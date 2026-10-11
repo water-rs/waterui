@@ -1,0 +1,28 @@
+[package]
+name = "cherenkov-shader"
+version = "0.0.0"
+description = "Shader composer on naga IR, shared by Cherenkov and filtrate"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["shader", "naga", "wgsl", "gpu", "composer"]
+categories = ["graphics", "rendering"]
+
+[features]
+# The reference interpreter in `eval`.
+eval = ["dep:half"]
+
+[dependencies]
+# naga's `Literal::F16` payload; the evaluator reads it.
+half = { version = "2.5", default-features = false, optional = true }
+# The same naga major version wgpu 30 links, so composed modules reach wgpu without conversion.
+naga = { version = "30.0.1", features = ["wgsl-in", "wgsl-out", "msl-out", "spv-out"] }
+thiserror = "2"
+
+[dev-dependencies]
+# The composition tests check composed functions with the evaluator.
+cherenkov-shader = { path = ".", features = ["eval"] }
+
+[lints]
+workspace = true

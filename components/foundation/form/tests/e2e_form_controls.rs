@@ -2,6 +2,7 @@
 
 use jiff::civil::Date;
 use std::time::Duration;
+use waterui::Signal;
 use waterui::ViewExt as _;
 use waterui::component::vstack;
 use waterui::graphics::color::Srgb;
@@ -27,7 +28,7 @@ fn picker_items() -> Vec<PickerItem<&'static str>> {
     ]
 }
 
-#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+#[waterui::test(viewport = (320, 240))]
 fn picker_selection_flow(ui: UiBuilder) {
     let selection = Binding::container("Alpha");
     let selection_for_view = selection.clone();
@@ -56,7 +57,7 @@ fn picker_selection_flow(ui: UiBuilder) {
 
     app.query().role(Role::OPTION).label("Beta").tap();
     assert_eq!(
-        selection.get(),
+        selection.snapshot(),
         "Beta",
         "picker selection should update binding"
     );
@@ -75,7 +76,7 @@ fn picker_selection_flow(ui: UiBuilder) {
         .assert_exists();
 }
 
-#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+#[waterui::test(viewport = (320, 240))]
 fn picker_initial_non_first_selection_uses_matching_item_id(ui: UiBuilder) {
     let selection = Binding::container("Beta");
     let selection_for_view = selection.clone();
@@ -98,7 +99,7 @@ fn picker_initial_non_first_selection_uses_matching_item_id(ui: UiBuilder) {
         .assert_exists();
 }
 
-#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+#[waterui::test(viewport = (320, 240))]
 fn date_picker_accessibility(ui: UiBuilder) {
     let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
     let selected_date_for_view = selected_date.clone();
@@ -110,7 +111,7 @@ fn date_picker_accessibility(ui: UiBuilder) {
         )))
     });
 
-    let initial_value = DatePickerType::Date.format_value(selected_date.get().at(0, 0, 0, 0));
+    let initial_value = DatePickerType::Date.format_value(selected_date.snapshot().at(0, 0, 0, 0));
     app.query()
         .role(Role::COMBOBOX)
         .value(initial_value.clone())
@@ -123,7 +124,7 @@ fn date_picker_accessibility(ui: UiBuilder) {
         .value(initial_value)
         .set_text(updated_value.clone());
     assert_eq!(
-        selected_date.get(),
+        selected_date.snapshot(),
         updated_date,
         "date picker should update binding"
     );
@@ -137,7 +138,7 @@ fn date_picker_accessibility(ui: UiBuilder) {
         .assert_exists();
 }
 
-#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+#[waterui::test(viewport = (320, 240))]
 fn color_picker_accessibility_tap_is_handled(ui: UiBuilder) {
     let selected_color = Binding::container(Color::srgb(0, 0, 0));
     let selected_color_for_view = selected_color;
@@ -152,7 +153,7 @@ fn color_picker_accessibility_tap_is_handled(ui: UiBuilder) {
     app.query().role(Role::BUTTON).label("Accent Color").tap();
 }
 
-#[waterui::test(theme = hydrolysis_m3::install, viewport = (320, 240))]
+#[waterui::test(viewport = (320, 240))]
 fn calendar_navigation_and_selection_update_binding(ui: UiBuilder) {
     let selected_date = Binding::container(Date::new(2025, 1, 10).unwrap());
     let visible_month = Binding::container(Date::new(2025, 1, 1).unwrap());
@@ -177,7 +178,7 @@ fn calendar_navigation_and_selection_update_binding(ui: UiBuilder) {
     app.query().role(Role::BUTTON).label("14").assert_exists();
     app.query().role(Role::BUTTON).label("14").tap();
     assert_eq!(
-        selected_date.get(),
+        selected_date.snapshot(),
         Date::new(2025, 1, 14).unwrap(),
         "calendar day tap should update the selected date"
     );
@@ -192,7 +193,7 @@ fn calendar_navigation_and_selection_update_binding(ui: UiBuilder) {
     );
     app.query().role(Role::BUTTON).label("20").tap();
     assert_eq!(
-        selected_date.get(),
+        selected_date.snapshot(),
         Date::new(2025, 2, 20).unwrap(),
         "calendar month navigation should change the active month before selection"
     );

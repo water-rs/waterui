@@ -1,0 +1,12 @@
+<section class="resources">
+<div><span>CPU avg</span><strong>{{ avg_cpu }}%</strong></div>
+<div><span>CPU max</span><strong>{{ max_cpu }}%</strong></div>
+<div><span>memory max</span><strong>{{ max_memory }}</strong></div>
+<div><span>GPU pipeline avg</span><strong>{{ avg_gpu }}</strong></div>
+<div><span>GPU pipeline max</span><strong>{{ max_gpu }}</strong></div>
+<div><span>layer avg</span><strong>{{ avg_layers }}</strong></div>
+<div><span>layer max</span><strong>{{ max_layers }}</strong></div>
+<div><span>clip avg</span><strong>{{ avg_clip }}</strong></div>
+<div><span>clip depth max</span><strong>{{ max_clip_depth }}</strong></div>
+</section>
+<section class="trend-grid">{% for chart in charts %}{{ chart|safe }}{% endfor %}</section>

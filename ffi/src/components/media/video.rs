@@ -641,7 +641,7 @@ pub unsafe extern "C" fn waterui_video_track_catalog_replace_audio(
     // SAFETY: the caller contract requires `binding` to be a valid handle that stays
     // alive for this call; it is only borrowed.
     let binding = unsafe { crate::borrow_ffi(binding) };
-    binding.set(binding.get().replacing_audio(tracks));
+    binding.with_mut(|b| *b = core::mem::take(b).replacing_audio(tracks));
 }
 
 /// Replaces the video portion of a native player's shared track catalog.
@@ -661,7 +661,7 @@ pub unsafe extern "C" fn waterui_video_track_catalog_replace_video(
     // SAFETY: the caller contract requires `binding` to be a valid handle that stays
     // alive for this call; it is only borrowed.
     let binding = unsafe { crate::borrow_ffi(binding) };
-    binding.set(binding.get().replacing_video(tracks));
+    binding.with_mut(|b| *b = core::mem::take(b).replacing_video(tracks));
 }
 
 /// Replaces the subtitle portion of a native player's shared track catalog.
@@ -681,7 +681,7 @@ pub unsafe extern "C" fn waterui_video_track_catalog_replace_subtitles(
     // SAFETY: the caller contract requires `binding` to be a valid handle that stays
     // alive for this call; it is only borrowed.
     let binding = unsafe { crate::borrow_ffi(binding) };
-    binding.set(binding.get().replacing_subtitles(tracks));
+    binding.with_mut(|b| *b = core::mem::take(b).replacing_subtitles(tracks));
 }
 
 /// Drops the native write handle for a shared selectable-track catalog.
@@ -1028,7 +1028,7 @@ const fn generation_token(generation: u64) -> i32 {
 
 fn generation_binding(generation: &Binding<u64>) -> Binding<i32> {
     Binding::mapping(generation, generation_token, |generation, _| {
-        generation.set(generation.get().wrapping_add(1));
+        generation.with_mut(|generation| *generation = generation.wrapping_add(1));
     })
 }
 
@@ -1186,6 +1186,7 @@ impl IntoFFI for NativeVideoPlayerConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use waterui::Signal;
     use waterui_core::binding;
 
     #[test]
@@ -1239,7 +1240,7 @@ mod tests {
 
         // SAFETY: the caller contract requires `binding` to be a valid handle that
         // stays alive for this call; it is only borrowed.
-        let catalog = unsafe { crate::borrow_ffi(binding) }.get();
+        let catalog = unsafe { crate::borrow_ffi(binding) }.snapshot();
         assert_eq!(catalog.audio()[0].roles(), &[String::from("main")]);
         assert_eq!(catalog.video()[0].bandwidth(), None);
         assert_eq!(catalog.video()[0].dimensions(), Some((3840, 2160)));
@@ -1271,7 +1272,7 @@ mod tests {
         // SAFETY: the caller contract requires `binding` to be a valid handle that
         // stays alive for this call; it is only borrowed.
         let window = unsafe { crate::borrow_ffi(binding) }
-            .get()
+            .snapshot()
             .expect("native live snapshot must be present");
         assert_eq!(window.seekable_start(), core::time::Duration::from_secs(30));
         assert_eq!(
@@ -1285,7 +1286,7 @@ mod tests {
         }
         // SAFETY: the caller contract requires `binding` to be a valid handle that
         // stays alive for this call; it is only borrowed.
-        assert!(unsafe { crate::borrow_ffi(binding) }.get().is_none());
+        assert!(unsafe { crate::borrow_ffi(binding) }.snapshot().is_none());
         // SAFETY: `binding` is that same handle, dropped once at end of test.
         unsafe { waterui_drop_video_live_window_binding(binding) };
     }

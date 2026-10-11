@@ -135,7 +135,7 @@ let fill = signal_color(selected.select(indicator, clear).computed());
 Rectangle.fill(fill).size(64.0, 32.0)
 ```
 
-Without it, `.fill(binding)` fails to type-check and `.fill(binding.get())` freezes —
+Without it, `.fill(binding)` fails to type-check and `.fill(binding.snapshot())` freezes —
 the rule-1 bug in a hat.
 
 ## HDR
@@ -157,7 +157,9 @@ view.background(Material::Regular)        // platform blur material
 view.background(RoundedRectangle::new(0.18).fill(Surface))   // any view is a valid background
 ```
 
-`Material` is the content-layer frosted pane (SwiftUI's `.regularMaterial`); Liquid Glass
+`Material` is the content-layer frosted pane (SwiftUI's `.regularMaterial`). `UltraThin` and
+`Thin` blend what lies behind the window: Hydrolysis realizes them only as a window's
+background (`Window::background`), and panics on them as a view's background. Liquid Glass
 is a separate type, `Glass`, because it is a different surface with its own parameters,
 not a sixth thickness. Glass carries its own outline — a capsule unless you say
 otherwise — because a mask over glass would destroy its refraction; do not `.clip()` it.
@@ -172,28 +174,33 @@ view.background(Glass::clear().interactive(true))       // over media; reacts to
 view.background(Glass::regular().tint(Accent).shape(RoundedRectangle::new(0.2)))
 ```
 
-Gradients come in **two families that share names — pick the import deliberately**:
-
-- `waterui::gradient::*` (prelude): background-descriptor types (`LinearGradient`,
-  `RadialGradient`, `AngularGradient`, `MeshGradient` over `MeshVertex`, `ColorStop`,
-  `UnitPoint`) for `.background(..)`.
-- `waterui_graphics::{Gradient, MeshGradient, ResolvedColor}` (the `waterui-graphics`
-  crate, `features = ["gpu"]`): standalone GPU-rendered gradient *views*. Because the
-  prelude already binds `Gradient`, calling `Gradient::linear(..)` after a prelude glob
-  resolves to the wrong type — import the graphics one explicitly.
+Gradients are views in `waterui::gradient` (the prelude carries `Gradient` and
+`MeshGradient`), so they work anywhere a view does — on their own or inside
+`.background(..)`. They are authored in unit space, `(0, 0)` the top-left, and take
+`WorkingColor` (linear Display P3): `Srgb::from_hex(..).resolve()` makes one from a hex
+colour, and `color::working::from_linear_srgb` from linear components, where values
+above `1.0` are HDR.
 
 ```rust
-use waterui_graphics::{AnimatedMeshGradient, AnimatedMeshGradientConfig, MeshGradient, ResolvedColor};
+use waterui::color::working::from_linear_srgb;
+use waterui::gradient::{
+    AnimatedMeshGradient, AnimatedMeshGradientConfig, FlowingGradient, Gradient, MeshGradient,
+};
 
-// Stops take ResolvedColor: a plain struct of five public f32 fields (struct-literal it).
-let stop = ResolvedColor { red: 1.0, green: 0.3, blue: 0.5, opacity: 1.0, headroom: 0.0 };
+let rose = Srgb::from_hex("#FF4D80").resolve();
+let sky = from_linear_srgb([0.3, 0.5, 1.0], 1.0);
 
-MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)   // colors: any signal of ResolvedColors
-AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())   // animates in-shader, zero CPU
+Gradient::linear(vec![(0.0, rose), (1.0, sky)], [0.0, 0.0], [1.0, 1.0])   // fixed colours
+view.background(Gradient::radial(vec![(0.0, rose), (1.0, sky)], [0.5, 0.5], 0.0, 0.7))
+MeshGradient::new(3, 3, colors.clone()).size(300.0, 200.0)   // colors: any signal of WorkingColors
+AnimatedMeshGradient::new(AnimatedMeshGradientConfig::aqua_bloom())   // animates in-shader on the engine clock
+FlowingGradient::new()   // drifting noise bands, GPU only
 ```
 
-The graphics-crate gradients take signals directly, so an animated gradient is a signal
-change, not a rebuild.
+`MeshGradient` follows signals for its colours, its control points (`.points(..)`) and
+its interpolation (`.smooths_colors(..)`), and `AnimatedMeshGradient::new` takes a
+signal of its whole configuration, so an animated gradient is a signal change, not a
+rebuild. An animated mesh with `speed` `0.0` holds still and lets the engine idle.
 
 ## Shapes
 
@@ -255,6 +262,14 @@ supplies explicit `FloatingStyle` tokens. Themes may install a `FloatingStyle` i
 environment — read it with `env.get::<FloatingStyle>()` (falling back to
 `FloatingStyle::default()`) when custom chrome must match floating controls.
 
+`FloatingStyle::elevation` is a `StateValue<FloatingElevation>` — the surface's
+ambient and key shadows resolve against the state the control inside reports
+through `.interaction_state`, so a themed FAB can lift on hover
+(`elevation.when(InteractionState::HOVERED, ..)`) without view code wiring
+anything. The same `StateValue` shape keys `InteractionStyle`'s
+`state_layer_radii` and `label_color`, and `focus_ring` draws the M3-style
+focus indicator while a control shows keyboard focus.
+
 ## Icons
 
 Icons come from packaged icon-set crates. **Pick one set per app** and depend on it:
@@ -297,27 +312,43 @@ use waterui_icons_sf_symbol as sf;
 
 ## Material 3 with the Hydrolysis renderer
 
-Hydrolysis (the self-drawn GPU renderer) gets widget chrome from a backend-neutral
-`WidgetTheme`. For Material 3 output, install the theme package before running:
+Hydrolysis (the self-drawn GPU renderer) is styled by construction: every entry point
+takes a `hydrolysis::Style` value, and `Material3` is the Material Design 3 one:
 
 ```rust
-hydrolysis_m3::install(&mut env);        // light baseline
-hydrolysis_m3::install_dark(&mut env);
+hydrolysis::run(app(env), hydrolysis_m3::Material3::defaults());   // light+dark baseline
+hydrolysis::run(app(env), hydrolysis_m3::Material3::dark());
 ```
 
-Seed-based Material You theming takes an `Argb` seed (a tuple struct over `0xAARRGGBB`,
+Tests take the same style through `theme =` — see `references/testing.md`:
+
+```rust
+#[waterui::test(view, theme = hydrolysis_m3::Material3::defaults(), offscreen)]
+```
+
+To install a scheme into a scoped environment instead of running the whole app under
+it — a themed subtree like `examples/reply`'s `ReplyTheme` — call the `Style` trait's
+`install_tokens` directly:
+
+```rust
+use hydrolysis::Style;
+
+Material3::with_colors(my_scheme).install_tokens(&mut scoped_env);
+```
+
+Seed-based Material You styles take an `Argb` seed (a tuple struct over `0xAARRGGBB`,
 re-exported by `hydrolysis_m3`) and a `MaterialColorMode`:
 
 ```rust
-use hydrolysis_m3::{Argb, MaterialColorMode, MaterialColorSource, install_with_color_schemes};
+use hydrolysis_m3::{Argb, Material3, MaterialColorMode, MaterialColorSource};
 
-hydrolysis_m3::install_with_seed(&mut env, Argb(0xFF6750A4));                       // light
-hydrolysis_m3::install_with_seed_mode(&mut env, Argb(0xFF6750A4), MaterialColorMode::Dark);
+Material3::with_seed(Argb(0xFF6750A4));                               // light
+Material3::with_seed_mode(Argb(0xFF6750A4), MaterialColorMode::Dark); // dark
 
-// Full control: build paired schemes from a source, install one by reference.
+// Full control: build paired schemes from a source, pick one mode.
 let source = MaterialColorSource::new(Argb(0xFF6750A4));   // variant, contrast, spec version
-let schemes = source.schemes();                            // paired light/dark
-install_with_color_schemes(&mut env, &schemes, MaterialColorMode::Light);
+let schemes = source.schemes();                          // paired light/dark
+Material3::with_color_schemes(&schemes, MaterialColorMode::Light);
 ```
 
 Material-specific role tokens live in `hydrolysis_m3::color::*` (`Primary`, `OnPrimary`,
@@ -327,6 +358,10 @@ prefer the portable ones in views that should also run on native backends, and u
 Material roles only where the design is specifically Material.
 
 To see it:
+
+Declare `backend = "hydrolysis"` under `[platforms.<platform>]` in `Water.toml`,
+or use the flag below if that platform has no declaration. A conflicting declaration
+is an error; see [backend selection](project.md#platforms-and-backends).
 
 ```bash
 water preview my_view --backend hydrolysis --theme material3 --output preview.png

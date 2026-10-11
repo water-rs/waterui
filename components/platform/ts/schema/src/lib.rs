@@ -37,12 +37,15 @@
 //! # The artifact channel
 //!
 //! `#[derive(TsProps)]` emits a `#[cfg(debug_assertions)] #[used] static`
-//! named `waterui_meta_tsprops_<Type>` holding the encoded schema followed by
-//! one NUL. That is the canonical proc-macro to CLI channel: `#[used]` keeps
-//! the item in the object file and the rlib, so the CLI enumerates it by name
-//! from a dev-profile host build and reads its bytes. Because the whole
-//! encoding happens during const evaluation, the static is data — the macro
-//! runs no tool and reads no file.
+//! named `waterui_meta_tsprops_<Type>` whose bytes form a self-describing
+//! record in the [`DIR_SECTION`] (`__wmeta` on Mach-O) linker section: the
+//! static's name, NUL, the encoded schema followed by its NUL, NUL. That is
+//! the canonical proc-macro to CLI channel: `#[used]` keeps the item in the
+//! object file and the rlib — and in the linked image, where a Windows PE
+//! keeps no symbol table to name it — so the CLI walks the section's records
+//! by name from a dev-profile host build. Because the whole encoding happens
+//! during const evaluation, the static is data — the macro runs no tool and
+//! reads no file.
 //!
 //! The debug gate is what keeps a shipped binary free of it: `#[used]` emits
 //! `no_dead_strip` on Mach-O, so a release artifact would carry the payload
@@ -54,9 +57,13 @@
 //! component table — which components JSX may name, what each one's
 //! attributes are, and which modifier attributes exist. It is built from the
 //! same [`TypeSchema`] constants, encoded by [`encode_catalog`] during const
-//! evaluation, and read back by [`decode_catalog`]. The two kinds are told
-//! apart by the byte after the version, so neither decoder can read the other
-//! kind as a malformed one of its own.
+//! evaluation, and read back by [`decode_catalog`].
+//!
+//! A third payload records a *mount point*: one `tsx!` call site, naming the
+//! module it mounts and the props contract it is typed against. See
+//! [`encode_mount`] and [`decode_mount`]. The three kinds are told apart by
+//! the byte after the version, so no decoder can read another kind as a
+//! malformed payload of its own.
 //!
 //! # Type mapping
 //!
@@ -91,6 +98,7 @@ mod decode;
 mod encode;
 pub mod format;
 mod impls;
+mod mount;
 pub mod owned;
 mod tree;
 
@@ -104,10 +112,12 @@ pub use catalog::{
 pub use decode::{DecodeError, decode};
 pub use encode::{contract_hash, encode, encoded_len, payload};
 pub use format::{FORMAT_VERSION, MAX_ARRAY_LEN, MAX_DEPTH};
+pub use mount::{MountPoint, decode_mount, encode_mount, mount_encoded_len, struct_name};
 pub use tree::{
     EnumRepresentation, EnumSchema, FieldSchema, NumberKind, StructSchema, TypeSchema,
     VariantPayload, VariantSchema,
 };
+pub use waterui_meta::{DIR_SECTION, DirRecord, DirRecords, dir_entry, dir_record, dir_records};
 
 /// Derives the TypeScript projection of a struct or enum.
 ///
@@ -208,6 +218,15 @@ pub trait TsMapKey: TsType {}
 ///
 /// Derived by `#[derive(TsProps)]`, which also emits the artifact static the
 /// CLI reads.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a TypeScript props contract and cannot be mounted",
+    label = "`{Self}` does not derive `TsProps`",
+    note = "a mounted TypeScript module is typed against its props: add \
+            `#[derive(TsProps)]` to `{Self}`, which is what gives it the contract hash a \
+            bundle is checked against",
+    note = "a module that takes no props mounts against `waterui::ts::NoProps`, which \
+            `tsx!(\"./promo.tsx\")` with no props argument uses"
+)]
 pub trait TsProps: TsType {
     /// The encoded [`TsType::SCHEMA`], without the NUL terminator the artifact
     /// static appends — the exact bytes the CLI recovers and [`decode`] reads.

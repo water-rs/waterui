@@ -3,8 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use cef::{ImplBrowser, ImplBrowserHost, ImplFrame};
-use cookie::{Expiration, SameSite, time::OffsetDateTime};
-use num_traits::ToPrimitive as _;
+use cookie::{Expiration, SameSite};
 use serde_json::Value;
 use suiteki::Str;
 use waterui_core::{Computed, Signal};
@@ -75,7 +74,7 @@ impl CefWebViewHandle {
         let handlers = Rc::new(RefCell::new(HashMap::<String, Rc<MessageHandler>>::new()));
         let origins: Rc<RefCell<Option<waterui_webview::OriginPolicy>>> =
             Rc::new(RefCell::new(None));
-        let contexts = Rc::new(RefCell::new(HashMap::<i64, String>::new()));
+        let contexts = Rc::new(RefCell::new(HashMap::<i64, TrackedContext>::new()));
         let scripts = Rc::new(RefCell::new(HashMap::<String, String>::new()));
         let session = page.cdp();
         install_bridge(&session);
@@ -100,7 +99,7 @@ impl CefWebViewHandle {
                         );
                         return;
                     }
-                    dispatch_bridge_call(&session, &handlers, &event.params, context);
+                    dispatch_bridge_call(&session, &handlers, &contexts, &event.params, context);
                 }
                 _ => {}
             }
@@ -296,7 +295,7 @@ impl WebViewHandle for CefWebViewHandle {
         clippy::future_not_send,
         reason = "CEF pages and DevTools sessions are confined to the UI thread"
     )]
-    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
+    async fn get_cookies(&self) -> Result<Vec<Cookie<'static>>, waterui_core::Error> {
         // The cookies of the current document, not every cookie in the profile:
         // `Network.getAllCookies` returned the whole store, which is not what
         // "the cookies for this web view" means on any other backend.
@@ -304,8 +303,14 @@ impl WebViewHandle for CefWebViewHandle {
             .session()
             .execute(&protocol::GetCookies { urls: Vec::new() })
             .await
-            .unwrap_or_else(|error| panic!("CEF failed to retrieve WebView cookies: {error}"));
-        response.cookies.iter().map(cookie_from_cdp).collect()
+            .map_err(|error| {
+                waterui_core::Error::new(error).context("CEF failed to retrieve WebView cookies")
+            })?;
+        response
+            .cookies
+            .iter()
+            .map(cookie_from_cdp)
+            .collect::<Result<Vec<_>, _>>()
     }
 
     #[expect(
@@ -342,7 +347,7 @@ impl CefWebViewHandle {
                 expression,
                 await_promise: true,
                 return_by_value: true,
-                context_id: None,
+                unique_context_id: None,
             })
             .await
             .map_err(|error| Str::from(error.to_string()))?;
@@ -372,12 +377,34 @@ impl CustomWebViewController for CefController {
     }
 }
 
-/// Records the origin of a newly created execution context.
-fn track_context(contexts: &RefCell<HashMap<i64, String>>, params: &Value) {
+/// What the host keeps about one live execution context.
+///
+/// `origin` answers the bridge admission check; `unique_id` names the context
+/// to `Runtime.evaluate` when a reply goes back to it. The map is keyed by the
+/// numeric `executionContextId` because that is what `Runtime.bindingCalled`
+/// and the destruction events report — but the number is a per-renderer
+/// handle, and after a cross-process navigation another renderer can reuse it,
+/// so the reply itself is addressed by the unique id.
+struct TrackedContext {
+    /// The context's origin, for [`frame_may_use_bridge`].
+    origin: String,
+    /// The context's `uniqueId` — the `uniqueContextId` a reply is sent to.
+    unique_id: String,
+}
+
+/// Records the origin and unique id of a newly created execution context.
+///
+/// Both arrive in the `context` object of `Runtime.executionContextCreated`;
+/// a context whose `uniqueId` is missing can neither be authenticated for a
+/// call nor addressed for a reply, so it is not tracked at all.
+fn track_context(contexts: &RefCell<HashMap<i64, TrackedContext>>, params: &Value) {
     let Some(context) = params.get("context") else {
         return;
     };
     let Some(id) = context.get("id").and_then(Value::as_i64) else {
+        return;
+    };
+    let Some(unique_id) = context.get("uniqueId").and_then(Value::as_str) else {
         return;
     };
     let origin = context
@@ -385,7 +412,13 @@ fn track_context(contexts: &RefCell<HashMap<i64, String>>, params: &Value) {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string();
-    contexts.borrow_mut().insert(id, origin);
+    contexts.borrow_mut().insert(
+        id,
+        TrackedContext {
+            origin,
+            unique_id: unique_id.to_string(),
+        },
+    );
 }
 
 /// Reads an execution-context id out of an event's parameters.
@@ -401,7 +434,7 @@ fn context_id(params: &Value, key: &str) -> Option<i64> {
 /// cross-origin iframe inside an allowed page passed the check and could call
 /// every registered handler.
 fn frame_may_use_bridge(
-    contexts: &RefCell<HashMap<i64, String>>,
+    contexts: &RefCell<HashMap<i64, TrackedContext>>,
     origins: &RefCell<Option<waterui_webview::OriginPolicy>>,
     context: Option<i64>,
 ) -> bool {
@@ -413,13 +446,17 @@ fn frame_may_use_bridge(
     let Some(context) = context else {
         return false;
     };
-    let origin = contexts.borrow().get(&context).cloned();
+    let origin = contexts
+        .borrow()
+        .get(&context)
+        .map(|tracked| tracked.origin.clone());
     origin.is_some_and(|origin| policy.allows_origin(&origin))
 }
 
 fn dispatch_bridge_call(
     session: &CefCdpSession,
     handlers: &RefCell<HashMap<String, Rc<MessageHandler>>>,
+    contexts: &RefCell<HashMap<i64, TrackedContext>>,
     params: &Value,
     context: Option<i64>,
 ) {
@@ -434,6 +471,23 @@ fn dispatch_bridge_call(
             return;
         }
     };
+    // The reply has to find the document that made the call. The numeric
+    // `executionContextId` is a per-renderer handle, and after a
+    // cross-process navigation another renderer can reuse it — evaluating
+    // against the number would deliver the reply into a different document.
+    // The unique id cannot be reused, so the calling context is resolved to
+    // it while the call is being dispatched. `frame_may_use_bridge` admitted
+    // the call, which means the context is a tracked one. Chromium refuses an
+    // evaluation addressed to a unique id whose context is gone, so a reply
+    // whose document navigated away is dropped by the engine.
+    let unique_context_id = context
+        .and_then(|id| {
+            contexts
+                .borrow()
+                .get(&id)
+                .map(|tracked| tracked.unique_id.clone())
+        })
+        .expect("an admitted bridge call comes from a tracked execution context");
     // Resolve the handler and release the borrow before invoking it: a handler is
     // free to register or remove handlers on the same web view.
     let handler = handlers.borrow().get(&request.name).map(Rc::clone);
@@ -449,7 +503,7 @@ fn dispatch_bridge_call(
                 expression: &reply.resolve_script(request.id),
                 await_promise: false,
                 return_by_value: false,
-                context_id: context,
+                unique_context_id: Some(unique_context_id.as_str()),
             },
         );
         return;
@@ -464,16 +518,13 @@ fn dispatch_bridge_call(
             Ok(reply) => bridge::Reply::from(reply),
             Err(message) => bridge::Reply::Failure(message),
         };
-        // Back into the context that called, not the default one: the pending
-        // promise lives in the caller's frame, so a reply sent anywhere else
-        // leaves it pending forever.
         execute_without_result(
             &session,
             &protocol::Evaluate {
                 expression: &reply.resolve_script(request.id),
                 await_promise: false,
                 return_by_value: false,
-                context_id: context,
+                unique_context_id: Some(unique_context_id.as_str()),
             },
         );
     })
@@ -507,7 +558,7 @@ fn execute_without_result<C: protocol::CdpCommand>(session: &CefCdpSession, comm
     drop(session.execute(command));
 }
 
-fn cookie_from_cdp(cookie: &protocol::Cookie) -> Cookie<'static> {
+fn cookie_from_cdp(cookie: &protocol::Cookie) -> Result<Cookie<'static>, waterui_core::Error> {
     let mut builder = Cookie::build((cookie.name.clone(), cookie.value.clone()))
         .domain(cookie.domain.clone())
         .path(cookie.path.clone())
@@ -526,12 +577,13 @@ fn cookie_from_cdp(cookie: &protocol::Cookie) -> Cookie<'static> {
             ),
         }
     }
-    if cookie.expires.abs() > f64::EPSILON
-        && cookie.expires.is_sign_positive()
-        && let Some(seconds) = cookie.expires.to_i64()
-        && let Ok(expires) = OffsetDateTime::from_unix_timestamp(seconds)
-    {
-        builder = builder.expires(expires);
+    // CDP reports a non-positive `expires` for a session cookie; anything
+    // else, NaN included, is an expiry that must convert.
+    if cookie.expires.is_nan() || cookie.expires > 0.0 {
+        builder = builder.expires(waterui_webview::cookie_expiry(
+            &cookie.name,
+            cookie.expires,
+        )?);
     }
-    builder.build()
+    Ok(builder.build())
 }

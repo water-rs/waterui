@@ -68,14 +68,27 @@ def copy_file(source: pathlib.Path, destination: pathlib.Path) -> pathlib.Path:
 
 
 def package_owner(path: pathlib.Path) -> str:
-    result = subprocess.run(
-        ["dpkg-query", "-S", str(path)],
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-    )
-    if result.returncode != 0:
+    # lddtree reports the resolved path, which sits under /usr on merged-usr
+    # systems; dpkg's database still records the pre-merge /lib|/bin|/sbin
+    # spelling, so a /usr-prefixed path may need its merged alias stripped
+    # before the query matches.
+    candidates = [str(path)]
+    merged = str(path)
+    for directory in ("/usr/lib", "/usr/bin", "/usr/sbin"):
+        if merged.startswith(directory + "/"):
+            candidates.append(merged.removeprefix("/usr"))
+            break
+    for candidate in candidates:
+        result = subprocess.run(
+            ["dpkg-query", "-S", candidate],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode == 0:
+            break
+    else:
         raise RuntimeError(f"runtime dependency has no Debian package owner: {path}")
     return result.stdout.split(":", maxsplit=1)[0].split(",", maxsplit=1)[0]
 
@@ -339,6 +352,9 @@ def main() -> None:
     bridge = root / "lib/libwaterui_wpe.so"
     if not bridge.is_file():
         raise RuntimeError(f"WPE bridge was not installed at {bridge}")
+    extension = root / "lib/waterui-wpe/extensions/waterui_wpe_extension.so"
+    if not extension.is_file():
+        raise RuntimeError(f"WPE web-process extension was not installed at {extension}")
     for tool, requirement in SANDBOX_TOOLS.items():
         if not tool.is_file():
             raise RuntimeError(f"WPE sandbox requires {requirement} at {tool}")

@@ -2,6 +2,7 @@
 
 use crate::ViewExt;
 use nami::Binding;
+use waterui_core::accessibility::{AccessibilityChildren, AccessibilityRole};
 use waterui_core::{View, handler::ViewBuilder};
 use waterui_layout::stack::vstack;
 
@@ -74,9 +75,15 @@ where
         let toggle = self.toggle;
         let expanded = toggle.clone();
         vstack((
-            self.header.on_tap(move || {
-                toggle.toggle();
-            }),
+            // The header is one disclosure button: its label is resolved from
+            // the content and descendants stay out of the tree rather than
+            // repeating it, so assistive tech gets a single activatable node.
+            self.header
+                .on_tap(move || {
+                    toggle.toggle();
+                })
+                .a11y_role(AccessibilityRole::Button)
+                .a11y_children(AccessibilityChildren::ExcludeDescendants),
             when(expanded, move || self.content.build()),
         ))
     }

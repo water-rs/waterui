@@ -1,11 +1,19 @@
 //! Wire-format constants shared by the const encoder and the runtime decoder.
 //!
 //! Every byte a payload may contain is non-zero. The `water` CLI recovers a
-//! `#[used] static` from an artifact by reading its section from the symbol
-//! address and cutting at the first NUL — Mach-O symbols carry no size — so a
-//! NUL inside the payload would truncate it. The encoder asserts that
-//! invariant on every byte it emits, and the static appends exactly one NUL as
-//! its terminator.
+//! metadata record from an artifact by reading a name and a payload, each
+//! cut at its first NUL, so a NUL inside the payload would truncate it. The
+//! encoder asserts that invariant on every byte it emits, and the payload
+//! appends exactly one NUL as its terminator.
+//!
+//! The symbol lookup alone cannot carry the channel into a linked Windows
+//! image: the PE header's symbol-table fields are deprecated and lld-link
+//! leaves them at zero, so a `#[used]` static lands in `.rdata` unnamed. The
+//! derive's metadata static therefore lives in
+//! [`waterui_meta::DIR_SECTION`] (`__wmeta` on Mach-O) and its bytes form the
+//! self-describing record `name`, NUL, `payload`, NUL — a directory the
+//! reader walks by name on every format, in object files and linked images
+//! alike.
 
 /// Version of the encoded payload format, the first byte of every payload.
 ///
@@ -77,15 +85,28 @@ pub(crate) mod tag {
 
 /// What a payload carries, written straight after the version byte.
 ///
-/// Two kinds of payload share the format and the version: a props contract,
-/// which is one type tree, and the component catalog. A type tree starts with
-/// a node tag, so the catalog announces itself with a byte no node tag uses
-/// and each decoder refuses the other kind rather than reading it as a
-/// malformed one of its own.
+/// Three kinds of payload share the format and the version: a props contract,
+/// which is one type tree; the component catalog; and a mount point. A type
+/// tree starts with a node tag, so the other two announce themselves with
+/// bytes no node tag uses, and each decoder refuses the kinds that are not
+/// its own rather than reading one as a malformed payload of its own.
 pub(crate) mod kind {
     /// The component catalog: [`decode_catalog`](crate::decode_catalog) reads
     /// it, and [`decode`](crate::decode) refuses it.
     pub const CATALOG: u8 = 0x20;
+    /// One `tsx!` mount point: [`decode_mount`](crate::decode_mount) reads it,
+    /// and the other two decoders refuse it.
+    pub const MOUNT: u8 = 0x21;
+}
+
+/// What the byte after the version says a payload is, for the error a decoder
+/// handed the wrong kind raises.
+pub(crate) const fn payload_kind(byte: Option<u8>) -> &'static str {
+    match byte {
+        Some(kind::CATALOG) => "a component catalog",
+        Some(kind::MOUNT) => "a mount point",
+        _ => "a props type tree",
+    }
 }
 
 /// Which slot a component's JSX children fill.

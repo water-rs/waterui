@@ -1,4 +1,4 @@
-//! Snackbar test playground
+//! Snackbar test example
 
 use core::time::Duration;
 use mdi::check_circle;

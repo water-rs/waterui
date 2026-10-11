@@ -9,7 +9,7 @@ use core::ops::Deref;
 use std::path::Path;
 
 use crate::AssetError;
-#[cfg(feature = "std")]
+#[cfg(feature = "remote")]
 use crate::download_remote_bytes;
 
 /// Small binary data, fully loaded into memory.
@@ -20,7 +20,7 @@ use crate::download_remote_bytes;
 ///
 /// ```ignore
 /// // From local file (sync)
-/// let config: Data = asset!("config.json");
+/// let config: Data = asset!("config.json").load(resources)?;
 ///
 /// // From remote URL (async)
 /// let remote: Data =
@@ -35,7 +35,7 @@ use crate::download_remote_bytes;
 /// `Data` implements `Deref<Target = [u8]>`, so it can be used directly as `&[u8]`:
 ///
 /// ```ignore
-/// let config: Data = asset!("config.json");
+/// let config: Data = asset!("config.json").load(resources)?;
 /// let parsed: Config = serde_json::from_slice(&config)?;
 /// ```
 #[derive(Debug, Clone)]
@@ -89,7 +89,7 @@ impl Data {
     ///
     /// Returns `AssetError::Network` for network errors.
     /// Returns `AssetError::HttpNotAllowed` if using HTTP (not HTTPS) for non-loopback hosts.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "remote")]
     pub async fn from_remote(url: &str) -> Result<Self, AssetError> {
         Ok(Self::from_bytes(download_remote_bytes(url).await?))
     }

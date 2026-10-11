@@ -972,17 +972,18 @@ impl View for StackedSnackbarView {
         let content = Self::build_content(item.snackbar.clone(), manager, item.id, &theme);
 
         let enter_animation = theme.enter_animation.clone();
+        let shape = FixedRoundedRectangle::new(theme.corner_radius);
         let shadow = Shadow::new(
             theme.shadow_color.clone(),
             Vector::new(0.0, theme.shadow_offset_y),
             theme.shadow_radius,
-            theme.corner_radius,
+            shape,
         );
         let ambient_shadow = Shadow::new(
             theme.ambient_shadow_color.clone(),
             Vector::new(0.0, theme.ambient_shadow_offset_y),
             theme.ambient_shadow_radius,
-            theme.corner_radius,
+            shape,
         );
 
         // The appear hook runs after this subtree's first flush, once the animated
@@ -1008,9 +1009,7 @@ impl View for StackedSnackbarView {
                     .padding_with(content_padding)
                     .height(theme.single_line_min_height),),
             )
-            .background(
-                FixedRoundedRectangle::new(theme.corner_radius).fill(theme.container_color.clone()),
-            )
+            .background(shape.fill(theme.container_color.clone()))
             .shadow(ambient_shadow)
             .shadow(shadow)
             .opacity(item.opacity.with(enter_animation.clone()))

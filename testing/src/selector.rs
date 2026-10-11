@@ -1,10 +1,14 @@
+use core::marker::PhantomData;
 use core::ops::Index;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use accesskit::{Action as AccessibilityAction, ActionData as AccessibilityActionData};
+use hydrolysis::{AccessibilityActivationPointError, HeadlessRuntime};
+use waterui::component::text_field::ContentType;
 
 use crate::app::SemanticApp;
+use crate::driver::RuntimeDriver;
 use crate::semantics::{CheckedState, NodeBounds, NodeId, NodeSnapshot, Role};
 
 /// Chainable semantic selector.
@@ -22,6 +26,7 @@ pub struct Selector {
     value_exact: Option<String>,
     value_contains: Option<String>,
     hidden: Option<bool>,
+    content_type: Option<ContentType>,
     scope: Option<QueryScope>,
 }
 
@@ -40,6 +45,7 @@ impl Default for Selector {
             value_exact: None,
             value_contains: None,
             hidden: Some(false),
+            content_type: None,
             scope: None,
         }
     }
@@ -141,17 +147,24 @@ impl Selector {
         self
     }
 
+    /// Restricts matches to a declared text-field content type.
+    #[must_use]
+    pub const fn content_type(mut self, content_type: ContentType) -> Self {
+        self.content_type = Some(content_type);
+        self
+    }
+
     /// Restricts matches to descendants of `handle`.
     #[must_use]
-    pub fn within(mut self, handle: ElementRef) -> Self {
-        self.scope = Some(QueryScope::descendants(handle));
+    pub fn within<R>(mut self, handle: ElementRef<R>) -> Self {
+        self.scope = Some(QueryScope::descendants(handle.into_anchor()));
         self
     }
 
     /// Restricts matches to direct children of `handle`.
     #[must_use]
-    pub fn children_of(mut self, handle: ElementRef) -> Self {
-        self.scope = Some(QueryScope::children(handle));
+    pub fn children_of<R>(mut self, handle: ElementRef<R>) -> Self {
+        self.scope = Some(QueryScope::children(handle.into_anchor()));
         self
     }
 
@@ -198,6 +211,9 @@ impl Selector {
         }
         if let Some(hidden) = self.hidden {
             parts.push(format!("hidden={hidden}"));
+        }
+        if let Some(content_type) = self.content_type {
+            parts.push(format!("content_type={content_type:?}"));
         }
         if let Some(scope) = self.scope() {
             parts.push(scope.describe());
@@ -284,29 +300,42 @@ impl Selector {
             return false;
         }
 
+        if let Some(expected) = self.content_type
+            && node.content_type() != Some(expected)
+        {
+            return false;
+        }
+
         true
     }
 }
 
-/// Resolved element handle.
+/// The runtime-free identity and snapshot of a resolved element.
+///
+/// A `Selector` scopes to one of these through [`Selector::within`] /
+/// [`Selector::children_of`], so the scope survives independent of which
+/// runtime resolved the handle — the anchor only ever names a node, never
+/// drives the runtime.
 #[derive(Debug, Clone)]
-pub struct ElementRef {
+pub struct ElementAnchor {
     pub(crate) node_id: NodeId,
     pub(crate) node: NodeSnapshot,
     pub(crate) revision: u64,
 }
 
-impl ElementRef {
+impl ElementAnchor {
+    pub(crate) const fn new(node_id: NodeId, node: NodeSnapshot, revision: u64) -> Self {
+        Self {
+            node_id,
+            node,
+            revision,
+        }
+    }
+
     /// Returns the stable node id.
     #[must_use]
     pub const fn id(&self) -> NodeId {
         self.node_id
-    }
-
-    /// Returns the node snapshot captured when this handle was resolved.
-    #[must_use]
-    pub const fn node(&self) -> &NodeSnapshot {
-        &self.node
     }
 
     #[must_use]
@@ -336,7 +365,185 @@ impl ElementRef {
         );
         summary
     }
+}
 
+/// Resolved element handle.
+///
+/// `R` is the runtime the handle was resolved from — `SemanticRuntime` for a
+/// style-free [`SemanticApp`], `HeadlessRuntime` for a rendered one. The
+/// parameter is what splits the surface: accessibility actions exist on every
+/// `ElementRef`, while the geometry and pointer methods exist only on
+/// `ElementRef<HeadlessRuntime>` — a semantic element has no `bounds()`.
+pub struct ElementRef<R = hydrolysis::SemanticRuntime> {
+    pub(crate) node_id: NodeId,
+    pub(crate) node: NodeSnapshot,
+    pub(crate) revision: u64,
+    marker: PhantomData<fn() -> R>,
+}
+
+impl<R> Clone for ElementRef<R> {
+    fn clone(&self) -> Self {
+        Self::new(self.node_id, self.node.clone(), self.revision)
+    }
+}
+
+impl<R> core::fmt::Debug for ElementRef<R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ElementRef")
+            .field("node_id", &self.node_id)
+            .field("node", &self.node)
+            .field("revision", &self.revision)
+            .finish()
+    }
+}
+
+impl<R> ElementRef<R> {
+    pub(crate) const fn new(node_id: NodeId, node: NodeSnapshot, revision: u64) -> Self {
+        Self {
+            node_id,
+            node,
+            revision,
+            marker: PhantomData,
+        }
+    }
+
+    /// Returns the stable node id.
+    #[must_use]
+    pub const fn id(&self) -> NodeId {
+        self.node_id
+    }
+
+    /// Returns the node snapshot captured when this handle was resolved.
+    #[must_use]
+    pub const fn node(&self) -> &NodeSnapshot {
+        &self.node
+    }
+
+    #[must_use]
+    pub(crate) fn anchor(&self) -> ElementAnchor {
+        ElementAnchor::new(self.node_id, self.node.clone(), self.revision)
+    }
+
+    #[must_use]
+    pub(crate) fn into_anchor(self) -> ElementAnchor {
+        ElementAnchor::new(self.node_id, self.node, self.revision)
+    }
+
+    #[must_use]
+    pub(crate) fn debug_summary(&self) -> String {
+        self.anchor().debug_summary()
+    }
+}
+
+/// The semantic surface every element handle exposes: accessibility actions.
+impl<R: RuntimeDriver> ElementRef<R> {
+    /// Performs a click/tap action.
+    pub fn tap(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "tap");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Click, None);
+    }
+
+    /// Requests accessibility focus on the element.
+    pub fn focus(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "focus");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Focus, None);
+    }
+
+    /// Sets textual value on editable controls.
+    pub fn set_text(&self, app: &mut SemanticApp<R>, value: impl Into<String>) {
+        app.assert_current_element(self, "set_text");
+        app.perform_action_expect(
+            self.node_id,
+            AccessibilityAction::SetValue,
+            Some(AccessibilityActionData::Value(
+                value.into().into_boxed_str(),
+            )),
+        );
+    }
+
+    /// Increments current value for slider/stepper-like controls.
+    pub fn increment(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "increment");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Increment, None);
+    }
+
+    /// Decrements current value for slider/stepper-like controls.
+    pub fn decrement(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "decrement");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Decrement, None);
+    }
+
+    /// Scrolls down when supported by the node.
+    pub fn scroll_down(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "scroll_down");
+        app.perform_action_expect(self.node_id, AccessibilityAction::ScrollDown, None);
+    }
+
+    /// Expands a collapsible node.
+    pub fn expand(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "expand");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Expand, None);
+    }
+
+    /// Collapses an expanded node.
+    pub fn collapse(&self, app: &mut SemanticApp<R>) {
+        app.assert_current_element(self, "collapse");
+        app.perform_action_expect(self.node_id, AccessibilityAction::Collapse, None);
+    }
+}
+
+/// Asserts normalized element coordinates are finite and inside `[0, 1]`.
+fn assert_normalized(normalized_x: f32, normalized_y: f32) {
+    assert!(
+        normalized_x.is_finite() && normalized_y.is_finite(),
+        "waterui-testing normalized coordinates must be finite"
+    );
+    assert!(
+        (0.0..=1.0).contains(&normalized_x) && (0.0..=1.0).contains(&normalized_y),
+        "waterui-testing normalized coordinates must be within [0, 1]"
+    );
+}
+
+/// The geometry and pointer surface only a rendered session's elements
+/// expose.
+///
+/// Every pointer method resolves its point through the element's clip
+/// chain and the window bounds — the spot a real pointer could reach —
+/// never against the raw logical bounds, which may lie under a clip.
+impl ElementRef<HeadlessRuntime> {
+    /// Resolves normalized coordinates to the point a pointer can reach on
+    /// the element: the fraction inside its interaction owner's region,
+    /// projected through the owner's clip chain and the window bounds.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either coordinate is non-finite or outside `[0, 1]`, or
+    /// when no reachable point exists — a fully clipped element reports
+    /// itself as not visible instead of touching whatever lies under the
+    /// clip.
+    fn pointer_point(
+        &self,
+        app: &SemanticApp<HeadlessRuntime>,
+        op: &str,
+        normalized_x: f32,
+        normalized_y: f32,
+    ) -> (f32, f32) {
+        assert_normalized(normalized_x, normalized_y);
+        app.activation_point(self.node_id, normalized_x, normalized_y)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "waterui-testing {op} cannot reach element {}: {}",
+                    self.debug_summary(),
+                    match error {
+                        AccessibilityActivationPointError::EmptyFragment => {
+                            "the target is not visible: its clip chain and the window bounds leave no pointer-reachable fragment"
+                                .to_owned()
+                        }
+                        other => other.to_string(),
+                    },
+                )
+            })
+    }
     /// Returns node bounds.
     ///
     /// # Panics
@@ -365,14 +572,7 @@ impl ElementRef {
     /// Panics if either coordinate is non-finite or outside `[0, 1]`.
     #[must_use]
     pub fn normalized_point(&self, normalized_x: f32, normalized_y: f32) -> (f32, f32) {
-        assert!(
-            normalized_x.is_finite() && normalized_y.is_finite(),
-            "waterui-testing normalized coordinates must be finite"
-        );
-        assert!(
-            (0.0..=1.0).contains(&normalized_x) && (0.0..=1.0).contains(&normalized_y),
-            "waterui-testing normalized coordinates must be within [0, 1]"
-        );
+        assert_normalized(normalized_x, normalized_y);
         let bounds = self.bounds();
         (
             bounds.width().mul_add(normalized_x, bounds.x()),
@@ -380,119 +580,158 @@ impl ElementRef {
         )
     }
 
-    /// Performs a click/tap action.
-    pub fn tap(&self, app: &mut SemanticApp) {
-        app.assert_current_element(self, "tap");
-        app.perform_action_expect(self.node_id, AccessibilityAction::Click, None);
-    }
-
     /// Performs a pointer tap at the provided normalized coordinates.
-    pub fn tap_at(&self, app: &mut SemanticApp, normalized_x: f32, normalized_y: f32) {
+    ///
+    /// The point resolves against the element's interaction owner projected
+    /// through its clip chain and the window, so a tap on a partly visible
+    /// element lands inside its visible fragment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either coordinate is non-finite or outside `[0, 1]`, or
+    /// when no reachable point exists — a fully clipped element reports
+    /// itself as not visible instead of dead-tapping inside the clip.
+    pub fn tap_at(
+        &self,
+        app: &mut SemanticApp<HeadlessRuntime>,
+        normalized_x: f32,
+        normalized_y: f32,
+    ) {
         app.assert_current_element(self, "tap_at");
-        let (x, y) = self.normalized_point(normalized_x, normalized_y);
+        let (x, y) = self.pointer_point(app, "tap_at", normalized_x, normalized_y);
         app.tap_at(x, y);
     }
 
-    /// Requests accessibility focus on the element.
-    pub fn focus(&self, app: &mut SemanticApp) {
-        app.assert_current_element(self, "focus");
-        app.perform_action_expect(self.node_id, AccessibilityAction::Focus, None);
-    }
-
-    /// Moves hover to the element center.
-    pub fn hover(&self, app: &mut SemanticApp) {
+    /// Moves hover to the point a pointer can reach at the element's
+    /// center.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no reachable point exists — a fully clipped element
+    /// reports itself as not visible instead of hovering under the clip.
+    pub fn hover(&self, app: &mut SemanticApp<HeadlessRuntime>) {
         app.assert_current_element(self, "hover");
-        let (x, y) = self.center();
+        let (x, y) = self.pointer_point(app, "hover", 0.5, 0.5);
         app.hover_at(x, y);
     }
 
-    /// Moves hover to the provided normalized coordinates within the element.
-    pub fn hover_at(&self, app: &mut SemanticApp, normalized_x: f32, normalized_y: f32) {
+    /// Moves hover to the provided normalized coordinates within the
+    /// element, resolved against the fragment a pointer can reach.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either coordinate is non-finite or outside `[0, 1]`, or
+    /// when no reachable point exists — a fully clipped element reports
+    /// itself as not visible instead of hovering under the clip.
+    pub fn hover_at(
+        &self,
+        app: &mut SemanticApp<HeadlessRuntime>,
+        normalized_x: f32,
+        normalized_y: f32,
+    ) {
         app.assert_current_element(self, "hover_at");
-        let (x, y) = self.normalized_point(normalized_x, normalized_y);
+        let (x, y) = self.pointer_point(app, "hover_at", normalized_x, normalized_y);
         app.hover_at(x, y);
     }
 
     /// Drags from the element center by the provided delta.
-    pub fn drag_by(&self, app: &mut SemanticApp, dx: f32, dy: f32) {
+    pub fn drag_by(&self, app: &mut SemanticApp<HeadlessRuntime>, dx: f32, dy: f32) {
         self.drag_by_with(app, dx, dy, crate::app::DragOptions::default());
     }
 
     /// Drags from the element center by a delta with step/timing control.
+    ///
+    /// The start point resolves against the fragment a pointer can reach,
+    /// so a drag begun on a partly visible element presses inside it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no reachable start point exists — a fully clipped
+    /// element reports itself as not visible instead of pressing under
+    /// the clip.
     pub fn drag_by_with(
         &self,
-        app: &mut SemanticApp,
+        app: &mut SemanticApp<HeadlessRuntime>,
         dx: f32,
         dy: f32,
         options: crate::app::DragOptions,
     ) {
         app.assert_current_element(self, "drag_by");
-        let (x, y) = self.center();
+        let (x, y) = self.pointer_point(app, "drag_by", 0.5, 0.5);
         app.drag_from_to_with(x, y, x + dx, y + dy, options);
     }
 
-    /// Drags between two normalized coordinates within the element.
+    /// Drags between two normalized coordinates within the element, each
+    /// resolved against the fragment a pointer can reach.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a coordinate is non-finite or outside `[0, 1]`, or when
+    /// no reachable point exists — a fully clipped element reports itself
+    /// as not visible instead of pressing under the clip.
     pub fn drag_between(
         &self,
-        app: &mut SemanticApp,
+        app: &mut SemanticApp<HeadlessRuntime>,
         from_x: f32,
         from_y: f32,
         to_x: f32,
         to_y: f32,
     ) {
         app.assert_current_element(self, "drag_between");
-        let (start_x, start_y) = self.normalized_point(from_x, from_y);
-        let (end_x, end_y) = self.normalized_point(to_x, to_y);
+        let (start_x, start_y) = self.pointer_point(app, "drag_between", from_x, from_y);
+        let (end_x, end_y) = self.pointer_point(app, "drag_between", to_x, to_y);
         app.drag_from_to(start_x, start_y, end_x, end_y);
     }
 
-    /// Applies a magnification gesture centered on the element.
-    pub fn magnify(&self, app: &mut SemanticApp, factor: f32) {
+    /// Applies a magnification gesture centered on the element, at the
+    /// point a pointer can reach.
+    ///
+    /// # Panics
+    ///
+    /// Panics when no reachable point exists — a fully clipped element
+    /// reports itself as not visible instead of magnifying under the
+    /// clip.
+    pub fn magnify(&self, app: &mut SemanticApp<HeadlessRuntime>, factor: f32) {
         app.assert_current_element(self, "magnify");
-        let (x, y) = self.center();
+        let (x, y) = self.pointer_point(app, "magnify", 0.5, 0.5);
         app.magnify_at(x, y, factor);
-    }
-
-    /// Sets textual value on editable controls.
-    pub fn set_text(&self, app: &mut SemanticApp, value: impl Into<String>) {
-        app.assert_current_element(self, "set_text");
-        app.perform_action_expect(
-            self.node_id,
-            AccessibilityAction::SetValue,
-            Some(AccessibilityActionData::Value(
-                value.into().into_boxed_str(),
-            )),
-        );
-    }
-
-    /// Increments current value for slider/stepper-like controls.
-    pub fn increment(&self, app: &mut SemanticApp) {
-        app.assert_current_element(self, "increment");
-        app.perform_action_expect(self.node_id, AccessibilityAction::Increment, None);
-    }
-
-    /// Decrements current value for slider/stepper-like controls.
-    pub fn decrement(&self, app: &mut SemanticApp) {
-        app.assert_current_element(self, "decrement");
-        app.perform_action_expect(self.node_id, AccessibilityAction::Decrement, None);
-    }
-
-    /// Scrolls down when supported by the node.
-    pub fn scroll_down(&self, app: &mut SemanticApp) {
-        app.assert_current_element(self, "scroll_down");
-        app.perform_action_expect(self.node_id, AccessibilityAction::ScrollDown, None);
     }
 }
 
 /// A collection of resolved elements.
-#[derive(Debug, Clone, Default)]
-pub struct ElementSet {
-    elements: Vec<ElementRef>,
+pub struct ElementSet<R = hydrolysis::SemanticRuntime> {
+    elements: Vec<ElementRef<R>>,
     by_id: BTreeMap<NodeId, usize>,
 }
 
-impl ElementSet {
-    pub(crate) fn new(elements: Vec<ElementRef>, _revision: u64) -> Self {
+impl<R> core::fmt::Debug for ElementSet<R> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ElementSet")
+            .field("len", &self.elements.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<R> Clone for ElementSet<R> {
+    fn clone(&self) -> Self {
+        Self {
+            elements: self.elements.clone(),
+            by_id: self.by_id.clone(),
+        }
+    }
+}
+
+impl<R> Default for ElementSet<R> {
+    fn default() -> Self {
+        Self {
+            elements: Vec::new(),
+            by_id: BTreeMap::new(),
+        }
+    }
+}
+
+impl<R> ElementSet<R> {
+    pub(crate) fn new(elements: Vec<ElementRef<R>>) -> Self {
         let by_id = elements
             .iter()
             .enumerate()
@@ -514,7 +753,7 @@ impl ElementSet {
     }
 
     /// Iterates over resolved elements.
-    pub fn iter(&self) -> impl Iterator<Item = &ElementRef> {
+    pub fn iter(&self) -> impl Iterator<Item = &ElementRef<R>> {
         self.elements.iter()
     }
 
@@ -536,8 +775,8 @@ impl ElementSet {
     }
 }
 
-impl Index<usize> for ElementSet {
-    type Output = ElementRef;
+impl<R> Index<usize> for ElementSet<R> {
+    type Output = ElementRef<R>;
 
     fn index(&self, index: usize) -> &Self::Output {
         self.elements.get(index).unwrap_or_else(|| {
@@ -549,8 +788,8 @@ impl Index<usize> for ElementSet {
     }
 }
 
-impl Index<NodeId> for ElementSet {
-    type Output = ElementRef;
+impl<R> Index<NodeId> for ElementSet<R> {
+    type Output = ElementRef<R>;
 
     fn index(&self, index: NodeId) -> &Self::Output {
         let Some(position) = self.by_id.get(&index) else {
@@ -566,18 +805,18 @@ impl Index<NodeId> for ElementSet {
 #[derive(Debug, Clone)]
 pub struct QueryScope {
     relation: ScopeRelation,
-    handle: ElementRef,
+    handle: ElementAnchor,
 }
 
 impl QueryScope {
-    const fn descendants(handle: ElementRef) -> Self {
+    const fn descendants(handle: ElementAnchor) -> Self {
         Self {
             relation: ScopeRelation::Descendants,
             handle,
         }
     }
 
-    const fn children(handle: ElementRef) -> Self {
+    const fn children(handle: ElementAnchor) -> Self {
         Self {
             relation: ScopeRelation::Children,
             handle,
@@ -588,7 +827,7 @@ impl QueryScope {
         self.relation
     }
 
-    pub(crate) const fn handle(&self) -> &ElementRef {
+    pub(crate) const fn handle(&self) -> &ElementAnchor {
         &self.handle
     }
 

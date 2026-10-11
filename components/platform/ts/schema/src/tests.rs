@@ -1,8 +1,9 @@
 //! Format-level tests: encoding invariants and decoder rejections.
 //!
 //! The end-to-end test — derive, then read the payload back out of the
-//! compiled artifact's symbol table — lives in `tests/artifact.rs`, because it
-//! has to look at the binary it is running from.
+//! compiled artifact's metadata directory section — lives in
+//! `tests/artifact.rs`, because it has to look at the binary it is running
+//! from.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -455,7 +456,7 @@ fn display_renders_typescript_type_expressions() {
 /// Every fixture is named `Props` so the comparison isolates one difference at
 /// a time. The type name is part of the contract, and two identically shaped
 /// `Props` types encode identically — which is the reason the alias fixtures
-/// can share a metadata symbol leaf without conflicting.
+/// can share a metadata record name without conflicting.
 #[cfg(feature = "derive")]
 mod hashing {
     /// Written with concrete types.
@@ -630,9 +631,17 @@ mod raw_identifiers {
             panic!("`r#Type` is a struct")
         };
         assert_eq!(schema.name, "Type");
-        // The metadata static exists only in debug builds.
+        // The metadata static exists only in debug builds, and its bytes are
+        // the directory record: the unrawed name, NUL, the contract, NUL.
         #[cfg(debug_assertions)]
-        assert_eq!(crate::payload(&waterui_meta_tsprops_Type), r#Type::ENCODED);
+        {
+            let (name, rest) =
+                waterui_meta_tsprops_Type.split_at("waterui_meta_tsprops_Type".len() + 1);
+            assert_eq!(name, b"waterui_meta_tsprops_Type\0");
+            // The record's payload field is the encoded array — the contract
+            // plus its NUL — and the record adds its own NUL terminator.
+            assert_eq!(crate::payload(&rest[..rest.len() - 1]), r#Type::ENCODED);
+        }
     }
 }
 
@@ -753,16 +762,102 @@ mod catalog {
     }
 
     #[test]
-    fn each_decoder_refuses_the_other_payload_kind() {
+    fn each_decoder_refuses_the_other_payload_kinds() {
+        const MOUNT: [u8; crate::mount_encoded_len("src/promo.tsx", "PromoProps", 7) + 1] =
+            crate::encode_mount("src/promo.tsx", "PromoProps", 7);
         let props =
             crate::encode::<{ crate::encoded_len(&TOGGLE_ATTRIBUTES) + 1 }>(&TOGGLE_ATTRIBUTES);
         assert_eq!(
             decode(payload(&ENCODED)).expect_err("a catalog is not a type tree"),
-            crate::DecodeError::NotATypeTree
+            crate::DecodeError::NotATypeTree {
+                found: "a component catalog"
+            }
+        );
+        assert_eq!(
+            decode(payload(&MOUNT)).expect_err("a mount point is not a type tree"),
+            crate::DecodeError::NotATypeTree {
+                found: "a mount point"
+            }
         );
         assert_eq!(
             decode_catalog(payload(&props)).expect_err("a props contract is not a catalog"),
-            crate::DecodeError::NotACatalog
+            crate::DecodeError::NotACatalog {
+                found: "a props type tree"
+            }
+        );
+        assert_eq!(
+            crate::decode_mount(payload(&ENCODED)).expect_err("a catalog is not a mount point"),
+            crate::DecodeError::NotAMountPoint {
+                found: "a component catalog"
+            }
+        );
+    }
+}
+
+/// The mount-point payload: one `tsx!` call site, recovered from its bytes.
+mod mount {
+    use crate::{
+        FieldSchema, MountPoint, StructSchema, TypeSchema, decode_mount, encode_mount,
+        mount_encoded_len, payload, struct_name,
+    };
+
+    /// A props contract whose name the mount point records.
+    const PROMO: TypeSchema = TypeSchema::Struct(StructSchema {
+        name: "PromoProps",
+        fields: &[FieldSchema {
+            name: "headline",
+            ty: TypeSchema::String,
+        }],
+    });
+
+    /// A hash with bits set above `u32`, so a decoder reading it at the wrong
+    /// width loses something a test can see.
+    const HASH: u64 = 0xfedc_ba98_7654_3210;
+
+    const MODULE: &str = "src/views/promo.tsx";
+
+    const ENCODED: [u8; mount_encoded_len(MODULE, struct_name(&PROMO), HASH) + 1] =
+        encode_mount(MODULE, struct_name(&PROMO), HASH);
+
+    #[test]
+    fn a_mount_point_decodes_to_the_constant_the_compiler_encoded() {
+        assert_eq!(
+            decode_mount(payload(&ENCODED)).expect("the mount payload decodes"),
+            MountPoint {
+                module: MODULE.to_owned(),
+                props: "PromoProps".to_owned(),
+                contract_hash: HASH,
+            }
+        );
+    }
+
+    #[test]
+    fn the_mount_payload_is_nul_free_so_the_cli_can_find_its_end() {
+        assert!(!payload(&ENCODED).contains(&0));
+    }
+
+    #[test]
+    fn the_props_name_is_read_off_the_resolved_schema() {
+        assert_eq!(struct_name(&PROMO), "PromoProps");
+    }
+
+    #[test]
+    fn a_truncated_mount_payload_is_an_error_not_a_guess() {
+        let bytes = payload(&ENCODED);
+        let error = decode_mount(&bytes[..bytes.len() - 1]).expect_err("a cut hash cannot decode");
+        assert!(
+            matches!(error, crate::DecodeError::Truncated { .. }),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn trailing_bytes_after_the_hash_are_refused() {
+        let mut bytes = payload(&ENCODED).to_vec();
+        bytes.push(1);
+        assert_eq!(
+            decode_mount(&bytes).expect_err("a payload with extra bytes is malformed"),
+            crate::DecodeError::Trailing { extra: 1 }
         );
     }
 }

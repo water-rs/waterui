@@ -11,7 +11,9 @@
 use std::fmt::Write as _;
 
 use serde::Serialize;
-use waterui_testing::{CheckedState, NodeId, NodeSnapshot, Role, SemanticApp, TreeSnapshot};
+use waterui_testing::{
+    CheckedState, ContentType, NodeId, NodeSnapshot, Role, SemanticApp, TreeSnapshot,
+};
 
 /// Lowercases an `AccessKit` `Debug` name into `snake_case` (`CheckBox` becomes
 /// `check_box`); the spelling every role and action prints with.
@@ -33,7 +35,7 @@ pub fn role_name(role: Role) -> String {
 
 /// Renders the whole tree as the indented text form, including the
 /// `revision`/`viewport`/`focus` header line.
-pub fn render_text(app: &SemanticApp) -> String {
+pub fn render_text<R>(app: &SemanticApp<R>) -> String {
     let tree = app.tree();
     let (width, height) = app.viewport();
     let mut out = format!(
@@ -143,6 +145,10 @@ struct JsonNode {
     identifier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<String>,
+    /// The declared text-field content type — `ContentType`'s camelCase
+    /// serde names, e.g. `"oneTimeCode"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content_type: Option<ContentType>,
     #[serde(skip_serializing_if = "Option::is_none")]
     bounds: Option<JsonBounds>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -181,6 +187,7 @@ impl JsonNode {
             label: node.label().map(ToOwned::to_owned),
             identifier: node.identifier().map(ToOwned::to_owned),
             value: node.value().map(ToOwned::to_owned),
+            content_type: node.content_type(),
             bounds: node.bounds().map(|bounds| JsonBounds {
                 x: bounds.x(),
                 y: bounds.y(),
@@ -209,7 +216,7 @@ impl JsonNode {
 ///
 /// Returns the `serde_json` error if serialization fails; the value tree is
 /// self-contained, so this cannot fail in practice.
-pub fn render_json(app: &SemanticApp) -> serde_json::Result<String> {
+pub fn render_json<R>(app: &SemanticApp<R>) -> serde_json::Result<String> {
     let tree = app.tree();
     let root = JsonNode::from_snapshot(tree, &tree[tree.root()]);
     serde_json::to_string_pretty(&JsonTree {
@@ -223,7 +230,7 @@ pub fn render_json(app: &SemanticApp) -> serde_json::Result<String> {
 #[cfg(test)]
 mod tests {
     use waterui::component::{button, toggle, vstack};
-    use waterui_testing::{install_default_theme, ui};
+    use waterui_testing::ui;
 
     use super::{render_json, render_text};
 
@@ -232,7 +239,6 @@ mod tests {
     fn mounted_text() -> String {
         let enabled = waterui::Binding::bool(false);
         let app = ui()
-            .theme(install_default_theme)
             .viewport(200, 100)
             .mount(move || vstack((button("Save"), toggle("Enable", &enabled))));
         render_text(&app)
@@ -294,7 +300,6 @@ mod tests {
     fn json_tree_mirrors_node_fields() {
         let enabled = waterui::Binding::bool(false);
         let app = ui()
-            .theme(install_default_theme)
             .viewport(200, 100)
             .mount(move || vstack((button("Save"), toggle("Enable", &enabled))));
         let json: serde_json::Value =
