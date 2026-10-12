@@ -13,3 +13,6 @@ pub mod plan;
 
 #[cfg(target_vendor = "apple")]
 pub mod metal;
+
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+pub mod vulkan;

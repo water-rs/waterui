@@ -1337,22 +1337,23 @@ fn create_device(
     // the extensions/features wgpu does not request, preserving every
     // requirement wgpu does (#166). A non-Vulkan adapter falls through to
     // `request_device` unchanged.
-    #[cfg(all(unix, not(target_vendor = "apple")))]
-    if info.backend == wgpu::Backend::Vulkan {
-        let (device, queue) = create_vulkan_device(&adapter, required, &limits)?;
-        fire_probe(config, CreationPhase::Device, Some(&adapter), Some(&device))?;
-        tracing::info!(features = ?device.features(), "device");
-        return Ok((instance, adapter, device, queue));
-    }
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let descriptor = wgpu::DeviceDescriptor {
         label: Some("cherenkov-gpu"),
         required_features: required,
         required_limits: limits,
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
         memory_hints: memory_hints(info.backend),
         trace: wgpu::Trace::Off,
-    }))
-    .map_err(|e| EngineError::Backend(format!("{e}")))?;
+    };
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    if info.backend == wgpu::Backend::Vulkan {
+        let (device, queue) = create_vulkan_device(&adapter, &descriptor)?;
+        fire_probe(config, CreationPhase::Device, Some(&adapter), Some(&device))?;
+        tracing::info!(features = ?device.features(), "device");
+        return Ok((instance, adapter, device, queue));
+    }
+    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor))
+        .map_err(|e| EngineError::Backend(format!("{e}")))?;
     fire_probe(config, CreationPhase::Device, Some(&adapter), Some(&device))?;
     tracing::info!(features = ?device.features(), "device");
     Ok((instance, adapter, device, queue))
@@ -1363,11 +1364,17 @@ fn create_device(
 /// sampler-conversion feature bit are enabled at creation — first import
 /// would be too late — then hands the opened device back through
 /// `create_device_from_hal` with wgpu's requirements intact.
+///
+/// The on-chip composition capabilities (issue #2191) are enabled here
+/// for the same reason: `as_hal` cannot turn on an extension after
+/// `vkCreateDevice`, so a device that was not opened through this path
+/// composes portably for the rest of its life. Every host that shares a
+/// device with the engine therefore opens it here —
+/// [`crate::interop::open_vulkan_device`] is this function.
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
-fn create_vulkan_device(
+pub fn create_vulkan_device(
     adapter: &wgpu::Adapter,
-    features: wgpu::Features,
-    limits: &wgpu::Limits,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
 ) -> Result<(wgpu::Device, wgpu::Queue), EngineError> {
     use external::vulkan;
     // SAFETY: `adapter` is the engine's own wgpu adapter; `as_hal`
@@ -1376,23 +1383,49 @@ fn create_vulkan_device(
         return Err(EngineError::Backend("adapter is not Vulkan".into()));
     };
     let caps = hal_adapter.physical_device_capabilities();
-    let extensions: Vec<&'static core::ffi::CStr> = vulkan::extra_device_extensions()
+    let supported = |name: &core::ffi::CStr| caps.supports_extension(name);
+    // SAFETY: the instance owns the physical device this adapter wraps,
+    // and both outlive `hal_adapter`'s borrow.
+    let mut tile = unsafe {
+        composite::vulkan::Request::probe(
+            hal_adapter.shared_instance().raw_instance(),
+            hal_adapter.raw_physical_device(),
+            supported,
+        )
+    };
+    let mut extensions: Vec<&'static core::ffi::CStr> = vulkan::extra_device_extensions()
         .into_iter()
-        .filter(|ext| caps.supports_extension(ext))
+        .filter(|ext| supported(ext))
         .collect();
+    extensions.extend(tile.extensions(supported));
     // The YCbCr conversion feature is keyed to its extension's presence.
-    let ycbcr = caps.supports_extension(ash::khr::sampler_ycbcr_conversion::NAME);
-    // `create_info.p_next` points at this struct until `vkCreateDevice`
+    let ycbcr = supported(ash::khr::sampler_ycbcr_conversion::NAME);
+    // `create_info.p_next` points at these structs until `vkCreateDevice`
     // runs inside `open_with_callback`; the `FnOnce` callback is dropped
-    // before that call, so the struct is boxed in this scope instead of
-    // being captured by the closure.
-    let ycbcr_features = Box::new(
+    // before that call, so they are boxed in this scope instead of being
+    // captured by the closure.
+    let mut ycbcr_features = Box::new(
         ash::vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default()
             .sampler_ycbcr_conversion(true),
     );
+    // SAFETY: the chain lives in this scope, which outlives the
+    // `vkCreateDevice` call below. Its tail is null because the create
+    // info the callback sees carries no `p_next` yet: wgpu's own
+    // `add_to_device_create` runs after the callback and links its
+    // structures ahead of whatever the callback left, so nothing wgpu
+    // asked for is dropped.
+    let tile_chain = unsafe { tile.chain(core::ptr::null()) };
+    let access = tile.access();
     let callback: Option<Box<wgpu::hal::vulkan::CreateDeviceCallback<'_>>> =
         if ycbcr || !extensions.is_empty() {
-            let ycbcr_ptr = core::ptr::from_ref(&*ycbcr_features).cast::<core::ffi::c_void>();
+            if ycbcr {
+                ycbcr_features.p_next = tile_chain.unwrap_or(core::ptr::null()).cast_mut();
+            }
+            let head = if ycbcr {
+                core::ptr::from_ref(&*ycbcr_features).cast::<core::ffi::c_void>()
+            } else {
+                tile_chain.unwrap_or(core::ptr::null())
+            };
             Some(Box::new(
                 move |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
                     for ext in &extensions {
@@ -1400,37 +1433,34 @@ fn create_vulkan_device(
                             args.extensions.push(ext);
                         }
                     }
-                    if ycbcr {
-                        args.create_info.p_next = ycbcr_ptr;
+                    if !head.is_null() {
+                        args.create_info.p_next = head;
                     }
                 },
             ))
         } else {
             None
         };
-    let hints = memory_hints(wgpu::Backend::Vulkan);
-    // SAFETY: `callback` pins `ycbcr_features` in this scope, which
-    // outlives the `vkCreateDevice` call inside `open_with_callback`
-    // (the `FnOnce` runs there, not later).
-    let opened = unsafe { hal_adapter.open_with_callback(features, limits, &hints, callback) }
-        .map_err(|e| EngineError::Backend(format!("vulkan device creation: {e}")))?;
+    let hints = descriptor.memory_hints.clone();
+    tracing::info!(?access, "vulkan on-chip composition");
+    // SAFETY: `callback` pins the feature chains in this scope, which
+    // outlive the `vkCreateDevice` call inside `open_with_callback` (the
+    // `FnOnce` runs there, not later).
+    let opened = unsafe {
+        hal_adapter.open_with_callback(
+            descriptor.required_features,
+            &descriptor.required_limits,
+            &hints,
+            callback,
+        )
+    }
+    .map_err(|e| EngineError::Backend(format!("vulkan device creation: {e}")))?;
     drop(hal_adapter);
     // SAFETY: `opened` came from `hal_adapter.open_with_callback` on
     // this same adapter just above — the pairing contract.
-    let (device, queue) = unsafe {
-        adapter.create_device_from_hal::<wgpu::hal::vulkan::Api>(
-            opened,
-            &wgpu::DeviceDescriptor {
-                label: Some("cherenkov-gpu"),
-                required_features: features,
-                required_limits: limits.clone(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: hints,
-                trace: wgpu::Trace::Off,
-            },
-        )
-    }
-    .map_err(|e| EngineError::Backend(format!("vulkan device from hal: {e}")))?;
+    let (device, queue) =
+        unsafe { adapter.create_device_from_hal::<wgpu::hal::vulkan::Api>(opened, descriptor) }
+            .map_err(|e| EngineError::Backend(format!("vulkan device from hal: {e}")))?;
     Ok((device, queue))
 }
 
@@ -2188,6 +2218,18 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         // constant-folded dispatch to fs_simple/fs_shadow/fs_full. On Vulkan
         // and Metal these are the embedded passthrough binaries (#57).
         let shader_delivery = shaders::delivery(info.backend, &device)?;
+        // What this device — the engine's own or a host's shared one —
+        // can keep on chip (#2191). A shared device opened outside
+        // `interop::open_vulkan_device` reports `None` here, which is
+        // the only visible sign that its host bypassed the engine's
+        // creation path.
+        #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+        if info.backend == wgpu::Backend::Vulkan {
+            tracing::info!(
+                access = ?composite::vulkan::device_access(&device),
+                "vulkan on-chip composition"
+            );
+        }
         let modules = core_pipelines_eager()
             .then(|| [0usize, 1, 2].map(|v| shader_delivery.engine_module(&device, v)));
         fire_probe(
