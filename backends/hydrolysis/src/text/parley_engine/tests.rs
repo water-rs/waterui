@@ -1,6 +1,8 @@
 //! Engine tests: the moved shaping, truncation, family and glyph-bounds
 //! suites, each running against the parley engine directly.
 
+use parley::fontique::{Blob, Collection, CollectionOptions};
+
 use super::*;
 use crate::renderer::tests::test_environment;
 use crate::text::{TextService, resolve_text_layout_input};
@@ -9,6 +11,75 @@ use waterui_text::styled::StyledStr;
 
 fn test_input(env: &Environment, text: &'static str) -> ResolvedTextLayoutInput {
     resolve_text_layout_input(&StyledStr::plain(text), HorizontalAlignment::Leading, env)
+}
+
+#[test]
+fn declared_noto_sans_draws_missing_latin_marks_without_replacing_roboto() {
+    let roboto: Arc<[u8]> = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fonts/Roboto-Web-Variable.ttf"),
+    )
+    .expect("the test-fonts setup generates the real web Roboto face")
+    .into();
+    let noto = fonts::installed_font_bytes("Noto Sans");
+    assert!(
+        skrifa::FontRef::from_index(&noto, 0)
+            .expect("Noto Sans parses")
+            .charmap()
+            .map('\u{0350}')
+            .is_some(),
+        "the fallback face must really cover U+0350"
+    );
+    assert!(
+        skrifa::FontRef::from_index(&roboto, 0)
+            .expect("web Roboto parses")
+            .charmap()
+            .map('\u{0350}')
+            .is_none(),
+        "the primary web face must really need fallback for U+0350"
+    );
+    let mut font_cx = parley::FontContext {
+        collection: Collection::new(CollectionOptions {
+            shared: false,
+            system_fonts: false,
+        }),
+        source_cache: parley::fontique::SourceCache::default(),
+    };
+    let mut families = fonts::ResourceFontFamilies::default();
+    for (name, data) in [("Roboto", &roboto), ("Noto Sans", &noto)] {
+        let registered = font_cx
+            .collection
+            .register_fonts(Blob::new(Arc::new(data.to_vec())), None);
+        assert!(!registered.is_empty());
+        families.classify(name, &registered);
+    }
+    families.install(&mut font_cx.collection);
+    let engine = ParleyEngine::new(font_cx, FontFamilyResolution::Strict);
+    let env = test_environment();
+    let plain = engine.shape(&test_input(&env, "Z"), None);
+    let run = plain
+        .0
+        .layout
+        .get(0)
+        .expect("Latin line")
+        .runs()
+        .next()
+        .expect("Latin run");
+    assert!(
+        run.font().data.as_ref() == roboto.as_ref(),
+        "plain Latin must retain the primary Roboto face"
+    );
+
+    let combined = engine.shape(&test_input(&env, "Z\u{0350}"), None);
+    let line = combined.0.layout.get(0).expect("combining-mark line");
+    assert!(
+        line.runs()
+            .any(|run| run.font().data.as_ref() == noto.as_ref())
+    );
+    for run in line.runs() {
+        for cluster in run.clusters() {
+            assert!(cluster.glyphs().all(|glyph| glyph.id != 0));
+        }
+    }
 }
 
 #[test]
