@@ -8,7 +8,9 @@ use eyre::Result;
 
 use crate::shell::Shell;
 use crate::{header, note, success};
-use waterui_cli::inspector::{InspectorLaunchOptions, InspectorPlatform, launch_inspector_session};
+use waterui_cli::inspector::{
+    InspectorLaunchOptions, InspectorPlatform, explicit_token, launch_inspector_session,
+};
 
 /// Target platform for inspector app.
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -40,13 +42,10 @@ pub struct Args {
     /// Omit it to attach to a debug build running on this machine, which
     /// publishes where it is listening. `--platform android` requires it: the
     /// inspector runs on the device, so an app on that same device is
-    /// `127.0.0.1:<port>`.
+    /// `127.0.0.1:<port>`. An explicit credential comes from
+    /// `WATERUI_INSPECTOR_TOKEN`, never a command-line argument.
     #[arg(long)]
     target: Option<String>,
-
-    /// One-time token for runtime endpoint authentication.
-    #[arg(long)]
-    token: Option<String>,
 
     /// Target platform for the inspector app.
     #[arg(short, long, value_enum, default_value = "macos")]
@@ -72,11 +71,13 @@ impl Args {
 
 /// Run the inspector command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
+    let host = waterui_cli::toolchain::Host::current();
     let platform = InspectorPlatform::from(args.platform);
     if args.device.is_some() && platform != InspectorPlatform::Android {
         eyre::bail!("`--device` is supported only with `--platform android`.");
     }
-    require_device_endpoint(platform, args.target.as_deref(), args.token.as_deref())?;
+    let token_override = explicit_token(&host)?;
+    require_device_endpoint(platform, args.target.as_deref(), token_override.as_deref())?;
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
 
@@ -86,7 +87,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     // asked where it is, which is what makes attaching a single command.
     let (target, token) = if let Some(target) = args.target {
         let addr = target.parse::<SocketAddr>()?;
-        let token = match args.token {
+        let token = match token_override {
             Some(token) => token,
             None => token_for(addr)?,
         };
@@ -94,17 +95,16 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     } else {
         let found = discover(shell)?;
         note!(shell, "Attaching to {} (pid {})", found.app_name, found.pid);
-        (found.addr, args.token.unwrap_or(found.token))
+        (found.addr, token_override.unwrap_or(found.token))
     };
 
     note!(shell, "Target runtime endpoint: {}", target);
-    note!(shell, "Session token: {}", token);
 
     let android = if platform == InspectorPlatform::Android {
         let spinner = shell.spinner("Scanning for devices...");
         let target = super::select_android_target(
             shell,
-            &waterui_cli::toolchain::Host::current(),
+            &host,
             waterui_cli::water_dir::device_memory_key(
                 waterui_cli::platform::TargetBackend::Hydrolysis,
                 waterui_cli::platform::TargetPlatform::Android,
@@ -122,7 +122,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     };
 
     let mut session = launch_inspector_session(
-        &waterui_cli::toolchain::Host::current(),
+        &host,
         &project_path,
         platform,
         android,
@@ -139,12 +139,12 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     success!(shell, "Inspector app launched");
     note!(
         shell,
-        "Ensure the target app runs with WATERUI_INSPECTOR_TOKEN={token} and matching inspector endpoint."
+        "Ensure the target app runs with WATERUI_INSPECTOR_TOKEN set to the matching credential and a matching inspector endpoint."
     );
     Ok(())
 }
 
-/// An Android inspector needs the endpoint and token spelled out.
+/// An Android inspector needs the endpoint and credential spelled out.
 ///
 /// Discovery lists the endpoints advertised on this computer, and the device
 /// the inspector runs on cannot dial their loopback addresses, so there is
@@ -157,7 +157,8 @@ fn require_device_endpoint(
     if platform == InspectorPlatform::Android && (target.is_none() || token.is_none()) {
         eyre::bail!(
             "`--platform android` needs --target <addr:port> (the endpoint as the device sees it; \
-             127.0.0.1:<port> for an app on the same device) and --token <token>"
+             127.0.0.1:<port> for an app on the same device) and WATERUI_INSPECTOR_TOKEN set \
+             to the matching credential"
         );
     }
     Ok(())
@@ -224,8 +225,8 @@ fn token_for(addr: SocketAddr) -> Result<String> {
             || {
                 Err(eyre!(
                     "no application on this machine advertises {addr}.\n\
-                     Pass --token with the token it printed at startup, which is how \
-                     to attach to an application on another machine or device."
+                     Set WATERUI_INSPECTOR_TOKEN to the matching credential, \
+                     which is how to attach to an application on another machine or device."
                 ))
             },
             Ok,
@@ -234,12 +235,28 @@ fn token_for(addr: SocketAddr) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser as _;
     use waterui_cli::inspector::InspectorPlatform;
 
-    use super::require_device_endpoint;
+    use super::{Args, require_device_endpoint};
 
     const ANDROID_ERROR: &str = "`--platform android` needs --target <addr:port> (the endpoint as \
-        the device sees it; 127.0.0.1:<port> for an app on the same device) and --token <token>";
+        the device sees it; 127.0.0.1:<port> for an app on the same device) and \
+        WATERUI_INSPECTOR_TOKEN set to the matching credential";
+
+    #[derive(clap::Parser, Debug)]
+    struct TestCli {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    #[test]
+    fn command_line_credentials_are_rejected() {
+        let error = TestCli::try_parse_from(["water-inspector", "--token", "cli-test-credential"])
+            .expect_err("a credential argument must not parse");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert!(!error.to_string().contains("cli-test-credential"));
+    }
 
     #[test]
     fn android_requires_both_the_target_and_the_token() {

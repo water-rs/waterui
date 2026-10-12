@@ -32,7 +32,7 @@ mod detached;
 /// what a spawned child sees. Detection code must read all of those
 /// through this value so a declared host cannot leak real-machine state
 /// into a check.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Host {
     env: BTreeMap<OsString, OsString>,
     cwd: PathBuf,
@@ -43,6 +43,20 @@ pub struct Host {
     std_output: bool,
     #[cfg(test)]
     http_responses: Option<std::sync::Arc<std::sync::Mutex<BTreeMap<String, zenwave::Response>>>>,
+}
+
+// `env` holds credentials handed to tools (`WATERUI_INSPECTOR_TOKEN` and
+// the like): `Debug` names environment keys, never their values, and skips
+// the canned-response table entirely.
+impl std::fmt::Debug for Host {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Host")
+            .field("env_keys", &self.env.keys().collect::<Vec<_>>())
+            .field("cwd", &self.cwd)
+            .field("app_dirs", &self.app_dirs)
+            .field("std_output", &self.std_output)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Host {
@@ -956,6 +970,32 @@ mod tests {
     /// A variable name nothing declares — proves reads never reach the
     /// ambient process environment.
     const UNDECLARED: &str = "WATERUI_TEST_NEVER_DECLARED";
+
+    /// `Host::Debug` is a diagnostic surface — environment values are
+    /// credentials (`WATERUI_INSPECTOR_TOKEN` carries one to `adb`), so the
+    /// rendering names keys only.
+    #[test]
+    fn the_debug_form_names_keys_never_values() {
+        let host = Host::new(
+            Vec::<std::path::PathBuf>::new(),
+            [
+                (
+                    String::from("WATERUI_INSPECTOR_TOKEN"),
+                    String::from("s3cret-inspector-token"),
+                ),
+                (
+                    String::from("WATERUI_TEST_OTHER_SECRET"),
+                    String::from("s3cret-other-value"),
+                ),
+            ],
+        );
+        let rendered = format!("{host:?}");
+        assert!(!rendered.contains("s3cret-inspector-token"), "{rendered}");
+        assert!(!rendered.contains("s3cret-other-value"), "{rendered}");
+        assert!(rendered.contains("WATERUI_INSPECTOR_TOKEN"), "{rendered}");
+        assert!(rendered.contains("WATERUI_TEST_OTHER_SECRET"), "{rendered}");
+        assert!(rendered.contains("cwd"), "{rendered}");
+    }
 
     #[test]
     fn declared_host_env_contains_only_what_was_declared() {
