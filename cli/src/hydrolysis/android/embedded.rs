@@ -24,12 +24,8 @@ use tracing::info;
 
 use crate::{
     android::{
-        KotlinToolchain,
-        backend::manifest_permissions,
-        platform::{
-            AndroidAbi, android_ffi_dependency_features, audit_android_permissions,
-            run_gradle_tasks,
-        },
+        KotlinToolchain, manifest_permissions,
+        platform::{AndroidAbi, run_gradle_tasks},
     },
     assets::{self, AndroidDependencyScope},
     build::BuildOptions,
@@ -45,9 +41,9 @@ pub use crate::android::platform::ALL_ABIS;
 
 /// The routing rule for embedded Android builds: Hydrolysis only.
 ///
-/// The Kotlin Android backend has no `com.android.library` output, so
-/// selecting it is a configuration error, raised here and in
-/// `AndroidBackend::init` before either path scaffolds a project.
+/// Hydrolysis is the one backend with a `com.android.library` output, so
+/// any other selection is a configuration error, raised here before the
+/// build scaffolds anything.
 pub const EMBEDDED_REQUIRES_HYDROLYSIS: &str =
     "embedded Android libraries are built by Hydrolysis: pass `--backend hydrolysis`";
 
@@ -233,9 +229,8 @@ pub struct EmbeddedArtifact {
 
 /// Build the embedded AAR.
 ///
-/// Runs the ABI-independent preparation once — the FFI companion render, the
-/// permission audit, the launcher's font metadata and the library scaffold —
-/// then compiles the crate's Hydrolysis cdylib for each of `abis` into the
+/// Runs the ABI-independent preparation once — the launcher's font metadata
+/// and the library scaffold — then compiles the crate's Hydrolysis cdylib for each of `abis` into the
 /// library module's `jniLibs`, stages assets into it, and has the generated
 /// Gradle project publish the host modules under this build's host version,
 /// assemble the AAR and publish it to `mavenLocal`.
@@ -259,13 +254,7 @@ pub async fn build_aar(
     let dir = project
         .backend_path::<HydrolysisBackend>()
         .join("android-embedded");
-    let ((), (), library) = futures_util::try_join!(
-        async {
-            // The companion is the graph the classpath staging and the
-            // feature answers below read, so it renders before its audit.
-            project.scaffold_ffi_companion().await?;
-            audit_android_permissions(project).await
-        },
+    let ((), library) = futures_util::try_join!(
         super::prepare_for_build(project),
         render_library(project, painter, &dir),
     )?;
@@ -307,17 +296,18 @@ pub async fn build_aar(
     // the host app resolves classes from; `api` exports them through the
     // published POM so a consumer's build sees them too. Manifest components
     // go into the library manifest, which the host's manifest merger folds
-    // into its own, `${applicationId}` resolving to the host's. The feature
-    // set is the one every built ABI's own graph answers, so helpers behind
-    // optional features are not missed.
-    let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-    let triples: Vec<_> = abis.iter().map(|abi| abi.triple()).collect();
+    // into its own, `${applicationId}` resolving to the host's. The scan
+    // mirrors the exact feature selection the launcher compiled with, so
+    // helpers behind optional features are not missed.
+    let launcher_manifest = project
+        .backend_path::<HydrolysisBackend>()
+        .join("Cargo.toml");
     assets::stage_android_declarations(
         project,
-        &ffi_manifest,
+        &launcher_manifest,
         &module_dir,
         AndroidDependencyScope::Api,
-        &android_ffi_dependency_features(project, &triples).await?,
+        &built.features,
     )
     .await?;
 

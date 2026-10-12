@@ -14,9 +14,7 @@
     "hydrolysis-m3-version": "0.3.1",
     "waterui-gtk-version": "0.2.1",
     "apple-backend-url": "https://github.com/water-rs/apple-backend.git",
-    "apple-backend-version": "0.3.0",
-    "android-backend-url": "https://github.com/water-rs/android-backend.git",
-    "android-backend-revision": "b8477febe8f7d8025ee5a5e0dbcfe229d57c49b8"
+    "apple-backend-version": "0.3.0"
   },
   "experimental-packages": {
     "waterui-dew": {
@@ -35,8 +33,6 @@
     "android-min-api-level": 26,
     "apple-backend-url": "https://github.com/water-rs/apple-backend.git",
     "apple-backend-version": "0.3.0",
-    "android-backend-url": "https://github.com/water-rs/android-backend.git",
-    "android-backend-revision": "b8477febe8f7d8025ee5a5e0dbcfe229d57c49b8",
     "scaffold-packages": [
       "hydrolysis",
       "hydrolysis-m3",

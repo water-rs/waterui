@@ -2,8 +2,6 @@
 
 /// The `adb` client with its server running.
 pub mod adb;
-/// Android backend implementation.
-pub mod backend;
 /// Android device detection and management.
 pub mod device;
 /// Embedded Android NDK version and its runtime-Gradle parser.
@@ -20,3 +18,16 @@ pub use self::toolchain::{
     AndroidBuildTools, AndroidNdk, AndroidPlatformTools, AndroidRustTargets, AndroidSdk,
     AndroidSdkPlatforms, Java, Kotlin, KotlinToolchain,
 };
+
+/// The `<uses-permission>` entries the project manifest enables, for the
+/// backend that scaffolds an `AndroidManifest.xml` — the Hydrolysis host.
+pub(crate) fn manifest_permissions(
+    manifest: &crate::project::Manifest,
+) -> Vec<crate::project_types::AndroidPermissionName> {
+    manifest
+        .permissions
+        .iter()
+        .filter(|(_, entry)| entry.is_enabled())
+        .filter_map(|(key, _)| key.android_permission_name())
+        .collect()
+}

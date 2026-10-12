@@ -4,7 +4,6 @@ extern crate alloc;
 
 /// Color types and conversion utilities.
 pub mod color;
-/// cbindgen:ignore
 #[cfg(feature = "effects")]
 mod effects;
 #[cfg(feature = "gpu")]

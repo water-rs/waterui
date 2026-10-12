@@ -153,6 +153,9 @@ impl CargoTarget<'_> {
 /// landed under and the artifact Cargo reported for the selected target.
 #[derive(Debug)]
 pub struct BuiltTarget {
+    /// Explicit Cargo features used for this invocation. Post-build metadata
+    /// scans must resolve the same graph instead of inferring launcher features.
+    pub features: Vec<String>,
     /// `<target>/<triple>/<profile>` — dependency artifacts and staged
     /// runtime libraries resolve from this directory.
     pub profile_dir: PathBuf,
@@ -1953,6 +1956,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             None => None,
         };
         Ok(BuiltTarget {
+            features: self.features.clone(),
             profile_dir,
             artifact,
             executable: executable.map(|path| SharedExecutable {
@@ -3689,6 +3693,7 @@ mod tests {
 
         let profile_dir = temporary.path().join("target/debug");
         let error = BuiltTarget {
+            features: Vec::new(),
             profile_dir: profile_dir.clone(),
             artifact: temporary.path().join("app"),
             executable: None,
@@ -4373,7 +4378,7 @@ mod tests {
     #[test]
     fn reported_artifact_selects_the_static_archive_from_declared_types() {
         let temporary = tempdir().expect("tempdir");
-        let crate_dir = temporary.path().join("demo-ffi-deadbeef");
+        let crate_dir = temporary.path().join("demo-apple-deadbeef");
         std::fs::create_dir_all(&crate_dir).expect("crate dir");
         std::fs::write(crate_dir.join("Cargo.toml"), "[package]\n").expect("manifest");
         let manifest =
@@ -4389,7 +4394,7 @@ mod tests {
 
         let stdout = serde_json::json!({
             "reason": "compiler-artifact",
-            "package_id": "path+file:///x#demo-ffi@0.1.0",
+            "package_id": "path+file:///x#demo-apple@0.1.0",
             "manifest_path": manifest,
             "target": {
                 "kind": ["lib"],

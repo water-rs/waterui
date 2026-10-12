@@ -275,7 +275,7 @@ the defaults below apply. `water create` leaves the tables absent.
 |---|---|---|
 | macOS | `apple` (AppKit) | `hydrolysis` |
 | iOS (+ simulator) | `apple` (UIKit) | — |
-| Android | `hydrolysis` | `android` (Kotlin runtime, Android View) |
+| Android | `hydrolysis` | — |
 | Linux | `gtk4` | `hydrolysis` |
 | Windows | `hydrolysis` | `winui` |
 | Web | `hydrolysis` (WASM + WebGPU) | — |

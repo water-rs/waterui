@@ -1,7 +1,8 @@
 //! Android platform build and package utilities.
 //!
-//! This module provides utility functions for building and packaging Android apps.
-//! These functions are used by `AndroidBackend` to implement the `Backend` trait.
+//! The shared Android machinery every Android build runs through: the NDK and
+//! JDK/Kotlin toolchain resolution, the ABI model, and the Gradle wrapper
+//! invocation the Hydrolysis app and embedded library builds drive.
 
 use std::path::{Path, PathBuf};
 
@@ -11,25 +12,13 @@ use target_lexicon::{
     Aarch64Architecture, Architecture, BinaryFormat, Environment, OperatingSystem, Triple, Vendor,
 };
 
-use tracing::info;
-
 use std::str::FromStr;
 
 use crate::{
-    android::{
-        backend::AndroidBackend,
-        output_metadata::{OutputKind, packaged_artifact},
-        toolchain::{
-            AndroidNdk, AndroidSdk, Java, Kotlin, KotlinToolchain, java_proxy_properties_from_env,
-        },
+    android::toolchain::{
+        AndroidNdk, AndroidSdk, Java, Kotlin, KotlinToolchain, java_proxy_properties_from_env,
     },
-    assets,
-    build::{BuildOptions, BuiltTarget, RustBuild, RustDynamicLibraries},
-    device::Artifact,
-    platform::{PackageOptions, TargetPlatform},
-    project::Project,
-    toolchain::{Host, ToolchainError, windows_arm64_llvm::WindowsArm64LlvmToolchain},
-    utils::copy_file_if_changed,
+    toolchain::Host,
 };
 
 fn gradle_cmd(
@@ -389,7 +378,6 @@ pub(crate) struct AndroidBuildContext {
     pub(crate) cxx: PathBuf,
     pub(crate) target_underscore: String,
     pub(crate) target_upper: String,
-    pub(crate) llvm_envs: Vec<(String, std::ffi::OsString)>,
     pub(crate) java_home: PathBuf,
     pub(crate) java_bin_dir: PathBuf,
     pub(crate) kotlin_compiler: PathBuf,
@@ -474,220 +462,6 @@ impl AndroidPlatform {
         self.abi.triple()
     }
 
-    /// Build Rust library for this Android platform.
-    ///
-    /// `kotlin` is the toolchain the caller's toolchain check resolved —
-    /// the build reuses it rather than probing `kotlinc` again.
-    ///
-    /// # Errors
-    /// Returns an error if the build fails.
-    pub async fn build(
-        &self,
-        project: &Project,
-        options: BuildOptions,
-        kotlin: &KotlinToolchain,
-    ) -> eyre::Result<BuiltTarget> {
-        Self::prepare_for_build(project).await?;
-        self.build_prepared(project, options, kotlin).await
-    }
-
-    /// The shared prologue every Android Rust build needs: render the FFI
-    /// companion this build compiles, audit the permissions its graph
-    /// declares, and stage the font assets its crates' `build.rs` scripts
-    /// read. Nothing in it depends on the ABI, so a build over several
-    /// ABIs runs it once and then [`build_prepared`](Self::build_prepared)
-    /// per ABI.
-    ///
-    /// # Errors
-    /// Returns an error if the companion scaffold, the permission audit,
-    /// or the font resolution fails.
-    pub async fn prepare_for_build(project: &Project) -> eyre::Result<()> {
-        // The ffi companion is the crate this builds — render it for the
-        // graph its `cfg` tables serve before anything reads its manifest.
-        project.scaffold_ffi_companion().await?;
-        audit_android_permissions(project).await?;
-
-        // Resolve fonts BEFORE cargo build - this ensures icons.json is present
-        // for crates like fontawesome7 that need it during build.rs
-        let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-        let font_declarations = crate::assets::scan_fonts(
-            project,
-            &ffi_manifest,
-            &[waterui_assets_planner::FontPlatform::Android],
-        )
-        .await?;
-        crate::assets::resolve_fonts(project.host(), font_declarations).await?;
-        Ok(())
-    }
-
-    /// `build` for a caller that already ran
-    /// [`prepare_for_build`](Self::prepare_for_build) — a multi-ABI loop
-    /// runs the prologue once, then this per ABI.
-    ///
-    /// `kotlin` is the toolchain the caller's toolchain check resolved —
-    /// the build reuses it rather than probing `kotlinc` again.
-    ///
-    /// # Errors
-    /// Returns an error if the build fails.
-    pub async fn build_prepared(
-        &self,
-        project: &Project,
-        options: BuildOptions,
-        kotlin: &KotlinToolchain,
-    ) -> eyre::Result<BuiltTarget> {
-        // `-Cprefer-dynamic` on Android cannot resolve `std` to rustup's
-        // prebuilt `libstd.so` (its LOAD segments are 4 KB-aligned and
-        // 16 KB-page devices reject the whole package), so every Android
-        // build links the runtime in — what a packaged build already does.
-        let options = options.with_static_runtime();
-
-        let abi = self.abi();
-        let triple = self.triple();
-        let min_api_level = project
-            .resolved_framework()
-            .await?
-            .android_min_api_level()?;
-        let host = project.host();
-        let build_context =
-            resolve_android_build_context(host, abi, &triple, min_api_level, kotlin).await?;
-        let build = configure_android_rust_build(project, &triple, &build_context, &options)
-            .await?
-            .with_envs(options.cargo_envs().iter().cloned())
-            .with_target_dir(project.water_target_dir(options.linkage()).await?);
-
-        let built_target = build.build_lib(options.is_release()).await?;
-        copy_android_build_outputs(
-            project,
-            &options,
-            abi,
-            &build_context.ndk_path,
-            &built_target,
-        )
-        .await?;
-        Ok(built_target)
-    }
-
-    /// Clean all jniLibs directories to remove stale libraries from previous builds.
-    ///
-    /// # Errors
-    /// Returns an error if the directory cannot be removed.
-    pub async fn clean_jni_libs(project: &Project) -> eyre::Result<()> {
-        let jni_libs_dir = project
-            .backend_path::<AndroidBackend>()
-            .join("app/src/main/jniLibs");
-
-        if jni_libs_dir.exists() {
-            fs::remove_dir_all(&jni_libs_dir).await?;
-        }
-        Ok(())
-    }
-
-    /// Package the Android app with specific ABIs.
-    ///
-    /// This is used when building for multiple architectures. The ABIs parameter
-    /// controls which native libraries are included in the final APK.
-    ///
-    /// `built` is the build's target result — its `app_symbols()` carry the
-    /// `waterui_meta_bundle_*` statics that declare the asset mounts.
-    ///
-    /// `prepared` is the release-signing decision
-    /// [`PreparedSigning::resolve`](crate::android::signing::PreparedSigning::resolve)
-    /// produced for this project and these options — before the Rust builds
-    /// when the caller sequences them (`water package`, `water run`), or at
-    /// the single in-package resolution otherwise. It is re-checked against
-    /// this call's project and options, so a plan resolved elsewhere cannot
-    /// sign or unsign this package.
-    ///
-    /// # Errors
-    /// Returns an error if the plan does not bind to this project/options, or
-    /// if Gradle build fails.
-    pub async fn package_with_abis(
-        project: &Project,
-        options: PackageOptions,
-        abis: &[AndroidAbi],
-        built: &BuiltTarget,
-        prepared: &crate::android::signing::PreparedSigning,
-    ) -> eyre::Result<Artifact> {
-        // Prove the plan belongs to this project and these options before
-        // any work: a plan resolved for another project or stale options is
-        // an error, never a signing decision.
-        let release_signing = prepared.release_signing_for(project.root(), &options)?;
-
-        // The ffi companion is the crate the staged declarations are read
-        // from — render it before the manifest is scanned.
-        project.scaffold_ffi_companion().await?;
-
-        // The identifier becomes the app's Java package name in the Gradle
-        // build below — reject an Android-invalid one before the SDK runs.
-        let _ = project
-            .bundle_identifier()
-            .android_package_name()
-            .map_err(|error| eyre::eyre!("{error}"))?;
-
-        let backend_path = project.backend_path::<AndroidBackend>();
-
-        // Copy project assets and dependency fonts
-        copy_assets_and_fonts(
-            project,
-            &backend_path,
-            &built.app_symbols().await?,
-            options.uses_dev_server(),
-        )
-        .await?;
-
-        // Stage dependency-declared Kotlin helpers and Maven coordinates onto
-        // the app module's classpath so Gradle compiles them into the dex, and
-        // their manifest components into the app manifest. The scan must see
-        // the same feature selection the Rust build compiles with: helpers
-        // declared by crates behind optional features (e.g. waterkit-screen
-        // via `gpu`) otherwise miss the resolved graph.
-        crate::assets::stage_android_declarations(
-            project,
-            &project.ffi_crate_path().join("Cargo.toml"),
-            &backend_path.join("app"),
-            crate::assets::AndroidDependencyScope::Implementation,
-            &android_ffi_dependency_features(
-                project,
-                &abis.iter().map(|abi| abi.triple()).collect::<Vec<_>>(),
-            )
-            .await?,
-        )
-        .await?;
-
-        let (command_name, output_kind, variant) =
-            match (options.is_distribution(), options.is_debug()) {
-                (true, false) => ("bundleRelease", OutputKind::Bundle, "release"),
-                (false, false) => ("assembleRelease", OutputKind::Apk, "release"),
-                (false, true) => ("assembleDebug", OutputKind::Apk, "debug"),
-                (true, true) => ("bundleDebug", OutputKind::Bundle, "debug"),
-            };
-
-        // Join ABIs with comma for the environment variable
-        let abis_str = abis
-            .iter()
-            .map(|a| a.as_str())
-            .collect::<Vec<_>>()
-            .join(",");
-
-        // Debug packages keep the Gradle debug keystore (the plan carries
-        // no decision for them). Release packages apply the decision the
-        // prepared plan holds — Signed, unsigned-without-config, or
-        // `--unsigned` suppressing the generated signingConfig through the
-        // environment.
-        let mut envs = vec![
-            ("WATERUI_SKIP_RUST_BUILD", "1".to_string()),
-            ("WATERUI_ANDROID_ABIS", abis_str),
-        ];
-        if release_signing == Some(crate::android::signing::ReleaseSigning::Suppressed) {
-            envs.push((crate::android::signing::UNSIGNED_ENV, "1".to_string()));
-        }
-
-        run_gradle_tasks(project.host(), &backend_path, &[command_name], &envs).await?;
-
-        let path = packaged_artifact(&backend_path, output_kind, variant).await?;
-        Ok(Artifact::new(project.bundle_identifier(), path))
-    }
-
     /// List available Android Virtual Devices (emulators) on `host`.
     ///
     /// # Errors
@@ -737,7 +511,6 @@ pub(crate) async fn resolve_android_build_context(
     }
     let target_underscore = triple.to_string().replace('-', "_");
     let target_upper = target_underscore.to_uppercase();
-    let llvm_envs = resolve_windows_arm64_llvm_envs(host).await?;
     let (java_home, java_bin_dir) = resolve_java_home(host).await?;
     let (kotlin_compiler, kotlin_bin_dir, kotlin_home) = kotlin_context_paths(kotlin)?;
     let (sdk_path, android_jar) = resolve_android_sdk_paths(host).await?;
@@ -752,7 +525,6 @@ pub(crate) async fn resolve_android_build_context(
         cxx,
         target_underscore,
         target_upper,
-        llvm_envs,
         java_home,
         java_bin_dir,
         kotlin_compiler,
@@ -763,22 +535,6 @@ pub(crate) async fn resolve_android_build_context(
         wrapper_toolchain,
         android_platform: format!("android-{api_level}"),
     })
-}
-
-async fn resolve_windows_arm64_llvm_envs(
-    host: &Host,
-) -> eyre::Result<Vec<(String, std::ffi::OsString)>> {
-    WindowsArm64LlvmToolchain
-        .cargo_envs(host)
-        .await
-        .map_err(|error| match error {
-            ToolchainError::Fixable(_) => eyre::eyre!(
-                "Windows ARM64 LLVM toolchain is missing. Run `water doctor --fix` to install it automatically."
-            ),
-            ToolchainError::Unfixable(unfixable) => {
-                eyre::eyre!("Windows ARM64 LLVM toolchain check failed: {unfixable}")
-            }
-        })
 }
 
 async fn resolve_java_home(host: &Host) -> eyre::Result<(PathBuf, PathBuf)> {
@@ -842,115 +598,6 @@ async fn resolve_android_sdk_paths(host: &Host) -> eyre::Result<(PathBuf, PathBu
     })
     .await
 }
-
-/// Warn about every permission the FFI companion's dependency graph needs
-/// that the project has not enabled.
-///
-/// Android is where a missing declaration actually breaks things. The audit
-/// resolves the companion's graph — the crate an Android build compiles and
-/// the one whose declarations reach the Gradle classpath — so it runs after
-/// the build rendered the companion.
-///
-/// # Errors
-/// Returns an error when the companion's graph cannot be resolved.
-pub(crate) async fn audit_android_permissions(project: &Project) -> eyre::Result<()> {
-    let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-    let required = crate::assets::scan_required_permissions(project.host(), &ffi_manifest).await?;
-    crate::assets::warn_missing_permissions(project, &required, |key| {
-        key.android_permission_name().is_some()
-    });
-    Ok(())
-}
-
-/// The features an Android runtime's generated FFI crate is compiled with,
-/// each forwarded to `waterui-ffi` by the generated manifest.
-///
-/// See [`crate::apple::platform::apple_dependency_features`] for why anything
-/// loaded into that runtime must be compiled with the same set.
-///
-/// # Errors
-///
-/// Returns an error when the project's enabled capabilities cannot be resolved.
-/// `targets` is the serving set of the feature list — the ABI triples the
-/// Gradle package the caller renders embeds. The answers are read from each
-/// triple's own graph and must agree, because the Gradle classpath and the
-/// ABI `cargo build`s they forward to cannot express a per-ABI difference.
-pub(crate) async fn android_ffi_dependency_features(
-    project: &Project,
-    targets: &[Triple],
-) -> eyre::Result<Vec<String>> {
-    let build_manifest = project.ffi_crate_path().join("Cargo.toml");
-    project
-        .unanimous_graph_answer(
-            targets,
-            "the Android FFI feature set",
-            crate::project::GraphSection {
-                manifest: "the generated FFI companion manifest",
-                table: "the Android `--features` list and the Gradle classpath",
-                remedy: "the dependency graph answers differently per target, so those \
-                         consumers need a per-target answer — resolve the set for \
-                         each ABI's own serving set instead of one shared list",
-            },
-            |features: &Vec<String>| features.join(", "),
-            |project, target| {
-                let build_manifest = build_manifest.clone();
-                async move {
-                    let mut features = vec!["android-jni".to_string()];
-                    features.extend(
-                        crate::project_model::assets::capability_ffi_features(
-                            project,
-                            &build_manifest,
-                            &target,
-                        )
-                        .await?,
-                    );
-                    // Android has no player or map WaterUI bridges, so it draws both itself.
-                    features.extend(
-                        crate::project_model::assets::self_drawn_realization_features(
-                            project,
-                            &build_manifest,
-                            &target,
-                        )
-                        .await?,
-                    );
-                    Ok(features)
-                }
-            },
-        )
-        .await
-}
-
-async fn configure_android_rust_build(
-    project: &Project,
-    triple: &Triple,
-    context: &AndroidBuildContext,
-    options: &BuildOptions,
-) -> eyre::Result<RustBuild> {
-    let host = project.host();
-    // Android loads the JNI shared object and nothing else, so build only that crate
-    // type instead of also archiving the whole dependency graph into a staticlib.
-    let mut build = RustBuild::for_project(project, project.ffi_crate_path(), triple.clone())
-        .with_features(
-            android_ffi_dependency_features(project, std::slice::from_ref(triple)).await?,
-        )
-        .with_crate_type_override("cdylib")
-        .with_rustc_flag(ANDROID_MAX_PAGE_SIZE_LINK_ARG);
-    if let Some(sccache_path) = options.sccache_path() {
-        build = build.with_sccache(sccache_path.to_path_buf());
-    }
-    if let Some(progress) = options.progress() {
-        build = build.with_progress(progress.clone());
-    }
-    for (key, value) in &context.llvm_envs {
-        build = build.with_env(key.clone(), value.clone());
-    }
-
-    build = build.with_envs(android_cargo_envs(context, triple));
-
-    let new_path = android_path_env(host, context).await?;
-    Ok(build.with_env("PATH", new_path))
-}
-
 /// The `PATH` an Android cargo invocation runs under: the resolved JDK and
 /// Kotlin compiler bin directories ahead of the host's, so NDK-side build
 /// scripts find the same toolchain the doctor verified.
@@ -1066,55 +713,6 @@ pub(crate) fn android_cargo_envs(
     .collect()
 }
 
-async fn copy_android_build_outputs(
-    project: &Project,
-    options: &BuildOptions,
-    abi: AndroidAbi,
-    ndk_path: &Path,
-    built_target: &BuiltTarget,
-) -> eyre::Result<()> {
-    let output_dir = options.output_dir().map_or_else(
-        || {
-            project
-                .backend_path::<AndroidBackend>()
-                .join("app/src/main/jniLibs")
-                .join(abi.as_str())
-        },
-        std::path::Path::to_path_buf,
-    );
-    fs::create_dir_all(&output_dir).await?;
-    copy_file_if_changed(
-        &built_target.artifact,
-        &output_dir.join("libwaterui_app.so"),
-    )
-    .await?;
-
-    // The Android build always links the runtime statically, so a stale
-    // shared runtime staged by an older build must not ship in the package.
-    RustDynamicLibraries::remove_staged(&output_dir, &AndroidPlatform::new(abi).triple()).await?;
-
-    // `libc++_shared.so` only belongs in the package when a staged native
-    // library actually links the C++ STL — Rust-only builds never reference it,
-    // and shipping it unconditionally cost ~9 MB per ABI of dead weight.
-    let libcxx_target = output_dir.join("libc++_shared.so");
-    if staged_libs_need_libcxx(&output_dir).await? {
-        let libcxx_path = ndk_libcxx_path(ndk_path, abi);
-        if libcxx_path.exists() {
-            copy_file_if_changed(&libcxx_path, &libcxx_target).await?;
-        }
-    } else if libcxx_target.exists() {
-        // Drop the copy an earlier build staged; nothing links it now.
-        fs::remove_file(&libcxx_target).await?;
-    }
-
-    // Every library about to ship must map its LOAD segments at the largest
-    // page size Android runs with; a 4 KB-aligned one is rejected at install
-    // time on 16 KB devices, so fail here naming the file instead.
-    crate::elf::require_aligned_shared_libraries(&output_dir).await?;
-
-    Ok(())
-}
-
 /// True when any `.so` staged in `output_dir` lists `libc++_shared.so` in its
 /// `DT_NEEDED` entries.
 ///
@@ -1169,112 +767,6 @@ fn elf_needs_libcxx(data: &[u8]) -> Option<bool> {
 
     scan::<object::elf::FileHeader64<object::Endianness>>(data)
         .or_else(|| scan::<object::elf::FileHeader32<object::Endianness>>(data))
-}
-
-// ============================================================================
-// Clean
-// ============================================================================
-
-/// Clean Gradle build artifacts for Android.
-///
-/// # Errors
-/// Returns an error if the Gradle clean command fails.
-pub async fn clean_android(project: &Project) -> eyre::Result<()> {
-    let backend_path = project.backend_path::<AndroidBackend>();
-    let gradlew = backend_path.join(if cfg!(windows) {
-        "gradlew.bat"
-    } else {
-        "gradlew"
-    });
-
-    if !gradlew.exists() {
-        // No Android project to clean
-        return Ok(());
-    }
-
-    // Set JAVA_HOME to Android Studio's bundled JDK to avoid JDK version conflicts
-    let host = project.host();
-    let mut cmd = gradle_cmd(host, &gradlew, &backend_path, &["clean"]);
-
-    if let Some(java_home) = Java::detect_home(host).await {
-        cmd.env("JAVA_HOME", java_home);
-    }
-    if let Some(sdk_path) = AndroidSdk::detect_path(host) {
-        cmd.env("ANDROID_HOME", &sdk_path)
-            .env("ANDROID_SDK_ROOT", &sdk_path);
-    }
-    apply_gradle_proxy_env(host, &mut cmd)?;
-
-    let output = cmd.output().await?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Gradle clean failed: {}", stderr.trim());
-    }
-
-    Ok(())
-}
-
-// ============================================================================
-// Platform Support Check
-// ============================================================================
-
-/// Check if a platform is supported by the Android backend.
-#[must_use]
-pub const fn is_android_platform(platform: TargetPlatform) -> bool {
-    matches!(platform, TargetPlatform::Android)
-}
-
-// ============================================================================
-// Asset and Font Handling
-// ============================================================================
-
-/// Copy project assets and dependency fonts to the Android assets directory.
-/// `symbols` is the app library artifact the target build produced, whose
-/// `waterui_meta_bundle_*` statics declare the asset mounts.
-async fn copy_assets_and_fonts(
-    project: &Project,
-    backend_path: &Path,
-    symbols: &crate::artifact_symbols::ArtifactSymbols,
-    dev_server: bool,
-) -> eyre::Result<()> {
-    let assets_dir = backend_path.join("app/src/main/assets");
-
-    // Stage project assets using platform-native conventions.
-    let manifest = assets::stage_project_assets_for_android(
-        project,
-        backend_path,
-        symbols,
-        dev_server,
-        assets::AndroidThemeParent::Material3,
-        // This backend's Kotlin `WaterUiFontTable` loads `assets/fonts` and
-        // its manifest, staged below; the bundle carries no font tree.
-        None,
-    )
-    .await?;
-
-    // Scan and resolve dependency fonts
-    let font_declarations = assets::scan_fonts(
-        project,
-        &project.ffi_crate_path().join("Cargo.toml"),
-        &[waterui_assets_planner::FontPlatform::Android],
-    )
-    .await?;
-    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
-    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
-
-    if !resolved_fonts.is_empty() {
-        // Copy fonts to assets/fonts/ along with the manifest the runtime's
-        // WaterUiFontTable loads at bootstrap to map declared families to
-        // bundled files.
-        let fonts_dest = assets_dir.join("fonts");
-        assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
-        assets::write_font_manifest(&resolved_fonts, &fonts_dest, None).await?;
-
-        info!("Copied {} fonts to Android app", resolved_fonts.len());
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

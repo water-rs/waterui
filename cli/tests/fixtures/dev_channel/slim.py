@@ -95,7 +95,8 @@ def slim_lock(text, names, keep_path=True):
         "names": {n for n, _, _, _ in selected},
         "exact": {(n, v) for n, v, _, _ in selected},
     }
-    return header + "".join(trim_deps(b, kept) for _, _, _, b in selected)
+    lock = header + "".join(trim_deps(b, kept) for _, _, _, b in selected)
+    return lock.rstrip("\n") + "\n"
 
 
 def main():

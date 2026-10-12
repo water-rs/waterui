@@ -1,7 +1,8 @@
 //! `water create` against the published stable `framework.json`.
 //!
 //! The fixture is the `framework.json` attached to the v0.5.2 framework
-//! release, verbatim. That release pins its Apple backend as the separate
+//! release, minus the Kotlin Android runtime pins this CLI no longer reads.
+//! That release pins its Apple backend as the separate
 //! Swift `apple-backend` package and its Hydrolysis backend as a registry
 //! crate, so it declares neither `apple-backend-path` nor
 //! `hydrolysis-path`. This CLI scaffolds only a framework that carries

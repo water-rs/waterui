@@ -148,7 +148,6 @@ if let Some(h) = handle.snapshot() {
 
 - Window API: `src/window.rs`
 - Material types: `src/background.rs`
-- FFI bindings: `ffi/src/window.rs`
 
 ## Related Examples
 

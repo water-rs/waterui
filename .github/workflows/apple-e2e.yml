@@ -29,8 +29,8 @@ name: Apple E2E Suite
 # run certifies one (framework, lockfile, CLI, rustc) tuple — a floating
 # toolchain would make a night impossible to compare with the last. Bump
 # the pin deliberately. The pin is the repository's declared channel: the
-# suite's Rust surface is plain stable — no `-Z` flag, build-std or
-# cbindgen expansion is reached from these legs — and stable ships both
+# suite's Rust surface is plain stable — no `-Z` flag or build-std is reached
+# from these legs — and stable ships both
 # Apple ARM64 targets the shards install explicitly. The native backend
 # no longer needs the old packaging path's nightly override.
 

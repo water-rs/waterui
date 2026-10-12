@@ -18,18 +18,20 @@
 //! ```ignore
 //! use waterui::app::App;
 //! use waterui::prelude::*;
-//! use waterui_preview::Preview;
+//! use waterui_preview::{Preview, init_tracing_from_env};
 //!
 //! fn main() -> impl View {
+//!     init_tracing_from_env();
 //!     Preview::new()
 //! }
 //!
 //! pub fn app(env: Environment) -> App {
 //!     App::new(main, env)
 //! }
-//!
-//! waterui_ffi::export!();
 //! ```
+//!
+//! The CLI scaffolds that view with the platform's preview entry; the app
+//! itself carries no export boilerplate.
 
 mod cache;
 mod library;
