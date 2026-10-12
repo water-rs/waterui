@@ -705,15 +705,15 @@ fn encode_text_layout(
                 let brush = rgba8_to_peniko(style.brush);
                 let normalized_coords = run.normalized_coords();
 
-                let mut run_x = glyph_run.offset() + x_shift;
-                let run_y = glyph_run.baseline();
+                // `positioned_glyphs` already folds each cluster advance into
+                // `x` and the run baseline into `y`; only the fragment shift
+                // is ours.
                 let glyphs: Vec<crate::renderer::Glyph> = glyph_run
-                    .glyphs()
-                    .map(move |glyph| {
-                        let x = run_x + glyph.x;
-                        let y = run_y - glyph.y;
-                        run_x += glyph.advance;
-                        Glyph { id: glyph.id, x, y }
+                    .positioned_glyphs()
+                    .map(|glyph| Glyph {
+                        id: glyph.id,
+                        x: glyph.x + x_shift,
+                        y: glyph.y,
                     })
                     .collect();
 

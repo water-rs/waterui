@@ -668,15 +668,15 @@ def main() -> None:
     for name in missing_raw:
         url, pin = RAW_FONTS[name]
         write_verified(name, fetch(url, pin))
+    missing, mismatched = check_faces(OUT_DIR, EXPECTED)
+    reject_drift(mismatched)
+    if missing:
+        generate()
     target = user_font_dir()
     missing_installed, mismatched_installed = check_faces(target, EXPECTED)
     if not missing_installed and not mismatched_installed:
         print(f"all {len(EXPECTED)} test fonts already installed in {target}")
         return
-    missing, mismatched = check_faces(OUT_DIR, EXPECTED)
-    reject_drift(mismatched)
-    if missing:
-        generate()
     install()
 
 

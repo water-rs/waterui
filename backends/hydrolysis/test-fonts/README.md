@@ -29,6 +29,10 @@ re-run the test.
 
 ## The faces
 
+The generator verifies local fixture files even when their installed copies are
+already present. Shaping/recording tests load those pinned bytes directly, rather
+than letting system discovery select another face with the same family name.
+
 Noto Sans Regular is the full Noto Sans 2.015 face pinned in the CLI registry,
 kept intact for the combining-mark fallback regression and licensed under OFL.
 
