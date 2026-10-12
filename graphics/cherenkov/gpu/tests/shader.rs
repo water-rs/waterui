@@ -40,9 +40,12 @@ fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
         "enable f16;\nconst VARIANT: u32 = {variant}u;\n{cap}{SHARED}\n{shader}\n{union}{BLEND}"
     );
     let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16)
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
     (module, info)
 }
 
@@ -101,14 +104,20 @@ fn effect_module(name: &str, user: &str) -> (Module, naga::valid::ModuleInfo) {
     let union_text = cherenkov_gpu::backdrop_effect_text(user, true);
     let union_module =
         wgsl::parse_str(&union_text).unwrap_or_else(|e| panic!("{name} (union): {e}"));
-    Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16)
-        .validate(&union_module)
-        .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
+    Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&union_module)
+    .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
     let text = cherenkov_gpu::backdrop_effect_text(user, false);
     let module = wgsl::parse_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16)
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     (module, info)
 }
 
@@ -204,7 +213,7 @@ fn standalone_modules_emit() {
         ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16)
+        let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32))
             .validate(&module)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         effect_emits(name, &module, &info);
