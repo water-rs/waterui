@@ -19,9 +19,11 @@
 //! describe, not the traffic the memory system saw. Physical bandwidth
 //! belongs to the device's own counters and is never inferred here.
 //!
-//! The planner that produces these decisions is built where the on-chip
-//! composition backend is (Apple, issue #2191 tracks Vulkan); elsewhere
-//! no report is recorded.
+//! The planner that produces these decisions is platform-neutral
+//! (issue #2549), but it runs only where a backend supplies a tile
+//! executor and its limits (Apple, issue #2191 tracks Vulkan).
+//! Elsewhere the frame is never planned, so no report is recorded and
+//! every image's reason would be [`Materialization::NoExecutor`].
 
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
@@ -68,6 +70,14 @@ pub enum Materialization {
     /// shadow, a mip build, a custom effect, a content shader, or a blend
     /// other than source-over and replace.
     UnsupportedOp,
+    /// The backend's tile executor orders accesses to a slot only
+    /// between passes, so no draw may read what an earlier draw of the
+    /// same pass wrote and no epoch can form.
+    Ordering,
+    /// This target has no tile executor at all, so the frame is never
+    /// planned and every logical image is materialized (issue #2549;
+    /// issue #2191 tracks the Vulkan executor).
+    NoExecutor,
 }
 
 impl Materialization {
@@ -86,6 +96,8 @@ impl Materialization {
             Self::Region => "region",
             Self::SlotLimit => "slot-limit",
             Self::UnsupportedOp => "unsupported-op",
+            Self::Ordering => "ordering",
+            Self::NoExecutor => "no-executor",
         }
     }
 }
@@ -340,7 +352,6 @@ pub struct PipelineCreated {
 /// The report of one encoded surface, built from the decided plan.
 ///
 /// Called only with a sink installed; it allocates and walks the frame.
-#[cfg(target_vendor = "apple")]
 pub(crate) fn frame_report(
     frame: u64,
     surface: u64,
@@ -400,7 +411,6 @@ pub(crate) fn frame_report(
 }
 
 /// The frame's logical intermediate traffic.
-#[cfg(target_vendor = "apple")]
 fn traffic(lowered: &super::lower::Frame, plan: &super::composite::plan::ExecutionPlan) -> Traffic {
     use super::composite::plan::Storage;
 
@@ -439,13 +449,11 @@ fn traffic(lowered: &super::lower::Frame, plan: &super::composite::plan::Executi
 
 /// The bytes a region covers in `format` — a logical size, never an
 /// allocation.
-#[cfg(target_vendor = "apple")]
 fn region_bytes(region: [u32; 4], format: wgpu::TextureFormat) -> u64 {
     u64::from(region[2]) * u64::from(region[3]) * super::texel_bytes(format)
 }
 
 /// The report class of a canonical target.
-#[cfg(target_vendor = "apple")]
 const fn kind(target: super::lower::Target) -> ImageKind {
     use super::lower::Target;
 

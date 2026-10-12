@@ -3,12 +3,60 @@
 //! A scratch depth is an allocation address, not an image identity. Every
 //! clear starts a new generation; reads name that generation before any
 //! physical attachment is assigned.
+//!
+//! Nothing here is platform-specific (issue #2549). A backend hands the
+//! planner the [`Limits`] its tile executor works within; a target with
+//! no executor has no limits, so an [`ExecutionPlan`] is never built
+//! there and every logical image is materialized for
+//! [`Materialization::NoExecutor`].
+
+// A target with no executor never calls the planner, so every item here
+// is unreachable there. Apple uses all of them, and #2191's Vulkan
+// executor will use them on the rest.
+#![cfg_attr(
+    not(target_vendor = "apple"),
+    expect(
+        dead_code,
+        reason = "no tile executor on this target, so nothing plans (#2549)"
+    )
+)]
 
 use std::ops::Range;
 
 use super::super::composition::Materialization;
 use super::super::instance::PAINT_TEXTURE;
 use super::super::lower::{DrawRange, Frame, ImageSource, PipelineKind, Source, Target};
+
+/// How a tile executor orders two accesses to one pixel of one
+/// attachment slot within a single pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ordering {
+    /// Fragments covering the same pixel are ordered against each other,
+    /// so a draw reads exactly what the epoch's earlier draws wrote into
+    /// the slot — Apple's `raster_order_group(0)`.
+    PerPixel,
+    /// Accesses are ordered only at pass granularity: a draw that reads
+    /// a slot an earlier draw of the same pass wrote is undefined, so no
+    /// epoch can carry a destination or slot read.
+    PerPass,
+}
+
+/// What a backend's tile executor can hold, as the planner must respect
+/// it: how many attachment slots it binds at once (slot zero, the stored
+/// output, included), the pixel format every slot carries, and the
+/// ordering it guarantees within one pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Limits {
+    /// Attachment slots the executor binds at once, slot zero included.
+    /// Fewer than two slots cannot hold an intermediate beside the
+    /// output, so no epoch forms.
+    pub slots: u8,
+    /// The format every attachment slot carries. An image stored in any
+    /// other format cannot enter an epoch.
+    pub format: wgpu::TextureFormat,
+    /// The ordering the executor guarantees within one pass.
+    pub ordering: Ordering,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LogicalImageId(pub usize);
@@ -55,11 +103,21 @@ pub struct TileOp {
     pub target: u8,
     pub sources: Vec<Option<u8>>,
     pub begin: bool,
+    /// Where a `begin` whose slot still holds a dead image has to clear:
+    /// every region this epoch writes that image over, and every region
+    /// it reads the image from, so the slot reads transparent everywhere
+    /// the image's own clear would have. Only `begin` consults it.
+    pub clear_region: [u32; 4],
     pub backdrop: Option<ReadKind>,
 }
 
 /// Slot zero is the persistent output. Other slots have no device-memory
 /// backing and are cleared at each logical image's original begin point.
+///
+/// One epoch is one native pass. [`ExecutionPlan::partition`] coalesces
+/// adjacent intervals that store into the same logical image into a
+/// single epoch, so an epoch's ops can cover several intervals and the
+/// output stays in tile memory across all of them.
 #[derive(Clone, Debug)]
 pub struct TileEpoch {
     pub passes: Range<usize>,
@@ -82,6 +140,11 @@ pub struct ExecutionPlan {
     pub reads: Vec<Vec<Option<Read>>>,
     pub segments: Vec<Segment>,
     native: Vec<Option<usize>>,
+    /// Whether a backend planned this frame at all. A target whose
+    /// backend has no tile executor supplies no [`Limits`], so its plan
+    /// stays in this default state: no epoch, and every image
+    /// materialized for [`Materialization::NoExecutor`].
+    planned: bool,
 }
 
 impl ExecutionPlan {
@@ -113,8 +176,14 @@ impl ExecutionPlan {
                 .sum::<usize>()) as u64
     }
 
-    pub fn build(frame: &Frame, format: wgpu::TextureFormat, slots: u8) -> Self {
-        let mut plan = Self::default();
+    /// The plan for `frame`, where `scratch` is the format the frame's
+    /// isolation scratches are stored in and `limits` is what the
+    /// backend's tile executor can hold.
+    pub fn build(frame: &Frame, scratch: wgpu::TextureFormat, limits: Limits) -> Self {
+        let mut plan = Self {
+            planned: true,
+            ..Self::default()
+        };
         let mut current: Vec<(Target, LogicalImageId)> = Vec::new();
         for (index, pass) in frame.passes.iter().enumerate() {
             let previous = current
@@ -131,7 +200,7 @@ impl ExecutionPlan {
                     region: pass.region,
                     space: pass.space,
                     format: if matches!(pass.target, Target::Scratch(_)) {
-                        format
+                        scratch
                     } else {
                         wgpu::TextureFormat::Rgba16Float
                     },
@@ -189,11 +258,11 @@ impl ExecutionPlan {
                 plan.images[id.0].last_consumer = index;
             }
         }
-        plan.partition(frame, slots);
+        plan.partition(frame, limits);
         plan
     }
 
-    pub fn update_placement(&mut self, frame: &Frame, slots: u8) {
+    pub fn update_placement(&mut self, frame: &Frame, limits: Limits) {
         for (index, pass) in frame.passes.iter().enumerate() {
             let image = &mut self.images[self.targets[index].0];
             image.region = pass.region;
@@ -201,17 +270,22 @@ impl ExecutionPlan {
             image.storage = Storage::Materialized(initial(pass.target));
         }
         self.segments.clear();
-        self.partition(frame, slots);
+        self.partition(frame, limits);
     }
 
-    fn partition(&mut self, frame: &Frame, slots: u8) {
+    fn partition(&mut self, frame: &Frame, limits: Limits) {
         let plan = self;
         plan.native.clear();
         plan.native.resize(frame.passes.len(), None);
         let mut index = 0;
         while index < frame.passes.len() {
-            let attempt = if slots >= 2 {
-                plan.epoch(frame, index, slots)
+            // An epoch's draws read slots earlier draws of the same pass
+            // wrote, so an executor that orders accesses only between
+            // passes can carry none of it.
+            let attempt = if limits.ordering == Ordering::PerPass {
+                Err(Materialization::Ordering)
+            } else if limits.slots >= 2 {
+                plan.epoch(frame, index, limits)
             } else {
                 Err(Materialization::SlotLimit)
             };
@@ -235,9 +309,40 @@ impl ExecutionPlan {
                                 Materialization::Persistent
                             });
                     }
-                    index = epoch.passes.end;
-                    plan.native[epoch.passes.clone()].fill(Some(plan.segments.len()));
-                    plan.segments.push(Segment::NativeEpoch(epoch));
+                    // Adjacent intervals that store into the same logical
+                    // image are one native pass: nothing between them
+                    // touches that image — a gap would have opened a
+                    // portable segment, and a clear would have started a
+                    // new image — so its pixels need never leave the
+                    // executor's slot zero between them. The interval's own
+                    // slots are free again at its end (an image living past
+                    // it is `External`), which is what lets the next one
+                    // reuse them under the same attachment binding.
+                    let coalesce = match plan.segments.last() {
+                        Some(Segment::NativeEpoch(last)) => {
+                            let stores_the_same_image = last.output == epoch.output;
+                            let adjacent = last.passes.end == epoch.passes.start;
+                            stores_the_same_image && adjacent
+                        }
+                        _ => false,
+                    };
+                    let passes = epoch.passes.clone();
+                    index = passes.end;
+                    if coalesce {
+                        let Some(Segment::NativeEpoch(last)) = plan.segments.last_mut() else {
+                            unreachable!("the segment just matched a native epoch")
+                        };
+                        debug_assert_eq!(
+                            last.region, epoch.region,
+                            "one logical image has one region"
+                        );
+                        last.passes.end = epoch.passes.end;
+                        last.slots = last.slots.max(epoch.slots);
+                        last.ops.extend(epoch.ops);
+                    } else {
+                        plan.segments.push(Segment::NativeEpoch(epoch));
+                    }
+                    plan.native[passes].fill(Some(plan.segments.len() - 1));
                 }
                 Err(reason) => {
                     // The reason belongs to the attempt that opens the image;
@@ -260,7 +365,7 @@ impl ExecutionPlan {
     /// The interval an epoch rooted at `start` would cover: the image that
     /// pass produces, read until its last consumer, which stores the
     /// epoch's result. `Err` names why that interval does not exist.
-    fn interval(&self, start: usize) -> Result<usize, Materialization> {
+    fn interval(&self, start: usize, limits: Limits) -> Result<usize, Materialization> {
         let first = &self.images[self.targets[start].0];
         if !matches!(first.target, Target::Scratch(_)) {
             return Err(Materialization::Persistent);
@@ -279,7 +384,7 @@ impl ExecutionPlan {
         {
             return Err(Materialization::OutputNotEligible);
         }
-        if destination.format != wgpu::TextureFormat::Rgba16Float {
+        if destination.format != limits.format {
             return Err(Materialization::Format);
         }
         Ok(end)
@@ -295,6 +400,7 @@ impl ExecutionPlan {
         frame: &Frame,
         index: usize,
         destination: &LogicalImage,
+        limits: Limits,
     ) -> Result<(), Materialization> {
         let pass = &frame.passes[index];
         let image = &self.images[self.targets[index].0];
@@ -304,7 +410,7 @@ impl ExecutionPlan {
         if pass.capture.is_some() {
             return Err(Materialization::External);
         }
-        if image.format != wgpu::TextureFormat::Rgba16Float {
+        if image.format != limits.format {
             return Err(Materialization::Format);
         }
         if image.space != pass.space {
@@ -341,18 +447,37 @@ impl ExecutionPlan {
 
     /// The epoch rooted at `start`, or why the image that pass produces is
     /// materialized instead.
-    fn epoch(&self, frame: &Frame, start: usize, limit: u8) -> Result<TileEpoch, Materialization> {
-        let end = self.interval(start)?;
+    fn epoch(
+        &self,
+        frame: &Frame,
+        start: usize,
+        limits: Limits,
+    ) -> Result<TileEpoch, Materialization> {
+        let end = self.interval(start, limits)?;
         let output = self.targets[end];
         let destination = &self.images[output.0];
         let mut assigned = vec![(output, 0u8)];
         let mut slots = 1;
         let mut ops = Vec::new();
+        // Where each image this interval writes has to read transparent: a
+        // slot it reuses still holds the previous occupant's pixels, which
+        // a draw covers only inside its own region. Every region the
+        // interval writes the image over counts, and so does the image's
+        // own region, which `corresponds` proves bounds every read of it.
+        let mut cleared: Vec<(LogicalImageId, [u32; 4])> = Vec::new();
+        for index in start..=end {
+            let id = self.targets[index];
+            let region = frame.passes[index].region;
+            match cleared.iter_mut().find(|(i, _)| *i == id) {
+                Some((_, grown)) => *grown = cover(*grown, region),
+                None => cleared.push((id, cover(self.images[id.0].region, region))),
+            }
+        }
         for index in start..=end {
             let pass = &frame.passes[index];
             let id = self.targets[index];
             let image = &self.images[id.0];
-            self.admits(frame, index, destination)?;
+            self.admits(frame, index, destination, limits)?;
             let begin = image.producer == Some(index);
             let target = if let Some((_, slot)) = assigned.iter().find(|(i, _)| *i == id) {
                 *slot
@@ -371,7 +496,7 @@ impl ExecutionPlan {
                 if pass.clear != Some([0.0; 4]) {
                     return Err(Materialization::UnsupportedOp);
                 }
-                let slot = (1..limit)
+                let slot = (1..limits.slots)
                     .find(|slot| {
                         assigned
                             .iter()
@@ -412,6 +537,11 @@ impl ExecutionPlan {
                 target,
                 sources,
                 begin,
+                clear_region: cleared
+                    .iter()
+                    .find(|(i, _)| *i == id)
+                    .expect("every written image was covered")
+                    .1,
                 backdrop: pass.backdrop_copy.map(|_| ReadKind::FrozenSnapshot),
             });
         }
@@ -424,10 +554,19 @@ impl ExecutionPlan {
         })
     }
 
+    /// Whether a backend planned this frame. Only a planned frame has
+    /// logical images to report on (issue #2547's attribution).
+    pub const fn is_planned(&self) -> bool {
+        self.planned
+    }
+
     /// Why the image `pass` writes reaches device memory; `None` when an
     /// epoch keeps it on chip. The pass needs a backed scratch attachment
     /// exactly when this is `Some`.
     pub fn materialization(&self, pass: usize) -> Option<Materialization> {
+        if !self.planned {
+            return Some(Materialization::NoExecutor);
+        }
         match self.images[self.targets[pass].0].storage {
             Storage::OnChip => None,
             Storage::Materialized(reason) => Some(reason),
@@ -442,19 +581,26 @@ impl ExecutionPlan {
         })
     }
 
+    /// The segment index of the epoch covering `pass`, if one does. An
+    /// unplanned frame has no entry for any pass.
+    fn native_segment(&self, pass: usize) -> Option<usize> {
+        self.native.get(pass).copied().flatten()
+    }
+
     pub fn epoch_at(&self, pass: usize) -> Option<&TileEpoch> {
-        self.native[pass].and_then(|index| match &self.segments[index] {
-            Segment::NativeEpoch(epoch) if epoch.passes.start == pass => Some(epoch),
-            _ => None,
-        })
+        self.native_segment(pass)
+            .and_then(|index| match &self.segments[index] {
+                Segment::NativeEpoch(epoch) if epoch.passes.start == pass => Some(epoch),
+                _ => None,
+            })
     }
 
     pub fn contains_native_pass(&self, pass: usize) -> bool {
-        self.native[pass].is_some()
+        self.native_segment(pass).is_some()
     }
 
     pub fn attachment_origin(&self, pass: usize) -> Option<[u32; 2]> {
-        self.native[pass].map(|index| {
+        self.native_segment(pass).map(|index| {
             let Segment::NativeEpoch(epoch) = &self.segments[index] else {
                 unreachable!("native pass index names its epoch")
             };
@@ -491,6 +637,18 @@ pub fn materialization_boundary(frame: &Frame, index: usize) -> bool {
     frame.filters.iter().any(|(i, _)| *i == index)
         || frame.shadows.iter().any(|(i, _)| *i == index)
         || frame.mips.iter().any(|(i, _)| *i == index)
+}
+
+/// The smallest region containing both.
+fn cover(a: [u32; 4], b: [u32; 4]) -> [u32; 4] {
+    let x = a[0].min(b[0]);
+    let y = a[1].min(b[1]);
+    [
+        x,
+        y,
+        (a[0] + a[2]).max(b[0] + b[2]) - x,
+        (a[1] + a[3]).max(b[1] + b[3]) - y,
+    ]
 }
 
 const fn contains(outer: [u32; 4], inner: [u32; 4]) -> bool {
