@@ -82,23 +82,29 @@ fn git(repo_root: &Path, args: &[&str]) -> Option<String> {
 
 fn register_git_head_rerun(repo_root: &Path) {
     // A packaged build has no `.git` to watch.
-    let Some(git_dir) = git(repo_root, &["rev-parse", "--git-dir"]) else {
+    let Some(paths) = git(
+        repo_root,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "HEAD",
+            "--git-common-dir",
+        ],
+    ) else {
         return;
     };
-    let git_dir_path = PathBuf::from(git_dir);
-    let git_dir_path = if git_dir_path.is_absolute() {
-        git_dir_path
-    } else {
-        repo_root.join(git_dir_path)
-    };
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir_path.join("HEAD").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir_path.join("refs").display()
-    );
+    let mut paths = paths.lines();
+    let head = paths.next().expect("Git must report its HEAD path");
+    let common = Path::new(paths.next().expect("Git must report its common directory"));
+    println!("cargo:rerun-if-changed={head}");
+    println!("cargo:rerun-if-changed={}", common.join("refs").display());
+    for storage in ["packed-refs", "reftable"] {
+        let path = common.join(storage);
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
 }
 
 /// The repository this crate lives in — where certified manifests, releases,
