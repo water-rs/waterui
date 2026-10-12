@@ -5,13 +5,21 @@ self-intersecting paths behind an unchanged API. This document (#2542) is
 the single rendering specification both routes answer to, so the GPU route
 is an implementation of the existing visual design rather than a second
 one. It describes what is in the tree today, line by line, and states
-what the GPU route must reproduce. Everything that is not yet decided is
-an explicit open question with its alternatives; nothing is decided here
-by omission.
+what the GPU route must reproduce. Every design choice is decided here,
+each with the alternatives it was chosen over; section 7 lists them.
 
 Scope: only coverage computation moves to compute. Painting, blending,
 clipping and composition stay in the raster pipeline, which reads the same
 emission form from either route.
+
+**Standing constraint: no CPU readback.** Hydrolysis's contract forbids
+any runtime path that reads a GPU target back to the CPU. Nothing in the
+GPU route may read coverage, a classification result, a cell count or a
+buffer length back to the CPU inside a frame. This single constraint
+decides most of what follows: the CPU cannot see the kernel's output, so
+it cannot classify strips, cannot allocate atlas cells for a path whose
+cell count it does not know, and cannot choose a route from a measured
+result. Every decision below is the one that holds without a readback.
 
 ## 1. The coverage model
 
@@ -110,15 +118,22 @@ a conservative or multi-sample approximation, or a different fill-rule
 fold: the oracle-relative error must stay of the same character and the
 same magnitude as the CPU route's (section 4).
 
-**Open question C1 — accumulation precision on the GPU route.** The CPU
-route accumulates in `f32`. A compute route can accumulate in `f32`, in
-`f16` (cheaper, and the hardware floor guarantees f16 arithmetic), or in
-fixed-point integers with atomics.
-Options: (a) require `f32` accumulation and a `f32` prefix sum, matching
-the CPU route's error character exactly; (b) permit `f16`/fixed-point and
-widen the tolerance in section 4 to cover it; (c) require the quantized
-R8 byte to be *bit-identical* to the CPU route's for the same geometry,
-which forces `f32` and a matching summation order. Not decided here.
+**Decision C1 — the GPU route accumulates in `f32`.** Per-cell signed
+area, per-cell cover and the strip's backdrop prefix are all `f32`, as is
+the fill-rule fold, so the route's error is of the same character and
+magnitude as the CPU route's. Quantization to R8 is the same expression
+(section 1.1 step 8) applied to the same `[0, 1]` value.
+
+Bit-identity with the CPU route is explicitly *not* the contract: the
+summation order of a strip-parallel kernel differs from a row-serial
+prefix sum, and requiring identical bits would dictate the kernel's
+shape. Acceptance is the tolerance gate of section 4.3.
+
+*Alternatives considered:* `f16` or fixed-point accumulation with atomics
+(cheaper, and the hardware floor guarantees f16 arithmetic, but it adds
+an error source of a different magnitude and would force the section 4
+thresholds wider); bit-identical R8 output (strongest contract, but it
+constrains summation order and precision for no visual gain).
 
 ## 2. Geometry semantics are route-independent
 
@@ -150,29 +165,45 @@ it:
   are drawn by `KIND_FILL`/`KIND_STROKE_DIST` SDF instances, not by
   coverage cells. The GPU coverage route changes nothing there.
 
-The contract: the GPU route receives the already-expanded, already-flattened
-device-space segment list — the output of step 3 in section 1.1 — and is
-responsible only for steps 5 through 8.
+The contract: the GPU route receives the expanded outline in device space
+— the output of step 2 in section 1.1 — and is responsible for steps 3
+through 8. Flattening moves to the GPU with #2543; the tolerance, and the
+`sigma_max` scaling that derives the user-space stroke tolerance from it,
+are unchanged, so the flattened geometry the kernel integrates is the
+same geometry the CPU route would have produced to within the flattener's
+own tolerance.
 
-**Open question G1 — where `resolve_winding` runs.** It is a CPU left-to-right
-sweep with a sort, and its cost on large self-intersecting paths is part of
-what #2536 wants to remove. Options: (a) keep it on the CPU and hand the
-GPU route resolved boundary edges, so the GPU route is a pure
-accumulate-and-fold kernel and the fill rule is always `NonZero` for
-overlapping input (smallest change, but keeps the sweep's cost);
-(b) implement the overlap-correct fold directly in the kernel (e.g. per-pixel
-winding-interval accumulation) and drop `resolve_winding` for GPU-routed
-paths, which must then reproduce the union's true coverage without the
-sweep; (c) run the sweep on the GPU as a separate pass. (b) is the only
-option that removes the sweep from the CPU, and the only one that requires
-proving overlap correctness independently of the CPU implementation. Not
-decided here.
+**Decision G1 — winding resolves inside the kernels; no intersections
+are solved anywhere.** The GPU route does not run `resolve_winding`, and
+it does not solve segment intersections. Each cell accumulates the signed
+area its segment pieces deposit *and* the signed cover (net winding
+crossing the cell's right edge); a prefix along the strip turns per-cell
+cover into each cell's backdrop winding; the fill-rule fold of section
+1.1 step 7 then maps `backdrop + local area` to coverage. Overlap is
+therefore correct because the accumulated quantity is a true winding
+number per pixel, not a clamped sum of per-contour coverages — the
+failure `resolve_winding` exists to prevent (`lowering.rs:2033`–2047)
+cannot arise, because nothing clamps before the fold.
+
+`resolve_winding` stays on the CPU route, unchanged, and keeps its
+`None` fast path so non-overlapping CPU-routed scenes stay
+bit-identical.
+
+*Alternatives considered:* keep the CPU sweep and hand the kernel
+resolved boundary edges (smallest change, but it leaves on the CPU
+exactly the cost #2536 exists to remove, and the sweep's sort dominates
+large self-intersecting paths); run the sweep itself as a GPU pass
+(solves intersections on the GPU, far more complex than area-and-cover
+accumulation and unnecessary once nothing clamps early).
 
 ## 3. The shared emission form
 
 Both routes emit the same thing: full-coverage runs as solid instances,
-partial coverage as R8 atlas cells. This is `path::emit` (`path.rs:228`)
-and it is the interface the GPU route must satisfy.
+partial coverage as R8 coverage cells. This is `path::emit`
+(`path.rs:228`) and it is the semantic interface the GPU route must
+satisfy. The *storage* of the partial cells differs by route — atlas for
+the CPU route, a per-frame storage buffer for the GPU route (decision
+S1) — and nothing else does.
 
 - **Small bbox.** When `coverage.w <= SMALL_BBOX && coverage.h <= SMALL_BBOX`
   (`SMALL_BBOX = 32.0`, `path.rs:27`) the whole grid is one cell with no
@@ -196,41 +227,49 @@ and it is the interface the GPU route must satisfy.
   (`path.rs:306`), replayed as `KIND_SPAN` instances — full coverage, no
   atlas sampling.
 - **Cells.** Everything else becomes a `PathCell` (`glyph.rs:165`) with
-  its device rect, its atlas origin (filled on the render thread), its
-  shelf slot, and `interior` — the `start | end << 16` column interval,
-  relative to `x0`, that is known fully covered inside the cell
-  (`path.rs:324`). A cell emission greedily consumes
-  `partial… full… partial…` in one pass (`path.rs:312`–`338`), so one
-  cell may carry one retained full interval.
+  its device rect, the location of its texels (an atlas origin plus shelf
+  slot on the CPU route, a storage-buffer offset on the GPU route), and
+  `interior` — the `start | end << 16` column interval, relative to `x0`,
+  that is known fully covered inside the cell (`path.rs:324`). A cell
+  emission greedily consumes `partial… full… partial…` in one pass
+  (`path.rs:312`–`338`), so one cell may carry one retained full
+  interval.
 - **Interior promotion.** On replay, a cell with `interior != 0` under a
   solid paint becomes `KIND_REGION` (`lower.rs:4810`), whose opaque
   vertex stage narrows the quad to the interior interval
-  (`shader.wgsl:715`) and whose partial fragment stage samples the atlas
-  exactly like `KIND_GLYPH` (`shared.wgsl:188`, `shader.wgsl:819`).
+  (`shader.wgsl:715`) and whose partial fragment stage fetches coverage
+  exactly like `KIND_GLYPH` (`shared.wgsl:188`, `shader.wgsl:819`) —
+  from the atlas on the CPU route, from the per-frame buffer on the GPU
+  route (decision S1).
 - **Texel order.** A cell's texels are row-major, `w * h` bytes,
   appended to the lowering batch's arena as a byte range
   (`CellTexels = (u32, u32, Range<usize>)`, `glyph.rs:1954`); cell order
   in `PathEmit::cells` matches the raster order index for index
   (`path.rs:217`).
 
-The GPU route must produce byte-identical texels and the same
-span/cell decomposition for the same geometry, or an explicitly
-specified different one — see open question E1.
+**Decision E1 — a second compute kernel classifies and compacts.** The
+coverage kernel writes coverage; a second kernel classifies each strip's
+columns into empty, full-run and partial under *the same* semantics —
+exact `0.0`/`1.0` per-row tests, `FULL_RUN_MIN = 8` demotion,
+`PARTIAL_GAP_MAX = 8` two-sided gap absorption, `SMALL_BBOX = 32`
+whole-grid cell, and the same greedy `partial… full… partial…` merge that
+yields one retained `interior` interval per cell — and writes two compact
+lists, spans and partial cells, plus the indirect draw arguments for
+each. The raster passes draw them with indirect instanced draws, so the
+CPU never learns how many of either there are.
 
-**Open question E1 — who performs the emission split on the GPU route.**
-The split needs the coverage grid's exact `0.0`/`1.0` classification per
-column. Options: (a) the kernel writes the full `f32` (or R8) coverage
-grid to a buffer and the CPU runs the existing `emit`, which keeps the
-emission bit-identical but pays a readback and loses most of the win;
-(b) a second compute pass classifies columns and compacts the strips on
-the GPU, writing cell texels and a span/cell descriptor list the render
-thread consumes without reading coverage back — no readback, but the
-`FULL_RUN_MIN`/`PARTIAL_GAP_MAX`/`SMALL_BBOX` heuristics must be
-reimplemented in WGSL and kept in lockstep with `path.rs`;
-(c) the GPU route emits *only* cells (no span extraction), accepting more
-sampled instances and more atlas bytes in exchange for a trivial kernel.
-Not decided here. Note (c) changes performance, not pixels, only if
-`KIND_REGION`'s interior promotion is preserved.
+The WGSL classifier and `path::strip_class`/`path::emit` are two
+implementations of one specification; they are kept in lockstep by the
+route-equivalence gate of section 4.3 threshold 4, which fails on any
+divergence that changes pixels, and by the shared constants being stated
+once here.
+
+*Alternatives considered:* write the coverage grid to a buffer and run
+the existing CPU `emit` on it (keeps the emission bit-identical, but
+requires a readback — forbidden); emit cells only, with no span
+extraction (trivial kernel, but it discards the full-run and
+`KIND_REGION` interior optimizations that make large fills cheap, and
+multiplies sampled instances and coverage bytes).
 
 ## 4. Oracle tolerance
 
@@ -324,38 +363,47 @@ SDR white):
    and at its heatmap, per `AGENTS.md`; the numbers above are a gate,
    not the acceptance criterion.
 
-**Open question T1 — bit-identity versus tolerance.** If open question C1
-resolves to (c) (`f32`, matching summation order) the GPU route can be
-required to produce *bit-identical* R8 texels, and then the whole corpus
-stays bit-identical and section 4.3's thresholds are never exercised.
-Options: (a) require bit-identity and treat any difference as a bug,
-which is the strongest contract and the simplest gate but constrains the
-kernel's summation order and precision; (b) require only the thresholds
-above, allowing a faster kernel at the cost of per-scene churn in the
-committed metrics; (c) require bit-identity for scenes the CPU route
-would have taken anyway and thresholds only for paths the CPU route
-could not have handled in budget. Not decided here. Note (b) means the
-#2536 PR legitimately changes committed metrics and PNG bytes, which
-`AGENTS.md` permits only for a change that intends to change pixels —
-that intent would have to be stated in the PR.
+**Decision T1 — acceptance is tolerance-based, with thresholds 1–5 as
+written.** #2536 already states a tolerance contract, and decision C1
+declines bit-identity, so the gate above *is* the acceptance criterion.
+Thresholds 1–3 apply to the corpus scenes that route through the GPU;
+threshold 4 applies between the CPU and GPU images of the same scene;
+threshold 5 applies to all of them. Because the GPU route is only
+selected for paths the CPU route handles slowly and the new scenes of
+decision T2 arrive with it, the #2536 PR is a change that intends to
+change pixels for those scenes and must say so, per `AGENTS.md`; every
+existing scene that keeps the CPU route stays bit-identical.
 
-**Open question T2 — which scenes the gate runs on.** The GPU route only
-triggers for large/self-intersecting paths (section 6), and the current
-corpus's path scenes are small (most are 128×128). Options: (a) add
-corpus scenes large enough to trigger the GPU route, so the gate above
-measures the route it is meant to measure; (b) add a test-only override
-that forces the GPU route for every path scene, accepting that the
-override is test-only machinery and not a public hint; (c) both. Without
-(a) or (b) the thresholds in 4.3 are unenforceable, because no existing
-corpus scene would select the GPU route. Not decided here. `AGENTS.md`
-("every new capability gets corpus scenes") points at (a), and (b) would
-have to avoid becoming a hint that changes output, which section 6
-forbids.
+*Alternatives considered:* require bit-identical R8 texels (simplest
+gate and no corpus churn, but it forces C1 to a fixed summation order
+and precision); require bit-identity for scenes the CPU route would have
+taken and tolerance only beyond that (no churn either, but it makes the
+contract depend on the selection predicate, so a predicate tweak could
+turn a passing scene into a failing one).
 
-## 5. Atlas integration
+**Decision T2 — new corpus scenes, plus a `#[cfg(test)]`-only route
+hook.** #2546 adds path scenes large enough that the predicate of
+section 6 selects the GPU route naturally, which is what thresholds 1–3
+measure. Route-equivalence testing (threshold 4) additionally needs the
+*same* scene rendered both ways, so it forces a route through an
+internal hook compiled only under `#[cfg(test)]`. That hook is never
+public API, is not reachable from any released build, and is therefore
+not the implementation switch #2536 forbids — the shipped selection
+stays internal and automatic, and section 6's hint-invariance still
+holds.
 
-GPU-routed cells enter the *existing* atlas lifecycle (`docs/design/119-pan-coverage.md`);
-they do not get a parallel cache.
+*Alternatives considered:* new scenes only (no test-only machinery at
+all, but then threshold 4 cannot be measured, since no scene can be
+rendered both ways); the forcing hook only (no new scenes, but then the
+route is never exercised at the sizes it exists for, and `AGENTS.md`
+requires corpus scenes for every new capability).
+
+## 5. Coverage storage, keys and lifetime
+
+CPU-routed cells live in the existing R8 atlas, under the existing
+lifecycle (`docs/design/119-pan-coverage.md`). GPU-routed cells live in a
+per-frame storage buffer and are not cached at all (decision S1, 5.3).
+Both carry the same emission form from section 3.
 
 ### 5.1 Keys
 
@@ -377,25 +425,33 @@ fill, an even-odd fill and a stroke of the same outline never collide:
 (`lower.rs:4843`).
 
 Rule for #2536: **a GPU-routed cell's key must denote the same coverage
-bytes as a CPU-routed cell's key, or be a different key.** Since both
-routes implement one specification, a shared key is correct *only* if
-the bytes are identical for the same geometry.
+bytes as a CPU-routed cell's key, or be a different key.** Since
+decision C1 declines bit-identity, the bytes are *not* identical for the
+same geometry, so the keys must differ.
 
-**Open question K1 — key namespace.** Options: (a) one namespace, which
-requires bit-identical output (open question C1 option (c) / T1 option
-(a)) and gives free cross-route reuse — a path rasterized on the CPU
-this frame and GPU-routed the next hits the same entry; (b) a route tag
-mixed into the content hash, which makes the two routes' entries
-disjoint, guarantees no incorrect sharing under any precision choice,
-and costs a re-rasterization whenever a path's route flips; (c) one
-namespace plus a per-entry route marker, so a hit from the other route
-is accepted only when a recorded equivalence flag is set. Not decided
-here. (b) interacts badly with open question R1: a route that can flip
-with zoom or segment count would thrash the atlas.
+**Decision K1 — keys are route-tagged.** The route is mixed into the
+content hash, so a GPU-routed entry and a CPU-routed entry of the same
+geometry are disjoint keys and can never satisfy each other's lookups.
+This is required by C1 rather than chosen for convenience: a shared key
+would hand a lookup bytes produced by a different accumulation order
+than the key promises.
 
-### 5.2 Residency, eviction and frame lifetime
+In practice the tag costs nothing, because decision S1 gives GPU-routed
+coverage no cache entry at all: the route tag keeps a GPU-routed
+placement key from colliding with the atlas's CPU-routed entries, and the
+route flip that would otherwise thrash the atlas (a path crossing the
+selection predicate's boundary as it is zoomed) evicts nothing, since
+only the CPU side of it was ever resident.
 
-Unchanged from #119, and the GPU route inherits all of it:
+*Alternatives considered:* one namespace (free cross-route reuse, but
+only sound under bit-identity, which C1 declines); one namespace plus a
+per-entry equivalence marker (keeps reuse where the bytes happen to
+match, but it has to prove byte equality to set the marker, which needs
+a readback).
+
+### 5.2 The CPU route's residency, eviction and frame lifetime
+
+Unchanged from #119:
 
 - Cells are allocated on shelf bands; eviction is bounded and at shelf
   granularity, strict allocation first then simulated eviction
@@ -417,7 +473,82 @@ Unchanged from #119, and the GPU route inherits all of it:
   retained across commits and no CPU buffer aliases the upload ring's
   in-flight staging.
 
-### 5.3 Compute-to-raster synchronization
+### 5.3 The GPU route's storage: a per-frame buffer, not the atlas
+
+**Decision S1 — GPU-routed partial cells do not enter the R8 atlas.**
+This refines #2536, which assumed they would. Two facts make the atlas
+unreachable for them:
+
+- Without a readback the CPU cannot know how many cells a path produces
+  before the dispatch, since the count is a result of the
+  classification. Atlas allocation (`Atlas::alloc` via `place_path`,
+  `glyph.rs:1321`) needs the cell list up front, and shelf planning
+  (`AtlasPlan`, `glyph.rs:2040`) needs each cell's size.
+- The atlas texture is `R8Unorm` with `TEXTURE_BINDING | COPY_DST`
+  (`glyph.rs:535`–`536`), and `R8Unorm` is not a storage-texture format
+  a compute shader can write in portable wgpu, so the kernel cannot
+  write into it even if the origins were known.
+
+So GPU-routed cells live in a per-frame storage buffer: R8 texel values,
+four per `u32`, cells laid out back to back in the compacted order the
+classifier emits, each cell's descriptor carrying its byte offset,
+width, height and `interior` interval. The paint shader reads them
+through a storage-buffer variant of the cell fetch it already does
+against the atlas (`shared.wgsl:188`, `shader.wgsl:819`): same `[0, 1]`
+value, same bilinear-free per-texel addressing, same
+`KIND_SPAN`/`KIND_REGION` treatment of full coverage.
+
+What does *not* change: the emission form (spans plus partial cells with
+the semantics of section 3), the R8 quantization expression, interior
+promotion, and the fact that painting, blending and composition read
+coverage and do nothing else differently. Only where the texels sit
+differs.
+
+*Alternatives considered:* kernel writes to a buffer and the render
+thread copies into atlas shelves with `copy_buffer_to_texture` (reuses
+#169's one-copy-per-region shape, but the copy's destination rects are
+exactly the cell origins the CPU cannot know without a readback); add
+`STORAGE_BINDING` with an `R32Uint` view of the atlas and write cells
+directly (removes the copy, but requires allocation before dispatch,
+which inverts the current ordering for the same reason); a two-phase
+frame that reads back only the classification (defeated by the
+no-readback constraint).
+
+**Decision R2 — buffers are sized from an exact CPU-side upper bound.**
+Before the dispatch the CPU computes, in `O(n)` over the path's segments
+and without touching coverage, an upper bound on the cells a path can
+touch: each segment's device-space bounding box converted to strip and
+cell units, summed, which bounds the touched cells of every strip it
+crosses. Buffers — coverage scratch, cell texels, cell and span
+descriptors — are allocated from that bound, so the kernels cannot
+overflow and there is no overflow-detection path to read back.
+
+A bound that exceeds a hard per-frame memory cap is an `Unsupported`
+error, reported as such. It is never a silent fall-through to the CPU
+route: `AGENTS.md` requires an explicit `Unsupported` for a case the
+engine cannot serve, and a silent fallback here would hide an
+unbounded-memory bug behind a frame that merely got slow.
+
+*Alternatives considered:* grow-and-retry across frames (needs a
+readback of the overflow flag, and makes a frame's output depend on
+history); a fixed cap with clipped output (silently drops geometry,
+which `AGENTS.md` forbids); conservative over-allocation by a constant
+factor (either wastes memory or still overflows, and the memory rule
+requires a bound that is justified, not guessed).
+
+**Decision — GPU-routed coverage is not retained.** It is recomputed on
+every frame the path is drawn, and the buffer is frame-scoped like
+`CellWrites` (`glyph.rs:1986`) is today. Caching it would be a
+memory-for-time trade that the memory rule requires be paid for in
+measured time or energy, and that measurement does not exist yet; it is
+out of scope for #2536 and belongs to its own issue if the per-frame
+recompute proves to be the cost.
+
+*Alternatives considered:* a GPU-side coverage cache keyed like the
+atlas (saves the recompute for static paths, but adds a second cache
+lifecycle, a second eviction policy and unjustified steady-state memory).
+
+### 5.4 Compute-to-raster synchronization
 
 The constraint the current structure imposes: **lowering has no device.**
 `Renderer::lower_content` (`mod.rs:6259`) takes no `wgpu::Device` or
@@ -427,50 +558,46 @@ the render thread, in `apply_pending` (`mod.rs:6722`) →
 `apply_raster` (`mod.rs:6817`) → `Atlas::place_path` (`glyph.rs:1321`),
 then `Atlas::upload_committed` (`glyph.rs:662`), which issues one
 `write_texture` per newly allocated contiguous shelf region. So a
-compute dispatch cannot be issued during lowering; the GPU route must
-emit a *pending* record that carries the geometry (not the texels) and be
-dispatched on the render thread before the raster pass that samples the
-atlas.
+compute dispatch cannot be issued during lowering; the GPU route emits a
+*pending* record carrying geometry rather than texels, and is dispatched
+on the render thread.
 
-Two hard facts constrain the write path. The atlas texture is created
-with `TEXTURE_BINDING | COPY_DST` only (`glyph.rs:536`) and its format
-is `R8Unorm` (`glyph.rs:535`), which is not a storage-texture format a
-compute shader can write directly in portable wgpu. And cell origins are
-not known until `Atlas::alloc` runs on the render thread, after planning
-and possible eviction.
+**Decision S2 — the dispatches are in the frame's own submission, ahead
+of its raster passes.** One command encoder: the coverage kernel and the
+classifier kernel are encoded first, then a barrier from compute to the
+vertex and fragment stages that read the coverage buffer and the indirect
+draw arguments, then the frame's raster passes. One submission, ordered
+by the encoder, so no fence, no stall, and no cross-frame state.
 
-**Open question S1 — how compute output reaches the atlas.** Options:
-(a) the kernel writes packed R8 bytes to a storage buffer, the render
-thread allocates cells, then `copy_buffer_to_texture` per shelf region
-— reuses #169's one-copy-per-region shape and needs no texture usage
-change, but needs the kernel to write into a layout the copy can address
-after allocation; (b) add `STORAGE_BINDING` with an `R32Uint` view (or a
-separate `R32Uint` scratch texture) and have the kernel write cells
-directly, requiring allocation to be known before the dispatch — which
-inverts the current ordering; (c) a two-phase frame: dispatch coverage
-for *bounding boxes* in one submission, read back only the strip
-classification, then allocate and copy. Not decided here.
+There is no deferred or frame-latency variant. Dispatching for frame `n`
+and consuming in frame `n + 1` would make a path's first frame render by
+a different route than its second, so the output would depend on frame
+history — which section 1 forbids, and which decision C1 makes
+observable since the two routes are not bit-identical.
 
-**Open question S2 — where the dispatch sits in the submission.**
-Options: (a) one compute pass at the head of the frame's command encoder,
-before the raster pass, with the atlas copy in between — one submission,
-and the raster pass's sampling is ordered by the encoder;
-(b) a separate earlier submission so the copy can be issued after a
-readback of classification data (needed by S1 option (c)), costing a
-submission and possibly a stall; (c) dispatch for frame `n` and consume
-in frame `n + 1`, which hides latency but makes a path's first frame fall
-back to the CPU route and so makes the output depend on frame history —
-which section 1 forbids unless the fallback is bit-identical. Not
-decided here.
+*Alternatives considered:* a separate earlier submission (only needed to
+sequence a readback, which is forbidden); dispatch for frame `n`,
+consume in `n + 1` (hides dispatch latency, but makes output
+history-dependent as above).
 
-**Open question S3 — pending-record shape.** The pending path record
-today is `PendingRaster::Path { key, emit, cells }` with CPU texels in
-the batch arena (`lower.rs:4724`). A GPU-routed path has no texels at
-lowering time. Options: (a) a new `PendingRaster::GpuPath` variant
-carrying the device-space segment range and the coverage rect, resolved
-at apply; (b) reuse `PendingRaster::Path` with an empty arena range and a
-side table of dispatch descriptors; (c) make the texel source an enum
-inside `CellWrite`. Not decided here.
+**Decision S3 — a pending GPU-routed path records geometry, fill rule,
+transform and placement key.** The pending path record today is
+`PendingRaster::Path { key, emit, cells }` with CPU texels in the batch
+arena (`lower.rs:4724`). A GPU-routed path has no texels at lowering
+time, so its record instead holds: the range of its geometry in the
+frame's compute input buffer, its fill rule, its transform, and its
+placement key (route-tagged per K1, `key_exact` when the coverage rect
+is surface-clipped). Because flattening is on the GPU (#2543), the
+uploaded geometry is *curve elements*, not flattened segments — the
+record describes what the kernel will flatten, so the CPU never
+materializes the segment list.
+
+*Alternatives considered:* reuse `PendingRaster::Path` with an empty
+arena range plus a side table of dispatch descriptors (no new variant,
+but it makes an empty arena range mean two different things); put the
+texel source in an enum inside `CellWrite` (pushes the route distinction
+into the atlas upload path, which decision S1 says GPU-routed cells never
+enter).
 
 ## 6. Route selection
 
@@ -486,49 +613,61 @@ can ask for CPU or GPU coverage.
   under this same specification. There is no reduced-quality fallback:
   the CPU route is the full specification, and the GPU route is an
   optimization of it.
-- **Candidate inputs** for the decision: flattened segment count, the
-  device-space coverage rect's area (and whether it was surface-clipped),
-  and a crossing-density estimate — the signal `resolve_winding` already
-  computes incidentally (it reports whether the input overlapped at all,
-  `lowering.rs:2045`).
 - **Hints.** Any hint that exists may only be semantic (large, static,
   dynamic) and the engine may ignore it. **Rendered output must be
-  identical with and without any hint, and identical whichever route
-  ran** (subject to open question T1's resolution). No `PathHint` or
-  volatility type exists in the tree today; #2536 would introduce it.
+  identical with and without any hint**, and the two routes' outputs must
+  agree to within section 4.3 threshold 4. No `PathHint` or volatility
+  type exists in the tree today; #2536 would introduce it.
 
-**Open question R1 — the selection predicate and its stability.** A
-threshold on segment count or area makes the route flip as a path is
-zoomed or edited, which under open question K1 option (b) thrashes the
-atlas, and under option (a) requires bit-identity to be invisible.
-Options: (a) a fixed threshold pair (segments, area) with hysteresis per
-cache key; (b) select per frame from a measured cost model and accept
-flipping; (c) select once per content hash and keep the decision for as
-long as the entry is resident. Not decided here.
+**Decision R1 — the predicate depends only on content and scale, and is
+deterministic without hysteresis.** Its inputs are the path's own
+content (its curve element count, and the crossing-density estimate that
+falls out of the same `O(n)` segment-bound pass as decision R2's buffer
+bound) and the scale of its transform, from which the device-space
+coverage rect follows. Nothing else: not frame history, not the previous
+frame's choice, not a measured timing, not atlas pressure, not whether an
+entry is currently resident. The same path at the same scale therefore
+takes the same route in every frame and in every process, which is what
+makes the route-equivalence gate reproducible.
 
-**Open question R2 — what happens when the GPU route fails at runtime.**
-A dispatch can fail to find atlas room exactly like a CPU raster can.
-Options: (a) the same `AtlasExhausted` path as today, with no CPU retry;
-(b) fall back to the CPU sweep within the frame, which is correct only if
-the two routes are bit-identical, otherwise the output depends on atlas
-pressure; (c) fail the frame. Not decided here; `AGENTS.md`'s fail-fast
-rule argues against a silent (b).
+There is no hysteresis. A hysteretic predicate is history by
+definition — the same path at the same scale would route differently
+depending on how it got there, and under decision C1 that difference is
+observable in the image. Route flipping across a zoom is acceptable
+precisely because decision S1 gives the GPU route no cache to thrash: the
+flip costs a recompute that the GPU route pays every frame anyway.
 
-## 7. Summary of open questions
+*Alternatives considered:* a fixed threshold with per-key hysteresis
+(stabilizes the route across a zoom, but makes output depend on history);
+per-frame selection from a measured cost model (adapts to the device, but
+a measurement is history and makes output non-reproducible); decide once
+per content hash and keep it while the entry is resident (stable, but
+ties the route to cache residency, which is also history).
 
-| id | question |
+**Runtime failure.** The GPU route has no atlas allocation to fail
+(decision S1) and no buffer overflow to detect (decision R2): the only
+failure is a buffer bound above the hard memory cap, which is an
+`Unsupported` error raised before the dispatch. There is no in-frame
+fallback to the CPU sweep — under decision C1 that would make the image
+depend on memory pressure.
+
+## 7. Summary of decisions
+
+| id | decision |
 | --- | --- |
-| C1 | GPU accumulation precision: `f32`, `f16`/fixed-point, or bit-identical-to-CPU |
-| G1 | Where overlap/winding resolution runs (CPU sweep, in-kernel, GPU sweep) |
-| E1 | Who performs the span/cell emission split (CPU after readback, second kernel, cells-only) |
-| T1 | Bit-identity versus tolerance as the acceptance contract |
-| T2 | Which corpus scenes exercise the GPU route at all |
-| K1 | Atlas key namespace: shared, route-tagged, or shared with an equivalence marker |
-| S1 | How compute output reaches an `R8Unorm` atlas (buffer copy, storage view, two-phase) |
-| S2 | Where the dispatch sits in the frame's submission |
-| S3 | Pending-record shape for a GPU-routed path |
-| R1 | The selection predicate and its stability across frames |
-| R2 | Behaviour when the GPU route cannot complete |
+| — | No CPU readback anywhere in the route; this decides most of the rest |
+| C1 | `f32` accumulation on the GPU; bit-identity with the CPU route is not the contract |
+| G1 | Winding resolves in-kernel: per-cell area and cover, strip backdrop prefix, fill-rule fold, no intersections solved |
+| E1 | A second kernel classifies strips and writes compact span/cell lists plus indirect draw arguments |
+| T1 | Tolerance-based acceptance, thresholds 1–5 of section 4.3 |
+| T2 | #2546 adds large corpus scenes; route equivalence uses a `#[cfg(test)]`-only forcing hook |
+| K1 | Route-tagged keys; a GPU entry never shares a key with a CPU entry |
+| S1 | GPU-routed cells live in a per-frame storage buffer, not the R8 atlas (refines #2536) |
+| R2 | Buffers sized from an exact `O(n)` CPU-side cell bound; above the cap it is `Unsupported`, never a silent fallback |
+| — | GPU-routed coverage is recomputed every frame; caching it is out of scope |
+| S2 | Dispatches in the frame's own submission, ahead of its raster passes, with a compute→vertex/fragment barrier |
+| S3 | Pending record holds curve elements (flattening is on the GPU, #2543), fill rule, transform and placement key |
+| R1 | Predicate depends only on content and transform scale; deterministic, no hysteresis |
 
 ## Appendix A — per-scene measurements
 
