@@ -10,6 +10,17 @@ use crate::render::composition as report;
 use crate::render::lower::{PipelineKind, ShaderVariant, Target};
 use crate::render::{Bind1Key, ScratchTarget, SurfaceState, create_target, make_bind1};
 
+/// Attachment slots this executor binds at once, slot zero — the
+/// epoch's stored output — included.
+///
+/// `attachment.metal` declares the closed set this names:
+/// `TILE_OUTPUT(D)` for every `D` below `SLOTS`, giving each target its
+/// simple, shadow, clear and self-sourced fragment, plus
+/// `TILE_COMPOSITE(D,S)` for every other pair. Every target and source
+/// slot the planner can assign within [`crate::render::composite::plan::Limits::slots`]
+/// therefore has an entry point.
+pub const SLOTS: u8 = 4;
+
 #[derive(Default)]
 pub struct Attachments {
     textures: FxHashMap<(u32, u32), AttachmentSet>,
@@ -117,8 +128,12 @@ impl Executor {
                         workgroup_size: (0, 0, 0),
                     })
                     .collect();
-            for target in 0..4 {
-                for source in ["simple", "shadow", "clear", "0", "1", "2", "3"] {
+            for target in 0..SLOTS {
+                let sources = ["simple", "shadow", "clear"]
+                    .map(String::from)
+                    .into_iter()
+                    .chain((0..SLOTS).map(|source| source.to_string()));
+                for source in sources {
                     entries.push(wgpu::PassthroughShaderEntryPoint {
                         name: Cow::Owned(format!("tile_{target}_{source}")),
                         workgroup_size: (0, 0, 0),
@@ -328,16 +343,40 @@ pub fn encode(
         occlusion_query_set: None,
         multiview_mask: None,
     });
-    let mut used = [false; 4];
+    let mut used = [false; SLOTS as usize];
+    // The state the pass has already been given. An epoch spans many
+    // canonical passes that share a region, a pipeline or a sampled
+    // binding, and rebinding what is already bound is the executor's own
+    // host cost (#2549).
+    let mut viewport: Option<[u32; 4]> = None;
+    let mut bound: Option<(Option<crate::render::lower::ImageSource>, Option<u64>)> = None;
+    let origin = |region: [u32; 4]| {
+        [
+            region[0] - epoch.region[0],
+            region[1] - epoch.region[1],
+            region[2],
+            region[3],
+        ]
+    };
+    let place = |pass: &mut wgpu::RenderPass<'_>, viewport: &mut Option<[u32; 4]>, region| {
+        let region = origin(region);
+        if *viewport == Some(region) {
+            return;
+        }
+        *viewport = Some(region);
+        let [x, y, width, height] = region;
+        pass.set_viewport(x as f32, y as f32, width as f32, height as f32, 0.0, 1.0);
+        pass.set_scissor_rect(x, y, width, height);
+    };
     for op in &epoch.ops {
         tracing::trace!(pass = op.pass, target = op.target, backdrop = ?op.backdrop, "tile operation");
         let canonical = &surf.frame.passes[op.pass];
-        let [x, y, width, height] = canonical.region;
-        let x = x - epoch.region[0];
-        let y = y - epoch.region[1];
-        pass.set_viewport(x as f32, y as f32, width as f32, height as f32, 0.0, 1.0);
-        pass.set_scissor_rect(x, y, width, height);
         if op.begin && used[usize::from(op.target)] {
+            // The slot still holds an image this epoch has finished with,
+            // over a region this draw need not cover. The planner's clear
+            // region is everywhere the opening image is written, which
+            // bounds every read of it.
+            place(&mut pass, &mut viewport, op.clear_region);
             let key = Key {
                 target: op.target,
                 source: op.target,
@@ -358,6 +397,7 @@ pub fn encode(
             stats.pipeline_switches += 1;
         }
         used[usize::from(op.target)] = true;
+        place(&mut pass, &mut viewport, canonical.region);
         pass.set_bind_group(
             0,
             resources.bind0,
@@ -390,32 +430,42 @@ pub fn encode(
                 &mut created,
             ));
             note(&mut pipelines, created, op.pass, key);
-            let key: Bind1Key = (None, false, range.image.clone(), range.mask);
-            let bind = surf.binds1.entry(key).or_insert_with(|| {
-                stats.bind_groups_created += 1;
-                make_bind1(
-                    resources.device,
-                    resources.layout1,
-                    resources.dummy,
-                    None,
-                    None,
-                    range.image.as_ref().map(|image| {
-                        crate::render::image_view(
-                            image,
-                            resources.images,
-                            resources.bitmaps,
-                            &surf.shader_textures,
-                        )
-                    }),
-                    range.mask.map(|key| {
-                        resources
-                            .atlas
-                            .mask_texture_view(key)
-                            .expect("prepared mask")
-                    }),
-                )
-            });
-            pass.set_bind_group(1, &*bind, &[]);
+            // A tile epoch's draws sample nothing but their own image and
+            // mask, and a run of them shares both — most of an epoch's
+            // draws want the group already bound, so neither the key nor
+            // the lookup is built for them.
+            if !bound
+                .as_ref()
+                .is_some_and(|(image, mask)| *image == range.image && *mask == range.mask)
+            {
+                bound = Some((range.image.clone(), range.mask));
+                let key: Bind1Key = (None, false, range.image.clone(), range.mask);
+                let bind = surf.binds1.entry(key).or_insert_with(|| {
+                    stats.bind_groups_created += 1;
+                    make_bind1(
+                        resources.device,
+                        resources.layout1,
+                        resources.dummy,
+                        None,
+                        None,
+                        range.image.as_ref().map(|image| {
+                            crate::render::image_view(
+                                image,
+                                resources.images,
+                                resources.bitmaps,
+                                &surf.shader_textures,
+                            )
+                        }),
+                        range.mask.map(|key| {
+                            resources
+                                .atlas
+                                .mask_texture_view(key)
+                                .expect("prepared mask")
+                        }),
+                    )
+                });
+                pass.set_bind_group(1, &*bind, &[]);
+            }
             pass.draw(
                 0..6,
                 surf.inst_base + range.instances.start..surf.inst_base + range.instances.end,
