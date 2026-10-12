@@ -811,14 +811,7 @@ fn road_network_grid(
 /// the same winding into bands. The spiral offset is larger than `step`, so
 /// consecutive circles cross rather than nest, and the path self-intersects
 /// everywhere.
-fn dense_overlap_rings(
-    cx: f64,
-    cy: f64,
-    count: u32,
-    r0: f64,
-    step: f64,
-    spread: f64,
-) -> BezPath {
+fn dense_overlap_rings(cx: f64, cy: f64, count: u32, r0: f64, step: f64, spread: f64) -> BezPath {
     let mut p = BezPath::new();
     for i in 0..count {
         let t = f64::from(i) / f64::from(count);
