@@ -26,8 +26,8 @@ use crate::{android::toolchain::AndroidSdk, toolchain::Host, utils::CommandError
 /// Why no [`Adb`] could be produced.
 #[derive(Debug, thiserror::Error)]
 pub enum AdbError {
-    /// No Android SDK, or its platform-tools carry no `adb`.
-    #[error("Android SDK not found or adb not installed")]
+    /// No `adb` — neither under an Android SDK nor on `PATH`.
+    #[error("adb not found — install Android SDK platform-tools or put `adb` on PATH")]
     NotFound,
     /// `adb start-server` could not be run.
     #[error("failed to start the adb server: {0}")]
@@ -114,13 +114,20 @@ fn parse_forward_line(serial: &str, line: &str) -> eyre::Result<Option<Forward>>
 impl Adb {
     /// Locate `adb` on `host` and make sure its server is up.
     ///
+    /// The SDK's `platform-tools/adb` wins when present; without an SDK a
+    /// bare `adb` on `PATH` still works — the server owns the devices, not
+    /// the directory the client was installed from. A broken SDK binary is
+    /// an error, never a reason to silently reach for another one.
+    ///
     /// # Errors
-    /// [`AdbError::NotFound`] when the SDK has no `adb`; the other variants
-    /// when the server could not be started.
+    /// [`AdbError::NotFound`] when neither location has `adb`; the other
+    /// variants when the server could not be started.
     pub async fn locate(host: &Host) -> Result<Self, AdbError> {
-        let adb = Self {
-            path: AndroidSdk::adb_path(host).ok_or(AdbError::NotFound)?,
+        let path = match AndroidSdk::adb_path(host) {
+            Some(path) => path,
+            None => host.which("adb").await.map_err(|_| AdbError::NotFound)?,
         };
+        let adb = Self { path };
         adb.start_server(host).await?;
         Ok(adb)
     }
@@ -812,6 +819,55 @@ mod tests {
         )]);
         let adb = smol::block_on(Adb::locate(&host)).expect("the fake adb starts its server");
         assert_eq!(adb.path(), staged);
+    }
+
+    /// Without an SDK at all, a bare `adb` on the host's `PATH` is the
+    /// one located — the server owns the devices, not the directory the
+    /// client was installed from.
+    #[test]
+    #[cfg(unix)]
+    fn a_path_adb_is_located_without_an_sdk() {
+        let machine = TestMachine::new();
+        let staged = machine.install("adb");
+        let host = machine.host(Vec::<(OsString, OsString)>::new());
+        let adb = smol::block_on(Adb::locate(&host)).expect("a PATH adb locates");
+        assert_eq!(adb.path(), staged);
+    }
+
+    /// The SDK's adb wins over a PATH one, and its failure is reported —
+    /// not shadowed by a second try against PATH.
+    #[test]
+    #[cfg(unix)]
+    fn an_sdk_adb_is_chosen_over_path_and_its_failure_stays() {
+        let machine = TestMachine::new();
+        let sdk = machine.install_android_sdk();
+        machine.install_adb();
+        machine.install("adb");
+        let host = machine.host([
+            (
+                OsString::from("ANDROID_SDK_ROOT"),
+                sdk.as_os_str().to_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_LOG"),
+                machine.file("adb.log", "").into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_START_SERVER_STATUS"),
+                OsString::from("7"),
+            ),
+        ]);
+        let error = smol::block_on(Adb::locate(&host)).expect_err("the SDK adb fails");
+        match error {
+            AdbError::ServerStart { adb, status } => {
+                assert_eq!(adb, sdk.join("platform-tools").join("adb"));
+                assert_eq!(status.code(), Some(7));
+            }
+            other => panic!("expected ServerStart, got {other:?}"),
+        }
+        // One invocation total — PATH was never reached.
+        let log = std::fs::read_to_string(machine.root().join("adb.log")).expect("the adb log");
+        assert_eq!(log.lines().count(), 1, "{log}");
     }
 
     #[test]
