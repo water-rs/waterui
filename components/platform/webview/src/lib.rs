@@ -1065,6 +1065,7 @@ impl WebViewOpen {
         let policy = OriginPolicy::new(bridge_origins, &initial);
         #[cfg(not(target_arch = "wasm32"))]
         webview.handle().set_bridge_origins(policy.clone());
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(enabled) = redirects_enabled {
             webview.set_redirects_enabled(enabled);
         }
