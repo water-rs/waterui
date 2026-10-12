@@ -29,6 +29,10 @@ re-run the test.
 
 ## The faces
 
+The generator verifies local fixture files even when their installed copies are
+already present. Shaping/recording tests load those pinned bytes directly, rather
+than letting system discovery select another face with the same family name.
+
 Roboto, from the release the `water` CLI's font registry ships to applications
 (<https://github.com/googlefonts/roboto/releases/download/v2.138/roboto-android.zip>),
 licensed under the Apache License 2.0 (see `LICENSE` beside the files).
