@@ -757,6 +757,250 @@ fn star_path(cx: f64, cy: f64, r0: f64, r1: f64) -> BezPath {
     p
 }
 
+/// A road network in one path: `rows` horizontal and `cols` vertical wavy
+/// polylines spanning `w` × `h` inset by `inset`, each of `per` segments.
+/// Every horizontal crosses every vertical, so the centrelines alone carry
+/// `rows * cols` crossings and the stroke outline carries four self
+/// intersections per crossing. The waves come from `libm::sin` so the
+/// coordinates are the same bytes on every host.
+fn road_network_grid(
+    w: f64,
+    h: f64,
+    inset: f64,
+    rows: u32,
+    cols: u32,
+    per: u32,
+    amp: f64,
+) -> BezPath {
+    let mut p = BezPath::new();
+    let span_x = w - 2.0 * inset;
+    let span_y = h - 2.0 * inset;
+    let steps = f64::from(per);
+    for row in 0..rows {
+        let y = (f64::from(row) + 1.0) * span_y / f64::from(rows + 1) + inset;
+        let phase = f64::from(row) * 0.7;
+        p.move_to((inset, y + amp * libm::sin(phase)));
+        for k in 1..=per {
+            let t = f64::from(k) / steps;
+            p.line_to((
+                t.mul_add(span_x, inset),
+                y + amp * libm::sin(t.mul_add(std::f64::consts::TAU, phase)),
+            ));
+        }
+    }
+    for col in 0..cols {
+        let x = (f64::from(col) + 1.0) * span_x / f64::from(cols + 1) + inset;
+        let phase = f64::from(col) * 1.1;
+        p.move_to((x + amp * libm::sin(phase), inset));
+        for k in 1..=per {
+            let t = f64::from(k) / steps;
+            p.line_to((
+                x + amp * libm::sin(t.mul_add(std::f64::consts::TAU, phase)),
+                t.mul_add(span_y, inset),
+            ));
+        }
+    }
+    p
+}
+
+/// `count` same-direction circles in one path, radius `r0 + i * step`, their
+/// centres walking a Fermat spiral of extent `spread` about `(cx, cy)`. The
+/// centre of the figure lies inside every circle, so the winding under a
+/// pixel reaches `count`: `NonZero` must still give the union its true area
+/// — the failure `resolve_winding` exists to prevent — and `EvenOdd` folds
+/// the same winding into bands. The spiral offset is larger than `step`, so
+/// consecutive circles cross rather than nest, and the path self-intersects
+/// everywhere.
+fn dense_overlap_rings(
+    cx: f64,
+    cy: f64,
+    count: u32,
+    r0: f64,
+    step: f64,
+    spread: f64,
+) -> BezPath {
+    let mut p = BezPath::new();
+    for i in 0..count {
+        let t = f64::from(i) / f64::from(count);
+        let angle = f64::from(i) * 2.399_963_229_728_653;
+        let d = spread * t.sqrt();
+        let r = f64::from(i).mul_add(step, r0);
+        // κ·r for a four-cubic circle approximation.
+        let kr = 0.5523 * r;
+        let ox = d.mul_add(libm::cos(angle), cx);
+        let oy = d.mul_add(libm::sin(angle), cy);
+        p.move_to((ox + r, oy));
+        p.curve_to((ox + r, oy - kr), (ox + kr, oy - r), (ox, oy - r));
+        p.curve_to((ox - kr, oy - r), (ox - r, oy - kr), (ox - r, oy));
+        p.curve_to((ox - r, oy + kr), (ox - kr, oy + r), (ox, oy + r));
+        p.curve_to((ox + kr, oy + r), (ox + r, oy + kr), (ox + r, oy));
+        p.close_path();
+    }
+    p
+}
+
+/// The `road-network` perf path at an `n` × `n` grid: one path of short
+/// wavy horizontal roads on a 22 × 17 px lattice, every fifth column
+/// carrying a vertical road to the row below, 40 line segments each. The
+/// bends come from one `Rng(7)` walked in grid order, so the `n = 40` path
+/// is the same bytes it was before the size series existed.
+fn perf_road_network(n: u32) -> BezPath {
+    let mut rng = Rng(7);
+    let mut roads = BezPath::new();
+    for row in 0..n {
+        for col in 0..n {
+            let start = Point::new(64.0 + f64::from(col) * 22.0, 48.0 + f64::from(row) * 17.0);
+            let bend = 1.0 + rng.f64() * 2.0;
+            roads.move_to(start);
+            for k in 1..=40 {
+                let t = f64::from(k) / 40.0;
+                roads.line_to((
+                    start.x + t * 22.0,
+                    start.y + bend * libm::sin(t * std::f64::consts::TAU),
+                ));
+            }
+            if col % 5 == 0 && row < n - 1 {
+                roads.move_to(start);
+                for k in 1..=40 {
+                    let t = f64::from(k) / 40.0;
+                    roads.line_to((
+                        start.x + bend * libm::sin(t * std::f64::consts::TAU),
+                        start.y + t * 17.0,
+                    ));
+                }
+            }
+        }
+    }
+    roads
+}
+
+/// A `cols` × `rows` grid of [`dense_overlap_rings`] clusters filling
+/// `w` × `h`, all in one path. The cluster pitch is smaller than a
+/// cluster's outer radius, so neighbouring clusters overlap as well and the
+/// crossing count grows with the ring count rather than with the area.
+fn dense_overlap_field(
+    w: f64,
+    h: f64,
+    cols: u32,
+    rows: u32,
+    count: u32,
+    r0: f64,
+    step: f64,
+    spread: f64,
+) -> BezPath {
+    let mut p = BezPath::new();
+    for row in 0..rows {
+        for col in 0..cols {
+            let cx = (f64::from(col) + 0.5) * w / f64::from(cols);
+            let cy = (f64::from(row) + 0.5) * h / f64::from(rows);
+            p.extend(dense_overlap_rings(cx, cy, count, r0, step, spread).iter());
+        }
+    }
+    p
+}
+
+/// `count` thin closed slivers, each a chord of `w` × `h` through its
+/// centre ending on the border, `width` px wide at its waist. The path's
+/// device bounds are the whole surface while its coverage is a few
+/// thousand pixels, and every sliver is one long segment whose own
+/// bounding box spans most of the grid — the case where the `O(n)`
+/// per-segment cell bound is loosest.
+fn sparse_bounds_slivers(w: f64, h: f64, count: u32, width: f64) -> BezPath {
+    let mut p = BezPath::new();
+    let (cx, cy) = (w * 0.5, h * 0.5);
+    for i in 0..count {
+        let angle = f64::from(i) * std::f64::consts::PI / f64::from(count);
+        let (s, c) = libm::sincos(angle);
+        // The chord ends on the border: the shorter of the two half-extents
+        // the direction reaches, so nothing leaves the surface.
+        let reach = (cx / c.abs()).min(cy / s.abs()) - width;
+        let (dx, dy) = (c * reach, s * reach);
+        let (nx, ny) = (-s * width * 0.5, c * width * 0.5);
+        p.move_to((cx - dx + nx, cy - dy + ny));
+        p.line_to((cx + dx + nx, cy + dy + ny));
+        p.line_to((cx + dx - nx, cy + dy - ny));
+        p.line_to((cx - dx - nx, cy - dy - ny));
+        p.close_path();
+    }
+    p
+}
+
+/// Logs the route-selection inputs of a scene's path, as section 6 of
+/// `docs/design/2536-coverage-spec.md` defines them: the curve element
+/// count of the geometry the engine receives (the stroke outline when
+/// `stroke` is `Some(width)`, since expansion happens before coverage),
+/// its device bounds, the segment count the engine's `FLATTEN = 0.02`
+/// device-pixel tolerance produces, and the `O(n)` bound on touched
+/// 1-column × 4-row strip cells that decision R2 sizes buffers from and
+/// decision R1 reads as the crossing-density estimate.
+///
+/// The scenes are authored at identity transform, so device space is the
+/// scene's own space. Nothing here is written to the scene tree; it keeps
+/// the numbers quoted in the scene comments checkable by rerunning the
+/// generator.
+fn log_route_inputs(name: &str, path: &BezPath, stroke: Option<f64>) {
+    use cherenkov_scene::kurbo::{Shape as _, Stroke, StrokeOpts};
+
+    /// The engine's device flattening tolerance (`path::FLATTEN`).
+    const FLATTEN: f64 = 0.02;
+    /// The engine's coverage strip height in device rows (`path::STRIP_H`).
+    const STRIP_H: f64 = 4.0;
+
+    let outline = match stroke {
+        Some(width) => cherenkov_scene::kurbo::stroke(
+            path.iter(),
+            &Stroke::new(width),
+            &StrokeOpts::default(),
+            FLATTEN,
+        ),
+        None => path.clone(),
+    };
+    let elements = outline.elements().len();
+    let bbox = outline.bounding_box();
+    let mut segments = 0usize;
+    let mut cells = 0usize;
+    let mut last = Point::ORIGIN;
+    let mut start = Point::ORIGIN;
+    let mut edge = |p0: Point, p1: Point| {
+        if p0 == p1 {
+            return;
+        }
+        segments += 1;
+        let (lo_x, hi_x) = (p0.x.min(p1.x), p0.x.max(p1.x));
+        let (lo_y, hi_y) = (p0.y.min(p1.y), p0.y.max(p1.y));
+        let columns = (hi_x.floor() - lo_x.floor()) + 1.0;
+        let strips = ((hi_y / STRIP_H).floor() - (lo_y / STRIP_H).floor()) + 1.0;
+        cells += (columns * strips) as usize;
+    };
+    cherenkov_scene::kurbo::flatten(outline.iter(), FLATTEN, |el| match el {
+        cherenkov_scene::kurbo::PathEl::MoveTo(p) => {
+            edge(last, start);
+            start = p;
+            last = p;
+        }
+        cherenkov_scene::kurbo::PathEl::LineTo(p) => {
+            edge(last, p);
+            last = p;
+        }
+        cherenkov_scene::kurbo::PathEl::ClosePath => {
+            edge(last, start);
+            last = start;
+        }
+        cherenkov_scene::kurbo::PathEl::QuadTo(..)
+        | cherenkov_scene::kurbo::PathEl::CurveTo(..) => unreachable!("flatten emits lines"),
+    });
+    edge(last, start);
+    tracing::info!(
+        scene = name,
+        elements,
+        device_w = bbox.width(),
+        device_h = bbox.height(),
+        segments,
+        cell_bound = cells,
+        "route-selection inputs"
+    );
+}
+
 /// Clone `run` with all glyph positions shifted by `(dx, dy)`.
 #[expect(
     clippy::cast_possible_truncation,
@@ -2488,6 +2732,127 @@ fn run() -> Result<(), SceneError> {
             p.extend(star_path(64.0, 64.0, 10.0, 24.0));
             l.fill_rule(Shape::Path { path: p }, rule, solid(srgb(0.1, 0.5, 0.6)));
         });
+    }
+
+    // ---- Large and self-intersecting paths (water-rs/waterui#2546) ---------
+    //
+    // These are the scenes section 4.3's thresholds 1-3 measure once a
+    // coverage route exists for them: single paths whose element count,
+    // device bounds and crossing density are one to two orders above the
+    // UI paths the CPU sweep is tuned for. Section 6's predicate does not
+    // exist yet, so every scene's comment states the three inputs it
+    // presents — curve elements of the geometry the engine receives, its
+    // device bounds, and the `O(n)` touched-cell bound of decision R2,
+    // which is also decision R1's crossing-density estimate. The generator
+    // logs the same numbers through `log_route_inputs`, so they stay
+    // checkable rather than quoted from a stale measurement. Each scene is
+    // authored at identity, so device space is the scene's own space.
+    //
+    // Every scene here is P3-only or above SDR white: the working space is
+    // extended linear Display P3, and `AGENTS.md` requires both of a new
+    // feature family.
+
+    // Road network: 40 horizontal and 48 vertical wavy centrelines of 40
+    // segments each in one stroked path, every horizontal crossing every
+    // vertical — 1,920 centreline crossings, each contributing four self
+    // intersections of the stroke outline, which the sweep cannot resolve
+    // without sorting all of them.
+    //   elements 7,480 (stroke outline of 3,608 centreline elements)
+    //   device 494.5 x 366.5 · segments 8,811 · cell bound 65,575
+    {
+        let roads = road_network_grid(512.0, 384.0, 10.0, 40, 48, 40, 3.5);
+        log_route_inputs("stroke-road-network-p3", &roads, Some(2.5));
+        for (name, ink) in [
+            ("stroke-road-network-p3", p3(0.0, 0.55, 1.0)),
+            ("stroke-road-network-hdr", hdr(6.0, 2.5, 0.4)),
+        ] {
+            let roads = roads.clone();
+            corpus.scene(name, 512, 384, white, |l| {
+                l.stroke(
+                    Shape::Path { path: roads },
+                    StrokeStyle {
+                        width: 2.5,
+                        ..StrokeStyle::default()
+                    },
+                    solid(ink),
+                );
+            });
+        }
+    }
+
+    // Dense self-overlap: a 4 x 4 field of ring clusters in one path, 6
+    // same-direction circles per cluster on a spiral tighter than their
+    // radius step, 96 circles in all. Every cluster centre lies inside all
+    // six of its circles and the clusters overlap their neighbours, so the
+    // winding under a pixel runs into the tens: `NonZero` must still give
+    // the union its true area — the failure `resolve_winding` exists to
+    // prevent — and `EvenOdd` folds the same winding into bands. The ring
+    // radii reach past the surface, so the coverage is clipped at the
+    // border as well.
+    //   elements 576 · device 705.6 x 702 · segments 10,087
+    //   cell bound 34,455
+    {
+        let rings = dense_overlap_field(768.0, 768.0, 4, 4, 6, 18.0, 9.0, 8.0);
+        log_route_inputs("path-dense-overlap-nonzero-p3", &rings, None);
+        for (name, rule, ink) in [
+            (
+                "path-dense-overlap-nonzero-p3",
+                FillRule::NonZero,
+                p3(1.0, 0.0, 0.55),
+            ),
+            (
+                "path-dense-overlap-evenodd-p3",
+                FillRule::EvenOdd,
+                p3(0.0, 0.95, 0.35),
+            ),
+            (
+                "path-dense-overlap-nonzero-hdr",
+                FillRule::NonZero,
+                hdr(9.0, 1.0, 3.0),
+            ),
+            (
+                "path-dense-overlap-evenodd-hdr",
+                FillRule::EvenOdd,
+                hdr(0.6, 3.5, 5.0),
+            ),
+        ] {
+            let rings = rings.clone();
+            corpus.scene(name, 768, 768, white, |l| {
+                l.fill_rule(Shape::Path { path: rings }, rule, solid(ink));
+            });
+        }
+    }
+
+    // Huge sparse bounds: 61 slivers in one path, each a 2.6 px wide chord
+    // through the centre of the 1024 x 768 surface, all 61 crossing each
+    // other in the middle. The device bounds are the whole surface and the
+    // covered area is a few per cent of it, and because every sliver edge
+    // is one long diagonal segment, the per-segment cell bound overstates
+    // the touched cells by two orders of magnitude — the case where
+    // decision R2's `O(n)` bound is loosest, and the one a route predicate
+    // reading it as a crossing-density estimate has to survive.
+    //   elements 305 · device 1021.3 x 766.8 · segments 244
+    //   cell bound 10,372,768 (true touched cells are of order 10^5)
+    {
+        let slivers = sparse_bounds_slivers(1024.0, 768.0, 61, 2.6);
+        log_route_inputs("path-sparse-bounds-nonzero-p3", &slivers, None);
+        for (name, rule, ink) in [
+            (
+                "path-sparse-bounds-nonzero-p3",
+                FillRule::NonZero,
+                p3(0.1, 0.0, 1.0),
+            ),
+            (
+                "path-sparse-bounds-evenodd-hdr",
+                FillRule::EvenOdd,
+                hdr(2.0, 8.0, 1.5),
+            ),
+        ] {
+            let slivers = slivers.clone();
+            corpus.scene(name, 1024, 768, white, |l| {
+                l.fill_rule(Shape::Path { path: slivers }, rule, solid(ink));
+            });
+        }
     }
 
     // ---- Strokes -----------------------------------------------------------
@@ -5306,45 +5671,42 @@ fn run() -> Result<(), SceneError> {
     // A street layer batches short roads and their junctions into one
     // stroke. Every centerline and its width-3 outline stay inside the
     // canvas throughout the fractional pan, with room for antialiasing.
+    //
+    // `road-network` is the 40 x 40 point of a series the scaling report of
+    // water-rs/waterui#2546 reads (`bench/scripts/lower_scaling.py`): the
+    // same geometry at four smaller grids, same canvas, same pan, same
+    // stroke, so the only thing that changes between them is the segment
+    // count the coverage sweep has to sort. Line segments per scene, from
+    // `rows * cols * 40` horizontals plus `ceil(cols / 5) * (rows - 1) * 40`
+    // verticals:
+    //
+    //   road-network-n10    4,720
+    //   road-network-n14    9,400
+    //   road-network-n20   19,040
+    //   road-network-n28   37,840
+    //   road-network       76,480
     {
-        let mut rng = Rng(7);
-        let mut roads = BezPath::new();
-        for row in 0..40 {
-            for col in 0..40 {
-                let start = Point::new(64.0 + f64::from(col) * 22.0, 48.0 + f64::from(row) * 17.0);
-                let bend = 1.0 + rng.f64() * 2.0;
-                roads.move_to(start);
-                for k in 1..=40 {
-                    let t = f64::from(k) / 40.0;
-                    roads.line_to((
-                        start.x + t * 22.0,
-                        start.y + bend * libm::sin(t * std::f64::consts::TAU),
-                    ));
-                }
-                if col % 5 == 0 && row < 39 {
-                    roads.move_to(start);
-                    for k in 1..=40 {
-                        let t = f64::from(k) / 40.0;
-                        roads.line_to((
-                            start.x + bend * libm::sin(t * std::f64::consts::TAU),
-                            start.y + t * 17.0,
-                        ));
-                    }
-                }
-            }
-        }
-        perf.scene("road-network", 1024, 768, srgb(0.93, 0.95, 0.90), |l| {
-            winding_pan(l, |pan| {
-                pan.stroke(
-                    Shape::Path { path: roads },
-                    StrokeStyle {
-                        width: 3.0,
-                        ..StrokeStyle::default()
-                    },
-                    solid(srgb(0.35, 0.38, 0.40)),
-                );
+        for (name, n) in [
+            ("road-network-n10", 10),
+            ("road-network-n14", 14),
+            ("road-network-n20", 20),
+            ("road-network-n28", 28),
+            ("road-network", 40),
+        ] {
+            let roads = perf_road_network(n);
+            perf.scene(name, 1024, 768, srgb(0.93, 0.95, 0.90), |l| {
+                winding_pan(l, |pan| {
+                    pan.stroke(
+                        Shape::Path { path: roads },
+                        StrokeStyle {
+                            width: 3.0,
+                            ..StrokeStyle::default()
+                        },
+                        solid(srgb(0.35, 0.38, 0.40)),
+                    );
+                });
             });
-        });
+        }
     }
 
     // Abutting rows with staggered x positions exercise equal-slope join
