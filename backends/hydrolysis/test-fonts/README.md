@@ -29,6 +29,13 @@ re-run the test.
 
 ## The faces
 
+Noto Sans Regular is the full Noto Sans 2.015 face pinned in the CLI registry,
+kept intact for the combining-mark fallback regression and licensed under OFL.
+
+The same regression registers Material's pinned web Roboto variable face directly.
+Its generated `Roboto-Web-Variable.ttf` is not installed into system discovery,
+so it does not replace the existing static Roboto fixtures.
+
 Roboto, from the release the `water` CLI's font registry ships to applications
 (<https://github.com/googlefonts/roboto/releases/download/v2.138/roboto-android.zip>),
 licensed under the Apache License 2.0 (see `LICENSE` beside the files).
