@@ -85,6 +85,25 @@ impl Attachments {
             .sum()
     }
 
+    /// Every live memoryless attachment's bytes, this frame's and the
+    /// sizes a previous frame left allocated.
+    ///
+    /// This is the steady-state figure `Engine::memory` reports, so
+    /// unlike [`Self::memoryless_bytes`] it cannot be scoped to a
+    /// frame: between frames nothing is "used", and the textures are
+    /// still there.
+    pub fn reserved_bytes(&self) -> u64 {
+        self.textures
+            .iter()
+            .map(|((width, height), entry)| {
+                u64::from(*width)
+                    * u64::from(*height)
+                    * crate::render::texel_bytes(wgpu::TextureFormat::Rgba16Float)
+                    * u64::try_from(entry.targets.len()).unwrap_or(u64::MAX)
+            })
+            .sum()
+    }
+
     /// Animated bounds must not retain every historical attachment size.
     pub fn finish_frame(&mut self) {
         self.textures

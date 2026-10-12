@@ -153,21 +153,32 @@ impl AndroidGpuContext {
         let required_features = crate::platform::required_media_features(adapter.features())
             | (adapter.features()
                 & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
+        // The device is opened through the engine's creation path, not
+        // `request_device`: the capabilities Cherenkov composes with —
+        // external-frame and YCbCr import (cherenkov#166), and the
+        // dynamic-rendering local read and rasterization-order
+        // attachment access that keep an epoch's intermediates in tile
+        // memory (waterui#2191) — are chosen when `vkCreateDevice` runs
+        // and cannot be turned on afterwards. A device this host opened
+        // itself would make the engine materialize every intermediate
+        // through memory for the life of the process.
+        let (device, queue) = crate::platform::open_engine_device(
+            &adapter,
+            &wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-android-device"),
                 required_features,
                 required_limits,
                 memory_hints: wgpu::MemoryHints::Performance,
                 experimental_features: wgpu::ExperimentalFeatures::default(),
                 trace: wgpu::Trace::default(),
-            })
-            .await
-            .map_err(|error| {
-                GpuError::new(format!(
-                    "hydrolysis android: failed to request wgpu device: {error}"
-                ))
-            })?;
+            },
+        )
+        .await
+        .map_err(|error| {
+            GpuError::new(format!(
+                "hydrolysis android: failed to open the engine's wgpu device: {error}"
+            ))
+        })?;
         let context_id = crate::platform::next_gpu_context_id();
         let shared_device = cherenkov_gpu::interop::SharedDevice {
             instance: instance.clone(),

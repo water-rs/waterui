@@ -429,7 +429,8 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
         &fused,
         &plan,
         AttachmentBytes {
-            peak_memoryless_bytes: REGION_BYTES,
+            peak_reserved_bytes: REGION_BYTES,
+            peak_committed_bytes: Some(0),
             peak_backed_bytes: 4 * REGION_BYTES,
         },
         Vec::new(),
@@ -447,7 +448,8 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
     assert_eq!(report.materialized.len(), 1);
     assert_eq!(report.materialized[0].kind, ImageKind::Part);
     assert_eq!(report.materialized[0].reason, Materialization::Persistent);
-    assert_eq!(report.attachments.peak_memoryless_bytes, REGION_BYTES);
+    assert_eq!(report.attachments.peak_reserved_bytes, REGION_BYTES);
+    assert_eq!(report.attachments.peak_committed_bytes, Some(0));
     assert_eq!(report.attachments.peak_backed_bytes, 4 * REGION_BYTES);
     // One intermediate written, read once, ordered by the epoch itself.
     assert_eq!(report.traffic.logical_bytes_written, REGION_BYTES);

@@ -215,6 +215,30 @@ impl SharedDevice {
     }
 }
 
+/// Opens a Vulkan device for a [`SharedDevice`] the engine composes on.
+///
+/// A host that creates its own Vulkan device with `request_device` gets a
+/// device without the engine's capabilities: the external-frame and YCbCr
+/// extensions of issue #166, and the dynamic-rendering local-read and
+/// rasterization-order attachment access of issue #2191. None of them can
+/// be turned on after `vkCreateDevice`, so a device opened any other way
+/// composes every intermediate through memory for the rest of its life.
+/// This is the engine's own creation path, exported for exactly that
+/// handoff: pass the same descriptor a host would pass to
+/// `Adapter::request_device`, and put the device and queue it answers
+/// with into [`SharedDevice`].
+///
+/// # Errors
+/// [`EngineError`] when `adapter` is not a Vulkan adapter, or when the
+/// device cannot be created.
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+pub fn open_vulkan_device(
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+) -> Result<(wgpu::Device, wgpu::Queue), crate::EngineError> {
+    crate::render::create_vulkan_device(adapter, descriptor)
+}
+
 /// The compute predicate: wgpu reports the stage as a downlevel flag plus
 /// the workgroup limits it dispatches on.
 const fn supports_compute(flags: wgpu::DownlevelFlags, limits: &wgpu::Limits) -> bool {

@@ -28,6 +28,7 @@
 mod bindings;
 mod deployment;
 
+mod build_tile_spirv;
 #[path = "build_tile.rs"]
 mod tile;
 /// The union member cap the WGSL fold compiles against — the same
@@ -60,6 +61,9 @@ struct Spec {
     /// lowering merges into one combined sampled image at the texture's
     /// binding (issue #166).
     merge_pair: Option<(u32, u32)>,
+    /// Rewrite the corresponding-pixel reads into input attachment reads
+    /// and emit the tile variants (issue #2191); Vulkan only.
+    attachment: bool,
 }
 
 /// Apple shader tools and the deployment target resolved by rustc.
@@ -145,6 +149,7 @@ fn main() {
         resolve,
         reduce,
         native,
+        tile,
     ] = [
         "shared",
         "shader",
@@ -157,6 +162,7 @@ fn main() {
         "resolve",
         "reduce",
         "external_native",
+        "composite/tile",
     ]
     .map(read);
 
@@ -187,6 +193,7 @@ fn main() {
         mip: &mip,
         resolve: &resolve,
         reduce: &reduce,
+        tile: &tile,
     });
 
     compile_specs(&out_dir, &specs);
@@ -209,6 +216,8 @@ struct Modules<'a> {
     mip: &'a str,
     resolve: &'a str,
     reduce: &'a str,
+    /// The Vulkan tile stage interfaces around the fragment bodies.
+    tile: &'a str,
 }
 
 /// The fixed module set `render` creates: four VARIANT specializations
@@ -236,6 +245,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
                 groups: bindings::ENGINE_GROUPS,
                 metal: true,
                 merge_pair: None,
+                attachment: false,
             }
         })
         .collect();
@@ -245,6 +255,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         groups: bindings::PRESENT_GROUPS,
         metal: true,
         merge_pair: None,
+        attachment: false,
     });
     specs.push(Spec {
         name: "external".into(),
@@ -252,6 +263,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         groups: bindings::EXTERNAL_GROUPS,
         metal: true,
         merge_pair: None,
+        attachment: false,
     });
     // The Vulkan native module (issue #166): the same `fs_external` plus
     // `fs_external_format`, whose `ext_image`/`ext_sampler` pair lowers to
@@ -263,6 +275,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         groups: bindings::NATIVE_EXTERNAL_GROUPS,
         metal: false,
         merge_pair: Some((5, 6)),
+        attachment: false,
     });
     specs.push(Spec {
         name: "projective".into(),
@@ -270,6 +283,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         groups: bindings::PROJECTIVE_GROUPS,
         metal: true,
         merge_pair: None,
+        attachment: false,
     });
     for (name, source, groups) in [
         ("mip", m.mip, bindings::MIP_GROUPS),
@@ -282,8 +296,22 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             groups,
             metal: true,
             merge_pair: None,
+            attachment: false,
         });
     }
+    // The Vulkan tile executor's composition module (issue #2191): the
+    // stripped no-union variant, like the Apple `engine_tile` metallib,
+    // plus the tile stage interfaces. A union member samples its group's
+    // capture, a read `ExecutionPlan::epoch` never admits into a tile
+    // epoch.
+    specs.push(Spec {
+        name: "engine_tile".into(),
+        source: format!("{}\n{}", specs[2].source, m.tile),
+        groups: bindings::ENGINE_GROUPS,
+        metal: false,
+        merge_pair: None,
+        attachment: true,
+    });
     specs
 }
 
@@ -314,6 +342,7 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
             groups: bindings::ENGINE_GROUPS,
             metal: true,
             merge_pair: None,
+            attachment: false,
         };
         compile(out_dir, &spec, Some(apple), false, false);
         let fixture = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap())
@@ -393,7 +422,13 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
     let options = spv::Options {
         // SPIR-V 1.0 is legal for every Vulkan 1.x driver.
         lang_version: (1, 0),
-        flags: spv::WriterFlags::empty(),
+        // The attachment pass finds the reads by name; it strips the
+        // names again, so the written module matches the others.
+        flags: if spec.attachment {
+            spv::WriterFlags::DEBUG
+        } else {
+            spv::WriterFlags::empty()
+        },
         fake_missing_bindings: false,
         binding_map: binding_map(spec, module),
         capabilities: None,
@@ -418,10 +453,30 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
     if let Some((texture, sampler)) = spec.merge_pair {
         merge_sampled_pair(&mut words, texture, sampler, &spec.name);
     }
-    let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
-    // naga's emission ships as-is: spirv-opt was measured a net loss on the
-    // device (issue #124) and the driver's compiler optimizes itself.
-    std::fs::write(out_dir.join(format!("{}.spv", spec.name)), bytes).unwrap();
+    let write = |suffix: &str, words: &[u32]| {
+        let bytes: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
+        // naga's emission ships as-is: spirv-opt was measured a net loss on
+        // the device (issue #124) and the driver's compiler optimizes itself.
+        std::fs::write(out_dir.join(format!("{}{suffix}.spv", spec.name)), bytes).unwrap();
+    };
+    if spec.attachment {
+        // One module per input attachment mapping: a draw that sources
+        // another slot reads it at index 1, a draw that sources its own
+        // reads index 0 twice over.
+        for (suffix, source_index) in [("", bindings::TILE_SOURCE_INDEX), ("_self", 0)] {
+            write(
+                suffix,
+                &build_tile_spirv::attachment_reads(
+                    &words,
+                    bindings::TILE_INPUT_GROUP,
+                    bindings::TILE_INPUT_BINDINGS,
+                    source_index,
+                ),
+            );
+        }
+        return;
+    }
+    write("", &words);
 }
 
 /// Emits the Metal source and, on Apple targets, the compiled library.

@@ -97,6 +97,7 @@ half = "2"
 # The WGSL engine shaders are compiled once at build time (issue #57), at
 # the naga version wgpu 30 links.
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }
+rspirv = "0.13"
 # `UNION_MAX_MEMBERS` comes from `../record/src/union_cap.rs` via `#[path]` —
 # the same file `cherenkov::BackdropUnion::MAX_MEMBERS` reads — so the
 # build script never depends on the engine crate.
@@ -134,3 +135,9 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# `rspirv` is used by `build_tile_spirv.rs`, a file `build.rs` pulls in as a
+# module — cargo-machete does not follow `mod` declarations out of a build
+# script, so the genuine use is invisible to it.
+ignored = ["rspirv"]

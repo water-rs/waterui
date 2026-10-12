@@ -207,6 +207,23 @@ pub const ENGINE_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, ENGINE_GROUP1];
 #[allow(dead_code)]
 pub const PRESENT_GROUPS: &[&[Entry]] = &[PRESENT_GROUP0];
 
+/// The descriptor set the Vulkan tile executor's input attachments
+/// occupy, after the two engine groups (issue #2191).
+///
+/// These three are not `Entry` tables: an input attachment has no wgpu
+/// binding type, so the set exists only in the executor's own
+/// descriptor set layout and in the tile SPIR-V's decorations. They are
+/// the one definition both read.
+#[allow(dead_code)]
+pub const TILE_INPUT_GROUP: u32 = 2;
+/// The tile input attachment bindings, the draw's own slot first.
+#[allow(dead_code)]
+pub const TILE_INPUT_BINDINGS: [u32; 2] = [0, 1];
+/// The input attachment index the source slot is mapped to when it is
+/// not the draw's own slot.
+#[allow(dead_code)]
+pub const TILE_SOURCE_INDEX: u32 = 1;
+
 /// The external-frame pipelines' two groups, in declaration order: the
 /// shared engine group 0 followed by `EXTERNAL_GROUP1`.
 ///
