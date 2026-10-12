@@ -1171,9 +1171,9 @@ impl OffscreenGpuContext {
     /// Requests a context on the adapter `WaterUI` would render an application on.
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     pub async fn new() -> Self {
@@ -1199,16 +1199,16 @@ impl OffscreenGpuContext {
 
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::arc_with_non_send_sync,
-            reason = "`OffscreenGpuContextInner` holds a wgpu adapter, device and queue, which the WebGPU backend makes neither `Send` nor `Sync` because they are JS objects. The context is shared by reference count on every target and is `Send + Sync` on all of them but this one, so the storage type is `Arc` everywhere rather than `Rc` here and `Arc` elsewhere."
+            reason = "the context is shared by reference count on every target; on wasm the page's single-threaded event loop never crosses it with a thread, and the handles' Send/Sync bound varies with Cargo feature unification"
         )
     )]
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     async fn new_with_adapter_selection(selection: AdapterSelection) -> Self {
@@ -1401,6 +1401,7 @@ const fn device_type_rank(device_type: wgpu::DeviceType) -> u8 {
 /// compilation (Microsoft Basic Render Driver on Windows Server does exactly
 /// that), so recommending it as the remedy sends the user somewhere worse
 /// than the refusal.
+#[cfg(not(target_arch = "wasm32"))]
 const GPU_REQUIRED_GUIDANCE: &str = "Hydrolysis renders through GPU pipelines and has no CPU path: \
 run on a machine with a GPU, or on a virtual machine enable hardware 3D acceleration and install the vendor driver. \
 For targets without a GPU, waterui-dew is the CPU renderer. \
@@ -1842,9 +1843,9 @@ impl OffscreenSurface {
 
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "wasm32 is single-threaded; the WebGPU device handles this awaits are JS objects and `!Send` by design"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     /// Creates an offscreen surface synchronously.

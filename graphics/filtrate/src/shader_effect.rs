@@ -469,9 +469,9 @@ impl Clone for ShaderEffect {
 /// `samples_input` says whether `main` reads `input_sampler`.
 #[cfg_attr(
     target_arch = "wasm32",
-    expect(
+    allow(
         clippy::future_not_send,
-        reason = "the wasm32 WebGPU device is !Send; effect futures run on the page's event loop"
+        reason = "setup runs on the page's event loop; wgpu handles' Send bound varies with Cargo feature unification"
     )
 )]
 async fn build(
@@ -661,9 +661,9 @@ impl Effect for ShaderEffect {
 
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "the wasm32 WebGPU device is !Send; effect futures run on the page's event loop"
+            reason = "setup runs on the page's event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     async fn setup(&mut self, ctx: &EffectContext<'_>) -> EffectSetupResult {
