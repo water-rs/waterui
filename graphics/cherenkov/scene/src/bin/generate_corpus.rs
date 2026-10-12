@@ -764,8 +764,8 @@ fn star_path(cx: f64, cy: f64, r0: f64, r1: f64) -> BezPath {
 /// intersections per crossing. The waves come from `libm::sin` so the
 /// coordinates are the same bytes on every host.
 fn road_network_grid(
-    w: f64,
-    h: f64,
+    width: f64,
+    height: f64,
     inset: f64,
     rows: u32,
     cols: u32,
@@ -773,29 +773,29 @@ fn road_network_grid(
     amp: f64,
 ) -> BezPath {
     let mut p = BezPath::new();
-    let span_x = w - 2.0 * inset;
-    let span_y = h - 2.0 * inset;
+    let span_x = 2.0f64.mul_add(-inset, width);
+    let span_y = 2.0f64.mul_add(-inset, height);
     let steps = f64::from(per);
     for row in 0..rows {
-        let y = (f64::from(row) + 1.0) * span_y / f64::from(rows + 1) + inset;
+        let y = (f64::from(row) + 1.0).mul_add(span_y / f64::from(rows + 1), inset);
         let phase = f64::from(row) * 0.7;
-        p.move_to((inset, y + amp * libm::sin(phase)));
+        p.move_to((inset, amp.mul_add(libm::sin(phase), y)));
         for k in 1..=per {
             let t = f64::from(k) / steps;
             p.line_to((
                 t.mul_add(span_x, inset),
-                y + amp * libm::sin(t.mul_add(std::f64::consts::TAU, phase)),
+                amp.mul_add(libm::sin(t.mul_add(std::f64::consts::TAU, phase)), y),
             ));
         }
     }
     for col in 0..cols {
-        let x = (f64::from(col) + 1.0) * span_x / f64::from(cols + 1) + inset;
+        let x = (f64::from(col) + 1.0).mul_add(span_x / f64::from(cols + 1), inset);
         let phase = f64::from(col) * 1.1;
-        p.move_to((x + amp * libm::sin(phase), inset));
+        p.move_to((amp.mul_add(libm::sin(phase), x), inset));
         for k in 1..=per {
             let t = f64::from(k) / steps;
             p.line_to((
-                x + amp * libm::sin(t.mul_add(std::f64::consts::TAU, phase)),
+                amp.mul_add(libm::sin(t.mul_add(std::f64::consts::TAU, phase)), x),
                 t.mul_add(span_y, inset),
             ));
         }
@@ -837,6 +837,10 @@ fn dense_overlap_rings(cx: f64, cy: f64, count: u32, r0: f64, step: f64, spread:
 /// carrying a vertical road to the row below, 40 line segments each. The
 /// bends come from one `Rng(7)` walked in grid order, so the `n = 40` path
 /// is the same bytes it was before the size series existed.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "the `n = 40` path must stay byte-identical to the historical perf scene; `mul_add` rounds differently"
+)]
 fn perf_road_network(n: u32) -> BezPath {
     let mut rng = Rng(7);
     let mut roads = BezPath::new();
@@ -871,22 +875,25 @@ fn perf_road_network(n: u32) -> BezPath {
 /// `w` × `h`, all in one path. The cluster pitch is smaller than a
 /// cluster's outer radius, so neighbouring clusters overlap as well and the
 /// crossing count grows with the ring count rather than with the area.
-fn dense_overlap_field(
-    w: f64,
-    h: f64,
-    cols: u32,
-    rows: u32,
+/// One [`dense_overlap_rings`] cluster's shape: `count` rings of radius
+/// `r0 + i·step` whose centres walk a spiral of extent `spread`.
+#[derive(Clone, Copy)]
+struct RingsSpec {
     count: u32,
     r0: f64,
     step: f64,
     spread: f64,
-) -> BezPath {
+}
+
+fn dense_overlap_field(width: f64, height: f64, cols: u32, rows: u32, rings: RingsSpec) -> BezPath {
     let mut p = BezPath::new();
     for row in 0..rows {
         for col in 0..cols {
-            let cx = (f64::from(col) + 0.5) * w / f64::from(cols);
-            let cy = (f64::from(row) + 0.5) * h / f64::from(rows);
-            p.extend(dense_overlap_rings(cx, cy, count, r0, step, spread).iter());
+            let cx = (f64::from(col) + 0.5) * width / f64::from(cols);
+            let cy = (f64::from(row) + 0.5) * height / f64::from(rows);
+            p.extend(
+                dense_overlap_rings(cx, cy, rings.count, rings.r0, rings.step, rings.spread).iter(),
+            );
         }
     }
     p
@@ -898,9 +905,9 @@ fn dense_overlap_field(
 /// thousand pixels, and every sliver is one long segment whose own
 /// bounding box spans most of the grid — the case where the `O(n)`
 /// per-segment cell bound is loosest.
-fn sparse_bounds_slivers(w: f64, h: f64, count: u32, width: f64) -> BezPath {
+fn sparse_bounds_slivers(bound_w: f64, bound_h: f64, count: u32, width: f64) -> BezPath {
     let mut p = BezPath::new();
-    let (cx, cy) = (w * 0.5, h * 0.5);
+    let (cx, cy) = (bound_w * 0.5, bound_h * 0.5);
     for i in 0..count {
         let angle = f64::from(i) * std::f64::consts::PI / f64::from(count);
         let (s, c) = libm::sincos(angle);
@@ -939,21 +946,28 @@ fn log_route_inputs(name: &str, path: &BezPath, stroke: Option<f64>) {
     /// The engine's coverage strip height in device rows (`path::STRIP_H`).
     const STRIP_H: f64 = 4.0;
 
-    let outline = match stroke {
-        Some(width) => cherenkov_scene::kurbo::stroke(
-            path.iter(),
-            &Stroke::new(width),
-            &StrokeOpts::default(),
-            FLATTEN,
-        ),
-        None => path.clone(),
-    };
+    let outline = stroke.map_or_else(
+        || path.clone(),
+        |width| {
+            cherenkov_scene::kurbo::stroke(
+                path.iter(),
+                &Stroke::new(width),
+                &StrokeOpts::default(),
+                FLATTEN,
+            )
+        },
+    );
     let elements = outline.elements().len();
     let bbox = outline.bounding_box();
     let mut segments = 0usize;
     let mut cells = 0usize;
     let mut last = Point::ORIGIN;
     let mut start = Point::ORIGIN;
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "columns × strips is a non-negative cell count bounded by the path's surface"
+    )]
     let mut edge = |p0: Point, p1: Point| {
         if p0 == p1 {
             return;
@@ -2785,7 +2799,18 @@ fn run() -> Result<(), SceneError> {
     //   elements 576 · device 705.6 x 702 · segments 10,087
     //   cell bound 34,455
     {
-        let rings = dense_overlap_field(768.0, 768.0, 4, 4, 6, 18.0, 9.0, 8.0);
+        let rings = dense_overlap_field(
+            768.0,
+            768.0,
+            4,
+            4,
+            RingsSpec {
+                count: 6,
+                r0: 18.0,
+                step: 9.0,
+                spread: 8.0,
+            },
+        );
         log_route_inputs("path-dense-overlap-nonzero-p3", &rings, None);
         for (name, rule, ink) in [
             (
