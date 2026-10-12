@@ -78,9 +78,19 @@ const FALLBACK_HEIGHT: f32 = FALLBACK_WIDTH / waterui_video::DEFAULT_ASPECT;
 /// The coordinator's periodic-observer cadence, matching the Swift 1/4s.
 const PERIODIC_SECONDS: f64 = 0.25;
 
-/// Reported-buffering threshold: stalls shorter than a second stay silent,
-/// matching the coordinator's `systemUptime` gate.
-const BUFFERING_REPORT_SECONDS: f64 = 1.0;
+/// Report a transition when the player's empty/waiting state changes.
+const fn buffering_event(buffering: &mut bool, empty: bool, waiting: bool) -> Option<Event> {
+    let now = empty && waiting;
+    if now == *buffering {
+        return None;
+    }
+    *buffering = now;
+    Some(if now {
+        Event::Buffering
+    } else {
+        Event::BufferingEnded
+    })
+}
 
 /// Duck volume multiplier while audio focus is lossy, per the Swift apply.
 const DUCK_SCALE: f32 = 0.2;
@@ -338,7 +348,6 @@ struct State {
     loops: bool,
     emit: Option<Rc<BoundVideoEventHandler>>,
     buffering: bool,
-    buffering_since: Option<f64>,
     ducked: bool,
     resume_after_transient_loss: bool,
     seen_seek_generation: u64,
@@ -457,7 +466,6 @@ impl State {
         self.ended = false;
         self.set_source_size(None);
         self.buffering = false;
-        self.buffering_since = None;
         self.last_buffer_level_ms = None;
         self.started_at = uptime_seconds();
         self.deferred.push(Deferred::DurationSeconds(0.0));
@@ -636,31 +644,24 @@ impl State {
         }
     }
 
-    /// Buffering bookkeeping + events, gated on ≥1s of continuous stall.
+    /// Emit both ends of observed buffering transitions without a duration gate.
     fn buffer_did_change(&mut self) {
         let Some(item) = &self.item else { return };
         let empty = item.is_playback_buffer_empty();
-        let waiting = self.player.time_control_status() == TimeControlStatus::WaitingToPlay;
-        let now_buffering = empty && waiting;
-        if now_buffering && !self.buffering {
-            self.buffering = true;
-            self.buffering_since = Some(uptime_seconds());
-            self.emit(Event::Buffering);
-            self.set_phase(PlaybackPhase::Buffering);
-        } else if !now_buffering && self.buffering {
-            self.buffering = false;
-            if let Some(since) = self.buffering_since.take()
-                && uptime_seconds() - since >= BUFFERING_REPORT_SECONDS
-            {
-                self.emit(Event::BufferingEnded);
-            }
-            self.set_phase(
-                if self.player.time_control_status() == TimeControlStatus::Playing {
-                    PlaybackPhase::Playing
-                } else {
-                    PlaybackPhase::Paused
-                },
-            );
+        let status = self.player.time_control_status();
+        if let Some(event) = buffering_event(
+            &mut self.buffering,
+            empty,
+            status == TimeControlStatus::WaitingToPlay,
+        ) {
+            self.emit(event);
+            self.set_phase(if self.buffering {
+                PlaybackPhase::Buffering
+            } else if status == TimeControlStatus::Playing {
+                PlaybackPhase::Playing
+            } else {
+                PlaybackPhase::Paused
+            });
         }
         self.defer_push_playback_state();
     }
@@ -1382,7 +1383,7 @@ fn codec_string(fourcc: u32) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Uptime in seconds — `systemUptime`'s equivalent for the buffering gate.
+/// Uptime in seconds — `systemUptime` for the session-elapsed metrics.
 fn uptime_seconds() -> f64 {
     cocoa_ui::process::time_since_start().map_or(0.0, |duration| duration.as_secs_f64())
 }
@@ -1460,7 +1461,6 @@ fn coordinator(
         emit: playback.on_event.map(Rc::new),
         deferred: Vec::new(),
         buffering: false,
-        buffering_since: None,
         ducked: false,
         resume_after_transient_loss: false,
         seen_seek_generation: 0,
@@ -1482,6 +1482,7 @@ fn coordinator(
         move || {
             if let Some(state) = state.upgrade() {
                 update(&state, |state| {
+                    state.buffer_did_change();
                     match state.player.time_control_status() {
                         TimeControlStatus::Playing => state.set_phase(PlaybackPhase::Playing),
                         TimeControlStatus::Paused => {
@@ -1489,7 +1490,7 @@ fn coordinator(
                                 state.set_phase(PlaybackPhase::Paused);
                             }
                         }
-                        TimeControlStatus::WaitingToPlay => state.buffer_did_change(),
+                        TimeControlStatus::WaitingToPlay => {}
                     }
                     state.defer_push_playback_state();
                 });
@@ -1884,5 +1885,72 @@ mod tests {
     #[test]
     fn codec_string_decodes_fourcc() {
         assert_eq!(codec_string(u32::from_be_bytes(*b"avc1")), "avc1");
+    }
+
+    /// A stall reports its beginning and its end immediately — a stall
+    /// shorter than a second still closes, so `Buffering` never stands
+    /// alone.
+    #[test]
+    fn a_buffering_start_and_end_pair_immediately() {
+        let mut buffering = false;
+        assert!(matches!(
+            buffering_event(&mut buffering, true, true),
+            Some(Event::Buffering)
+        ));
+        assert!(buffering);
+        assert!(matches!(
+            buffering_event(&mut buffering, false, true),
+            Some(Event::BufferingEnded)
+        ));
+        assert!(!buffering);
+    }
+
+    /// A stall also ends when the player itself recovers — `Playing` or
+    /// `Paused` arriving while the buffer-empty property is stale still
+    /// emits `BufferingEnded`.
+    #[test]
+    fn a_stall_ends_when_the_player_recovers() {
+        let mut buffering = false;
+        assert!(matches!(
+            buffering_event(&mut buffering, true, true),
+            Some(Event::Buffering)
+        ));
+        assert!(matches!(
+            buffering_event(&mut buffering, true, false),
+            Some(Event::BufferingEnded)
+        ));
+    }
+
+    /// State that has not moved emits nothing — no duplicate `Buffering`
+    /// while a stall holds, and none after it ended.
+    #[test]
+    fn unchanged_buffering_emits_nothing() {
+        let mut buffering = false;
+        assert!(matches!(
+            buffering_event(&mut buffering, true, true),
+            Some(Event::Buffering)
+        ));
+        assert!(buffering_event(&mut buffering, true, true).is_none());
+        assert!(matches!(
+            buffering_event(&mut buffering, false, false),
+            Some(Event::BufferingEnded)
+        ));
+        assert!(buffering_event(&mut buffering, false, false).is_none());
+    }
+
+    /// Two stalls back to back report two begin/end pairs.
+    #[test]
+    fn every_stall_reports_its_own_pair() {
+        let mut buffering = false;
+        for _ in 0..2 {
+            assert!(matches!(
+                buffering_event(&mut buffering, true, true),
+                Some(Event::Buffering)
+            ));
+            assert!(matches!(
+                buffering_event(&mut buffering, false, false),
+                Some(Event::BufferingEnded)
+            ));
+        }
     }
 }
