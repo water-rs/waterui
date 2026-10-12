@@ -208,16 +208,6 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     );
 }
 
-/// f32 coverage → `R8Unorm` texels.
-#[expect(clippy::cast_possible_truncation)]
-#[expect(clippy::cast_sign_loss)]
-fn texels(coverage: &[f32]) -> Vec<u8> {
-    coverage
-        .iter()
-        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-        .collect()
-}
-
 /// Emits `coverage` as spans and atlas cells: one cell when the grid is
 /// small, otherwise strips of [`STRIP_H`] rows split into full-column span
 /// runs and partial-column cells.
@@ -225,14 +215,25 @@ fn texels(coverage: &[f32]) -> Vec<u8> {
 /// Pure CPU work: the emission and, per cell, its `(w, h, texels)` — the
 /// returned cells' `x`/`y` stay zero until the render thread stores them
 /// with [`Atlas::store_path`]. Cell order in `cells` matches the per-cell
-/// rasters in the second return value index for index.
+/// rasters in the second return value index for index. Each raster's
+/// texels are appended to `arena`, which the caller owns until the atlas
+/// upload has consumed them.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_precision_loss)]
-pub fn emit(coverage: &Coverage) -> Result<(PathEmit, Vec<CellTexels>), RenderError> {
+#[expect(clippy::cast_sign_loss)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one emission walk: small-cell fast path, strip loop"
+)]
+pub fn emit(
+    coverage: &Coverage,
+    arena: &mut Vec<u8>,
+) -> Result<(PathEmit, Vec<CellTexels>), RenderError> {
     let mut out = PathEmit::default();
     let mut rasters: Vec<CellTexels> = Vec::new();
     let make_cell = |cells: &mut Vec<PathCell>,
                      rasters: &mut Vec<CellTexels>,
+                     arena: &mut Vec<u8>,
                      x: usize,
                      y: usize,
                      w: usize,
@@ -242,11 +243,20 @@ pub fn emit(coverage: &Coverage) -> Result<(PathEmit, Vec<CellTexels>), RenderEr
         let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
             return Err(RenderError::AtlasFull);
         };
-        let mut rows = Vec::with_capacity(w * h);
-        for row in 0..h {
-            rows.extend_from_slice(&coverage.data[(y + row) * coverage.w + x..][..w]);
+        // Reserve the coverage's area on an emission's first cell so the
+        // arena never regrows mid-emit; empty emissions stay allocation-free.
+        if rasters.is_empty() {
+            arena.reserve(coverage.data.len());
         }
-        rasters.push((w32, h32, texels(&rows)));
+        let start = arena.len();
+        for row in 0..h {
+            arena.extend(
+                coverage.data[(y + row) * coverage.w + x..][..w]
+                    .iter()
+                    .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8),
+            );
+        }
+        rasters.push((w32, h32, start..arena.len()));
         cells.push(PathCell {
             rect: [
                 (coverage.x + x as f64) as f32,
@@ -268,6 +278,7 @@ pub fn emit(coverage: &Coverage) -> Result<(PathEmit, Vec<CellTexels>), RenderEr
         make_cell(
             &mut out.cells,
             &mut rasters,
+            arena,
             0,
             0,
             coverage.w,
@@ -276,9 +287,10 @@ pub fn emit(coverage: &Coverage) -> Result<(PathEmit, Vec<CellTexels>), RenderEr
         )?;
         return Ok((out, rasters));
     }
+    let mut class = Vec::new();
     for sy in (0..coverage.h).step_by(STRIP_H) {
         let sh = STRIP_H.min(coverage.h - sy);
-        let class = strip_class(coverage, sy, sh);
+        strip_class(coverage, sy, sh, &mut class);
         // Emit runs: all-full runs become spans, the rest cells.
         let mut x = 0;
         while x < coverage.w {
@@ -317,6 +329,7 @@ pub fn emit(coverage: &Coverage) -> Result<(PathEmit, Vec<CellTexels>), RenderEr
                 make_cell(
                     &mut out.cells,
                     &mut rasters,
+                    arena,
                     start,
                     sy,
                     x - start,
@@ -339,8 +352,9 @@ pub fn emit(coverage: &Coverage) -> Result<(PathEmit, Vec<CellTexels>), RenderEr
     clippy::float_cmp,
     reason = "a column is 'full' exactly when coverage clamped to 1.0"
 )]
-fn strip_class(coverage: &Coverage, sy: usize, sh: usize) -> Vec<u8> {
-    let mut class = vec![0u8; coverage.w];
+fn strip_class(coverage: &Coverage, sy: usize, sh: usize, class: &mut Vec<u8>) {
+    class.clear();
+    class.resize(coverage.w, 0);
     for (x, c) in class.iter_mut().enumerate() {
         let mut empty = true;
         let mut full = true;
@@ -390,7 +404,6 @@ fn strip_class(coverage: &Coverage, sy: usize, sh: usize) -> Vec<u8> {
             x += 1;
         }
     }
-    class
 }
 
 /// A stable hash of a shape's field bits, for strokes of non-path shapes
@@ -768,25 +781,29 @@ mod tests {
         };
         // Gap of `PARTIAL_GAP_MAX` between two partial runs: one cell.
         let g = PARTIAL_GAP_MAX.max(1);
-        let (emitted, rasters) = emit(&cov(&[(0, 3), (3 + g, 6 + g)], &[], 40, 4)).unwrap();
+        let mut arena = Vec::new();
+        let (emitted, rasters) =
+            emit(&cov(&[(0, 3), (3 + g, 6 + g)], &[], 40, 4), &mut arena).unwrap();
         assert_eq!(emitted.cells.len(), 1);
         assert_eq!(rasters[0].0 as usize, 6 + g);
         // The carried gap's texels are zero coverage.
+        let cell = &arena[rasters[0].2.clone()];
         for row in 0..4 {
             for x in 3..3 + g {
-                assert_eq!(rasters[0].2[row * (6 + g) + x], 0);
+                assert_eq!(cell[row * (6 + g) + x], 0);
             }
         }
         // Gap of `PARTIAL_GAP_MAX + 1`: two separate cells.
-        let (emitted, _) = emit(&cov(&[(0, 3), (4 + g, 7 + g)], &[], 40, 4)).unwrap();
+        let (emitted, _) = emit(&cov(&[(0, 3), (4 + g, 7 + g)], &[], 40, 4), &mut arena).unwrap();
         assert_eq!(emitted.cells.len(), 2);
         // A gap bounded by a full run (wider than `FULL_RUN_MIN`) is not
         // filled: the partial run ends before it and the full run spans.
-        let (emitted, _) = emit(&cov(&[(0, 3)], &[(3 + g, 12 + g)], 40, 4)).unwrap();
+        let (emitted, _) = emit(&cov(&[(0, 3)], &[(3 + g, 12 + g)], 40, 4), &mut arena).unwrap();
         assert_eq!(emitted.cells.len(), 1);
         assert_eq!(emitted.spans.len(), 1);
         // Adjacent partial edges must not consume the full interior run.
-        let (emitted, rasters) = emit(&cov(&[(0, 3), (20, 23)], &[(3, 20)], 40, 4)).unwrap();
+        let (emitted, rasters) =
+            emit(&cov(&[(0, 3), (20, 23)], &[(3, 20)], 40, 4), &mut arena).unwrap();
         assert_eq!(emitted.spans.len(), 0);
         assert_eq!(emitted.cells.len(), 1);
         assert_eq!(emitted.cells[0].interior, 3 | (20 << 16));

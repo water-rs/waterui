@@ -115,14 +115,12 @@ impl AndroidGpuContext {
     }
 
     async fn request_async() -> Result<Self, GpuError> {
-        // The engine's shaders require these capabilities — its compute
-        // pipeline uses f16-in-f32 builtins unconditionally, and the pipeline is
-        // compute. The default pick may lack them (software Vulkan drivers
-        // like llvmpipe drop shaderFloat16), so walk every Vulkan adapter and
-        // choose the first that can paint; a device with none is an explicit
-        // error, never a painter fallback.
-        const PAINTER_FLAGS: wgpu::DownlevelFlags =
-            wgpu::DownlevelFlags::COMPUTE_SHADERS.union(wgpu::DownlevelFlags::SHADER_F16_IN_F32);
+        // The engine's shaders require f16 arithmetic — its raster pipeline
+        // uses f16-in-f32 builtins unconditionally. The default pick may lack
+        // it (software Vulkan drivers like llvmpipe drop shaderFloat16), so
+        // walk every Vulkan adapter and choose the first that can paint; a
+        // device with none is an explicit error, never a painter fallback.
+        const PAINTER_FLAGS: wgpu::DownlevelFlags = wgpu::DownlevelFlags::SHADER_F16_IN_F32;
         let flags_of = |adapter: &wgpu::Adapter| adapter.get_downlevel_capabilities().flags;
         let capable = |adapter: &wgpu::Adapter| flags_of(adapter).contains(PAINTER_FLAGS);
         // A Vulkan-only instance: no other GPU API is ever instantiated, and
@@ -151,11 +149,6 @@ impl AndroidGpuContext {
                 )));
             }
         };
-        crate::platform::ensure_compute_capable_adapter(
-            &adapter,
-            "hydrolysis android surface",
-            "failed to find compute-capable wgpu adapter",
-        );
         let required_limits = crate::platform::required_device_limits(&adapter);
         let required_features = crate::platform::required_media_features(adapter.features())
             | (adapter.features()
