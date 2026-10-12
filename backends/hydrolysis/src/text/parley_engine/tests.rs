@@ -12,6 +12,67 @@ fn test_input(env: &Environment, text: &'static str) -> ResolvedTextLayoutInput 
 }
 
 #[test]
+fn recorded_glyph_positions_preserve_parley_mark_offsets_and_fragment_shift() {
+    let roboto: Arc<[u8]> = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fonts/Roboto-Regular.ttf"),
+    )
+    .expect("the test-fonts setup generates the pinned Roboto Regular face")
+    .into();
+    let mut font_cx = parley::FontContext {
+        collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
+            shared: false,
+            system_fonts: false,
+        }),
+        source_cache: parley::fontique::SourceCache::default(),
+    };
+    let registered = font_cx
+        .collection
+        .register_fonts(parley::fontique::Blob::new(Arc::new(roboto.to_vec())), None);
+    assert!(!registered.is_empty());
+    let mut families = fonts::ResourceFontFamilies::default();
+    families.classify("Roboto", &registered);
+    families.install(&mut font_cx.collection);
+    let engine = ParleyEngine::new(font_cx, FontFamilyResolution::Strict);
+    let env = test_environment();
+    let layout = engine.shape(&test_input(&env, "Z\u{0350}"), None);
+    let line = layout.0.layout.get(0).expect("combining-mark line");
+    assert!(
+        line.items().any(|item| {
+            if let parley::PositionedLayoutItem::GlyphRun(run) = item {
+                run.glyphs().any(|glyph| glyph.y.abs() > 0.0)
+            } else {
+                false
+            }
+        }),
+        "the real fixture must exercise a nonzero vertical shaping offset"
+    );
+
+    for x_shift in [0.0, 13.0] {
+        let expected: Vec<_> = line
+            .items()
+            .filter_map(|item| match item {
+                parley::PositionedLayoutItem::GlyphRun(run) => Some(run),
+                parley::PositionedLayoutItem::InlineBox(_) => None,
+            })
+            .flat_map(|run| {
+                run.positioned_glyphs()
+                    .map(|glyph| (glyph.id, (glyph.x + x_shift).to_bits(), glyph.y.to_bits()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut scene = Recording::new();
+        let mut counters = FrameWorkCounters::default();
+        encode_text_layout(&mut scene, &mut counters, &layout, None, x_shift);
+        let recorded: Vec<_> = scene
+            .glyph_runs()
+            .flat_map(|(_, glyphs)| glyphs)
+            .map(|glyph| (glyph.id, glyph.x.to_bits(), glyph.y.to_bits()))
+            .collect();
+        assert_eq!(recorded, expected, "fragment shift {x_shift}");
+    }
+}
+
+#[test]
 fn explicit_family_list_is_preserved_for_parley_css_parsing() {
     let family = font_family(Some("Roboto, Noto Sans CJK SC, sans-serif"));
 

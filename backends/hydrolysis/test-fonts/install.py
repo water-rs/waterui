@@ -629,11 +629,6 @@ def generate() -> None:
 
 
 def main() -> None:
-    target = user_font_dir()
-    missing_installed, mismatched_installed = check_faces(target)
-    if not missing_installed and not mismatched_installed:
-        print(f"all {len(EXPECTED)} test fonts already installed in {target}")
-        return
     missing, mismatched = check_faces(OUT_DIR)
     if mismatched:
         lines = "\n".join(f"  {name}" for name in mismatched)
@@ -645,6 +640,11 @@ def main() -> None:
         )
     if missing:
         generate()
+    target = user_font_dir()
+    missing_installed, mismatched_installed = check_faces(target)
+    if not missing_installed and not mismatched_installed:
+        print(f"all {len(EXPECTED)} test fonts already installed in {target}")
+        return
     install()
 
 
