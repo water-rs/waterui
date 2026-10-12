@@ -1329,7 +1329,10 @@ fn create_device(
         "adapter"
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
-    let mut required = wgpu::Features::empty();
+    // f16 arithmetic is the hardware floor (#2190): the engine shaders
+    // carry `vec4<f16>` colour payloads and premultiply arithmetic, so
+    // `SHADER_F16` is required, not probed — no f32 variant is kept.
+    let mut required = wgpu::Features::SHADER_F16;
     // The fixed engine shaders are precompiled (#57): Vulkan loads SPIR-V
     // and Metal a metallib through the passthrough API; wgpu-hal advertises
     // the feature unconditionally on both backends.
@@ -1588,7 +1591,10 @@ async fn create_device(
         "adapter"
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
-    let mut required = wgpu::Features::empty();
+    // f16 arithmetic is the hardware floor (#2190): the engine shaders
+    // carry `vec4<f16>` colour payloads and premultiply arithmetic, so
+    // `SHADER_F16` is required, not probed — no f32 variant is kept.
+    let mut required = wgpu::Features::SHADER_F16;
     // Pass-boundary timestamps are all Metal is asked for: Apple GPUs
     // advertise `TIMESTAMP_QUERY_INSIDE_ENCODERS` but sample only at
     // stage boundaries, so an encoder-level `write_timestamp` goes through

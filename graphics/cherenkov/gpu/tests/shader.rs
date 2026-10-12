@@ -34,10 +34,13 @@ fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
     } else {
         ("", SHADER_NO_UNION, "")
     };
-    let source =
-        format!("const VARIANT: u32 = {variant}u;\n{cap}{SHARED}\n{shader}\n{union}{BLEND}");
+    // `enable f16;` heads the module exactly as in build.rs's engine
+    // prefix: `shared.wgsl` uses f16 arithmetic.
+    let source = format!(
+        "enable f16;\nconst VARIANT: u32 = {variant}u;\n{cap}{SHARED}\n{shader}\n{union}{BLEND}"
+    );
     let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16)
         .validate(&module)
         .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
     (module, info)
@@ -98,12 +101,12 @@ fn effect_module(name: &str, user: &str) -> (Module, naga::valid::ModuleInfo) {
     let union_text = cherenkov_gpu::backdrop_effect_text(user, true);
     let union_module =
         wgsl::parse_str(&union_text).unwrap_or_else(|e| panic!("{name} (union): {e}"));
-    Validator::new(ValidationFlags::all(), Capabilities::empty())
+    Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16)
         .validate(&union_module)
         .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
     let text = cherenkov_gpu::backdrop_effect_text(user, false);
     let module = wgsl::parse_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16)
         .validate(&module)
         .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     (module, info)
@@ -191,12 +194,17 @@ split_test! {
 /// as in build.rs.
 fn standalone_modules_emit() {
     for (name, source) in [
-        ("projective", format!("{SHARED}\n{BLEND}\n{PROJECTIVE}")),
+        // `projective` includes `shared.wgsl`, so it carries the same
+        // `enable f16;` head as build.rs's composition.
+        (
+            "projective",
+            format!("enable f16;\n{SHARED}\n{BLEND}\n{PROJECTIVE}"),
+        ),
         ("mip", MIP.to_owned()),
         ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16)
             .validate(&module)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         effect_emits(name, &module, &info);
