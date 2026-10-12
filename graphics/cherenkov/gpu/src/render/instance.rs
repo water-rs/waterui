@@ -18,6 +18,12 @@ pub const KIND_SPAN: u32 = 5;
 /// An atlas cell with an explicit full-coverage horizontal interval.
 /// Solid paint leaves `meta[2]` available for its two u16 column offsets.
 pub const KIND_REGION: u32 = 6;
+/// An opaque ellipse interior appended after a coverage-order pass's
+/// painter ranges and drawn only by the opaque phase at the tier's
+/// vertex count. `meta[3]`'s low bits hold the tier code (1: 16 sides,
+/// 2: 32); `grad[0]` bitcast holds the painter instance index the
+/// polygon stands for, so its depth tag lands four ulps above it.
+pub const KIND_POLYGON: u32 = 7;
 
 /// A single colour.
 pub const PAINT_SOLID: u32 = 0;
@@ -100,6 +106,26 @@ pub const FLAG_BLEND_SRC: u32 = 0x20;
 /// its `outer` extent. The ownership-weighted field replaces the
 /// member's clip coverage for the composite.
 pub const FLAG_UNION: u32 = 0x40;
+
+/// Projected-area threshold in device px² above which a solid ellipse's
+/// opaque interior is promoted from the inscribed octagon to a
+/// 16-sided polygon; [`ELLIPSE_TIER32_MIN_AREA`] selects 32 sides above
+/// it.
+///
+/// A regular n-gon inscribed in an ellipse misses
+/// `1 − n·sin(2π/n)/(2π)` of its area — 9.97%, 2.55% and 0.64% at 8, 16
+/// and 32 sides — and that crescent of fragments is replayed through
+/// the boundary coverage solve instead of the one-instruction opaque
+/// shader. With a boundary fragment costing roughly a few appended
+/// vertices, the vertex-versus-fragment estimate places the 16-side
+/// break-even near a few hundred device px² and the 32-side one near a
+/// few thousand; the appended instance's CPU cost in `lower` (~250 Ir
+/// on the Callgrind gate) shifts the joint estimate further up. These
+/// initial values sit above it; final values come from device
+/// measurements (#2540). Change them only here.
+pub const ELLIPSE_TIER16_MIN_AREA: f64 = 4096.0;
+/// See [`ELLIPSE_TIER16_MIN_AREA`].
+pub const ELLIPSE_TIER32_MIN_AREA: f64 = 32768.0;
 
 /// The shader's blend-mode code for a [`cherenkov::BlendMode`]; `0` keeps the
 /// fixed-function source-over composite. Matches `blend_mode` in the WGSL.

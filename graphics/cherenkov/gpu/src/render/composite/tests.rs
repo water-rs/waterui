@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use super::*;
 use crate::render::composite::plan::{Limits, Ordering};
 use crate::render::composition::Materialization;
@@ -20,6 +22,7 @@ fn pass(target: Target, clear: bool, source: Option<Source>, instance: u32) -> P
         region: [0, 0, 16, 16],
         backdrop_copy: None,
         capture: None,
+        tier_ranges: [Range::default(), Range::default()],
     }
 }
 
