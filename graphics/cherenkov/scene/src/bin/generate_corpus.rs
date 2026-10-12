@@ -871,10 +871,6 @@ fn perf_road_network(n: u32) -> BezPath {
     roads
 }
 
-/// A `cols` × `rows` grid of [`dense_overlap_rings`] clusters filling
-/// `w` × `h`, all in one path. The cluster pitch is smaller than a
-/// cluster's outer radius, so neighbouring clusters overlap as well and the
-/// crossing count grows with the ring count rather than with the area.
 /// One [`dense_overlap_rings`] cluster's shape: `count` rings of radius
 /// `r0 + i·step` whose centres walk a spiral of extent `spread`.
 #[derive(Clone, Copy)]
@@ -885,6 +881,10 @@ struct RingsSpec {
     spread: f64,
 }
 
+/// A `cols` × `rows` grid of [`dense_overlap_rings`] clusters filling
+/// `width` × `height`, all in one path. The cluster pitch is smaller than a
+/// cluster's outer radius, so neighbouring clusters overlap as well and the
+/// crossing count grows with the ring count rather than with the area.
 fn dense_overlap_field(width: f64, height: f64, cols: u32, rows: u32, rings: RingsSpec) -> BezPath {
     let mut p = BezPath::new();
     for row in 0..rows {
