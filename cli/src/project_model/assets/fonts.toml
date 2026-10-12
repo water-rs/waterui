@@ -18,6 +18,11 @@
 # Popular text fonts
 
 [[font]]
+name = "Noto Sans"
+url = "https://github.com/notofonts/latin-greek-cyrillic/releases/download/NotoSans-v2.015/NotoSans-v2.015.zip"
+sha256 = "0c34df072a3fa7efbb7cbf34950e1f971a4447cffe365d3a359e2d4089b958f5"
+
+[[font]]
 name = "Inter"
 url = "https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip"
 sha256 = "ff970a5d4561a04f102a7cb781adbd6ac4e9b6c460914c7a101f15acb7f7d1a4"
