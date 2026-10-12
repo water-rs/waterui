@@ -153,7 +153,7 @@ impl TargetPlatform {
 }
 
 /// Arguments for the run command.
-#[derive(ClapArgs, Debug)]
+#[derive(ClapArgs)]
 // CLI flag structs collect booleans by nature; each flag is a documented
 // `--flag`, not structural state.
 #[expect(
@@ -244,6 +244,36 @@ pub struct Args {
     /// (needed in non-interactive environments).
     #[arg(short = 'y', long)]
     yes: bool,
+}
+
+// `--env` values are where credentials travel — the keys are the useful
+// diagnostic, the values never are.
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Args")
+            .field("platform", &self.platform)
+            .field("backend", &self.backend)
+            .field("painter", &self.painter)
+            .field("device", &self.device)
+            .field("path", &self.path)
+            .field("logs", &self.logs)
+            .field("native_logs", &self.native_logs)
+            .field(
+                "env",
+                &self
+                    .env
+                    .iter()
+                    .map(|(key, _)| key.as_str())
+                    .collect::<std::collections::BTreeSet<_>>(),
+            )
+            .field("tui", &self.tui)
+            .field("release", &self.release)
+            .field("profiling", &self.profiling)
+            .field("debug", &self.debug)
+            .field("no_dev_server", &self.no_dev_server)
+            .field("yes", &self.yes)
+            .finish()
+    }
 }
 
 impl Args {
@@ -1767,6 +1797,25 @@ mod tests {
             run_profile(&run_args(&["--profiling"]), TargetBackend::Hydrolysis),
             BuildProfile::Profiling
         );
+    }
+
+    /// `--env` values are where credentials travel — `Debug` names the
+    /// variables and keeps the rest of the parse, never their values.
+    #[test]
+    fn the_args_debug_names_env_vars_without_their_values() {
+        let args = run_args(&[
+            "--platform",
+            "android",
+            "--device",
+            "pixel-9-pro",
+            "--env",
+            "WATERUI_INSPECTOR_TOKEN=s3cret-runtime-token",
+        ]);
+        let rendered = format!("{args:?}");
+        assert!(!rendered.contains("s3cret-runtime-token"), "{rendered}");
+        assert!(rendered.contains("WATERUI_INSPECTOR_TOKEN"), "{rendered}");
+        assert!(rendered.contains("pixel-9-pro"), "{rendered}");
+        assert!(rendered.contains("Android"), "{rendered}");
     }
 
     #[test]

@@ -96,6 +96,14 @@ object HydrolysisEnvironment {
         mainHandler.post {
             Os.setenv("WATERUI_ASSETS_ROOT", assetsRoot.absolutePath, true)
             Os.setenv("WATER_CACHE_DIR", appContext.cacheDir.absolutePath, true)
+            // The inspector's token advertisement lives in the app's
+            // private cache — readable by an authorized `run-as` on a
+            // debuggable build, never in a shared temp dir or a log.
+            Os.setenv(
+                "WATERUI_INSPECTOR_DISCOVERY_DIR",
+                File(appContext.cacheDir, "waterui-inspector").absolutePath,
+                true,
+            )
             val continuations = synchronized(this) {
                 prepared = true
                 syncRunning = false
