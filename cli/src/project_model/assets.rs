@@ -2783,6 +2783,7 @@ mod tests {
         assert!(!registry.fonts.is_empty());
         assert!(registry.origin("Inter").is_some());
         assert!(registry.origin("Roboto").is_some());
+        assert!(registry.origin("Noto Sans").is_some());
         assert!(registry.origin("Noto Sans CJK SC").is_some());
         assert!(registry.origin("Noto Color Emoji").is_some());
         // Every entry pins the digest of what its URL serves.
