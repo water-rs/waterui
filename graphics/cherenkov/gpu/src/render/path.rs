@@ -96,6 +96,59 @@ pub fn flatten_segments(path: &BezPath, tolerance: f64) -> (Vec<(f32, f32, f32, 
     (segments, bbox)
 }
 
+/// Which route turns a path's flattened segments into coverage.
+///
+/// The CPU sweep is the only route today. water-rs/waterui#2536's GPU
+/// coverage route is added by water-rs/waterui#2543: it adds a variant
+/// here, grows [`route`] into the predicate of that specification's
+/// section 6 over the inputs `route` already takes, and the route
+/// differential (`route_diff.rs`) compares the two images under section
+/// 4.3 threshold 4.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoverageRoute {
+    /// The scanline sweep of this module: `O((n + k) log n)` in `n`
+    /// segments and `k` crossings.
+    Sweep,
+}
+
+// The test-only route override. Decision T2 of the coverage specification:
+// large scenes select the GPU route by themselves, and a route is never
+// forced through public API — the route-equivalence tests reach this hook
+// from inside the crate instead.
+#[cfg(test)]
+thread_local! {
+    static FORCED_ROUTE: std::cell::Cell<Option<CoverageRoute>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Forces `route` for every rasterization on this thread until it is reset
+/// with `None`. Test-only, and never reachable from public API.
+#[cfg(test)]
+pub fn force_route(route: Option<CoverageRoute>) {
+    FORCED_ROUTE.with(|forced| forced.set(route));
+}
+
+/// The route a rasterization takes. One route exists, so there is nothing
+/// to decide and the function takes no inputs: #2543 gives it the
+/// route-selection inputs of the coverage specification's section 6 — the
+/// flattened segment count, the coverage grid's device bounds, the surface
+/// rect and `SharedDevice::has_compute` — along with the variant that
+/// needs them.
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::missing_const_for_fn,
+        reason = "the test build reads the thread-local override"
+    )
+)]
+fn route() -> CoverageRoute {
+    #[cfg(test)]
+    if let Some(forced) = FORCED_ROUTE.with(std::cell::Cell::get) {
+        return forced;
+    }
+    CoverageRoute::Sweep
+}
+
 /// A coverage grid over an integer device-space rect.
 pub struct Coverage {
     /// Device origin of the grid.
@@ -116,10 +169,27 @@ pub struct Coverage {
 /// Rasterizes flattened device-space `segments` spanning `bbox` under
 /// `rule`, over `bbox` inflated by 1 px and clipped to the surface rect.
 /// `None` when the path misses the surface entirely.
+///
+/// [`route`] picks which route does it; every route returns the same
+/// [`Coverage`] grid, to within section 4.3 threshold 4 of the coverage
+/// specification.
+pub fn rasterize(
+    segments: &[(f32, f32, f32, f32)],
+    bbox: Rect,
+    surface: (f64, f64),
+    rule: FillRule,
+) -> Option<Coverage> {
+    match route() {
+        CoverageRoute::Sweep => sweep(segments, bbox, surface, rule),
+    }
+}
+
+/// The CPU sweep route: `resolve_winding` turns self-intersections into a
+/// non-zero cover and the scanline raster accumulates signed area.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_sign_loss)]
 #[expect(clippy::cast_precision_loss)]
-pub fn rasterize(
+fn sweep(
     segments: &[(f32, f32, f32, f32)],
     bbox: Rect,
     surface: (f64, f64),
@@ -813,3 +883,6 @@ mod tests {
 
 #[cfg(test)]
 mod hash_identity;
+
+#[cfg(test)]
+mod route_diff;

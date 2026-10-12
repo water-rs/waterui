@@ -97,6 +97,22 @@ retries = { backoff = "fixed", count = 2, delay = "1s" }
 filter = 'package(waterui-cli)'
 retries = { backoff = "fixed", count = 2, delay = "1s" }
 
+# The large-path gates of water-rs/waterui#2546 are legitimately slow: each
+# renders the eight large-path corpus scenes — up to 10k flattened segments
+# over a 1024x768 surface — twice over, and `large_paths` also computes the
+# oracle's f64 reference for every one of them. Locally, in a debug build on
+# a Metal device, each takes about a minute; on CI's software rasterizer, in
+# an unoptimized build, several. The ceiling is raised rather than the
+# coverage cut, as for the benches above: these are the gates the GPU
+# coverage route (water-rs/waterui#2543) has to pass.
+[[profile.default.overrides]]
+filter = 'test(route_diff) or test(large_paths_match_the_oracle)'
+slow-timeout = { period = "300s", terminate-after = 6 }
+
+[[profile.ci.overrides]]
+filter = 'test(route_diff) or test(large_paths_match_the_oracle)'
+slow-timeout = { period = "300s", terminate-after = 6 }
+
 # How many wgpu devices may exist at once on the Windows runner.
 #
 # Every package in the filter mounts a `waterui-testing` host or creates a
