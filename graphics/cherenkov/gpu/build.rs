@@ -383,9 +383,12 @@ fn compile(out_dir: &Path, spec: &Spec, apple: Option<&AppleTarget>, wasm: bool,
     if spec.name == "engine_tile" {
         tile::attachment_inputs(&mut module);
     }
-    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16)
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     if wasm {
         return;
     }
@@ -815,9 +818,12 @@ fn merge_sampled_pair(words: &mut Vec<u32>, binding_tex: u32, binding_smp: u32, 
 
 fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option<&AppleTarget>) {
     let module = pin_runtime_arrays(module);
-    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16)
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     let options = msl::Options {
         // The floor Metal language version wgpu selects on supported
         // hardware; the shader test covers the same value.

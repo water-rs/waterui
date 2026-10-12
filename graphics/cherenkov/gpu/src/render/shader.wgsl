@@ -517,7 +517,7 @@ fn backdrop_field(q: vec2<f32>) -> BackdropField {
     let inst = instances[backdrop_member];
     // union-stub
     if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
-        let u = union_field(bitcast<u32>(inst.uv.x), bitcast<u32>(inst.uv.y), q);
+        let u = union_field(bitcast<u32>(inst.inner.half.x), bitcast<u32>(inst.inner.half.y), q);
         return BackdropField(u.d, u.n, u.w_own);
     }
     // union-stub
@@ -569,7 +569,7 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     var px: BackdropPixel;
     px.p = pixel;
     px.size = inst.grad2.zw;
-    px.scale = inst.color.x;
+    px.scale = inst.inner.aspect;
     px.local = apply_inverse(inst.affine, pixel);
     // union-stub
     if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
@@ -895,11 +895,11 @@ fn fs_full(in: VsOut) -> vec4<f32> {
         // A union member's instance clip carries the ancestors only; the
         // member's own coverage term is the ownership-weighted union
         // field `w_own · AA(field < outer)`, `outer` in params.x. The
-        // record base and member index arrive bitcast in `uv.xy` — read
-        // from `instances` storage, not a varying: the small u32s are
+        // record base and member index arrive bitcast in `inner.half` —
+        // read from `instances` storage, not a varying: the small u32s are
         // subnormals as f32 and could flush to zero.
-        let base = bitcast<u32>(instances[i].uv.x);
-        let ord = bitcast<u32>(instances[i].uv.y);
+        let base = bitcast<u32>(instances[i].inner.half.x);
+        let ord = bitcast<u32>(instances[i].inner.half.y);
         member_field = union_field(base, ord, in.device);
         cov *= union_coverage(member_field, instances[i].params.x);
     }

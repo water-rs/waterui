@@ -575,7 +575,8 @@ impl SurfaceState {
             .shader_textures
             .values()
             .map(|texture| {
-                u64::from(texture.image.width) * u64::from(texture.image.height) * 8 + 272
+                u64::from(texture.image.width) * u64::from(texture.image.height) * 8
+                    + std::mem::size_of::<instance::Instance>() as u64
             })
             .sum::<u64>();
         surface_bytes * (1 + self.parts.len() as u64)
@@ -2375,7 +2376,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         });
         let instances = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
-            size: 272 * 16,
+            size: std::mem::size_of::<instance::Instance>() as u64 * 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -2566,7 +2567,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             )]
             exports: FxHashMap::default(),
             bound_atlas: 0,
-            bound_instance_size: 272 * 16,
+            bound_instance_size: std::mem::size_of::<instance::Instance>() as u64 * 16,
             bound_stop_size: 32 * 16,
             bound_globals_size: 256,
             atlas,
@@ -2731,7 +2732,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     });
     let instances = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("instances"),
-        size: 272 * 16,
+        size: std::mem::size_of::<instance::Instance>() as u64 * 16,
         usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -2883,7 +2884,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         )]
         exports: FxHashMap::default(),
         bound_atlas: 0,
-        bound_instance_size: 272 * 16,
+        bound_instance_size: std::mem::size_of::<instance::Instance>() as u64 * 16,
         bound_stop_size: 32 * 16,
         bound_globals_size: 256,
         atlas,
@@ -3722,7 +3723,7 @@ impl Renderer for GpuRenderer {
             "instances",
             diag::Class::Buffer,
             self.instances.size(),
-            272 * 16,
+            std::mem::size_of::<instance::Instance>() as u64 * 16,
             0,
             true,
         );
@@ -3746,7 +3747,7 @@ impl Renderer for GpuRenderer {
         );
         self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
-            size: 272 * 16,
+            size: std::mem::size_of::<instance::Instance>() as u64 * 16,
             usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -6802,7 +6803,10 @@ impl GpuRenderer {
                 let flags = inst.meta[3] >> 24;
                 if flags & instance::FLAG_HAS_MASK != 0
                     && flags & instance::FLAG_MASK_TEXTURE == 0
-                    && let Some(slot) = self.atlas.shelf_at(inst.uv[2], inst.uv[3])
+                    && let Some(slot) = {
+                        let [mx, my] = instance::unpack_uv(inst.uv[1]);
+                        self.atlas.shelf_at(mx, my)
+                    }
                 {
                     touches.push(slot);
                 }
@@ -6924,8 +6928,8 @@ impl GpuRenderer {
                     for i in emission.pending_cells() {
                         let (inst, p, c) = lowered.emission_patches[i];
                         let local = inst - emission.cell_inst_base();
-                        content.storage.instances[emission.instances.start + local as usize].uv
-                            [..2]
+                        content.storage.instances[emission.instances.start + local as usize]
+                            .uv
                             .copy_from_slice(&cell_origin(p, c));
                         if let PendingOrigin::Cells(_, bands) = &origins[p as usize] {
                             content.storage.refs.extend(
@@ -6966,13 +6970,13 @@ impl GpuRenderer {
         }
         for (inst, p, c) in lowered.cell_patches.drain(..) {
             let [x, y] = cell_origin(p, c);
-            surf.frame.instances[inst as usize].uv[..2].copy_from_slice(&[x, y]);
+            surf.frame.instances[inst as usize].uv[0] = instance::pack_uv(x, y);
         }
         for (inst, p) in lowered.mask_patches.drain(..) {
             let PendingOrigin::Mask(origin) = &origins[p as usize] else {
                 unreachable!("mask patch must reference mask raster");
             };
-            surf.frame.instances[inst as usize].uv[2..].copy_from_slice(origin);
+            surf.frame.instances[inst as usize].uv[1] = instance::pack_uv(origin[0], origin[1]);
         }
         self.pending_origins = origins;
         Ok(())
@@ -7659,11 +7663,12 @@ impl GpuRenderer {
         if stop_base != 0 {
             for inst in &mut surf.frame.instances {
                 inst.meta[2] += stop_base;
-                // A union member's `uv[0]` bitcast holds its record run's
-                // base `Stop` index inside the surface's stops section;
-                // shift it into the shared frame buffer's coordinates.
+                // A union member's `inner.half[0]` bitcast holds its
+                // record run's base `Stop` index inside the surface's
+                // stops section; shift it into the shared frame buffer's
+                // coordinates.
                 if inst.meta[3] >> 24 & instance::FLAG_UNION != 0 {
-                    inst.uv[0] = f32::from_bits(inst.uv[0].to_bits() + stop_base);
+                    inst.inner.half[0] = f32::from_bits(inst.inner.half[0].to_bits() + stop_base);
                 }
             }
         }

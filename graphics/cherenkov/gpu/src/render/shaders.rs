@@ -189,7 +189,8 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
         // SHADER_FLOAT16 is on the engine floor: the shared prelude the
         // user source joins carries f16 arithmetic.
         naga::valid::Capabilities::default()
-            .union(naga::valid::Capabilities::SHADER_FLOAT16),
+            .union(naga::valid::Capabilities::SHADER_FLOAT16)
+            .union(naga::valid::Capabilities::SHADER_FLOAT16_IN_FLOAT32),
     )
     .validate(&module)
     .map_err(|error| ResourceError::Shader(error.emit_to_string(text)))?;
