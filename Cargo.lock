@@ -13004,10 +13004,12 @@ version = "0.5.1"
 dependencies = [
  "bincode 2.0.1",
  "bitflags 2.13.2",
+ "dirs 7.0.0",
  "futures-lite",
  "libc",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.21",
  "windows-sys 0.61.2",
 ]
