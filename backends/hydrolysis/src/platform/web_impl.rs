@@ -55,9 +55,9 @@ impl core::fmt::Debug for BrowserSurface {
 }
 
 impl BrowserSurface {
-    #[expect(
+    #[allow(
         clippy::future_not_send,
-        reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
+        reason = "the future runs on the browser main thread via spawn_local; wgpu handles' Send bound varies with Cargo feature unification"
     )]
     pub async fn new(root: HtmlElement, width: u32, height: u32) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
@@ -333,11 +333,13 @@ impl BrowserWindow {
 
     /// The page's safe area: the binding the runner installs as the
     /// window's `WindowSafeArea`.
+    #[must_use]
     pub fn safe_area(&self) -> nami::Binding<waterui_layout::padding::EdgeInsets> {
         self.safe_area.clone()
     }
 
     /// Consumes the pending redraw request, reporting whether one was set.
+    #[must_use]
     pub fn take_redraw_request(&self) -> bool {
         self.redraw_requested.replace(false)
     }

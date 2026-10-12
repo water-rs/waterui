@@ -461,9 +461,9 @@ impl Backend for Gpu {
     }
 
     #[cfg(target_arch = "wasm32")]
-    #[expect(
+    #[allow(
         clippy::future_not_send,
-        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+        reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
     )]
     async fn init(config: GpuConfig) -> Result<(Self::Renderer, Self::Info), EngineError> {
         render::init(config).await
