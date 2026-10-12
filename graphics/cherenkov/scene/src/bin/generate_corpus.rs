@@ -3532,6 +3532,26 @@ fn run() -> Result<(), SceneError> {
         });
     });
 
+    // A deep stack of translucent layers at alpha ≈ 0.02: the packed
+    // instance colour quantises alpha to f16, whose resolution at this
+    // magnitude is ~1e-5, so each layer's share survives rounding.
+    corpus.scene("alpha-stack", 96, 96, white, |l| {
+        l.fill(
+            Shape::rect(0.0, 0.0, 96.0, 96.0),
+            solid(srgb(0.05, 0.05, 0.08)),
+        );
+        for i in 0..8u32 {
+            let f = f64::from(i);
+            l.layer(|a| {
+                a.opacity(0.02);
+                a.fill(
+                    Shape::rect(8.0 + 8.0 * f, 8.0, 72.0 - 8.0 * f, 80.0),
+                    solid(srgb(0.9, 0.4 + 0.05 * (f as f32), 0.2)),
+                );
+            });
+        }
+    });
+
     corpus.scene("transform-rotate", 128, 128, white, |l| {
         l.layer(|a| {
             a.transform(rotate_about(0.6, Point::new(64.0, 64.0)));
@@ -4070,7 +4090,25 @@ fn run() -> Result<(), SceneError> {
             color: hdr(16.0, 2.0, 0.5),
         },
     ];
-    for (suffix, stops) in [("p3", stops_p3), ("hdr", stops_hdr)] {
+    // Dark gradients: stops below 0.06 luminance in the working space.
+    // f16 keeps sub-0.001 absolute steps here (ulp ≈ 6e-8 at 0.06), so
+    // any banding or stepping is a real precision failure, not a format
+    // limit.
+    let stops_dark = vec![
+        GradientStop {
+            offset: 0.0,
+            color: Color::new(ColorSpace::LinearP3, [0.0, 0.0, 0.0, 1.0]),
+        },
+        GradientStop {
+            offset: 0.5,
+            color: Color::new(ColorSpace::LinearP3, [0.008, 0.010, 0.018, 1.0]),
+        },
+        GradientStop {
+            offset: 1.0,
+            color: Color::new(ColorSpace::LinearP3, [0.05, 0.045, 0.06, 1.0]),
+        },
+    ];
+    for (suffix, stops) in [("p3", stops_p3), ("hdr", stops_hdr), ("dark", stops_dark)] {
         corpus.scene(format!("grad-linear-{suffix}"), 128, 128, white, |l| {
             l.fill(
                 gradient_rect.clone(),
