@@ -36,7 +36,11 @@ exceeds `--exponent`. Nothing here gates CI in the meantime.
 
 Callgrind runs on Linux only (and `ir_gate`'s dump watcher is built on
 `inotify` and `timerfd`), so `measure` refuses to run anywhere else instead of
-reporting a number it did not measure.
+reporting a number it did not measure. No measurement of this series exists
+yet for the same reason: it is taken on Linux, on the lane that already runs
+`ir_gate.py`, and the first real exponent for the CPU sweep comes from there.
+The figures in `test_lower_scaling.py` are synthetic inputs chosen to exercise
+the fit (`segments ** 1.4` and `40 * segments`), not measurements of anything.
 
   lower_scaling.py measure --binary B --tag T --repo R --out O [--jobs N]
   lower_scaling.py report  --out O --tag T [--exponent 1.1] [--gate]
