@@ -295,9 +295,14 @@ pub struct Composition {
     /// planner's stable reason names (`"neighborhood-read"`,
     /// `"slot-limit"`, ...). Sorted, so the JSON is stable.
     pub reasons: BTreeMap<&'static str, u32>,
-    /// Peak memoryless attachment bytes — tile storage the frame did not
-    /// take from device memory.
-    pub peak_memoryless_bytes: u64,
+    /// Peak tile attachment bytes the frame reserved — storage it
+    /// expects tile memory, not device memory, to hold.
+    pub peak_reserved_bytes: u64,
+    /// What the device reports it actually committed for those
+    /// attachments. `None` where the platform has no such query
+    /// (Apple's memoryless textures), so the reserved figure is all
+    /// that is known.
+    pub peak_committed_bytes: Option<u64>,
     /// Peak device-memory attachment bytes the composition plan governs.
     pub peak_backed_bytes: u64,
     /// Logical bytes written into intermediates.

@@ -239,8 +239,8 @@ enum Sub {
         /// Record the #2547 composition attribution with every frame
         /// sample: the epochs the frame kept on chip, the images it
         /// materialized with the planner's reason for each, the
-        /// attachment bytes split into memoryless and backed, and the
-        /// logical intermediate traffic. The collection allocates per
+        /// attachment bytes split into reserved, committed and backed,
+        /// and the logical intermediate traffic. The collection allocates per
         /// frame, so a run that compares timings leaves it off.
         #[arg(long)]
         composition: bool,
@@ -1315,7 +1315,8 @@ fn log_measure_details(dir: &Path, report: &MeasureReport, out_path: &Path) {
             materialized_images = composition.materialized_images,
             materialized_logical_bytes = composition.materialized_logical_bytes,
             reasons = ?composition.reasons,
-            memoryless_bytes = composition.peak_memoryless_bytes,
+            reserved_bytes = composition.peak_reserved_bytes,
+            committed_bytes = ?composition.peak_committed_bytes,
             backed_bytes = composition.peak_backed_bytes,
             written = composition.logical_bytes_written,
             read = composition.logical_bytes_read,

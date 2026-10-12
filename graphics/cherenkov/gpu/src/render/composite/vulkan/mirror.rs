@@ -138,6 +138,10 @@ impl std::error::Error for MirrorError {}
 /// the engine finishes creating targets, images and atlases before
 /// encode, so this cannot move within a frame.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "each field is a generation counter, and `gen` is what names one"
+)]
 pub struct Stamp {
     /// The surface's bind generation — bumped whenever its targets are
     /// re-created.
@@ -395,39 +399,46 @@ impl Mirror {
     /// released and the cap is reached, and [`MirrorError::Vulkan`]
     /// when a pool cannot be reset or created.
     pub fn begin_frame(&mut self, stamp: Stamp) -> Result<(), MirrorError> {
-        debug_assert!(self.active.is_none(), "a tile frame is already open");
+        if let Some(index) = self.active.take() {
+            // The previous frame never closed, so its encode failed
+            // before the surface submitted. Its command buffers were
+            // dropped unsubmitted and nothing ever referenced its sets,
+            // so its pools are free again immediately — the release the
+            // submission would have given them.
+            self.frames[index].idle.store(true, Ordering::Release);
+        }
         let free = self
             .frames
             .iter()
             .position(|frame| frame.idle.load(Ordering::Acquire));
-        let index = match free {
-            Some(index) => {
-                let frame = &mut self.frames[index];
-                for pool in &frame.pools {
-                    // SAFETY: `pool` was created on `self.device` by
-                    // this mirror, and `idle` says every command buffer
-                    // that referenced its sets has retired.
-                    unsafe { self.device.reset_descriptor_pool(*pool, Default::default()) }
-                        .map_err(|e| MirrorError::Vulkan("vkResetDescriptorPool", e))?;
+        let index = if let Some(index) = free {
+            let frame = &mut self.frames[index];
+            for pool in &frame.pools {
+                // SAFETY: `pool` was created on `self.device` by
+                // this mirror, and `idle` says every command buffer
+                // that referenced its sets has retired.
+                unsafe {
+                    self.device
+                        .reset_descriptor_pool(*pool, vk::DescriptorPoolResetFlags::default())
                 }
-                frame.sets.clear();
-                frame.allocated = 0;
-                frame.idle.store(false, Ordering::Release);
-                index
+                .map_err(|e| MirrorError::Vulkan("vkResetDescriptorPool", e))?;
             }
-            None => {
-                if self.frames.len() >= MAX_FRAMES {
-                    return Err(MirrorError::PoolsExhausted);
-                }
-                let pool = self.create_pool()?;
-                self.frames.push(FrameSets {
-                    pools: vec![pool],
-                    sets: FxHashMap::default(),
-                    allocated: 0,
-                    idle: Arc::new(AtomicBool::new(false)),
-                });
-                self.frames.len() - 1
+            frame.sets.clear();
+            frame.allocated = 0;
+            frame.idle.store(false, Ordering::Release);
+            index
+        } else {
+            if self.frames.len() >= MAX_FRAMES {
+                return Err(MirrorError::PoolsExhausted);
             }
+            let pool = self.create_pool()?;
+            self.frames.push(FrameSets {
+                pools: vec![pool],
+                sets: FxHashMap::default(),
+                allocated: 0,
+                idle: Arc::new(AtomicBool::new(false)),
+            });
+            self.frames.len() - 1
         };
         self.active = Some(index);
         self.stamp = Some(stamp);
@@ -518,6 +529,36 @@ impl Mirror {
             .filter(|entry| entry.used)
             .flat_map(|entry| entry.slots.iter())
             .map(|slot| slot.size)
+            .sum()
+    }
+
+    /// Every live transient attachment's reserved bytes, this frame's
+    /// and the sizes a previous frame left allocated.
+    ///
+    /// This is the steady-state figure `Engine::memory` reports, so it
+    /// cannot be scoped to a frame the way [`Self::memoryless_bytes`]
+    /// is: between frames nothing is "used", and the allocations are
+    /// still there.
+    #[must_use]
+    pub fn reserved_bytes(&self) -> u64 {
+        self.attachments
+            .values()
+            .flat_map(|entry| entry.slots.iter())
+            .map(|slot| slot.size)
+            .sum()
+    }
+
+    /// What the driver reports committed across every live transient
+    /// attachment — the device memory [`Self::reserved_bytes`] actually
+    /// cost.
+    #[must_use]
+    pub fn committed_total_bytes(&self) -> u64 {
+        self.attachments
+            .values()
+            .flat_map(|entry| entry.slots.iter())
+            // SAFETY: each `slot.memory` was allocated on
+            // `self.device` by this mirror and is live.
+            .map(|slot| unsafe { self.device.get_device_memory_commitment(slot.memory) })
             .sum()
     }
 
@@ -1099,11 +1140,17 @@ impl Mirror {
             (self
                 .local_read
                 .fp()
-                .cmd_set_rendering_attachment_locations_khr)(cb, &location_info);
+                .cmd_set_rendering_attachment_locations_khr)(
+                cb,
+                std::ptr::from_ref(&location_info),
+            );
             (self
                 .local_read
                 .fp()
-                .cmd_set_rendering_input_attachment_indices_khr)(cb, &index_info);
+                .cmd_set_rendering_input_attachment_indices_khr)(
+                cb,
+                std::ptr::from_ref(&index_info),
+            );
         }
     }
 
@@ -1291,17 +1338,17 @@ impl Built {
         // and in order, so the layouts above can name the bindings
         // directly — but only while that holds, and a table edited out
         // of order must not silently misbind the mirror.
-        for (group, bindings) in [(ENGINE_GROUP0, group0.len()), (ENGINE_GROUP1, group1.len())] {
-            for binding in 0..u32::try_from(bindings).expect("four bindings") {
+        for (group, count) in [(ENGINE_GROUP0, group0.len()), (ENGINE_GROUP1, group1.len())] {
+            for ordinal in 0..u32::try_from(count).expect("four bindings") {
                 assert_eq!(
-                    vulkan_slot(group, binding),
-                    binding,
+                    vulkan_slot(group, ordinal),
+                    ordinal,
                     "the engine binding tables are no longer in ordinal order"
                 );
             }
         }
-        let groups: [&[vk::DescriptorSetLayoutBinding<'_>]; 3] = [&group0, &group1, &group2];
-        for (slot, bindings) in groups.iter().enumerate() {
+        let tables: [&[vk::DescriptorSetLayoutBinding<'_>]; 3] = [&group0, &group1, &group2];
+        for (slot, bindings) in tables.iter().enumerate() {
             // SAFETY: `device` is live and the info points at the
             // bindings slice, which outlives the call.
             self.set_layouts[slot] = unsafe {

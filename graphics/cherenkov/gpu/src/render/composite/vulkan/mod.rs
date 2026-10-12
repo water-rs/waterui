@@ -46,7 +46,7 @@ use std::ffi::CStr;
 
 use ash::vk;
 
-pub use mirror::{Mirror, MirrorError, SLOTS};
+pub use mirror::{Mirror, SLOTS};
 
 /// What a Vulkan device's *enabled* capabilities let a tile epoch do.
 ///

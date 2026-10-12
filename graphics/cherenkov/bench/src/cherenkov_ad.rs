@@ -1602,7 +1602,10 @@ fn composition_sample(reports: &[cherenkov_gpu::composition::FrameReport]) -> cr
         for image in &report.materialized {
             *sample.reasons.entry(image.reason.name()).or_default() += 1;
         }
-        sample.peak_memoryless_bytes += report.attachments.peak_memoryless_bytes;
+        sample.peak_reserved_bytes += report.attachments.peak_reserved_bytes;
+        if let Some(committed) = report.attachments.peak_committed_bytes {
+            *sample.peak_committed_bytes.get_or_insert(0) += committed;
+        }
         sample.peak_backed_bytes += report.attachments.peak_backed_bytes;
         sample.logical_bytes_written += report.traffic.logical_bytes_written;
         sample.logical_bytes_read += report.traffic.logical_bytes_read;

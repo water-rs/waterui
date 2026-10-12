@@ -340,6 +340,10 @@ struct Epoch<'a> {
     clippy::cast_precision_loss,
     reason = "attachment coordinates are pixel counts and fit exactly in f32"
 )]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one rendering scope: its barriers, its attachments and its draws"
+)]
 unsafe fn record(
     mirror: &mut Mirror,
     cb: vk::CommandBuffer,
@@ -406,15 +410,15 @@ unsafe fn record(
                 // The epoch's output is stored, and loaded or cleared
                 // exactly as the canonical pass that opens it asks.
                 let info = info.store_op(vk::AttachmentStoreOp::STORE);
-                match epoch.clear {
-                    Some(c) => {
+                epoch.clear.map_or_else(
+                    || info.load_op(vk::AttachmentLoadOp::LOAD),
+                    |c| {
                         info.load_op(vk::AttachmentLoadOp::CLEAR)
                             .clear_value(vk::ClearValue {
                                 color: vk::ClearColorValue { float32: c },
                             })
-                    }
-                    None => info.load_op(vk::AttachmentLoadOp::LOAD),
-                }
+                    },
+                )
             } else {
                 // A transient slot opens transparent and is never
                 // stored: its contents exist only for this rendering.

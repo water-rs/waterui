@@ -11,10 +11,11 @@
 //! [`Materialization::NoExecutor`].
 
 // A target with no executor never calls the planner, so every item here
-// is unreachable there. Apple uses all of them, and #2191's Vulkan
-// executor will use them on the rest.
+// is unreachable there. Both executors — Apple's (#2549) and Vulkan's
+// (#2191) — use all of it, so only a target with neither has dead code
+// here.
 #![cfg_attr(
-    not(target_vendor = "apple"),
+    not(unix),
     expect(
         dead_code,
         reason = "no tile executor on this target, so nothing plans (#2549)"
@@ -143,8 +144,18 @@ pub struct ExecutionPlan {
     /// Whether a backend planned this frame at all. A target whose
     /// backend has no tile executor supplies no [`Limits`], so its plan
     /// stays in this default state: no epoch, and every image
-    /// materialized for [`Materialization::NoExecutor`].
+    /// materialized for [`Self::unplanned`]'s reason.
     planned: bool,
+    /// Why no plan was built, while `planned` is false.
+    ///
+    /// `None` is the default state [`Materialization::NoExecutor`]
+    /// names: the target has no tile executor and nothing asked. A
+    /// backend that *has* an executor but could not install it —
+    /// because the device lacks what it needs, or the engine is
+    /// configured with a format it cannot bind — records that reason
+    /// here through [`ExecutionPlan::set_unplanned`], so the
+    /// attribution says which (#2191).
+    unplanned: Option<Materialization>,
 }
 
 impl ExecutionPlan {
@@ -560,12 +571,28 @@ impl ExecutionPlan {
         self.planned
     }
 
+    /// Records that this frame is not planned, and why.
+    ///
+    /// The backend calls this instead of [`Self::build`] when it has an
+    /// executor it could not install, so [`Self::materialization`]
+    /// names the real obstacle rather than the generic
+    /// [`Materialization::NoExecutor`]. Any plan a previous frame built
+    /// is discarded: an unplanned frame has no epochs.
+    pub fn set_unplanned(&mut self, reason: Materialization) {
+        if self.planned || self.unplanned != Some(reason) {
+            *self = Self {
+                unplanned: Some(reason),
+                ..Self::default()
+            };
+        }
+    }
+
     /// Why the image `pass` writes reaches device memory; `None` when an
     /// epoch keeps it on chip. The pass needs a backed scratch attachment
     /// exactly when this is `Some`.
     pub fn materialization(&self, pass: usize) -> Option<Materialization> {
         if !self.planned {
-            return Some(Materialization::NoExecutor);
+            return Some(self.unplanned.unwrap_or(Materialization::NoExecutor));
         }
         match self.images[self.targets[pass].0].storage {
             Storage::OnChip => None,

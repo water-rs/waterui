@@ -48,6 +48,19 @@ pub struct MemoryUsage {
     pub gpu: Bytes,
     /// CPU-side cache bytes.
     pub cpu: Bytes,
+    /// Tile-composition attachment bytes the engine reserved: storage
+    /// it asked the device for and expects tile memory, not device
+    /// memory, to hold. *Not* included in `gpu` — only
+    /// `tile_committed` is.
+    pub tile_reserved: Bytes,
+    /// What the device reports it actually committed for those
+    /// attachments; included in `gpu`.
+    ///
+    /// `Some(0)` is the intended state: every slot stayed on chip.
+    /// `None` where the platform cannot be asked — Metal's memoryless
+    /// textures have no commitment to read — so only `tile_reserved`
+    /// is known there.
+    pub tile_committed: Option<Bytes>,
     /// Backdrop-group capture textures, in bytes; included in `gpu`.
     pub backdrop_captures: Bytes,
     /// Texture format of the backdrop captures (`"rgba16float"` normally),

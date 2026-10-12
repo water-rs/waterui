@@ -75,9 +75,21 @@ pub enum Materialization {
     /// same pass wrote and no epoch can form.
     Ordering,
     /// This target has no tile executor at all, so the frame is never
-    /// planned and every logical image is materialized (issue #2549;
-    /// issue #2191 tracks the Vulkan executor).
+    /// planned and every logical image is materialized (issue #2549).
     NoExecutor,
+    /// The target has a tile executor, but *this device* was not opened
+    /// with the capabilities it needs, so the engine installed none and
+    /// the frame is never planned.
+    ///
+    /// On Vulkan the executor needs a rendering scope's colour
+    /// attachments to be readable per pixel — `dynamicRendering`,
+    /// `VK_KHR_dynamic_rendering_local_read` and rasterization-order
+    /// attachment access together. A device missing local read offers
+    /// no attachment read at all; one missing ordered access offers it
+    /// only between draws, which cannot carry the engine's
+    /// same-pass read-after-write (#2191). Both land here, because the
+    /// distinction is the device's, not the plan's.
+    DeviceAccess,
 }
 
 impl Materialization {
@@ -98,6 +110,7 @@ impl Materialization {
             Self::UnsupportedOp => "unsupported-op",
             Self::Ordering => "ordering",
             Self::NoExecutor => "no-executor",
+            Self::DeviceAccess => "device-access",
         }
     }
 }
@@ -267,15 +280,30 @@ pub struct OnChipImage {
 
 /// The attachment storage one surface's frame held.
 ///
-/// Both numbers are peaks over the frame: the renderer allocates a
+/// Every number is a peak over the frame: the renderer allocates a
 /// surface's attachments for the whole frame, so each is the storage
 /// bound while any pass of the frame is encoded.
+///
+/// The tile slots are reported twice, because the two answers are not
+/// the same question. *Reserved* is what the epochs' slots would have
+/// cost in device memory — the saving claimed by keeping them on chip.
+/// *Committed* is what the device says it actually spent on them, and
+/// only a platform that can be asked reports it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AttachmentBytes {
-    /// Bytes of memoryless attachments — the epochs' tile slots. Their
-    /// contents never leave tile memory, so this is storage the frame
-    /// did *not* take from device memory.
-    pub peak_memoryless_bytes: u64,
+    /// Bytes the epochs' tile slots reserve. Their contents are not
+    /// meant to leave tile memory, so this is storage the frame asked
+    /// for but does not expect to take from device memory.
+    pub peak_reserved_bytes: u64,
+    /// Bytes the device reports committed for those slots.
+    ///
+    /// `Some(0)` is the good case: every slot stayed on chip. A larger
+    /// value is the driver admitting it had to back some of them, and
+    /// that is real device memory the reserved figure would have hidden.
+    /// `None` where the platform has no such query — Metal's
+    /// `MTLStorageMode::Memoryless` has no commitment to read, so Apple
+    /// reports only the reserved figure.
+    pub peak_committed_bytes: Option<u64>,
     /// Bytes of device-memory attachments the frame bound: the surface
     /// parts and the materialized isolation scratches.
     pub peak_backed_bytes: u64,
