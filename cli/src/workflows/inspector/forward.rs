@@ -13,6 +13,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
 use eyre::{Context as _, Result};
+use futures_util::future::{Either, select};
 use tracing::debug;
 
 use crate::android::adb::Adb;
@@ -46,9 +47,18 @@ impl AndroidForward {
     /// Returns an error when `adb` cannot be located, its server cannot be
     /// started, or the forward cannot be created.
     pub async fn open(host: &Host, serial: &str, device_port: u16) -> Result<Self> {
-        let adb = Adb::locate(host)
-            .await
-            .wrap_err("Failed to locate adb for the inspector's connection to the device")?;
+        // `locate` is bounded like the forward verbs themselves: nothing is
+        // acquired yet, so a wedged server lookup fails rather than holding
+        // the caller forever.
+        let locate = std::pin::pin!(Adb::locate(host));
+        let deadline = std::pin::pin!(smol::Timer::after(FORWARD_DEADLINE));
+        let adb = match select(locate, deadline).await {
+            Either::Left((result, _)) => result
+                .wrap_err("Failed to locate adb for the inspector's connection to the device")?,
+            Either::Right(_) => {
+                eyre::bail!("timed out locating adb for the inspector's connection to the device");
+            }
+        };
         let remote = format!("tcp:{device_port}");
 
         let local_port = adb

@@ -8,7 +8,9 @@ use eyre::Result;
 
 use crate::shell::Shell;
 use crate::{header, note, success};
-use waterui_cli::inspector::{InspectorLaunchOptions, InspectorTarget, launch_inspector_session};
+use waterui_cli::inspector::{
+    InspectorLaunchOptions, InspectorTarget, PreparedInspector, prepare_inspector,
+};
 
 /// Where the application being inspected runs.
 ///
@@ -125,18 +127,15 @@ impl Args {
     }
 }
 
-/// Run the inspector command.
-pub async fn run(shell: &Shell, args: Args) -> Result<()> {
-    // The client never runs where the inspected application is: a phone or
-    // simulator cannot show the inspector and keep the inspected application
-    // answering — Android freezes whichever of the two is in the background
-    // (water-rs/waterui#2230). A target's platform only chooses how its
-    // endpoint is reached.
-    if args.device.is_some() && args.platform != CliInspectorPlatform::Android {
-        eyre::bail!("`--device` is supported only with `--platform android`.");
-    }
-    require_device_endpoint(args.platform, args.target.as_deref(), args.token.as_deref())?;
-
+/// The resource-free half of the command: project canonicalisation,
+/// endpoint discovery or parse, target-device selection, and the client's
+/// build — everything that can be interrupted without leaving a forward,
+/// a credential or a process behind.
+async fn prepare_selected_inspector(
+    shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
+    args: Args,
+) -> Result<(PreparedInspector, InspectorLaunchOptions)> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
 
     header!(shell, "Inspector");
@@ -158,13 +157,12 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     note!(shell, "Target runtime endpoint: {}", target);
 
-    let host = waterui_cli::toolchain::Host::current();
     let inspector_target = match args.platform {
         CliInspectorPlatform::Android => {
             let spinner = shell.spinner("Scanning for devices...");
             let device = super::select_android_target(
                 shell,
-                &host,
+                host,
                 waterui_cli::water_dir::device_memory_key(
                     waterui_cli::platform::TargetBackend::Hydrolysis,
                     waterui_cli::platform::TargetPlatform::Android,
@@ -178,7 +176,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
             }
             // An emulator has no serial before it boots, and adb cannot
             // forward to a device that is not up.
-            let serial = device?.launch(&host).await?.identifier().to_owned();
+            let serial = device?.launch(host).await?.identifier().to_owned();
             note!(
                 shell,
                 "Forwarding a local port to {} on {serial}",
@@ -196,23 +194,65 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         | CliInspectorPlatform::Ios => InspectorTarget::Direct(target),
     };
 
-    let mut session = launch_inspector_session(
-        &host,
-        &project_path,
+    let prepared = prepare_inspector(host, &project_path, Some(shell.build_progress())).await?;
+    Ok((
+        prepared,
         InspectorLaunchOptions {
             target: inspector_target,
             token,
         },
-        Some(shell.build_progress()),
-    )
-    .await?;
+    ))
+}
 
-    // Keep the inspector app alive after the CLI exits. The `adb forward` it
-    // dials through stays registered with the adb server for the same
-    // reason — it belongs to the detached app.
-    session.detach();
+/// Run the inspector command.
+///
+/// The command stays up for the session's whole life: closing the client
+/// ends it normally, and Ctrl-C asks the supervised client to stop — the
+/// session still owns the `adb forward` and removes it itself.
+pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<()>) -> Result<()> {
+    // The client never runs where the inspected application is: a phone or
+    // simulator cannot show the inspector and keep the inspected application
+    // answering — Android freezes whichever of the two is in the background
+    // (water-rs/waterui#2230). A target's platform only chooses how its
+    // endpoint is reached.
+    if args.device.is_some() && args.platform != CliInspectorPlatform::Android {
+        eyre::bail!("`--device` is supported only with `--platform android`.");
+    }
+    require_device_endpoint(args.platform, args.target.as_deref(), args.token.as_deref())?;
+
+    let host = waterui_cli::toolchain::Host::current();
+
+    // Everything in `prepare_selected_inspector` acquires nothing that can
+    // leak, so an interrupt while devices scan or the client builds just
+    // returns.
+    let prepared = Box::pin(crate::until_interrupt(
+        prepare_selected_inspector(shell, &host, args),
+        &interrupts,
+    ))
+    .await?;
+    let Some((prepared, options)) = prepared else {
+        return Ok(());
+    };
+
+    // From here the session owns what it acquires: an interruption goes to
+    // the supervised client, not around it.
+    let session = prepared.launch(options).await?;
     success!(shell, "Inspector app launched");
-    Ok(())
+    note!(
+        shell,
+        "The inspector stays attached until its client closes — Ctrl-C stops it."
+    );
+
+    session
+        .supervise(interrupts, |event| {
+            super::run::handle_device_event(
+                shell,
+                &host,
+                event,
+                super::run::backend_name(super::TargetBackend::Hydrolysis),
+            )
+        })
+        .await
 }
 
 /// Inspecting an application off this machine needs the endpoint and token
@@ -308,6 +348,83 @@ fn token_for(addr: SocketAddr) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{Args, CliInspectorPlatform, require_device_endpoint};
+
+    /// Ctrl-C while devices scan never reaches preparation: the queued
+    /// interrupt returns `None` before any forward could be opened, and
+    /// the hanging `adb` spawn is dropped with the raced future.
+    #[cfg(unix)]
+    #[test]
+    fn an_interrupt_during_preparation_acquires_nothing() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("a scratch machine");
+        let bin = temp.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let log = temp.path().join("adb-argv.log");
+        // `adb` that records its argv then hangs: any probe blocks until
+        // the spawned sleep dies with the dropped future.
+        let adb = bin.join("adb");
+        std::fs::write(&adb, include_str!("testdata/hanging_adb.sh")).expect("hanging adb");
+        let mut permissions = std::fs::metadata(&adb).expect("adb").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&adb, permissions).expect("chmod");
+
+        let host = waterui_cli::toolchain::Host::new(
+            [bin],
+            [
+                (
+                    std::ffi::OsString::from("HOME"),
+                    temp.path().join("home").into_os_string(),
+                ),
+                (
+                    std::ffi::OsString::from("USERPROFILE"),
+                    temp.path().join("home").into_os_string(),
+                ),
+                (
+                    std::ffi::OsString::from("WATERUI_FAKE_ADB_LOG"),
+                    log.clone().into_os_string(),
+                ),
+            ],
+        )
+        .with_cwd(temp.path().to_path_buf());
+        let args = Args {
+            target: Some(String::from("127.0.0.1:23106")),
+            token: Some(String::from("token")),
+            platform: CliInspectorPlatform::Android,
+            device: Some(String::from("pixel-9-pro:5555")),
+            path: temp.path().to_path_buf(),
+        };
+        let shell = crate::shell::Shell::new(true);
+
+        let (interrupts_tx, interrupts) = smol::channel::unbounded::<()>();
+        interrupts_tx.try_send(()).expect("the interrupt is queued");
+
+        smol::block_on(smol::future::or(
+            async {
+                let result = Box::pin(crate::until_interrupt(
+                    super::prepare_selected_inspector(&shell, &host, args),
+                    &interrupts,
+                ))
+                .await;
+                assert!(matches!(result, Ok(None)), "{result:?}");
+            },
+            async {
+                smol::Timer::after(std::time::Duration::from_secs(2)).await;
+                panic!("preparation did not cancel within two seconds");
+            },
+        ));
+
+        // Whatever adb argv was captured, no forward was ever opened.
+        let recorded = match std::fs::read_to_string(&log) {
+            Ok(recorded) => recorded,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => panic!("read the fake adb argv log: {error}"),
+        };
+        assert!(
+            !recorded.contains("forward"),
+            "nothing acquired: {recorded}"
+        );
+    }
 
     /// `--token` is a credential: `Debug` redacts a set value and keeps
     /// `None` and the rest of the parse intact.

@@ -5,5 +5,5 @@ mod launcher;
 
 pub use forward::AndroidForward;
 pub use launcher::{
-    InspectorLaunchOptions, InspectorSession, InspectorTarget, launch_inspector_session,
+    InspectorLaunchOptions, InspectorSession, InspectorTarget, PreparedInspector, prepare_inspector,
 };

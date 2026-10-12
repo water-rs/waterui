@@ -247,6 +247,13 @@ mod tests {
         assert!(rendered.contains("Gallery"), "{rendered}");
         assert!(rendered.contains("hydrolysis"), "{rendered}");
         assert!(rendered.contains("23106"), "{rendered}");
+        // `Debug` redacts the readout only — the wire and on-disk form still
+        // carry the real token, which is how the client authenticates.
+        let serialized = serde_json::to_value(&advertised).expect("serialization");
+        assert_eq!(
+            serialized["token"], "s3cret-advertisement-token",
+            "{serialized}"
+        );
     }
 
     #[test]
