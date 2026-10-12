@@ -1670,6 +1670,32 @@ fn image_view<'a>(
     }
 }
 
+/// The texture behind the view [`image_view`] returns, for the paths
+/// that must transition the resource rather than bind it.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn image_texture<'a>(
+    source: &lower::ImageSource,
+    images: &'a FxHashMap<u64, GpuImage>,
+    bitmaps: &'a FxHashMap<BitmapKey, GpuBitmap>,
+    shaders: &'a FxHashMap<std::sync::Arc<paint::Key>, paint::Texture>,
+) -> &'a wgpu::Texture {
+    match source {
+        lower::ImageSource::Registered(id) => {
+            &images
+                .get(id)
+                .unwrap_or_else(|| panic!("a lowered range samples unregistered image {id}"))
+                .texture
+        }
+        lower::ImageSource::Bitmap(key) => {
+            &bitmaps.get(key).expect("prepared bitmap").image.texture
+        }
+        lower::ImageSource::Shader(key) => &shaders[key].image.texture,
+        lower::ImageSource::Content(_) => {
+            unreachable!("producer ranges bind the external pipeline")
+        }
+    }
+}
+
 /// Builds a group-1 bind group; `None` binds the dummy view.
 fn make_bind1(
     device: &wgpu::Device,
@@ -1768,6 +1794,16 @@ fn raw_vk_view(view: &wgpu::TextureView) -> ash::vk::ImageView {
     // asserted by `expect` — borrowed for this scope.
     let hal = unsafe { view.as_hal::<wgpu::hal::vulkan::Api>() };
     // SAFETY: `hal` is the view's own hal object, live above.
+    unsafe { hal.expect("vulkan").raw_handle() }
+}
+
+/// `texture`'s `VkImage`.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn raw_vk_image(texture: &wgpu::Texture) -> ash::vk::Image {
+    // SAFETY: `texture` is a live wgpu texture on the Vulkan backend —
+    // asserted by `expect` — borrowed for this scope.
+    let hal = unsafe { texture.as_hal::<wgpu::hal::vulkan::Api>() };
+    // SAFETY: `hal` is the texture's own hal object, live above.
     unsafe { hal.expect("vulkan").raw_handle() }
 }
 

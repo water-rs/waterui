@@ -39,9 +39,14 @@
 //! rasterization-order attachment access. A device that had only tile
 //! image would get [`Access::None`] and compose portably.
 
+pub mod exec;
+pub mod mirror;
+
 use std::ffi::CStr;
 
 use ash::vk;
+
+pub use mirror::{Mirror, MirrorError, SLOTS};
 
 /// What a Vulkan device's *enabled* capabilities let a tile epoch do.
 ///

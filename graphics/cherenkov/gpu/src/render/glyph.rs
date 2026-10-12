@@ -274,7 +274,16 @@ pub const MASK_TEXTURE_TEXELS: u64 = 256 * 256;
 struct MaskTexture {
     /// The mask data; `cell.atlas` stays `[0, 0]` (unused).
     cell: MaskCell,
-    _texture: wgpu::Texture,
+    /// Retained so a native executor can transition the resource its
+    /// descriptor names, not just bind the view.
+    #[cfg_attr(
+        target_vendor = "apple",
+        expect(
+            dead_code,
+            reason = "only the native Vulkan executor transitions these resources; Metal binds the views"
+        )
+    )]
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
     /// `w` × `h`, the texture's GPU bytes.
     bytes: u64,
@@ -351,6 +360,17 @@ pub struct Atlas {
     /// The atlas texture — `None` until the first committed cell writes
     /// it; an idle engine holds no coverage storage (#170).
     texture: Option<wgpu::Texture>,
+    /// The 1×1 placeholder `view` binds until the first committed cell.
+    /// Retained so a native executor can transition the resource its
+    /// descriptor names, whether or not storage exists.
+    #[cfg_attr(
+        target_vendor = "apple",
+        expect(
+            dead_code,
+            reason = "only the native Vulkan executor transitions these resources; Metal binds the views"
+        )
+    )]
+    placeholder: wgpu::Texture,
     /// The group-0 binding: the atlas view once allocated, otherwise a
     /// 1×1 `R8Unorm` placeholder — the minimal valid binding for a
     /// binding the frame's instances never sample (#170).
@@ -440,22 +460,21 @@ impl Atlas {
     /// committed cell, and `view` binds a 1×1 placeholder until then
     /// (#170's "storage absent until the first atlas-backed primitive").
     pub fn new(device: &wgpu::Device, budget: u64) -> Self {
-        let view = device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("glyph atlas placeholder"),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let placeholder = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph atlas placeholder"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = placeholder.create_view(&wgpu::TextureViewDescriptor::default());
         crate::diag::create(device, "glyph atlas placeholder", 1);
         let texture_limit = device.limits().max_texture_dimension_2d;
         #[expect(
@@ -470,6 +489,7 @@ impl Atlas {
             .max(ATLAS_START);
         Self {
             texture: None,
+            placeholder,
             view,
             size: ATLAS_START,
             cap,
@@ -544,6 +564,13 @@ impl Atlas {
     /// cell has committed.
     pub const fn view(&self) -> &wgpu::TextureView {
         &self.view
+    }
+
+    /// The texture `view` names: the atlas storage once a cell has
+    /// committed, the placeholder before that.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    pub fn texture(&self) -> &wgpu::Texture {
+        self.texture.as_ref().unwrap_or(&self.placeholder)
     }
 
     /// Allocates the atlas texture at the first committed cell. The
@@ -1071,6 +1098,13 @@ impl Atlas {
         self.mask_textures.get(&key).map(|t| &t.view)
     }
 
+    /// The texture behind [`Self::mask_texture_view`], for the paths
+    /// that transition the resource rather than bind it.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    pub fn mask_texture_resource(&self, key: u64) -> Option<&wgpu::Texture> {
+        self.mask_textures.get(&key).map(|t| &t.texture)
+    }
+
     /// Stores a mask on its own `w` × `h` `R8Unorm` texture, uploading
     /// `texels`. Idempotent on `key`.
     #[expect(
@@ -1137,7 +1171,7 @@ impl Atlas {
             key,
             MaskTexture {
                 cell,
-                _texture: texture,
+                texture,
                 view,
                 bytes,
             },
