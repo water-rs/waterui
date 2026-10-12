@@ -478,6 +478,33 @@ impl Adb {
         })
     }
 
+    /// `adb -s <serial> forward --remove tcp:<local_port>` — drop a
+    /// registration this process created, so the adb server stops holding
+    /// the local port once nothing is using it.
+    ///
+    /// # Errors
+    /// Returns an error if the removal fails — including when the server
+    /// holds no such registration, which means the caller's bookkeeping
+    /// and the server's disagree.
+    pub(crate) async fn remove_forward(
+        &self,
+        host: &Host,
+        serial: &str,
+        local_port: u16,
+        timeout: Duration,
+    ) -> Result<(), AdbCommandError> {
+        let local = format!("tcp:{local_port}");
+        self.device_command(
+            host,
+            serial,
+            ["forward", "--remove", local.as_str()],
+            "removing an adb forward",
+            timeout,
+        )
+        .await?;
+        Ok(())
+    }
+
     /// [`Self::device_output`] failing on a non-zero exit, stdout on success.
     async fn device_command<A, S>(
         &self,
