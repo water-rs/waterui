@@ -21,8 +21,8 @@ from `project.yml`; nothing generated is checked in.
     cd bench/ios
     xcodegen generate
     xcodebuild -project CherenkovBench.xcodeproj -scheme CherenkovBench \
-        -sdk iphoneos -configuration Release -derivedDataPath build \
-        CODE_SIGNING_ALLOWED=NO build
+        -destination 'generic/platform=iOS' -configuration Release \
+        -derivedDataPath build CODE_SIGNING_ALLOWED=NO build
 
 A fresh Xcode may report "iOS is not installed" — the SDK ships but
 device support is a separate component:

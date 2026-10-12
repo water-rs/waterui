@@ -3107,6 +3107,37 @@ fn run() -> Result<(), SceneError> {
         });
     });
 
+    // Three isolated groups live at once, each blending into the one
+    // above it: the depth the GPU planner's fourth attachment slot
+    // serves (water-rs/waterui#2549). P3-only, above SDR white.
+    corpus.scene("layer-isolates-triple-nest-blend-p3", 64, 96, white, |l| {
+        l.layer(|a| {
+            a.opacity(0.75);
+            a.fill(Shape::rect(4.0, 4.0, 56.0, 88.0), solid(hdr(1.8, 0.2, 0.5)));
+            a.layer(|b| {
+                b.blend(BlendMode::Multiply);
+                b.fill(
+                    Shape::rect(8.0, 12.0, 48.0, 72.0),
+                    solid(hdr(0.3, 2.4, 0.7)),
+                );
+                b.layer(|c| {
+                    c.blend(BlendMode::Screen);
+                    c.fill(
+                        Shape::rect(14.0, 24.0, 36.0, 56.0),
+                        solid(hdr(0.4, 0.3, 3.1)),
+                    );
+                    c.layer(|d| {
+                        d.blend(BlendMode::DestOut);
+                        d.fill(
+                            Shape::rect(24.0, 40.0, 16.0, 24.0),
+                            solid(p3(1.0, 1.0, 1.0)),
+                        );
+                    });
+                });
+            });
+        });
+    });
+
     corpus.scene("group-opacity", 128, 128, white, |l| {
         l.fill(
             Shape::rect(0.0, 0.0, 128.0, 128.0),

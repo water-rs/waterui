@@ -6,8 +6,20 @@ use cherenkov::FrameStats;
 use objc2_metal::{MTLResource, MTLStorageMode};
 use rustc_hash::FxHashMap;
 
+use crate::render::composition as report;
 use crate::render::lower::{PipelineKind, ShaderVariant, Target};
 use crate::render::{Bind1Key, ScratchTarget, SurfaceState, create_target, make_bind1};
+
+/// Attachment slots this executor binds at once, slot zero — the
+/// epoch's stored output — included.
+///
+/// `attachment.metal` declares the closed set this names:
+/// `TILE_OUTPUT(D)` for every `D` below `SLOTS`, giving each target its
+/// simple, shadow, clear and self-sourced fragment, plus
+/// `TILE_COMPOSITE(D,S)` for every other pair. Every target and source
+/// slot the planner can assign within [`crate::render::composite::plan::Limits::slots`]
+/// therefore has an entry point.
+pub const SLOTS: u8 = 4;
 
 #[derive(Default)]
 pub struct Attachments {
@@ -56,6 +68,23 @@ impl Attachments {
         self.textures.clear();
     }
 
+    /// The bytes of memoryless attachment storage this frame's epochs
+    /// bound: what the same attachments would have cost in device memory
+    /// had the hardware not kept them in tile memory (#2547). Sizes the
+    /// frame did not use are excluded, so it is this frame's live set.
+    pub fn memoryless_bytes(&self) -> u64 {
+        self.textures
+            .iter()
+            .filter(|(_, entry)| entry.used)
+            .map(|((width, height), entry)| {
+                u64::from(*width)
+                    * u64::from(*height)
+                    * crate::render::texel_bytes(wgpu::TextureFormat::Rgba16Float)
+                    * u64::try_from(entry.targets.len()).unwrap_or(u64::MAX)
+            })
+            .sum()
+    }
+
     /// Animated bounds must not retain every historical attachment size.
     pub fn finish_frame(&mut self) {
         self.textures
@@ -79,11 +108,16 @@ pub struct Executor {
 }
 
 impl Executor {
+    /// The pipeline for `key`, created on first use. `created` is set
+    /// when this call built it — the attribution report's first-use
+    /// event (#2547); the flag costs one store, so the hot path pays
+    /// nothing for it.
     fn pipeline(
         &mut self,
         device: &wgpu::Device,
         layout: &wgpu::PipelineLayout,
         key: Key,
+        created: &mut bool,
     ) -> &wgpu::RenderPipeline {
         let module = self.module.get_or_insert_with(|| {
             let mut entries: Vec<wgpu::PassthroughShaderEntryPoint<'static>> =
@@ -94,8 +128,12 @@ impl Executor {
                         workgroup_size: (0, 0, 0),
                     })
                     .collect();
-            for target in 0..4 {
-                for source in ["simple", "shadow", "clear", "0", "1", "2", "3"] {
+            for target in 0..SLOTS {
+                let sources = ["simple", "shadow", "clear"]
+                    .map(String::from)
+                    .into_iter()
+                    .chain((0..SLOTS).map(|source| source.to_string()));
+                for source in sources {
                     entries.push(wgpu::PassthroughShaderEntryPoint {
                         name: Cow::Owned(format!("tile_{target}_{source}")),
                         workgroup_size: (0, 0, 0),
@@ -118,6 +156,7 @@ impl Executor {
             }
         });
         self.pipelines.entry(key).or_insert_with(|| {
+            *created = true;
             let entry = match key.variant {
                 0 => format!("tile_{}_simple", key.target),
                 1 => format!("tile_{}_shadow", key.target),
@@ -168,6 +207,35 @@ impl Executor {
     }
 }
 
+/// Records a first-use pipeline creation when the attribution report is
+/// collecting; with no report this is one `Option` test (#2547).
+fn note(
+    pipelines: &mut Option<&mut Vec<report::PipelineCreated>>,
+    created: bool,
+    pass: usize,
+    key: Key,
+) {
+    if !created {
+        return;
+    }
+    if let Some(pipelines) = pipelines {
+        pipelines.push(report::PipelineCreated {
+            pass,
+            target: key.target,
+            source: key.source,
+            variant: match key.variant {
+                0 => report::Variant::Simple,
+                1 => report::Variant::Shadow,
+                2 => report::Variant::Source,
+                3 => report::Variant::Clear,
+                _ => unreachable!("closed tile shader set"),
+            },
+            replace: key.replace,
+            slots: key.slots,
+        });
+    }
+}
+
 /// Borrowed resources shared with the materialized encoder; attachment
 /// textures are never installed in sampled bind groups.
 pub struct Resources<'a> {
@@ -179,6 +247,20 @@ pub struct Resources<'a> {
     pub images: &'a FxHashMap<u64, crate::render::GpuImage>,
     pub bitmaps: &'a FxHashMap<crate::render::bitmap::BitmapKey, crate::render::GpuBitmap>,
     pub atlas: &'a crate::render::glyph::Atlas,
+}
+
+/// Where one epoch's encode records: the command encoder it is written
+/// to, that pass's timestamp writes, the frame statistics it counts into,
+/// and the attribution collector when a report is being built (#2547).
+pub struct Recording<'a, 'b> {
+    /// The encoder the epoch's single render pass is recorded on.
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    /// Timestamp writes bracketing the pass, when the engine times it.
+    pub timestamps: Option<wgpu::RenderPassTimestampWrites<'b>>,
+    /// The frame's statistics.
+    pub stats: &'a mut FrameStats,
+    /// First-use tile pipeline creations, when a report is collecting.
+    pub pipelines: Option<&'a mut Vec<report::PipelineCreated>>,
 }
 
 #[expect(
@@ -194,10 +276,14 @@ pub fn encode(
     resources: &Resources<'_>,
     surf: &mut SurfaceState,
     first_pass: usize,
-    encoder: &mut wgpu::CommandEncoder,
-    timestamps: Option<wgpu::RenderPassTimestampWrites<'_>>,
-    stats: &mut FrameStats,
+    recording: Recording<'_, '_>,
 ) {
+    let Recording {
+        encoder,
+        timestamps,
+        stats,
+        mut pipelines,
+    } = recording;
     let epoch = surf
         .composition
         .epoch_at(first_pass)
@@ -257,32 +343,61 @@ pub fn encode(
         occlusion_query_set: None,
         multiview_mask: None,
     });
-    let mut used = [false; 4];
+    let mut used = [false; SLOTS as usize];
+    // The state the pass has already been given. An epoch spans many
+    // canonical passes that share a region, a pipeline or a sampled
+    // binding, and rebinding what is already bound is the executor's own
+    // host cost (#2549).
+    let mut viewport: Option<[u32; 4]> = None;
+    let mut bound: Option<(Option<crate::render::lower::ImageSource>, Option<u64>)> = None;
+    let origin = |region: [u32; 4]| {
+        [
+            region[0] - epoch.region[0],
+            region[1] - epoch.region[1],
+            region[2],
+            region[3],
+        ]
+    };
+    let place = |pass: &mut wgpu::RenderPass<'_>, viewport: &mut Option<[u32; 4]>, region| {
+        let region = origin(region);
+        if *viewport == Some(region) {
+            return;
+        }
+        *viewport = Some(region);
+        let [x, y, width, height] = region;
+        pass.set_viewport(x as f32, y as f32, width as f32, height as f32, 0.0, 1.0);
+        pass.set_scissor_rect(x, y, width, height);
+    };
     for op in &epoch.ops {
         tracing::trace!(pass = op.pass, target = op.target, backdrop = ?op.backdrop, "tile operation");
         let canonical = &surf.frame.passes[op.pass];
-        let [x, y, width, height] = canonical.region;
-        let x = x - epoch.region[0];
-        let y = y - epoch.region[1];
-        pass.set_viewport(x as f32, y as f32, width as f32, height as f32, 0.0, 1.0);
-        pass.set_scissor_rect(x, y, width, height);
         if op.begin && used[usize::from(op.target)] {
+            // The slot still holds an image this epoch has finished with,
+            // over a region this draw need not cover. The planner's clear
+            // region is everywhere the opening image is written, which
+            // bounds every read of it.
+            place(&mut pass, &mut viewport, op.clear_region);
+            let key = Key {
+                target: op.target,
+                source: op.target,
+                variant: 3,
+                replace: true,
+                slots: epoch.slots,
+            };
+            let mut created = false;
             pass.set_pipeline(executor.pipeline(
                 resources.device,
                 resources.layout,
-                Key {
-                    target: op.target,
-                    source: op.target,
-                    variant: 3,
-                    replace: true,
-                    slots: epoch.slots,
-                },
+                key,
+                &mut created,
             ));
+            note(&mut pipelines, created, op.pass, key);
             pass.draw(0..3, 0..1);
             stats.draws += 1;
             stats.pipeline_switches += 1;
         }
         used[usize::from(op.target)] = true;
+        place(&mut pass, &mut viewport, canonical.region);
         pass.set_bind_group(
             0,
             resources.bind0,
@@ -300,43 +415,57 @@ pub fn encode(
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }
             };
+            let key = Key {
+                target: op.target,
+                source: source.unwrap_or(op.target),
+                variant,
+                replace: range.pipeline == PipelineKind::Replace,
+                slots: epoch.slots,
+            };
+            let mut created = false;
             pass.set_pipeline(executor.pipeline(
                 resources.device,
                 resources.layout,
-                Key {
-                    target: op.target,
-                    source: source.unwrap_or(op.target),
-                    variant,
-                    replace: range.pipeline == PipelineKind::Replace,
-                    slots: epoch.slots,
-                },
+                key,
+                &mut created,
             ));
-            let key: Bind1Key = (None, false, range.image.clone(), range.mask);
-            let bind = surf.binds1.entry(key).or_insert_with(|| {
-                stats.bind_groups_created += 1;
-                make_bind1(
-                    resources.device,
-                    resources.layout1,
-                    resources.dummy,
-                    None,
-                    None,
-                    range.image.as_ref().map(|image| {
-                        crate::render::image_view(
-                            image,
-                            resources.images,
-                            resources.bitmaps,
-                            &surf.shader_textures,
-                        )
-                    }),
-                    range.mask.map(|key| {
-                        resources
-                            .atlas
-                            .mask_texture_view(key)
-                            .expect("prepared mask")
-                    }),
-                )
-            });
-            pass.set_bind_group(1, &*bind, &[]);
+            note(&mut pipelines, created, op.pass, key);
+            // A tile epoch's draws sample nothing but their own image and
+            // mask, and a run of them shares both — most of an epoch's
+            // draws want the group already bound, so neither the key nor
+            // the lookup is built for them.
+            if !bound
+                .as_ref()
+                .is_some_and(|(image, mask)| *image == range.image && *mask == range.mask)
+            {
+                bound = Some((range.image.clone(), range.mask));
+                let key: Bind1Key = (None, false, range.image.clone(), range.mask);
+                let bind = surf.binds1.entry(key).or_insert_with(|| {
+                    stats.bind_groups_created += 1;
+                    make_bind1(
+                        resources.device,
+                        resources.layout1,
+                        resources.dummy,
+                        None,
+                        None,
+                        range.image.as_ref().map(|image| {
+                            crate::render::image_view(
+                                image,
+                                resources.images,
+                                resources.bitmaps,
+                                &surf.shader_textures,
+                            )
+                        }),
+                        range.mask.map(|key| {
+                            resources
+                                .atlas
+                                .mask_texture_view(key)
+                                .expect("prepared mask")
+                        }),
+                    )
+                });
+                pass.set_bind_group(1, &*bind, &[]);
+            }
             pass.draw(
                 0..6,
                 surf.inst_base + range.instances.start..surf.inst_base + range.instances.end,

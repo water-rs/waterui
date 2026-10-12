@@ -13529,7 +13529,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?rev=1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0#1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0"
+source = "git+https://github.com/water-rs/map-gpu?rev=5c0882a5d757ec8e8be79c169d3bad5e874d0046#5c0882a5d757ec8e8be79c169d3bad5e874d0046"
 dependencies = [
  "blocking",
  "executor-core",
@@ -13547,6 +13547,7 @@ dependencies = [
  "native-executor",
  "parley",
  "rayon",
+ "rustc-hash 2.1.3",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
