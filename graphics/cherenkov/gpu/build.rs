@@ -28,10 +28,9 @@
 mod bindings;
 mod deployment;
 
+mod build_tile_spirv;
 #[path = "build_tile.rs"]
 mod tile;
-#[path = "build_tile_spirv.rs"]
-mod tile_spirv;
 /// The union member cap the WGSL fold compiles against — the same
 /// definition `cherenkov::BackdropUnion::MAX_MEMBERS` re-exports, kept
 /// free of a crate dependency so this build script does not link the
@@ -467,7 +466,7 @@ fn write_spirv(out_dir: &Path, spec: &Spec, module: &naga::Module, info: &naga::
         for (suffix, source_index) in [("", bindings::TILE_SOURCE_INDEX), ("_self", 0)] {
             write(
                 suffix,
-                &tile_spirv::attachment_reads(
+                &build_tile_spirv::attachment_reads(
                     &words,
                     bindings::TILE_INPUT_GROUP,
                     bindings::TILE_INPUT_BINDINGS,

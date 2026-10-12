@@ -277,7 +277,7 @@ struct MaskTexture {
     /// Retained so a native executor can transition the resource its
     /// descriptor names, not just bind the view.
     #[cfg_attr(
-        target_vendor = "apple",
+        not(all(unix, not(target_vendor = "apple"))),
         expect(
             dead_code,
             reason = "only the native Vulkan executor transitions these resources; Metal binds the views"
@@ -364,7 +364,7 @@ pub struct Atlas {
     /// Retained so a native executor can transition the resource its
     /// descriptor names, whether or not storage exists.
     #[cfg_attr(
-        target_vendor = "apple",
+        not(all(unix, not(target_vendor = "apple"))),
         expect(
             dead_code,
             reason = "only the native Vulkan executor transitions these resources; Metal binds the views"

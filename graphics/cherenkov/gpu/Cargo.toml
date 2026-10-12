@@ -135,3 +135,9 @@ harness = false
 
 [lints]
 workspace = true
+
+[package.metadata.cargo-machete]
+# `rspirv` is used by `build_tile_spirv.rs`, a file `build.rs` pulls in as a
+# module — cargo-machete does not follow `mod` declarations out of a build
+# script, so the genuine use is invisible to it.
+ignored = ["rspirv"]

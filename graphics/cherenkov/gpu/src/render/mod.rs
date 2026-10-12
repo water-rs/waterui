@@ -2393,7 +2393,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         fire_probe(&config, CreationPhase::Atlas, Some(&adapter), Some(&device))?;
         let bind0 = make_bind0(&device, &layout0, &globals, &instances, &stops, &atlas);
         #[cfg_attr(
-            target_vendor = "apple",
+            not(all(unix, not(target_vendor = "apple"))),
             expect(
                 unused_variables,
                 reason = "only the Vulkan executor transitions the dummy texture (#2191)"
@@ -7087,13 +7087,6 @@ impl GpuRenderer {
     /// The error is the reason the frame's images are attributed to, so
     /// a census distinguishes "this build has no executor" from "this
     /// device cannot run one".
-    #[cfg_attr(
-        not(unix),
-        expect(
-            clippy::unused_self,
-            reason = "no executor on this target: the answer needs no engine state (#2549)"
-        )
-    )]
     fn tile_limits(&self) -> Result<composite::plan::Limits, composition::Materialization> {
         // Which executor this target has, and whether it is installed.
         // The mirror is absent only because the Vulkan device declined,
