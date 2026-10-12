@@ -1706,9 +1706,12 @@ impl Device for AndroidEmulator {
     }
 
     async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
-        // List available AVDs using avdmanager or emulator -list-avds
-        let emulator_path = AndroidSdk::emulator_path(host)
-            .ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
+        // An emulator-capable host may simply have none installed — that
+        // is an empty inventory, not a failure; explicit AVD operations
+        // still require the tool.
+        let Some(emulator_path) = AndroidSdk::emulator_path(host) else {
+            return Ok(Vec::new());
+        };
 
         let output = host
             .output(&emulator_path, ["-list-avds"])
@@ -2078,6 +2081,8 @@ mod tests {
         build_android_start_args, command_targets_avd, log_level_allows, log_mentions_pid,
     };
     use crate::device::{Artifact, LogLevel};
+    #[cfg(unix)]
+    use crate::toolchain::testing::TestMachine;
 
     /// The `am` words ride in `start_args[3]` as a single quoted command line;
     /// splitting it back yields the argv `am` sees on the device.
@@ -2299,6 +2304,95 @@ mod tests {
         assert!(message.contains("--device"), "{message}");
         assert!(message.contains("R5CX1234"), "{message}");
         assert!(message.contains("emulator-5554"), "{message}");
+    }
+
+    /// A host carrying adb only on `PATH` — no SDK, no emulator — still
+    /// resolves an explicit connected serial.
+    #[test]
+    #[cfg(unix)]
+    fn a_serial_resolves_without_an_sdk_or_emulator() {
+        let machine = TestMachine::new();
+        machine.install("adb");
+        let host = machine.host([
+            (
+                OsString::from("WATERUI_FAKE_ADB_DEVICES"),
+                OsString::from("pixel-9-pro:5555 device product:caiman"),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_GETPROP"),
+                OsString::from("arm64-v8a"),
+            ),
+        ]);
+
+        let target = smol::block_on(super::AndroidTarget::resolve(
+            &host,
+            Some("pixel-9-pro:5555"),
+            None,
+        ))
+        .expect("the serial resolves");
+        assert_eq!(target.id(), "pixel-9-pro:5555");
+
+        // And with no name given, the single candidate resolves itself.
+        let target = smol::block_on(super::AndroidTarget::resolve(&host, None, None))
+            .expect("the only candidate resolves");
+        assert_eq!(target.id(), "pixel-9-pro:5555");
+    }
+
+    /// The emulator inventory is optional: no `emulator` binary means no
+    /// AVDs, not an error — a connected device still resolves.
+    #[test]
+    #[cfg(unix)]
+    fn a_missing_emulator_is_an_empty_inventory_not_an_error() {
+        let machine = TestMachine::new();
+        let sdk = machine.install_android_sdk();
+        machine.install_adb();
+        // Deliberately no install_android_emulator().
+        let host = machine.host([
+            (OsString::from("ANDROID_SDK_ROOT"), sdk.into_os_string()),
+            (
+                OsString::from("WATERUI_FAKE_ADB_DEVICES"),
+                OsString::from("pixel-9-pro:5555 device product:caiman"),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_GETPROP"),
+                OsString::from("arm64-v8a"),
+            ),
+        ]);
+
+        let target = smol::block_on(super::AndroidTarget::resolve(&host, None, None))
+            .expect("the connected device resolves");
+        assert_eq!(target.id(), "pixel-9-pro:5555");
+    }
+
+    /// An installed emulator that cannot list AVDs is still an error —
+    /// the inventory being optional never silently drops a broken tool.
+    #[test]
+    #[cfg(unix)]
+    fn a_broken_emulator_list_stays_an_error() {
+        let machine = TestMachine::new();
+        let sdk = machine.install_android_sdk();
+        machine.install_adb();
+        machine.install_android_emulator();
+        let host = machine.host([
+            (OsString::from("ANDROID_SDK_ROOT"), sdk.into_os_string()),
+            (
+                OsString::from("WATERUI_FAKE_ADB_DEVICES"),
+                OsString::from("pixel-9-pro:5555 device product:caiman"),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_GETPROP"),
+                OsString::from("arm64-v8a"),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_EMULATOR_STATUS"),
+                OsString::from("3"),
+            ),
+        ]);
+
+        let error = smol::block_on(super::AndroidTarget::resolve(&host, None, None))
+            .expect_err("a failing -list-avds propagates");
+        let message = format!("{error:#}");
+        assert!(message.contains("Failed to list AVDs"), "{message}");
     }
 
     /// `--device` selects the connected device it names, whichever order
