@@ -3,6 +3,8 @@ package dev.waterui.hydrolysis
 import android.content.Context
 import android.widget.FrameLayout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -65,6 +67,73 @@ class DeferredMountTest {
         assertEquals(1, ShadowNativeBridge.sessions)
         assertEquals(1, container.childCount)
         assertTrue(container.getChildAt(0).isAttachedToWindow)
+    }
+
+    @Test
+    fun theEnvironmentAppliesAfterPreparationBeforeTheLibraryLoads() {
+        var deliver: ((() -> Unit) -> Unit)? = null
+        var sessionsAtApply = -1
+        var loadsAtApply = -1
+        val activity = Robolectric.buildActivity(ClosingActivity::class.java).setup().get()
+        val container = HydrolysisEmbedding.createView(
+            activity,
+            activity,
+            activity,
+            activity.onBackPressedDispatcher,
+            "waterui_app",
+            prepareEnvironmentOverrides = { callback -> deliver = callback },
+            createContentView = { HydrolysisHostView(activity, it) },
+            onCloseRequested = {},
+        ) as FrameLayout
+        activity.setContentView(container)
+
+        worker.runOffMain()
+
+        // Preparation was invoked, but nothing applies — and nothing loads —
+        // until the apply closure is delivered.
+        assertNotNull(deliver)
+        assertEquals(0, ShadowNativeBridge.sessions)
+        assertEquals(0, ShadowNativeBridge.loads)
+
+        deliver!! {
+            sessionsAtApply = ShadowNativeBridge.sessions
+            loadsAtApply = ShadowNativeBridge.loads
+        }
+
+        // apply ran before the library load, which ran before the mount.
+        assertEquals(0, sessionsAtApply)
+        assertEquals(0, loadsAtApply)
+        assertEquals(1, ShadowNativeBridge.loads)
+        assertEquals(1, ShadowNativeBridge.sessions)
+        assertEquals(1, container.childCount)
+    }
+
+    @Test
+    fun anOwnerDestroyedMidPreparationNeverAppliesOrLoads() {
+        var deliver: ((() -> Unit) -> Unit)? = null
+        var applied = false
+        val controller = Robolectric.buildActivity(ClosingActivity::class.java)
+        val activity = controller.setup().get()
+        HydrolysisEmbedding.createView(
+            activity,
+            activity,
+            activity,
+            activity.onBackPressedDispatcher,
+            "waterui_app",
+            prepareEnvironmentOverrides = { callback -> deliver = callback },
+            createContentView = { HydrolysisHostView(activity, it) },
+            onCloseRequested = {},
+        )
+
+        worker.runOffMain()
+        assertNotNull(deliver)
+
+        controller.destroy()
+        deliver!! { applied = true }
+
+        assertFalse(applied)
+        assertEquals(0, ShadowNativeBridge.loads)
+        assertEquals(0, ShadowNativeBridge.sessions)
     }
 
     @Test

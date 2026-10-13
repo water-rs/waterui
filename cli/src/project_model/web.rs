@@ -210,10 +210,11 @@ pub async fn build_frontend(
 ///
 /// Every launch channel reduces to this name: desktop spawns it directly,
 /// `simctl launch` forwards it as `SIMCTL_CHILD_WATERUI_DEV_URL`,
-/// `devicectl device process launch` carries it in the `-e` environment
-/// dictionary, and Android ships it as the `waterui.env.WATERUI_DEV_URL`
-/// intent extra that the generated `MainActivity` turns back into an
-/// environment variable before the runtime initializes.
+/// `devicectl device process launch` forwards it through the
+/// `DEVICECTL_CHILD_*` caller environment, and Android ships it inside
+/// the launch-environment handoff the generated `MainActivity` claims
+/// and turns back into an environment variable before the runtime
+/// initializes.
 pub const DEV_URL_ENV: &str = "WATERUI_DEV_URL";
 
 /// A target `water run` can hand a dev-server URL to.
@@ -233,8 +234,9 @@ pub enum DevTarget {
 /// this machine's loopback.
 ///
 /// `WATERUI_DEV_URL` travels in the launch environment on every target —
-/// `devicectl device process launch -e` carries it to a physical iOS device
-/// exactly as `SIMCTL_CHILD_*` carries it to a simulator.
+/// `DEVICECTL_CHILD_*` carries it to a physical iOS device through
+/// `devicectl device process launch` exactly as `SIMCTL_CHILD_*` carries
+/// it to a simulator.
 ///
 /// On a physical iOS device `localhost` is the phone itself, so the URL's
 /// loopback host is replaced with the Mac's LAN address — the address the

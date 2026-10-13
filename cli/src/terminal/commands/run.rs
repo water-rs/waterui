@@ -153,7 +153,7 @@ impl TargetPlatform {
 }
 
 /// Arguments for the run command.
-#[derive(ClapArgs, Debug)]
+#[derive(ClapArgs)]
 // CLI flag structs collect booleans by nature; each flag is a documented
 // `--flag`, not structural state.
 #[expect(
@@ -200,12 +200,13 @@ pub struct Args {
     #[arg(long)]
     native_logs: bool,
 
-    /// Set an environment variable inside the launched application, as
-    /// `KEY=VALUE`. Repeatable. Delivered through each platform's launch
-    /// channel: `SIMCTL_CHILD_*` on Apple platforms and `waterui.env.*` intent
-    /// extras on Android, where `Os.setenv` applies them before the app starts.
-    #[arg(long = "env", value_name = "KEY=VALUE", value_parser = parse_env_assignment)]
-    env: Vec<(String, String)>,
+    /// Export a named environment variable into the launched application,
+    /// resolved from this shell's environment. Repeatable. On Android the
+    /// values travel the app's private launch-environment handoff over the
+    /// device shell's stdin — never an `am` argument; other platforms keep
+    /// their own launch channels.
+    #[arg(long = "env", value_name = "NAME")]
+    env: Vec<String>,
 
     /// Run the app in this terminal with the experimental TUI backend.
     ///
@@ -246,25 +247,35 @@ pub struct Args {
     yes: bool,
 }
 
+// `Debug` prints the declaration count only: a raw `--env` token is
+// unvalidated at this point and may still be a legacy `NAME=secret`
+// assignment — echoing it here would leak the secret into diagnostics.
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Args")
+            .field("platform", &self.platform)
+            .field("backend", &self.backend)
+            .field("painter", &self.painter)
+            .field("device", &self.device)
+            .field("path", &self.path)
+            .field("logs", &self.logs)
+            .field("native_logs", &self.native_logs)
+            .field("env_declarations", &self.env.len())
+            .field("tui", &self.tui)
+            .field("release", &self.release)
+            .field("profiling", &self.profiling)
+            .field("debug", &self.debug)
+            .field("no_dev_server", &self.no_dev_server)
+            .field("yes", &self.yes)
+            .finish()
+    }
+}
+
 impl Args {
     /// The project directory this command works on.
     pub(crate) fn project_dir(&self) -> &std::path::Path {
         &self.path
     }
-}
-
-/// Parses one `--env KEY=VALUE` argument into its key and value.
-///
-/// The key may not be empty or contain `=`; everything after the first `=` is
-/// the value, so values may hold further `=` characters.
-fn parse_env_assignment(raw: &str) -> Result<(String, String), String> {
-    let (key, value) = raw
-        .split_once('=')
-        .ok_or_else(|| String::from("expected KEY=VALUE"))?;
-    if key.is_empty() {
-        return Err(String::from("expected KEY=VALUE with a non-empty key"));
-    }
-    Ok((key.to_string(), value.to_string()))
 }
 
 /// Log level for filtering device logs (CLI argument wrapper).
@@ -391,7 +402,7 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
             args.device.as_deref(),
         ))
         .await?;
-        let config = build_run_config(shell, &args, &context.project, context.backend).await;
+        let config = build_run_config(shell, &args, &context.project, context.backend).await?;
 
         #[cfg(target_os = "macos")]
         let crash_ctx = match CrashReportContext::try_new(
@@ -628,7 +639,7 @@ async fn build_run_config(
     args: &Args,
     project: &Project,
     backend: TargetBackend,
-) -> BuildRunConfig {
+) -> Result<BuildRunConfig> {
     let sccache_path = detect_sccache_path(shell, project.host()).await;
     let mut run_options = RunOptions::new();
     if let Some(level) = args.logs.map(LogLevel::from) {
@@ -636,19 +647,19 @@ async fn build_run_config(
     }
     run_options.set_native_logs(args.native_logs);
     run_options.describe_project(project);
-    // Explicit `--env` wins over the derived project defaults above.
-    for (key, value) in &args.env {
-        run_options.insert_env_var(key.clone(), value.clone());
+    // Explicit `--env` declarations win over the derived project defaults.
+    for (key, value) in waterui_cli::environment::declared_environment(project.host(), &args.env)? {
+        run_options.insert_env_var(key, value);
     }
 
     let profile = run_profile(args, backend);
-    BuildRunConfig {
+    Ok(BuildRunConfig {
         run_options,
         sccache_path,
         profile,
         dev_server: !profile.is_release() && !args.no_dev_server,
         painter: hydrolysis_android::resolve_painter(project, args.painter),
-    }
+    })
 }
 
 /// Resolve the Cargo profile `water run` builds under.
@@ -922,8 +933,9 @@ fn apply_dev_url_handoff(
     };
     // Every launch path forwards `WATERUI_DEV_URL` in the environment —
     // `cmd.env`/`open --env` on desktop, `SIMCTL_CHILD_*` under `simctl
-    // launch`, `devicectl -e` on a physical device, and the `waterui.env.`
-    // intent extra on Android (where `run_on_android` additionally makes the
+    // launch`, `DEVICECTL_CHILD_*` on a physical device, and the private
+    // launch-environment handoff on Android (where `run_on_android`
+    // additionally makes the
     // port reachable with `adb reverse`). A physical device cannot reach the
     // Mac's loopback, so its URL is rewritten to the LAN address first.
     let url = web::device_facing_url(target, url)?;
@@ -1700,11 +1712,12 @@ fn handle_device_event(
 mod tests {
     use super::{
         Args, DeviceCandidate, DeviceChoice, SelectedDevice, TargetBackend, TargetPlatform,
-        device_android_abi, device_choice, handle_device_event, lib_platform, parse_env_assignment,
-        resolve_platform, run_profile, stream_running_events, validate_device_arg,
+        device_android_abi, device_choice, handle_device_event, lib_platform, resolve_platform,
+        run_profile, stream_running_events, validate_device_arg,
     };
     use crate::commands::prompt_for_device;
     use clap::Parser as _;
+    use std::path::PathBuf;
     #[cfg(unix)]
     use waterui_cli::android::adb::Adb;
     #[cfg(unix)]
@@ -1726,6 +1739,34 @@ mod tests {
         let mut full = vec!["water-run"];
         full.extend_from_slice(argv);
         TestCli::try_parse_from(full).expect("run args parse").args
+    }
+
+    #[test]
+    fn args_debug_reports_the_env_count_not_the_declarations() {
+        let args = Args {
+            platform: None,
+            backend: None,
+            painter: None,
+            device: None,
+            path: PathBuf::from("."),
+            logs: None,
+            native_logs: false,
+            env: vec![
+                String::from("SECRET_NAME=secret-value"),
+                String::from("OTHER_DECL"),
+            ],
+            tui: false,
+            release: false,
+            profiling: false,
+            debug: false,
+            no_dev_server: false,
+            yes: false,
+        };
+        let debug = format!("{args:?}");
+        assert!(debug.contains("env_declarations: 2"), "{debug}");
+        for secret in ["SECRET_NAME", "secret-value", "OTHER_DECL"] {
+            assert!(!debug.contains(secret), "{debug}");
+        }
     }
 
     #[test]
@@ -1779,24 +1820,6 @@ mod tests {
                 "{backend:?} experimental flag drifted"
             );
         }
-    }
-
-    #[test]
-    fn env_assignment_splits_on_first_equals() {
-        assert_eq!(
-            parse_env_assignment("A=b=c").expect("value may hold '='"),
-            (String::from("A"), String::from("b=c"))
-        );
-        assert_eq!(
-            parse_env_assignment("EMPTY=").expect("empty value is fine"),
-            (String::from("EMPTY"), String::new())
-        );
-    }
-
-    #[test]
-    fn env_assignment_rejects_malformed_pairs() {
-        assert!(parse_env_assignment("NOEQUALS").is_err());
-        assert!(parse_env_assignment("=novalue").is_err());
     }
 
     #[test]
