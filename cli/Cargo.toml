@@ -7,6 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 readme = "README.md"
 repository.workspace = true
+homepage = "https://github.com/water-rs/waterui"
 description = "Cross-platform tooling for WaterUI applications"
 keywords = ["ui", "framework", "rust", "gui", "water"]
 categories = ["gui"]
