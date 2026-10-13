@@ -679,12 +679,20 @@ struct OpaqueOut {
     @location(0) @interpolate(flat) color: vec3<f32>,
 }
 
+// All eight primitive kinds fit three bits. MAX_PASS_INSTANCES = 1 << 21
+// leaves room to pack the instance index and original kind in one u32.
+const PARTIAL_KIND_BITS: u32 = 3u;
+const PARTIAL_KIND_MASK: u32 = (1u << PARTIAL_KIND_BITS) - 1u;
+const_assert (((KIND_FILL | KIND_STROKE_OFFSET | KIND_STROKE_DIST | KIND_SHADOW
+    | KIND_GLYPH | KIND_SPAN | KIND_REGION | KIND_POLYGON) & ~PARTIAL_KIND_MASK) == 0u);
+
 // Coverage replay keeps five rasterizer scalars: two local/atlas coordinates,
-// one instance index, and two conservative ellipse bounds.
+// one packed instance/kind, and two conservative ellipse bounds. Packing
+// avoids a fragment storage fetch for the kind without adding varyings.
 struct PartialOut {
     @builtin(position) position: vec4<f32>,
     @location(0) local: vec2<f32>,
-    @location(1) @interpolate(flat) instance: u32,
+    @location(1) @interpolate(flat) instance_kind: u32,
     @location(2) @interpolate(flat) coverage: vec2<f32>,
 }
 
@@ -787,7 +795,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     let local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
-    return PartialOut(out.position, local, ii, out.affine1.zw);
+    return PartialOut(out.position, local, (ii << PARTIAL_KIND_BITS) | inst.meta_.x, out.affine1.zw);
 }
 
 @fragment
@@ -797,10 +805,11 @@ fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
-    let i = in.instance;
+    let i = in.instance_kind >> PARTIAL_KIND_BITS;
     var cov: f32;
-    switch instances[i].meta_.x {
-        case KIND_GLYPH, KIND_REGION: {
+    let kind = in.instance_kind & PARTIAL_KIND_MASK;
+    switch select(kind, KIND_GLYPH, kind == KIND_REGION) {
+        case KIND_GLYPH: {
             cov = textureLoad(atlas, vec2<i32>(floor(in.local)), 0).r;
         }
         case KIND_SPAN: {
@@ -821,7 +830,7 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
 }
 
 fn partial_shape_coverage(in: PartialOut) -> f32 {
-    let i = in.instance;
+    let i = in.instance_kind >> PARTIAL_KIND_BITS;
     let s = instances[i].shape;
     if in.coverage.y > 0.0 {
         let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
