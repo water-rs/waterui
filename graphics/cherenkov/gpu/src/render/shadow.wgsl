@@ -6,6 +6,7 @@ struct Kernel {
 }
 @group(0) @binding(0) var input: texture_2d<f32>;
 @group(0) @binding(1) var<storage, read> kernel: Kernel;
+override INTEGRAL_SAMPLING: bool = false;
 
 @vertex fn vs(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
     let p = array<vec2<f32>, 3>(vec2<f32>(-1.,-1.),vec2<f32>(3.,-1.),vec2<f32>(-1.,3.));
@@ -17,12 +18,10 @@ fn texel(p: vec2<i32>) -> vec4<f32> {
 }
 fn sample_at(p: vec2<f32>) -> vec4<f32> {
     let origin = vec2<i32>(floor(p));
-    let phase = fract(p);
-    // Bilinear interpolation at a texel center has one nonzero weight.
-    // Keep the other three loads out of axis-aligned convolution taps.
-    if all(phase == vec2<f32>(0.)) {
+    if INTEGRAL_SAMPLING {
         return texel(origin);
     }
+    let phase = fract(p);
     return mix(mix(texel(origin),texel(origin+vec2<i32>(1,0)),phase.x),
                mix(texel(origin+vec2<i32>(0,1)),texel(origin+vec2<i32>(1,1)),phase.x),phase.y);
 }
