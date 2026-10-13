@@ -627,7 +627,7 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if VARIANT == VARIANT_SIMPLE {
-        return fs_simple(in, false);
+        return fs_simple(in);
     }
     if VARIANT == VARIANT_SHADOW {
         return fs_shadow(in);
@@ -647,44 +647,30 @@ fn read_composite_backdrop(coord: vec2<i32>) -> vec4<f32> {
 
 // Solid fill/span/glyph coverage: no clip, mask, inner, or paint()
 // evaluation, and no `instances` reads at all.
-fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
+fn fs_simple(in: VsOut) -> vec4<f32> {
     let s = Shape(in.shape_a.xy, in.shape_a.z, in.shape_a.w, in.shape_radii);
     let m = array<vec4<f32>, 2>(in.affine0, in.affine1);
     var cov: f32;
     switch in.meta_.x {
         case KIND_GLYPH: {
-            var texel: vec2<i32>;
-            if classified {
-                texel = vec2<i32>(floor(in.local));
-            } else {
-                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
-            }
+            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
             cov = textureLoad(atlas, texel, 0).r;
         }
         case KIND_SPAN: {
             cov = 1.0;
         }
         default: {
-            if classified && in.affine1.w > 0.0 {
-                let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
-                let u = abs(in.local) / r;
-                let rr = dot(u, u);
-                if rr < in.affine1.z {
-                    cov = 1.0;
-                } else if rr > in.affine1.w {
-                    cov = 0.0;
-                } else {
-                    cov = shape_coverage(s, in.local, m, classified);
-                }
-            } else {
-                cov = shape_coverage(s, in.local, m, classified);
-            }
+            cov = shape_coverage(s, in.local, m, false);
         }
     }
-    cov = clamp(cov, 0.0, 1.0) * in.params.y;
+    return solid_coverage_color(in.color, in.params.y, cov);
+}
+
+fn solid_coverage_color(color_bits: vec2<u32>, opacity: f32, coverage: f32) -> vec4<f32> {
+    let cov = clamp(coverage, 0.0, 1.0) * opacity;
     // The premultiply runs in f16 — the floor's colour precision; the
     // coverage multiply then runs f32: coverage stays out of f16.
-    let color = unpack_color(in.color);
+    let color = unpack_color(color_bits);
     let px = vec4<f32>(vec4<f16>(vec3<f16>(color[0], color[1], color[2]) * color[3], color[3])) * cov;
     return move_space(px, SPACE_LINEAR, globals.space);
 }
@@ -702,14 +688,20 @@ struct OpaqueOut {
     @location(0) @interpolate(flat) color: vec2<u32>,
 }
 
-// Coverage replay needs only the original local/atlas coordinate, the
-// instance identity, and the conservative ellipse bounds. Pull the uniform
-// primitive fields in the fragment stage instead of duplicating them in
-// every vertex's rasterizer payload.
+// All eight primitive kinds fit three bits. MAX_PASS_INSTANCES = 1 << 21
+// leaves room to pack the instance index and original kind in one u32.
+const PARTIAL_KIND_BITS: u32 = 3u;
+const PARTIAL_KIND_MASK: u32 = (1u << PARTIAL_KIND_BITS) - 1u;
+const_assert (((KIND_FILL | KIND_STROKE_OFFSET | KIND_STROKE_DIST | KIND_SHADOW
+    | KIND_GLYPH | KIND_SPAN | KIND_REGION | KIND_POLYGON) & ~PARTIAL_KIND_MASK) == 0u);
+
+// Coverage replay keeps five rasterizer scalars: two local/atlas coordinates,
+// one packed instance/kind, and two conservative ellipse bounds. Packing
+// avoids a fragment storage fetch for the kind without adding varyings.
 struct PartialOut {
     @builtin(position) position: vec4<f32>,
     @location(0) local: vec2<f32>,
-    @location(1) @interpolate(flat) instance: u32,
+    @location(1) @interpolate(flat) instance_kind: u32,
     @location(2) @interpolate(flat) coverage: vec2<f32>,
 }
 
@@ -812,7 +804,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     let local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
-    return PartialOut(out.position, local, ii, out.affine1.zw);
+    return PartialOut(out.position, local, (ii << PARTIAL_KIND_BITS) | inst.meta_.x, out.affine1.zw);
 }
 
 @fragment
@@ -823,19 +815,44 @@ fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
-    let inst = instances[in.instance];
-    var data: VsOut;
-    data.local = in.local;
-    data.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
-    data.color = inst.color;
-    data.params.y = inst.params.y;
-    if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {
-        data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
-        data.shape_radii = inst.shape.radii;
-        data.affine0 = inst.affine[0];
+    let i = in.instance_kind >> PARTIAL_KIND_BITS;
+    var cov: f32;
+    switch in.instance_kind & PARTIAL_KIND_MASK {
+        case KIND_GLYPH, KIND_REGION: {
+            cov = textureLoad(atlas, vec2<i32>(floor(in.local)), 0).r;
+        }
+        case KIND_SPAN: {
+            cov = 1.0;
+        }
+        default: {
+            cov = partial_shape_coverage(in);
+        }
     }
-    data.affine1 = vec4<f32>(0.0, 0.0, in.coverage);
-    return fs_simple(data, true);
+    // This replay uses source-over without depth writes. Zero coverage
+    // leaves the destination unchanged and needs no paint loads or blend.
+    if cov <= 0.0 {
+        discard;
+    }
+    // Keep paint storage loads after coverage, outside the corner solve's
+    // register lifetime. Varying-backed fs_simple shares the same color tail.
+    return solid_coverage_color(instances[i].color, instances[i].params.y, cov);
+}
+
+fn partial_shape_coverage(in: PartialOut) -> f32 {
+    let i = in.instance_kind >> PARTIAL_KIND_BITS;
+    let s = instances[i].shape;
+    if in.coverage.y > 0.0 {
+        let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
+        let u = abs(in.local) / r;
+        let rr = dot(u, u);
+        if rr < in.coverage.x {
+            return 1.0;
+        }
+        if rr > in.coverage.y {
+            return 0.0;
+        }
+    }
+    return shape_coverage(s, in.local, instances[i].affine, true);
 }
 
 // The shadow kernel plus the same opacity/solid-colour tail.
