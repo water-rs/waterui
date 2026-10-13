@@ -457,6 +457,10 @@ adb)
             # stages the port its fake host listener holds.
             respond_or_empty ADB_FORWARD_PORT
             ;;
+        *"forward --remove "*)
+            (respond_or_empty ADB_FORWARD_REMOVE)
+            exit "${WATERUI_FAKE_ADB_FORWARD_REMOVE_STATUS:-0}"
+            ;;
         *logcat*)
             respond_or_empty ADB_LOGCAT
             ;;

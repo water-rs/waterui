@@ -66,7 +66,7 @@ const DEFAULT_TASK_WINDOW_MS: u64 = 100;
 const DEFAULT_STALL_RATIO: f64 = 0.90;
 
 /// Where the endpoint is listening and the token required to talk to it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct InspectorEndpointInfo {
     /// Bound socket address.
     pub addr: SocketAddr,
@@ -74,8 +74,20 @@ pub struct InspectorEndpointInfo {
     pub token: String,
 }
 
+// The token is a credential: it travels in the advertisement and the
+// `Hello`, never into diagnostics.
+impl std::fmt::Debug for InspectorEndpointInfo {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InspectorEndpointInfo")
+            .field("addr", &self.addr)
+            .field("token", &"[redacted]")
+            .finish()
+    }
+}
+
 /// Runtime endpoint configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct InspectorServerConfig {
     /// Address to bind.
     pub host: IpAddr,
@@ -89,6 +101,22 @@ pub struct InspectorServerConfig {
     pub stall_ratio: f64,
     /// Name reported to the inspector.
     pub app_name: String,
+}
+
+// The token is a credential: the config carries it to the endpoint,
+// never into diagnostics.
+impl std::fmt::Debug for InspectorServerConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("InspectorServerConfig")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("token", &"[redacted]")
+            .field("task_window", &self.task_window)
+            .field("stall_ratio", &self.stall_ratio)
+            .field("app_name", &self.app_name)
+            .finish()
+    }
 }
 
 impl InspectorServerConfig {
@@ -177,6 +205,14 @@ const fn debug_host() -> IpAddr {
     } else {
         DEFAULT_HOST
     }
+}
+
+/// What the launched CLI's captured output looks like in a diagnostic:
+/// the same bytes with the session token scrubbed, because a tool that
+/// echoes its own arguments would otherwise print the credential it was
+/// called with.
+fn redacted_child_output(output: &[u8], token: &str) -> String {
+    String::from_utf8_lossy(output).replace(token, "[redacted]")
 }
 
 /// A token for one process, from the system's random source.
@@ -342,8 +378,7 @@ impl InspectorRuntime {
             tracing::info!(
                 target: "waterui::inspector",
                 inspector_addr = %endpoint.addr,
-                token = %endpoint.token,
-                "Inspect requested; attach from your computer with `water inspector`"
+                "Inspect requested; the credentials are in the app's private advertisement — attach from your computer with `water inspector`"
             );
             return;
         }
@@ -355,8 +390,7 @@ impl InspectorRuntime {
             tracing::warn!(
                 target: "waterui::inspector",
                 inspector_addr = %endpoint.addr,
-                token = %endpoint.token,
-                "Could not find the `water` CLI; attach with `water inspect --target <addr> --token <token>`,                  or point WATERUI_CLI at the binary"
+                "Could not find the `water` CLI; attach with `water inspector --target <addr> --token <token>`, or point WATERUI_CLI at the binary"
             );
             return;
         };
@@ -410,9 +444,8 @@ impl InspectorRuntime {
                             target: "waterui::inspector",
                             status = %output.status,
                             inspector_addr = %addr,
-                            token = %token,
-                            stderr = %String::from_utf8_lossy(&output.stderr).trim_end(),
-                            stdout = %String::from_utf8_lossy(&output.stdout).trim_end(),
+                            stderr = %redacted_child_output(&output.stderr, &token).trim_end().to_owned(),
+                            stdout = %redacted_child_output(&output.stdout, &token).trim_end().to_owned(),
                             "`water inspector` failed"
                         ),
                         Err(error) => tracing::error!(
@@ -434,7 +467,6 @@ impl InspectorRuntime {
                 target: "waterui::inspector",
                 error = %error,
                 inspector_addr = %addr,
-                token = %token,
                 "Could not launch `water inspector`; attach manually"
             ),
         }
@@ -728,4 +760,58 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<()> {
         .spawn(body)
         .map(drop)
         .map_err(|error| io::Error::other(format!("failed to spawn {name} thread: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    /// The config's token is a credential: `Debug` keeps every setting
+    /// that diagnoses a misconfigured endpoint and never the secret.
+    #[test]
+    fn the_server_config_debug_never_shows_the_token() {
+        let config = super::InspectorServerConfig {
+            host: super::DEFAULT_HOST,
+            port: super::DEFAULT_PORT,
+            token: "s3cret-runtime-token".into(),
+            task_window: std::time::Duration::from_millis(super::DEFAULT_TASK_WINDOW_MS),
+            stall_ratio: super::DEFAULT_STALL_RATIO,
+            app_name: "CredentialDebugTest".into(),
+        };
+        let rendered = format!("{config:?}");
+        assert!(!rendered.contains("s3cret-runtime-token"), "{rendered}");
+        assert!(rendered.contains("CredentialDebugTest"), "{rendered}");
+        assert!(rendered.contains("task_window"), "{rendered}");
+        assert!(rendered.contains("stall_ratio"), "{rendered}");
+    }
+
+    /// The advertised endpoint's token is a credential: `Debug` names
+    /// where to dial, never the secret that guards it — which the
+    /// runtime's own `Debug` inherits through its nested endpoint.
+    #[test]
+    fn the_endpoint_debug_never_shows_the_token() {
+        let endpoint = super::InspectorEndpointInfo {
+            addr: "127.0.0.1:23106".parse().expect("a valid address"),
+            token: "s3cret-runtime-token".into(),
+        };
+        let rendered = format!("{endpoint:?}");
+        assert!(!rendered.contains("s3cret-runtime-token"), "{rendered}");
+        assert!(rendered.contains("23106"), "{rendered}");
+    }
+
+    /// A child that echoes its own arguments prints the token it was
+    /// called with — the scrub removes every occurrence and keeps the
+    /// rest of the output.
+    #[test]
+    fn child_output_is_scrubbed_of_the_token() {
+        let output = super::redacted_child_output(
+            b"warning: retrying s3cret-runtime-token\ntoken s3cret-runtime-token refused",
+            "s3cret-runtime-token",
+        );
+        assert!(!output.contains("s3cret-runtime-token"), "{output}");
+        assert!(output.contains("warning: retrying"), "{output}");
+        assert!(output.contains("refused"), "{output}");
+        assert_eq!(
+            super::redacted_child_output(b"", "s3cret-runtime-token"),
+            ""
+        );
+    }
 }

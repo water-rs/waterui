@@ -24,7 +24,6 @@ pub mod embedded;
 use crate::{
     android::KotlinToolchain,
     android::{
-        device::AndroidAbiProvider,
         manifest_permissions,
         output_metadata::{OutputKind, packaged_artifact},
         platform::{
@@ -34,8 +33,8 @@ use crate::{
         },
     },
     assets,
-    build::{BuildOptions, BuildProgress, BuiltTarget, RustBuild},
-    device::{Artifact, Device, FailToRun, RunOptions, Running},
+    build::{BuildOptions, BuiltTarget, RustBuild},
+    device::Artifact,
     framework::ResolvedFramework,
     hydrolysis::backend::HydrolysisBackend,
     platform::{PackageOptions, TargetBackend, TargetPlatform},
@@ -855,68 +854,6 @@ pub async fn package_with_abis(
 
     let path = packaged_artifact(&android_dir, output_kind, variant).await?;
     Ok(Artifact::new(project.bundle_identifier(), path))
-}
-
-/// Build, package and run the project's Hydrolysis app on `device` as a
-/// debug development build.
-///
-/// The library counterpart of `water run --platform android --backend
-/// hydrolysis` for flows that pick their own device, such as the inspector
-/// support app: the launcher crate is built for the device's ABI, the
-/// generated Gradle app is assembled over the pinned host with `painter`, and
-/// the APK is installed and launched with `run_options`. The project's
-/// managed Hydrolysis backend must already be generated
-/// ([`crate::hydrolysis::backend::open_ready`]).
-///
-/// # Errors
-///
-/// Returns an error when signing resolution, the build, the packaging, or the
-/// launch fails.
-pub async fn run_on_device<D: Device + AndroidAbiProvider>(
-    project: &Project,
-    painter: HydrolysisAndroidPainter,
-    device: D,
-    run_options: RunOptions,
-    build_options: BuildOptions,
-    progress: Option<BuildProgress>,
-    kotlin: &KotlinToolchain,
-) -> Result<Running, FailToRun> {
-    let host = project.host();
-    let abi = device.android_abi();
-
-    clean_jni_libs(project).await.map_err(FailToRun::Build)?;
-
-    let mut package_options = PackageOptions::development();
-    if let Some(progress) = &progress {
-        package_options = package_options.with_progress(progress.clone());
-    }
-    // Resolve release signing before the Rust build, as `water run` does: a
-    // misconfigured release package fails before compilation. A debug run
-    // resolves to a no-decision plan.
-    let prepared = crate::android::signing::PreparedSigning::resolve(project, &package_options)
-        .map_err(FailToRun::Package)?;
-
-    let build_options = match progress {
-        Some(progress) => build_options.with_progress(progress),
-        None => build_options,
-    };
-    let built = build(project, abi, build_options, kotlin)
-        .await
-        .map_err(FailToRun::Build)?;
-
-    let artifact = package_with_abis(
-        project,
-        painter,
-        &package_options,
-        &[abi],
-        &built,
-        &prepared,
-    )
-    .await
-    .map_err(FailToRun::Package)?;
-
-    info!("Running on device");
-    device.run(host, artifact, run_options).await
 }
 
 /// Remove the staged `jniLibs` under the generated Gradle app.

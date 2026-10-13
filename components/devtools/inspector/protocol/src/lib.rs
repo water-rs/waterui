@@ -68,7 +68,7 @@ pub struct TargetInfo {
 }
 
 /// Messages sent by the inspector to the target application.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub enum InspectorClientMessage {
     /// Authenticate and declare which channels to open.
     Hello {
@@ -86,6 +86,28 @@ pub enum InspectorClientMessage {
     },
     /// Liveness probe.
     Ping,
+}
+
+// The `Hello` token is a credential: it travels on the wire, never into
+// diagnostics.
+impl std::fmt::Debug for InspectorClientMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Hello {
+                protocol, channels, ..
+            } => f
+                .debug_struct("Hello")
+                .field("token", &"[redacted]")
+                .field("protocol", protocol)
+                .field("channels", channels)
+                .finish(),
+            Self::Subscribe { channels } => f
+                .debug_struct("Subscribe")
+                .field("channels", channels)
+                .finish(),
+            Self::Ping => f.write_str("Ping"),
+        }
+    }
 }
 
 /// Messages sent by the target application to the inspector.
@@ -173,6 +195,27 @@ mod tests {
             }
             other => panic!("unexpected message: {other:?}"),
         }
+    }
+
+    /// The `Hello` token is a credential: `Debug` redacts it while the
+    /// protocol itself still carries it to the endpoint — the round trip
+    /// above proves the token survives serialization.
+    #[test]
+    fn the_hello_debug_form_never_shows_the_token() {
+        let hello = InspectorClientMessage::Hello {
+            token: String::from("s3cret-hello-token"),
+            protocol: super::protocol_info(),
+            channels: ChannelSet::default_subscription(),
+        };
+        let rendered = format!("{hello:?}");
+        assert!(!rendered.contains("s3cret-hello-token"), "{rendered}");
+        assert!(rendered.contains("channels"), "{rendered}");
+        // And the wire form still carries the token — redaction is a
+        // Debug concern, never a serialization one.
+        let mut bytes = Vec::new();
+        transport::write_frame_blocking(&mut bytes, &hello).unwrap();
+        let serialized = String::from_utf8_lossy(&bytes);
+        assert!(serialized.contains("s3cret-hello-token"));
     }
 
     #[test]
