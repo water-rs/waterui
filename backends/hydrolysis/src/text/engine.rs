@@ -100,9 +100,10 @@ pub trait TextLayout: Clone + Send + Sync + 'static {
     fn line_metrics(&self, line: usize) -> LineMetrics;
     /// The laid-out height.
     fn height(&self) -> f32;
-    /// The selection an anchor/focus pair forms, snapped to clusters.
+    /// The selection an anchor/focus pair forms, each end moved back to the
+    /// start of the extended grapheme cluster it falls inside.
     fn selection(&self, anchor: TextPosition, focus: TextPosition) -> TextSelection;
-    /// The position a point hits.
+    /// The grapheme boundary a point hits.
     fn hit_test(&self, x: f32, y: f32) -> TextPosition;
     /// The word under a point.
     fn word_at(&self, x: f32, y: f32) -> TextSelection;
@@ -112,9 +113,11 @@ pub trait TextLayout: Clone + Send + Sync + 'static {
     fn caret_rect(&self, at: TextPosition) -> kurbo::Rect;
     /// Runs `each` on every rectangle `selection` covers.
     fn selection_rects(&self, selection: TextSelection, each: impl FnMut(kurbo::Rect));
-    /// The selection with its focus at the previous cluster in visual order.
+    /// The selection with its focus at the previous grapheme boundary in
+    /// visual order.
     fn previous_visual(&self, selection: TextSelection, extend: bool) -> TextSelection;
-    /// The selection with its focus at the next cluster in visual order.
+    /// The selection with its focus at the next grapheme boundary in visual
+    /// order.
     fn next_visual(&self, selection: TextSelection, extend: bool) -> TextSelection;
 }
 
