@@ -818,10 +818,11 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
             cov = partial_shape_coverage(in);
         }
     }
-    // This replay uses source-over without depth writes. Zero coverage
-    // leaves the destination unchanged and needs no paint loads or blend.
+    // This replay uses premultiplied source-over without depth writes.
+    // A zero-color fragment leaves the destination unchanged and avoids
+    // paint storage loads without discarding the fragment.
     if cov <= 0.0 {
-        discard;
+        return vec4<f32>(0.0);
     }
     // Keep paint storage loads after coverage, outside the corner solve's
     // register lifetime. Varying-backed fs_simple shares the same color tail.
