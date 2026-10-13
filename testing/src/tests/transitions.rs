@@ -5,7 +5,6 @@
 //! (layout-spec.md §4.5).
 
 use super::*;
-use hydrolysis_m3::Material3;
 use std::time::Duration;
 use waterui::PropertyTransition;
 use waterui::animation::Animation;
@@ -20,7 +19,7 @@ fn exiting_member_leaves_the_semantic_tree_immediately_but_holds_its_slot() {
     let view_rows = rows.clone();
     let mut app = ui()
         .viewport(240, 160)
-        .theme(Material3::defaults())
+        .theme(TestStyle::new())
         .mount_offscreen(move || {
             let rows = view_rows.clone();
             VStack::for_each(rows, move |id: SelfId<u64>| {
