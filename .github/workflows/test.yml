@@ -207,7 +207,7 @@ jobs:
         run: |
           read -ra args <<< "${LINUX_ARGS}"
           cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
-          RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps "${args[@]}"
+          RUSTDOCFLAGS="-D warnings" cargo doc --locked --profile ci-check --no-deps "${args[@]}"
       # Filters and their portable description without the GPU stack: no other
       # pass builds `effects` with `gpu` off, so a GPU item leaking into the
       # description would otherwise go unnoticed until a non-GPU target built it.
@@ -315,7 +315,7 @@ jobs:
       # modules these features gate in are never resolved there (#2013).
       - name: Rustdoc (hydrolysis, checked feature set)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked -p hydrolysis --no-deps --features accessibility,inspector-signals,testing,web,winit
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --profile ci-check -p hydrolysis --no-deps --features accessibility,inspector-signals,testing,web,winit
       - name: Check (hydrolysis, no features)
         if: inputs.full
         run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib
