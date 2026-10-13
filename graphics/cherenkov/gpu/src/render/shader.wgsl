@@ -806,6 +806,8 @@ fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     let i = in.instance_kind >> PARTIAL_KIND_BITS;
+    let color = instances[i].color;
+    let opacity = instances[i].params.y;
     var cov: f32;
     switch in.instance_kind & PARTIAL_KIND_MASK {
         case KIND_GLYPH, KIND_REGION: {
@@ -818,15 +820,12 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
             cov = partial_shape_coverage(in);
         }
     }
-    // This replay uses premultiplied source-over without depth writes.
-    // A zero-color fragment leaves the destination unchanged and avoids
-    // paint storage loads without discarding the fragment.
+    // This replay uses source-over without depth writes. Zero coverage
+    // leaves the destination unchanged and needs no blend.
     if cov <= 0.0 {
-        return vec4<f32>(0.0);
+        discard;
     }
-    // Keep paint storage loads after coverage, outside the corner solve's
-    // register lifetime. Varying-backed fs_simple shares the same color tail.
-    return solid_coverage_color(instances[i].color, instances[i].params.y, cov);
+    return solid_coverage_color(color, opacity, cov);
 }
 
 fn partial_shape_coverage(in: PartialOut) -> f32 {
