@@ -58,6 +58,7 @@ struct Shape {
     radii: vec4<f32>,
 }
 
+// The first 128 bytes hold transform, geometry and solid-paint fields.
 struct Instance {
     // local -> device, kurbo coefficient order [a, b, c, d, e, f]:
     // x' = a x + c y + e ; y' = b x + d y + f.
@@ -66,6 +67,14 @@ struct Instance {
     // KIND_SPAN where it is the device-space atlas cell rectangle.
     bounds: vec4<f32>,
     shape: Shape,
+    // Straight-alpha working-space colour; precision is retained until
+    // target storage.
+    color: vec4<f32>,
+    // x: stroke half width (STROKE_DIST) or shadow sigma. y: opacity.
+    // zw: mask device origin.
+    params: vec4<f32>,
+    // x: kind, y: paint, z: first stop index, w: stops | interp << 16 | extend << 20 | flags << 24
+    meta_: vec4<u32>,
     // The offset stroke's inner shape. A `PAINT_BACKDROP` span never reads
     // it as an SDF, so it carries the member's metadata instead: `half`
     // bitcast holds the union record run's base and the member's index
@@ -88,14 +97,6 @@ struct Instance {
     grad: vec4<f32>,
     // Radial: start radius, end radius.
     grad2: vec4<f32>,
-    // x: stroke half width (STROKE_DIST) or shadow sigma. y: opacity.
-    // zw: mask device origin.
-    params: vec4<f32>,
-    // x: kind, y: paint, z: first stop index, w: stops | interp << 16 | extend << 20 | flags << 24
-    meta_: vec4<u32>,
-    // Straight-alpha working-space colour; precision is retained until
-    // target storage.
-    color: vec4<f32>,
 }
 
 struct Stop {

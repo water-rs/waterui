@@ -204,7 +204,8 @@ impl From<RoundedBox> for Shape {
     }
 }
 
-/// One instanced quad, mirroring the WGSL `Instance`.
+/// One instanced quad, mirroring the WGSL `Instance`. The first 128
+/// bytes hold transform, geometry and solid-paint fields.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Instance {
@@ -217,6 +218,20 @@ pub struct Instance {
     pub bounds: [f32; 4],
     /// The shape being drawn.
     pub shape: Shape,
+    /// Straight-alpha working-space colour; precision is retained until
+    /// target storage.
+    pub color: [f32; 4],
+    /// x: stroke half width or shadow sigma. y: opacity. zw: mask device
+    /// origin.
+    pub params: [f32; 4],
+    /// `[kind, paint, first_stop, count | interp<<16 | extend<<20 | flags<<24]`.
+    /// For `PAINT_IMAGE`: `extend_x | extend_y<<4 | sampling<<8 | flags<<24`
+    /// (`sampling`: 0 nearest, 1 bilinear). For a blended `PAINT_TEXTURE`
+    /// composite: `blend_code<<16 | flags<<24` (the low 16 bits are free
+    /// there). For `PAINT_BACKDROP`: `effect_kind | stop_count<<8 |
+    /// flags<<24`.
+    /// For `KIND_REGION`, `first_stop` holds the full-column interval instead.
+    pub meta: [u32; 4],
     /// The inner shape of an offset stroke. `PAINT_BACKDROP` spans never
     /// read it as an SDF, so it carries the member's metadata instead:
     /// `half` bitcast the union record run's base and member index
@@ -247,20 +262,6 @@ pub struct Instance {
     /// Sweep: start angle, end angle.
     /// Image: local→image affine `[e, f]` and image `[w, h]`.
     pub grad2: [f32; 4],
-    /// x: stroke half width or shadow sigma. y: opacity. zw: mask device
-    /// origin.
-    pub params: [f32; 4],
-    /// `[kind, paint, first_stop, count | interp<<16 | extend<<20 | flags<<24]`.
-    /// For `PAINT_IMAGE`: `extend_x | extend_y<<4 | sampling<<8 | flags<<24`
-    /// (`sampling`: 0 nearest, 1 bilinear). For a blended `PAINT_TEXTURE`
-    /// composite: `blend_code<<16 | flags<<24` (the low 16 bits are free
-    /// there). For `PAINT_BACKDROP`: `effect_kind | stop_count<<8 |
-    /// flags<<24`.
-    /// For `KIND_REGION`, `first_stop` holds the full-column interval instead.
-    pub meta: [u32; 4],
-    /// Straight-alpha working-space colour; precision is retained until
-    /// target storage.
-    pub color: [f32; 4],
 }
 
 /// The colour the payload can carry: every channel finite.
@@ -304,6 +305,9 @@ impl Instance {
             affine: [0.0; 8],
             bounds: [0.0; 4],
             shape: Shape::rect([0.0; 2]),
+            color: [0.0; 4],
+            params: [0.0, 1.0, 0.0, 0.0],
+            meta: [kind, PAINT_SOLID, 0, 0],
             inner: Shape::rect([0.0; 2]),
             clip_linear: [0.0; 4],
             clip_translation: [0.0; 2],
@@ -311,9 +315,6 @@ impl Instance {
             clip: Shape::rect([0.0; 2]),
             grad: [0.0; 4],
             grad2: [0.0; 4],
-            params: [0.0, 1.0, 0.0, 0.0],
-            meta: [kind, PAINT_SOLID, 0, 0],
-            color: [0.0; 4],
         }
     }
 }
@@ -371,11 +372,44 @@ mod tests {
     #[test]
     fn layouts_match_the_shader() {
         assert_eq!(size_of::<Instance>(), 256);
-        assert_eq!(offset_of!(Instance, clip_linear), 112);
-        assert_eq!(offset_of!(Instance, clip_translation), 128);
-        assert_eq!(offset_of!(Instance, uv), 136);
-        assert_eq!(offset_of!(Instance, clip), 144);
-        assert_eq!(offset_of!(Instance, color), 240);
+        assert_eq!(offset_of!(Instance, color), 80);
+        assert_eq!(offset_of!(Instance, params), 96);
+        assert_eq!(offset_of!(Instance, meta), 112);
+        assert_eq!(offset_of!(Instance, clip_linear), 160);
+        assert_eq!(offset_of!(Instance, clip_translation), 176);
+        assert_eq!(offset_of!(Instance, uv), 184);
+        assert_eq!(offset_of!(Instance, clip), 192);
+        let module = naga::front::wgsl::parse_str(include_str!("shared.wgsl"))
+            .expect("shared WGSL parses");
+        let (_, instance) = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("Instance"))
+            .expect("shared WGSL declares Instance");
+        let naga::TypeInner::Struct { members, span } = &instance.inner else {
+            panic!("WGSL Instance is a struct");
+        };
+        let fields = [
+            ("affine", offset_of!(Instance, affine)),
+            ("bounds", offset_of!(Instance, bounds)),
+            ("shape", offset_of!(Instance, shape)),
+            ("color", offset_of!(Instance, color)),
+            ("params", offset_of!(Instance, params)),
+            ("meta_", offset_of!(Instance, meta)),
+            ("inner", offset_of!(Instance, inner)),
+            ("clip_linear", offset_of!(Instance, clip_linear)),
+            ("clip_translation", offset_of!(Instance, clip_translation)),
+            ("uv", offset_of!(Instance, uv)),
+            ("clip", offset_of!(Instance, clip)),
+            ("grad", offset_of!(Instance, grad)),
+            ("grad2", offset_of!(Instance, grad2)),
+        ];
+        assert_eq!(*span, u32::try_from(size_of::<Instance>()).unwrap());
+        assert_eq!(members.len(), fields.len());
+        for (member, (name, offset)) in members.iter().zip(fields) {
+            assert_eq!(member.name.as_deref(), Some(name));
+            assert_eq!(member.offset, u32::try_from(offset).unwrap(), "{name}");
+        }
         assert_eq!(size_of::<Shape>(), 32);
         assert_eq!(size_of::<Stop>(), 32);
         assert_eq!(size_of::<Globals>(), 32);
