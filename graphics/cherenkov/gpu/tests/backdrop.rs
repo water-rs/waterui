@@ -761,12 +761,13 @@ fn shader_effect_reads_the_recording_scale() -> Result<(), Box<dyn std::error::E
     for y in 0..64 {
         for x in 0..64 {
             for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                assert_eq!(
+                // The scale-1 and scale-2 routes evaluate the member
+                // colour through different f16 paths; they can differ by
+                // one ulp, so compare at the pixel tolerance.
+                assert_pixel(
                     pixel(&two, 2 * x + dx, 2 * y + dy),
                     pixel(&one, x, y),
-                    "device pixel ({}, {}) at scale 2 against logical pixel ({x}, {y})",
-                    2 * x + dx,
-                    2 * y + dy,
+                    1e-3,
                 );
             }
         }
@@ -2781,8 +2782,10 @@ fn shader_effect_reads_the_member_local_position() -> Result<(), Box<dyn std::er
         }",
     ))?;
     let readback = wait!(transformed_rounded_member(&engine, &shader))?;
-    assert_pixel(pixel(&readback, 28, 21), [9.25 / 16.0, 7.75 / 16.0, 0.0, 1.0], 1e-4);
-    assert_pixel(pixel(&readback, 12, 8), [1.25 / 16.0, 1.25 / 16.0, 0.0, 1.0], 1e-4);
+    // The member colour now crosses the f16 paint evaluation: two paths
+    // can land one ulp apart, so compare at the file's pixel tolerance.
+    assert_pixel(pixel(&readback, 28, 21), [9.25 / 16.0, 7.75 / 16.0, 0.0, 1.0], 1e-3);
+    assert_pixel(pixel(&readback, 12, 8), [1.25 / 16.0, 1.25 / 16.0, 0.0, 1.0], 1e-3);
     Ok(())
 }
 }

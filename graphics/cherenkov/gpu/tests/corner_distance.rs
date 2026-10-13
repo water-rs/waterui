@@ -51,8 +51,10 @@ struct Sweep {
 /// the nearest boundary point is not unique and the normal is either of
 /// the tied ones.
 fn sweep(shape: &Shape, probes: &[[f64; 2]], medial: impl Fn([f64; 2]) -> bool) -> Sweep {
-    let source = include_str!("../src/render/shared.wgsl");
-    let module = naga::front::wgsl::parse_str(source).expect("shared.wgsl parses");
+    // `enable f16;` heads the module as in build.rs: `shared.wgsl` uses
+    // f16 arithmetic.
+    let source = format!("enable f16;\n{}", include_str!("../src/render/shared.wgsl"));
+    let module = naga::front::wgsl::parse_str(&source).expect("shared.wgsl parses");
     let eval = Eval::new(&module);
     let sdf_sample = eval.function("sdf_sample");
     let (boxed, extra) = box_params(shape).expect("the shape is a box");

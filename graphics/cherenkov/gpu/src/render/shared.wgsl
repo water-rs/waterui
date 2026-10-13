@@ -66,25 +66,35 @@ struct Instance {
     // KIND_SPAN where it is the device-space atlas cell rectangle.
     bounds: vec4<f32>,
     shape: Shape,
+    // The offset stroke's inner shape. A `PAINT_BACKDROP` span never reads
+    // it as an SDF, so it carries the member's metadata instead: `half`
+    // bitcast holds the union record run's base and the member's index
+    // (`FLAG_UNION`), `aspect` the member's recording scale, and
+    // `exponent`/`radii.x` the backdrop copy's device origin
+    // (`FLAG_BLEND_SRC`).
     inner: Shape,
     // device -> clip-local affine, same coefficient order.
     clip_inv: array<vec4<f32>, 2>,
     // The clip shape; for a masked clip (always a sharp rect) `aspect` and
     // `exponent` — unread by its SDF — carry the mask cell size.
     clip: Shape,
-    // Straight-alpha working-space colour (solid paint, glyph, shadow).
-    color: vec4<f32>,
     // Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
     grad: vec4<f32>,
     // Radial: start radius, end radius.
     grad2: vec4<f32>,
-    // Glyph/cell: atlas cell origin (x, y) in texels. zw: mask atlas origin.
-    uv: vec4<f32>,
     // x: stroke half width (STROKE_DIST) or shadow sigma. y: opacity.
     // zw: mask device origin.
     params: vec4<f32>,
     // x: kind, y: paint, z: first stop index, w: stops | interp << 16 | extend << 20 | flags << 24
     meta_: vec4<u32>,
+    // Straight-alpha working-space colour as `vec4<f16>` bits (x|y in .x,
+    // z|w in .y): the colour payload runs at the floor's f16 precision,
+    // whose ±65504 range still covers every HDR value the engine emits.
+    color: vec2<u32>,
+    // Four u16 texel origins packed as two u32s: xy the glyph/cell atlas
+    // origin, zw the mask atlas origin — or an external frame's binding
+    // size, whose pixel extent stays inside the u16 texel bound.
+    uv: vec2<u32>,
 }
 
 struct Stop {
@@ -125,7 +135,9 @@ struct VsOut {
     @location(1) device: vec2<f32>,
     @location(2) @interpolate(flat) instance: u32,
     @location(3) @interpolate(flat) meta_: vec4<u32>,
-    @location(4) @interpolate(flat) color: vec4<f32>,
+    // `vec4<f16>`-packed colour: two u32s keep the flat varying inside
+    // the f32 integer interface every backend supports.
+    @location(4) @interpolate(flat) color: vec2<u32>,
     @location(5) @interpolate(flat) params: vec4<f32>,
     // half.xy, aspect, exponent.
     @location(6) @interpolate(flat) shape_a: vec4<f32>,
@@ -134,6 +146,20 @@ struct VsOut {
     @location(9) @interpolate(flat) affine1: vec4<f32>,
     // bounds.xy, uv.xy (glyph/mask cell texel origin).
     @location(10) @interpolate(flat) cell: vec4<f32>,
+}
+
+// The two u16 texel origins packed in one `uv` word, expanded to f32.
+fn uv_unpack(v: u32) -> vec2<f32> {
+    return vec2<f32>(f32(v & 0xffffu), f32(v >> 16u));
+}
+
+// `Instance.color` is two u32 lanes each packing a half2 — the f16 colour
+// channels of the span's paint. naga rejects `bitcast<vec2<f16>>(u32)` —
+// a scalar-to-vector bitcast — so the decode goes through the
+// `unpack2x16float` builtin and narrows back: the f16-representable value
+// survives the round trip exactly.
+fn unpack_color(v: vec2<u32>) -> vec4<f16> {
+    return vec4<f16>(vec2<f16>(unpack2x16float(v.x)), vec2<f16>(unpack2x16float(v.y)));
 }
 
 fn apply(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
@@ -192,7 +218,7 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     out.shape_radii = inst.shape.radii;
     out.affine0 = inst.affine[0];
     out.affine1 = inst.affine[1];
-    out.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
+    out.cell = vec4<f32>(inst.bounds.xy, uv_unpack(inst.uv.x));
     return out;
 }
 
@@ -638,7 +664,7 @@ fn clip_mask_coverage(in: VsOut) -> f32 {
         if (flags & FLAG_MASK_TEXTURE) != 0u {
             m = textureLoad(mask_tex, vec2<i32>(mp), 0).r;
         } else {
-            m = textureLoad(atlas, vec2<i32>(mp) + vec2<i32>(instances[i].uv.zw), 0).r;
+            m = textureLoad(atlas, vec2<i32>(mp) + vec2<i32>(uv_unpack(instances[i].uv.y)), 0).r;
         }
         cov *= select(0.0, m, inside);
     }

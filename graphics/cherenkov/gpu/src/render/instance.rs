@@ -101,10 +101,10 @@ pub const FLAG_TEX_SRGB: u32 = 0x10;
 /// the isolated plane's storage space differs from the pass's.
 pub const FLAG_BLEND_SRC: u32 = 0x20;
 /// A `PAINT_BACKDROP` member draws against its group's union field: the
-/// instance's clip carries the ancestors only, `uv.xy` bitcast holds the
-/// record run's base `vec4` index and the member's index, and `params.x`
-/// its `outer` extent. The ownership-weighted field replaces the
-/// member's clip coverage for the composite.
+/// instance's clip carries the ancestors only, `inner.half` bitcast holds
+/// the record run's base `vec4` index and the member's index, and
+/// `params.x` its `outer` extent. The ownership-weighted field replaces
+/// the member's clip coverage for the composite.
 pub const FLAG_UNION: u32 = 0x40;
 
 /// Projected-area threshold in device px² above which a solid ellipse's
@@ -217,19 +217,19 @@ pub struct Instance {
     pub bounds: [f32; 4],
     /// The shape being drawn.
     pub shape: Shape,
-    /// The inner shape of an offset stroke.
+    /// The inner shape of an offset stroke. `PAINT_BACKDROP` spans never
+    /// read it as an SDF, so it carries the member's metadata instead:
+    /// `half` bitcast the union record run's base and member index
+    /// (`FLAG_UNION`), `aspect` the member's recording scale (device
+    /// pixels per logical pixel), and `exponent`/`radii[0]` the backdrop
+    /// copy's device origin when `FLAG_BLEND_SRC` is set. A member's
+    /// colour stays transparent, so a member span is never an opaque span.
     pub inner: Shape,
     /// Device-to-clip-local affine.
     pub clip_inv: [f32; 8],
     /// The clip shape. A masked clip is a sharp rect, so `aspect` and
     /// `exponent` (unused by its SDF) carry the mask cell size.
     pub clip: Shape,
-    /// Straight-alpha working-space colour. `PAINT_BACKDROP`: x the
-    /// member's recording scale (device pixels per logical pixel), yz the
-    /// device origin of the backdrop copy when the member composites in
-    /// the space the pass does not store (`FLAG_BLEND_SRC`); its alpha
-    /// stays 0, so a member span is never an opaque span.
-    pub color: [f32; 4],
     /// Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
     /// Sweep: centre.xy. Image: local→image affine `[a, b, c, d]`.
     /// `PAINT_TEXTURE`: source region origin.xy. `PAINT_BACKDROP`: the
@@ -240,8 +240,6 @@ pub struct Instance {
     /// Sweep: start angle, end angle.
     /// Image: local→image affine `[e, f]` and image `[w, h]`.
     pub grad2: [f32; 4],
-    /// Glyph/cell: atlas cell origin in texels. zw: mask atlas cell origin.
-    pub uv: [f32; 4],
     /// x: stroke half width or shadow sigma. y: opacity. zw: mask device
     /// origin.
     pub params: [f32; 4],
@@ -253,6 +251,77 @@ pub struct Instance {
     /// flags<<24`.
     /// For `KIND_REGION`, `first_stop` holds the full-column interval instead.
     pub meta: [u32; 4],
+    /// Straight-alpha working-space colour packed as `vec4<f16>` bits
+    /// (x|y in `color[0]`, z|w in `color[1]`): the colour payload runs at
+    /// the floor's f16 precision, whose ±65504 range still covers every
+    /// HDR value the engine emits. Write through [`pack_color`].
+    pub color: [u32; 2],
+    /// Four u16 texel origins packed as two u32s: xy the glyph/cell atlas
+    /// origin, zw the mask atlas origin — or an external frame's binding
+    /// size, whose pixel extent stays inside the u16 texel bound. Write
+    /// through [`pack_uv`].
+    pub uv: [u32; 2],
+}
+
+/// The largest finite f16 channel magnitude: 65504. A finite channel
+/// above it packs to ±inf, and a non-finite one to NaN — either would
+/// silently corrupt the paint, so lowering rejects it first through
+/// [`check_color`].
+pub const F16_CHANNEL_MAX: f32 = 65504.0;
+
+/// The colour the f16 payload can carry: every channel finite and within
+/// ±[`F16_CHANNEL_MAX`].
+///
+/// # Errors
+/// [`RenderError::Render`] when a channel is non-finite or its magnitude
+/// exceeds f16's finite range.
+pub fn check_color(c: [f32; 4]) -> Result<[f32; 4], cherenkov::RenderError> {
+    if c.iter()
+        .all(|v| v.is_finite() && v.abs() <= F16_CHANNEL_MAX)
+    {
+        Ok(c)
+    } else {
+        Err(cherenkov::RenderError::Render(
+            "colour channel is non-finite or exceeds the f16 range".into(),
+        ))
+    }
+}
+
+/// Packs four f32 channels as the shader's `vec4<f16>` colour payload:
+/// x|y in the first u32, z|w in the second.
+pub const fn pack_color(c: [f32; 4]) -> [u32; 2] {
+    [
+        half::f16::from_f32_const(c[0]).to_bits() as u32
+            | (half::f16::from_f32_const(c[1]).to_bits() as u32) << 16,
+        half::f16::from_f32_const(c[2]).to_bits() as u32
+            | (half::f16::from_f32_const(c[3]).to_bits() as u32) << 16,
+    ]
+}
+
+/// Packs two texel coordinates as the u16 pair of one `uv` word.
+pub const fn pack_uv(x: f32, y: f32) -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "atlas texel origins and binding sizes are integral and u16-bounded"
+    )]
+    let (x, y) = (x as u32, y as u32);
+    x | (y << 16)
+}
+
+/// The two texel coordinates packed in one `uv` word, expanded to f32.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "u16 texel origins are exact in f32"
+)]
+pub const fn unpack_uv(v: u32) -> [f32; 2] {
+    [(v & 0xffff) as f32, (v >> 16) as f32]
+}
+
+/// The f16-packed colour's alpha channel expanded to f32.
+pub const fn color_alpha(color: [u32; 2]) -> f32 {
+    let bits = (color[1] >> 16) as u16;
+    half::f16::from_bits(bits).to_f32_const()
 }
 
 impl Instance {
@@ -265,12 +334,12 @@ impl Instance {
             inner: Shape::rect([0.0; 2]),
             clip_inv: [0.0; 8],
             clip: Shape::rect([0.0; 2]),
-            color: [0.0; 4],
             grad: [0.0; 4],
             grad2: [0.0; 4],
-            uv: [0.0; 4],
             params: [0.0, 1.0, 0.0, 0.0],
             meta: [kind, PAINT_SOLID, 0, 0],
+            color: [0; 2],
+            uv: [0; 2],
         }
     }
 }
@@ -321,7 +390,7 @@ mod tests {
 
     #[test]
     fn layouts_match_the_shader() {
-        assert_eq!(size_of::<Instance>(), 272);
+        assert_eq!(size_of::<Instance>(), 256);
         assert_eq!(size_of::<Shape>(), 32);
         assert_eq!(size_of::<Stop>(), 32);
         assert_eq!(size_of::<Globals>(), 32);
@@ -329,5 +398,26 @@ mod tests {
             super::super::bindings::ENGINE_GROUP0[0].min_size,
             size_of::<Globals>() as u64
         );
+    }
+
+    #[test]
+    fn check_color_bounds_the_f16_payload() {
+        assert_eq!(
+            check_color([16.0, -2.0, 0.0, 1.0]).unwrap(),
+            [16.0, -2.0, 0.0, 1.0]
+        );
+        assert_eq!(
+            check_color([F16_CHANNEL_MAX; 4]).unwrap(),
+            [F16_CHANNEL_MAX; 4]
+        );
+        for c in [
+            [65504.1, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0, -65504.1],
+            [f32::NAN, 0.0, 0.0, 1.0],
+            [0.0, f32::INFINITY, 0.0, 1.0],
+            [0.0, 0.0, 0.0, f32::NEG_INFINITY],
+        ] {
+            assert!(check_color(c).is_err(), "{c:?}");
+        }
     }
 }

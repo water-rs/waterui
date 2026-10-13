@@ -239,7 +239,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             Spec {
                 name: format!("engine{variant}"),
                 source: format!(
-                    "const VARIANT: u32 = {variant}u;\n{cap}{}\n{shader}\n{union}{}",
+                    "enable f16;\nconst VARIANT: u32 = {variant}u;\n{cap}{}\n{shader}\n{union}{}",
                     m.shared, m.blend
                 ),
                 groups: bindings::ENGINE_GROUPS,
@@ -259,7 +259,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
     });
     specs.push(Spec {
         name: "external".into(),
-        source: format!("{}\n{}", m.shared, m.external),
+        source: format!("enable f16;\n{}\n{}", m.shared, m.external),
         groups: bindings::EXTERNAL_GROUPS,
         metal: true,
         merge_pair: None,
@@ -271,7 +271,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
     // `VkSamplerYcbcrConversion` immutable sampler occupies.
     specs.push(Spec {
         name: "external_native".into(),
-        source: format!("{}\n{}\n{}", m.shared, m.external, m.native),
+        source: format!("enable f16;\n{}\n{}\n{}", m.shared, m.external, m.native),
         groups: bindings::NATIVE_EXTERNAL_GROUPS,
         metal: false,
         merge_pair: Some((5, 6)),
@@ -279,7 +279,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
     });
     specs.push(Spec {
         name: "projective".into(),
-        source: format!("{}\n{}\n{}", m.shared, m.blend, m.projective),
+        source: format!("enable f16;\n{}\n{}\n{}", m.shared, m.blend, m.projective),
         groups: bindings::PROJECTIVE_GROUPS,
         metal: true,
         merge_pair: None,
@@ -383,9 +383,12 @@ fn compile(out_dir: &Path, spec: &Spec, apple: Option<&AppleTarget>, wasm: bool,
     if spec.name == "engine_tile" {
         tile::attachment_inputs(&mut module);
     }
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     if wasm {
         return;
     }
@@ -815,9 +818,12 @@ fn merge_sampled_pair(words: &mut Vec<u32>, binding_tex: u32, binding_smp: u32, 
 
 fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option<&AppleTarget>) {
     let module = pin_runtime_arrays(module);
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     let options = msl::Options {
         // The floor Metal language version wgpu selects on supported
         // hardware; the shader test covers the same value.
