@@ -47,6 +47,9 @@ pub struct RegisteredAnchoredOverlay {
     /// The node's environment — the overlay content inherits `.state` and
     /// plugin values from where the anchor declared it.
     pub(crate) env: Environment,
+    /// The overlay's view builder: every presentation calls it, so each one
+    /// gets an independent view instance.
+    pub(crate) builder: waterui_core::handler::AnyViewBuilder,
     /// The retained content slot the owning effect keeps across frames.
     pub(crate) content: Rc<RefCell<Option<RetainedSubview>>>,
     /// Identity shared between the effect and its registration, so the render
@@ -165,6 +168,18 @@ impl HydrolysisRenderer {
                     .any(|overlay| Rc::ptr_eq(&overlay.marker, &entry.marker));
                 if !drew_last_frame || entry.content.borrow().is_none() {
                     continue;
+                }
+            } else {
+                // A new presentation builds fresh content: still-presented
+                // keeps its subtree — signals already patch it in place —
+                // while a first open or a re-present, including one that
+                // overtakes an exit in flight, starts an independent
+                // instance.
+                let was_presented = last_presented
+                    .iter()
+                    .any(|overlay| Rc::ptr_eq(&overlay.marker, &entry.marker) && !overlay.exiting);
+                if !was_presented {
+                    *entry.content.borrow_mut() = Some(RetainedSubview::new(entry.builder.build()));
                 }
             }
             let Some(mut content) = entry.content.borrow_mut().take() else {

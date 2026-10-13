@@ -1,4 +1,5 @@
 mod harness;
+mod transitions;
 
 use super::*;
 use std::cell::Cell;

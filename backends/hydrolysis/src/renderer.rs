@@ -1744,21 +1744,6 @@ impl SemanticCore {
         );
     }
 
-    /// Runs `f` with accessibility-node registration suppressed. For a control
-    /// whose own node already carries an internal sub-view's semantics (a merged
-    /// label, a numeric value): emitting that sub-view inside this scope keeps it
-    /// visual-only, so the control stays a single accessibility node instead of
-    /// double-exposing its label as a separate node.
-    #[cfg(feature = "accessibility")]
-    pub(crate) fn with_suppressed_accessibility<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        #[cfg(feature = "accessibility")]
-        self.push_accessibility_suppression();
-        let result = f(self);
-        #[cfg(feature = "accessibility")]
-        self.pop_accessibility_suppression();
-        result
-    }
-
     /// The modifier snapshot the window last reported — pointer targets read
     /// it at commit time because pointer events carry no modifier state of
     /// their own (toggle and Shift range selection).

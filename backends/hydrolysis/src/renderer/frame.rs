@@ -592,22 +592,6 @@ impl HydrolysisRenderer {
         self.pop_placement_scope();
     }
 
-    /// Runs `f` inside the named scope `key` — the lexical pairing of
-    /// [`Self::open_scope`] and [`Self::close_scope`].
-    pub(crate) fn with_scope(
-        &mut self,
-        key: mount::ScopeKey,
-        alpha: f32,
-        paint: kurbo::Affine,
-        clip: &ScopeClip,
-        scope: crate::renderer::ScopeDelta,
-        f: impl FnOnce(&mut Self),
-    ) {
-        self.open_scope(key, alpha, paint, clip, scope);
-        f(self);
-        self.close_scope();
-    }
-
     pub(crate) fn set_host_redraw_handle(&mut self, handle: RedrawHandle) {
         self.host_redraw_handle = Some(handle);
     }
