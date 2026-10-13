@@ -105,6 +105,16 @@ impl ShaderVariant {
     pub const fn supports_coverage_order(self) -> bool {
         matches!(self, Self::Simple | Self::Atlas)
     }
+
+    /// A kernel that covers both compatible solid batches. Atlas-only
+    /// batches retain their specialization; a mixed batch needs Simple.
+    fn batch_with(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (Self::Simple, Self::Atlas) | (Self::Atlas, Self::Simple) => Some(Self::Simple),
+            (left, right) if left == right => Some(left),
+            _ => None,
+        }
+    }
 }
 
 /// A texture identity scoped to its resource owner.
@@ -2249,26 +2259,27 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Starts a new draw range when the shader variant changes.
+    /// Selects a kernel for the whole compatible batch, ending the range
+    /// only when its required shader cannot share that batch.
     fn set_variant(&mut self, variant: ShaderVariant) {
-        self.set_variant_at(variant, self.frame.instances.len());
-    }
-
-    /// `set_variant` at an instance offset other than the frame's current
-    /// length: `compose` fills resized slots in place, so each instance's
-    /// own variant check segments at its actual index.
-    fn set_variant_at(&mut self, variant: ShaderVariant, end: usize) {
-        if self
-            .frame
-            .open
-            .as_ref()
-            .is_some_and(|o| o.variant != variant)
-        {
-            self.end_segment_at(end);
-            if let Some(open) = &mut self.frame.open {
-                open.variant = variant;
-            }
+        let end = instance_index(self.frame.instances.len());
+        let Some(open) = &mut self.frame.open else {
+            return;
+        };
+        if open.seg_start == end {
+            open.variant = variant;
+            return;
         }
+        if let Some(combined) = open.variant.batch_with(variant) {
+            open.variant = combined;
+            return;
+        }
+        self.end_segment();
+        self.frame
+            .open
+            .as_mut()
+            .expect("open pass kept by segmentation")
+            .variant = variant;
     }
 
     /// Emits `inst` into the current draw range, segmenting on its
@@ -4081,32 +4092,34 @@ impl<'a> Lowering<'a> {
         let instance_base = instance_index(self.frame.instances.len());
         let retained = &storage.instances[emission.instances.clone()];
         if let Some(first) = retained.first() {
-            // A realized leaf shares paint and clip fields. Its kinds are
-            // no longer one specialization — glyph/region/span instances
-            // take the atlas path while fills keep the simple one.
+            // A realized leaf shares paint and clip fields. Its instances
+            // draw as one batch: atlas-only batches keep the dedicated
+            // shader, while a batch containing a fill needs Simple.
             let mut template = first.restore(&storage.templates[emission.template], offset);
             Self::apply_clip(&mut template, clip);
-            self.set_variant(variant_of(&template));
+            let mut variant = variant_of(&template);
+            if variant == ShaderVariant::Atlas
+                && retained.iter().any(|source| source.kind == KIND_FILL)
+            {
+                variant = ShaderVariant::Simple;
+            }
+            self.set_variant(variant);
             let first = self.frame.instances.len();
             check_instance_bound(first + retained.len());
             self.frame
                 .instances
                 .resize(first + retained.len(), template);
-            for (i, source) in retained.iter().enumerate() {
-                let variant = {
-                    let inst = &mut self.frame.instances[first + i];
-                    inst.bounds = source.bounds;
-                    inst.uv[0] = pack_uv(source.uv[0], source.uv[1]);
-                    inst.meta[0] = source.kind;
-                    inst.meta[2] = source.first_stop
-                        + if source.kind == KIND_REGION {
-                            0
-                        } else {
-                            offset
-                        };
-                    variant_of(inst)
-                };
-                self.set_variant_at(variant, first + i);
+            for (inst, source) in self.frame.instances[first..].iter_mut().zip(retained) {
+                inst.bounds = source.bounds;
+                inst.uv[0] = pack_uv(source.uv[0], source.uv[1]);
+                inst.meta[0] = source.kind;
+                inst.meta[2] = source.first_stop
+                    + if source.kind == KIND_REGION {
+                        0
+                    } else {
+                        offset
+                    };
+                debug_assert_eq!(variant.batch_with(variant_of(inst)), Some(variant));
             }
             if let Some(pending) = self.mask_pending {
                 self.mask_patches.extend(
@@ -6857,71 +6870,78 @@ mod tests {
         assert_eq!(lowering.anchor_scratch.links, [(anchor_a, 10)]);
     }
 
-    /// A retained leaf's instances no longer share one specialization:
-    /// span/glyph/region compose to atlas ranges while the fill between
-    /// them keeps the simple variant — and the pass still qualifies for
-    /// coverage order.
+    /// A retained leaf's instances draw as one batch: a leaf mixing atlas
+    /// primitives with a fill keeps the compatible Simple kernel, while a
+    /// leaf holding only atlas primitives keeps the Atlas specialization —
+    /// and the pass still qualifies for coverage order.
     #[test]
-    fn retained_mixed_coverage_ranges_preserve_order() {
-        let mut frame = Frame::default();
-        let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
-        lowering.begin_pass(Target::Part(0), Some([0.0; 4]));
+    fn retained_coverage_batches_preserve_order() {
+        for (kinds, expected_variant) in [
+            (
+                &[KIND_SPAN, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SPAN][..],
+                ShaderVariant::Simple,
+            ),
+            (
+                &[KIND_SPAN, KIND_GLYPH, KIND_REGION, KIND_SPAN][..],
+                ShaderVariant::Atlas,
+            ),
+        ] {
+            let mut frame = Frame::default();
+            let mut anchor_scratch = AnchorScratch::default();
+            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            lowering.begin_pass(Target::Part(0), Some([0.0; 4]));
 
-        let mut inst = Instance::new(KIND_FILL);
-        inst.affine = affine(Affine::IDENTITY);
-        inst.bounds = [0.0, 0.0, 32.0, 32.0];
-        inst.color = [0.5, 0.25, 0.75, 0.5];
-        let storage = EmissionStorage {
-            templates: vec![InstanceTemplate::new(&inst)],
-            covers: Vec::new(),
-            instances: [KIND_SPAN, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SPAN]
-                .into_iter()
-                .map(|kind| RetainedInstance {
-                    bounds: [0.0, 0.0, 32.0, 32.0],
-                    uv: [0.0, 0.0],
-                    kind,
-                    first_stop: 0,
-                })
-                .collect(),
-            stops: Vec::new(),
-            refs: Vec::new(),
-        };
-        let emission = Emission {
-            pending_cells: 0,
-            refs: 0,
-            live_stamp: 0,
-            template: 0,
-            cover: None,
-            transform: Affine::IDENTITY,
-            size: [32.0, 32.0],
-            instances: 0..5,
-            stops: 0..0,
-            image: None,
-        };
-        lowering.compose(&emission, &storage, None);
-        lowering.end_segment();
+            let mut inst = Instance::new(KIND_FILL);
+            inst.affine = affine(Affine::IDENTITY);
+            inst.bounds = [0.0, 0.0, 32.0, 32.0];
+            inst.color = [0.5, 0.25, 0.75, 0.5];
+            let storage = EmissionStorage {
+                templates: vec![InstanceTemplate::new(&inst)],
+                covers: Vec::new(),
+                instances: kinds
+                    .iter()
+                    .map(|&kind| RetainedInstance {
+                        bounds: [0.0, 0.0, 32.0, 32.0],
+                        uv: [0.0, 0.0],
+                        kind,
+                        first_stop: 0,
+                    })
+                    .collect(),
+                stops: Vec::new(),
+                refs: Vec::new(),
+            };
+            let emission = Emission {
+                pending_cells: 0,
+                refs: 0,
+                live_stamp: 0,
+                template: 0,
+                cover: None,
+                transform: Affine::IDENTITY,
+                size: [32.0, 32.0],
+                instances: 0..kinds.len(),
+                stops: 0..0,
+                image: None,
+            };
+            lowering.compose(&emission, &storage, None);
+            lowering.end_segment();
 
-        assert_eq!(
-            frame
-                .instances
-                .iter()
-                .map(|inst| inst.meta[0])
-                .collect::<Vec<_>>(),
-            [KIND_SPAN, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SPAN]
-        );
-        let open = frame.open.as_ref().expect("part pass still open");
-        assert_eq!(
-            open.ranges
-                .iter()
-                .map(|range| (range.variant, range.instances.clone()))
-                .collect::<Vec<_>>(),
-            [
-                (ShaderVariant::Atlas, 0..1),
-                (ShaderVariant::Simple, 1..2),
-                (ShaderVariant::Atlas, 2..5)
-            ]
-        );
-        assert!(open.maybe_coverage);
+            assert_eq!(
+                frame
+                    .instances
+                    .iter()
+                    .map(|inst| inst.meta[0])
+                    .collect::<Vec<_>>(),
+                kinds
+            );
+            let open = frame.open.as_ref().expect("part pass still open");
+            assert_eq!(
+                open.ranges
+                    .iter()
+                    .map(|range| (range.variant, range.instances.clone()))
+                    .collect::<Vec<_>>(),
+                [(expected_variant, 0..u32::try_from(kinds.len()).unwrap())]
+            );
+            assert!(open.maybe_coverage);
+        }
     }
 }
