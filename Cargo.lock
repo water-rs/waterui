@@ -12697,7 +12697,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-cli"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "aither-core",
  "aither-mcp",
@@ -12774,6 +12774,7 @@ dependencies = [
  "ttf-parser",
  "unicode-ident",
  "url",
+ "uuid",
  "walkdir",
  "waterui-assets-core",
  "waterui-assets-planner",

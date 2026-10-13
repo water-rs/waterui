@@ -476,6 +476,10 @@ class ShadowNativeBridge {
         var sessions = 0
             private set
 
+        /** Every `nativeInit` the real `load` made — the library-load event. */
+        var loads = 0
+            private set
+
         var destroyed = false
             private set
 
@@ -500,8 +504,16 @@ class ShadowNativeBridge {
         var treeJson: String? = null
 
         fun reset() {
+            // The real `load` records its library process-wide and
+            // early-returns on a remount; tests need the first-load path
+            // replayed each time.
+            NativeBridge::class.java.getDeclaredField("loadedLibraryName").apply {
+                isAccessible = true
+                set(NativeBridge, null)
+            }
             frames = 0
             sessions = 0
+            loads = 0
             destroyed = false
             deadlineQueries = 0
             visibilities.clear()
@@ -522,7 +534,10 @@ class ShadowNativeBridge {
         fun nativeInit(
             schema: Int,
             @Suppress("UNUSED_PARAMETER") logLevel: String?,
-        ): Int = schema
+        ): Int {
+            loads += 1
+            return schema
+        }
 
         @JvmStatic
         @Implementation
