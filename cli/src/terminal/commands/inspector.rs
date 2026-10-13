@@ -9,7 +9,7 @@ use eyre::Result;
 use crate::shell::Shell;
 use crate::{header, note, success};
 use waterui_cli::inspector::{
-    InspectorLaunchOptions, InspectorTarget, PreparedInspector, prepare_inspector,
+    InspectorLaunchOptions, InspectorTarget, PreparedInspector, explicit_token, prepare_inspector,
 };
 
 /// Where the application being inspected runs.
@@ -58,7 +58,8 @@ impl CliInspectorPlatform {
     /// `cfg!(target_os)` proves it: the `water` binary always runs on the
     /// developer machine). Only those can be discovered or have a token
     /// looked up here; every other platform is a remote endpoint reached
-    /// through `--target` and `--token` (or, for Android, `adb forward`).
+    /// through `--target` and WATERUI_INSPECTOR_TOKEN (or, for Android,
+    /// `adb forward`).
     const fn can_run_on_this_machine(self) -> bool {
         let host_desktop = match self {
             Self::Macos => cfg!(target_os = "macos"),
@@ -71,7 +72,7 @@ impl CliInspectorPlatform {
 }
 
 /// Arguments for `water inspector`.
-#[derive(ClapArgs)]
+#[derive(ClapArgs, Debug)]
 pub struct Args {
     /// Runtime app debug endpoint (`host:port`).
     ///
@@ -82,13 +83,10 @@ pub struct Args {
     /// device or simulator sees it (a simulator shares this machine's
     /// loopback, a device needs its routable address); for Android it is
     /// the endpoint the application bound on the device — the port is what
-    /// `adb forward` carries.
+    /// `adb forward` carries. An explicit credential comes from
+    /// `WATERUI_INSPECTOR_TOKEN`, never a command-line argument.
     #[arg(long)]
     target: Option<String>,
-
-    /// One-time token for runtime endpoint authentication.
-    #[arg(long)]
-    token: Option<String>,
 
     /// Where the application being inspected runs. The inspector client
     /// always runs on this machine; the platform only says how the target's
@@ -107,19 +105,6 @@ pub struct Args {
     path: PathBuf,
 }
 
-// The token is a credential: the parse never reaches diagnostics.
-impl std::fmt::Debug for Args {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Args")
-            .field("target", &self.target)
-            .field("token", &self.token.as_ref().map(|_| "[redacted]"))
-            .field("platform", &self.platform)
-            .field("device", &self.device)
-            .field("path", &self.path)
-            .finish()
-    }
-}
-
 impl Args {
     /// The project directory this command works on.
     pub(crate) fn project_dir(&self) -> &std::path::Path {
@@ -135,6 +120,7 @@ async fn prepare_selected_inspector(
     shell: &Shell,
     host: &waterui_cli::toolchain::Host,
     args: Args,
+    token_override: Option<String>,
 ) -> Result<(PreparedInspector, InspectorLaunchOptions)> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
 
@@ -144,7 +130,7 @@ async fn prepare_selected_inspector(
     // asked where it is, which is what makes attaching a single command.
     let (target, token) = if let Some(target) = args.target {
         let addr = target.parse::<SocketAddr>()?;
-        let token = match args.token {
+        let token = match token_override {
             Some(token) => token,
             None => token_for(addr)?,
         };
@@ -152,7 +138,7 @@ async fn prepare_selected_inspector(
     } else {
         let found = discover(shell)?;
         note!(shell, "Attaching to {} (pid {})", found.app_name, found.pid);
-        (found.addr, args.token.unwrap_or(found.token))
+        (found.addr, token_override.unwrap_or(found.token))
     };
 
     note!(shell, "Target runtime endpoint: {}", target);
@@ -218,15 +204,19 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
     if args.device.is_some() && args.platform != CliInspectorPlatform::Android {
         eyre::bail!("`--device` is supported only with `--platform android`.");
     }
-    require_device_endpoint(args.platform, args.target.as_deref(), args.token.as_deref())?;
-
     let host = waterui_cli::toolchain::Host::current();
+    let token_override = explicit_token(&host)?;
+    require_device_endpoint(
+        args.platform,
+        args.target.as_deref(),
+        token_override.as_deref(),
+    )?;
 
     // Everything in `prepare_selected_inspector` acquires nothing that can
     // leak, so an interrupt while devices scan or the client builds just
     // returns.
     let prepared = Box::pin(crate::until_interrupt(
-        prepare_selected_inspector(shell, &host, args),
+        prepare_selected_inspector(shell, &host, args, token_override),
         &interrupts,
     ))
     .await?;
@@ -255,8 +245,8 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         .await
 }
 
-/// Inspecting an application off this machine needs the endpoint and token
-/// spelled out.
+/// Inspecting an application off this machine needs the endpoint and
+/// credential spelled out.
 ///
 /// Discovery lists the endpoints advertised on this computer; an
 /// application on a device, a simulator, or another machine's OS
@@ -268,8 +258,8 @@ fn require_device_endpoint(
 ) -> Result<()> {
     if !platform.can_run_on_this_machine() && (target.is_none() || token.is_none()) {
         eyre::bail!(
-            "`--platform {}` needs --target <addr:port> and --token <token>: the endpoint and \
-             one-time token the application advertises",
+            "`--platform {}` needs --target <addr:port> and WATERUI_INSPECTOR_TOKEN: the \
+             endpoint and matching credential of the application",
             platform.name()
         );
     }
@@ -337,8 +327,8 @@ fn token_for(addr: SocketAddr) -> Result<String> {
             || {
                 Err(eyre!(
                     "no application on this machine advertises {addr}.\n\
-                     Pass --token with the token it printed at startup, which is how \
-                     to attach to an application on another machine or device."
+                     Set WATERUI_INSPECTOR_TOKEN to the matching credential, \
+                     which is how to attach to an application on another machine or device."
                 ))
             },
             Ok,
@@ -347,7 +337,23 @@ fn token_for(addr: SocketAddr) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use clap::Parser as _;
+
     use super::{Args, CliInspectorPlatform, require_device_endpoint};
+
+    #[derive(clap::Parser, Debug)]
+    struct TestCli {
+        #[command(flatten)]
+        args: Args,
+    }
+
+    #[test]
+    fn command_line_credentials_are_rejected() {
+        let error = TestCli::try_parse_from(["water-inspector", "--token", "cli-test-credential"])
+            .expect_err("a credential argument must not parse");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert!(!error.to_string().contains("cli-test-credential"));
+    }
 
     /// Ctrl-C while devices scan never reaches preparation: the queued
     /// interrupt returns `None` before any forward could be opened, and
@@ -384,12 +390,15 @@ mod tests {
                     std::ffi::OsString::from("WATERUI_FAKE_ADB_LOG"),
                     log.clone().into_os_string(),
                 ),
+                (
+                    std::ffi::OsString::from("WATERUI_INSPECTOR_TOKEN"),
+                    std::ffi::OsString::from("token"),
+                ),
             ],
         )
         .with_cwd(temp.path().to_path_buf());
         let args = Args {
             target: Some(String::from("127.0.0.1:23106")),
-            token: Some(String::from("token")),
             platform: CliInspectorPlatform::Android,
             device: Some(String::from("pixel-9-pro:5555")),
             path: temp.path().to_path_buf(),
@@ -402,7 +411,12 @@ mod tests {
         smol::block_on(smol::future::or(
             async {
                 let result = Box::pin(crate::until_interrupt(
-                    super::prepare_selected_inspector(&shell, &host, args),
+                    super::prepare_selected_inspector(
+                        &shell,
+                        &host,
+                        args,
+                        super::explicit_token(&host).expect("declared credential"),
+                    ),
                     &interrupts,
                 ))
                 .await;
@@ -426,35 +440,10 @@ mod tests {
         );
     }
 
-    /// `--token` is a credential: `Debug` redacts a set value and keeps
-    /// `None` and the rest of the parse intact.
-    #[test]
-    fn the_args_debug_never_shows_the_token() {
-        let args = Args {
-            target: Some(String::from("127.0.0.1:23106")),
-            token: Some(String::from("s3cret-cli-token")),
-            platform: super::CliInspectorPlatform::Local,
-            device: Some(String::from("pixel-9-pro")),
-            path: std::path::PathBuf::from("."),
-        };
-        let rendered = format!("{args:?}");
-        assert!(!rendered.contains("s3cret-cli-token"), "{rendered}");
-        assert!(rendered.contains("[redacted]"), "{rendered}");
-        assert!(rendered.contains("23106"), "{rendered}");
-        assert!(rendered.contains("pixel-9-pro"), "{rendered}");
-
-        let without = Args {
-            token: None,
-            ..args
-        };
-        let rendered = format!("{without:?}");
-        assert!(rendered.contains("token: None"), "{rendered}");
-    }
-
     fn expected_error(platform: CliInspectorPlatform) -> String {
         format!(
-            "`--platform {}` needs --target <addr:port> and --token <token>: the endpoint and \
-             one-time token the application advertises",
+            "`--platform {}` needs --target <addr:port> and WATERUI_INSPECTOR_TOKEN: the \
+             endpoint and matching credential of the application",
             platform.name()
         )
     }

@@ -33,6 +33,8 @@ pub use super::web_fonts::WebFonts;
 pub(super) enum FontRole {
     /// The generic sans-serif face (Roboto).
     Generic,
+    /// Noto Sans's Latin, Greek and Cyrillic fallback coverage.
+    LatinGreekCyrillic,
     /// The emoji face.
     Emoji,
     /// Han in its Simplified Chinese design.
@@ -59,6 +61,9 @@ impl FontRole {
     /// to its own family name — an icon face, a text face a theme names.
     pub(super) fn of(name: &str) -> Option<Self> {
         let key = name.to_ascii_lowercase().replace(' ', "");
+        if key == "notosans" || key.starts_with("notosans-") {
+            return Some(Self::LatinGreekCyrillic);
+        }
         let rules = [
             ("emoji", Self::Emoji),
             ("roboto", Self::Generic),
@@ -107,7 +112,7 @@ impl FontRole {
                         .as_deref()
                         .is_some_and(|region| matches!(region, "TW" | "HK" | "MO")));
         match self {
-            Self::Generic => true,
+            Self::Generic | Self::LatinGreekCyrillic => true,
             Self::Emoji => false,
             Self::HaniSimplified => language == "zh" && !traditional_chinese,
             Self::HaniTraditional => traditional_chinese,
@@ -140,7 +145,8 @@ impl FontRole {
 pub fn loads_before_first_frame(name: &str, default_family: &str, languages: &[String]) -> bool {
     name == default_family
         || FontRole::of(name).is_none_or(|role| {
-            role == FontRole::Generic || languages.iter().any(|language| role.serves(language))
+            matches!(role, FontRole::Generic | FontRole::LatinGreekCyrillic)
+                || languages.iter().any(|language| role.serves(language))
         })
 }
 
@@ -149,6 +155,7 @@ pub fn loads_before_first_frame(name: &str, default_family: &str, languages: &[S
 #[derive(Default)]
 pub(super) struct ResourceFontFamilies {
     generic: Vec<FamilyId>,
+    latin_greek_cyrillic: Vec<FamilyId>,
     emoji: Vec<FamilyId>,
     hani_simplified: Vec<FamilyId>,
     hani_traditional: Vec<FamilyId>,
@@ -181,6 +188,7 @@ impl ResourceFontFamilies {
         };
         let bucket = match role {
             FontRole::Generic => &mut self.generic,
+            FontRole::LatinGreekCyrillic => &mut self.latin_greek_cyrillic,
             FontRole::Emoji => &mut self.emoji,
             FontRole::HaniSimplified => &mut self.hani_simplified,
             FontRole::HaniTraditional => &mut self.hani_traditional,
@@ -194,8 +202,8 @@ impl ResourceFontFamilies {
         bucket.extend(families.iter().map(|(family_id, _)| *family_id));
     }
 
-    /// Install the classified families as generic-family defaults and Han
-    /// script fallbacks keyed by locale.
+    /// Install generic-family defaults and script fallbacks, including
+    /// locale-specific Han families.
     pub(super) fn install(&self, collection: &mut Collection) {
         if !self.generic.is_empty() {
             collection.set_generic_families(GenericFamily::SansSerif, self.generic.iter().copied());
@@ -205,6 +213,14 @@ impl ResourceFontFamilies {
         }
         if !self.emoji.is_empty() {
             collection.set_generic_families(GenericFamily::Emoji, self.emoji.iter().copied());
+        }
+
+        for script in ["Latn", "Grek", "Cyrl"] {
+            set_fallbacks(
+                collection,
+                Script::from_str_unchecked(script),
+                &self.latin_greek_cyrillic,
+            );
         }
 
         let hani = Script::from_str_unchecked("Hani");
@@ -529,6 +545,21 @@ mod tests {
         ));
         // With no preferred language only the generic face is needed.
         assert!(loads_before_first_frame("Roboto", "Inter", &[]));
+        assert!(loads_before_first_frame("Noto Sans", "Roboto", &[]));
         assert!(!loads_before_first_frame("Noto Sans Hebrew", "Roboto", &[]));
+    }
+
+    #[test]
+    fn noto_sans_is_a_script_fallback_not_the_default_generic_face() {
+        for name in ["Noto Sans", "NotoSans-Regular.ttf", "NotoSans-Bold.ttf"] {
+            assert_eq!(FontRole::of(name), Some(FontRole::LatinGreekCyrillic));
+        }
+        assert_eq!(FontRole::of("Roboto"), Some(FontRole::Generic));
+        assert_eq!(
+            FontRole::of("Noto Sans CJK SC"),
+            Some(FontRole::HaniSimplified)
+        );
+        assert_eq!(FontRole::of("Noto Sans Arabic"), Some(FontRole::Arabic));
+        assert_eq!(FontRole::of("Noto Sans Cherokee"), None);
     }
 }

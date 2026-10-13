@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = ["fonttools==4.60.1"]
 # ///
 """Build Hydrolysis's test fonts from pinned sources and install them.
@@ -54,6 +54,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -157,6 +158,7 @@ NOTO_CJK_UNICODES = {
 # Expected SHA-256 of every file this script writes — the byte-exact contract
 # the test fonts live under.
 EXPECTED = {
+    "NotoSans-Regular.ttf": "f5f552c8c5edb61fe6efb824baf4d4de47b1a8689ab4925ff43f7bd6a4ebece5",
     "Roboto-Regular.ttf": "797e35f7f5d6020a5c6ea13b42ecd668bcfb3bbc4baa0e74773527e5b6cb3174",
     "Roboto-Medium.ttf": "7984aafeaf437899ce89b251d2875fc5048cb7d290152eac070239cca7ff726c",
     "Roboto-Bold.ttf": "36f3709dea3e3ce3c6aedc058079e55980825f898f1e901d091c73c40de8bab1",
@@ -174,6 +176,15 @@ EXPECTED = {
     "TestVariable-ABC.ttf": "ea6bdd1b7cdbb593d2fc7c8e1832a69f6fd307a9c8763c268e9d98bb528792e4",
 }
 
+# This web input stays out of system discovery so existing Roboto fixtures
+# retain their exact family and style selection.
+RAW_FONTS = {
+    "Roboto-Web-Variable.ttf": (
+        "https://raw.githubusercontent.com/water-rs/hydrolysis-m3/00fe165b8221b74bd0da21dbdd4555c418881555/assets/fonts/Roboto-Variable.ttf",
+        "d7598e12c5dbef095ff8272cfc55da0250bd07fbdecbac8a530b9b277872a134",
+    ),
+}
+
 # The Noto Sans CJK supercollection indexes Simplified Chinese and Korean at
 # these member positions (notofonts/noto-cjk Sans2.004 `00_NotoSansCJK.ttc.zip`,
 # `NotoSansCJK.ttc`).
@@ -182,9 +193,10 @@ CJK_TTC_INDEX = {"sc": 27, "kr": 26}
 
 def write_verified(name: str, data: bytes) -> None:
     digest = sha256(data)
-    if digest != EXPECTED[name]:
+    expected = EXPECTED[name] if name in EXPECTED else RAW_FONTS[name][1]
+    if digest != expected:
         raise SystemExit(
-            f"{name}: generated sha256 {digest} != expected {EXPECTED[name]}\n"
+            f"{name}: generated sha256 {digest} != expected {expected}\n"
             "the font bytes are part of the test contract — investigate the "
             "source or fonttools version drift instead of accepting the output"
         )
@@ -467,21 +479,32 @@ def install() -> None:
         wait_for_directwrite_families([target / name for name in sorted(EXPECTED)])
 
 
-def check_faces(directory: Path) -> tuple[list[str], list[str]]:
-    """Partition `EXPECTED` into faces missing under `directory` and faces
+def check_faces(directory: Path, expected: dict[str, str]) -> tuple[list[str], list[str]]:
+    """Partition `expected` into faces missing under `directory` and faces
     present with bytes that do not match their pin."""
     missing, mismatched = [], []
-    for name, expected in sorted(EXPECTED.items()):
+    for name, digest in sorted(expected.items()):
         path = directory / name
         if not path.is_file():
             missing.append(name)
-        elif sha256(path.read_bytes()) != expected:
+        elif sha256(path.read_bytes()) != digest:
             mismatched.append(name)
     return missing, mismatched
 
 
+def reject_drift(mismatched: list[str]) -> None:
+    if mismatched:
+        lines = "\n".join(f"  {name}" for name in mismatched)
+        raise SystemExit(
+            "generated fonts exist that do not match their pinned sha256:\n"
+            f"{lines}\n"
+            "the font bytes are part of the test contract — remove the files "
+            "and rerun, or investigate why they drifted"
+        )
+
+
 def generate() -> None:
-    """Fetch every pinned source, build the 15 faces and verify each."""
+    """Fetch every pinned source, build the faces and verify each."""
     with tempfile.TemporaryDirectory(prefix="hydrolysis-test-fonts-") as tmp:
         work = Path(tmp)
 
@@ -497,6 +520,15 @@ def generate() -> None:
             "Roboto-Italic.ttf",
         ):
             write_verified(name, zip_member(roboto_zip, name))
+
+        registry_path = OUT_DIR.parents[2] / "cli/src/project_model/assets/fonts.toml"
+        registry = tomllib.loads(registry_path.read_text())
+        noto_origin = next(font for font in registry["font"] if font["name"] == "Noto Sans")
+        noto_sans_zip = fetch(noto_origin["url"], noto_origin["sha256"])
+        write_verified(
+            "NotoSans-Regular.ttf",
+            zip_member(noto_sans_zip, "NotoSans/full/ttf/NotoSans-Regular.ttf"),
+        )
 
         # BungeeColor — the COLRv0 colour face (the Windows/colr member of the
         # 1.0.0 release fonts bundle).
@@ -625,26 +657,26 @@ def generate() -> None:
             "TestVariable-ABC.ttf", (work / "TestVariable-ABC.ttf").read_bytes()
         )
 
-    print("all 15 test fonts verified")
+    print(f"all {len(EXPECTED)} test fonts verified")
 
 
 def main() -> None:
+    missing_raw, mismatched_raw = check_faces(
+        OUT_DIR, {name: pin for name, (_, pin) in RAW_FONTS.items()}
+    )
+    reject_drift(mismatched_raw)
+    for name in missing_raw:
+        url, pin = RAW_FONTS[name]
+        write_verified(name, fetch(url, pin))
+    missing, mismatched = check_faces(OUT_DIR, EXPECTED)
+    reject_drift(mismatched)
+    if missing:
+        generate()
     target = user_font_dir()
-    missing_installed, mismatched_installed = check_faces(target)
+    missing_installed, mismatched_installed = check_faces(target, EXPECTED)
     if not missing_installed and not mismatched_installed:
         print(f"all {len(EXPECTED)} test fonts already installed in {target}")
         return
-    missing, mismatched = check_faces(OUT_DIR)
-    if mismatched:
-        lines = "\n".join(f"  {name}" for name in mismatched)
-        raise SystemExit(
-            "generated fonts exist that do not match their pinned sha256:\n"
-            f"{lines}\n"
-            "the font bytes are part of the test contract — remove the files "
-            "and rerun, or investigate why they drifted"
-        )
-    if missing:
-        generate()
     install()
 
 

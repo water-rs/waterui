@@ -3,6 +3,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+use waterui_cli::toolchain::Host;
+
 struct Fixture {
     root: tempfile::TempDir,
     package: PathBuf,
@@ -20,7 +22,7 @@ fn run(command: &mut Command) -> Output {
 }
 
 fn git(directory: &Path) -> Command {
-    let mut command = Command::new("git");
+    let mut command = Host::current().std_command("git");
     command.arg("-C").arg(directory);
     for variable in [
         "GIT_DIR",
@@ -56,7 +58,7 @@ impl Fixture {
     }
 
     fn cargo(&self) -> Command {
-        let mut command = Command::new(env!("CARGO"));
+        let mut command = Host::current().std_command(env!("CARGO"));
         command
             .current_dir(&self.package)
             .env("CARGO_TARGET_DIR", self.package.join("target"));
@@ -76,7 +78,8 @@ impl Fixture {
     fn initialize(&self) {
         run(git(&self.package).args(["init", "--template=", "-b", "metadata"]));
         let key = self.root.path().join("signing-key");
-        run(Command::new("ssh-keygen")
+        run(Host::current()
+            .std_command("ssh-keygen")
             .args(["-q", "-t", "ed25519", "-N", "", "-f"])
             .arg(&key));
         for (name, value) in [
