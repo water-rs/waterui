@@ -114,6 +114,9 @@ impl RenderNode {
         let view = match view.downcast::<Native<LazyContainer>>() {
             Ok(container) => {
                 let direction = container.as_inner().direction();
+                // Whether the items statically declared `.transition(...)`,
+                // read before `into_inner` consumes the container.
+                let wants_transition = container.as_inner().declares_transitions();
                 let (layout, children) = (*container).into_inner().into_inner();
                 // The collection's own layout inputs (stack spacing, absolute
                 // pins, …) are signals too: subscribe them through
@@ -131,12 +134,10 @@ impl RenderNode {
                         }
                     }))
                 };
-                // A viewport-virtualizable stack layout (and not opting into a
-                // membership transition, which must retain every item) becomes a
-                // virtualized LazyStack: only visible rows are built/measured.
-                let wants_transition = env
-                    .get::<waterui_layout::collection_transition::CollectionTransition>()
-                    .is_some();
+                // A viewport-virtualizable stack layout becomes a virtualized
+                // LazyStack — unless the items declared `.transition(...)`,
+                // which must retain every member so a removal can hold its
+                // ghost slot (layout-spec.md §4.5).
                 if let Some(axis) =
                     lazy_stack_axis_config(layout.as_ref(), direction).filter(|_| !wants_transition)
                 {
@@ -239,6 +240,16 @@ impl RenderNode {
                 }));
             }
             Err(view) => view,
+        };
+        // A `.transition(...)` reached outside a structural site (retained
+        // collections peel the spec before this arm ever sees it — see
+        // `split_transition`): with no structural owner there is no clock
+        // and no honest rendering path — fail fast rather than draw through.
+        let Err(view) = view.downcast::<Metadata<waterui_core::transition::TransitionSpec>>()
+        else {
+            panic!(
+                "Hydrolysis: transition metadata requires a structural transition owner; this site is not implemented (water-rs/waterui#1593)"
+            );
         };
         // Accessibility metadata are environment-scoping wrappers (the dispatch
         // handlers just `env.insert(value)` then render the content), so the tree
@@ -411,7 +422,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 let AnchoredOverlay {
-                    content: overlay_content,
+                    content: overlay_builder,
                     is_presented,
                     placed_edge,
                     placement,
@@ -419,7 +430,8 @@ impl RenderNode {
                 } = value;
                 return Self::build_wrapper(
                     WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
-                        content: Rc::new(RefCell::new(Some(RetainedSubview::new(overlay_content)))),
+                        builder: overlay_builder,
+                        content: Rc::new(RefCell::new(None)),
                         is_presented,
                         placed_edge,
                         placement,
@@ -1016,12 +1028,12 @@ impl RenderNode {
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
                 let entry_core = renderer.new_core();
                 entry_core.cell.set_parent(&core.cell);
-                let node = Self::build_view(normalize_layout_view(view, env), env, renderer);
+                let (spec, content) = split_transition(view);
+                let node = Self::build_view(normalize_layout_view(content, env), env, renderer);
                 node.core().cell.set_parent(&entry_core.cell);
-                CollectionEntry::stable(id, node, entry_core)
+                CollectionEntry::new(id, node, entry_core, spec)
             })
             .collect();
-        let transition = collection_transition_runtime(env, layout.as_ref(), &mut renderer.state);
         Self::Collection(Box::new(CollectionNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
@@ -1036,7 +1048,13 @@ impl RenderNode {
             placed: Vec::new(),
             #[cfg(feature = "accessibility")]
             resolved: Rect::from_size(Size::zero()),
-            transition,
+            ghosts: Vec::new(),
+            ghost_placed: Vec::new(),
+            reduce_motion: env
+                .get::<waterui_core::transition::ReduceMotion>()
+                .is_some_and(|flag| flag.0),
+            direction: waterui_layout::layout_direction(env).snapshot(),
+            ghost_seq: Cell::new(0),
             dirty,
             replaced_ids,
             _guard: guard,

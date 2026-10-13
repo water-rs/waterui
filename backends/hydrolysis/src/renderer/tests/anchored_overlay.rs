@@ -115,7 +115,7 @@ fn a_mid_window_anchor_places_the_overlay_below_it_centered() {
         AnyView::new(vstack((
             ().size(0.0, 100.0),
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(&open, overlay_content())
+                AnchoredOverlay::new(&open, overlay_content)
                     .edge(AnchorEdge::Bottom)
                     .alignment(EdgeAlignment::Center)
                     .gap(GAP)
@@ -151,7 +151,7 @@ fn an_overlay_too_tall_for_the_top_edge_flips_below() {
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_content())
+            AnchoredOverlay::new(&open, overlay_content)
                 .edge(AnchorEdge::Top)
                 .alignment(EdgeAlignment::Center)
                 .gap(GAP)
@@ -183,7 +183,7 @@ fn a_trailing_edge_overlay_clamps_inside_the_window_margin() {
                 .width(crate::num_cast::u32_as_f32(WINDOW.0))
                 .height(20.0)
                 .anchored_overlay(
-                    AnchoredOverlay::new(&open, overlay_content())
+                    AnchoredOverlay::new(&open, overlay_content)
                         .edge(AnchorEdge::Trailing)
                         .alignment(EdgeAlignment::Center)
                         .gap(GAP)
@@ -217,7 +217,7 @@ fn an_outside_press_writes_false_and_still_reaches_its_target() {
         AnyView::new(vstack((
             ().size(0.0, 100.0),
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(&open, overlay_content())
+                AnchoredOverlay::new(&open, overlay_content)
                     .edge(AnchorEdge::Bottom)
                     .gap(GAP),
             ),
@@ -270,7 +270,7 @@ fn a_manual_overlay_ignores_outside_presses() {
         AnyView::new(vstack((
             ().size(0.0, 100.0),
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(&open, overlay_content())
+                AnchoredOverlay::new(&open, overlay_content)
                     .edge(AnchorEdge::Bottom)
                     .gap(GAP)
                     .dismissal(Dismissal::Manual),
@@ -320,7 +320,7 @@ fn a_window_resize_replaces_the_overlay() {
                 .width(crate::num_cast::u32_as_f32(WINDOW.0))
                 .height(20.0)
                 .anchored_overlay(
-                    AnchoredOverlay::new(&open, overlay_content())
+                    AnchoredOverlay::new(&open, overlay_content)
                         .edge(AnchorEdge::Trailing)
                         .alignment(EdgeAlignment::Center)
                         .gap(GAP)
@@ -363,13 +363,12 @@ fn a_long_overlay_wraps_inside_the_window() {
         AnyView::new(vstack((
             ().size(0.0, 60.0),
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(
-                    &open,
+                AnchoredOverlay::new(&open, move || {
                     AnyView::new(text(
                         "A long line of overlay text that cannot fit on a \
                          single line inside a narrow window.",
-                    )),
-                )
+                    ))
+                })
                 .edge(AnchorEdge::Bottom)
                 .alignment(EdgeAlignment::Center)
                 .gap(GAP)
@@ -409,8 +408,8 @@ fn a_closing_overlays_exit_animation_plays_to_completion() {
         let open = open_for_view.clone();
         let scale = scale_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(
-                &open,
+            AnchoredOverlay::new(&open, move || {
+                let scale = scale.clone();
                 AnyView::new(
                     Frame::new(
                         text("tip").scale(
@@ -422,8 +421,8 @@ fn a_closing_overlays_exit_animation_plays_to_completion() {
                     )
                     .width(OVERLAY.0)
                     .height(OVERLAY.1),
-                ),
-            )
+                )
+            })
             .edge(AnchorEdge::Bottom)
             .gap(GAP),
         ),)))
@@ -478,7 +477,7 @@ fn an_overlay_with_no_exit_animation_is_gone_on_the_dismissal_frame() {
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_content())
+            AnchoredOverlay::new(&open, overlay_content)
                 .edge(AnchorEdge::Bottom)
                 .gap(GAP),
         ),)))
@@ -513,8 +512,8 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
         let open = open_for_view.clone();
         let scale = scale_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(
-                &open,
+            AnchoredOverlay::new(&open, move || {
+                let scale = scale.clone();
                 AnyView::new(
                     Frame::new(
                         Color::srgb(30, 120, 220).scale(
@@ -526,8 +525,8 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
                     )
                     .width(OVERLAY.0)
                     .height(OVERLAY.1),
-                ),
-            )
+                )
+            })
             .edge(AnchorEdge::Bottom)
             .gap(GAP),
         ),)))
@@ -581,8 +580,9 @@ fn input_during_the_exit_reaches_the_content_underneath() {
         let under = under_for_view.clone();
         AnyView::new(vstack((
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(
-                    &open,
+                AnchoredOverlay::new(&open, move || {
+                    let inner = inner.clone();
+                    let scale = scale.clone();
                     AnyView::new(
                         button("in")
                             .action(move || {
@@ -594,8 +594,8 @@ fn input_during_the_exit_reaches_the_content_underneath() {
                                     .with(Animation::linear(Duration::from_millis(1_000))),
                                 scale.with(Animation::linear(Duration::from_millis(1_000))),
                             ),
-                    ),
-                )
+                    )
+                })
                 .edge(AnchorEdge::Bottom)
                 .gap(GAP),
             ),
@@ -673,8 +673,8 @@ fn re_presenting_mid_exit_keeps_the_overlay_presented() {
         let open = open_for_view.clone();
         let scale = scale_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(
-                &open,
+            AnchoredOverlay::new(&open, move || {
+                let scale = scale.clone();
                 AnyView::new(
                     Frame::new(
                         text("tip").scale(
@@ -686,8 +686,8 @@ fn re_presenting_mid_exit_keeps_the_overlay_presented() {
                     )
                     .width(OVERLAY.0)
                     .height(OVERLAY.1),
-                ),
-            )
+                )
+            })
             .edge(AnchorEdge::Bottom)
             .gap(GAP),
         ),)))
@@ -726,7 +726,7 @@ fn placed_edge_reports_the_logical_edge_after_a_flip() {
         let open = open_for_view.clone();
         let placed = placed_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_content())
+            AnchoredOverlay::new(&open, overlay_content)
                 .edge(AnchorEdge::Top)
                 .alignment(EdgeAlignment::Center)
                 .gap(GAP)
@@ -755,7 +755,7 @@ fn placed_edge_reports_the_logical_edge_after_a_flip() {
         AnyView::new(vstack((
             ().size(0.0, 100.0),
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(&open, overlay_content())
+                AnchoredOverlay::new(&open, overlay_content)
                     .edge(AnchorEdge::Leading)
                     .alignment(EdgeAlignment::Center)
                     .gap(GAP)

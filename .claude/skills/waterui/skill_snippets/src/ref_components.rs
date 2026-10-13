@@ -665,16 +665,17 @@ pub fn components_block_22() -> impl View {
     use waterui::animation::Animation;
     use waterui::reactive::collection::List as ReactiveList;
 
-    fn row_view(r: Record) -> Text {
+    fn row_view(r: Record) -> impl View {
         text(r.title)
+            .transition(PropertyTransition::opacity())
+            .animation(Animation::ease_in_out(Duration::from_millis(250)))
     }
     let rows = ReactiveList::<Record>::new();
 
-    use waterui::layout::collection_transition;
+    use waterui::PropertyTransition;
     use waterui::layout::stack::VStack;
 
-    let drawer = VStack::for_each(rows.clone(), row_view).spacing(4.0);
-    collection_transition(drawer, Animation::ease_in_out(Duration::from_millis(250)))
+    VStack::for_each(rows.clone(), row_view).spacing(4.0)
 }
 
 // ---------------------------------------------------------------------------
