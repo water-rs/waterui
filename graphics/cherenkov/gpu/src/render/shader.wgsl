@@ -19,6 +19,7 @@ const VARIANT_SIMPLE: u32 = 0u;
 const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
 const VARIANT_UNION: u32 = 3u;
+const VARIANT_ATLAS: u32 = 4u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
@@ -628,6 +629,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if VARIANT == VARIANT_SHADOW {
         return fs_shadow(in);
     }
+    if VARIANT == VARIANT_ATLAS {
+        return fs_atlas(in);
+    }
     return fs_full(in);
 }
 
@@ -649,8 +653,7 @@ fn fs_simple(in: VsOut) -> vec4<f32> {
     var cov: f32;
     switch in.meta_.x {
         case KIND_GLYPH: {
-            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
-            cov = textureLoad(atlas, texel, 0).r;
+            cov = painter_atlas_coverage(in);
         }
         case KIND_SPAN: {
             cov = 1.0;
@@ -660,6 +663,24 @@ fn fs_simple(in: VsOut) -> vec4<f32> {
         }
     }
     return solid_coverage_color(in.color, in.params.y, cov);
+}
+
+// Atlas primitives: glyph/region texels plus uniform spans. The Rust
+// classifier admits only these kinds into the atlas variants.
+fn atlas_coverage(kind: u32, texel: vec2<i32>) -> f32 {
+    if kind == KIND_SPAN {
+        return 1.0;
+    }
+    return textureLoad(atlas, texel, 0).r;
+}
+
+fn painter_atlas_coverage(in: VsOut) -> f32 {
+    let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
+    return atlas_coverage(in.meta_.x, texel);
+}
+
+fn fs_atlas(in: VsOut) -> vec4<f32> {
+    return solid_coverage_color(in.color, in.params.y, painter_atlas_coverage(in));
 }
 
 fn solid_coverage_color(color: vec4<f32>, opacity: f32, coverage: f32) -> vec4<f32> {
@@ -777,10 +798,42 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     return OpaqueOut(out.position, out.color.rgb);
 }
 
-@vertex
-fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PartialOut {
+struct AtlasPartialOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) local: vec2<f32>,
+    @location(1) @interpolate(flat) instance_kind: u32,
+}
+
+@fragment
+fn fs_partial_atlas(in: AtlasPartialOut) -> @location(0) vec4<f32> {
+    let i = in.instance_kind >> PARTIAL_KIND_BITS;
+    let kind = in.instance_kind & PARTIAL_KIND_MASK;
+    let cov = atlas_coverage(kind, vec2<i32>(floor(in.local)));
+    if cov <= 0.0 {
+        discard;
+    }
+    return solid_coverage_color(instances[i].color, instances[i].params.y, cov);
+}
+
+fn partial_vertex(vi: u32, ii: u32) -> VsOut {
     var out = quad_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[vi], ii);
     out.position.z = bitcast<f32>(0x3e000000u + ii * 8u);
+    if opaque_span(instances[ii]) {
+        out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    out.local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
+    return out;
+}
+
+@vertex
+fn vs_partial_atlas(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> AtlasPartialOut {
+    let out = partial_vertex(vi, ii);
+    return AtlasPartialOut(out.position, out.local, (ii << PARTIAL_KIND_BITS) | instances[ii].meta_.x);
+}
+
+@vertex
+fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PartialOut {
+    var out = partial_vertex(vi, ii);
     let inst = instances[ii];
     let s = inst.shape;
     if inst.meta_.x == KIND_FILL && s.exponent == 2.0 && all(s.radii == vec4<f32>(s.half.x)) {
@@ -791,11 +844,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
         out.affine1.z = max(1.0 - margin, 0.0) * max(1.0 - margin, 0.0);
         out.affine1.w = (1.0 + margin) * (1.0 + margin);
     }
-    if opaque_span(instances[ii]) {
-        out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    }
-    let local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
-    return PartialOut(out.position, local, (ii << PARTIAL_KIND_BITS) | inst.meta_.x, out.affine1.zw);
+    return PartialOut(out.position, out.local, (ii << PARTIAL_KIND_BITS) | inst.meta_.x, out.affine1.zw);
 }
 
 @fragment
@@ -807,9 +856,8 @@ fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
 fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     let i = in.instance_kind >> PARTIAL_KIND_BITS;
     var cov: f32;
-    let kind = in.instance_kind & PARTIAL_KIND_MASK;
-    switch select(kind, KIND_GLYPH, kind == KIND_REGION) {
-        case KIND_GLYPH: {
+    switch in.instance_kind & PARTIAL_KIND_MASK {
+        case KIND_GLYPH, KIND_REGION: {
             cov = textureLoad(atlas, vec2<i32>(floor(in.local)), 0).r;
         }
         case KIND_SPAN: {

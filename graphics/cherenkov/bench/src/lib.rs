@@ -161,6 +161,8 @@ pub struct Counters {
     pub bytes_uploaded: Option<u64>,
     /// Dispatch/draw calls submitted, where the backend exposes them.
     pub dispatches: Option<u32>,
+    /// Engine-reported pipeline state changes while encoding draw ranges.
+    pub pipeline_switches: Option<u32>,
     /// Render/dispatch pass count, where the backend exposes it.
     pub passes: Option<u32>,
     /// `Engine::memory()` GPU bytes at the end of the run, where the adapter

@@ -220,7 +220,7 @@ struct Modules<'a> {
     tile: &'a str,
 }
 
-/// The fixed module set `render` creates: four VARIANT specializations
+/// The fixed module set `render` creates: five VARIANT specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
 /// `projective`, `mip`, `resolve` and `reduce`. The engine, external
 /// and projective modules share the `shared.wgsl` prelude; the engine
@@ -229,7 +229,7 @@ struct Modules<'a> {
 /// `union.wgsl`; the plain variants drop every `// union-stub` span, so
 /// their modules carry no union fold or member-cap arrays.
 fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
-    let mut specs: Vec<Spec> = (0..4u32)
+    let mut specs: Vec<Spec> = (0..5u32)
         .map(|variant| {
             let (cap, shader, union) = if variant == 3 {
                 (m.union_max, m.shader, m.union)

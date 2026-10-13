@@ -1970,6 +1970,7 @@ impl Engine for Cherenkov {
         let stats = self.engine.stats();
         let memory = self.engine.memory();
         counters.dispatches = Some(stats.draws);
+        counters.pipeline_switches = Some(stats.pipeline_switches);
         counters.passes = Some(stats.passes);
         counters.memory_gpu_bytes = Some(memory.gpu.0);
         counters.memory_cpu_bytes = Some(memory.cpu.0);

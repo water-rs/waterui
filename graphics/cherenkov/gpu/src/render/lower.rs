@@ -94,6 +94,17 @@ pub enum ShaderVariant {
     /// `Full` plus the backdrop union field: the module carries the
     /// member-record fold and its ownership weights.
     Union,
+    /// Solid glyph/region/span coverage: atlas or uniform coverage plus
+    /// a solid colour, without an analytic solve.
+    Atlas,
+}
+
+impl ShaderVariant {
+    /// Whether the variant draws only coverage-ordered shapes: those
+    /// replay under the depth-tested partial pipeline.
+    pub const fn supports_coverage_order(self) -> bool {
+        matches!(self, Self::Simple | Self::Atlas)
+    }
 }
 
 /// A texture identity scoped to its resource owner.
@@ -471,6 +482,9 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
     }
     if inst.meta[0] == KIND_SHADOW {
         return ShaderVariant::Shadow;
+    }
+    if matches!(inst.meta[0], KIND_GLYPH | KIND_REGION | KIND_SPAN) {
+        return ShaderVariant::Atlas;
     }
     ShaderVariant::Simple
 }
@@ -1935,7 +1949,7 @@ impl<'a> Lowering<'a> {
                 instances: open.seg_start..end,
             });
             open.maybe_coverage &= open.pipeline == PipelineKind::SrcOver
-                && open.variant == ShaderVariant::Simple
+                && open.variant.supports_coverage_order()
                 && open.source.is_none()
                 && open.image.is_none()
                 && open.mask.is_none();
@@ -2237,13 +2251,20 @@ impl<'a> Lowering<'a> {
 
     /// Starts a new draw range when the shader variant changes.
     fn set_variant(&mut self, variant: ShaderVariant) {
+        self.set_variant_at(variant, self.frame.instances.len());
+    }
+
+    /// `set_variant` at an instance offset other than the frame's current
+    /// length: `compose` fills resized slots in place, so each instance's
+    /// own variant check segments at its actual index.
+    fn set_variant_at(&mut self, variant: ShaderVariant, end: usize) {
         if self
             .frame
             .open
             .as_ref()
             .is_some_and(|o| o.variant != variant)
         {
-            self.end_segment();
+            self.end_segment_at(end);
             if let Some(open) = &mut self.frame.open {
                 open.variant = variant;
             }
@@ -4060,8 +4081,9 @@ impl<'a> Lowering<'a> {
         let instance_base = instance_index(self.frame.instances.len());
         let retained = &storage.instances[emission.instances.clone()];
         if let Some(first) = retained.first() {
-            // A realized leaf shares paint and clip fields. Its varying
-            // kinds (fill/span/cell) all use the same shader specialization.
+            // A realized leaf shares paint and clip fields. Its kinds are
+            // no longer one specialization — glyph/region/span instances
+            // take the atlas path while fills keep the simple one.
             let mut template = first.restore(&storage.templates[emission.template], offset);
             Self::apply_clip(&mut template, clip);
             self.set_variant(variant_of(&template));
@@ -4070,17 +4092,21 @@ impl<'a> Lowering<'a> {
             self.frame
                 .instances
                 .resize(first + retained.len(), template);
-            for (inst, source) in self.frame.instances[first..].iter_mut().zip(retained) {
-                inst.bounds = source.bounds;
-                inst.uv[0] = pack_uv(source.uv[0], source.uv[1]);
-                inst.meta[0] = source.kind;
-                inst.meta[2] = source.first_stop
-                    + if source.kind == KIND_REGION {
-                        0
-                    } else {
-                        offset
-                    };
-                debug_assert_eq!(variant_of(inst), variant_of(&template));
+            for (i, source) in retained.iter().enumerate() {
+                let variant = {
+                    let inst = &mut self.frame.instances[first + i];
+                    inst.bounds = source.bounds;
+                    inst.uv[0] = pack_uv(source.uv[0], source.uv[1]);
+                    inst.meta[0] = source.kind;
+                    inst.meta[2] = source.first_stop
+                        + if source.kind == KIND_REGION {
+                            0
+                        } else {
+                            offset
+                        };
+                    variant_of(inst)
+                };
+                self.set_variant_at(variant, first + i);
             }
             if let Some(pending) = self.mask_pending {
                 self.mask_patches.extend(
@@ -6829,5 +6855,73 @@ mod tests {
             .plan_anchors(&tree)
             .expect("a plan after an error has no stale links");
         assert_eq!(lowering.anchor_scratch.links, [(anchor_a, 10)]);
+    }
+
+    /// A retained leaf's instances no longer share one specialization:
+    /// span/glyph/region compose to atlas ranges while the fill between
+    /// them keeps the simple variant — and the pass still qualifies for
+    /// coverage order.
+    #[test]
+    fn retained_mixed_coverage_ranges_preserve_order() {
+        let mut frame = Frame::default();
+        let mut anchor_scratch = AnchorScratch::default();
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        lowering.begin_pass(Target::Part(0), Some([0.0; 4]));
+
+        let mut inst = Instance::new(KIND_FILL);
+        inst.affine = affine(Affine::IDENTITY);
+        inst.bounds = [0.0, 0.0, 32.0, 32.0];
+        inst.color = [0.5, 0.25, 0.75, 0.5];
+        let storage = EmissionStorage {
+            templates: vec![InstanceTemplate::new(&inst)],
+            covers: Vec::new(),
+            instances: [KIND_SPAN, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SPAN]
+                .into_iter()
+                .map(|kind| RetainedInstance {
+                    bounds: [0.0, 0.0, 32.0, 32.0],
+                    uv: [0.0, 0.0],
+                    kind,
+                    first_stop: 0,
+                })
+                .collect(),
+            stops: Vec::new(),
+            refs: Vec::new(),
+        };
+        let emission = Emission {
+            pending_cells: 0,
+            refs: 0,
+            live_stamp: 0,
+            template: 0,
+            cover: None,
+            transform: Affine::IDENTITY,
+            size: [32.0, 32.0],
+            instances: 0..5,
+            stops: 0..0,
+            image: None,
+        };
+        lowering.compose(&emission, &storage, None);
+        lowering.end_segment();
+
+        assert_eq!(
+            frame
+                .instances
+                .iter()
+                .map(|inst| inst.meta[0])
+                .collect::<Vec<_>>(),
+            [KIND_SPAN, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SPAN]
+        );
+        let open = frame.open.as_ref().expect("part pass still open");
+        assert_eq!(
+            open.ranges
+                .iter()
+                .map(|range| (range.variant, range.instances.clone()))
+                .collect::<Vec<_>>(),
+            [
+                (ShaderVariant::Atlas, 0..1),
+                (ShaderVariant::Simple, 1..2),
+                (ShaderVariant::Atlas, 2..5)
+            ]
+        );
+        assert!(open.maybe_coverage);
     }
 }

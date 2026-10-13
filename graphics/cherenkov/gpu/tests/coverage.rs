@@ -1,6 +1,6 @@
 //! Pixel-area coverage on oblique edges (lavapipe).
 
-use cherenkov::kurbo::Rect;
+use cherenkov::kurbo::{BezPath, Rect};
 use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
 use cherenkov::{Draw, Engine, EngineError, Offscreen, OffscreenFormat, WorkingColor};
 use cherenkov_gpu::{Gpu, GpuConfig};
@@ -14,9 +14,21 @@ fn opaque_interiors_preserve_translucent_painter_order() -> Result<(), Box<dyn s
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), WorkingColor::new([1.5, 0.25, 0.0, 1.0]));
-            c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), WorkingColor::new([0.0, 0.5, 0.0, 0.5]));
+            let mut translucent = BezPath::new();
+            translucent.move_to((-8.0, -8.0));
+            translucent.line_to((40.0, -4.0));
+            translucent.line_to((40.0, 40.0));
+            translucent.line_to((-8.0, 36.0));
+            translucent.close_path();
+            c.fill(translucent, WorkingColor::new([0.0, 0.5, 0.0, 0.5]));
             c.fill(cherenkov::kurbo::Circle::new((16.0, 16.0), 8.0), WorkingColor::new([0.0, 0.0, 2.0, 1.0]));
-            c.fill(Rect::new(16.0, 0.0, 32.0, 32.0), WorkingColor::new([1.0, 1.0, 0.0, 0.25]));
+            let mut edge = BezPath::new();
+            edge.move_to((16.25, -8.0));
+            edge.line_to((40.0, -4.0));
+            edge.line_to((40.0, 40.0));
+            edge.line_to((16.25, 36.0));
+            edge.close_path();
+            c.fill(edge, WorkingColor::new([1.0, 1.0, 0.0, 0.25]));
         }));
     });
     wait!(engine.render(cherenkov::FrameTime::now()))?;
@@ -24,6 +36,7 @@ fn opaque_interiors_preserve_translucent_painter_order() -> Result<(), Box<dyn s
     for (x, y, expected) in [
         (4, 4, [0.75, 0.375, 0.0, 1.0]),
         (12, 16, [0.0, 0.0, 2.0, 1.0]),
+        (16, 4, [0.796875, 0.4921875, 0.0, 1.0]),
         (20, 16, [0.25, 0.25, 1.5, 1.0]),
         (28, 4, [0.8125, 0.53125, 0.0, 1.0]),
     ] {
