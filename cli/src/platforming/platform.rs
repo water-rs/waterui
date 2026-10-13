@@ -585,13 +585,25 @@ impl NativeOs {
 
     /// The `NativeOs` this CLI build runs on — the OS `Triple::host()`
     /// names.
-    const fn running_host() -> Self {
+    pub(crate) const fn running_host() -> Self {
         if cfg!(target_os = "macos") {
             Self::MacOs
         } else if cfg!(target_os = "windows") {
             Self::Windows
         } else {
             Self::Linux
+        }
+    }
+
+    /// The `TargetPlatform` a desktop build on this OS produces — what a
+    /// run targeting the machine itself resolves to. Anything else the
+    /// machine builds is a target it is not.
+    #[must_use]
+    pub(crate) const fn target_platform(self) -> TargetPlatform {
+        match self {
+            Self::MacOs => TargetPlatform::MacOS,
+            Self::Linux => TargetPlatform::Linux,
+            Self::Windows => TargetPlatform::Windows,
         }
     }
 }
