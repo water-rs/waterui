@@ -564,7 +564,7 @@ impl std::fmt::Debug for SemanticCore {
     }
 }
 
-/// Core hydrolysis renderer state: a [`SemanticCore`] plus the GPU-side scene
+/// Core hydrolysis renderer state: a `SemanticCore` plus the GPU-side scene
 /// and surface state the layout/encode pass needs.
 pub struct HydrolysisRenderer {
     core: SemanticCore,

@@ -224,7 +224,7 @@ impl PlatformViewFocus {
     }
 }
 
-/// The environment value installing a [`PlatformViewTable`] into a window:
+/// The environment value installing a `PlatformViewTable` into a window:
 /// a host inserts one at session create and [`PlatformView`] leaves record
 /// their frames into it.
 ///

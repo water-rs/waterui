@@ -216,7 +216,7 @@ pub const WINDOW_ID_STRIDE: u64 = 1 << 32;
 /// `accesskit` has no property for what a text field's content *means*, so
 /// the declaration travels beside the tree instead of on the node: every
 /// publish carries this map next to the merged `TreeUpdate`, with popup ids
-/// offset by [`WINDOW_ID_STRIDE`] exactly as the tree's are.
+/// offset by `WINDOW_ID_STRIDE` exactly as the tree's are.
 #[cfg(feature = "accessibility")]
 pub type AccessibilityContentTypes = BTreeMap<AccessibilityNodeId, ContentType>;
 
@@ -1293,7 +1293,7 @@ impl SemanticCore {
     ///
     /// The content types ride the same merge: each window's builder map is
     /// keyed by that core's node ids, so a popup's entries shift by the same
-    /// [`WINDOW_ID_STRIDE`] its tree nodes do.
+    /// `WINDOW_ID_STRIDE` its tree nodes do.
     #[cfg(feature = "accessibility")]
     fn merged_accessibility_tree_update<'a>(
         &mut self,

@@ -283,7 +283,7 @@ impl SemanticRuntime {
     /// Performs an accessibility action against the merged tree.
     ///
     /// Popup-window node ids are shifted into their own stride in the merged
-    /// update (see [`Self::take_merged_accessibility_tree_update`]), so a
+    /// update (see `Self::take_merged_accessibility_tree_update`), so a
     /// request whose target lands in a popup's range demuxes back to that
     /// window's core — the action targets (a menu item's activation, a picker
     /// row's selection) live there. Returns whether the action changed state,

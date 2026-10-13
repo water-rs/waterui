@@ -565,7 +565,7 @@ pub enum InputEvent {
     /// Text that is the `text` payload of the [`InputEvent::Key`] press
     /// immediately preceding it — the web platform's `keydown` →
     /// `beforeinput` pair, in that order. A press a key handler consumed
-    /// suppresses this event at dispatch. Distinct from [`TextInput`],
+    /// suppresses this event at dispatch. Distinct from [`InputEvent::TextInput`],
     /// which carries text with no key origin (synthetic pushes, test
     /// drivers) and is never suppressed.
     KeyText {
@@ -3230,7 +3230,7 @@ mod winit_impl {
         }
 
         /// Creates the surface for `window`, reusing `shared_gpu`'s device
-        /// chain when given and returning the [`WinitGpuContext`] in use so
+        /// chain when given and returning the `WinitGpuContext` in use so
         /// the caller can hand it to the next surface.
         ///
         /// `wake` asks the host's event loop to redraw this window. GPU
