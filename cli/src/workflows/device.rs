@@ -148,11 +148,11 @@ impl LogLevel {
 pub struct RunOptions {
     /// # Note
     ///
-    /// Android does not support environment variables yet.
     /// `iOS`/`macOS` support environment variables via `export SIMCTL_CHILD_KEY=Val`.
     ///
-    /// As a workaround, on Android we pass values as Activity intent extras using the
-    /// `waterui.env.<KEY>` namespace, and the app reads them on startup and calls `Os.setenv()`.
+    /// On Android the values reach the app through its private
+    /// launch-environment handoff — never the process table — and the
+    /// activity reads them on startup and calls `Os.setenv`.
     env_vars: HashMap<String, String>,
 
     /// If set, stream device logs at or above this level.

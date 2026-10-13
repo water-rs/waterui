@@ -1,6 +1,6 @@
 [package]
 name = "waterui-cli"
-version = "0.4.5"
+version = "0.4.6"
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
@@ -151,6 +151,7 @@ pathdiff = "0.2"
 # macOS — so the plist code paths must compile everywhere too.
 plist = "1.10"
 url = "2.5"
+uuid.workspace = true
 fs4 = "1.1.0"
 toml_edit = { version = "=0.25.13", features = ["serde"] }
 cargo-lock = { version = "=10.1.0", default-features = false }

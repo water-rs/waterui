@@ -31,9 +31,13 @@ enum AndroidRuntimeEvent {
 
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The `am` extra carrying a launch-environment handoff's id — the only
+/// launch-environment datum allowed in argv, an opaque routing key.
+const ANDROID_ENVIRONMENT_ID_EXTRA: &str = "waterui.launch.environment";
+
 /// The launch-intent extra carrying the `--logs` level to a Hydrolysis
-/// Android app — `HydrolysisActivity` reads it and hands it to the native
-/// logging setup. Unlike `waterui.env.*` extras it never becomes an
+/// Android app — `HydrolysisActivity` reads it straight off the intent and
+/// hands it to the native logging setup, so it never becomes an
 /// environment variable.
 const ANDROID_LOG_LEVEL_EXTRA: &str = "waterui.log.level";
 
@@ -495,12 +499,15 @@ async fn run_on_android(
     }
 
     install_android_artifact(host, adb, device_id, artifact.path()).await?;
-    let start_args =
-        build_android_start_args(device_id, &artifact, &env_vars, options.log_level())?;
-    launch_android_app(host, adb, start_args).await?;
-
-    // Wait for the process to start and get its PID
-    let pid = wait_for_app_pid(host, adb, device_id, artifact.bundle_id()).await?;
+    let pid = launch_android_app_with_environment(
+        host,
+        adb,
+        device_id,
+        &artifact,
+        &env_vars,
+        options.log_level(),
+    )
+    .await?;
 
     let (mut running, sender, control) = Running::new();
     if !options.forward_tcp_ports().is_empty() {
@@ -556,16 +563,137 @@ async fn install_android_artifact(
     )))
 }
 
-/// The environment the app process starts with, delivered as `waterui.env.*`
-/// intent extras; the generated `MainActivity` applies each of them with
-/// `Os.setenv` before loading the native library. The `--logs` level rides
-/// alongside as its own extra (`waterui.log.level`): a Hydrolysis host reads
-/// it straight from the intent, no `Os.setenv` detour, so its tracing filter
-/// is set by the flag rather than by the build's debug assertions.
-fn build_android_start_args(
+/// The staged handoff this launch owns: written by the CLI, claimed by the
+/// app. `id` is the only launch-environment datum `am` may carry; `uri` is
+/// where the payload lives inside the app's provider, kept so a rollback
+/// addresses exactly what the write produced.
+struct StagedLaunchEnvironment {
+    id: uuid::Uuid,
+    uri: url::Url,
+}
+
+/// The URI `id` lives at inside the app's launch-environment provider:
+/// `content://<package>.waterui.launch-environment/<id>` — authority and id
+/// only, never a value.
+fn launch_environment_uri(bundle_id: &str, id: &uuid::Uuid) -> eyre::Result<url::Url> {
+    let authority = format!("{bundle_id}.waterui.launch-environment");
+    let mut uri = url::Url::parse(&format!("content://{authority}/"))
+        .map_err(|_| eyre::eyre!("the launch-environment authority is not a valid URI"))?;
+    uri.path_segments_mut()
+        .map_err(|()| eyre::eyre!("the launch-environment URI cannot take a path"))?
+        .push(&id.to_string());
+    Ok(uri)
+}
+
+/// Hand the launch environment to the app's private provider: the whole
+/// `RunOptions` map serialized deterministically and fed to
+/// `content write` over the device shell's stdin — the only channel where
+/// the payload never enters an argv or a process table. Returns the
+/// handoff this launch owns — or `None` when the environment is empty and
+/// no handoff is needed. Every fallible step that needs no device runs
+/// before the write, so a failed plan leaves nothing behind.
+async fn stage_launch_environment(
+    host: &Host,
+    adb: &Adb,
+    device_id: &str,
+    bundle_id: &str,
+    env_vars: &[(String, String)],
+) -> Result<Option<StagedLaunchEnvironment>, FailToRun> {
+    if env_vars.is_empty() {
+        return Ok(None);
+    }
+    let payload = serde_json::to_string(
+        &env_vars
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeMap<_, _>>(),
+    )
+    .map_err(|error| {
+        FailToRun::Launch(eyre!("the launch environment is not serialisable: {error}"))
+    })?;
+    let id = uuid::Uuid::new_v4();
+    let uri = launch_environment_uri(bundle_id, &id).map_err(FailToRun::Launch)?;
+    adb.content_write(
+        host,
+        device_id,
+        &uri,
+        payload.as_bytes(),
+        ADB_DEVICE_COMMAND_TIMEOUT,
+    )
+    .await
+    .map_err(|error| {
+        FailToRun::Launch(eyre!("could not deliver the launch environment: {error}"))
+    })?;
+    Ok(Some(StagedLaunchEnvironment { id, uri }))
+}
+
+/// The whole post-install launch operation: stage the handoff, start `am`,
+/// and wait for the app's pid. Any failure after the write — argument
+/// preparation, `am` exit, pid lookup — rolls back exactly the staged id's
+/// payload; a failed write deletes nothing, because a denied exclusive
+/// create was never this launch's slot.
+async fn launch_android_app_with_environment(
+    host: &Host,
+    adb: &Adb,
     device_id: &str,
     artifact: &Artifact,
     env_vars: &[(String, String)],
+    log_level: Option<LogLevel>,
+) -> Result<u32, FailToRun> {
+    let staged =
+        stage_launch_environment(host, adb, device_id, artifact.bundle_id(), env_vars).await?;
+    let result = async {
+        let start_args = build_android_start_args(
+            device_id,
+            artifact,
+            staged.as_ref().map(|staged| &staged.id),
+            log_level,
+        )?;
+        launch_android_app(host, adb, start_args).await?;
+        wait_for_app_pid(host, adb, device_id, artifact.bundle_id()).await
+    }
+    .await;
+    let Err(error) = result else {
+        return result;
+    };
+    if let Some(staged) = &staged
+        && let Err(cleanup) = delete_launch_environment(host, adb, device_id, staged).await
+    {
+        return Err(FailToRun::Launch(eyre!(
+            "{error}; rolling back the launch-environment handoff also failed: {cleanup}"
+        )));
+    }
+    Err(error)
+}
+
+/// Roll back exactly this launch's staged handoff — the provider removes
+/// the id's payload and leaves its directory as a tombstone, so the slot
+/// can never be reallocated by a later launch.
+async fn delete_launch_environment(
+    host: &Host,
+    adb: &Adb,
+    device_id: &str,
+    staged: &StagedLaunchEnvironment,
+) -> Result<(), FailToRun> {
+    adb.content_delete(host, device_id, &staged.uri, ADB_DEVICE_COMMAND_TIMEOUT)
+        .await
+        .map_err(|error| {
+            FailToRun::Launch(eyre!(
+                "could not remove the launch-environment handoff: {error}"
+            ))
+        })?;
+    Ok(())
+}
+
+/// The `am start` argv: activity name plus non-secret extras only — the
+/// launch-environment handoff's `id` and the `--logs` level
+/// (`waterui.log.level`), which a Hydrolysis host reads straight from the
+/// intent. Environment values never appear here: they travel the private
+/// handoff [`stage_launch_environment`] writes to the app's provider.
+fn build_android_start_args(
+    device_id: &str,
+    artifact: &Artifact,
+    environment_id: Option<&uuid::Uuid>,
     log_level: Option<LogLevel>,
 ) -> Result<Vec<String>, FailToRun> {
     let mut words = vec![
@@ -576,10 +704,10 @@ fn build_android_start_args(
         format!("{}/.MainActivity", artifact.bundle_id()),
     ];
 
-    for (key, value) in env_vars {
+    if let Some(id) = environment_id {
         words.push("--es".to_string());
-        words.push(format!("waterui.env.{key}"));
-        words.push(value.clone());
+        words.push(ANDROID_ENVIRONMENT_ID_EXTRA.to_string());
+        words.push(id.to_string());
     }
 
     if let Some(level) = log_level {
@@ -2094,7 +2222,7 @@ mod tests {
     fn android_start_args_carry_log_level_extra() {
         let artifact = Artifact::new("com.example.app", PathBuf::from("/tmp/app.apk"));
         let start_args =
-            build_android_start_args("emulator-5554", &artifact, &[], Some(LogLevel::Debug))
+            build_android_start_args("emulator-5554", &artifact, None, Some(LogLevel::Debug))
                 .expect("start args build");
         let words = device_words(&start_args);
         let position = words
@@ -2104,7 +2232,7 @@ mod tests {
         assert_eq!(words[position - 1], "--es");
         assert_eq!(words[position + 1], "debug");
 
-        let start_args = build_android_start_args("emulator-5554", &artifact, &[], None)
+        let start_args = build_android_start_args("emulator-5554", &artifact, None, None)
             .expect("start args build");
         assert!(
             !device_words(&start_args)
@@ -2226,13 +2354,9 @@ mod tests {
         // `/system/bin/sh` parses again; values with spaces, quotes or
         // metacharacters must each come back out as exactly one word.
         let artifact = Artifact::new("dev.waterui.app", PathBuf::from("/tmp/app.apk"));
-        let env_vars = vec![
-            ("WATERUI_APP_NAME".to_string(), "Logs Repro".to_string()),
-            ("WATERUI_LOG".to_string(), "o'clock".to_string()),
-            ("WATERUI_PATH".to_string(), "say \"hi\" $HOME".to_string()),
-        ];
 
-        let start_args = build_android_start_args("100.76.86.48:5555", &artifact, &env_vars, None)
+        let id = uuid::Uuid::new_v4();
+        let start_args = build_android_start_args("100.76.86.48:5555", &artifact, Some(&id), None)
             .expect("start args build");
 
         // The device shell receives one command word after `shell`; what it
@@ -2250,15 +2374,393 @@ mod tests {
                 "-n",
                 "dev.waterui.app/.MainActivity",
                 "--es",
-                "waterui.env.WATERUI_APP_NAME",
-                "Logs Repro",
-                "--es",
-                "waterui.env.WATERUI_LOG",
-                "o'clock",
-                "--es",
-                "waterui.env.WATERUI_PATH",
-                "say \"hi\" $HOME",
+                "waterui.launch.environment",
+                id.to_string().as_str(),
             ]
+        );
+    }
+
+    /// `content`/`am`/`pidof` shims inside the fake device — script bodies
+    /// live in `testdata/` so the strings stay shell, not format text.
+    #[cfg(unix)]
+    fn install_device_shims(bin: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::create_dir_all(bin).expect("shim dir");
+        for (name, body) in [
+            ("content", include_str!("testdata/fake_content.sh")),
+            ("am", include_str!("testdata/fake_am.sh")),
+            ("pidof", include_str!("testdata/fake_pidof.sh")),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(&path, body).expect(name);
+            let mut permissions = std::fs::metadata(&path).expect(name).permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).expect("chmod");
+        }
+    }
+
+    /// A fake `adb` plus a staged `content`/`am`/`pidof` device:
+    /// `(machine, host, adb)` for the handoff tests.
+    #[cfg(unix)]
+    fn handoff_machine(
+        vars: &[(std::ffi::OsString, std::ffi::OsString)],
+    ) -> (
+        crate::toolchain::testing::TestMachine,
+        crate::toolchain::Host,
+        super::Adb,
+    ) {
+        use std::ffi::OsString;
+
+        let machine = crate::toolchain::testing::TestMachine::new();
+        machine.install("adb");
+        let shims = machine.root().join("device-shims");
+        install_device_shims(&shims);
+        let mut declared = vec![
+            (
+                OsString::from("WATERUI_FAKE_ADB_LOG"),
+                machine.root().join("adb.log").into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_DEVICES"),
+                OsString::from("emulator-5554 device product:sdk"),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_DEVICE_TMP"),
+                machine.root().join("device").into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_DEVICE_PATH"),
+                shims.into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_CONTENT_LOG"),
+                machine.root().join("content.log").into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_CONTENT_STDIN"),
+                machine.root().join("content-stdin").into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_AM_LOG"),
+                machine.root().join("am.log").into_os_string(),
+            ),
+        ];
+        declared.extend(vars.iter().cloned());
+        let host = machine.host(declared);
+        let adb = smol::block_on(super::Adb::locate(&host)).expect("fake adb locates");
+        (machine, host, adb)
+    }
+
+    /// The argv every fake tool logged, or empty when the tool never ran.
+    #[cfg(unix)]
+    fn recorded_calls(machine: &crate::toolchain::testing::TestMachine, name: &str) -> String {
+        std::fs::read_to_string(machine.root().join(name)).unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    fn artifact() -> Artifact {
+        Artifact::new("com.example.app", PathBuf::from("/tmp/app.apk"))
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_environment_travels_stdin_and_only_its_id_enters_argv() {
+        let (machine, host, adb) = handoff_machine(&[]);
+        let env = vec![
+            (
+                String::from("WATERUI_DUMMY_KEY"),
+                String::from("dummy-secret-value"),
+            ),
+            (String::from("SPACED"), String::from("a  b\nc")),
+            (String::from("QUOTED"), String::from("say \"hi\" $HOME")),
+            (String::from("EQUALS"), String::from("x=y")),
+            (String::from("NONASCII"), String::from("日本語")),
+            (String::from("EMPTY"), String::new()),
+        ];
+
+        let pid = smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect("the whole launch succeeds");
+        assert_eq!(pid, 4242);
+
+        // Every secret-bearing value must be absent from every argv the
+        // host or the device ever saw.
+        let adb_log = recorded_calls(&machine, "adb.log");
+        let content_log = recorded_calls(&machine, "content.log");
+        let am_log = recorded_calls(&machine, "am.log");
+        for (_, value) in &env {
+            if value.is_empty() {
+                continue;
+            }
+            assert!(!adb_log.contains(value.as_str()), "adb argv: {value}");
+            assert!(
+                !content_log.contains(value.as_str()),
+                "content argv: {value}"
+            );
+            assert!(!am_log.contains(value.as_str()), "am argv: {value}");
+        }
+        assert!(adb_log.contains("content write --uri"), "{adb_log}");
+        assert!(am_log.contains("waterui.launch.environment"), "{am_log}");
+        assert!(!am_log.contains("waterui.env."), "{am_log}");
+
+        // The payload arrives on stdin as the exact deterministic JSON map.
+        let stdin = std::fs::read_to_string(machine.root().join("content-stdin"))
+            .expect("the payload lands on stdin");
+        let decoded: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&stdin).expect("the handoff is one JSON object");
+        assert_eq!(decoded, env.iter().cloned().collect());
+
+        // The `am` extra carries a canonical UUID, nothing else.
+        let am_id = am_log
+            .split("waterui.launch.environment ")
+            .nth(1)
+            .and_then(|tail| tail.split_whitespace().next())
+            .expect("the id extra is present");
+        assert!(uuid::Uuid::parse_str(am_id).is_ok(), "{am_id}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_write_never_runs_am_and_deletes_nothing() {
+        let (machine, host, adb) = handoff_machine(&[(
+            std::ffi::OsString::from("WATERUI_FAKE_CONTENT_STATUS"),
+            std::ffi::OsString::from("1"),
+        )]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("a denied write fails the launch");
+        assert!(
+            recorded_calls(&machine, "am.log").is_empty(),
+            "a failed write must not launch"
+        );
+        assert!(
+            !recorded_calls(&machine, "content.log").contains("delete"),
+            "a failed write owns nothing to delete"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_hung_write_times_out_without_am() {
+        let (machine, host, adb) = handoff_machine(&[(
+            std::ffi::OsString::from("WATERUI_FAKE_CONTENT_HANG"),
+            std::ffi::OsString::from("60"),
+        )]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("a wedged write is a bounded failure");
+        assert!(
+            recorded_calls(&machine, "am.log").is_empty(),
+            "a timed-out write must not launch"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_launch_rolls_back_only_its_own_handoff() {
+        let (machine, host, adb) = handoff_machine(&[(
+            std::ffi::OsString::from("WATERUI_FAKE_AM_STATUS"),
+            std::ffi::OsString::from("1"),
+        )]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("the staged app fails to start");
+
+        let content_log = recorded_calls(&machine, "content.log");
+        let write_uri = content_log
+            .split("write --uri ")
+            .nth(1)
+            .and_then(|tail| tail.split_whitespace().next())
+            .expect("the write URI was logged");
+        assert!(
+            content_log.contains(&format!("delete --uri {write_uri}")),
+            "the rollback removes exactly this launch's URI: {content_log}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_pid_lookup_rolls_back_the_handoff() {
+        let (machine, host, adb) = handoff_machine(&[(
+            std::ffi::OsString::from("WATERUI_FAKE_PIDOF_FAIL"),
+            std::ffi::OsString::from("1"),
+        )]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("a silent process fails the launch");
+        assert!(
+            recorded_calls(&machine, "content.log").contains("delete --uri"),
+            "a pid failure still rolls back this launch's slot"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_rollback_is_reported_with_the_launch_error() {
+        let (_machine, host, adb) = handoff_machine(&[
+            (
+                std::ffi::OsString::from("WATERUI_FAKE_AM_STATUS"),
+                std::ffi::OsString::from("1"),
+            ),
+            (
+                std::ffi::OsString::from("WATERUI_FAKE_CONTENT_DELETE_STATUS"),
+                std::ffi::OsString::from("1"),
+            ),
+        ]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        let error = smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("both failures surface");
+        let message = error.to_string();
+        assert!(
+            message.contains("Failed to launch app"),
+            "the launch failure is preserved: {message}"
+        );
+        assert!(
+            message.contains("could not remove the launch-environment handoff"),
+            "the cleanup failure is reported alongside: {message}"
+        );
+    }
+
+    /// The SDK verdict is stderr, not the exit code: `content write` can
+    /// exit zero while reporting a provider error. That must fail the
+    /// launch exactly like a nonzero status — no `am`, no delete — and
+    /// the SDK's own text (which can echo the payload) stays out of ours.
+    #[test]
+    #[cfg(unix)]
+    fn a_zero_exit_stderr_write_still_fails_without_am() {
+        let (machine, host, adb) = handoff_machine(&[(
+            std::ffi::OsString::from("WATERUI_FAKE_CONTENT_STDERR"),
+            std::ffi::OsString::from("Error while accessing provider: s3ntinel-write-failure"),
+        )]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        let error = smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("a stderr-reported failure is a failure");
+        let message = error.to_string();
+        assert!(
+            message.contains("could not deliver the launch environment"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("s3ntinel-write-failure"),
+            "the SDK's error text must never echo into ours: {message}"
+        );
+        assert!(
+            recorded_calls(&machine, "am.log").is_empty(),
+            "a reported write failure must not launch"
+        );
+        assert!(
+            !recorded_calls(&machine, "content.log").contains("delete"),
+            "a write that did not succeed owns nothing to delete"
+        );
+    }
+
+    /// The rollback delete obeys the same contract: a zero exit with an
+    /// error on stderr is a cleanup failure, reported alongside the
+    /// launch failure — still without echoing the SDK's own text.
+    #[test]
+    #[cfg(unix)]
+    fn a_zero_exit_stderr_delete_still_reports_cleanup_failure() {
+        let (_machine, host, adb) = handoff_machine(&[
+            (
+                std::ffi::OsString::from("WATERUI_FAKE_AM_STATUS"),
+                std::ffi::OsString::from("1"),
+            ),
+            (
+                std::ffi::OsString::from("WATERUI_FAKE_CONTENT_DELETE_STDERR"),
+                std::ffi::OsString::from("Error while accessing provider: s3ntinel-cleanup"),
+            ),
+        ]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        let error = smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("both failures surface");
+        let message = error.to_string();
+        assert!(
+            message.contains("Failed to launch app"),
+            "the launch failure is preserved: {message}"
+        );
+        assert!(
+            message.contains("could not remove the launch-environment handoff"),
+            "the cleanup failure is reported alongside: {message}"
+        );
+        assert!(
+            !message.contains("s3ntinel-cleanup"),
+            "the SDK's error text must never echo into ours: {message}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_empty_environment_stages_no_handoff() {
+        let (machine, host, adb) = handoff_machine(&[]);
+        let pid = smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &[],
+            None,
+        ))
+        .expect("an empty environment launches fine");
+        assert_eq!(pid, 4242);
+        assert!(
+            recorded_calls(&machine, "content.log").is_empty(),
+            "no provider call happens for an empty map"
         );
     }
 
