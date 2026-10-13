@@ -58,7 +58,7 @@ impl CliInspectorPlatform {
     /// `cfg!(target_os)` proves it: the `water` binary always runs on the
     /// developer machine). Only those can be discovered or have a token
     /// looked up here; every other platform is a remote endpoint reached
-    /// through `--target` and WATERUI_INSPECTOR_TOKEN (or, for Android,
+    /// through `--target` and `WATERUI_INSPECTOR_TOKEN` (or, for Android,
     /// `adb forward`).
     const fn can_run_on_this_machine(self) -> bool {
         let host_desktop = match self {
