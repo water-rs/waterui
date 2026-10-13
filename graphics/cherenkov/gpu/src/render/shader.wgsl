@@ -820,12 +820,10 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
             cov = partial_shape_coverage(in);
         }
     }
-    // This replay uses source-over without depth writes. Zero coverage
-    // leaves the destination unchanged and needs no blend.
-    if cov <= 0.0 {
-        discard;
-    }
-    return solid_coverage_color(color, opacity, cov);
+    // This replay uses premultiplied source-over without depth writes.
+    // Select transparent output for uncovered samples without control flow.
+    let painted = solid_coverage_color(color, opacity, cov);
+    return select(painted, vec4<f32>(0.0), cov <= 0.0);
 }
 
 fn partial_shape_coverage(in: PartialOut) -> f32 {
