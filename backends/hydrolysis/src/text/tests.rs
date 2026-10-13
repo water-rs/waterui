@@ -74,9 +74,7 @@ fn editing_contract<E: TextEngine>(service: &TextService<E>) {
 
     // A selection snapped into the middle of a cluster lands on its
     // boundary: in "\u{4e2d}x" byte index 1 sits inside the first,
-    // three-byte cluster. (Parley splits "e\u{301}x" into one cluster per
-    // scalar — byte 1 is already a boundary there — so this probes a
-    // multi-byte scalar instead.)
+    // three-byte cluster.
     let mid_character = resolve_text_layout_input(
         &StyledStr::plain("\u{4e2d}x"),
         HorizontalAlignment::Leading,
@@ -87,6 +85,35 @@ fn editing_contract<E: TextEngine>(service: &TextService<E>) {
         mid_character_layout.selection(TextPosition::in_text(1, 4), TextPosition::in_text(1, 4));
     assert_eq!(snapped.anchor.index, 0);
     assert_eq!(snapped.focus.index, 0);
+
+    // Caret positions are grapheme boundaries even where the shaper gives a
+    // combining mark a cluster of its own: in "e\u{301}x" byte 1 sits
+    // between the letter and its accent, and the grapheme ends at byte 3.
+    let combining = resolve_text_layout_input(
+        &StyledStr::plain("e\u{301}x"),
+        HorizontalAlignment::Leading,
+        &env,
+    );
+    let combining_layout = service.shape(&combining, None);
+    let snapped =
+        combining_layout.selection(TextPosition::in_text(1, 4), TextPosition::in_text(1, 4));
+    assert_eq!((snapped.anchor.index, snapped.focus.index), (0, 0));
+    let start = TextSelection::collapsed(TextPosition::in_text(0, 4));
+    assert_eq!(combining_layout.next_visual(start, false).focus.index, 3);
+    let extended = combining_layout.next_visual(start, true);
+    assert_eq!((extended.anchor.index, extended.focus.index), (0, 3));
+    let after = TextSelection::collapsed(TextPosition::in_text(3, 4));
+    assert_eq!(
+        combining_layout.previous_visual(after, false).focus.index,
+        0
+    );
+    let x_end = combining_layout.caret_rect(TextPosition::in_text(4, 4)).x1;
+    let y = crate::num_cast::f64_as_f32(combining_layout.caret_rect(after.focus).center().y);
+    for step in 0..=20 {
+        let x = crate::num_cast::f64_as_f32(x_end * f64::from(step) / 20.0);
+        let hit = combining_layout.hit_test(x, y);
+        assert_ne!(hit.index, 1, "a hit at x = {x} landed inside the grapheme");
+    }
 
     assert_eq!(TextPosition::in_text(11, 11).affinity, Affinity::Upstream);
 }
