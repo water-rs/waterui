@@ -386,6 +386,19 @@ struct DistanceSample {
     gradient: vec4<f32>,
 }
 
+fn rect_sample(half: vec2<f32>, p: vec2<f32>) -> DistanceSample {
+    let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+    let a = abs(p) - half;
+    let d = length(max(a, vec2<f32>(0.0))) + min(max(a.x, a.y), 0.0);
+    var g: vec4<f32>;
+    if a.x > 0.0 && a.y > 0.0 {
+        g = vec4<f32>(a / length(a), 0.0, 1.0);
+    } else {
+        g = vec4<f32>(select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), a.x > a.y), 0.0, 0.0);
+    }
+    return DistanceSample(d, vec4<f32>(sgn * g.xy, g.zw));
+}
+
 fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSample {
     let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
     let right = p.x > 0.0;
@@ -399,14 +412,7 @@ fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSam
     let ry = rx * s.aspect;
     let a = abs(p) - s.half;
     if rx <= 0.0 || ry <= 0.0 {
-        let d = length(max(a, vec2<f32>(0.0))) + min(max(a.x, a.y), 0.0);
-        var g: vec4<f32>;
-        if a.x > 0.0 && a.y > 0.0 {
-            g = vec4<f32>(a / length(a), 0.0, 1.0);
-        } else {
-            g = vec4<f32>(select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), a.x > a.y), 0.0, 0.0);
-        }
-        return DistanceSample(d, vec4<f32>(sgn * g.xy, g.zw));
+        return rect_sample(s.half, p);
     }
     let q = a + vec2<f32>(rx, ry);
     if abs(s.exponent - 2.0) < 1e-4 && abs(s.aspect - 1.0) < 1e-4 {
@@ -605,13 +611,33 @@ fn corner_coverage(a: vec2<f32>, v1: vec2<f32>, v2: vec2<f32>, scale: f32) -> f3
     return clamp(abs(sum) * 0.5, 0.0, 1.0);
 }
 
+fn rect_coverage(half: vec2<f32>, p: vec2<f32>, m: vec4<f32>) -> f32 {
+    // A sharp corner inside this pixel: the exact area inside both
+    // half-planes. The strict `<` keeps a corner exactly on a pixel
+    // boundary on the distance-coverage path.
+    let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+    let a = abs(p) - half;
+    let scale = device_grad_scale(m);
+    let v1 = device_grad_vec(m, vec2<f32>(sgn.x, 0.0));
+    let v2 = device_grad_vec(m, vec2<f32>(0.0, sgn.y));
+    let h1 = 0.5 * scale * (abs(v1.x) + abs(v1.y));
+    let h2 = 0.5 * scale * (abs(v2.x) + abs(v2.y));
+    if abs(a.x) < h1 && abs(a.y) < h2 {
+        return corner_coverage(a, v1, v2, scale);
+    }
+    let sample = rect_sample(half, p);
+    let g = sample.gradient;
+    return coverage_dir(
+        sample.distance,
+        device_grad_vec(m, g.xy),
+        device_grad_scale(m),
+        g.w > 0.0,
+        g.z,
+    );
+}
+
 // Coverage of shape `s` at local point `p`; `m` holds local-to-device linear coefficients.
 fn shape_coverage(s: Shape, p: vec2<f32>, m: vec4<f32>, specialize_quadratic: bool) -> f32 {
-    // A sharp corner inside this pixel: the exact area inside both
-    // half-planes. `a`, `sgn`, and the quadrant radius mirror `sdf_sample`;
-    // the strict `<` keeps a corner exactly on a pixel boundary on the
-    // old path.
-    let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
     let right = p.x > 0.0;
     let bottom = p.y > 0.0;
     let r = select(
@@ -621,16 +647,8 @@ fn shape_coverage(s: Shape, p: vec2<f32>, m: vec4<f32>, specialize_quadratic: bo
     );
     let rx = max(r, 0.0);
     let ry = rx * s.aspect;
-    let a = abs(p) - s.half;
     if rx <= 0.0 || ry <= 0.0 {
-        let scale = device_grad_scale(m);
-        let v1 = device_grad_vec(m, vec2<f32>(sgn.x, 0.0));
-        let v2 = device_grad_vec(m, vec2<f32>(0.0, sgn.y));
-        let h1 = 0.5 * scale * (abs(v1.x) + abs(v1.y));
-        let h2 = 0.5 * scale * (abs(v2.x) + abs(v2.y));
-        if abs(a.x) < h1 && abs(a.y) < h2 {
-            return corner_coverage(a, v1, v2, scale);
-        }
+        return rect_coverage(s.half, p, m);
     }
     let sample = sdf_sample(s, p, specialize_quadratic);
     let g = sample.gradient;

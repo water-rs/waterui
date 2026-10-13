@@ -51,7 +51,7 @@ fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
 
 split_test! {
 fn every_variant_emits_msl() {
-    for variant in 0..5 {
+    for variant in 0..6 {
         let (module, info) = composed(variant);
         let options = msl::Options {
             lang_version: MSL_VERSION,
@@ -65,7 +65,7 @@ fn every_variant_emits_msl() {
 
 split_test! {
 fn every_variant_emits_spirv() {
-    for variant in 0..5 {
+    for variant in 0..6 {
         let (module, info) = composed(variant);
         let mut writer = spv::Writer::new(&spv::Options::default())
             .unwrap_or_else(|e| panic!("variant {variant}: spv: {e}"));
@@ -80,7 +80,7 @@ fn every_variant_emits_spirv() {
 
 split_test! {
 fn every_variant_emits_hlsl() {
-    for variant in 0..5 {
+    for variant in 0..6 {
         let (module, info) = composed(variant);
         let options = hlsl::Options::default();
         let mut out = String::new();

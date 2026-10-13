@@ -187,6 +187,33 @@ fn check_ellipse(radii: [f64; 2], centre: f64) {
 }
 
 #[test]
+fn sharp_rectangle_distance_is_exact() {
+    // Fractional samples avoid the undefined normal at a sharp vertex.
+    let probes = [
+        [-48.25, -32.25],
+        [-48.25, 32.25],
+        [48.25, -32.25],
+        [48.25, 32.25],
+        [-49.0, 0.0],
+        [49.0, 0.0],
+        [0.0, -33.0],
+        [0.0, 33.0],
+    ];
+    for centre in [72.0, 72.25] {
+        let shape = Shape::Rect(Rect::new(
+            centre - 48.0,
+            centre - 32.0,
+            centre + 48.0,
+            centre + 32.0,
+        ));
+        let tied = |p: [f64; 2]| {
+            (p[1] == 0.0 && p[0].abs() <= 16.0) || p[0].abs() - 48.0 - (p[1].abs() - 32.0) == 0.0
+        };
+        check("sharp rectangle", &sweep(&shape, &probes, tied));
+    }
+}
+
+#[test]
 fn ellipse_distance_is_exact() {
     // Centred on a pixel corner, and on a pixel centre.
     for centre in [72.0, 72.5] {

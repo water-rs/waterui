@@ -424,7 +424,7 @@ pub fn encode(
         );
         for (range, source) in canonical.ranges.iter().zip(&op.sources) {
             let variant = match range.variant {
-                ShaderVariant::Simple | ShaderVariant::Atlas => 0,
+                ShaderVariant::Simple | ShaderVariant::Atlas | ShaderVariant::Rect => 0,
                 ShaderVariant::Shadow => 1,
                 ShaderVariant::Full => 2,
                 // A union member is `PAINT_BACKDROP` sampling its group's

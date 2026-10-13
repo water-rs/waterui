@@ -8,18 +8,24 @@ use cherenkov_gpu::{Gpu, GpuConfig};
 split_test! {
 /// Opaque interiors occlude earlier translucent paint, while later paint
 /// still composites in order. Extended P3 values must survive both phases.
-/// Runs twice: once with analytic opaque geometry, once with the same
-/// opaque shapes as paths so the atlas variants carry the batch.
+/// Runs for three opaque geometries: analytic shapes, a sharp rectangle,
+/// and the same opaque shapes as paths so the atlas/rect variants carry
+/// the batch.
 fn opaque_interiors_preserve_translucent_painter_order() -> Result<(), Box<dyn std::error::Error>> {
+    #[derive(Clone, Copy, Debug)]
+    enum Geometry {
+        Rounded,
+        Sharp,
+        Paths,
+    }
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    for atlas_only in [false, true] {
+    for geometry in [Geometry::Rounded, Geometry::Sharp, Geometry::Paths] {
         let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
         surface.update(|tx| {
             tx[surface.root()].content(surface.record(|c| {
-                if atlas_only {
-                    c.fill(Rect::new(0.0, 0.0, 32.0, 32.0).to_path(0.01), WorkingColor::new([1.5, 0.25, 0.0, 1.0]));
-                } else {
-                    c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), WorkingColor::new([1.5, 0.25, 0.0, 1.0]));
+                match geometry {
+                    Geometry::Paths => c.fill(Rect::new(0.0, 0.0, 32.0, 32.0).to_path(0.01), WorkingColor::new([1.5, 0.25, 0.0, 1.0])),
+                    _ => c.fill(Rect::new(0.0, 0.0, 32.0, 32.0), WorkingColor::new([1.5, 0.25, 0.0, 1.0])),
                 }
                 let mut translucent = BezPath::new();
                 translucent.move_to((-8.0, -8.0));
@@ -28,10 +34,10 @@ fn opaque_interiors_preserve_translucent_painter_order() -> Result<(), Box<dyn s
                 translucent.line_to((-8.0, 36.0));
                 translucent.close_path();
                 c.fill(translucent, WorkingColor::new([0.0, 0.5, 0.0, 0.5]));
-                if atlas_only {
-                    c.fill(cherenkov::kurbo::Circle::new((16.0, 16.0), 8.0).to_path(0.01), WorkingColor::new([0.0, 0.0, 2.0, 1.0]));
-                } else {
-                    c.fill(cherenkov::kurbo::Circle::new((16.0, 16.0), 8.0), WorkingColor::new([0.0, 0.0, 2.0, 1.0]));
+                match geometry {
+                    Geometry::Rounded => c.fill(cherenkov::kurbo::Circle::new((16.0, 16.0), 8.0), WorkingColor::new([0.0, 0.0, 2.0, 1.0])),
+                    Geometry::Sharp => c.fill(Rect::new(8.0, 8.0, 24.0, 24.0), WorkingColor::new([0.0, 0.0, 2.0, 1.0])),
+                    Geometry::Paths => c.fill(cherenkov::kurbo::Circle::new((16.0, 16.0), 8.0).to_path(0.01), WorkingColor::new([0.0, 0.0, 2.0, 1.0])),
                 }
                 let mut edge = BezPath::new();
                 edge.move_to((16.25, -8.0));
@@ -46,7 +52,7 @@ fn opaque_interiors_preserve_translucent_painter_order() -> Result<(), Box<dyn s
         assert_eq!(
             engine.stats().pipeline_switches,
             2,
-            "atlas_only={atlas_only}: opaque + partial coverage binds only"
+            "{geometry:?}: opaque + partial coverage binds only"
         );
         let pixels = wait!(surface.readback())?.pixels;
         for (x, y, expected) in [
@@ -57,7 +63,7 @@ fn opaque_interiors_preserve_translucent_painter_order() -> Result<(), Box<dyn s
             (28, 4, [0.8125, 0.53125, 0.0, 1.0]),
         ] {
             for (actual, expected) in pixels[y * 32 + x].iter().zip(expected) {
-                assert!((actual - expected).abs() < 0.001, "atlas_only={atlas_only} pixel {x},{y}: {actual} != {expected}");
+                assert!((actual - expected).abs() < 0.001, "{geometry:?} pixel {x},{y}: {actual} != {expected}");
             }
         }
     }

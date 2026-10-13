@@ -20,6 +20,7 @@ const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
 const VARIANT_UNION: u32 = 3u;
 const VARIANT_ATLAS: u32 = 4u;
+const VARIANT_RECT: u32 = 5u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
@@ -632,6 +633,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if VARIANT == VARIANT_ATLAS {
         return fs_atlas(in);
     }
+    if VARIANT == VARIANT_RECT {
+        return fs_rect(in);
+    }
     return fs_full(in);
 }
 
@@ -681,6 +685,18 @@ fn painter_atlas_coverage(in: VsOut) -> f32 {
 
 fn fs_atlas(in: VsOut) -> vec4<f32> {
     return solid_coverage_color(in.color, in.params.y, painter_atlas_coverage(in));
+}
+
+// Sharp-rectangle fills plus atlas primitives: the exact rect coverage
+// beside the atlas lookup, without the Lamé call chain.
+fn fs_rect(in: VsOut) -> vec4<f32> {
+    var cov: f32;
+    if in.meta_.x == KIND_FILL {
+        cov = rect_coverage(in.shape_a.xy, in.local, in.affine0);
+    } else {
+        cov = painter_atlas_coverage(in);
+    }
+    return solid_coverage_color(in.color, in.params.y, cov);
 }
 
 fn solid_coverage_color(color: vec4<f32>, opacity: f32, coverage: f32) -> vec4<f32> {
@@ -798,17 +814,33 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     return OpaqueOut(out.position, out.color.rgb);
 }
 
-struct AtlasPartialOut {
+struct BasicPartialOut {
     @builtin(position) position: vec4<f32>,
     @location(0) local: vec2<f32>,
     @location(1) @interpolate(flat) instance_kind: u32,
 }
 
 @fragment
-fn fs_partial_atlas(in: AtlasPartialOut) -> @location(0) vec4<f32> {
+fn fs_partial_atlas(in: BasicPartialOut) -> @location(0) vec4<f32> {
     let i = in.instance_kind >> PARTIAL_KIND_BITS;
     let kind = in.instance_kind & PARTIAL_KIND_MASK;
     let cov = atlas_coverage(kind, vec2<i32>(floor(in.local)));
+    if cov <= 0.0 {
+        discard;
+    }
+    return solid_coverage_color(instances[i].color, instances[i].params.y, cov);
+}
+
+@fragment
+fn fs_partial_rect(in: BasicPartialOut) -> @location(0) vec4<f32> {
+    let i = in.instance_kind >> PARTIAL_KIND_BITS;
+    let kind = in.instance_kind & PARTIAL_KIND_MASK;
+    var cov: f32;
+    if kind == KIND_FILL {
+        cov = rect_coverage(instances[i].shape.half, in.local, instances[i].affine[0]);
+    } else {
+        cov = atlas_coverage(kind, vec2<i32>(floor(in.local)));
+    }
     if cov <= 0.0 {
         discard;
     }
@@ -826,9 +858,9 @@ fn partial_vertex(vi: u32, ii: u32) -> VsOut {
 }
 
 @vertex
-fn vs_partial_atlas(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> AtlasPartialOut {
+fn vs_partial_basic(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> BasicPartialOut {
     let out = partial_vertex(vi, ii);
-    return AtlasPartialOut(out.position, out.local, (ii << PARTIAL_KIND_BITS) | instances[ii].meta_.x);
+    return BasicPartialOut(out.position, out.local, (ii << PARTIAL_KIND_BITS) | instances[ii].meta_.x);
 }
 
 @vertex

@@ -81,6 +81,7 @@ enum CoveragePhase {
     Opaque = 0,
     Partial = 1,
     AtlasPartial = 2,
+    RectPartial = 3,
 }
 
 impl CoveragePhase {
@@ -89,6 +90,7 @@ impl CoveragePhase {
         match variant {
             ShaderVariant::Simple => Self::Partial,
             ShaderVariant::Atlas => Self::AtlasPartial,
+            ShaderVariant::Rect => Self::RectPartial,
             _ => unreachable!("coverage-order range requires a coverage shader"),
         }
     }
@@ -98,6 +100,7 @@ impl CoveragePhase {
         match self {
             Self::Opaque | Self::Partial => ShaderVariant::Simple,
             Self::AtlasPartial => ShaderVariant::Atlas,
+            Self::RectPartial => ShaderVariant::Rect,
         }
     }
 }
@@ -118,9 +121,9 @@ impl CoveragePass {
     const fn topology(self) -> wgpu::PrimitiveTopology {
         match self {
             Self::Painter(_)
-            | Self::Coverage(CoveragePhase::Partial | CoveragePhase::AtlasPartial) => {
-                wgpu::PrimitiveTopology::TriangleList
-            }
+            | Self::Coverage(
+                CoveragePhase::Partial | CoveragePhase::AtlasPartial | CoveragePhase::RectPartial,
+            ) => wgpu::PrimitiveTopology::TriangleList,
             Self::Coverage(CoveragePhase::Opaque) => wgpu::PrimitiveTopology::TriangleStrip,
         }
     }
@@ -130,7 +133,9 @@ impl CoveragePass {
             Self::Painter(_) => "vs_main",
             Self::Coverage(CoveragePhase::Opaque) => "vs_opaque",
             Self::Coverage(CoveragePhase::Partial) => "vs_partial",
-            Self::Coverage(CoveragePhase::AtlasPartial) => "vs_partial_atlas",
+            Self::Coverage(CoveragePhase::AtlasPartial | CoveragePhase::RectPartial) => {
+                "vs_partial_basic"
+            }
         }
     }
 
@@ -140,15 +145,16 @@ impl CoveragePass {
             Self::Coverage(CoveragePhase::Opaque) => "fs_opaque",
             Self::Coverage(CoveragePhase::Partial) => "fs_partial",
             Self::Coverage(CoveragePhase::AtlasPartial) => "fs_partial_atlas",
+            Self::Coverage(CoveragePhase::RectPartial) => "fs_partial_rect",
         }
     }
 
     const fn blend(self) -> Option<wgpu::BlendState> {
         match self {
             Self::Painter(false)
-            | Self::Coverage(CoveragePhase::Partial | CoveragePhase::AtlasPartial) => {
-                Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING)
-            }
+            | Self::Coverage(
+                CoveragePhase::Partial | CoveragePhase::AtlasPartial | CoveragePhase::RectPartial,
+            ) => Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
             Self::Painter(true) | Self::Coverage(CoveragePhase::Opaque) => None,
         }
     }
@@ -975,12 +981,12 @@ pub struct GpuRenderer {
     /// never built at init: the variant-3 module and pipeline are
     /// created on the first union or outer-band member (on wasm, by
     /// `prepare_lazy_pipelines` before the frame that needs them).
-    pipelines: [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
-    /// `[opaque, partial, atlas partial]` coverage pipelines, same cell
-    /// policy as the core set: built at init under
+    pipelines: [[[Option<wgpu::RenderPipeline>; 6]; 2]; 2],
+    /// `[opaque, partial, atlas partial, rect partial]` coverage
+    /// pipelines, same cell policy as the core set: built at init under
     /// `core_pipelines_eager()` (always, on wasm), else created at the
     /// first coverage pass (#170 B3, #49).
-    coverage_pipelines: [Option<wgpu::RenderPipeline>; 3],
+    coverage_pipelines: [Option<wgpu::RenderPipeline>; 4],
     /// The pipeline layout every core and backdrop pipeline shares.
     pipeline_layout: wgpu::PipelineLayout,
     #[cfg(target_vendor = "apple")]
@@ -1895,6 +1901,7 @@ const fn variant_index(variant: ShaderVariant) -> usize {
         ShaderVariant::Full => 2,
         ShaderVariant::Union => 3,
         ShaderVariant::Atlas => 4,
+        ShaderVariant::Rect => 5,
     }
 }
 
@@ -2153,7 +2160,7 @@ impl PipelineFactory<'_> {
 /// created at first use so preparation lands inside the frame that needs
 /// it (#170).
 fn core_pipeline<'m>(
-    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
+    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 6]; 2]; 2],
     factory: &PipelineFactory<'_>,
     format: wgpu::TextureFormat,
     replace: bool,
@@ -2167,12 +2174,12 @@ fn core_pipeline<'m>(
     Ok(cell.as_ref().expect("core pipeline ready"))
 }
 
-/// The `[opaque, partial, atlas partial]` coverage pipeline for the
-/// surface target —
-/// the same cell policy as `core_pipeline`: an empty cell is created at
+/// The `[opaque, partial, atlas partial, rect partial]` coverage pipeline
+/// for the surface target, with the same cell policy as `core_pipeline`:
+/// an empty cell is created at
 /// the first coverage pass that needs it (#170 B3, #49).
 fn coverage_pipeline<'m>(
-    pipelines: &'m mut [Option<wgpu::RenderPipeline>; 3],
+    pipelines: &'m mut [Option<wgpu::RenderPipeline>; 4],
     factory: &PipelineFactory<'_>,
     phase: CoveragePhase,
 ) -> Result<&'m wgpu::RenderPipeline, RenderError> {
@@ -2334,7 +2341,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             );
         }
         let modules = core_pipelines_eager()
-            .then(|| [0usize, 1, 2, 4].map(|v| shader_delivery.engine_module(&device, v)));
+            .then(|| [0usize, 1, 2, 4, 5].map(|v| shader_delivery.engine_module(&device, v)));
         fire_probe(
             &config,
             CreationPhase::ShaderModules,
@@ -2346,7 +2353,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         let mut pipelines = std::array::from_fn(|_| {
             std::array::from_fn(|_| std::array::from_fn(|_| None::<wgpu::RenderPipeline>))
         });
-        let mut coverage_pipelines = [None, None, None];
+        let mut coverage_pipelines = [None, None, None, None];
         // The closed core set, deduplicated by format slot: when surface
         // and scratch share `Rgba16Float` every cell lands in slot 0 and
         // the later iteration's `is_none` skips its duplicates (#170).
@@ -2357,7 +2364,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             for format in [TARGET_FORMAT, scratch_format] {
                 let slot = usize::from(format != TARGET_FORMAT);
                 for replace in [false, true] {
-                    for (module, variant) in [0usize, 1, 2, 4].iter().enumerate() {
+                    for (module, variant) in [0usize, 1, 2, 4, 5].iter().enumerate() {
                         let cell = &mut pipelines[slot][usize::from(replace)][*variant];
                         if cell.is_none() {
                             *cell = Some(create_pipeline(
@@ -2377,6 +2384,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 (0, CoveragePhase::Opaque),
                 (0, CoveragePhase::Partial),
                 (3, CoveragePhase::AtlasPartial),
+                (4, CoveragePhase::RectPartial),
             ]) {
                 *cell = Some(create_pipeline(
                     &device,
@@ -2674,12 +2682,12 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&device),
     )?;
     let scratch_format = scratch_wgpu(config.scratch_format);
-    // Four eager specializations — simple, shadow, full and atlas — from
+    // Five eager specializations — simple, shadow, full, atlas and rect — from
     // one source file: the prepended `VARIANT` constant makes fs_main a
     // constant-folded dispatch. WebGPU keeps WGSL (#57).
     let shader_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let shader_delivery = shaders::delivery(info.backend, &device)?;
-    let modules = [0usize, 1, 2, 4].map(|v| shader_delivery.engine_module(&device, v));
+    let modules = [0usize, 1, 2, 4, 5].map(|v| shader_delivery.engine_module(&device, v));
     if let Some(error) = shader_scope.pop().await {
         return Err(EngineError::Backend(error.to_string()));
     }
@@ -2710,7 +2718,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     {
         let slot = usize::from(format != TARGET_FORMAT);
         for replace in [false, true] {
-            for (module, variant) in [0usize, 1, 2, 4].into_iter().enumerate() {
+            for (module, variant) in [0usize, 1, 2, 4, 5].into_iter().enumerate() {
                 let module = &modules[module];
                 jobs.push(async move {
                     create_pipeline(
@@ -2735,8 +2743,8 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     {
         pipelines[slot][usize::from(replace)][variant] = Some(pipeline);
     }
-    let coverage_pipelines = <[_; 3]>::from(
-        futures_util::future::try_join3(
+    let coverage_pipelines = <[_; 4]>::from(
+        futures_util::future::try_join4(
             create_pipeline(
                 &device,
                 &config,
@@ -2763,6 +2771,15 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
                 &modules[3],
                 TARGET_FORMAT,
                 CoveragePass::Coverage(CoveragePhase::AtlasPartial),
+            ),
+            create_pipeline(
+                &device,
+                &config,
+                &pipeline_layout,
+                pipeline_cache.as_ref(),
+                &modules[4],
+                TARGET_FORMAT,
+                CoveragePass::Coverage(CoveragePhase::RectPartial),
             ),
         )
         .await?,
@@ -8297,7 +8314,10 @@ impl GpuRenderer {
                     range.pipeline == PipelineKind::SrcOver
                         && matches!(
                             range.variant,
-                            ShaderVariant::Simple | ShaderVariant::Shadow | ShaderVariant::Atlas
+                            ShaderVariant::Simple
+                                | ShaderVariant::Shadow
+                                | ShaderVariant::Atlas
+                                | ShaderVariant::Rect
                         )
                         && range.source.is_none()
                         && range.image.is_none()

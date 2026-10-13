@@ -77,11 +77,15 @@ const ENGINE_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
         workgroup_size: (0, 0, 0),
     },
     wgpu::PassthroughShaderEntryPoint {
-        name: Cow::Borrowed("vs_partial_atlas"),
+        name: Cow::Borrowed("vs_partial_basic"),
         workgroup_size: (0, 0, 0),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("fs_partial_atlas"),
+        workgroup_size: (0, 0, 0),
+    },
+    wgpu::PassthroughShaderEntryPoint {
+        name: Cow::Borrowed("fs_partial_rect"),
         workgroup_size: (0, 0, 0),
     },
 ];
@@ -112,54 +116,24 @@ const VS_FS_PROJECTIVE: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
 
 /// The `VARIANT = 0` specialization of `shader.wgsl` (simple).
 ///
-/// Non-union variants compile `shader_no_union.wgsl` — `shader.wgsl`
-/// with every `// union-stub` span removed by `build.rs` — so the
-/// pipelines plain draws use contain neither the union fold nor its
-/// member-cap arrays.
-const ENGINE_WGSL0: &str = concat!(
-    "enable f16;\nconst VARIANT: u32 = 0u;\n",
-    include_str!("shared.wgsl"),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
-    "\n",
-    include_str!("blend.wgsl")
-);
+/// Every `ENGINE_WGSL` constant is the `engineN.wgsl` `build.rs` wrote
+/// from the same `Spec.source` its passthrough artifacts compile — the
+/// runtime WGSL cannot drift from the SPIR-V/metallib. Non-union
+/// variants are built from `shader.wgsl` with every `// union-stub`
+/// span removed, so their pipelines carry neither the union fold nor
+/// its member-cap arrays; variant 3 additionally prepends
+/// `UNION_MAX_MEMBERS` and links the `union.wgsl` fold.
+const ENGINE_WGSL0: &str = include_str!(concat!(env!("OUT_DIR"), "/engine0.wgsl"));
 /// The `VARIANT = 1` specialization (shadow).
-const ENGINE_WGSL1: &str = concat!(
-    "enable f16;\nconst VARIANT: u32 = 1u;\n",
-    include_str!("shared.wgsl"),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
-    "\n",
-    include_str!("blend.wgsl")
-);
+const ENGINE_WGSL1: &str = include_str!(concat!(env!("OUT_DIR"), "/engine1.wgsl"));
 /// The `VARIANT = 2` specialization (full).
-const ENGINE_WGSL2: &str = concat!(
-    "enable f16;\nconst VARIANT: u32 = 2u;\n",
-    include_str!("shared.wgsl"),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
-    "\n",
-    include_str!("blend.wgsl")
-);
-/// The `VARIANT = 3` specialization (union): the full module plus the
-/// `UNION_MAX_MEMBERS` prepend — `BackdropUnion::MAX_MEMBERS` verbatim,
-/// emitted by `build.rs` — and the `union.wgsl` fold.
-const ENGINE_WGSL3: &str = concat!(
-    "enable f16;\nconst VARIANT: u32 = 3u;\n",
-    include_str!(concat!(env!("OUT_DIR"), "/union_max_members.wgsl")),
-    include_str!("shared.wgsl"),
-    include_str!("shader.wgsl"),
-    "\n",
-    include_str!("union.wgsl"),
-    "\n",
-    include_str!("blend.wgsl")
-);
+const ENGINE_WGSL2: &str = include_str!(concat!(env!("OUT_DIR"), "/engine2.wgsl"));
+/// The `VARIANT = 3` specialization (union).
+const ENGINE_WGSL3: &str = include_str!(concat!(env!("OUT_DIR"), "/engine3.wgsl"));
 /// The `VARIANT = 4` specialization (atlas coverage).
-const ENGINE_WGSL4: &str = concat!(
-    "enable f16;\nconst VARIANT: u32 = 4u;\n",
-    include_str!("shared.wgsl"),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
-    "\n",
-    include_str!("blend.wgsl")
-);
+const ENGINE_WGSL4: &str = include_str!(concat!(env!("OUT_DIR"), "/engine4.wgsl"));
+/// The `VARIANT = 5` specialization (rect coverage).
+const ENGINE_WGSL5: &str = include_str!(concat!(env!("OUT_DIR"), "/engine5.wgsl"));
 
 /// The effect-module text for a user `backdrop_effect` source.
 ///
@@ -222,14 +196,15 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
 /// exactly those targets, so the condition lives in one place (issue #241).
 #[cfg(cherenkov_spirv)]
 pub mod spirv {
-    /// naga SPIR-V for the five `VARIANT` specializations of
+    /// naga SPIR-V for the six `VARIANT` specializations of
     /// `shader.wgsl`.
-    pub const ENGINE: [&[u8]; 5] = [
+    pub const ENGINE: [&[u8]; 6] = [
         include_bytes!(concat!(env!("OUT_DIR"), "/engine0.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine1.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine2.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine3.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine4.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine5.spv")),
     ];
     /// `present.wgsl`.
     pub const PRESENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.spv"));
@@ -268,15 +243,16 @@ pub mod spirv {
 // produce them otherwise, and a Metal backend cannot appear on a
 // non-Apple build), so the empty slices are unreachable.
 #[cfg(target_vendor = "apple")]
-const ENGINE_METALLIB: [&[u8]; 5] = [
+const ENGINE_METALLIB: [&[u8]; 6] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/engine0.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine1.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine2.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine3.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine4.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine5.metallib")),
 ];
 #[cfg(not(target_vendor = "apple"))]
-const ENGINE_METALLIB: [&[u8]; 5] = [&[], &[], &[], &[], &[]];
+const ENGINE_METALLIB: [&[u8]; 6] = [&[], &[], &[], &[], &[], &[]];
 #[cfg(target_vendor = "apple")]
 const PRESENT_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.metallib"));
 #[cfg(not(target_vendor = "apple"))]
@@ -302,9 +278,9 @@ const REDUCE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.
 #[cfg(not(target_vendor = "apple"))]
 const REDUCE_METALLIB: &[u8] = &[];
 
-/// The five `VARIANT` specializations of `shader.wgsl`, indexed by
+/// The six `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
-const ENGINE: [Fixed; 5] = [
+const ENGINE: [Fixed; 6] = [
     Fixed {
         wgsl: ENGINE_WGSL0,
         #[cfg(cherenkov_spirv)]
@@ -338,6 +314,13 @@ const ENGINE: [Fixed; 5] = [
         #[cfg(cherenkov_spirv)]
         spirv: spirv::ENGINE[4],
         metallib: ENGINE_METALLIB[4],
+        entries: ENGINE_ENTRIES,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL5,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[5],
+        metallib: ENGINE_METALLIB[5],
         entries: ENGINE_ENTRIES,
     },
 ];

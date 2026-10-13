@@ -379,8 +379,8 @@ mod tests {
         assert_eq!(offset_of!(Instance, clip_translation), 176);
         assert_eq!(offset_of!(Instance, uv), 184);
         assert_eq!(offset_of!(Instance, clip), 192);
-        let module = naga::front::wgsl::parse_str(include_str!("shared.wgsl"))
-            .expect("shared WGSL parses");
+        let module =
+            naga::front::wgsl::parse_str(include_str!("shared.wgsl")).expect("shared WGSL parses");
         let (_, instance) = module
             .types
             .iter()

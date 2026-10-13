@@ -220,7 +220,7 @@ struct Modules<'a> {
     tile: &'a str,
 }
 
-/// The fixed module set `render` creates: five VARIANT specializations
+/// The fixed module set `render` creates: six VARIANT specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
 /// `projective`, `mip`, `resolve` and `reduce`. The engine, external
 /// and projective modules share the `shared.wgsl` prelude; the engine
@@ -229,7 +229,7 @@ struct Modules<'a> {
 /// `union.wgsl`; the plain variants drop every `// union-stub` span, so
 /// their modules carry no union fold or member-cap arrays.
 fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
-    let mut specs: Vec<Spec> = (0..5u32)
+    let mut specs: Vec<Spec> = (0..6u32)
         .map(|variant| {
             let (cap, shader, union) = if variant == 3 {
                 (m.union_max, m.shader, m.union)
@@ -330,6 +330,11 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
         println!("cargo::rustc-cfg=cherenkov_spirv");
     }
     for spec in specs {
+        // The runtime WGSL is the exact source the passthrough artifacts
+        // are compiled from, so `shaders.rs` includes `engineN.wgsl`
+        // rather than reassembling the module.
+        std::fs::write(out_dir.join(format!("{}.wgsl", spec.name)), &spec.source)
+            .expect("write fixed WGSL source");
         compile(out_dir, spec, apple.as_ref(), wasm, spirv);
     }
     if let Some(apple) = apple.as_ref() {

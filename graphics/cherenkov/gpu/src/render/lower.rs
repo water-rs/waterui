@@ -97,20 +97,27 @@ pub enum ShaderVariant {
     /// Solid glyph/region/span coverage: atlas or uniform coverage plus
     /// a solid colour, without an analytic solve.
     Atlas,
+    /// Solid sharp-rectangle and atlas coverage: the exact rect solve and
+    /// atlas texels plus a solid colour, without the general SDF chain.
+    Rect,
 }
 
 impl ShaderVariant {
     /// Whether the variant draws only coverage-ordered shapes: those
     /// replay under the depth-tested partial pipeline.
     pub const fn supports_coverage_order(self) -> bool {
-        matches!(self, Self::Simple | Self::Atlas)
+        matches!(self, Self::Simple | Self::Atlas | Self::Rect)
     }
 
-    /// A kernel that covers both compatible solid batches. Atlas-only
-    /// batches retain their specialization; a mixed batch needs Simple.
+    /// A kernel that covers both compatible solid batches. Atlas-only and
+    /// rect batches retain their specialization; a mixed batch with an
+    /// analytic fill needs Simple, and atlas instances ride on Rect.
     fn batch_with(self, other: Self) -> Option<Self> {
         match (self, other) {
-            (Self::Simple, Self::Atlas) | (Self::Atlas, Self::Simple) => Some(Self::Simple),
+            (Self::Simple, Self::Atlas | Self::Rect) | (Self::Atlas | Self::Rect, Self::Simple) => {
+                Some(Self::Simple)
+            }
+            (Self::Rect, Self::Atlas) | (Self::Atlas, Self::Rect) => Some(Self::Rect),
             (left, right) if left == right => Some(left),
             _ => None,
         }
@@ -496,7 +503,24 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
     if matches!(inst.meta[0], KIND_GLYPH | KIND_REGION | KIND_SPAN) {
         return ShaderVariant::Atlas;
     }
+    if inst.meta[0] == KIND_FILL {
+        return fill_variant(&inst.shape);
+    }
     ShaderVariant::Simple
+}
+
+/// The specialization a solid fill's shape admits: a sharp rectangle
+/// takes the rect kernel; rounded or superelliptic shapes stay Simple.
+const fn fill_variant(shape: &Shape) -> ShaderVariant {
+    if shape.radii[0] == 0.0
+        && shape.radii[1] == 0.0
+        && shape.radii[2] == 0.0
+        && shape.radii[3] == 0.0
+    {
+        ShaderVariant::Rect
+    } else {
+        ShaderVariant::Simple
+    }
 }
 
 /// The part of a shadow its following opaque fill hides, in shadow-local
@@ -4093,15 +4117,18 @@ impl<'a> Lowering<'a> {
         let retained = &storage.instances[emission.instances.clone()];
         if let Some(first) = retained.first() {
             // A realized leaf shares paint and clip fields. Its instances
-            // draw as one batch: atlas-only batches keep the dedicated
-            // shader, while a batch containing a fill needs Simple.
+            // draw as one batch over the compatible families — atlas
+            // primitives, sharp-rect fills and general fills: atlas-only
+            // batches keep their dedicated shader, a batch whose fill is
+            // a sharp rect takes Rect, and one with a general fill needs
+            // Simple.
             let mut template = first.restore(&storage.templates[emission.template], offset);
             Self::apply_clip(&mut template, clip);
             let mut variant = variant_of(&template);
             if variant == ShaderVariant::Atlas
                 && retained.iter().any(|source| source.kind == KIND_FILL)
             {
-                variant = ShaderVariant::Simple;
+                variant = fill_variant(&template.shape);
             }
             self.set_variant(variant);
             let first = self.frame.instances.len();
@@ -6870,21 +6897,21 @@ mod tests {
         assert_eq!(lowering.anchor_scratch.links, [(anchor_a, 10)]);
     }
 
-    /// A retained leaf's instances draw as one batch: a leaf mixing atlas
-    /// primitives with a fill keeps the compatible Simple kernel, while a
-    /// leaf holding only atlas primitives keeps the Atlas specialization —
-    /// and the pass still qualifies for coverage order.
+    /// A retained leaf's instances draw as one batch over the compatible
+    /// families: a leaf mixing atlas primitives with a sharp-rect fill
+    /// takes Rect, a rounded fill forces Simple, an atlas-only leaf keeps
+    /// Atlas, and a rounded leaf appended after the batch widens the same
+    /// range to Simple — never an additional range. The pass still
+    /// qualifies for coverage order.
     #[test]
     fn retained_coverage_batches_preserve_order() {
-        for (kinds, expected_variant) in [
-            (
-                &[KIND_SPAN, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SPAN][..],
-                ShaderVariant::Simple,
-            ),
-            (
-                &[KIND_SPAN, KIND_GLYPH, KIND_REGION, KIND_SPAN][..],
-                ShaderVariant::Atlas,
-            ),
+        let mixed = [KIND_SPAN, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SPAN];
+        let atlas = [KIND_SPAN, KIND_GLYPH, KIND_REGION, KIND_SPAN];
+        for (kinds, radius, append_rounded, expected_variant) in [
+            (&mixed[..], 0.0, false, ShaderVariant::Rect),
+            (&mixed[..], 2.0, false, ShaderVariant::Simple),
+            (&atlas[..], 0.0, false, ShaderVariant::Atlas),
+            (&mixed[..], 0.0, true, ShaderVariant::Simple),
         ] {
             let mut frame = Frame::default();
             let mut anchor_scratch = AnchorScratch::default();
@@ -6895,7 +6922,9 @@ mod tests {
             inst.affine = affine(Affine::IDENTITY);
             inst.bounds = [0.0, 0.0, 32.0, 32.0];
             inst.color = [0.5, 0.25, 0.75, 0.5];
-            let storage = EmissionStorage {
+            inst.shape.half = [16.0; 2];
+            inst.shape.radii = [radius; 4];
+            let mut storage = EmissionStorage {
                 templates: vec![InstanceTemplate::new(&inst)],
                 covers: Vec::new(),
                 instances: kinds
@@ -6910,7 +6939,7 @@ mod tests {
                 stops: Vec::new(),
                 refs: Vec::new(),
             };
-            let emission = Emission {
+            let mut emission = Emission {
                 pending_cells: 0,
                 refs: 0,
                 live_stamp: 0,
@@ -6923,6 +6952,14 @@ mod tests {
                 image: None,
             };
             lowering.compose(&emission, &storage, None);
+            let mut expected_kinds = kinds.to_vec();
+            if append_rounded {
+                storage.templates[0].shape.radii = [2.0; 4];
+                storage.instances[0].kind = KIND_FILL;
+                emission.instances = 0..1;
+                lowering.compose(&emission, &storage, None);
+                expected_kinds.push(KIND_FILL);
+            }
             lowering.end_segment();
 
             assert_eq!(
@@ -6931,7 +6968,7 @@ mod tests {
                     .iter()
                     .map(|inst| inst.meta[0])
                     .collect::<Vec<_>>(),
-                kinds
+                expected_kinds
             );
             let open = frame.open.as_ref().expect("part pass still open");
             assert_eq!(
@@ -6939,7 +6976,10 @@ mod tests {
                     .iter()
                     .map(|range| (range.variant, range.instances.clone()))
                     .collect::<Vec<_>>(),
-                [(expected_variant, 0..u32::try_from(kinds.len()).unwrap())]
+                [(
+                    expected_variant,
+                    0..u32::try_from(expected_kinds.len()).unwrap()
+                )]
             );
             assert!(open.maybe_coverage);
         }
