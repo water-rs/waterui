@@ -68,8 +68,6 @@ pub enum TargetPlatform {
 pub enum TargetBackend {
     /// Apple backend (Xcode, UIKit/AppKit)
     Apple,
-    /// Android backend (Gradle, Android Views)
-    Android,
     /// GTK4 backend (pure Rust binary)
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer)
@@ -86,7 +84,7 @@ impl TargetBackend {
     #[must_use]
     pub const fn scaffold_packages(&self) -> &'static [&'static str] {
         match self {
-            Self::Apple | Self::Android => &[],
+            Self::Apple => &[],
             Self::Gtk4 => &["waterui-gtk"],
             // `hydrolysis` itself is an in-tree framework member resolved
             // through `hydrolysis-path`, not a scaffold package (#1635).
@@ -150,7 +148,6 @@ impl TargetBackend {
                 #[cfg(not(target_os = "macos"))]
                 bail!("Apple backend requires a macOS host");
             }
-            Self::Android => {}
         }
         Ok(())
     }
@@ -286,10 +283,9 @@ impl TargetPlatform {
             | Self::WatchOSSimulator
             | Self::VisionOS
             | Self::VisionOSSimulator => &[TargetBackend::Apple],
-            Self::Android => &[TargetBackend::Hydrolysis, TargetBackend::Android],
+            Self::Android | Self::Web => &[TargetBackend::Hydrolysis],
             Self::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
             Self::Windows => &[TargetBackend::Hydrolysis, TargetBackend::WinUi],
-            Self::Web => &[TargetBackend::Hydrolysis],
             // No backend serves ESP32 targets yet: Dew is archived and
             // Hydrolysis's embedded host lands with #1601.
             Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => &[],
@@ -960,11 +956,6 @@ mod host_support_tests {
         assert!(
             TargetBackend::Hydrolysis
                 .validate_host_support(TargetPlatform::Web)
-                .is_ok()
-        );
-        assert!(
-            TargetBackend::Android
-                .validate_host_support(TargetPlatform::Android)
                 .is_ok()
         );
     }

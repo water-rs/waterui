@@ -8,7 +8,7 @@ in ``scenes/fonts`` is committed. By default this produces all of it:
     2. fonts   ``scenes/fonts/``         OFL subsets and the licence
     3. tools   ``scenes/fonts/*.ttf``    the authored and derived test fonts
     4. corpus  ``scenes/corpus/``        scene.json + resources per scene
-    5. perf    ``scenes/perf/``          the five perf scenes
+    5. perf    ``scenes/perf/``          perf scenes, including a batched road stroke
 
 ``--fonts-only`` stops after the font tools. Compile-time readers
 (``include_bytes!`` of ``scenes/fonts``) need nothing else.

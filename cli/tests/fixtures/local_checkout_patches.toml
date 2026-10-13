@@ -8,6 +8,6 @@ waterui-gtk = "0.1.2"
 
 [patch.crates-io]
 waterui-core = { path = "core" }
-vello = { git = "https://github.com/lexoliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
+vello = { git = "https://github.com/testerliu/vello", rev = "5e5f538556be16527f67379b105af82f408b747d" }
 hydrolysis = { path = "backends/hydrolysis" }
 hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d8872e5" }

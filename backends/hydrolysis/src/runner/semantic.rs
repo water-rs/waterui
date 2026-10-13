@@ -283,7 +283,7 @@ impl SemanticRuntime {
     /// Performs an accessibility action against the merged tree.
     ///
     /// Popup-window node ids are shifted into their own stride in the merged
-    /// update (see [`Self::take_merged_accessibility_tree_update`]), so a
+    /// update (see `Self::take_merged_accessibility_tree_update`), so a
     /// request whose target lands in a popup's range demuxes back to that
     /// window's core — the action targets (a menu item's activation, a picker
     /// row's selection) live there. Returns whether the action changed state,
@@ -744,9 +744,8 @@ mod tests {
     //! accesskit tree with no GPU, no style, no layout and no encode, and
     //! accessibility actions drive widget state directly.
     //!
-    //! These cannot run until `waterui-testing` (a dev-dependency every test
-    //! target links) carries the `waterui#1125` driver side; the identical
-    //! flow is verified against the public API in an external scratch crate.
+    //! They run without `waterui-testing` — Hydrolysis's own tests stay on
+    //! its own API (water-rs/waterui#1673).
 
     use super::*;
     use accesskit::{Action, ActionRequest, Node as AccessibilityNode, NodeId, Role, TreeId};

@@ -581,6 +581,9 @@ impl Renderer for RasterRenderer {
         MemoryUsage {
             gpu: cherenkov::Bytes(0),
             cpu: cherenkov::Bytes(categories.total()),
+            // The CPU backend has no tile memory to compose in.
+            tile_reserved: cherenkov::Bytes(0),
+            tile_committed: None,
             backdrop_captures: cherenkov::Bytes(backdrop_captures),
             backdrop_capture_format: (backdrop_captures > 0).then_some("linear-f32"),
         }

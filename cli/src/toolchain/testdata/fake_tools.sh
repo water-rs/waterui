@@ -477,6 +477,12 @@ adb)
 emulator)
     case "$*" in
         *-list-avds*)
+            # WATERUI_FAKE_EMULATOR_STATUS stages a broken emulator:
+            # listing its AVDs fails the way a real one does.
+            exit_status="${WATERUI_FAKE_EMULATOR_STATUS:-0}"
+            if [ "$exit_status" -ne 0 ]; then
+                exit "$exit_status"
+            fi
             respond_or_empty EMULATOR_AVDS
             ;;
         *)

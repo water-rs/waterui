@@ -13,6 +13,7 @@ const KIND_SHADOW: u32 = 3u;        // Gaussian-blurred rounded box
 const KIND_GLYPH: u32 = 4u;         // coverage from the glyph atlas
 const KIND_SPAN: u32 = 5u;          // a full-coverage device-space run
 const KIND_REGION: u32 = 6u;        // atlas cell with a retained full interval
+const KIND_POLYGON: u32 = 7u;       // appended opaque interior tier (opaque phase only)
 
 const PAINT_SOLID: u32 = 0u;
 const PAINT_LINEAR: u32 = 1u;

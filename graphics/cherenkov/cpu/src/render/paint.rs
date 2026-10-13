@@ -7,69 +7,22 @@ use cherenkov::{ColorStop, Extend, Interpolation, Paint};
 use rustc_hash::FxHashMap;
 
 use cherenkov::RenderError;
+use filtrate_core::space::{
+    P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
+};
 
 use crate::names;
 
-/// Linear Display P3 to linear sRGB, for `SrgbEncoded` gradient stops.
-const P3_TO_SRGB: [[f32; 3]; 3] = [
-    [1.224_940_1, -0.224_940_4, 0.0],
-    [-0.042_056_9, 1.042_057_1, 0.0],
-    [-0.019_637_6, -0.078_636_1, 1.098_273_5],
-];
-
-/// Linear sRGB to linear Display P3.
-const SRGB_TO_P3: [[f32; 3]; 3] = [
-    [0.822_461_96, 0.177_538_04, 0.0],
-    [0.033_194_2, 0.966_805_8, 0.0],
-    [0.017_082_632, 0.072_397_44, 0.910_519_96],
-];
-
-fn mat3(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
-    [
-        m[0][0].mul_add(v[0], m[0][1].mul_add(v[1], m[0][2] * v[2])),
-        m[1][0].mul_add(v[0], m[1][1].mul_add(v[1], m[1][2] * v[2])),
-        m[2][0].mul_add(v[0], m[2][1].mul_add(v[1], m[2][2] * v[2])),
-    ]
-}
-
-/// sRGB-encodes one channel, preserving sign.
-fn srgb_encode(x: f32) -> f32 {
-    let e = if x.abs() <= 0.003_130_8 {
-        x.abs() * 12.92
-    } else {
-        1.055f32.mul_add(x.abs().powf(1.0 / 2.4), -0.055)
-    };
-    e.copysign(x)
-}
-
-/// sRGB-decodes one channel, preserving sign.
-fn srgb_decode(x: f32) -> f32 {
-    let d = if x.abs() <= 0.04045 {
-        x.abs() / 12.92
-    } else {
-        ((x.abs() + 0.055) / 1.055).powf(2.4)
-    };
-    d.copysign(x)
-}
-
-/// Convert a premultiplied pixel between linear P3 and encoded sRGB.
+/// Convert a premultiplied pixel between linear P3 and encoded sRGB —
+/// filtrate-core's `to_srgb`/`from_srgb` conversion on a single pixel.
 pub(super) fn convert_pixel(pixel: [f32; 4], encode: bool) -> [f32; 4] {
-    let alpha = pixel[3];
-    if alpha == 0.0 {
-        return [0.0; 4];
-    }
-    let straight = [pixel[0] / alpha, pixel[1] / alpha, pixel[2] / alpha];
-    let converted = if encode {
-        mat3(&P3_TO_SRGB, straight).map(srgb_encode)
+    let mut pixel = [pixel];
+    if encode {
+        to_srgb(&mut pixel);
     } else {
-        mat3(&SRGB_TO_P3, straight.map(srgb_decode))
-    };
-    [
-        converted[0] * alpha,
-        converted[1] * alpha,
-        converted[2] * alpha,
-        alpha,
-    ]
+        from_srgb(&mut pixel);
+    }
+    pixel[0]
 }
 
 /// A gradient stop in interpolation-space straight-alpha components.
@@ -198,13 +151,8 @@ fn stops(stops: &[ColorStop], interpolation: Interpolation) -> std::sync::Arc<[S
         .map(|s| {
             let [r, g, b, a] = s.color.components;
             let color = if interpolation == Interpolation::SrgbEncoded {
-                let lin = mat3(&P3_TO_SRGB, [r, g, b]);
-                [
-                    srgb_encode(lin[0]),
-                    srgb_encode(lin[1]),
-                    srgb_encode(lin[2]),
-                    a,
-                ]
+                let [r, g, b] = transform(&P3_TO_SRGB, [r, g, b]).map(srgb_encode);
+                [r, g, b, a]
             } else {
                 [r, g, b, a]
             };
@@ -437,10 +385,7 @@ fn extend_t(t: f32, extend: Extend) -> Option<f32> {
 fn to_premul(c: [f32; 4], interpolation: Interpolation) -> [f32; 4] {
     let [r, g, b, a] = c;
     let [pr, pg, pb] = if interpolation == Interpolation::SrgbEncoded {
-        mat3(
-            &SRGB_TO_P3,
-            [srgb_decode(r), srgb_decode(g), srgb_decode(b)],
-        )
+        transform(&SRGB_TO_P3, [r, g, b].map(srgb_decode))
     } else {
         [r, g, b]
     };

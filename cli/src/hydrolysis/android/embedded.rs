@@ -24,12 +24,8 @@ use tracing::info;
 
 use crate::{
     android::{
-        KotlinToolchain,
-        backend::manifest_permissions,
-        platform::{
-            AndroidAbi, android_ffi_dependency_features, audit_android_permissions,
-            run_gradle_tasks,
-        },
+        KotlinToolchain, manifest_permissions,
+        platform::{AndroidAbi, run_gradle_tasks},
     },
     assets::{self, AndroidDependencyScope},
     build::BuildOptions,
@@ -45,9 +41,9 @@ pub use crate::android::platform::ALL_ABIS;
 
 /// The routing rule for embedded Android builds: Hydrolysis only.
 ///
-/// The Kotlin Android backend has no `com.android.library` output, so
-/// selecting it is a configuration error, raised here and in
-/// `AndroidBackend::init` before either path scaffolds a project.
+/// Hydrolysis is the one backend with a `com.android.library` output, so
+/// any other selection is a configuration error, raised here before the
+/// build scaffolds anything.
 pub const EMBEDDED_REQUIRES_HYDROLYSIS: &str =
     "embedded Android libraries are built by Hydrolysis: pass `--backend hydrolysis`";
 
@@ -84,9 +80,18 @@ const HOST_HASH_READ_CONCURRENCY: usize = 16;
 
 /// The host checkout's Gradle modules an embedded build substitutes,
 /// fingerprints (see [`host_version`]) and publishes — one table so a new
-/// host module joins with a single entry here.
-pub(crate) fn publish_modules(painter: HydrolysisAndroidPainter) -> Vec<&'static str> {
-    vec!["host", painter.host_module()]
+/// host module joins with a single entry here. `system_webview` adds the
+/// system-WebView bridge, which the library's `webview-system` launcher
+/// calls into.
+pub(crate) fn publish_modules(
+    painter: HydrolysisAndroidPainter,
+    system_webview: bool,
+) -> Vec<&'static str> {
+    let mut modules = vec!["host", painter.host_module()];
+    if system_webview {
+        modules.push("webview");
+    }
+    modules
 }
 
 /// The embedded library's Gradle project, rendered and ready to assemble.
@@ -161,7 +166,10 @@ pub async fn render_library(
         .android_package_name()
         .map_err(|error| eyre::eyre!("{error}"))?;
     let host_project_dir = require_painter_module(project, painter).await?;
-    let modules = publish_modules(painter);
+    let base =
+        HydrolysisBackend::template_context(project, project.resolved_framework().await?).await?;
+    let system_webview = base.webview_backend_feature()?.is_some();
+    let modules = publish_modules(painter, system_webview);
     let (host_version, crate_version, compile_sdk) = futures_util::try_join!(
         host_version(&host_project_dir, &modules),
         project.crate_version(),
@@ -169,6 +177,7 @@ pub async fn render_library(
     )?;
     let ctx = embedded_template_context(
         project,
+        base,
         painter,
         &host_project_dir,
         dir,
@@ -220,9 +229,8 @@ pub struct EmbeddedArtifact {
 
 /// Build the embedded AAR.
 ///
-/// Runs the ABI-independent preparation once — the FFI companion render, the
-/// permission audit, the launcher's font metadata and the library scaffold —
-/// then compiles the crate's Hydrolysis cdylib for each of `abis` into the
+/// Runs the ABI-independent preparation once — the launcher's font metadata
+/// and the library scaffold — then compiles the crate's Hydrolysis cdylib for each of `abis` into the
 /// library module's `jniLibs`, stages assets into it, and has the generated
 /// Gradle project publish the host modules under this build's host version,
 /// assemble the AAR and publish it to `mavenLocal`.
@@ -246,13 +254,7 @@ pub async fn build_aar(
     let dir = project
         .backend_path::<HydrolysisBackend>()
         .join("android-embedded");
-    let ((), (), library) = futures_util::try_join!(
-        async {
-            // The companion is the graph the classpath staging and the
-            // feature answers below read, so it renders before its audit.
-            project.scaffold_ffi_companion().await?;
-            audit_android_permissions(project).await
-        },
+    let ((), library) = futures_util::try_join!(
         super::prepare_for_build(project),
         render_library(project, painter, &dir),
     )?;
@@ -276,16 +278,17 @@ pub async fn build_aar(
     // `waterui_assets` ships inside the AAR exactly as it ships inside an
     // APK — `HydrolysisEnvironment.prepare` syncs the same tree at runtime.
     // What the app scaffold stages beyond it (`res`, theme, icons) is the
-    // host application's own, never the library's. No font tree ships beside
-    // it: the runtime's Android collection scans the platform font
-    // directories (`text::fonts::android_collection`), nothing reads a
-    // packaged `assets/fonts`, and that shared root is the host app's
-    // namespace to win at merge time (#2348).
+    // host application's own, never the library's. The declared faces ride
+    // inside the bundle, not in a tree beside it: that shared root is the
+    // host app's namespace to win at merge time (#2348), and the bundle is
+    // what `text::fonts::native_collection` reads an application's fonts
+    // from on Android.
     assets::stage_project_assets_for_android_library(
         project,
         &module_dir,
         &built.app_symbols().await?,
         false,
+        &super::resolve_declared_fonts(project).await?,
     )
     .await?;
 
@@ -293,17 +296,18 @@ pub async fn build_aar(
     // the host app resolves classes from; `api` exports them through the
     // published POM so a consumer's build sees them too. Manifest components
     // go into the library manifest, which the host's manifest merger folds
-    // into its own, `${applicationId}` resolving to the host's. The feature
-    // set is the one every built ABI's own graph answers, so helpers behind
-    // optional features are not missed.
-    let ffi_manifest = project.ffi_crate_path().join("Cargo.toml");
-    let triples: Vec<_> = abis.iter().map(|abi| abi.triple()).collect();
+    // into its own, `${applicationId}` resolving to the host's. The scan
+    // mirrors the exact feature selection the launcher compiled with, so
+    // helpers behind optional features are not missed.
+    let launcher_manifest = project
+        .backend_path::<HydrolysisBackend>()
+        .join("Cargo.toml");
     assets::stage_android_declarations(
         project,
-        &ffi_manifest,
+        &launcher_manifest,
         &module_dir,
         AndroidDependencyScope::Api,
-        &android_ffi_dependency_features(project, &triples).await?,
+        &built.features,
     )
     .await?;
 
@@ -378,33 +382,33 @@ async fn host_compile_sdk(host_project_dir: &Path) -> Result<u32> {
 }
 
 /// The template context the generated `android-embedded/` Gradle project
-/// renders with: the shared launcher context plus the crate-version and
-/// permission entries and the embedded entry carrying the published host
-/// version.
+/// renders with: the shared launcher context `base` plus the crate-version
+/// and permission entries and the embedded entry carrying the published host
+/// version. `base` also answers whether the launcher compiles the
+/// system-WebView bridge, the same predicate [`publish_modules`] was given.
 async fn embedded_template_context(
     project: &Project,
+    base: crate::templates::TemplateContext,
     painter: HydrolysisAndroidPainter,
     host_project_dir: &Path,
     dir: &Path,
     host: EmbeddedHost<'_>,
     crate_version: &str,
 ) -> Result<crate::templates::TemplateContext> {
-    Ok(
-        HydrolysisBackend::template_context(project, project.resolved_framework().await?)
-            .await?
-            .with_crate_version(crate_version)
-            .with_android_permissions(manifest_permissions(project.manifest()))
-            .with_hydrolysis_android_embedded(HydrolysisAndroidEmbeddedTemplateEntry {
-                app: template_entry(project, painter, host_project_dir, dir).await?,
-                host_version: host.version.to_owned(),
-                host_modules: host
-                    .modules
-                    .iter()
-                    .map(|module| (*module).to_owned())
-                    .collect(),
-                compile_sdk: host.compile_sdk,
-            }),
-    )
+    let system_webview = base.webview_backend_feature()?.is_some();
+    Ok(base
+        .with_crate_version(crate_version)
+        .with_android_permissions(manifest_permissions(project.manifest()))
+        .with_hydrolysis_android_embedded(HydrolysisAndroidEmbeddedTemplateEntry {
+            app: template_entry(project, painter, host_project_dir, dir, system_webview).await?,
+            host_version: host.version.to_owned(),
+            host_modules: host
+                .modules
+                .iter()
+                .map(|module| (*module).to_owned())
+                .collect(),
+            compile_sdk: host.compile_sdk,
+        }))
 }
 
 /// The host `compileSdk` [`rendered_embedded_outputs`] renders with.
@@ -428,14 +432,18 @@ pub(super) async fn rendered_embedded_outputs(
     let dir = project
         .backend_path::<HydrolysisBackend>()
         .join("android-embedded");
+    let base =
+        HydrolysisBackend::template_context(project, project.resolved_framework().await?).await?;
+    let system_webview = base.webview_backend_feature()?.is_some();
     let ctx = embedded_template_context(
         project,
+        base,
         painter,
         host_project_dir,
         &dir,
         EmbeddedHost {
             version,
-            modules: &publish_modules(painter),
+            modules: &publish_modules(painter, system_webview),
             compile_sdk: TEST_COMPILE_SDK,
         },
         crate_version,
@@ -613,7 +621,8 @@ mod tests {
         host
     }
 
-    /// The modules [`publish_modules`] reports for the GPU painter.
+    /// The modules [`publish_modules`] reports for the GPU painter without
+    /// the system `WebView`.
     const GPU_MODULES: [&str; 2] = ["host", "gpu"];
 
     #[test]

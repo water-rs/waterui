@@ -542,6 +542,8 @@ pub struct Cherenkov {
     present: Option<Box<Present>>,
     /// The #169 allocation diagnostic sink, when the run installed one.
     alloc_diag: Option<cherenkov_gpu::diag::Sink>,
+    /// The #2547 composition attribution sink; `None` in timed runs.
+    composition_diag: Option<cherenkov_gpu::composition::Sink>,
 }
 
 /// `--present` state: the engine runs on a bench-owned shared device so a
@@ -1573,6 +1575,48 @@ fn backdrop_group(
     })
 }
 
+/// One frame's composition attribution: the surface reports the engine
+/// recorded for it, summed (#2547).
+///
+/// A frame encodes every dirty surface, so the counters add across the
+/// frame's reports; the attachment peaks add too, because the surfaces'
+/// attachments are bound at the same time.
+fn composition_sample(reports: &[cherenkov_gpu::composition::FrameReport]) -> crate::Composition {
+    let mut sample = crate::Composition::default();
+    for report in reports {
+        sample.epochs += u32::try_from(report.epochs.len()).expect("epoch count fits u32");
+        sample.passes += u32::try_from(report.passes).expect("pass count fits u32");
+        sample.on_chip_images += u32::try_from(report.on_chip.len()).expect("image count fits u32");
+        sample.on_chip_logical_bytes += report
+            .on_chip
+            .iter()
+            .map(|image| image.logical_bytes)
+            .sum::<u64>();
+        sample.materialized_images +=
+            u32::try_from(report.materialized.len()).expect("image count fits u32");
+        sample.materialized_logical_bytes += report
+            .materialized
+            .iter()
+            .map(|image| image.logical_bytes)
+            .sum::<u64>();
+        for image in &report.materialized {
+            *sample.reasons.entry(image.reason.name()).or_default() += 1;
+        }
+        sample.peak_reserved_bytes += report.attachments.peak_reserved_bytes;
+        if let Some(committed) = report.attachments.peak_committed_bytes {
+            *sample.peak_committed_bytes.get_or_insert(0) += committed;
+        }
+        sample.peak_backed_bytes += report.attachments.peak_backed_bytes;
+        sample.logical_bytes_written += report.traffic.logical_bytes_written;
+        sample.logical_bytes_read += report.traffic.logical_bytes_read;
+        sample.logical_bytes_copied += report.traffic.logical_bytes_copied;
+        sample.barriers += report.traffic.barriers;
+        sample.pipelines_created +=
+            u32::try_from(report.pipelines.len()).expect("pipeline count fits u32");
+    }
+    sample
+}
+
 /// The engine, device and prepared scene state do not format.
 impl std::fmt::Debug for Cherenkov {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1591,7 +1635,17 @@ impl Cherenkov {
     /// # Errors
     /// [`BenchError::Gpu`] when no adapter exists or device creation fails.
     pub fn new() -> Result<Self, BenchError> {
-        Self::make(None)
+        Self::make(None, None)
+    }
+
+    /// Creates the adapter with the #2547 composition attribution
+    /// installed: every submitted frame reports what its epochs kept on
+    /// chip and why the rest was materialized.
+    ///
+    /// # Errors
+    /// [`BenchError::Gpu`] when no adapter exists or device creation fails.
+    pub fn with_composition_diag() -> Result<Self, BenchError> {
+        Self::make(None, Some(cherenkov_gpu::composition::Sink::new()))
     }
 
     /// Creates the adapter with the #169 allocation diagnostic installed.
@@ -1599,7 +1653,7 @@ impl Cherenkov {
     /// # Errors
     /// [`BenchError::Gpu`] when no adapter exists or device creation fails.
     pub fn with_alloc_diag(sink: cherenkov_gpu::diag::Sink) -> Result<Self, BenchError> {
-        Self::make(Some(sink))
+        Self::make(Some(sink), None)
     }
 
     /// A final snapshot event after the engine's last submission, so a
@@ -1610,7 +1664,10 @@ impl Cherenkov {
         }
     }
 
-    fn make(alloc_diag: Option<cherenkov_gpu::diag::Sink>) -> Result<Self, BenchError> {
+    fn make(
+        alloc_diag: Option<cherenkov_gpu::diag::Sink>,
+        composition_diag: Option<cherenkov_gpu::composition::Sink>,
+    ) -> Result<Self, BenchError> {
         let config = GpuConfig {
             timestamps: true,
             scratch_format: match std::env::var("CHERENKOV_SCRATCH_FORMAT").as_deref() {
@@ -1618,6 +1675,7 @@ impl Cherenkov {
                 _ => ScratchFormat::LinearF16,
             },
             alloc_diag: alloc_diag.clone(),
+            composition_diag: composition_diag.clone(),
             ..GpuConfig::default()
         };
         let shared_device = SharedDevice::create(&config)
@@ -1658,6 +1716,7 @@ impl Cherenkov {
             counters: Counters::default(),
             present: None,
             alloc_diag,
+            composition_diag,
         })
     }
 }
@@ -1892,6 +1951,10 @@ impl Engine for Cherenkov {
                 stamp: phases.stamp_seconds,
                 wait: phases.wait_seconds,
             }),
+            composition: self
+                .composition_diag
+                .as_ref()
+                .map(|sink| composition_sample(&sink.take())),
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
         })

@@ -3,8 +3,8 @@
 mod bindings;
 mod bitmap;
 mod colr;
-#[cfg(target_vendor = "apple")]
 mod composite;
+pub mod composition;
 pub mod diag;
 #[cfg(target_os = "linux")]
 pub mod dmabuf_export;
@@ -344,10 +344,11 @@ struct SurfaceState {
     hosted: FxHashMap<LayerId, planes::HostedBinding>,
     shader_textures: FxHashMap<std::sync::Arc<paint::Key>, paint::Texture>,
     frame: LoweredFrame,
-    /// Image lifetimes and attachment assignment, before physical allocation.
-    #[cfg(target_vendor = "apple")]
+    /// Image lifetimes and attachment assignment, before physical
+    /// allocation. Planned only where the backend has a tile executor
+    /// (issue #2549): elsewhere the plan stays empty and unplanned, and
+    /// every pass keeps its backed attachment.
     composition: composite::plan::ExecutionPlan,
-    #[cfg(target_vendor = "apple")]
     composition_cache: composite::cache::Cache,
     #[cfg(target_vendor = "apple")]
     tile_targets: composite::metal::Attachments,
@@ -958,6 +959,15 @@ pub struct GpuRenderer {
     pipeline_layout: wgpu::PipelineLayout,
     #[cfg(target_vendor = "apple")]
     tile_executor: composite::metal::Executor,
+    /// The Vulkan tile executor's mirror of the engine's pipeline
+    /// layout, descriptor sets and attachments (#2191).
+    ///
+    /// `None` where the device was not opened with per-pixel attachment
+    /// access, which is also what makes [`GpuRenderer::tile_limits`]
+    /// decline to plan; the two answers come from this one field, so
+    /// no frame can be planned for an executor that is not there.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    tile_mirror: Option<composite::vulkan::Mirror>,
     /// The configured pipeline cache, opened once for the whole set.
     pipeline_cache: Option<wgpu::PipelineCache>,
     /// Registered backdrop effect shaders, by raw id — see
@@ -989,13 +999,21 @@ pub struct GpuRenderer {
     bound_globals_size: u64,
     atlas: Atlas,
     /// Per-commit cell writes, rebuilt in place each frame.
-    commit_writes: Vec<glyph::CellWrite>,
+    commit_writes: glyph::CellWrites,
     /// Per-surface pending origins, rebuilt in place each apply.
     pending_origins: Vec<PendingOrigin>,
     /// Replay-pin slots, reused across evicting commits (#119).
     commit_touches: Vec<u32>,
     /// A dummy 1×1 view for unused group-1 slots.
     dummy_view: wgpu::TextureView,
+    /// The texture `dummy_view` views.
+    ///
+    /// The Vulkan tile executor records natively, so every image its
+    /// descriptor sets name has to be moved into the layout the native
+    /// recording assumes — and a transition takes the texture, not the
+    /// view (#2191).
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    dummy: wgpu::Texture,
     /// A dummy 1×1 `u32` view for unused external-frame plane slots.
     dummy_uint_view: wgpu::TextureView,
     /// The external-frame group-1 layout, `None` until a surface first
@@ -1320,12 +1338,20 @@ fn create_device(
     {
         required |= wgpu::Features::PASSTHROUGH_SHADERS;
     }
-    // Only pass-boundary timestamps are requested: Metal on Apple GPUs
-    // advertises `TIMESTAMP_QUERY_INSIDE_ENCODERS` but samples only at
+    // Pass-boundary timestamps are all Metal is asked for: Apple GPUs
+    // advertise `TIMESTAMP_QUERY_INSIDE_ENCODERS` but sample only at
     // stage boundaries, so an encoder-level `write_timestamp` goes through
     // a dummy blit encoder that wgpu itself documents as unreliable.
+    // Vulkan is asked for both, because the tile executor records its
+    // epoch in a native command buffer that is no wgpu pass: the only
+    // place its bracket can go is the encoder, where Vulkan's
+    // `vkCmdWriteTimestamp` is exact (#2191). Every wgpu Vulkan adapter
+    // with `TIMESTAMP_QUERY` has it, so it is required, not probed.
     if config.timestamps && supported.contains(wgpu::Features::TIMESTAMP_QUERY) {
         required |= wgpu::Features::TIMESTAMP_QUERY;
+        if info.backend == wgpu::Backend::Vulkan {
+            required |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        }
     }
     if config.pipeline_cache.is_some() && supported.contains(wgpu::Features::PIPELINE_CACHE) {
         required |= wgpu::Features::PIPELINE_CACHE;
@@ -1336,22 +1362,23 @@ fn create_device(
     // the extensions/features wgpu does not request, preserving every
     // requirement wgpu does (#166). A non-Vulkan adapter falls through to
     // `request_device` unchanged.
-    #[cfg(all(unix, not(target_vendor = "apple")))]
-    if info.backend == wgpu::Backend::Vulkan {
-        let (device, queue) = create_vulkan_device(&adapter, required, &limits)?;
-        fire_probe(config, CreationPhase::Device, Some(&adapter), Some(&device))?;
-        tracing::info!(features = ?device.features(), "device");
-        return Ok((instance, adapter, device, queue));
-    }
-    let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    let descriptor = wgpu::DeviceDescriptor {
         label: Some("cherenkov-gpu"),
         required_features: required,
         required_limits: limits,
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
         memory_hints: memory_hints(info.backend),
         trace: wgpu::Trace::Off,
-    }))
-    .map_err(|e| EngineError::Backend(format!("{e}")))?;
+    };
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    if info.backend == wgpu::Backend::Vulkan {
+        let (device, queue) = create_vulkan_device(&adapter, &descriptor)?;
+        fire_probe(config, CreationPhase::Device, Some(&adapter), Some(&device))?;
+        tracing::info!(features = ?device.features(), "device");
+        return Ok((instance, adapter, device, queue));
+    }
+    let (device, queue) = pollster::block_on(adapter.request_device(&descriptor))
+        .map_err(|e| EngineError::Backend(format!("{e}")))?;
     fire_probe(config, CreationPhase::Device, Some(&adapter), Some(&device))?;
     tracing::info!(features = ?device.features(), "device");
     Ok((instance, adapter, device, queue))
@@ -1362,11 +1389,17 @@ fn create_device(
 /// sampler-conversion feature bit are enabled at creation — first import
 /// would be too late — then hands the opened device back through
 /// `create_device_from_hal` with wgpu's requirements intact.
+///
+/// The on-chip composition capabilities (issue #2191) are enabled here
+/// for the same reason: `as_hal` cannot turn on an extension after
+/// `vkCreateDevice`, so a device that was not opened through this path
+/// composes portably for the rest of its life. Every host that shares a
+/// device with the engine therefore opens it here —
+/// [`crate::interop::open_vulkan_device`] is this function.
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
-fn create_vulkan_device(
+pub fn create_vulkan_device(
     adapter: &wgpu::Adapter,
-    features: wgpu::Features,
-    limits: &wgpu::Limits,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
 ) -> Result<(wgpu::Device, wgpu::Queue), EngineError> {
     use external::vulkan;
     // SAFETY: `adapter` is the engine's own wgpu adapter; `as_hal`
@@ -1375,23 +1408,49 @@ fn create_vulkan_device(
         return Err(EngineError::Backend("adapter is not Vulkan".into()));
     };
     let caps = hal_adapter.physical_device_capabilities();
-    let extensions: Vec<&'static core::ffi::CStr> = vulkan::extra_device_extensions()
+    let supported = |name: &core::ffi::CStr| caps.supports_extension(name);
+    // SAFETY: the instance owns the physical device this adapter wraps,
+    // and both outlive `hal_adapter`'s borrow.
+    let mut tile = unsafe {
+        composite::vulkan::Request::probe(
+            hal_adapter.shared_instance().raw_instance(),
+            hal_adapter.raw_physical_device(),
+            supported,
+        )
+    };
+    let mut extensions: Vec<&'static core::ffi::CStr> = vulkan::extra_device_extensions()
         .into_iter()
-        .filter(|ext| caps.supports_extension(ext))
+        .filter(|ext| supported(ext))
         .collect();
+    extensions.extend(tile.extensions(supported));
     // The YCbCr conversion feature is keyed to its extension's presence.
-    let ycbcr = caps.supports_extension(ash::khr::sampler_ycbcr_conversion::NAME);
-    // `create_info.p_next` points at this struct until `vkCreateDevice`
+    let ycbcr = supported(ash::khr::sampler_ycbcr_conversion::NAME);
+    // `create_info.p_next` points at these structs until `vkCreateDevice`
     // runs inside `open_with_callback`; the `FnOnce` callback is dropped
-    // before that call, so the struct is boxed in this scope instead of
-    // being captured by the closure.
-    let ycbcr_features = Box::new(
+    // before that call, so they are boxed in this scope instead of being
+    // captured by the closure.
+    let mut ycbcr_features = Box::new(
         ash::vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default()
             .sampler_ycbcr_conversion(true),
     );
+    // SAFETY: the chain lives in this scope, which outlives the
+    // `vkCreateDevice` call below. Its tail is null because the create
+    // info the callback sees carries no `p_next` yet: wgpu's own
+    // `add_to_device_create` runs after the callback and links its
+    // structures ahead of whatever the callback left, so nothing wgpu
+    // asked for is dropped.
+    let tile_chain = unsafe { tile.chain(core::ptr::null()) };
+    let access = tile.access();
     let callback: Option<Box<wgpu::hal::vulkan::CreateDeviceCallback<'_>>> =
         if ycbcr || !extensions.is_empty() {
-            let ycbcr_ptr = core::ptr::from_ref(&*ycbcr_features).cast::<core::ffi::c_void>();
+            if ycbcr {
+                ycbcr_features.p_next = tile_chain.unwrap_or(core::ptr::null()).cast_mut();
+            }
+            let head = if ycbcr {
+                core::ptr::from_ref(&*ycbcr_features).cast::<core::ffi::c_void>()
+            } else {
+                tile_chain.unwrap_or(core::ptr::null())
+            };
             Some(Box::new(
                 move |args: wgpu::hal::vulkan::CreateDeviceCallbackArgs<'_, '_, '_>| {
                     for ext in &extensions {
@@ -1399,37 +1458,34 @@ fn create_vulkan_device(
                             args.extensions.push(ext);
                         }
                     }
-                    if ycbcr {
-                        args.create_info.p_next = ycbcr_ptr;
+                    if !head.is_null() {
+                        args.create_info.p_next = head;
                     }
                 },
             ))
         } else {
             None
         };
-    let hints = memory_hints(wgpu::Backend::Vulkan);
-    // SAFETY: `callback` pins `ycbcr_features` in this scope, which
-    // outlives the `vkCreateDevice` call inside `open_with_callback`
-    // (the `FnOnce` runs there, not later).
-    let opened = unsafe { hal_adapter.open_with_callback(features, limits, &hints, callback) }
-        .map_err(|e| EngineError::Backend(format!("vulkan device creation: {e}")))?;
+    let hints = descriptor.memory_hints.clone();
+    tracing::info!(?access, "vulkan on-chip composition");
+    // SAFETY: `callback` pins the feature chains in this scope, which
+    // outlive the `vkCreateDevice` call inside `open_with_callback` (the
+    // `FnOnce` runs there, not later).
+    let opened = unsafe {
+        hal_adapter.open_with_callback(
+            descriptor.required_features,
+            &descriptor.required_limits,
+            &hints,
+            callback,
+        )
+    }
+    .map_err(|e| EngineError::Backend(format!("vulkan device creation: {e}")))?;
     drop(hal_adapter);
     // SAFETY: `opened` came from `hal_adapter.open_with_callback` on
     // this same adapter just above — the pairing contract.
-    let (device, queue) = unsafe {
-        adapter.create_device_from_hal::<wgpu::hal::vulkan::Api>(
-            opened,
-            &wgpu::DeviceDescriptor {
-                label: Some("cherenkov-gpu"),
-                required_features: features,
-                required_limits: limits.clone(),
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-                memory_hints: hints,
-                trace: wgpu::Trace::Off,
-            },
-        )
-    }
-    .map_err(|e| EngineError::Backend(format!("vulkan device from hal: {e}")))?;
+    let (device, queue) =
+        unsafe { adapter.create_device_from_hal::<wgpu::hal::vulkan::Api>(opened, descriptor) }
+            .map_err(|e| EngineError::Backend(format!("vulkan device from hal: {e}")))?;
     Ok((device, queue))
 }
 
@@ -1455,9 +1511,9 @@ impl crate::interop::SharedDevice {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[expect(
+#[allow(
     clippy::future_not_send,
-    reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
 )]
 impl crate::interop::SharedDevice {
     /// As the native [`SharedDevice::create`](Self::create), awaited on
@@ -1478,9 +1534,9 @@ impl crate::interop::SharedDevice {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[expect(
+#[allow(
     clippy::future_not_send,
-    reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
 )]
 async fn create_device(
     config: &GpuConfig,
@@ -1533,12 +1589,20 @@ async fn create_device(
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
     let mut required = wgpu::Features::empty();
-    // Only pass-boundary timestamps are requested: Metal on Apple GPUs
-    // advertises `TIMESTAMP_QUERY_INSIDE_ENCODERS` but samples only at
+    // Pass-boundary timestamps are all Metal is asked for: Apple GPUs
+    // advertise `TIMESTAMP_QUERY_INSIDE_ENCODERS` but sample only at
     // stage boundaries, so an encoder-level `write_timestamp` goes through
     // a dummy blit encoder that wgpu itself documents as unreliable.
+    // Vulkan is asked for both, because the tile executor records its
+    // epoch in a native command buffer that is no wgpu pass: the only
+    // place its bracket can go is the encoder, where Vulkan's
+    // `vkCmdWriteTimestamp` is exact (#2191). Every wgpu Vulkan adapter
+    // with `TIMESTAMP_QUERY` has it, so it is required, not probed.
     if config.timestamps && supported.contains(wgpu::Features::TIMESTAMP_QUERY) {
         required |= wgpu::Features::TIMESTAMP_QUERY;
+        if info.backend == wgpu::Backend::Vulkan {
+            required |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        }
     }
     if config.pipeline_cache.is_some() && supported.contains(wgpu::Features::PIPELINE_CACHE) {
         required |= wgpu::Features::PIPELINE_CACHE;
@@ -1633,6 +1697,32 @@ fn image_view<'a>(
         }
         lower::ImageSource::Bitmap(key) => &bitmaps.get(key).expect("prepared bitmap").image.view,
         lower::ImageSource::Shader(key) => &shaders[key].image.view,
+        lower::ImageSource::Content(_) => {
+            unreachable!("producer ranges bind the external pipeline")
+        }
+    }
+}
+
+/// The texture behind the view [`image_view`] returns, for the paths
+/// that must transition the resource rather than bind it.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn image_texture<'a>(
+    source: &lower::ImageSource,
+    images: &'a FxHashMap<u64, GpuImage>,
+    bitmaps: &'a FxHashMap<BitmapKey, GpuBitmap>,
+    shaders: &'a FxHashMap<std::sync::Arc<paint::Key>, paint::Texture>,
+) -> &'a wgpu::Texture {
+    match source {
+        lower::ImageSource::Registered(id) => {
+            &images
+                .get(id)
+                .unwrap_or_else(|| panic!("a lowered range samples unregistered image {id}"))
+                .texture
+        }
+        lower::ImageSource::Bitmap(key) => {
+            &bitmaps.get(key).expect("prepared bitmap").image.texture
+        }
+        lower::ImageSource::Shader(key) => &shaders[key].image.texture,
         lower::ImageSource::Content(_) => {
             unreachable!("producer ranges bind the external pipeline")
         }
@@ -1737,6 +1827,16 @@ fn raw_vk_view(view: &wgpu::TextureView) -> ash::vk::ImageView {
     // asserted by `expect` — borrowed for this scope.
     let hal = unsafe { view.as_hal::<wgpu::hal::vulkan::Api>() };
     // SAFETY: `hal` is the view's own hal object, live above.
+    unsafe { hal.expect("vulkan").raw_handle() }
+}
+
+/// `texture`'s `VkImage`.
+#[cfg(all(unix, not(target_vendor = "apple")))]
+fn raw_vk_image(texture: &wgpu::Texture) -> ash::vk::Image {
+    // SAFETY: `texture` is a live wgpu texture on the Vulkan backend —
+    // asserted by `expect` — borrowed for this scope.
+    let hal = unsafe { texture.as_hal::<wgpu::hal::vulkan::Api>() };
+    // SAFETY: `hal` is the texture's own hal object, live above.
     unsafe { hal.expect("vulkan").raw_handle() }
 }
 
@@ -1903,9 +2003,9 @@ fn create_pipeline(
 }
 
 #[cfg(target_arch = "wasm32")]
-#[expect(
+#[allow(
     clippy::future_not_send,
-    reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
 )]
 async fn create_pipeline(
     device: &wgpu::Device,
@@ -2187,6 +2287,18 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         // constant-folded dispatch to fs_simple/fs_shadow/fs_full. On Vulkan
         // and Metal these are the embedded passthrough binaries (#57).
         let shader_delivery = shaders::delivery(info.backend, &device)?;
+        // What this device — the engine's own or a host's shared one —
+        // can keep on chip (#2191). A shared device opened outside
+        // `interop::open_vulkan_device` reports `None` here, which is
+        // the only visible sign that its host bypassed the engine's
+        // creation path.
+        #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+        if info.backend == wgpu::Backend::Vulkan {
+            tracing::info!(
+                access = ?composite::vulkan::device_access(&device),
+                "vulkan on-chip composition"
+            );
+        }
         let modules = core_pipelines_eager()
             .then(|| [0usize, 1, 2].map(|v| shader_delivery.engine_module(&device, v)));
         fire_probe(
@@ -2280,7 +2392,14 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         let atlas = Atlas::new(&device, config.budget.gpu.0);
         fire_probe(&config, CreationPhase::Atlas, Some(&adapter), Some(&device))?;
         let bind0 = make_bind0(&device, &layout0, &globals, &instances, &stops, &atlas);
-        let (_, dummy_view) = create_target(
+        #[cfg_attr(
+            not(all(unix, not(target_vendor = "apple"))),
+            expect(
+                unused_variables,
+                reason = "only the Vulkan executor transitions the dummy texture (#2191)"
+            )
+        )]
+        let (dummy, dummy_view) = create_target(
             &device,
             "dummy source",
             (1, 1),
@@ -2361,6 +2480,18 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             Some(&adapter),
             Some(&device),
         )?;
+        // The tile executor's mirror, built once for a device that can
+        // run an epoch. Its shader modules and layouts are the whole
+        // cost here — every pipeline is created on first use — and a
+        // device that cannot run an epoch builds none of it (#2191).
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        let tile_mirror = match composite::vulkan::device_access(&device) {
+            composite::vulkan::Access::PerPixel => Some(
+                composite::vulkan::Mirror::new(&device, &adapter)
+                    .map_err(|e| EngineError::Backend(format!("tile composition: {e}")))?,
+            ),
+            composite::vulkan::Access::None | composite::vulkan::Access::PerDraw => None,
+        };
         let renderer = GpuRenderer {
             instance,
             adapter,
@@ -2397,6 +2528,8 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             pipeline_layout,
             #[cfg(target_vendor = "apple")]
             tile_executor: composite::metal::Executor::default(),
+            #[cfg(all(unix, not(target_vendor = "apple")))]
+            tile_mirror,
             pipeline_cache,
             scratch_format,
             layout0,
@@ -2407,6 +2540,8 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             quad_indices,
             bind0,
             dummy_view,
+            #[cfg(all(unix, not(target_vendor = "apple")))]
+            dummy,
             dummy_uint_view,
             ext_layout: None,
             external_pipes: [None, None],
@@ -2429,7 +2564,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             bound_stop_size: 32 * 16,
             bound_globals_size: 256,
             atlas,
-            commit_writes: Vec::new(),
+            commit_writes: glyph::CellWrites::default(),
             pending_origins: Vec::new(),
             commit_touches: Vec::new(),
             surfaces: FxHashMap::default(),
@@ -2478,9 +2613,9 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
 }
 
 #[cfg(target_arch = "wasm32")]
-#[expect(
+#[allow(
     clippy::future_not_send,
-    reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
 )]
 #[expect(
     clippy::too_many_lines,
@@ -2746,7 +2881,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         bound_stop_size: 32 * 16,
         bound_globals_size: 256,
         atlas,
-        commit_writes: Vec::new(),
+        commit_writes: glyph::CellWrites::default(),
         pending_origins: Vec::new(),
         commit_touches: Vec::new(),
         surfaces: FxHashMap::default(),
@@ -3014,9 +3149,7 @@ impl Renderer for GpuRenderer {
                 hosted: FxHashMap::default(),
                 shader_textures: FxHashMap::default(),
                 frame: LoweredFrame::default(),
-                #[cfg(target_vendor = "apple")]
                 composition: composite::plan::ExecutionPlan::default(),
-                #[cfg(target_vendor = "apple")]
                 composition_cache: composite::cache::Cache::default(),
                 #[cfg(target_vendor = "apple")]
                 tile_targets: composite::metal::Attachments::default(),
@@ -3494,12 +3627,10 @@ impl Renderer for GpuRenderer {
                 }
             }
             surf.scratch.clear();
+            surf.composition = composite::plan::ExecutionPlan::default();
+            surf.composition_cache = composite::cache::Cache::default();
             #[cfg(target_vendor = "apple")]
-            {
-                surf.composition = composite::plan::ExecutionPlan::default();
-                surf.composition_cache = composite::cache::Cache::default();
-                surf.tile_targets.clear();
-            }
+            surf.tile_targets.clear();
             surf.coverage_depth = None;
             surf.backdrop = [None, None];
             surf.staging = [None, None];
@@ -3694,6 +3825,7 @@ impl Renderer for GpuRenderer {
             .map(|c| format_name(c.target.texture.format()))
             .next();
         let cpu = self.atlas.cpu_bytes()
+            + self.commit_writes.heap_bytes()
             + self
                 .surfaces
                 .values()
@@ -3710,19 +3842,42 @@ impl Renderer for GpuRenderer {
                         as u64
                 })
                 .sum::<u64>();
-        #[cfg(target_vendor = "apple")]
         let cpu = cpu
             + self
                 .surfaces
                 .values()
                 .map(|surface| surface.composition.bytes() + surface.composition_cache.bytes())
                 .sum::<u64>();
+        // The tile executor's attachments, reported apart from the rest
+        // because they are the one allocation the engine makes that it
+        // expects device memory *not* to back (#2191). Apple's are
+        // memoryless and have no commitment to read; Vulkan's are
+        // lazily allocated, and the driver says how much of them it had
+        // to commit. Only the committed part is real device memory, so
+        // only it joins `gpu`.
+        #[cfg(target_vendor = "apple")]
+        let (tile_reserved, tile_committed) = (
+            self.surfaces
+                .values()
+                .map(|surf| surf.tile_targets.reserved_bytes())
+                .sum(),
+            None,
+        );
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        let (tile_reserved, tile_committed) = self.tile_mirror.as_ref().map_or((0, None), |m| {
+            (m.reserved_bytes(), Some(m.committed_total_bytes()))
+        });
+        #[cfg(not(unix))]
+        let (tile_reserved, tile_committed) = (0, None);
         MemoryUsage {
             gpu: cherenkov::Bytes(
                 gpu + self.filters.gpu_bytes()
-                    + self.shadow_blur.as_ref().map_or(0, shadow::Blur::gpu_bytes),
+                    + self.shadow_blur.as_ref().map_or(0, shadow::Blur::gpu_bytes)
+                    + tile_committed.unwrap_or(0),
             ),
             cpu: cherenkov::Bytes(cpu),
+            tile_reserved: cherenkov::Bytes(tile_reserved),
+            tile_committed: tile_committed.map(cherenkov::Bytes),
             backdrop_captures: cherenkov::Bytes(captures),
             backdrop_capture_format: capture_format,
         }
@@ -4353,7 +4508,7 @@ impl GpuRenderer {
             for sf in &dirty {
                 let count = self.frame_pass_count;
                 let meta = self.pass_meta.len();
-                if let Err(error) = self.encode_surface(sf.id, timing, stats) {
+                if let Err(error) = self.encode_surface(sf.id, frame.id, timing, stats) {
                     self.frame_pass_count = count;
                     self.pass_meta.truncate(meta);
                     result = Err(error);
@@ -4509,7 +4664,7 @@ impl GpuRenderer {
             for sf in &dirty {
                 let count = self.frame_pass_count;
                 let meta = self.pass_meta.len();
-                if let Err(error) = self.encode_surface(sf.id, timing, stats) {
+                if let Err(error) = self.encode_surface(sf.id, frame.id, timing, stats) {
                     self.frame_pass_count = count;
                     self.pass_meta.truncate(meta);
                     result = Err(error);
@@ -6348,6 +6503,7 @@ impl GpuRenderer {
             lowered.emission_patches = std::mem::take(&mut lowering.emission_patches);
             lowered.mask_patches = std::mem::take(&mut lowering.mask_patches);
             lowered.pending = std::mem::take(&mut lowering.pending);
+            lowered.path_arena = std::mem::take(&mut lowering.path_arena);
             result
         };
         surf.layers = layers;
@@ -6725,13 +6881,16 @@ impl GpuRenderer {
         &mut self,
         surf: &mut SurfaceState,
         lowered: &mut Lowered,
-        writes: &mut Vec<glyph::CellWrite>,
+        writes: &mut glyph::CellWrites,
     ) -> Result<(), RenderError> {
         let pending = std::mem::take(&mut lowered.pending);
+        // The batch's texel arena moves into the commit's writes, which
+        // keep it alive until the upload below has consumed its bytes.
+        let arena = writes.push_arena(std::mem::take(&mut lowered.path_arena));
         let mut origins = std::mem::take(&mut self.pending_origins);
         origins.clear();
         for raster in pending {
-            origins.push(self.apply_raster(raster, writes)?);
+            origins.push(self.apply_raster(raster, arena, writes)?);
         }
         let cell_origin = |p: u32, c: u32| {
             let PendingOrigin::Cells(cells, _) = &origins[p as usize] else {
@@ -6816,7 +6975,8 @@ impl GpuRenderer {
     fn apply_raster(
         &mut self,
         raster: PendingRaster,
-        writes: &mut Vec<glyph::CellWrite>,
+        arena: u32,
+        writes: &mut glyph::CellWrites,
     ) -> Result<PendingOrigin, RenderError> {
         match raster {
             PendingRaster::Glyph {
@@ -6844,7 +7004,7 @@ impl GpuRenderer {
             }
             PendingRaster::Path { key, emit, cells } => {
                 self.atlas
-                    .place_path(key, emit, cells, writes)
+                    .place_path(key, emit, cells, arena, writes)
                     .ok_or(RenderError::AtlasFull)?;
                 Ok(PendingOrigin::Cells(
                     self.atlas.path_origins(key).expect("just stored"),
@@ -6907,6 +7067,60 @@ impl GpuRenderer {
         }
     }
 
+    /// What this engine's tile executor can hold, or why there is none
+    /// to plan for (issues #2549, #2191).
+    ///
+    /// Both executors bind four slots — slot zero stores the epoch's
+    /// output, the other three carry live intermediates — in
+    /// `Rgba16Float`, and both order a slot's accesses per pixel within
+    /// a pass, so a frame whose isolation scratches are stored in
+    /// another format can never place one on chip and is not planned at
+    /// all. What differs is what makes the executor available:
+    ///
+    /// - Apple's shaders come from the prebuilt metallib (#57), so a
+    ///   build that delivers WGSL has no executor to plan for.
+    /// - Vulkan's need the device to have been opened with per-pixel
+    ///   attachment access; [`GpuRenderer::tile_mirror`] holds the
+    ///   mirror exactly when it was, and the `Err` says the device is
+    ///   what declined.
+    ///
+    /// The error is the reason the frame's images are attributed to, so
+    /// a census distinguishes "this build has no executor" from "this
+    /// device cannot run one".
+    fn tile_limits(&self) -> Result<composite::plan::Limits, composition::Materialization> {
+        // Which executor this target has, and whether it is installed.
+        // The mirror is absent only because the Vulkan device declined,
+        // so that is the reason; a non-metallib Apple build and a
+        // target with no executor at all share `NoExecutor`.
+        #[cfg(target_vendor = "apple")]
+        let (slots, available) = (
+            composite::metal::SLOTS,
+            (self.shader_delivery == shaders::ShaderDelivery::Metallib)
+                .then_some(())
+                .ok_or(composition::Materialization::NoExecutor),
+        );
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        let (slots, available) = (
+            composite::vulkan::SLOTS,
+            self.tile_mirror
+                .as_ref()
+                .map(|_| ())
+                .ok_or(composition::Materialization::DeviceAccess),
+        );
+        #[cfg(not(unix))]
+        let (slots, available) = (0, Err(composition::Materialization::NoExecutor));
+
+        available?;
+        if self.scratch_format != TARGET_FORMAT {
+            return Err(composition::Materialization::Format);
+        }
+        Ok(composite::plan::Limits {
+            slots,
+            format: TARGET_FORMAT,
+            ordering: composite::plan::Ordering::PerPixel,
+        })
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "one surface's frame application and buffer growth"
@@ -6937,6 +7151,9 @@ impl GpuRenderer {
         stats.projective_realized += u32::try_from(realize.len()).unwrap_or(u32::MAX);
         stats.projective_composed += u32::try_from(composed.len()).unwrap_or(u32::MAX);
         self.allocate_projective(id, realize, composed)?;
+        // What the backend's tile executor can hold, read before the
+        // surface is borrowed for the frame's attachment planning.
+        let tile_limits = self.tile_limits();
         // Scratch textures for the frame's deepest isolation level.
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
@@ -6995,21 +7212,19 @@ impl GpuRenderer {
                 surf.drop_resolve_binds_on(&self.device, &view, "backdrop resolve");
             }
         }
-        #[cfg(target_vendor = "apple")]
-        {
-            let tile_slots = if self.shader_delivery == shaders::ShaderDelivery::Metallib
-                && self.scratch_format == TARGET_FORMAT
-            {
-                2
-            } else {
-                0
-            };
-            surf.composition_cache.update(
-                &mut surf.composition,
-                &surf.frame,
-                self.scratch_format,
-                tile_slots,
-            );
+        // Planning runs only for a backend that can execute an epoch;
+        // with no executor there is no plan, and the reason it is
+        // missing becomes every image's attribution (#2549, #2191).
+        match tile_limits {
+            Ok(limits) => {
+                surf.composition_cache.update(
+                    &mut surf.composition,
+                    &surf.frame,
+                    self.scratch_format,
+                    limits,
+                );
+            }
+            Err(reason) => surf.composition.set_unplanned(reason),
         }
         let max_scratch = surf
             .frame
@@ -7026,11 +7241,19 @@ impl GpuRenderer {
             .unwrap_or(0);
         // The largest region each isolation depth must hold this frame.
         let mut region_max = vec![(0u32, 0u32); max_scratch];
-        let passes = surf.frame.passes.iter();
-        #[cfg(target_vendor = "apple")]
-        let passes = passes
+        // A pass whose image an epoch keeps on chip needs no backed
+        // scratch; every pass of an unplanned frame does.
+        let passes = surf
+            .frame
+            .passes
+            .iter()
             .enumerate()
-            .filter_map(|(index, pass)| surf.composition.materialized_pass(index).then_some(pass));
+            .filter_map(|(index, pass)| {
+                surf.composition
+                    .materialization(index)
+                    .is_some()
+                    .then_some(pass)
+            });
         for pass in passes {
             if let Target::Scratch(i) = pass.target {
                 region_max[i].0 = region_max[i].0.max(pass.region[2]);
@@ -7347,11 +7570,14 @@ impl GpuRenderer {
         // Backdrop textures for blend composites, sized like the scratch
         // pool to the largest region copied this frame.
         let mut backdrop_max = [(0u32, 0u32); 2];
-        let passes = surf.frame.passes.iter();
-        #[cfg(target_vendor = "apple")]
-        let passes = passes.enumerate().filter_map(|(index, pass)| {
-            (!surf.composition.contains_native_pass(index)).then_some(pass)
-        });
+        let passes = surf
+            .frame
+            .passes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, pass)| {
+                (!surf.composition.contains_native_pass(index)).then_some(pass)
+            });
         for pass in passes {
             if let Some(r) = pass.backdrop_copy {
                 let slot = match pass.target {
@@ -7437,6 +7663,14 @@ impl GpuRenderer {
         }
         surf.inst_base = inst_base;
         surf.globals_base = globals_base;
+        // Appended `KIND_POLYGON` slots store the painter index locally;
+        // shift it into the shared frame buffer's coordinates.
+        for range in surf.frame.passes.iter().flat_map(|p| p.tier_ranges.iter()) {
+            for index in range.clone() {
+                let inst = &mut surf.frame.instances[usize::try_from(index).unwrap_or(usize::MAX)];
+                inst.grad[0] = f32::from_bits(inst.grad[0].to_bits() + inst_base);
+            }
+        }
         {
             let atlas = &self.atlas;
             if atlas.generation() != self.bound_atlas {
@@ -7604,7 +7838,6 @@ impl GpuRenderer {
                         resolve::params(pass),
                     )
                 });
-                #[cfg(target_vendor = "apple")]
                 let globals = globals.enumerate().map(|(index, (mut g, params))| {
                     if let Some(origin) = surf.composition.attachment_origin(index) {
                         g.attachment_origin = origin.map(|value| value as f32);
@@ -7706,6 +7939,9 @@ impl GpuRenderer {
     fn encode_surface(
         &mut self,
         id: SurfaceId,
+        // The frame this surface is encoded for: the composition
+        // attribution's key (#2547), recorded for a planned frame.
+        frame: cherenkov::FrameId,
         timing: filtrate::EffectFrameTiming,
         stats: &mut FrameStats,
     ) -> Result<(), RenderError> {
@@ -7838,7 +8074,88 @@ impl GpuRenderer {
         // `write_uploads` lays them out in pass and level order after the
         // pass slots.
         let mut reduce_slot = 0u32;
+        // Composition attribution (#2547) collects only with a sink
+        // installed; the flag is the whole cost of the disabled path.
+        #[cfg(unix)]
+        let attribute = self.config.composition_diag.is_some();
+        // Only an executor creates tile pipelines, so where there is
+        // none this stays the empty list the report carries (#2549).
+        #[cfg(unix)]
+        let mut tile_pipelines = Vec::new();
+        #[cfg(not(unix))]
+        let tile_pipelines = Vec::new();
+        // The Vulkan executor's frame: its descriptor pools are taken
+        // for the duration of this surface's own submission, and the
+        // resource identities its sets are written against are frozen
+        // here. A surface with no epoch to record opens none, so an
+        // unplanned frame costs nothing (#2191).
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        let tile_frame = match self
+            .tile_mirror
+            .as_mut()
+            .filter(|_| surf.composition.epochs().next().is_some())
+        {
+            Some(mirror) => {
+                mirror
+                    .begin_frame(composite::vulkan::mirror::Stamp {
+                        bind_gen: surf.bind_gen,
+                        images_gen: self.images_gen,
+                        mask_gen,
+                    })
+                    .map_err(|e| RenderError::Render(format!("tile composition: {e}")))?;
+                true
+            }
+            None => false,
+        };
         while i < surf.frame.passes.len() {
+            #[cfg(all(unix, not(target_vendor = "apple")))]
+            if let Some(epoch) = surf.composition.epoch_at(i) {
+                let end = epoch.passes.end;
+                let pass_index = self.frame_pass_count;
+                self.frame_pass_count += 1;
+                if self.timestamps {
+                    self.pass_meta.push(PassMeta {
+                        name: "tile composition".into(),
+                        width: epoch.region[2],
+                        height: epoch.region[3],
+                        format: "rgba16float",
+                    });
+                }
+                composite::vulkan::exec::encode(
+                    self.tile_mirror.as_mut().expect("the epoch was planned"),
+                    &composite::vulkan::exec::Resources {
+                        device: &self.device,
+                        globals: &self.globals,
+                        instances: &self.instances,
+                        stops: &self.stops,
+                        dummy: &self.dummy_view,
+                        dummy_texture: &self.dummy,
+                        images: &self.images,
+                        bitmaps: &self.bitmaps,
+                        atlas: &self.atlas,
+                    },
+                    surf,
+                    self.images_gen,
+                    i,
+                    composite::vulkan::exec::Recording {
+                        encoder: &mut encoder,
+                        buffers: &mut buffers,
+                        timestamps: self.query_set.as_ref().map(|query_set| {
+                            (
+                                query_set,
+                                self.query_base + 2 * pass_index,
+                                self.query_base + 2 * pass_index + 1,
+                            )
+                        }),
+                        stats,
+                        pipelines: attribute.then_some(&mut tile_pipelines),
+                    },
+                )
+                .map_err(|e| RenderError::Render(format!("tile composition: {e}")))?;
+                stats.passes += 1;
+                i = end;
+                continue;
+            }
             #[cfg(target_vendor = "apple")]
             if let Some(epoch) = surf.composition.epoch_at(i) {
                 let end = epoch.passes.end;
@@ -7866,15 +8183,20 @@ impl GpuRenderer {
                     },
                     surf,
                     i,
-                    &mut encoder,
-                    self.query_set
-                        .as_ref()
-                        .map(|query_set| wgpu::RenderPassTimestampWrites {
-                            query_set,
-                            beginning_of_pass_write_index: Some(self.query_base + 2 * pass_index),
-                            end_of_pass_write_index: Some(self.query_base + 2 * pass_index + 1),
+                    composite::metal::Recording {
+                        encoder: &mut encoder,
+                        timestamps: self.query_set.as_ref().map(|query_set| {
+                            wgpu::RenderPassTimestampWrites {
+                                query_set,
+                                beginning_of_pass_write_index: Some(
+                                    self.query_base + 2 * pass_index,
+                                ),
+                                end_of_pass_write_index: Some(self.query_base + 2 * pass_index + 1),
+                            }
                         }),
-                    stats,
+                        stats,
+                        pipelines: attribute.then_some(&mut tile_pipelines),
+                    },
                 );
                 stats.passes += 1;
                 i = end;
@@ -8272,6 +8594,15 @@ impl GpuRenderer {
                         (inst_base + range.instances.start)..(inst_base + range.instances.end),
                     );
                     stats.draws += 1;
+                }
+                for (tier, range) in pass.tier_ranges.iter().enumerate() {
+                    if !range.is_empty() {
+                        render_pass.draw(
+                            0..(16u32 << tier),
+                            (inst_base + range.start)..(inst_base + range.end),
+                        );
+                        stats.draws += 1;
+                    }
                 }
                 render_pass.set_pipeline(coverage_pipeline(
                     &mut self.coverage_pipelines,
@@ -8951,8 +9282,67 @@ impl GpuRenderer {
             stats.passes += 1;
             i += 1;
         }
+        // Only a planned frame has logical images to attribute; a
+        // target with no tile executor records nothing (#2549).
+        if let Some(sink) = self
+            .config
+            .composition_diag
+            .as_ref()
+            .filter(|_| surf.composition.is_planned())
+        {
+            // The attachments the composition plan governs: the surface's
+            // parts and the isolation scratches a materialized image
+            // needs, against the epochs' memoryless tile slots.
+            let part_bytes =
+                u64::from(surf.size.0) * u64::from(surf.size.1) * texel_bytes(surf.target.format());
+            let parts = u64::try_from(surf.parts.len()).expect("part count fits u64");
+            let backed = part_bytes * (1 + parts)
+                + surf.scratch.values().map(ScratchTarget::bytes).sum::<u64>();
+            // Metal's memoryless attachments have no commitment to
+            // query, so Apple reports what they reserve and nothing
+            // else; Vulkan asks the driver what it actually spent.
+            #[cfg(target_vendor = "apple")]
+            let (peak_reserved_bytes, peak_committed_bytes) =
+                (surf.tile_targets.memoryless_bytes(), None);
+            #[cfg(all(unix, not(target_vendor = "apple")))]
+            let (peak_reserved_bytes, peak_committed_bytes) = self
+                .tile_mirror
+                .as_ref()
+                .filter(|_| tile_frame)
+                .map_or((0, None), |mirror| {
+                    (mirror.memoryless_bytes(), Some(mirror.committed_bytes()))
+                });
+            #[cfg(not(unix))]
+            let (peak_reserved_bytes, peak_committed_bytes) = (0, None);
+            sink.record(composition::frame_report(
+                frame.get(),
+                id.raw(),
+                &surf.frame,
+                &surf.composition,
+                composition::AttachmentBytes {
+                    peak_reserved_bytes,
+                    peak_committed_bytes,
+                    peak_backed_bytes: backed,
+                },
+                tile_pipelines,
+            ));
+        }
         #[cfg(target_vendor = "apple")]
         surf.tile_targets.finish_frame();
+        // The epoch's attachments and descriptor pools are released
+        // against this surface's own submission: `finish_frame` retires
+        // the sizes the frame did not bind, and the flag `end_frame`
+        // hands back lets a later frame recycle the pools once the
+        // queue reports this submission complete (#2191).
+        #[cfg(all(unix, not(target_vendor = "apple")))]
+        let tile_idle = self
+            .tile_mirror
+            .as_mut()
+            .filter(|_| tile_frame)
+            .and_then(|mirror| {
+                mirror.finish_frame();
+                mirror.end_frame()
+            });
         // Producer sync: each external frame's `wait` event becomes a
         // raw Metal command buffer committed ahead of the frame's, so the
         // GPU blocks in-queue — no CPU wait and no copy. Commit order on
@@ -9041,6 +9431,17 @@ impl GpuRenderer {
             buffers.push(encoder.finish());
             let submission = self.queue.submit(buffers);
             track_submission(&self.queue, &self.tracker);
+            // The epoch's descriptor sets were referenced by the
+            // command buffers just submitted and by nothing else, so
+            // the pools are free to reset the moment the queue reports
+            // it done. Nothing waits on this: a later frame takes a
+            // fresh set of pools until one is released (#2191).
+            #[cfg(all(unix, not(target_vendor = "apple")))]
+            if let Some(idle) = tile_idle {
+                self.queue.on_submitted_work_done(move || {
+                    idle.store(true, std::sync::atomic::Ordering::Release);
+                });
+            }
             #[cfg(all(unix, not(target_vendor = "apple")))]
             if let Some(native) = self.native.as_mut()
                 && !native.staged.is_empty()

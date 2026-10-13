@@ -679,12 +679,12 @@ struct OpaqueOut {
     @location(0) @interpolate(flat) color: vec3<f32>,
 }
 
-// All seven primitive kinds fit three bits. MAX_PASS_INSTANCES = 1 << 21
+// All eight primitive kinds fit three bits. MAX_PASS_INSTANCES = 1 << 21
 // leaves room to pack the instance index and original kind in one u32.
 const PARTIAL_KIND_BITS: u32 = 3u;
 const PARTIAL_KIND_MASK: u32 = (1u << PARTIAL_KIND_BITS) - 1u;
 const_assert (((KIND_FILL | KIND_STROKE_OFFSET | KIND_STROKE_DIST | KIND_SHADOW
-    | KIND_GLYPH | KIND_SPAN | KIND_REGION) & ~PARTIAL_KIND_MASK) == 0u);
+    | KIND_GLYPH | KIND_SPAN | KIND_REGION | KIND_POLYGON) & ~PARTIAL_KIND_MASK) == 0u);
 
 // Coverage replay keeps five rasterizer scalars: two local/atlas coordinates,
 // one packed instance/kind, and two conservative ellipse bounds. Packing
@@ -701,10 +701,25 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     var inst = instances[ii];
     var ellipse = false;
     var ellipse_half = vec2<f32>(0.0);
+    var inst_index = ii;
+    var tier = 0u;
+    var promoted = false;
     if inst.meta_.x == KIND_REGION {
         let x = inst.bounds.x;
         inst.bounds.x = x + f32(inst.meta_.z & 0xffffu);
         inst.bounds.z = x + f32(inst.meta_.z >> 16u);
+    }
+    if inst.meta_.x == KIND_POLYGON {
+        // An appended interior tier: grad.x bitcast holds the painter
+        // index it stands for, meta_.w its polygon side count.
+        inst_index = bitcast<u32>(inst.grad.x);
+        tier = inst.meta_.w & 3u;
+        inst.meta_.x = KIND_FILL;
+    } else if inst.meta_.x == KIND_FILL {
+        // meta_.w's low bits mark a fill whose interior an appended
+        // polygon covers: the polygon contains the octagon's every
+        // vertex, so this interior emits nothing.
+        promoted = (inst.meta_.w & 3u) != 0u;
     }
     if inst.meta_.x == KIND_FILL {
         let m = inst.affine[0];
@@ -723,16 +738,26 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     let corner = array<u32, 4>(0u, 1u, 2u, 5u)[min(vi, 3u)];
     var out = instance_vertex(corner, ii, inst);
     if ellipse {
-        let d = sqrt(0.5);
-        let polygon = array<vec2<f32>, 8>(
-            vec2<f32>(1.0, 0.0), vec2<f32>(d, d),
-            vec2<f32>(0.0, 1.0), vec2<f32>(-d, d),
-            vec2<f32>(-1.0, 0.0), vec2<f32>(-d, -d),
-            vec2<f32>(0.0, -1.0), vec2<f32>(d, -d),
-        );
-        let index = array<u32, 8>(0u, 1u, 7u, 2u, 6u, 3u, 5u, 4u)[vi];
-        let p = polygon[index] * max(ellipse_half, vec2<f32>(0.0));
-        let ndc = (apply(inst.affine, p) - globals.origin) / globals.size * 2.0 - 1.0;
+        var ndc: vec2<f32>;
+        if tier == 0u {
+            let d = sqrt(0.5);
+            let polygon = array<vec2<f32>, 8>(
+                vec2<f32>(1.0, 0.0), vec2<f32>(d, d),
+                vec2<f32>(0.0, 1.0), vec2<f32>(-d, d),
+                vec2<f32>(-1.0, 0.0), vec2<f32>(-d, -d),
+                vec2<f32>(0.0, -1.0), vec2<f32>(d, -d),
+            );
+            let index = array<u32, 8>(0u, 1u, 7u, 2u, 6u, 3u, 5u, 4u)[vi];
+            let p = polygon[index] * max(ellipse_half, vec2<f32>(0.0));
+            ndc = (apply(inst.affine, p) - globals.origin) / globals.size * 2.0 - 1.0;
+        } else {
+            // Zigzag order covers a regular n-gon as a strip.
+            let n = 8u << tier;
+            let k = select((n - vi / 2u) % n, (vi + 1u) / 2u, (vi & 1u) == 1u);
+            let a = f32(k) * 6.283185307179586 / f32(n);
+            let p = vec2<f32>(cos(a), sin(a)) * max(ellipse_half, vec2<f32>(0.0));
+            ndc = (apply(inst.affine, p) - globals.origin) / globals.size * 2.0 - 1.0;
+        }
         out.position = vec4<f32>(ndc.x, -ndc.y, 0.0, 1.0);
     }
     // Each index selects a distinct positive f32 depth starting at 0.125,
@@ -742,10 +767,11 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     // or neighbouring indices collapse and the replay's depth test fails.
     // Depths stay below 0.5 for 2^21 instances (below 1.0 for ~3.1M);
     // render/mod.rs's MAX_PASS_INSTANCES enforces the bound.
-    out.position.z = bitcast<f32>(0x3e000000u + ii * 8u);
+    out.position.z = bitcast<f32>(0x3e000000u + inst_index * 8u + select(0u, 4u, tier != 0u));
     if inst.color.a * inst.params.y != 1.0
         || (inst.meta_.x != KIND_SPAN && inst.meta_.x != KIND_FILL && inst.meta_.x != KIND_REGION)
-        || any(inst.bounds.xy >= inst.bounds.zw) {
+        || any(inst.bounds.xy >= inst.bounds.zw)
+        || promoted {
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
     return OpaqueOut(out.position, out.color.rgb);
@@ -753,7 +779,7 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
 
 @vertex
 fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PartialOut {
-    var out = quad_vertex(array<u32, 4>(0u, 1u, 2u, 5u)[vi], ii);
+    var out = quad_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[vi], ii);
     out.position.z = bitcast<f32>(0x3e000000u + ii * 8u);
     let inst = instances[ii];
     let s = inst.shape;

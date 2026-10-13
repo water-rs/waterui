@@ -87,7 +87,10 @@ belong to water-rs/waterui.
   metallib or SPIR-V) and loaded as passthrough shaders (#57). naga still links
   through wgpu, and that is accepted.
 - **The hardware floor** is on-chip programmable blending plus f16 arithmetic
-  on every supported device (#1). There is no low-end tier.
+  on every supported device (#1); there is no low-end tier. Compute is a
+  device capability, never part of the floor: `SharedDevice::has_compute`
+  reports it, and strategies may use it when present — water-rs/waterui#2536's
+  coverage route is designed to select on it.
 - **Upgrading wgpu** moves the whole stack at once, because an application can
   link only one wgpu (#63).
 

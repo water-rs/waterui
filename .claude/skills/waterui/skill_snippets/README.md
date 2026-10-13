@@ -51,6 +51,7 @@ One module per skill file, blocks in file order:
 | `src/ref_testing.rs` | `references/testing.md` |
 | `src/ref_project.rs` | `references/project.md` |
 | `src/ref_troubleshooting.rs` | `references/troubleshooting.md` |
+| `src/ref_ts.rs` | `SKILL.md` § "TypeScript views" (its own module: the fences need `waterui`'s `ts` feature) |
 
 Every transcription is preceded by a banner comment naming its source precisely:
 
@@ -124,6 +125,11 @@ Some snippets resolve real paths, so the crate carries the files they name:
 - `src/guide.md` — for `include_markdown!("guide.md")`.
 - `src/starfield.wgsl` — copied from `examples/starfield`, for `shader!("starfield.wgsl")`.
 - `src/crt.wgsl` — a real shader effect, for `ShaderEffect::new(include_str!("crt.wgsl"))`.
+- `src/promo.tsx` — for `tsx!("./promo.tsx", …)`. The macro resolves the literal
+  against the Rust file that names it and stats the file at expansion, so a `tsx!`
+  snippet can only be transcribed beside a real module. This one is a real module,
+  not a stub: it is the same shape as `docs/jsx.md`'s example, and editing the
+  snippet's props means editing both files.
 
 ## Dependencies
 

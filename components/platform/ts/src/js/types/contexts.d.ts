@@ -4,9 +4,23 @@ import type { Accessor } from "./signals.js";
 import type { Element } from "./jsx-runtime.js";
 import type { Handle } from "./host.js";
 
+export interface Color {
+  /** Linear-light red, green and blue; outside 0–1 for wide-gamut colors. */
+  red: number;
+  green: number;
+  blue: number;
+  /** Extended-range headroom: above 1 the color is HDR. */
+  headroom: number;
+  opacity: number;
+}
+
 export interface Theme {
   colorScheme: "light" | "dark";
-  /** Theme token colors keyed by slot name; see the framework theme docs. */
+  /**
+   * The theme's color tokens, keyed by slot name (`foreground`,
+   * `background`, `surface`, `accent`, …). A slot the environment does not
+   * install is absent rather than defaulted.
+   */
   [token: string]: unknown;
 }
 
@@ -15,13 +29,6 @@ export interface Locale {
   /** BCP-47 language tag, e.g. `"en"`, `"zh-Hans"`. */
   languageCode: string;
   textDirection: "ltr" | "rtl";
-}
-
-export interface SafeArea {
-  top: number;
-  bottom: number;
-  leading: number;
-  trailing: number;
 }
 
 /**
@@ -33,9 +40,6 @@ export declare function useTheme(): Accessor<Theme>;
 
 /** The ambient locale. Read-only like `useTheme`; host-owned. */
 export declare function useLocale(): Accessor<Locale>;
-
-/** The ambient safe-area insets. Read-only like `useTheme`; host-owned. */
-export declare function useSafeArea(): Accessor<SafeArea>;
 
 export interface Mounted {
   handle: Handle;

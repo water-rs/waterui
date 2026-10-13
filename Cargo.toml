@@ -20,8 +20,6 @@ members = [
     "src",
     "cli",
     "testing",
-    "ffi",
-    "ffi/generator",
     "macros",
     "examples/*",
     ".claude/skills/waterui/skill_snippets",
@@ -83,8 +81,11 @@ categories = ["gui"]
 # the same facts from the checked-out manifest directly.
 [package.metadata.waterui]
 # The lowest CLI version that may consume this framework revision.
-# 0.4.4 understands `apple-backend-path` and `hydrolysis-path`.
-minimum-cli-version = "0.4.4"
+# 0.4.5 is the first CLI without the Kotlin Android runtime: it reads no
+# Kotlin runtime pin out of this table, and it scaffolds an Apple-only
+# companion crate. An older CLI would look for metadata keys and a crate
+# this revision no longer carries.
+minimum-cli-version = "0.4.5"
 # Native Apple deployment targets, carried into every project's Cargo config.
 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
 # The Android API floor the native runtime supports; the backend's Gradle
@@ -98,8 +99,7 @@ android-gradle-version = "9.7.1"
 # The objc2 Rust backend (`waterui-apple`) lives in-tree at
 # `backends/apple`; it rides the framework's own commit — consumed as a path
 # package of the selected source — and the CLI preserves that location when
-# scaffolding a project. This revision has no waterui-ffi or generated
-# C-header dependency.
+# scaffolding a project.
 apple-backend-path = "backends/apple"
 # The self-drawn Hydrolysis backend is an in-tree workspace member too
 # (#1635): `hydrolysis-path` names its crate directory so a scaffolded
@@ -108,8 +108,6 @@ apple-backend-path = "backends/apple"
 # framework revision, never a crates.io release or the independent
 # `water-rs/hydrolysis` repository.
 hydrolysis-path = "backends/hydrolysis"
-android-backend-url = "https://github.com/water-rs/android-backend.git"
-android-backend-revision = "d3cad6430809d6a10341ee35d10e902f17b106d6"
 # The Hydrolysis Android host the `water` CLI composites into a generated
 # Gradle project for `--platform android --backend hydrolysis`. The host
 # lives in this repository now (#1428): the framework revision the manifest
@@ -239,7 +237,6 @@ waterui-canvas = "0.2.0"
 waterui-shape = { version = "0.5.1", path = "components/foundation/shape", default-features = false }
 waterui-svg = "0.4.0"
 waterui-math = "0.2.0"
-waterui-ffi = { version = "0.5.2", path = "ffi" }
 waterui-layout = { version = "0.5.1", path = "components/foundation/layout" }
 waterui-navigation = { version = "0.5.1", path = "components/foundation/navigation" }
 waterui-webview = { version = "0.5.1", path = "components/platform/webview" }
@@ -462,10 +459,13 @@ remote = ["waterui-internal/remote", "waterui-dylib?/remote"]
 # link it. The backend without one selects this.
 video-gpu = ["waterui-internal/video-gpu", "waterui-dylib?/video-gpu"]
 webview = ["waterui-internal/webview", "waterui-dylib?/webview"]
-# The TypeScript props contract schema (`waterui::ts::schema`): the
-# `TsType`/`TsProps` derives whose encoded contract the `water` CLI reads back
-# out of a debug artifact.
+# TypeScript views: the embedded JavaScript engine, the signal bridge, the
+# `tsx!` mount, and the props contract schema (`waterui::ts::schema`) whose
+# encoded contract the `water` CLI reads back out of a debug artifact.
 ts = ["waterui-internal/ts", "waterui-dylib?/ts"]
+# The over-the-air update client for TypeScript view bundles (`waterui::ts::Ota`).
+# Implies `ts`; off by default and outside `all` for the same reason `ts` is.
+ts-ota = ["ts", "waterui-internal/ts-ota", "waterui-dylib?/ts-ota"]
 navigation-restoration = [
     "waterui-internal/navigation-restoration",
     "waterui-dylib?/navigation-restoration",
@@ -618,7 +618,6 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "00fe
 # registry releases carry the change.
 # waterkit-* and waterui-image are pinned by the migration block at the
 # bottom of this table.
-xcb = { git = "https://github.com/rust-x-bindings/rust-xcb", rev = "ae3b2cd080e78173223038ccbebdc644eaf4a9ad" }
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
 # storage and takes its address as the opaque class pointer.
@@ -681,8 +680,8 @@ wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1
 waterui-barcode = { git = "https://github.com/water-rs/barcode", rev = "45db548f2a39660cabd67870a883345de79ee8e8" }
 waterui-canvas = { git = "https://github.com/water-rs/canvas", rev = "639957374ed6eac16ac410249b6ba7d9f06c3978" }
 waterui-chart = { git = "https://github.com/water-rs/chart", rev = "1062c5058f488b7edd302ee065ae3a2776847227" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "1a7c3e8afe31f8e13039de2aa116c3e37bcdccb0" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "2772f7fe261e3a1c8b9959bb1ca76292bec3f1ea" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", rev = "5c0882a5d757ec8e8be79c169d3bad5e874d0046" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", rev = "5485c6710b3a6f929bb8e294f801f974200eca93" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "bf663af85211d1f0bcce511b94ac435efad046a6" }
 waterui-image = { git = "https://github.com/water-rs/image", rev = "a36e16c555bd78ade9e28fad947af66a52f8f071" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
@@ -698,7 +697,6 @@ waterkit-location = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2
 # as the rest of the family. Drop the pin once a release exists.
 waterkit-menu = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
 waterkit-permission = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
-waterkit-screen = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
 waterkit-audio = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
 waterkit-codec = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }
 waterkit-core = { git = "https://github.com/water-rs/waterkit", rev = "c3ea2a5ad27c6e4eae2168d7e595389b570b6b33" }

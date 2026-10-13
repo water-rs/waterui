@@ -152,8 +152,8 @@ struct WaterUIMetadata {
     /// Permissions this crate cannot work without, keyed by logical permission.
     #[serde(default)]
     permissions: BTreeMap<PermissionKey, PermissionRequirement>,
-    /// Kotlin sources and Maven dependencies to place on the Android
-    /// application classpath, from `[package.metadata.waterui.android]`.
+    /// Kotlin sources and Maven dependencies to place on the Android preview
+    /// module classpath, from `[package.metadata.waterui.android]`.
     #[serde(default)]
     android: AndroidMetadata,
     /// Entitlements and `Info.plist` keys for the packaged Apple app, from
@@ -495,7 +495,7 @@ fn parse_waterui_metadata(
 /// `[package.metadata.waterui.assets.font]` declarations via `cargo metadata`.
 ///
 /// `build_manifest` is the `Cargo.toml` of the crate this build compiles,
-/// i.e. the generated backend or FFI crate. That crate depends on the app, so
+/// i.e. the generated backend or Apple companion. That crate depends on the app, so
 /// the graph carries both the app's authored dependencies and the backend's
 /// own (the theme crate and friends); scanning the app manifest instead
 /// would miss the backend's declarations entirely.
@@ -1469,9 +1469,9 @@ pub async fn seed_font_cache(project: &Project) -> Result<Vec<FetchOutcome>, See
 
 /// [`seed_font_cache`] restricted to the crates a `backend` build scans.
 ///
-/// `water fetch --backend android` is the caller: it seeds the cache for the
-/// Android build alone — the manifest set that build's font resolution reads
-/// — so a backend crate no Android build can ever compile is never
+/// `water fetch --backend hydrolysis` is the caller: it seeds the cache for
+/// the Hydrolysis build alone — the manifest set that build's font resolution
+/// reads — so a backend crate that build can never compile is never
 /// scaffolded or scanned here.
 ///
 /// # Errors
@@ -1514,10 +1514,9 @@ async fn seed_font_cache_scoped(
 /// The project crate is always scanned; beyond it, the manifests that matter
 /// are the generated crates': the theme crate's
 /// `[package.metadata.waterui.assets.font]` entries are reachable only
-/// through the backend manifest that depends on it. Apple and Android builds
-/// scan the FFI companion, which the build itself scaffolds — the Apple
-/// companion render and the Android `prepare_for_build` prologue — so if it
-/// is still absent it is scaffolded here. Each of
+/// through the backend manifest that depends on it. Apple builds scan the
+/// Apple companion, which the build itself renders — so if it is still
+/// absent it is scaffolded here. Each of
 /// the GTK4, Hydrolysis and `WinUI` crates is re-scaffolded with the
 /// current templates when missing or stale, exactly as the build and preview
 /// paths regenerate it. Scaffolding writes template files — nothing
@@ -1536,21 +1535,17 @@ async fn ensure_font_scan_manifests(
 ) -> eyre::Result<Vec<PathBuf>> {
     let mut manifests = vec![project.root().join("Cargo.toml")];
 
-    // Apple and Android builds scan the FFI companion; no other backend's
-    // build does, and a scoped fetch includes it only for those two.
-    let ffi_scanned = scope.is_none_or(|backend| {
-        matches!(
-            backend,
-            crate::platform::TargetBackend::Apple | crate::platform::TargetBackend::Android
-        )
-    });
-    if ffi_scanned {
-        let manifest = project.ffi_crate_path().join("Cargo.toml");
+    // Apple builds scan the Apple companion; no other backend's build does,
+    // and a scoped fetch includes it only for that one.
+    let apple_scanned =
+        scope.is_none_or(|backend| backend == crate::platform::TargetBackend::Apple);
+    if apple_scanned {
+        let manifest = project.apple_crate_path().join("Cargo.toml");
         // The companion on disk is re-rendered for the scan — the manifest
         // a build produces, so the font declarations the scan sees are the
         // ones the build's resolve carries.
-        project.scaffold_ffi_companion().await.map_err(|error| {
-            eyre::eyre!("could not scaffold the Apple/Android FFI companion crate: {error}")
+        project.scaffold_apple_companion().await.map_err(|error| {
+            eyre::eyre!("could not scaffold the Apple companion crate: {error}")
         })?;
         manifests.push(manifest);
     }
@@ -2025,7 +2020,10 @@ fn sha256_hex(s: &str) -> String {
     hex::encode(result)
 }
 
-pub use unified::{build_manifest as plan_library_resources, write_library_resources};
+pub use unified::{
+    build_manifest as plan_library_resources, write_android_library_resources,
+    write_library_resources,
+};
 
 /// The directory name the staged asset bundle carries inside an Android
 /// `src/main/assets/` root.
@@ -2048,21 +2046,25 @@ pub async fn stage_project_assets_for_apple(
 
 /// Stage project assets for Android packaging (res + assets/raw).
 /// `symbols` is the target build's app library — see
-/// [`stage_project_assets_for_apple`].
+/// [`stage_project_assets_for_apple`]. `fonts` are the declared faces that
+/// ship inside the asset bundle, where the Hydrolysis runtime reads an
+/// application's fonts from — see [`unified::stage_for_android`].
 pub async fn stage_project_assets_for_android(
     project: &Project,
     backend_path: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
-    theme_parent: unified::AndroidThemeParent,
+    fonts: &[ResolvedFont],
 ) -> eyre::Result<BundleManifest> {
-    unified::stage_for_android(project, backend_path, symbols, dev_server, theme_parent).await
+    unified::stage_for_android(project, backend_path, symbols, dev_server, fonts).await
 }
 
-/// Stage project assets for an embedded-mode Android library module
+/// Stage project assets for the Hydrolysis Android preview library module
 /// (`waterui_assets` + sync stamp only — no app-level `res` files).
 /// `symbols` is the target build's app library — see
 /// [`stage_project_assets_for_apple`].
+///
+/// `fonts` are the declared faces that ship inside the bundle.
 ///
 /// Returns the manifest and the staged `waterui_assets` directory.
 pub async fn stage_project_assets_for_android_library(
@@ -2070,8 +2072,9 @@ pub async fn stage_project_assets_for_android_library(
     module_dir: &Path,
     symbols: &crate::artifact_symbols::ArtifactSymbols,
     dev_server: bool,
+    fonts: &[ResolvedFont],
 ) -> eyre::Result<(BundleManifest, PathBuf)> {
-    unified::stage_for_android_library(project, module_dir, symbols, dev_server).await
+    unified::stage_for_android_library(project, module_dir, symbols, dev_server, fonts).await
 }
 
 /// Render the project's macOS `.icns` app icon for hand-assembled bundles.
@@ -2110,7 +2113,7 @@ pub fn scan_project_font_assets(manifest: &BundleManifest) -> eyre::Result<Vec<R
     unified::scan_project_fonts(manifest)
 }
 
-pub use unified::{AndroidThemeParent, LaunchAssets};
+pub use unified::LaunchAssets;
 
 /// Resolve the project's launch screen and load its artwork.
 pub fn project_launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
@@ -2232,13 +2235,13 @@ pub async fn write_font_manifest(
 /// project.
 ///
 /// `build_manifest` is the `Cargo.toml` of the crate the build actually
-/// compiles — the generated FFI crate for Apple and Android, the generated
+/// compiles — the generated Apple companion or Hydrolysis launcher, the generated
 /// backend crate for the self-drawn backends. That crate depends on the app,
 /// so its graph carries both the app's authored dependencies and the backend's
 /// own; resolving any other manifest misses declarations only the backend's
 /// dependencies make.
 ///
-/// Optional `WaterUI` capabilities are cargo features on the FFI crate, and the
+/// Optional `WaterUI` capabilities are cargo features on the Apple companion, and the
 /// native backends must compile the matching component only when the app turned
 /// that capability on. The resolved graph is the single source of truth for
 /// that, so backends never guess from the manifest text.
@@ -2271,11 +2274,11 @@ pub async fn package_feature_enabled(
 /// An optional `WaterUI` capability, and what in the app's resolved graph says
 /// the app has it.
 ///
-/// The name is also the feature the FFI crate exports the capability's C
-/// surface under, so one entry drives both the FFI build and the native
+/// The name is also the feature the Apple companion exports the capability's C
+/// surface under, so one entry drives both the companion build and the native
 /// backend's conditional compilation.
 struct Capability {
-    /// The capability's name, shared with `waterui-ffi`'s feature of the same
+    /// The capability's name, shared with `waterui-apple`'s feature of the same
     /// name.
     name: &'static str,
     /// The crate that actually provides the capability.
@@ -2293,15 +2296,15 @@ struct Capability {
 /// stack in through a side door — every SVG icon pack renders through
 /// `waterui-svg`, which enables `waterui-graphics/gpu` on its own — and such an
 /// app emits `GpuSurface` views at runtime. Keying on the facade's `gpu` there
-/// pruned the FFI exports and the native backend while the authoring layer kept
+/// pruned the Apple companion exports and the native backend while the authoring layer kept
 /// producing GPU views, which is a guaranteed panic on first render. Reading
 /// the resolved graph's `waterui-graphics/gpu` instead makes the exported
 /// surface follow what the app can actually express.
 ///
-/// `gpu` is default-on for the facade, but the generated FFI crate must set
-/// `default-features = false` (the `c-api` and `android-jni` ABIs are mutually
-/// exclusive), which drops it. Forwarding it here is what keeps the GPU C
-/// surface present for apps whose graphs carry the GPU stack.
+/// `gpu` is default-on for the facade, but the generated Apple companion
+/// disables default features and forwards the app's resolved features
+/// explicitly. Forwarding it here is what keeps the GPU C surface present for
+/// apps whose graphs carry the GPU stack.
 ///
 /// `map` has no feature at all: `waterui-map` is a component crate an app
 /// depends on directly, exactly like an icon pack or a browser engine, so
@@ -2317,7 +2320,7 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
         package: "waterui-map",
         feature: None,
     },
-    // The `Video`/`Media` playback FFI surface and the `waterkit_audio`
+    // The `Video`/`Media` playback surface and the `waterkit_audio`
     // keep-alive behind it. `waterui-video` is an optional dependency of the
     // facade (`media`/`video` features), so linking it *is* the opt-in — an app
     // that never plays media stops rooting the codec/streaming graph through
@@ -2327,7 +2330,7 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
         package: "waterui-video",
         feature: None,
     },
-    // The `WebView` FFI surface (bridge script, JS replies, cookie jar).
+    // The `WebView` surface (bridge script, JS replies, cookie jar).
     // `waterui-webview` is optional on the facade and the browser-cef crate
     // reaches it through its own `webview` feature, so a plain `links` check
     // covers both entry points.
@@ -2341,10 +2344,10 @@ const OPTIONAL_CAPABILITIES: &[Capability] = &[
 /// Returns whether this app's resolved graph carries the named capability.
 ///
 /// This is the one predicate every consumer of a capability must share: the
-/// FFI build forwards the capability's feature, and the native backend build
-/// compiles the matching components, from this same answer. The FFI features
+/// Apple companion forwards the capability's feature, and the native backend
+/// build compiles the matching components, from this same answer. Its features
 /// are passed on the build command line rather than written into the
-/// generated manifest, so re-resolving `waterui-ffi`'s own features from the
+/// generated manifest, so re-resolving `waterui-apple`'s own features from the
 /// manifest graph would always read them as off — the backend then prunes
 /// components whose symbols the dylib does export.
 ///
@@ -2382,28 +2385,28 @@ pub async fn capability_enabled(
     }
 }
 
-/// Returns the generated FFI crate's features to enable for this app's
+/// Returns the generated Apple companion's features to enable for this app's
 /// capabilities.
 ///
-/// Each entry is a feature the generated manifest forwards to `waterui-ffi`
-/// of the same name (`FORWARDED_FFI_FEATURES`), keeping the resolve inside
+/// Each entry is a feature the generated manifest forwards to `waterui-apple`
+/// of the same name (`FORWARDED_FEATURES`), keeping the resolve inside
 /// the seeded lockfile.
 ///
 /// An app opts into a capability through its dependency graph — a component
 /// crate it depends on (`waterui-map`), or a crate that carries the capability
-/// with it (an SVG icon pack carries `waterui-graphics/gpu`). The generated FFI
+/// with it (an SVG icon pack carries `waterui-graphics/gpu`). The generated Apple companion
 /// crate is what exports that capability's C surface, so the resolved graph's
 /// choice has to reach its build; reading it back out keeps one declaration in
 /// the app's manifest.
 ///
-/// `build_manifest` is the manifest of the crate being built — the FFI
-/// companion for Apple and Android builds — and `target` the triple that
-/// build resolves its graph for.
+/// `build_manifest` is the manifest of the crate being built — the Apple
+/// companion for an Apple build — and `target` the triple that build
+/// resolves its graph for.
 ///
 /// # Errors
 ///
 /// Returns an error when `cargo metadata` cannot be read.
-pub async fn capability_ffi_features(
+pub async fn capability_features(
     project: &Project,
     build_manifest: &Path,
     target: &Triple,
@@ -2413,49 +2416,6 @@ pub async fn capability_ffi_features(
         if capability_enabled(project, build_manifest, capability.name, target).await? {
             features.push(capability.name.to_string());
         }
-    }
-    Ok(features)
-}
-
-/// Returns the generated FFI crate features — forwarded to `waterui-ffi` —
-/// that select `WaterUI`'s own realizations of the semantic components the
-/// facade carries, for a platform with no native primitive to bridge.
-///
-/// Apple bridges `AVPlayer`, so an Apple build asks for none of these and links
-/// no player. Every other platform draws the video itself, and the
-/// application's composition root — `waterui::app::App` — is what installs it,
-/// so the choice travels as a facade feature rather than as a backend
-/// dependency. The realization is opt-in: linking it pulls decoders such as
-/// rav1d and symphonia into the artifact, so the FFI build selects it only when
-/// the application declared `waterui`'s `video-gpu` feature (or the
-/// `waterui-video-gpu` crate) in its own dependency graph.
-///
-/// Realizations that live in their own crates — `waterui-map-gpu` — are not
-/// here. The application depends on such a crate directly and installs it from
-/// its own `app(env)`, the way it installs a browser engine, so no build flag
-/// selects it.
-///
-/// `build_manifest` is the manifest of the crate being built — the FFI
-/// companion whose `video` feature this list feeds — and `target` the
-/// triple that build resolves its graph for.
-///
-/// # Errors
-///
-/// Returns an error when `cargo metadata` cannot be read.
-pub async fn self_drawn_realization_features(
-    project: &Project,
-    build_manifest: &Path,
-    target: &Triple,
-) -> eyre::Result<Vec<String>> {
-    let mut features = Vec::new();
-    seed_managed_crate_lock(project, build_manifest).await?;
-    let opted_in = package_feature_enabled(project, build_manifest, "waterui", "video-gpu", target)
-        .await?
-        || project
-            .links_runtime_package(target, "waterui-video-gpu")
-            .await?;
-    if opted_in {
-        features.push("video".to_string());
     }
     Ok(features)
 }
@@ -2823,6 +2783,7 @@ mod tests {
         assert!(!registry.fonts.is_empty());
         assert!(registry.origin("Inter").is_some());
         assert!(registry.origin("Roboto").is_some());
+        assert!(registry.origin("Noto Sans").is_some());
         assert!(registry.origin("Noto Sans CJK SC").is_some());
         assert!(registry.origin("Noto Color Emoji").is_some());
         // Every entry pins the digest of what its URL serves.
@@ -3079,10 +3040,9 @@ mod tests {
 /// graph actually enabled that feature for the declaring crate.
 ///
 /// The scan runs `cargo metadata` on `build_manifest` — the `Cargo.toml` of
-/// the crate this build compiles, i.e. the generated backend or FFI crate.
-/// That crate depends on the app, so its graph carries both the app's authored
-/// dependencies and the backend's own (a theme crate and friends); resolving
-/// the app's manifest instead would miss the backend's declarations entirely.
+/// the launcher this build compiles. Its graph carries the app's dependencies
+/// and the launcher's own dependencies. `features` must match the root Cargo
+/// features selected for that launcher build.
 ///
 /// # Errors
 ///
@@ -3090,8 +3050,9 @@ mod tests {
 pub async fn scan_required_permissions(
     host: &crate::toolchain::Host,
     build_manifest: &Path,
+    features: &[String],
 ) -> eyre::Result<Vec<RequiredPermission>> {
-    let metadata = crate_metadata(host, build_manifest, &[])
+    let metadata = crate_metadata(host, build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -3289,54 +3250,100 @@ mod permission_audit_tests {
 
     /// The scan resolves the graph of the manifest it is handed — the crate
     /// the build actually compiles. A permission declared only through the
-    /// managed backend's dependency tree is reported from the backend's
-    /// manifest and is invisible from the FFI companion's.
+    /// launcher's dependency tree is reported from the launcher manifest and
+    /// is invisible from the app manifest.
     #[test]
     fn a_permission_declared_in_the_built_crates_graph_is_scanned() {
         let project = tempdir().expect("temp project");
         // `theme` stands in for a managed backend's own dependency, such as
-        // hydrolysis-m3: the backend crate links it, the FFI crate does not.
+        // hydrolysis-m3: the backend crate links it, while the app does not.
         write_crate(
             &project.path().join("theme"),
             "theme",
             "[package.metadata.waterui.permissions]\n\
              internet = { reason = \"downloads map styles and vector tiles\" }\n",
         );
-        let ffi_manifest = write_crate(&project.path().join("ffi"), "app-ffi", "");
-        let backend_manifest = write_crate(
+        let app_manifest = write_crate(&project.path().join("app"), "app", "");
+        let launcher_manifest = write_crate(
             &project.path().join("hydrolysis"),
-            "app-hydrolysis",
+            "app-hydrolysis-launcher",
             "[dependencies]\ntheme = { path = \"../theme\" }\n",
         );
 
         let required = smol::block_on(scan_required_permissions(
             &crate::toolchain::Host::current(),
-            &backend_manifest,
+            &launcher_manifest,
+            &[],
         ))
-        .expect("scan the built crate's graph");
+        .expect("scan the launcher's graph");
         assert!(
             required
                 .iter()
                 .any(|requirement| requirement.package == "theme"
                     && requirement.key == PermissionKey::Internet
                     && requirement.evidence == PermissionEvidence::Declared),
-            "the backend graph must report the permission `theme` declares"
+            "the launcher graph must report the permission `theme` declares"
         );
 
-        let ffi = smol::block_on(scan_required_permissions(
+        let app = smol::block_on(scan_required_permissions(
             &crate::toolchain::Host::current(),
-            &ffi_manifest,
+            &app_manifest,
+            &[],
         ))
-        .expect("scan the ffi crate's graph");
+        .expect("scan the app's graph");
         assert!(
-            ffi.is_empty(),
-            "the ffi graph does not carry `theme` and must stay silent"
+            app.is_empty(),
+            "the app graph does not carry `theme` and must stay silent"
+        );
+    }
+
+    #[test]
+    fn permission_requirements_follow_the_actual_launcher_feature_selection() {
+        let project = tempdir().expect("temp project");
+        write_crate(
+            &project.path().join("theme"),
+            "theme",
+            "[features]\nremote = []\n\n\
+             [package.metadata.waterui.permissions]\n\
+             internet = { reason = \"downloads map styles\", required-feature = \"remote\" }\n",
+        );
+        let launcher_manifest = write_crate(
+            &project.path().join("launcher"),
+            "app-hydrolysis-launcher",
+            "[features]\nmap = [\"dep:theme\", \"theme/remote\"]\n\n\
+             [dependencies]\ntheme = { path = \"../theme\", optional = true }\n",
+        );
+
+        let enabled_features = vec![String::from("map")];
+        let enabled = smol::block_on(scan_required_permissions(
+            &crate::toolchain::Host::current(),
+            &launcher_manifest,
+            &enabled_features,
+        ))
+        .expect("scan with the launcher's selected feature");
+        assert!(
+            enabled
+                .iter()
+                .any(|requirement| requirement.package == "theme"
+                    && requirement.key == PermissionKey::Internet),
+            "the selected launcher feature must include its gated requirement"
+        );
+
+        let disabled = smol::block_on(scan_required_permissions(
+            &crate::toolchain::Host::current(),
+            &launcher_manifest,
+            &[],
+        ))
+        .expect("scan without the launcher's optional feature");
+        assert!(
+            disabled.is_empty(),
+            "the disabled launcher feature must not include the gated requirement"
         );
     }
 
     /// `package_feature_enabled` reads the same graph: a feature a dependency
-    /// carries only through the managed backend's manifest reports enabled
-    /// there and absent from the FFI companion's.
+    /// carries only through the launcher's manifest reports enabled there and
+    /// absent from the app's.
     #[test]
     fn a_feature_enabled_in_the_built_crates_graph_is_seen() {
         let directory = tempdir().expect("temp project");
@@ -3345,10 +3352,10 @@ mod permission_audit_tests {
             "theme",
             "[features]\nextra = []\n",
         );
-        let ffi_manifest = write_crate(&directory.path().join("ffi"), "app-ffi", "");
-        let backend_manifest = write_crate(
+        let app_manifest = write_crate(&directory.path().join("app"), "app", "");
+        let launcher_manifest = write_crate(
             &directory.path().join("hydrolysis"),
-            "app-hydrolysis",
+            "app-hydrolysis-launcher",
             "[dependencies]\ntheme = { path = \"../theme\", features = [\"extra\"] }\n",
         );
 
@@ -3377,22 +3384,22 @@ mod permission_audit_tests {
         assert!(
             smol::block_on(package_feature_enabled(
                 &project,
-                &backend_manifest,
+                &launcher_manifest,
                 "theme",
                 "extra",
                 &target,
             ))
-            .expect("scan the built crate's graph")
+            .expect("scan the launcher graph")
         );
         assert!(
             !smol::block_on(package_feature_enabled(
                 &project,
-                &ffi_manifest,
+                &app_manifest,
                 "theme",
                 "extra",
                 &target,
             ))
-            .expect("scan the ffi crate's graph")
+            .expect("scan the app's graph")
         );
     }
 
@@ -3470,17 +3477,17 @@ mod permission_audit_tests {
         );
     }
 
-    /// `water fetch --backend android` must never touch the GTK4 scaffold:
-    /// the scoped scan covers only the crates an Android build reads, so a
+    /// `water fetch --backend hydrolysis` must never touch the GTK4 scaffold:
+    /// the scoped scan covers only the crates a Hydrolysis build reads, so a
     /// backend crate whose dependency graph does not resolve on this host
     /// cannot fail a fetch meant for another backend.
     #[test]
     fn a_backend_scope_selects_only_that_backends_crate() {
         use crate::platform::TargetBackend;
 
-        let scope = Some(TargetBackend::Android);
+        let scope = Some(TargetBackend::Hydrolysis);
         assert!(!crate::gtk4::backend::Gtk4Backend::in_scope(scope));
-        assert!(!crate::hydrolysis::backend::HydrolysisBackend::in_scope(
+        assert!(crate::hydrolysis::backend::HydrolysisBackend::in_scope(
             scope
         ));
         assert!(!crate::winui::backend::WinUiBackend::in_scope(scope));

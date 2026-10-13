@@ -230,6 +230,17 @@ pub mod spirv {
     #[cfg(all(cherenkov_spirv, unix))]
     pub const EXTERNAL_NATIVE: &[u8] =
         include_bytes!(concat!(env!("OUT_DIR"), "/external_native.spv"));
+    /// `engine_tile.spv` — the tile executor's module for a draw whose
+    /// source is another slot: input attachment index 0 is the draw's
+    /// own slot and index 1 the source (issue #2191).
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile.spv"));
+    /// `engine_tile_self.spv` — the same module for a draw that sources
+    /// its own slot, which one attachment mapped to one input
+    /// attachment index cannot otherwise express: both reads are at
+    /// index 0.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_SELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_self.spv"));
 }
 
 // `.metallib` files exist only in Apple builds (`build.rs` refuses to

@@ -117,9 +117,9 @@ pub async fn build_xcframework(
     options: &BuildOptions,
     architecture: Option<Architecture>,
 ) -> Result<EmbeddedArtifact> {
-    // The package's dependency table is read from the generated FFI
+    // The package's dependency table is read from the generated Apple
     // manifest below — it must render before anything resolves it.
-    project.scaffold_ffi_companion().await?;
+    project.scaffold_apple_companion().await?;
     let selected = slices(architecture)?;
     let host = project.host();
     check_toolchain(host, &selected).await?;
@@ -264,7 +264,7 @@ async fn stage_resources(
     assets::write_library_resources(&manifest, destination).await?;
     let declarations = assets::scan_fonts(
         project,
-        &project.ffi_crate_path().join("Cargo.toml"),
+        &project.apple_crate_path().join("Cargo.toml"),
         &[
             waterui_assets_planner::FontPlatform::Ios,
             waterui_assets_planner::FontPlatform::Macos,

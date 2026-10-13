@@ -275,7 +275,7 @@ the defaults below apply. `water create` leaves the tables absent.
 |---|---|---|
 | macOS | `apple` (AppKit) | `hydrolysis` |
 | iOS (+ simulator) | `apple` (UIKit) | — |
-| Android | `hydrolysis` | `android` (Kotlin runtime, Android View) |
+| Android | `hydrolysis` | — |
 | Linux | `gtk4` | `hydrolysis` |
 | Windows | `hydrolysis` | `winui` |
 | Web | `hydrolysis` (WASM + WebGPU) | — |
@@ -289,6 +289,12 @@ Native backends bridge to real platform widgets. `hydrolysis` is WaterUI's own
 renderer: it is GPU-required and targets high-refresh modern hardware. Choosing a
 self-drawn renderer is a deliberate decision, never a fallback for a native path that
 failed.
+
+TypeScript views (`tsx!`) run on an embedded JavaScript engine that differs by platform:
+JavaScriptCore on iOS, macOS, tvOS and visionOS; QuickJS-NG on Android, Linux and Windows;
+unsupported on watchOS — the platform ships no JavaScriptCore and embedding QuickJS-NG
+there is not supported. The asymmetry is documented, not faked: the `ts` feature does
+not build on watchOS, a compile error rather than a fallback.
 
 The same view code runs on all of them. Platform-specific behavior belongs in the backend,
 not in conditional app code.

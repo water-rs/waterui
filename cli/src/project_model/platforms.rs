@@ -196,7 +196,7 @@ mod tests {
         let error = Manifest::parse(&format!("{PACKAGE}[platforms.linux]\nbackend = 'typo'"))
             .unwrap_err()
             .to_string();
-        for name in ["typo", "apple", "android", "gtk4", "hydrolysis", "winui"] {
+        for name in ["typo", "apple", "gtk4", "hydrolysis", "winui"] {
             assert!(error.contains(name), "{error}");
         }
     }

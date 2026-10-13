@@ -318,23 +318,53 @@ impl DeviceUnusable {
     }
 }
 
-/// `devicectl device process launch` environment-variable payload.
+/// `devicectl device process launch` for [`Device::run`] on a physical
+/// device. `--console` attaches the app's standard streams to devicectl's
+/// and waits for the app to exit: one child gives stdout/stderr streaming,
+/// exit detection, and signal forwarding (a signal to devicectl is
+/// delivered to the app) in a single process.
 ///
-/// The `-e` flag takes a JSON-encoded dictionary; every entry of
-/// [`crate::device::RunOptions::env_vars`] travels through it, so
-/// `WATERUI_DEV_URL`, `WATERUI_LOG`, `WATERUI_PROJECT_DIR` and
-/// `WATERUI_APP_NAME` reach the process exactly as `SIMCTL_CHILD_*` delivers
-/// them on a simulator.
-fn environment_json<'a>(env_vars: impl Iterator<Item = (&'a str, &'a str)>) -> String {
-    let map: serde_json::Map<String, serde_json::Value> = env_vars
-        .map(|(key, value)| {
-            (
-                key.to_string(),
-                serde_json::Value::String(value.to_string()),
-            )
-        })
-        .collect();
-    serde_json::Value::Object(map).to_string()
+/// Environment variables never enter argv: `devicectl` forwards every
+/// caller-side `DEVICECTL_CHILD_<key>` to the launched process, so each
+/// `RunOptions` entry rides the host's own prefixed channel — dev-server
+/// URL included. Any `DEVICECTL_CHILD_*` the host already carries is
+/// cleared from the child first, so `RunOptions` owns the namespace;
+/// the host's other variables pass through unchanged.
+fn physical_device_launch_command(
+    host: &Host,
+    selector: &str,
+    bundle_id: &str,
+    options: &crate::device::RunOptions,
+) -> smol::process::Command {
+    #[cfg(unix)]
+    let mut command = host.command_in_own_process_group("xcrun");
+    #[cfg(not(unix))]
+    let mut command = host.command("xcrun");
+    command.args([
+        "devicectl",
+        "device",
+        "process",
+        "launch",
+        "--device",
+        selector,
+        "--terminate-existing",
+        "--console",
+        bundle_id,
+    ]);
+    for (key, _) in host.envs() {
+        if key.as_encoded_bytes().starts_with(b"DEVICECTL_CHILD_") {
+            command.env_remove(key);
+        }
+    }
+    for (key, value) in options.env_vars() {
+        command.env(format!("DEVICECTL_CHILD_{key}"), value);
+    }
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    command
 }
 
 async fn install_device_app(
@@ -682,7 +712,6 @@ impl Device for ApplePhysicalDevice {
         );
         install_device_app(host, self.selector(), artifact.path()).await?;
 
-        let env_json = environment_json(options.env_vars());
         let bundle_id = artifact.bundle_id().to_string();
         let process_name = artifact
             .path()
@@ -700,40 +729,7 @@ impl Device for ApplePhysicalDevice {
         // waits for the app to exit: one child gives stdout/stderr streaming,
         // exit detection, and signal forwarding (a signal to devicectl is
         // delivered to the app) in a single process.
-        //
-        // The dev-server URL travels in the `-e` environment dictionary; a
-        // `--waterui-dev-url=` process argument repeats it, so `dev_url()`
-        // still finds it if a device-side launch path ever strips the
-        // environment.
-        #[cfg(unix)]
-        let mut command = host.command_in_own_process_group("xcrun");
-        #[cfg(not(unix))]
-        let mut command = host.command("xcrun");
-        command.args([
-            "devicectl",
-            "device",
-            "process",
-            "launch",
-            "--device",
-            self.selector(),
-            "--environment-variables",
-            &env_json,
-            "--terminate-existing",
-            "--console",
-            &bundle_id,
-        ]);
-        if let Some((_, dev_url)) = options
-            .env_vars()
-            .find(|(key, _)| *key == "WATERUI_DEV_URL")
-        {
-            command.arg(format!("--waterui-dev-url={dev_url}"));
-        }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command
+        let mut child = physical_device_launch_command(host, self.selector(), &bundle_id, &options)
             .spawn()
             .map_err(|error| FailToRun::Launch(eyre!("Failed to launch app: {error}")))?;
 
@@ -846,7 +842,9 @@ async fn stream_console(stream: impl smol::io::AsyncRead + Unpin, target: Consol
 
 #[cfg(test)]
 mod tests {
-    use super::{ApplePhysicalDevice, DeviceUnusable, Transport, TunnelState, environment_json};
+    use super::{
+        ApplePhysicalDevice, DeviceUnusable, Transport, TunnelState, physical_device_launch_command,
+    };
     use crate::device::Device as _;
     #[cfg(unix)]
     use crate::workflows::device::test_support::{ProcessGroupGuard, term_ignoring_fixture};
@@ -930,16 +928,150 @@ mod tests {
         );
     }
 
+    /// The command env folded last-wins-per-key, the way spawn resolves it.
+    fn command_env(command: &smol::process::Command) -> std::collections::HashMap<String, String> {
+        command
+            .get_envs()
+            .filter_map(|(key, value)| {
+                value.map(|value| {
+                    (
+                        key.to_string_lossy().into_owned(),
+                        value.to_string_lossy().into_owned(),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// RED for water-rs/waterui#2600: `RunOptions` values must ride the
+    /// caller-side `DEVICECTL_CHILD_*` channel — argv must never see them.
     #[test]
-    fn environment_json_encodes_all_vars() {
-        let vars = [
-            ("WATERUI_DEV_URL", "http://10.0.0.2:5173/"),
-            ("WATERUI_LOG", "debug"),
-        ];
-        let json = environment_json(vars.iter().copied());
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("env json parses");
-        assert_eq!(parsed["WATERUI_DEV_URL"], "http://10.0.0.2:5173/");
-        assert_eq!(parsed["WATERUI_LOG"], "debug");
+    fn the_launch_environment_never_enters_the_device_argv() {
+        let host = crate::toolchain::Host::new(
+            Vec::<std::path::PathBuf>::new(),
+            Vec::<(String, String)>::new(),
+        );
+        let mut options = crate::device::RunOptions::new();
+        options.insert_env_var(
+            String::from("WATERUI_DUMMY_KEY"),
+            String::from("dummy-secret-value"),
+        );
+        options.insert_env_var(
+            String::from("WATERUI_DEV_URL"),
+            String::from("http://10.0.0.2:5173/"),
+        );
+
+        let command =
+            physical_device_launch_command(&host, "ABC123-SELECTOR", "com.example.app", &options);
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|arg| arg.contains("dummy-secret-value")),
+            "a declared value must never reach argv: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg.contains("http://10.0.0.2:5173/")),
+            "the dev URL is environment, not argv: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--environment-variables"),
+            "{args:?}"
+        );
+        assert_eq!(
+            args,
+            [
+                "devicectl",
+                "device",
+                "process",
+                "launch",
+                "--device",
+                "ABC123-SELECTOR",
+                "--terminate-existing",
+                "--console",
+                "com.example.app",
+            ]
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+        );
+    }
+
+    /// Every `RunOptions` pair lands as an exact `DEVICECTL_CHILD_<key>`
+    /// value — spaces, newlines, `=`, non-ASCII and empty survive verbatim.
+    #[test]
+    fn declared_values_ride_the_child_prefixed_channel_verbatim() {
+        let host = crate::toolchain::Host::new(
+            Vec::<std::path::PathBuf>::new(),
+            Vec::<(String, String)>::new(),
+        );
+        let mut options = crate::device::RunOptions::new();
+        for (key, value) in [
+            ("SPACED", "a  b\nc"),
+            ("QUOTED", "say \"hi\" $HOME"),
+            ("EQUALS", "x=y"),
+            ("NONASCII", "日本語"),
+            ("EMPTY", ""),
+        ] {
+            options.insert_env_var(String::from(key), String::from(value));
+        }
+
+        let command = physical_device_launch_command(&host, "S", "com.example.app", &options);
+        let env = command_env(&command);
+        for (key, value) in [
+            ("SPACED", "a  b\nc"),
+            ("QUOTED", "say \"hi\" $HOME"),
+            ("EQUALS", "x=y"),
+            ("NONASCII", "日本語"),
+            ("EMPTY", ""),
+        ] {
+            assert_eq!(
+                env.get(&format!("DEVICECTL_CHILD_{key}"))
+                    .map(String::as_str),
+                Some(value),
+                "{key}"
+            );
+        }
+    }
+
+    /// A `DEVICECTL_CHILD_*` the host already carries is cleared from the
+    /// child — `RunOptions` owns the namespace — while the host itself and
+    /// its unrelated variables stay untouched.
+    #[test]
+    fn run_options_own_the_child_prefixed_namespace() {
+        let host = crate::toolchain::Host::new(
+            Vec::<std::path::PathBuf>::new(),
+            [
+                (
+                    String::from("DEVICECTL_CHILD_STALE"),
+                    String::from("host-stale"),
+                ),
+                (
+                    String::from("DEVICECTL_CHILD_OVERRIDDEN"),
+                    String::from("host-value"),
+                ),
+                (String::from("PATH"), String::from("/usr/bin:/bin")),
+            ],
+        );
+        let mut options = crate::device::RunOptions::new();
+        options.insert_env_var(String::from("OVERRIDDEN"), String::from("run-value"));
+
+        let command = physical_device_launch_command(&host, "S", "com.example.app", &options);
+        let env = command_env(&command);
+        assert!(!env.contains_key("DEVICECTL_CHILD_STALE"), "{env:?}");
+        assert_eq!(
+            env.get("DEVICECTL_CHILD_OVERRIDDEN").map(String::as_str),
+            Some("run-value")
+        );
+        assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin:/bin"));
+
+        // The host is immutable: its own env map never observed the purge.
+        assert_eq!(
+            host.env("DEVICECTL_CHILD_STALE")
+                .map(|value| value.to_string_lossy().into_owned()),
+            Some(String::from("host-stale"))
+        );
     }
 
     #[cfg(unix)]

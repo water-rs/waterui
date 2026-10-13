@@ -115,14 +115,12 @@ impl AndroidGpuContext {
     }
 
     async fn request_async() -> Result<Self, GpuError> {
-        // The engine's shaders require these capabilities — its compute
-        // pipeline uses f16-in-f32 builtins unconditionally, and the pipeline is
-        // compute. The default pick may lack them (software Vulkan drivers
-        // like llvmpipe drop shaderFloat16), so walk every Vulkan adapter and
-        // choose the first that can paint; a device with none is an explicit
-        // error, never a painter fallback.
-        const PAINTER_FLAGS: wgpu::DownlevelFlags =
-            wgpu::DownlevelFlags::COMPUTE_SHADERS.union(wgpu::DownlevelFlags::SHADER_F16_IN_F32);
+        // The engine's shaders require f16 arithmetic — its raster pipeline
+        // uses f16-in-f32 builtins unconditionally. The default pick may lack
+        // it (software Vulkan drivers like llvmpipe drop shaderFloat16), so
+        // walk every Vulkan adapter and choose the first that can paint; a
+        // device with none is an explicit error, never a painter fallback.
+        const PAINTER_FLAGS: wgpu::DownlevelFlags = wgpu::DownlevelFlags::SHADER_F16_IN_F32;
         let flags_of = |adapter: &wgpu::Adapter| adapter.get_downlevel_capabilities().flags;
         let capable = |adapter: &wgpu::Adapter| flags_of(adapter).contains(PAINTER_FLAGS);
         // A Vulkan-only instance: no other GPU API is ever instantiated, and
@@ -151,30 +149,36 @@ impl AndroidGpuContext {
                 )));
             }
         };
-        crate::platform::ensure_compute_capable_adapter(
-            &adapter,
-            "hydrolysis android surface",
-            "failed to find compute-capable wgpu adapter",
-        );
         let required_limits = crate::platform::required_device_limits(&adapter);
         let required_features = crate::platform::required_media_features(adapter.features())
             | (adapter.features()
                 & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
+        // The device is opened through the engine's creation path, not
+        // `request_device`: the capabilities Cherenkov composes with —
+        // external-frame and YCbCr import (cherenkov#166), and the
+        // dynamic-rendering local read and rasterization-order
+        // attachment access that keep an epoch's intermediates in tile
+        // memory (waterui#2191) — are chosen when `vkCreateDevice` runs
+        // and cannot be turned on afterwards. A device this host opened
+        // itself would make the engine materialize every intermediate
+        // through memory for the life of the process.
+        let (device, queue) = crate::platform::open_engine_device(
+            &adapter,
+            &wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-android-device"),
                 required_features,
                 required_limits,
                 memory_hints: wgpu::MemoryHints::Performance,
                 experimental_features: wgpu::ExperimentalFeatures::default(),
                 trace: wgpu::Trace::default(),
-            })
-            .await
-            .map_err(|error| {
-                GpuError::new(format!(
-                    "hydrolysis android: failed to request wgpu device: {error}"
-                ))
-            })?;
+            },
+        )
+        .await
+        .map_err(|error| {
+            GpuError::new(format!(
+                "hydrolysis android: failed to open the engine's wgpu device: {error}"
+            ))
+        })?;
         let context_id = crate::platform::next_gpu_context_id();
         let shared_device = cherenkov_gpu::interop::SharedDevice {
             instance: instance.clone(),

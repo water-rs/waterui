@@ -1021,9 +1021,6 @@ pub const fn device_memory_key(
             crate::platform::TargetBackend::Apple,
             crate::platform::TargetPlatform::IOS | crate::platform::TargetPlatform::IOSSimulator,
         ) => Some("apple/ios"),
-        (crate::platform::TargetBackend::Android, crate::platform::TargetPlatform::Android) => {
-            Some("android/android")
-        }
         (crate::platform::TargetBackend::Hydrolysis, crate::platform::TargetPlatform::Android) => {
             Some("hydrolysis/android")
         }
@@ -1164,7 +1161,7 @@ fn normalize_prefix_component(prefix: PrefixComponent<'_>) -> String {
     }
 }
 
-fn sanitize_os_str(value: &OsStr) -> String {
+pub(crate) fn sanitize_os_str(value: &OsStr) -> String {
     let sanitized = value
         .to_string_lossy()
         .chars()
@@ -1703,17 +1700,17 @@ mod tests {
     fn project_build_cache_dir_uses_absolute_project_path_components() {
         let cache_root = Path::new("/tmp/water-cache-root");
         let project_root = if cfg!(windows) {
-            PathBuf::from(r"C:\Users\lexo\demo")
+            PathBuf::from(r"C:\Users\tester\demo")
         } else {
-            PathBuf::from("/Users/lexo/demo")
+            PathBuf::from("/Users/tester/demo")
         };
 
         let cache_dir = project_build_cache_dir_in(&project_root, cache_root);
 
         let expected = if cfg!(windows) {
-            cache_root.join("drive-C/Users/lexo/demo/managed_backends")
+            cache_root.join("drive-C/Users/tester/demo/managed_backends")
         } else {
-            cache_root.join("Users/lexo/demo/managed_backends")
+            cache_root.join("Users/tester/demo/managed_backends")
         };
         assert_eq!(cache_dir, expected);
     }

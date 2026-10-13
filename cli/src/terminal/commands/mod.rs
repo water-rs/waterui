@@ -28,8 +28,6 @@ use waterui_cli::{
 pub enum TargetBackend {
     /// Apple backend (UIKit/AppKit).
     Apple,
-    /// Android backend (Android Views).
-    Android,
     /// GTK4 backend (Linux only, experimental).
     Gtk4,
     /// Hydrolysis backend (self-drawn renderer).
@@ -44,7 +42,6 @@ impl TargetBackend {
     pub const fn from_lib(backend: LibTargetBackend) -> Self {
         match backend {
             LibTargetBackend::Apple => Self::Apple,
-            LibTargetBackend::Android => Self::Android,
             LibTargetBackend::Gtk4 => Self::Gtk4,
             LibTargetBackend::Hydrolysis => Self::Hydrolysis,
             LibTargetBackend::WinUi => Self::WinUi,
@@ -61,7 +58,6 @@ impl TargetBackend {
     pub const fn label(self) -> &'static str {
         match self {
             Self::Apple => "Apple",
-            Self::Android => "Android",
             Self::Gtk4 => "GTK4",
             Self::Hydrolysis => "Hydrolysis",
             Self::WinUi => "WinUI",
@@ -72,7 +68,6 @@ impl TargetBackend {
     pub const fn lib_backend(self) -> LibTargetBackend {
         match self {
             Self::Apple => LibTargetBackend::Apple,
-            Self::Android => LibTargetBackend::Android,
             Self::Gtk4 => LibTargetBackend::Gtk4,
             Self::Hydrolysis => LibTargetBackend::Hydrolysis,
             Self::WinUi => LibTargetBackend::WinUi,
@@ -135,7 +130,6 @@ async fn ensure_generated_backend(
             project.apple_backend().is_some()
                 && AppleBackend::requires_regeneration(&project).await?
         }
-        TargetBackend::Android => false,
         TargetBackend::Gtk4 => Gtk4Backend::requires_regeneration(&project).await?,
         TargetBackend::Hydrolysis => HydrolysisBackend::requires_regeneration(&project).await?,
         TargetBackend::WinUi => WinUiBackend::requires_regeneration(&project).await?,
@@ -151,7 +145,6 @@ async fn ensure_generated_backend(
         TargetBackend::Apple => {
             reinit_backend::<AppleBackend>(&project).await?;
         }
-        TargetBackend::Android => {}
         TargetBackend::Gtk4 => {
             reinit_backend::<Gtk4Backend>(&project).await?;
         }

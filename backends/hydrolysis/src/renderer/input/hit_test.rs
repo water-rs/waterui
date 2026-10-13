@@ -3426,7 +3426,7 @@ impl SemanticCore {
 impl HydrolysisRenderer {
     /// The rendered-runtime gesture tick: advances the engine's recognizers,
     /// then fires an armed context-menu hold whose deadline elapsed. The
-    /// deadline rides [`SemanticCore::next_gesture_deadline`], so the runner
+    /// deadline rides `SemanticCore::next_gesture_deadline`, so the runner
     /// wakes for it — never a timer of its own. A hold that survives to the
     /// threshold opens the press point's menu through the same mount a
     /// secondary press takes, and consumes the press: pending recognizers

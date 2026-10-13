@@ -56,6 +56,11 @@ pub struct ComponentSchema {
 }
 
 /// One modifier attribute and the shape its value takes.
+///
+/// The `.d.ts` generator opens every modifier's doc comment with
+/// [`MODIFIER_ORDER_SENTENCE`] followed by [`summary`](Self::summary): the
+/// ordering rule is stated where writing the attributes in the wrong order
+/// happens, and this entry stays the modifier's own sentence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModifierSchema {
     /// The attribute name — `"padding"`, `"background"`.
@@ -65,6 +70,16 @@ pub struct ModifierSchema {
     /// The value it accepts.
     pub value: &'static TypeSchema,
 }
+
+/// The sentence every modifier attribute's generated doc comment opens with.
+///
+/// Modifier order is the one JSX rule an author cannot infer from the
+/// vocabulary, so the `.d.ts` generator prepends this verbatim to each
+/// [`ModifierSchema::summary`]. It is data rather than prose beside the data:
+/// the generator copies it, so it lives in the one table every generated
+/// surface is built from instead of being repeated inside each entry's
+/// summary.
+pub const MODIFIER_ORDER_SENTENCE: &str = "Modifier attributes apply in written order, left to right; reordering them changes the result.";
 
 /// What a component's JSX children are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -304,12 +319,14 @@ pub fn decode_catalog(payload: &[u8]) -> Result<Catalog, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
-    if payload.get(reader.pos) != Some(&kind::CATALOG) {
+    // Read rather than peeked: a payload that ends after the version byte is
+    // truncated, not a payload of another kind.
+    let found = reader.byte()?;
+    if found != kind::CATALOG {
         return Err(DecodeError::NotACatalog {
-            found: payload_kind(payload.get(reader.pos).copied()),
+            found: payload_kind(found),
         });
     }
-    reader.pos += 1;
 
     let count = reader.length()?;
     if count == 0 {

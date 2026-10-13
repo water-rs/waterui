@@ -234,6 +234,16 @@ jobs:
       - name: Clippy (cherenkov-scene generator)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'cherenkov-scene')
         run: cargo clippy --locked --profile ci-check -p cherenkov-scene --all-targets --features generator -- -D warnings
+      # cherenkov-bench's test targets sit behind the adapter features:
+      # the default-feature workspace pass never enables them, and the
+      # `--all-features` sweep excludes the bench crate (`skia-metal` is
+      # Apple-only), so only the `full`-only `cherenkov-corpus` leg
+      # compiled them — a scene-type field addition broke them silently
+      # (#2559). `check --tests` is the cheap compile on this job's
+      # already-built graph.
+      - name: Check (cherenkov-bench test targets)
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'cherenkov-bench')
+        run: cargo check --locked --profile ci-check -p cherenkov-bench --tests --features cherenkov,cherenkov-cpu
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
       # `--workspace`: the root manifest carries both `[workspace]` and
@@ -266,7 +276,6 @@ jobs:
             --exclude waterui-apple \
             --exclude cocoa-ui \
             --exclude waterui-core \
-            --exclude waterui-ffi \
             --exclude waterui-browser-cef \
             --exclude filtrate \
             --exclude cherenkov-bench \
@@ -277,14 +286,6 @@ jobs:
       - name: Clippy (waterui-core, every stable feature)
         if: inputs.full
         run: cargo clippy --locked --profile ci-check -p waterui-core --all-targets --features std,serde -- -D warnings
-      # `waterui-ffi` selects its ABI with mutually exclusive features and
-      # `ffi/src/lib.rs` turns `c-api` + `android-jni` into a `compile_error!`.
-      # This is the `c-api` half with every optional C surface a runtime build
-      # can carry; the `android-jni` half is the `Android FFI` job in ci.yml,
-      # and the compile-only `cef-header` shape is the `cef` job below.
-      - name: Clippy (waterui-ffi, C ABI surfaces)
-        if: inputs.full
-        run: cargo clippy --locked --profile ci-check -p waterui-ffi --all-targets --features map,chromium,webview-cef -- -D warnings
       # `compile-only` swaps in CEF's `dox` stubs and stops the build script
       # downloading the distribution that `cef-runtime` — and the `real_engine`
       # test target — need, so the two can never be enabled together. This is
@@ -309,6 +310,12 @@ jobs:
       - name: Clippy (hydrolysis, checked feature set)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
         run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      # Rustdoc under the same set: the comment-only owners pass documents
+      # hydrolysis with `default = []`, so intra-doc links inside the runner
+      # modules these features gate in are never resolved there (#2013).
+      - name: Rustdoc (hydrolysis, checked feature set)
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked -p hydrolysis --no-deps --features accessibility,inspector-signals,testing,web,winit
       - name: Check (hydrolysis, no features)
         if: inputs.full
         run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib
@@ -627,7 +634,6 @@ jobs:
             --exclude waterui-apple \
             --exclude cocoa-ui \
             --exclude waterui-core \
-            --exclude waterui-ffi \
             --exclude waterui-browser-cef \
             --exclude skill_snippets \
             --exclude filtrate \
@@ -640,10 +646,6 @@ jobs:
       # nextest cannot enumerate doc tests, so this is a `cargo test` pass.
       - name: Test (hydrolysis doc tests)
         run: cargo test --locked --doc -p hydrolysis --features accessibility,inspector-signals,testing,web,winit
-      # The `c-api` half with every optional C surface a runtime build can
-      # carry; `android-jni` is the `Android FFI` job in ci.yml.
-      - name: Test (waterui-ffi, C ABI surfaces)
-        run: cargo nextest run --locked -p waterui-ffi --features map,chromium,webview-cef --profile ci
       # The CEF runtime shape; `compile-only` and `real-engine` exclude it.
       - name: Test (waterui-browser-cef, CEF runtime)
         run: cargo nextest run --locked -p waterui-browser-cef --features chromium,webview --profile ci
@@ -695,8 +697,8 @@ jobs:
         with:
           mode: full
       # Of the excluded crates, `waterui-core`'s stable feature shape runs
-      # below; the FFI C surfaces and the CEF runtime shape are
-      # host-independent and the Linux job covers them, and the compile-only
+      # below; the CEF runtime shape is
+      # host-independent and the Linux job covers it, and the compile-only
       # `cef-header` shape is the `cef` job. The `trybuild_*` macro contract
       # tests ran already in `test` on this OS; see there. `filtrate` is
       # excluded for `webgl`'s off-wasm `compile_error!` — the wasm job
@@ -709,7 +711,6 @@ jobs:
             --exclude waterui-apple \
             --exclude cocoa-ui \
             --exclude waterui-core \
-            --exclude waterui-ffi \
             --exclude waterui-browser-cef \
             --exclude skill_snippets \
             --exclude filtrate \
@@ -756,17 +757,11 @@ jobs:
       # gate's rust job (apple.yml); read-only lanes never save.
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
-      # The same step also lints the FFI crate's compile-only CEF C ABI, which
-      # no other leg reaches: the Linux all-features passes exclude
-      # `waterui-ffi` for its ABI `compile_error!` and lint the `cef-runtime`
-      # shape instead, and `cef-header` is the mutually exclusive
-      # `compile-only` one. macOS is also the only leg that sees its
-      # `#[cfg(target_os = "macos")]` entry points at all, and the compile-only
-      # feature set buys the lint without a CEF runtime download.
+      # `real-engine` is the runtime shape the Linux all-features passes
+      # exclude, and its `#[cfg(target_os = "macos")]` entry points are only
+      # visible on this leg.
       - name: Lint the CEF targets
-        run: |
-          cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
-          cargo clippy --locked --profile ci-check -p waterui-ffi --features cef-header --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check -p waterui-browser-cef --features real-engine --all-targets -- -D warnings
       # The cherenkov-oracle and cherenkov-cpu test targets the composite
       # lints `include_bytes!` the generated scene fonts.
       - name: Generate Cherenkov scene assets
@@ -887,6 +882,7 @@ jobs:
       - name: Install native dependencies
         uses: ./.github/actions/setup-linux-deps
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --features accessibility,webview-system -- -D warnings
       - run: cargo clippy --locked --profile ci-check -p hydrolysis --target aarch64-linux-android --no-default-features -- -D warnings
 
   # The Android host library's own lint (`warningsAsErrors`): the Kotlin
@@ -938,9 +934,9 @@ jobs:
         if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
         with:
           gradle-version: ${{ steps.host-gradle-version.outputs.version }}
-      - name: Lint the host, gpu and preview modules
+      - name: Lint the host, gpu, preview and webview modules
         if: inputs.full || inputs.affected == 'workspace' || contains(inputs.affected, 'hydrolysis')
-        run: gradle :host:lintDebug :gpu:lintDebug :preview:lintDebug
+        run: gradle :host:lintDebug :gpu:lintDebug :preview:lintDebug :webview:lintDebug
       - name: Host unit tests
         if: inputs.full
         run: gradle :host:testDebugUnitTest

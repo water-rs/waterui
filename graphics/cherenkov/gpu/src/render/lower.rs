@@ -21,10 +21,11 @@ use crate::render::filter::FilterKey;
 
 use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRaster, glyph_key};
 use crate::render::instance::{
-    FLAG_BLEND_SRC, FLAG_HAS_CLIP, FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB,
-    FLAG_UNION, Globals, Instance, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SHADOW, KIND_SPAN,
-    KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID,
-    PAINT_TEXTURE, Shape, Stop, affine, blend_code,
+    ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
+    FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
+    KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
+    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID, PAINT_TEXTURE, Shape, Stop,
+    affine, blend_code,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -150,6 +151,12 @@ pub struct Pass {
     /// capture texture before this pass draws — only on
     /// [`Target::Backdrop`] passes.
     pub capture: Option<Capture>,
+    /// Instance spans appended after `ranges` holding [`KIND_POLYGON`]
+    /// interiors: an ellipse's opaque interior at 16 or 32 sides instead
+    /// of the inscribed octagon. Filled only when the pass qualifies for
+    /// coverage order; the opaque phase draws them at the tier's vertex
+    /// count after the painter ranges.
+    pub tier_ranges: [Range<u32>; 2],
 }
 
 /// A backdrop capture's copy source, on a [`Target::Backdrop`] pass.
@@ -211,6 +218,12 @@ pub struct Frame {
     /// group's level count `n`: the pass at the index reduces its region
     /// into `n − 1` pyramid levels, one globals slot each.
     pub reduces: Vec<(usize, u32)>,
+    /// `index | tier << 30` of live painter-order instances whose opaque
+    /// interior is promoted to a wider polygon, in increasing index.
+    /// Appended as [`KIND_POLYGON`] slots when their pass closes in
+    /// coverage order. One buffer for the frame: passes close in
+    /// emission order, so an entry always belongs to the open pass.
+    tier_scratch: Vec<u32>,
     open: Option<OpenPass>,
 }
 
@@ -230,6 +243,11 @@ struct OpenPass {
     capture: Option<Capture>,
     ranges: Vec<DrawRange>,
     seg_start: u32,
+    /// Whether the pass can still draw in coverage order: a `Part`
+    /// target whose every pushed range is the simple src-over pipeline
+    /// with no bound source, image or mask. Only such a pass scans its
+    /// instances for interior tiers at close.
+    maybe_coverage: bool,
 }
 
 /// A rollback point for [`Frame::restore`] (used by speculative
@@ -265,6 +283,14 @@ impl Frame {
         self.filters.truncate(snap.filters);
         self.shadows.truncate(snap.shadows);
         self.open = snap.open;
+        // Entries recorded since the snapshot index reverting instances;
+        // the ones kept precede it and belong to the restored open pass.
+        let keep = self
+            .tier_scratch
+            .iter()
+            .position(|&entry| (entry & 0x3fff_ffff) as usize >= snap.instances)
+            .unwrap_or(self.tier_scratch.len());
+        self.tier_scratch.truncate(keep);
     }
 
     /// Removes pass `i` and shifts the pass indexes recorded in `shadows`
@@ -307,6 +333,7 @@ impl Frame {
         self.shadows.clear();
         self.mips.clear();
         self.reduces.clear();
+        self.tier_scratch.clear();
         self.open = None;
     }
 }
@@ -385,6 +412,45 @@ fn aa_margin(transform: Affine) -> f64 {
     let [c0, c1, c2, c3, _, _] = transform.as_coeffs();
     let lmin = c0.hypot(c1).min(c2.hypot(c3));
     if lmin <= 1e-9 { 0.0 } else { 2.0 / lmin }
+}
+
+/// The opaque-interior tier `inst` earns: nonzero when it is a fully
+/// opaque solid fill of a whole ellipse (exponent 2, corner radii all
+/// `half.x`) large enough on screen that a wider inscribed polygon pays
+/// — 1 for 16 sides at [`ELLIPSE_TIER16_MIN_AREA`], 2 for 32 at
+/// [`ELLIPSE_TIER32_MIN_AREA`] — else 0 for the inscribed octagon.
+#[expect(
+    clippy::float_cmp,
+    reason = "exact gates mirroring the shader's alpha and ellipse tests"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "one early-out chain on the per-instance push path; the kind and paint tests must fold into the caller"
+)]
+#[inline(always)]
+fn interior_tier(inst: &Instance) -> u32 {
+    let s = &inst.shape;
+    // The ellipse is inside its device bounds: under the lowest tier
+    // threshold the projected ellipse area (pi/4 of it at most) cannot
+    // qualify — a cheap first filter. A degenerate bound fails it too.
+    if inst.meta[0] != KIND_FILL
+        || inst.meta[1] != PAINT_SOLID
+        || s.exponent != 2.0
+        || f64::from(inst.bounds[2] - inst.bounds[0]) * f64::from(inst.bounds[3] - inst.bounds[1])
+            < ELLIPSE_TIER16_MIN_AREA
+        || s.radii != [s.half[0]; 4]
+        || inst.color[3] * inst.params[1] != 1.0
+    {
+        return 0;
+    }
+    let det =
+        f64::from(inst.affine[0].mul_add(inst.affine[3], -(inst.affine[1] * inst.affine[2]))).abs();
+    let area = std::f64::consts::PI
+        * f64::from(s.half[0])
+        * f64::from(s.half[0])
+        * f64::from(s.aspect)
+        * det;
+    u32::from(area >= ELLIPSE_TIER16_MIN_AREA) + u32::from(area >= ELLIPSE_TIER32_MIN_AREA)
 }
 
 /// The specialised fragment pipeline `inst` requires: the union variant
@@ -849,6 +915,8 @@ pub struct Lowered {
     pub paths: u32,
     /// Deferred rasters, in lowering order.
     pub pending: Vec<PendingRaster>,
+    /// Path cell texels the `PendingRaster::Path` byte ranges index.
+    pub path_arena: Vec<u8>,
     /// `uv.xy` patches: `(instance, pending index, cell index)`.
     pub cell_patches: Vec<(u32, u32, u32)>,
     /// The producing emission's view of the same triples, indexed by
@@ -1166,6 +1234,9 @@ pub struct Lowering<'a> {
     member_outer_clip: Option<DeviceClip>,
     /// Atlas writes and cache updates to commit, in lowering order.
     pub(crate) pending: Vec<PendingRaster>,
+    /// The texel arena `pending`'s path cells index — per batch, so per
+    /// worker when lowering runs in parallel.
+    pub(crate) path_arena: Vec<u8>,
     /// Path identities admitted during this lowering, before atlas commit.
     /// A second use must replay the admitted layout as well as its texels.
     pending_paths: FxHashMap<u64, u32>,
@@ -1261,6 +1332,7 @@ impl<'a> Lowering<'a> {
             emission_patches: Vec::new(),
             mask_patches: Vec::new(),
             pending: Vec::new(),
+            path_arena: Vec::new(),
             pending_paths: FxHashMap::default(),
             commands_lowered: 0,
             layers_composed: 0,
@@ -1862,6 +1934,11 @@ impl<'a> Lowering<'a> {
                 variant: open.variant,
                 instances: open.seg_start..end,
             });
+            open.maybe_coverage &= open.pipeline == PipelineKind::SrcOver
+                && open.variant == ShaderVariant::Simple
+                && open.source.is_none()
+                && open.image.is_none()
+                && open.mask.is_none();
             open.seg_start = end;
         }
     }
@@ -1982,7 +2059,10 @@ impl<'a> Lowering<'a> {
             capture: None,
             ranges: Vec::new(),
             seg_start: instance_index(self.frame.instances.len()),
+            maybe_coverage: matches!(target, Target::Part(_)),
         });
+        // Any replaced pass ended without its entries; drop them.
+        self.frame.tier_scratch.clear();
         // A masked clip can span passes; the new pass binds its texture.
         self.set_mask(self.mask_key);
     }
@@ -2004,6 +2084,47 @@ impl<'a> Lowering<'a> {
     fn finish_pass_at(&mut self, end: usize) {
         self.end_segment_at(end);
         if let Some(open) = self.frame.open.take() {
+            let mut tier_ranges = [Range::default(), Range::default()];
+            // Entries at or past `end` belong to a speculative batch's
+            // inner pass (promote_isolation), finalized separately on a
+            // scratch target that never draws in coverage order.
+            let end_index = instance_index(end);
+            let mut entries = std::mem::take(&mut self.frame.tier_scratch);
+            let cut = entries
+                .iter()
+                .position(|&entry| (entry & 0x3fff_ffff) >= end_index)
+                .unwrap_or(entries.len());
+            if cut != 0 && open.maybe_coverage {
+                for tier in 0u32..2 {
+                    let start = instance_index(self.frame.instances.len());
+                    for &entry in &entries[..cut] {
+                        if entry >> 30 != tier + 1 {
+                            continue;
+                        }
+                        let src_index = (entry & 0x3fff_ffff) as usize;
+                        let index = self.frame.instances.len();
+                        self.frame.instances.push(Instance::new(KIND_POLYGON));
+                        let (head, tail) = self.frame.instances.split_at_mut(index);
+                        let (src, dst) = (&mut head[src_index], &mut tail[0]);
+                        dst.affine = src.affine;
+                        dst.bounds = src.bounds;
+                        dst.shape = src.shape;
+                        dst.color = src.color;
+                        dst.params = src.params;
+                        dst.grad[0] = f32::from_bits(u32::try_from(src_index).unwrap_or(u32::MAX));
+                        dst.meta = [KIND_POLYGON, PAINT_SOLID, 0, tier + 1];
+                        // The polygon covers the octagon this fill would
+                        // have drawn; the low bits tell vs_opaque to
+                        // skip it.
+                        src.meta[3] |= tier + 1;
+                    }
+                    tier_ranges[usize::try_from(tier).unwrap_or(usize::MAX)] =
+                        start..instance_index(self.frame.instances.len());
+                }
+                check_instance_bound(self.frame.instances.len());
+            }
+            entries.clear();
+            self.frame.tier_scratch = entries;
             let region = match open.target {
                 Target::Part(_) | Target::Projected(_) | Target::Plane(_) => {
                     [0, 0, self.width as u32, self.height as u32]
@@ -2037,6 +2158,7 @@ impl<'a> Lowering<'a> {
                 space: open.space,
                 backdrop_copy: open.backdrop_copy,
                 capture: open.capture,
+                tier_ranges,
             });
         }
     }
@@ -2133,10 +2255,21 @@ impl<'a> Lowering<'a> {
     /// instance's `uv.zw` is patched after the mask is stored.
     fn push_instance(&mut self, inst: &Instance) {
         self.set_variant(variant_of(inst));
-        let index = instance_index(self.frame.instances.len());
+        if inst.meta[0] == KIND_FILL
+            && let Some(open) = &self.frame.open
+            && open.maybe_coverage
+        {
+            let tier = interior_tier(inst);
+            if tier != 0 {
+                self.frame
+                    .tier_scratch
+                    .push(instance_index(self.frame.instances.len()) | (tier << 30));
+            }
+        }
         self.frame.instances.push(*inst);
         if let Some(pending) = self.mask_pending {
-            self.mask_patches.push((index, pending));
+            self.mask_patches
+                .push((instance_index(self.frame.instances.len() - 1), pending));
         }
     }
 
@@ -2563,6 +2696,7 @@ impl<'a> Lowering<'a> {
                 space: open.space,
                 backdrop_copy: None,
                 capture: None,
+                tier_ranges: [Range::default(), Range::default()],
             });
         }
         self.begin_pass(outer_target, None);
@@ -4577,7 +4711,7 @@ impl<'a> Lowering<'a> {
                 break 'stored (PathEmit::default(), None);
             };
             self.paths += 1;
-            let (emit, cells) = path::emit(&coverage)?;
+            let (emit, cells) = path::emit(&coverage, &mut self.path_arena)?;
             // Emission rects are relative to the placement offset; the
             // stored record keeps that frame.
             let stored = emit.translated(-pl.offset.x, -pl.offset.y);

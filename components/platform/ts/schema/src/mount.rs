@@ -130,12 +130,14 @@ pub fn decode_mount(payload: &[u8]) -> Result<MountPoint, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
-    if payload.get(reader.pos) != Some(&kind::MOUNT) {
+    // Read rather than peeked: a payload that ends after the version byte is
+    // truncated, not a payload of another kind.
+    let found = reader.byte()?;
+    if found != kind::MOUNT {
         return Err(DecodeError::NotAMountPoint {
-            found: payload_kind(payload.get(reader.pos).copied()),
+            found: payload_kind(found),
         });
     }
-    reader.pos += 1;
 
     let module = named(&mut reader, "module")?;
     let props = named(&mut reader, "props")?;

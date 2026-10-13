@@ -11,7 +11,7 @@ use crate::shell::Shell;
 use crate::{error, header, line, success};
 use waterui_cli::toolchain_checks;
 use waterui_cli::{
-    android::platform::{AndroidAbi, AndroidPlatform},
+    android::platform::AndroidAbi,
     apple::{platform::build_rust_lib, toolchain::AppleSdk},
     build::{BuildOptions, BuildProfile, BuiltTarget},
     gtk4::platform::build_gtk4,
@@ -135,7 +135,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     );
 
     if context.project.manifest().package.embedded {
-        // The embedded build's toolchain check and AAR compile futures cross
+        // The embedded build's toolchain check and XCFramework packaging futures cross
         // clippy's `large_futures` threshold (16 KiB) on Windows, so the future
         // is pinned on the heap instead of the caller's stack.
         return Box::pin(run_embedded_build(shell, &args, &context)).await;
@@ -155,12 +155,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 }
 
 /// `water build` on an embedded project produces the artifact the host
-/// application consumes — an Android AAR or Apple Swift package.
-///
-/// The AAR carries every ABI unless `--arch` narrows the set, lands at
-/// `target/package/` inside the project, and is published to `mavenLocal`
-/// under `<bundle_identifier>:<crate_name>:<crate_version>` so the host's
-/// Gradle build picks up every rerun (water-rs/cli#223).
+/// application consumes — an Apple Swift package.
 async fn run_embedded_build(shell: &Shell, args: &Args, context: &BuildContext) -> Result<()> {
     if args.output_dir.is_some() {
         bail!(
@@ -298,9 +293,8 @@ async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<Option<Buil
         args.backend.map(TargetBackend::lib_backend),
     )?);
     validate_backend_args(args, backend)?;
-    // Hydrolysis on Android opens no managed backend — the old widget-FFI
-    // backend is not its runtime; the Hydrolysis launcher crate
-    // `ensure_generated_backend` produces is.
+    // Hydrolysis on Android opens no managed backend crate: its runtime is
+    // the Hydrolysis launcher crate `ensure_generated_backend` produces.
     let managed_backends =
         if (args.platform, backend) == (TargetPlatform::Android, TargetBackend::Hydrolysis) {
             ManagedBackends::NONE
@@ -452,15 +446,6 @@ async fn execute_build(
                 )
                 .await
             }
-            TargetBackend::Android => {
-                build_for_android(
-                    &project,
-                    args.arch,
-                    context.build_options.clone(),
-                    kotlin()?,
-                )
-                .await
-            }
             TargetBackend::Gtk4 => build_gtk4(&project, context.build_options.clone()).await,
             TargetBackend::Hydrolysis => {
                 if args.platform == TargetPlatform::Android {
@@ -523,8 +508,8 @@ fn validate_arch_args(
     {
         waterui_cli::apple::platform::validate_architecture(arch.architecture())?;
     }
-    // Hydrolysis on Android takes --arch like the Android backend; on its
-    // desktop platforms the triple is the host's.
+    // Hydrolysis takes --arch on Android, where the build cross-compiles
+    // per ABI; on its desktop platforms the triple is the host's.
     let arch_free_backend = matches!(backend, TargetBackend::Gtk4 | TargetBackend::WinUi)
         || (backend == TargetBackend::Hydrolysis && platform != TargetPlatform::Android);
     if arch_free_backend && arch.is_some() {
@@ -538,9 +523,9 @@ fn validate_output_dir_args(
     backend: TargetBackend,
     output_dir: Option<&PathBuf>,
 ) -> Result<()> {
-    // Hydrolysis on Android stages the cdylib like the Android backend; the
-    // generated Gradle project's `buildRust_*` tasks use it.
-    let output_dir_supported = matches!(backend, TargetBackend::Apple | TargetBackend::Android)
+    // Hydrolysis on Android stages the cdylib for the generated Gradle
+    // project's `buildRust_*` tasks.
+    let output_dir_supported = backend == TargetBackend::Apple
         || (backend == TargetBackend::Hydrolysis && platform == TargetPlatform::Android);
     if output_dir.is_some() && !output_dir_supported {
         bail!("--output-dir is only supported for Apple/Android backends");
@@ -570,18 +555,6 @@ async fn check_toolchain_for_backend(
                 }
             };
             toolchain_checks::check_apple(host, sdk).await?;
-        }
-        TargetBackend::Android => {
-            if platform != TargetPlatform::Android {
-                bail!("Internal error: Android backend is not supported on {platform:?}");
-            }
-            let requested_abi = android_abi(arch.unwrap_or(TargetArch::Arm64));
-            return toolchain_checks::check_android_build_or_package_for_abis(
-                host,
-                &[requested_abi],
-            )
-            .await
-            .map(Some);
         }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
@@ -661,18 +634,6 @@ async fn build_for_apple(
     }
 }
 
-async fn build_for_android(
-    project: &Project,
-    arch: Option<TargetArch>,
-    options: BuildOptions,
-    kotlin: &waterui_cli::android::KotlinToolchain,
-) -> Result<BuiltTarget> {
-    let abi = android_abi(arch.unwrap_or(TargetArch::Arm64));
-    AndroidPlatform::new(abi)
-        .build(project, options, kotlin)
-        .await
-}
-
 const fn lib_platform(platform: TargetPlatform) -> LibTargetPlatform {
     match platform {
         TargetPlatform::Ios => LibTargetPlatform::IOS,
@@ -713,7 +674,6 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
 const fn backend_name(backend: TargetBackend) -> &'static str {
     match backend {
         TargetBackend::Apple => "Apple",
-        TargetBackend::Android => "Android",
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
         TargetBackend::WinUi => "WinUI",
@@ -741,8 +701,12 @@ mod tests {
                     validate_arch_args(platform, TargetBackend::Apple, Some(arch)).unwrap_err();
                 assert!(error.to_string().contains("only support arm64"));
                 assert!(
-                    validate_arch_args(TargetPlatform::Android, TargetBackend::Android, Some(arch))
-                        .is_ok()
+                    validate_arch_args(
+                        TargetPlatform::Android,
+                        TargetBackend::Hydrolysis,
+                        Some(arch)
+                    )
+                    .is_ok()
                 );
             }
             assert!(validate_arch_args(platform, TargetBackend::Apple, None).is_ok());

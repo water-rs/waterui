@@ -16,10 +16,7 @@ use crate::shell::Shell;
 use crate::{error, header, line, note, success, warn};
 use waterui_cli::toolchain_checks;
 use waterui_cli::{
-    android::{
-        device::{AndroidDevice, AndroidEmulator, AndroidTarget},
-        platform::AndroidPlatform,
-    },
+    android::device::{AndroidDevice, AndroidEmulator, AndroidTarget},
     apple::{
         device::AppleSimulator,
         physical::ApplePhysicalDevice,
@@ -304,8 +301,8 @@ impl From<CliLogLevel> for LogLevel {
 /// `--platform ios` covers both the physical device and the simulator; the
 /// device that decides between them is selected only after the project is
 /// open, and both build with the same Apple project. Hydrolysis on Android
-/// opens nothing — the old widget-FFI backend is not its runtime; the
-/// managed launcher crate `ensure_generated_backend` produces is.
+/// opens nothing: its runtime is the managed launcher crate
+/// `ensure_generated_backend` produces.
 const fn managed_backends(platform: TargetPlatform, backend: TargetBackend) -> ManagedBackends {
     if matches!(platform, TargetPlatform::Android) && matches!(backend, TargetBackend::Hydrolysis) {
         return ManagedBackends::NONE;
@@ -808,8 +805,8 @@ async fn build_and_run(
     // the Rust build: a release run without a valid `[signing.android]`
     // fails here instead of after compiling. The plan binds to this project
     // and these options; the Gradle step re-proves the binding rather than
-    // resolving again. `[signing.android]` is an Android platform contract —
-    // both Android backends prepare it.
+    // resolving again. `[signing.android]` is an Android platform contract,
+    // prepared here for every Android run.
     let package_options =
         package_options(&config, shell.build_progress()).with_device_udid(device_udid);
     let prepared_signing = (build_plan.lib_platform == LibTargetPlatform::Android)
@@ -1023,13 +1020,6 @@ async fn build_for_backend(
         TargetBackend::Apple => {
             Box::pin(build_rust_lib(project, plan.lib_platform, build_options)).await
         }
-        TargetBackend::Android => {
-            let abi = plan
-                .android_abi
-                .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for build"))?;
-            AndroidPlatform::clean_jni_libs(project).await?;
-            Box::pin(AndroidPlatform::new(abi).build(project, build_options, kotlin()?)).await
-        }
         TargetBackend::Gtk4 => Box::pin(build_gtk4(project, build_options)).await,
         TargetBackend::Hydrolysis => {
             if plan.lib_platform == LibTargetPlatform::Android {
@@ -1075,21 +1065,6 @@ async fn package_for_backend(
                 plan.lib_platform,
                 package_options,
                 built,
-            ))
-            .await
-        }
-        TargetBackend::Android => {
-            let abi = plan
-                .android_abi
-                .ok_or_else(|| eyre::eyre!("Internal error: missing Android ABI for packaging"))?;
-            Box::pin(AndroidPlatform::package_with_abis(
-                project,
-                package_options,
-                &[abi],
-                built,
-                prepared_signing.ok_or_else(|| {
-                    eyre::eyre!("Internal error: Android packaging has no signing plan")
-                })?,
             ))
             .await
         }
@@ -1479,12 +1454,6 @@ async fn check_toolchain_for_backend(
             };
             toolchain_checks::check_apple(host, sdk).await?;
         }
-        TargetBackend::Android => {
-            if platform != TargetPlatform::Android {
-                bail!("Internal error: Android backend is not supported on {platform:?}");
-            }
-            return toolchain_checks::check_android_run(host).await.map(Some);
-        }
         TargetBackend::Gtk4 => {
             if platform != TargetPlatform::Linux {
                 bail!("Internal error: GTK4 backend is not supported on {platform:?}");
@@ -1618,7 +1587,6 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
 const fn backend_name(backend: TargetBackend) -> &'static str {
     match backend {
         TargetBackend::Apple => "Apple",
-        TargetBackend::Android => "Android",
         TargetBackend::Gtk4 => "GTK4",
         TargetBackend::Hydrolysis => "Hydrolysis",
         TargetBackend::WinUi => "WinUI",

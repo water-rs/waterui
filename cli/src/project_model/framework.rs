@@ -194,7 +194,7 @@ struct LockedPackage {
 
 /// Whether a resolved package took the place of one the lock pins.
 ///
-/// The managed crate's graph is a superset of the project's: `waterui-ffi`
+/// The managed crate's graph is a superset of the project's: `waterui-apple`
 /// and its feature-gated platform dependencies add packages the project
 /// never locked, and among them a second major of a name the project already
 /// carries (`annotate-snippets` 0.11 beside the locked 0.12, through
@@ -1189,7 +1189,7 @@ impl ResolvedFramework {
         let project_lock: Lockfile = smol::fs::read_to_string(&project_lockfile).await?.parse()?;
         // Cargo resolves a member's lockfile at the workspace root, so the
         // seed has to land there — a `Cargo.lock` written into a member
-        // directory (a preview module under `managed_backends/ffi/modules`)
+        // directory (a preview module under `managed_backends/apple-companion/modules`)
         // is never read (#197).
         let workspace_root = {
             let mut command = cargo_metadata::MetadataCommand::new();
@@ -2065,7 +2065,6 @@ const FRAMEWORK_PACKAGES: &[&str] = &[
     "waterui",
     "waterui-core",
     "waterui-testing",
-    "waterui-ffi",
     "waterui-locale",
     "waterui-browser-cef",
     "waterui-preview",
@@ -2721,11 +2720,6 @@ pub(crate) mod test_fixtures {
                     "hydrolysis-path".to_owned(),
                     "backends/hydrolysis".to_owned(),
                 ),
-                (
-                    "android-backend-url".to_owned(),
-                    "https://github.com/water-rs/android-backend.git".to_owned(),
-                ),
-                ("android-backend-revision".to_owned(), revision('c')),
                 (
                     "hydrolysis-android-host-subdirectory".to_owned(),
                     "backends/hydrolysis/android".to_owned(),
@@ -3573,7 +3567,7 @@ fn rebase_patches_onto_source(
 ///
 /// The checkout's patch table only lists the members its own crates depend on
 /// through `path`; a member resolved through `[workspace.dependencies]` —
-/// `waterui-ffi`, `waterui-internal`, `waterui-media`, `waterui-mcp`,
+/// `waterui-internal`, `waterui-media`, `waterui-mcp`,
 /// `waterui-preview`, `waterui-preview-protocol`, `waterui-testing`, … — can
 /// still be requested by bare version from a generated or transitive manifest,
 /// and without an entry that request resolves a published release built from a
@@ -5687,7 +5681,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         );
 
         let mut wrong_repository = certification(FrameworkChannel::Stable, "v0.4.1");
-        wrong_repository.repository = "water-rs/android-backend".to_owned();
+        wrong_repository.repository = "water-rs/not-waterui".to_owned();
         assert!(
             verify_certification(
                 &crate::toolchain::Host::current(),
@@ -5697,7 +5691,7 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             )
             .unwrap_err()
             .to_string()
-            .contains("water-rs/android-backend")
+            .contains("water-rs/not-waterui")
         );
 
         let wrong_tag = certification(FrameworkChannel::Stable, "v0.4.0");
@@ -5751,7 +5745,6 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                 "hydrolysis-m3-version": "0.2.0",
                 "waterui-gtk-version": "0.1.2",
                 "apple-backend-path": "backends/apple",
-                "android-backend-url": "https://github.com/water-rs/android-backend.git",
             },
             "metadata": {
                 "minimum-cli-version": "0.1.0",
@@ -5837,11 +5830,6 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
                     "backends/hydrolysis".to_owned()
                 ),
                 (
-                    "android-backend-url".to_owned(),
-                    "https://github.com/water-rs/android-backend.git".to_owned()
-                ),
-                ("android-backend-revision".to_owned(), "c".repeat(40)),
-                (
                     "hydrolysis-android-host-subdirectory".to_owned(),
                     "backends/hydrolysis/android".to_owned()
                 ),
@@ -5862,21 +5850,6 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
         gtk.as_table_mut().unwrap().remove("rev");
         let error = framework_scaffold(&root).unwrap_err();
         assert!(error.to_string().contains("waterui-gtk"), "{error:?}");
-    }
-
-    #[test]
-    fn framework_scaffold_rejects_a_backend_revision_that_is_not_a_commit() {
-        let mut root: toml::Value = toml::from_str(include_str!(
-            "../../tests/fixtures/framework_checkout_manifest.toml"
-        ))
-        .unwrap();
-        root["package"]["metadata"]["waterui"]["android-backend-revision"] =
-            toml::Value::String("dev".to_owned());
-        let error = framework_scaffold(&root).unwrap_err();
-        assert!(
-            error.to_string().contains("android-backend-revision"),
-            "{error:?}"
-        );
     }
 
     #[test]
@@ -6149,10 +6122,6 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
         assert_eq!(
             framework.scaffold_value("apple-backend-path"),
             "backends/apple"
-        );
-        assert_eq!(
-            framework.scaffold_value("android-backend-revision"),
-            "c".repeat(40)
         );
         assert_eq!(framework.scaffold_value("waterui-version"), "0.4.1");
         assert!(framework.git_source().is_none());

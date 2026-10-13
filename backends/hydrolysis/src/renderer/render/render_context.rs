@@ -13,7 +13,7 @@ use waterui_text::styled::StyledStr;
 /// through it are node-local, and the transform maps them down. `bounds`
 /// is the widget's own rect in that space (`0,0,w,h` for a node). Hit
 /// tests no longer read a transform here: registrations carry the
-/// node-local rect plus the node's [`crate::renderer::Placement`], which
+/// node-local rect plus the node's `Placement`, which
 /// resolves them in window space.
 #[derive(Debug, Clone, Copy)]
 pub struct RenderContext {
