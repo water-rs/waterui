@@ -976,11 +976,13 @@ pub struct GpuRenderer {
     /// share `Rgba16Float`, both draw through slot 0, so identical
     /// pipelines are built once (#170). A `None` cell is created at first
     /// use — preparation is measured on the frame that needs it (#170 B3).
-    /// Slot 4 is the atlas variant; slot 3 holds the union-field
-    /// pipelines for backdrop-union members. Slot 3 is
-    /// never built at init: the variant-3 module and pipeline are
-    /// created on the first union or outer-band member (on wasm, by
-    /// `prepare_lazy_pipelines` before the frame that needs them).
+    /// Slot 4 is the atlas variant and slot 5 the rect variant; slot 3
+    /// holds the union-field pipelines for backdrop-union members. Only
+    /// Full and Union admit replacement composites, so the replace
+    /// column builds Full alone at init — and slot 3 is never built at
+    /// init: the variant-3 module and pipeline are created on the first
+    /// union or outer-band member (on wasm, by `prepare_lazy_pipelines`
+    /// before the frame that needs them).
     pipelines: [[[Option<wgpu::RenderPipeline>; 6]; 2]; 2],
     /// `[opaque, partial, atlas partial, rect partial]` coverage
     /// pipelines, same cell policy as the core set: built at init under
@@ -2166,6 +2168,10 @@ fn core_pipeline<'m>(
     replace: bool,
     variant: ShaderVariant,
 ) -> Result<&'m wgpu::RenderPipeline, RenderError> {
+    debug_assert!(
+        !replace || matches!(variant, ShaderVariant::Full | ShaderVariant::Union),
+        "only composite shaders replace the destination"
+    );
     let cell = &mut pipelines[usize::from(format != TARGET_FORMAT)][usize::from(replace)]
         [variant_index(variant)];
     if cell.is_none() {
@@ -2365,6 +2371,11 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 let slot = usize::from(format != TARGET_FORMAT);
                 for replace in [false, true] {
                     for (module, variant) in [0usize, 1, 2, 4, 5].iter().enumerate() {
+                        // Replacement composites require Full; Union
+                        // remains demand-created.
+                        if replace && *variant != variant_index(ShaderVariant::Full) {
+                            continue;
+                        }
                         let cell = &mut pipelines[slot][usize::from(replace)][*variant];
                         if cell.is_none() {
                             *cell = Some(create_pipeline(
@@ -2719,6 +2730,11 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         let slot = usize::from(format != TARGET_FORMAT);
         for replace in [false, true] {
             for (module, variant) in [0usize, 1, 2, 4, 5].into_iter().enumerate() {
+                // Replacement composites require Full; Union remains
+                // demand-created.
+                if replace && variant != variant_index(ShaderVariant::Full) {
+                    continue;
+                }
                 let module = &modules[module];
                 jobs.push(async move {
                     create_pipeline(
