@@ -8,7 +8,6 @@
 //! device is currently reachable over.
 
 use std::path::Path;
-#[cfg(unix)]
 use std::time::Duration;
 
 use eyre::{Context as _, bail, eyre};
