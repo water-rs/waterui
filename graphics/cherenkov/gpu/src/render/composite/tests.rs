@@ -3,7 +3,7 @@ use std::ops::Range;
 use super::*;
 use crate::render::composite::plan::{Limits, Ordering};
 use crate::render::composition::Materialization;
-use crate::render::instance::{Instance, KIND_SPAN, pack_color};
+use crate::render::instance::{Instance, KIND_SPAN};
 use crate::render::lower::{DrawRange, Pass, ShaderVariant};
 
 fn pass(target: Target, clear: bool, source: Option<Source>, instance: u32) -> Pass {
@@ -292,7 +292,7 @@ fn cached_paint_updates_preserve_lifetimes_and_motion_rechecks_locality() {
     let format = wgpu::TextureFormat::Rgba16Float;
     assert!(cache.update(&mut plan, &frame, format, limits(2)));
     let image = plan.targets[1];
-    frame.instances[1].color = pack_color([1.5, 0.3, 0.0, 0.8]);
+    frame.instances[1].color = [1.5, 0.3, 0.0, 0.8];
     frame.instances[2].params[1] = 0.5;
     assert!(!cache.update(&mut plan, &frame, format, limits(2)));
     assert_eq!(plan.targets[1], image);

@@ -74,7 +74,11 @@ struct Instance {
     // (`FLAG_BLEND_SRC`).
     inner: Shape,
     // device -> clip-local affine, same coefficient order.
-    clip_inv: array<vec4<f32>, 2>,
+    clip_inv: array<vec2<f32>, 3>,
+    // Four u16 texel origins packed as two u32s: xy the glyph/cell atlas
+    // origin, zw the mask atlas origin — or an external frame's binding
+    // size, whose pixel extent stays inside the u16 texel bound.
+    uv: vec2<u32>,
     // The clip shape; for a masked clip (always a sharp rect) `aspect` and
     // `exponent` — unread by its SDF — carry the mask cell size.
     clip: Shape,
@@ -87,14 +91,9 @@ struct Instance {
     params: vec4<f32>,
     // x: kind, y: paint, z: first stop index, w: stops | interp << 16 | extend << 20 | flags << 24
     meta_: vec4<u32>,
-    // Straight-alpha working-space colour as `vec4<f16>` bits (x|y in .x,
-    // z|w in .y): the colour payload runs at the floor's f16 precision,
-    // whose ±65504 range still covers every HDR value the engine emits.
-    color: vec2<u32>,
-    // Four u16 texel origins packed as two u32s: xy the glyph/cell atlas
-    // origin, zw the mask atlas origin — or an external frame's binding
-    // size, whose pixel extent stays inside the u16 texel bound.
-    uv: vec2<u32>,
+    // Straight-alpha working-space colour; precision is retained until
+    // target storage.
+    color: vec4<f32>,
 }
 
 struct Stop {
@@ -135,9 +134,9 @@ struct VsOut {
     @location(1) device: vec2<f32>,
     @location(2) @interpolate(flat) instance: u32,
     @location(3) @interpolate(flat) meta_: vec4<u32>,
-    // `vec4<f16>`-packed colour: two u32s keep the flat varying inside
-    // the f32 integer interface every backend supports.
-    @location(4) @interpolate(flat) color: vec2<u32>,
+    // Straight-alpha working-space colour; precision is retained until
+    // target storage.
+    @location(4) @interpolate(flat) color: vec4<f32>,
     @location(5) @interpolate(flat) params: vec4<f32>,
     // half.xy, aspect, exponent.
     @location(6) @interpolate(flat) shape_a: vec4<f32>,
@@ -153,13 +152,9 @@ fn uv_unpack(v: u32) -> vec2<f32> {
     return vec2<f32>(f32(v & 0xffffu), f32(v >> 16u));
 }
 
-// `Instance.color` is two u32 lanes each packing a half2 — the f16 colour
-// channels of the span's paint. naga rejects `bitcast<vec2<f16>>(u32)` —
-// a scalar-to-vector bitcast — so the decode goes through the
-// `unpack2x16float` builtin and narrows back: the f16-representable value
-// survives the round trip exactly.
-fn unpack_color(v: vec2<u32>) -> vec4<f16> {
-    return vec4<f16>(vec2<f16>(unpack2x16float(v.x)), vec2<f16>(unpack2x16float(v.y)));
+// Expand the six stored `clip_inv` coefficients to `apply`'s two vec4s.
+fn expand_affine(m: array<vec2<f32>, 3>) -> array<vec4<f32>, 2> {
+    return array<vec4<f32>, 2>(vec4<f32>(m[0], m[1]), vec4<f32>(m[2], 0.0, 0.0));
 }
 
 fn apply(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
@@ -654,10 +649,10 @@ fn clip_mask_coverage(in: VsOut) -> f32 {
     var cov = 1.0;
     if (flags & FLAG_HAS_CLIP) != 0u {
         // `clip_inv` maps device to clip-local: J^-T is its transpose.
-        let pc = apply(instances[i].clip_inv, in.device);
+        let ci = expand_affine(instances[i].clip_inv);
+        let pc = apply(ci, in.device);
         let sample = sdf_sample(instances[i].clip, pc, false);
         let g = sample.gradient;
-        let ci = instances[i].clip_inv;
         let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
         cov = coverage_dir(sample.distance, dg, 1.0, g.w > 0.0, g.z);
     }

@@ -6,7 +6,7 @@ struct TileInput {
     metal::float2 device_ [[user(loc1), center_perspective]];
     uint instance [[user(loc2), flat]];
     metal::uint4 meta [[user(loc3), flat]];
-    metal::uint2 color [[user(loc4), flat]];
+    metal::float4 color [[user(loc4), flat]];
     metal::float4 params [[user(loc5), flat]];
     metal::float4 shape_a [[user(loc6), flat]];
     metal::float4 shape_radii [[user(loc7), flat]];

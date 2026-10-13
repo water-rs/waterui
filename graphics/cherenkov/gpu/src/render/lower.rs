@@ -25,7 +25,7 @@ use crate::render::instance::{
     FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
     KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
     KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID, PAINT_TEXTURE, Shape, Stop,
-    affine, blend_code, check_color, color_alpha, pack_color, pack_uv, unpack_uv,
+    affine, affine_coefficients, blend_code, check_color, pack_uv, unpack_uv,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -439,7 +439,7 @@ fn interior_tier(inst: &Instance) -> u32 {
         || f64::from(inst.bounds[2] - inst.bounds[0]) * f64::from(inst.bounds[3] - inst.bounds[1])
             < ELLIPSE_TIER16_MIN_AREA
         || s.radii != [s.half[0]; 4]
-        || color_alpha(inst.color) * inst.params[1] != 1.0
+        || inst.color[3] * inst.params[1] != 1.0
     {
         return 0;
     }
@@ -682,7 +682,7 @@ struct InstanceTemplate {
     affine: [f32; 6],
     shape: Shape,
     inner: Shape,
-    color: [u32; 2],
+    color: [f32; 4],
     grad: [f32; 4],
     grad2: [f32; 4],
     params: [f32; 2],
@@ -3102,7 +3102,7 @@ impl<'a> Lowering<'a> {
     /// Clip state belongs to composition; coverage and glyph atlas UVs remain retained.
     const fn apply_clip(inst: &mut Instance, clip: Option<DeviceClip>) {
         if let Some(clip) = clip {
-            inst.clip_inv = affine(clip.inv);
+            inst.clip_inv = affine_coefficients(clip.inv);
             inst.clip = clip.shape;
             inst.meta[3] |= FLAG_HAS_CLIP << 24;
             if let Some(mask) = clip.mask {
@@ -4265,7 +4265,7 @@ impl<'a> Lowering<'a> {
                 }
                 inst.params[0] = *param_x;
                 let paint = self.shaped_paint(paint, *bounds, *local, *extra_margin)?;
-                inst.color = pack_color(paint.color);
+                inst.color = paint.color;
                 inst.grad = paint.grad;
                 inst.grad2 = paint.grad2;
                 inst.meta[1] = paint.kind;
@@ -4287,7 +4287,7 @@ impl<'a> Lowering<'a> {
                 inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
                 inst.shape = *shape;
                 inst.params[0] = f32_f64(*sigma_eff);
-                inst.color = pack_color(check_color(*color)?);
+                inst.color = check_color(*color)?;
                 inst.meta[1] = PAINT_SOLID;
                 self.push_shadow_quads(&inst, b, cover);
             }
@@ -4747,7 +4747,7 @@ impl<'a> Lowering<'a> {
             .copied()
             .unwrap_or_else(|| self.resolved_paint(paint));
         let mut template = Self::base(KIND_SPAN, affine(self.transform), self.clip);
-        template.color = pack_color(paint.color);
+        template.color = paint.color;
         template.grad = paint.grad;
         template.grad2 = paint.grad2;
         template.meta[1] = paint.kind;
@@ -5069,7 +5069,7 @@ impl<'a> Lowering<'a> {
             let mut inst = *template.get_or_insert_with(|| {
                 let mut inst = Self::base(KIND_GLYPH, affine(self.transform), self.clip);
                 let data = self.resolved_paint(paint);
-                inst.color = pack_color(data.color);
+                inst.color = data.color;
                 inst.grad = data.grad;
                 inst.grad2 = data.grad2;
                 inst.meta[1] = data.kind;
@@ -5594,6 +5594,26 @@ mod tests {
             let translated = Affine::new([a, b, c, d, 123.0, -456.0]);
             assert_eq!(lowering.margin(translated).to_bits(), expected);
         }
+    }
+
+    #[test]
+    fn near_opaque_ellipse_is_not_promoted_after_retention() {
+        let mut inst = Instance::new(KIND_FILL);
+        inst.affine = affine(Affine::IDENTITY);
+        inst.bounds = [-128.0, -128.0, 128.0, 128.0];
+        inst.shape = Shape {
+            half: [128.0; 2],
+            aspect: 1.0,
+            exponent: 2.0,
+            radii: [128.0; 4],
+        };
+        inst.color = [1.0, 0.0, 0.0, 0.9998];
+        assert_eq!(interior_tier(&inst), 0);
+        let mut retained = InstanceTemplate::new(&inst).restore();
+        retained.bounds = inst.bounds;
+        assert_eq!(interior_tier(&retained), 0);
+        inst.color[3] = 1.0;
+        assert_eq!(interior_tier(&inst), 2);
     }
 
     #[test]

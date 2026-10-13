@@ -143,17 +143,15 @@ fn extend_t(t: f32, mode: u32) -> f32 {
 }
 
 // Premultiplied working-space colour of the gradient at parameter `t`.
-// Stop interpolation and the premultiply run in f16 (±65504 covers HDR
-// stops); the sRGB decode and P3 matrix stay f32.
-fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f16> {
-    var c: vec4<f16>;
+fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
+    var c: vec4<f32>;
     if count == 0u {
-        return vec4<f16>(0.0);
+        return vec4<f32>(0.0);
     }
     if t <= stops[first].offset || count == 1u {
-        c = vec4<f16>(stops[first].color);
+        c = stops[first].color;
     } else if t >= stops[first + count - 1u].offset {
-        c = vec4<f16>(stops[first + count - 1u].color);
+        c = stops[first + count - 1u].color;
     } else {
         var i = first;
         loop {
@@ -166,13 +164,13 @@ fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f16> {
         let s1 = stops[i + 1u];
         let span = s1.offset - s0.offset;
         let f = select((t - s0.offset) / span, 0.0, span <= 0.0);
-        c = mix(vec4<f16>(s0.color), vec4<f16>(s1.color), f16(f));
+        c = mix(s0.color, s1.color, f);
     }
-    var rgb = vec3<f16>(c[0], c[1], c[2]);
+    var rgb = c.rgb;
     if interp == INTERP_SRGB {
-        rgb = vec3<f16>(SRGB_TO_P3 * srgb_decode(vec3<f32>(rgb)));
+        rgb = SRGB_TO_P3 * srgb_decode(rgb);
     }
-    return vec4<f16>(rgb * c[3], c[3]);
+    return vec4<f32>(rgb * c.a, c.a);
 }
 
 fn linear_t(i: u32, p: vec2<f32>) -> f32 {
@@ -348,25 +346,23 @@ fn mesh_uv(point: vec2<f32>, top: vec4<f32>, bottom: vec4<f32>) -> vec3<f32> {
     return answer;
 }
 
-fn paint_mesh(first: u32, count: u32, point: vec2<f32>, smooth_color: bool) -> vec4<f16> {
+fn paint_mesh(first: u32, count: u32, point: vec2<f32>, smooth_color: bool) -> vec4<f32> {
     for (var remaining = count; remaining > 0u; remaining -= 1u) {
         let base = first + (remaining - 1u) * 6u;
         let uv = mesh_uv(point, stops[base].color, stops[base + 1u].color);
         if uv.z != 0.0 {
             var weight = uv.xy;
             if smooth_color { weight = weight * weight * (3.0 - 2.0 * weight); }
-            let top = mix(vec4<f16>(stops[base + 2u].color), vec4<f16>(stops[base + 3u].color), f16(weight.x));
-            let bottom = mix(vec4<f16>(stops[base + 4u].color), vec4<f16>(stops[base + 5u].color), f16(weight.x));
-            return mix(top, bottom, f16(weight.y));
+            let top = mix(stops[base + 2u].color, stops[base + 3u].color, weight.x);
+            let bottom = mix(stops[base + 4u].color, stops[base + 5u].color, weight.x);
+            return mix(top, bottom, weight.y);
         }
     }
-    return vec4<f16>(0.0);
+    return vec4<f32>(0.0);
 }
 
-fn paint(i: u32, meta_: vec4<u32>, color_bits: vec2<u32>, local: vec2<f32>, device: vec2<f32>) -> vec4<f16> {
+fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: vec2<f32>) -> vec4<f32> {
     let kind = meta_.y & 0xffffu;
-    // The solid colour arrives f16-packed; its premultiply runs in f16.
-    let color = unpack_color(color_bits);
     var point = local;
     if (meta_.y & 0x10000u) != 0u {
         let linear = stops[meta_.z - 2u].color;
@@ -376,17 +372,17 @@ fn paint(i: u32, meta_: vec4<u32>, color_bits: vec2<u32>, local: vec2<f32>, devi
     }
     switch kind {
         case PAINT_SOLID: {
-            return vec4<f16>(vec3<f16>(color[0], color[1], color[2]) * color[3], color[3]);
+            return vec4<f32>(color.rgb * color.a, color.a);
         }
         case PAINT_TEXTURE: {
             // `grad.xy` carries the source region's device-space origin.
-            return vec4<f16>(textureLoad(source, vec2<i32>(floor(device - instances[i].grad.xy)), 0));
+            return textureLoad(source, vec2<i32>(floor(device - instances[i].grad.xy)), 0);
         }
         case PAINT_MESH: {
             return paint_mesh(meta_.z, meta_.w & 0x00ffffffu, point, (meta_.y & 0x20000u) != 0u);
         }
         case PAINT_IMAGE: {
-            return vec4<f16>(paint_image(i, point));
+            return paint_image(i, point);
         }
         default: {
             let meta_w = meta_.w;
@@ -399,13 +395,13 @@ fn paint(i: u32, meta_: vec4<u32>, color_bits: vec2<u32>, local: vec2<f32>, devi
             } else {
                 let radial = radial_t(i, point);
                 if !radial.valid {
-                    return vec4<f16>(0.0);
+                    return vec4<f32>(0.0);
                 }
                 if radial.side != 0.0 {
                     // t = ±∞ clamps to an end stop under pad and is outside
                     // the range of every other mode lowering accepts.
                     if extend != EXTEND_PAD {
-                        return vec4<f16>(0.0);
+                        return vec4<f32>(0.0);
                     }
                     t = max(radial.side, 0.0);
                 } else {
@@ -416,12 +412,12 @@ fn paint(i: u32, meta_: vec4<u32>, color_bits: vec2<u32>, local: vec2<f32>, devi
             // `t != t` is not reliable under every driver.
             let tbits = bitcast<u32>(t);
             if (tbits & 0x7f800000u) == 0x7f800000u && (tbits & 0x007fffffu) != 0u {
-                return vec4<f16>(0.0);
+                return vec4<f32>(0.0);
             }
             let interp = (meta_w >> 16u) & 0xfu;
             let count = meta_w & 0xffffu;
             if !extend_ok(t, extend) {
-                return vec4<f16>(0.0);
+                return vec4<f32>(0.0);
             }
             return eval_stops(instances[i].meta_.z, count, interp, extend_t(t, extend));
         }
@@ -525,7 +521,7 @@ fn backdrop_field(q: vec2<f32>) -> BackdropField {
         return BackdropField(u.d, u.n, u.w_own);
     }
     // union-stub
-    let own = device_sdf(inst.clip_inv, inst.clip, q);
+    let own = device_sdf(expand_affine(inst.clip_inv), inst.clip, q);
     return BackdropField(own.x, own.yz, 1.0);
 }
 
@@ -584,7 +580,7 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     } else
     // union-stub
     {
-        let own = device_sdf(inst.clip_inv, inst.clip, pixel);
+        let own = device_sdf(expand_affine(inst.clip_inv), inst.clip, pixel);
         px.own_sdf = own.x;
         px.sdf = own.x;
         px.normal = own.yz;
@@ -666,26 +662,21 @@ fn fs_simple(in: VsOut) -> vec4<f32> {
     return solid_coverage_color(in.color, in.params.y, cov);
 }
 
-fn solid_coverage_color(color_bits: vec2<u32>, opacity: f32, coverage: f32) -> vec4<f32> {
+fn solid_coverage_color(color: vec4<f32>, opacity: f32, coverage: f32) -> vec4<f32> {
     let cov = clamp(coverage, 0.0, 1.0) * opacity;
-    // The premultiply runs in f16 — the floor's colour precision; the
-    // coverage multiply then runs f32: coverage stays out of f16.
-    let color = unpack_color(color_bits);
-    let px = vec4<f32>(vec4<f16>(vec3<f16>(color[0], color[1], color[2]) * color[3], color[3])) * cov;
-    return move_space(px, SPACE_LINEAR, globals.space);
+    return move_space(vec4<f32>(color.rgb * color.a, color.a) * cov, SPACE_LINEAR, globals.space);
 }
 
 // Retained path spans already describe full coverage. Their opacity is
 // uniform over the primitive, so the vertex stage can select them without
 // fragment discard (which would prevent early hidden-surface removal).
 fn opaque_span(inst: Instance) -> bool {
-    return inst.meta_.x == KIND_SPAN && f32(unpack_color(inst.color)[3]) * inst.params.y == 1.0;
+    return inst.meta_.x == KIND_SPAN && inst.color.a * inst.params.y == 1.0;
 }
 
 struct OpaqueOut {
     @builtin(position) position: vec4<f32>,
-    // `vec4<f16>`-packed colour; fs_opaque reads .xyz and writes alpha 1.
-    @location(0) @interpolate(flat) color: vec2<u32>,
+    @location(0) @interpolate(flat) color: vec3<f32>,
 }
 
 // All eight primitive kinds fit three bits. MAX_PASS_INSTANCES = 1 << 21
@@ -777,13 +768,13 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     // Depths stay below 0.5 for 2^21 instances (below 1.0 for ~3.1M);
     // render/mod.rs's MAX_PASS_INSTANCES enforces the bound.
     out.position.z = bitcast<f32>(0x3e000000u + inst_index * 8u + select(0u, 4u, tier != 0u));
-    if f32(unpack_color(inst.color)[3]) * inst.params.y != 1.0
+    if inst.color.a * inst.params.y != 1.0
         || (inst.meta_.x != KIND_SPAN && inst.meta_.x != KIND_FILL && inst.meta_.x != KIND_REGION)
         || any(inst.bounds.xy >= inst.bounds.zw)
         || promoted {
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    return OpaqueOut(out.position, out.color);
+    return OpaqueOut(out.position, out.color.rgb);
 }
 
 @vertex
@@ -809,8 +800,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
 
 @fragment
 fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
-    let c = unpack_color(in.color);
-    return move_space(vec4<f32>(vec3<f32>(vec3<f16>(c[0], c[1], c[2])), 1.0), SPACE_LINEAR, globals.space);
+    return move_space(vec4<f32>(in.color, 1.0), SPACE_LINEAR, globals.space);
 }
 
 @fragment
@@ -867,9 +857,7 @@ fn fs_shadow(in: VsOut) -> vec4<f32> {
         cov = shadow(s, in.local, sigma);
     }
     cov = clamp(cov, 0.0, 1.0) * in.params.y;
-    let color = unpack_color(in.color);
-    let px = vec4<f32>(vec4<f16>(vec3<f16>(color[0], color[1], color[2]) * color[3], color[3])) * cov;
-    return move_space(px, SPACE_LINEAR, globals.space);
+    return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
 }
 
 fn fs_full(in: VsOut) -> vec4<f32> {
@@ -984,7 +972,5 @@ fn fs_full(in: VsOut) -> vec4<f32> {
         }
         return move_space(paint_backdrop(i, in.device) * cov, tspace, globals.space);
     }
-    // The paint payload is f16; widened once to f32, coverage applies
-    // there: coverage and opacity never enter f16 arithmetic.
-    return move_space(vec4<f32>(paint(i, in.meta_, in.color, in.local, in.device)) * cov, SPACE_LINEAR, globals.space);
+    return move_space(paint(i, in.meta_, in.color, in.local, in.device) * cov, SPACE_LINEAR, globals.space);
 }
