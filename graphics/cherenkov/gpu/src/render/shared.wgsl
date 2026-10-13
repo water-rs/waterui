@@ -649,11 +649,11 @@ fn clip_mask_coverage(in: VsOut) -> f32 {
     var cov = 1.0;
     if (flags & FLAG_HAS_CLIP) != 0u {
         // `clip_inv` maps device to clip-local: J^-T is its transpose.
-        let ci = expand_affine(instances[i].clip_inv);
-        let pc = apply(ci, in.device);
+        let pc = apply(expand_affine(instances[i].clip_inv), in.device);
         let sample = sdf_sample(instances[i].clip, pc, false);
         let g = sample.gradient;
-        let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
+        let ci = instances[i].clip_inv;
+        let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[1].x * g.x + ci[1].y * g.y);
         cov = coverage_dir(sample.distance, dg, 1.0, g.w > 0.0, g.z);
     }
     if (flags & FLAG_HAS_MASK) != 0u {
