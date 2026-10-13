@@ -310,6 +310,12 @@ jobs:
       - name: Clippy (hydrolysis, checked feature set)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
         run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      # Rustdoc under the same set: the comment-only owners pass documents
+      # hydrolysis with `default = []`, so intra-doc links inside the runner
+      # modules these features gate in are never resolved there (#2013).
+      - name: Rustdoc (hydrolysis, checked feature set)
+        if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked -p hydrolysis --no-deps --features accessibility,inspector-signals,testing,web,winit
       - name: Check (hydrolysis, no features)
         if: inputs.full
         run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib

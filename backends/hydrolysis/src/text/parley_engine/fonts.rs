@@ -284,10 +284,10 @@ fn staged_fonts_dir(resources: &waterui_core::ResourceContext) -> std::path::Pat
 ///
 /// The platform's own faces are the ones `fontique` enumerates, except on
 /// Android: `fontique` has no source there, so
-/// [`super::android_fonts::platform_font_context`] scans the platform font
+/// `android_fonts::platform_font_context` scans the platform font
 /// directories instead. The application's half is the same on every target.
 ///
-/// The fonts directory is [`staged_fonts_dir`] of the environment's required
+/// The fonts directory is `staged_fonts_dir` of the environment's required
 /// [`waterui_core::ResourceContext`] and is never probed from the process's
 /// working directory or executable location, so an embedded host's fonts come
 /// from the roots it installed.

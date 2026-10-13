@@ -1,6 +1,6 @@
 //! Theme-token assembly for the runtime environment.
 //!
-//! [`install_theme_tokens`] installs the runtime's theme tokens in precedence
+//! `install_theme_tokens` installs the runtime's theme tokens in precedence
 //! order: framework defaults < [`Style::install_tokens`](crate::Style) < the
 //! application's own environment. Every runner calls it — the rendered
 //! runners with their style, the semantic runtime with `None` — so the same
@@ -67,9 +67,9 @@ pub(crate) fn install_theme_tokens(env: &mut Environment, style: Option<&dyn cra
 /// Installs the framework default tokens underneath whatever `env` already
 /// carries.
 ///
-/// This is the `None`-style arm of [`install_theme_tokens`]. External test
+/// This is the `None`-style arm of `install_theme_tokens`. External test
 /// harnesses (`waterui-testing`) call this; the runners go through
-/// [`install_theme_tokens`].
+/// `install_theme_tokens`.
 pub fn install_default_tokens(env: &mut Environment) {
     install_theme_tokens(env, None);
 }

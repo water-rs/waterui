@@ -677,7 +677,7 @@ impl HeadlessRuntime {
     /// Performs an accessibility action against the merged tree.
     ///
     /// Popup-window node ids are shifted into their own stride in the merged
-    /// update (see [`SemanticCore::take_merged_accessibility_tree_update`]),
+    /// update (see `SemanticCore::take_merged_accessibility_tree_update`),
     /// so a request whose target lands in a popup's range demuxes back to that
     /// window's core — the action targets (a menu item's activation, a picker
     /// row's selection) live there. Returns whether the action changed state,
@@ -771,9 +771,10 @@ impl HeadlessRuntime {
     ///
     /// # Errors
     /// Returns [`AccessibilityActivationPointError::NoNode`] when the id
-    /// resolves to a closed popup or a node with no projected region, and
-    /// [`AccessibilityActivationPointError::UnknownNode`] when no window
-    /// holds it.
+    /// resolves to a closed popup or no window holds it, and
+    /// [`AccessibilityActivationPointError::NoBounds`] or
+    /// [`AccessibilityActivationPointError::EmptyFragment`] when the node has
+    /// no projected region.
     #[cfg(feature = "accessibility")]
     pub fn accessibility_activation_point(
         &self,
