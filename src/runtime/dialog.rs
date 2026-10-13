@@ -17,19 +17,21 @@
 //! use waterui::prelude::*;
 //! use waterui::dialog::{Dialog, DialogAction};
 //!
-//! let confirm = binding(false);
-//! vstack((
-//!     button("Paste").action({
-//!         let confirm = confirm.clone();
-//!         move || confirm.set(true)
-//!     }),
-//!     text("editor").dialog(
-//!         Dialog::new(&confirm, "Paste multiple lines?")
-//!             .message("The clipboard holds more than one line.")
-//!             .action(DialogAction::new("Paste", || {}))
-//!             .action(DialogAction::cancel("Cancel", || {})),
-//!     ),
-//! ))
+//! fn view() -> impl View {
+//!     let confirm = binding(false);
+//!     vstack((
+//!         button("Paste").action({
+//!             let confirm = confirm.clone();
+//!             move || confirm.set(true)
+//!         }),
+//!         text("editor").dialog(
+//!             Dialog::new(&confirm, "Paste multiple lines?")
+//!                 .message("The clipboard holds more than one line.")
+//!                 .action(DialogAction::new("Paste", || {}))
+//!                 .action(DialogAction::cancel("Cancel", || {})),
+//!         ),
+//!     ))
+//! }
 //! ```
 
 use nami::Binding;
