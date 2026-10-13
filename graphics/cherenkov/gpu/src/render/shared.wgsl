@@ -450,23 +450,23 @@ fn device_sdf(ci: array<vec4<f32>, 2>, s: Shape, pixel: vec2<f32>) -> vec4<f32> 
     return vec4<f32>(sample.distance / len, dg / len, 0.0);
 }
 
-// Device-space gradient of a signed distance, for the local -> device
-// affine `m` (J^-T g), before its length is scaled into per-pixel change.
-fn device_grad_vec(m: array<vec4<f32>, 2>, g: vec2<f32>) -> vec2<f32> {
-    let a = m[0].x;
-    let b = m[0].y;
-    let c = m[0].z;
-    let d = m[0].w;
+// Device-space gradient of a signed distance, for the affine's linear
+// coefficients (J^-T g), before its length is scaled into per-pixel change.
+fn device_grad_vec(m: vec4<f32>, g: vec2<f32>) -> vec2<f32> {
+    let a = m.x;
+    let b = m.y;
+    let c = m.z;
+    let d = m.w;
     return vec2<f32>(d * g.x - b * g.y, -c * g.x + a * g.y);
 }
 
 // Per-device-pixel scale for a gradient returned by `device_grad_vec`:
 // |det^-1| of the affine's linear part.
-fn device_grad_scale(m: array<vec4<f32>, 2>) -> f32 {
-    let a = m[0].x;
-    let b = m[0].y;
-    let c = m[0].z;
-    let d = m[0].w;
+fn device_grad_scale(m: vec4<f32>) -> f32 {
+    let a = m.x;
+    let b = m.y;
+    let c = m.z;
+    let d = m.w;
     let det = a * d - b * c;
     return abs(select(1.0 / det, 0.0, abs(det) < 1e-12));
 }
@@ -604,8 +604,8 @@ fn corner_coverage(a: vec2<f32>, v1: vec2<f32>, v2: vec2<f32>, scale: f32) -> f3
     return clamp(abs(sum) * 0.5, 0.0, 1.0);
 }
 
-// Coverage of the shape `s` at local point `p`, `m` mapping local to device.
-fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_quadratic: bool) -> f32 {
+// Coverage of shape `s` at local point `p`; `m` holds local-to-device linear coefficients.
+fn shape_coverage(s: Shape, p: vec2<f32>, m: vec4<f32>, specialize_quadratic: bool) -> f32 {
     // A sharp corner inside this pixel: the exact area inside both
     // half-planes. `a`, `sgn`, and the quadrant radius mirror `sdf_sample`;
     // the strict `<` keeps a corner exactly on a pixel boundary on the

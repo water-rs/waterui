@@ -649,7 +649,7 @@ fn read_composite_backdrop(coord: vec2<i32>) -> vec4<f32> {
 // evaluation, and no `instances` reads at all.
 fn fs_simple(in: VsOut) -> vec4<f32> {
     let s = Shape(in.shape_a.xy, in.shape_a.z, in.shape_a.w, in.shape_radii);
-    let m = array<vec4<f32>, 2>(in.affine0, in.affine1);
+    let m = in.affine0;
     var cov: f32;
     switch in.meta_.x {
         case KIND_GLYPH: {
@@ -839,7 +839,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
     if inst.meta_.x == KIND_FILL && s.exponent == 2.0 && all(s.radii == vec4<f32>(s.half.x)) {
         let m = inst.affine[0];
         let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
-        let h = 0.5 * device_grad_scale(inst.affine) * vec2<f32>(abs(m.w) + abs(m.z), abs(m.y) + abs(m.x));
+        let h = 0.5 * device_grad_scale(m) * vec2<f32>(abs(m.w) + abs(m.z), abs(m.y) + abs(m.x));
         let margin = length(h) / min(r.x, r.y);
         out.affine1.z = max(1.0 - margin, 0.0) * max(1.0 - margin, 0.0);
         out.affine1.w = (1.0 + margin) * (1.0 + margin);
@@ -891,13 +891,13 @@ fn partial_shape_coverage(in: PartialOut) -> f32 {
             return 0.0;
         }
     }
-    return shape_coverage(s, in.local, instances[i].affine, true);
+    return shape_coverage(s, in.local, instances[i].affine[0], true);
 }
 
 // The shadow kernel plus the same opacity/solid-colour tail.
 fn fs_shadow(in: VsOut) -> vec4<f32> {
     let s = Shape(in.shape_a.xy, in.shape_a.z, in.shape_a.w, in.shape_radii);
-    let m = array<vec4<f32>, 2>(in.affine0, in.affine1);
+    let m = in.affine0;
     let sigma = in.params.x;
     var cov: f32;
     if sigma < 0.25 {
@@ -915,7 +915,7 @@ fn fs_full(in: VsOut) -> vec4<f32> {
     // mask, gradient data).
     let i = in.instance;
     let s = Shape(in.shape_a.xy, in.shape_a.z, in.shape_a.w, in.shape_radii);
-    let m = array<vec4<f32>, 2>(in.affine0, in.affine1);
+    let m = in.affine0;
     let flags = (in.meta_.w >> 24u) & 0xffu;
     var cov: f32;
     switch in.meta_.x {
