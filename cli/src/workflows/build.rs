@@ -885,7 +885,7 @@ where
         .map_err(invalid)?;
     Ok(dyns
         .iter()
-        .filter(|d| d.tag32(endian) == Some(object::elf::DT_NEEDED))
+        .filter(|d| d.tag(endian) == object::elf::DT_NEEDED)
         .filter_map(|d| d.string(endian, strings).ok())
         .map(|name| String::from_utf8_lossy(name).into_owned())
         .collect())
@@ -3371,7 +3371,7 @@ where
     let (dyns, strings_index) = sections.dynamic(endian, data).ok()??;
     let strings = sections.strings(endian, data, strings_index).ok()?;
     dyns.iter()
-        .find(|d| d.tag32(endian) == Some(object::elf::DT_SONAME))
+        .find(|d| d.tag(endian) == object::elf::DT_SONAME)
         .and_then(|d| d.string(endian, strings).ok())
         .map(|name| String::from_utf8_lossy(name).into_owned())
 }

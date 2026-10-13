@@ -89,11 +89,11 @@ fn check_load_segment_alignment(data: &[u8]) -> eyre::Result<()> {
         Ok(())
     }
 
-    match data.get(4) {
-        Some(&object::elf::ELFCLASS64) => {
+    match data.get(4).copied().map(object::elf::FileClass) {
+        Some(object::elf::ELFCLASS64) => {
             scan::<object::elf::FileHeader64<object::Endianness>>(data)
         }
-        Some(&object::elf::ELFCLASS32) => {
+        Some(object::elf::ELFCLASS32) => {
             scan::<object::elf::FileHeader32<object::Endianness>>(data)
         }
         _ => bail!("not a parseable ELF file: missing or invalid ELF class byte"),
@@ -126,6 +126,28 @@ mod tests {
         data[68..72].copy_from_slice(&5u32.to_le_bytes()); // flags
         data[72..80].copy_from_slice(&0u64.to_le_bytes()); // p_offset
         data[112..120].copy_from_slice(&align.to_le_bytes()); // p_align
+        data
+    }
+
+    /// Minimal ELF32 header + one program header — the class byte takes
+    /// the 32-bit dispatch, so the same alignment rules apply to it.
+    fn elf32_with_load_align(align: u32) -> Vec<u8> {
+        let mut data = vec![0u8; 0x100];
+        data[..4].copy_from_slice(b"\x7fELF");
+        data[4] = 1; // ELFCLASS32
+        data[5] = 1; // little-endian
+        data[6] = 1; // EI_VERSION (EV_CURRENT)
+        data[16..18].copy_from_slice(&3u16.to_le_bytes()); // ET_DYN
+        data[18..20].copy_from_slice(&40u16.to_le_bytes()); // EM_ARM
+        data[20..24].copy_from_slice(&1u32.to_le_bytes()); // version
+        data[28..32].copy_from_slice(&52u32.to_le_bytes()); // e_phoff
+        data[40..42].copy_from_slice(&52u16.to_le_bytes()); // e_ehsize
+        data[42..44].copy_from_slice(&32u16.to_le_bytes()); // e_phentsize
+        data[44..46].copy_from_slice(&1u16.to_le_bytes()); // e_phnum
+        // program header at offset 52
+        data[52..56].copy_from_slice(&1u32.to_le_bytes()); // PT_LOAD
+        data[76..80].copy_from_slice(&5u32.to_le_bytes()); // flags
+        data[80..84].copy_from_slice(&align.to_le_bytes()); // p_align
         data
     }
 
@@ -164,5 +186,32 @@ mod tests {
         std::fs::write(&path, elf_with_load_align(0x1000)).expect("write");
         let error = require_aligned_load_segments(&path).expect_err("must fail");
         assert!(error.to_string().contains("libbad.so"));
+    }
+
+    #[test]
+    fn accepts_a_16k_aligned_elf32_load_segment() {
+        check_load_segment_alignment(&elf32_with_load_align(0x4000))
+            .expect("16 KB-aligned ELF32 LOAD must pass");
+    }
+
+    #[test]
+    fn rejects_an_under_aligned_elf32_load_segment() {
+        let error = check_load_segment_alignment(&elf32_with_load_align(0x1000))
+            .expect_err("4 KB-aligned ELF32 LOAD must fail");
+        let text = format!("{error:?}");
+        assert!(text.contains("0x1000"), "{text}");
+        assert!(text.contains("0x4000"), "{text}");
+    }
+
+    #[test]
+    fn rejects_missing_or_invalid_class_bytes() {
+        for data in [Vec::new(), b"\x7fELF\x00".to_vec(), b"\x7fELF\x03".to_vec()] {
+            let error = check_load_segment_alignment(&data)
+                .expect_err("a missing or invalid class byte must fail");
+            assert!(
+                format!("{error:?}").contains("missing or invalid ELF class byte"),
+                "{error:?}"
+            );
+        }
     }
 }
