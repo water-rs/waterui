@@ -760,7 +760,7 @@ fn elf_needs_libcxx(data: &[u8]) -> Option<bool> {
         let (dyns, strings_index) = sections.dynamic(endian, data).ok()??;
         let strings = sections.strings(endian, data, strings_index).ok()?;
         Some(dyns.iter().any(|d| {
-            d.tag32(endian) == Some(object::elf::DT_NEEDED)
+            d.tag(endian) == object::elf::DT_NEEDED
                 && d.string(endian, strings).ok() == Some(&b"libc++_shared.so"[..])
         }))
     }
