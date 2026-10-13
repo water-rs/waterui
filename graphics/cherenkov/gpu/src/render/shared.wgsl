@@ -73,8 +73,10 @@ struct Instance {
     // `exponent`/`radii.x` the backdrop copy's device origin
     // (`FLAG_BLEND_SRC`).
     inner: Shape,
-    // device -> clip-local affine, same coefficient order.
-    clip_inv: array<vec2<f32>, 3>,
+    // device -> clip-local linear coefficients [a, b, c, d] and
+    // translation [e, f], same coefficient order.
+    clip_linear: vec4<f32>,
+    clip_translation: vec2<f32>,
     // Four u16 texel origins packed as two u32s: xy the glyph/cell atlas
     // origin, zw the mask atlas origin — or an external frame's binding
     // size, whose pixel extent stays inside the u16 texel bound.
@@ -152,9 +154,10 @@ fn uv_unpack(v: u32) -> vec2<f32> {
     return vec2<f32>(f32(v & 0xffffu), f32(v >> 16u));
 }
 
-// Expand the six stored `clip_inv` coefficients to `apply`'s two vec4s.
-fn expand_affine(m: array<vec2<f32>, 3>) -> array<vec4<f32>, 2> {
-    return array<vec4<f32>, 2>(vec4<f32>(m[0], m[1]), vec4<f32>(m[2], 0.0, 0.0));
+// Expand the inverse clip's linear coefficients and translation to
+// `apply`'s two vec4s.
+fn expand_affine(linear: vec4<f32>, translation: vec2<f32>) -> array<vec4<f32>, 2> {
+    return array<vec4<f32>, 2>(linear, vec4<f32>(translation, 0.0, 0.0));
 }
 
 fn apply(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
@@ -648,12 +651,12 @@ fn clip_mask_coverage(in: VsOut) -> f32 {
     let flags = (in.meta_.w >> 24u) & 0xffu;
     var cov = 1.0;
     if (flags & FLAG_HAS_CLIP) != 0u {
-        // `clip_inv` maps device to clip-local: J^-T is its transpose.
-        let pc = apply(expand_affine(instances[i].clip_inv), in.device);
+        // The inverse clip maps device to clip-local: J^-T is its transpose.
+        let pc = apply(expand_affine(instances[i].clip_linear, instances[i].clip_translation), in.device);
         let sample = sdf_sample(instances[i].clip, pc, false);
         let g = sample.gradient;
-        let ci = instances[i].clip_inv;
-        let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[1].x * g.x + ci[1].y * g.y);
+        let ci = instances[i].clip_linear;
+        let dg = vec2<f32>(ci.x * g.x + ci.y * g.y, ci.z * g.x + ci.w * g.y);
         cov = coverage_dir(sample.distance, dg, 1.0, g.w > 0.0, g.z);
     }
     if (flags & FLAG_HAS_MASK) != 0u {

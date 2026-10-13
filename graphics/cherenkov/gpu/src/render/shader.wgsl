@@ -521,7 +521,7 @@ fn backdrop_field(q: vec2<f32>) -> BackdropField {
         return BackdropField(u.d, u.n, u.w_own);
     }
     // union-stub
-    let own = device_sdf(expand_affine(inst.clip_inv), inst.clip, q);
+    let own = device_sdf(expand_affine(inst.clip_linear, inst.clip_translation), inst.clip, q);
     return BackdropField(own.x, own.yz, 1.0);
 }
 
@@ -580,7 +580,7 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     } else
     // union-stub
     {
-        let own = device_sdf(expand_affine(inst.clip_inv), inst.clip, pixel);
+        let own = device_sdf(expand_affine(inst.clip_linear, inst.clip_translation), inst.clip, pixel);
         px.own_sdf = own.x;
         px.sdf = own.x;
         px.normal = own.yz;

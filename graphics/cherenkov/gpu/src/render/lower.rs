@@ -3102,7 +3102,9 @@ impl<'a> Lowering<'a> {
     /// Clip state belongs to composition; coverage and glyph atlas UVs remain retained.
     const fn apply_clip(inst: &mut Instance, clip: Option<DeviceClip>) {
         if let Some(clip) = clip {
-            inst.clip_inv = affine_coefficients(clip.inv);
+            let [c0, c1, c2, c3, c4, c5] = affine_coefficients(clip.inv);
+            inst.clip_linear = [c0, c1, c2, c3];
+            inst.clip_translation = [c4, c5];
             inst.clip = clip.shape;
             inst.meta[3] |= FLAG_HAS_CLIP << 24;
             if let Some(mask) = clip.mask {
@@ -6576,7 +6578,12 @@ mod tests {
             .filter(|p| p.target == Target::Scratch(0))
             .flat_map(|p| &p.ranges)
             .flat_map(|r| &frame.instances[r.instances.start as usize..r.instances.end as usize])
-            .map(|inst| (inst.clip_inv, bytemuck::bytes_of(&inst.clip).to_vec()))
+            .map(|inst| {
+                (
+                    (inst.clip_linear, inst.clip_translation),
+                    bytemuck::bytes_of(&inst.clip).to_vec(),
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(clips.len(), 4);
         assert!(clips.iter().all(|clip| *clip == clips[0]), "{clips:?}");

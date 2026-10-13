@@ -225,8 +225,10 @@ pub struct Instance {
     /// copy's device origin when `FLAG_BLEND_SRC` is set. A member's
     /// colour stays transparent, so a member span is never an opaque span.
     pub inner: Shape,
-    /// Device-to-clip-local affine.
-    pub clip_inv: [f32; 6],
+    /// Device-to-clip-local linear coefficients `[a, b, c, d]`.
+    pub clip_linear: [f32; 4],
+    /// Device-to-clip-local translation `[e, f]`.
+    pub clip_translation: [f32; 2],
     /// Four u16 texel origins packed as two u32s: xy the glyph/cell atlas
     /// origin, zw the mask atlas origin — or an external frame's binding
     /// size, whose pixel extent stays inside the u16 texel bound. Write
@@ -303,7 +305,8 @@ impl Instance {
             bounds: [0.0; 4],
             shape: Shape::rect([0.0; 2]),
             inner: Shape::rect([0.0; 2]),
-            clip_inv: [0.0; 6],
+            clip_linear: [0.0; 4],
+            clip_translation: [0.0; 2],
             uv: [0; 2],
             clip: Shape::rect([0.0; 2]),
             grad: [0.0; 4],
@@ -368,7 +371,8 @@ mod tests {
     #[test]
     fn layouts_match_the_shader() {
         assert_eq!(size_of::<Instance>(), 256);
-        assert_eq!(offset_of!(Instance, clip_inv), 112);
+        assert_eq!(offset_of!(Instance, clip_linear), 112);
+        assert_eq!(offset_of!(Instance, clip_translation), 128);
         assert_eq!(offset_of!(Instance, uv), 136);
         assert_eq!(offset_of!(Instance, clip), 144);
         assert_eq!(offset_of!(Instance, color), 240);
