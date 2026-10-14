@@ -80,7 +80,7 @@ jobs:
       - uses: ./.github/actions/setup-linux-deps
         with:
           gpu: "true"
-          extra-packages: valgrind
+          extra-packages: valgrind vulkan-tools
       - name: Check the stock gate's host requirements
         run: |
           set -euo pipefail
@@ -106,6 +106,19 @@ jobs:
           sha256sum ir-results/ir_gate.py ir-results/ir_no_raster.c > ir-results/harness.sha256
       - name: Check the gate and loader dispatch
         run: python3 -m unittest discover -s graphics/cherenkov/bench/scripts -p 'test_ir*.py'
+      - name: Check tile-attachment memory before building
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          runtime_dir=$(mktemp -d)
+          trap 'rmdir "$runtime_dir"' EXIT
+          VK_DRIVER_FILES="$CHERENKOV_IR_ICD" VK_ICD_FILENAMES="$CHERENKOV_IR_ICD" \
+            XDG_RUNTIME_DIR="$runtime_dir" vulkaninfo --text \
+            > ir-results/vulkaninfo.txt 2> ir-results/vulkaninfo.stderr
+          if ! grep -q 'MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT' ir-results/vulkaninfo.txt; then
+            echo "::error::Selected driver lacks lazily allocated memory for tile attachments. No CPU measurement can be collected."
+            exit 1
+          fi
       - uses: ./.github/actions/generate-scene-assets
         with:
           mode: full
