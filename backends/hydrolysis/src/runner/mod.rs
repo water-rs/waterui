@@ -226,7 +226,7 @@ fn init_global_executor() {
 #[cfg(not(target_arch = "wasm32"))]
 fn init_main_thread_executors() -> Option<waterui::inspector::InspectorRuntime> {
     init_global_executor();
-    waterui::inspector::maybe_init_from_env("hydrolysis")
+    waterui::inspector::maybe_init_from_env("hydrolysis", waterui::FRAMEWORK_VERSION)
 }
 
 /// Physical pixels per logical pixel for offscreen rendering, from

@@ -158,8 +158,11 @@ impl Probe {
         successful(&mut command);
     }
 
-    fn fails(&self, command: &mut Command) -> Output {
-        failing(command.args(["test", "--locked", "--offline"]))
+    /// Runs `cargo test` expecting a build failure.
+    fn check_fails(&self) -> Command {
+        let mut command = self.cargo();
+        command.args(["test", "--locked", "--offline"]);
+        command
     }
 
     /// Marks the fixture as a published package the way `cargo package` does.
@@ -242,9 +245,9 @@ fn explicit_release_mode_builds_without_a_commit() {
 #[test]
 fn an_invalid_build_mode_fails() {
     let probe = Probe::new();
-    let output = probe.fails(
+    let output = failing(
         probe
-            .cargo()
+            .check_fails()
             .env("WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE", "bogus"),
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -261,9 +264,9 @@ fn an_invalid_commit_override_fails() {
         &probe.head()[..12],
         "not-a-real-commit-string",
     ] {
-        let output = probe.fails(
+        let output = failing(
             probe
-                .cargo()
+                .check_fails()
                 .env("WATERUI_INSPECTOR_PROTOCOL_COMMIT", invalid),
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -275,9 +278,9 @@ fn an_invalid_commit_override_fails() {
 fn a_release_build_rejects_a_commit_override() {
     let probe = Probe::new();
     probe.mark_release();
-    let output = probe.fails(
+    let output = failing(
         probe
-            .cargo()
+            .check_fails()
             .env("WATERUI_INSPECTOR_PROTOCOL_COMMIT", "0".repeat(40)),
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -287,7 +290,7 @@ fn a_release_build_rejects_a_commit_override() {
 #[test]
 fn a_checkout_without_git_fails() {
     let probe = Probe::new();
-    let output = probe.fails(&mut probe.cargo());
+    let output = failing(&mut probe.check_fails());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("requires a Git checkout"), "{stderr}");
 }

@@ -12,7 +12,9 @@
 //! A backend takes the pieces it can feed and ignores the rest:
 //!
 //! ```rust
-//! let Some(inspector) = waterui::inspector::maybe_init_from_env("my-backend") else {
+//! let Some(inspector) =
+//!     waterui::inspector::maybe_init_from_env("my-backend", waterui::FRAMEWORK_VERSION)
+//! else {
 //!     return;
 //! };
 //! let probe = inspector.runtime_probe();          // main-thread occupancy
@@ -32,7 +34,7 @@ use std::time::Duration;
 
 use waterui_core::Environment;
 use waterui_inspector_protocol::discovery::Advertisement;
-use waterui_inspector_protocol::{ChannelSet, TargetInfo};
+use waterui_inspector_protocol::{ChannelSet, TargetInfo, build_identity};
 
 use crate::task::RuntimeProbe;
 
@@ -89,6 +91,9 @@ pub struct InspectorServerConfig {
     pub stall_ratio: f64,
     /// Name reported to the inspector.
     pub app_name: String,
+    /// Version of the `waterui` facade this application was built with —
+    /// supplied by the caller, never inferred from this crate's own version.
+    pub framework_version: String,
 }
 
 impl InspectorServerConfig {
@@ -102,7 +107,7 @@ impl InspectorServerConfig {
     ///
     /// Returns an error when a variable is present but unparseable. A malformed
     /// setting is a mistake worth reporting rather than quietly ignoring.
-    pub fn from_env() -> Result<Option<Self>, String> {
+    pub fn from_env(framework_version: &str) -> Result<Option<Self>, String> {
         let Some(token) = std::env::var("WATERUI_INSPECTOR_TOKEN")
             .ok()
             .map(|value| value.trim().to_string())
@@ -120,6 +125,7 @@ impl InspectorServerConfig {
             ),
             stall_ratio: parse_env("WATERUI_INSPECTOR_STALL_RATIO")?.unwrap_or(DEFAULT_STALL_RATIO),
             app_name: advertised_application_name(),
+            framework_version: framework_version.to_string(),
         }))
     }
 
@@ -137,7 +143,7 @@ impl InspectorServerConfig {
     /// machine and binds loopback, while a phone or a simulator is inspected
     /// from the developer's computer and has to be reachable from it.
     #[must_use]
-    pub fn for_debug_build() -> Option<Self> {
+    pub fn for_debug_build(framework_version: &str) -> Option<Self> {
         if !cfg!(debug_assertions) {
             return None;
         }
@@ -148,6 +154,7 @@ impl InspectorServerConfig {
             task_window: Duration::from_millis(DEFAULT_TASK_WINDOW_MS),
             stall_ratio: DEFAULT_STALL_RATIO,
             app_name: advertised_application_name(),
+            framework_version: framework_version.to_string(),
         })
     }
 }
@@ -559,10 +566,16 @@ fn available_channels() -> ChannelSet {
 ///
 /// A release build inspects only when the environment says so.
 #[must_use]
-pub fn maybe_init_from_env(backend: &'static str) -> Option<InspectorRuntime> {
-    let (config, listen_now) = match InspectorServerConfig::from_env() {
+pub fn maybe_init_from_env(
+    backend: &'static str,
+    framework_version: &str,
+) -> Option<InspectorRuntime> {
+    let (config, listen_now) = match InspectorServerConfig::from_env(framework_version) {
         Ok(Some(config)) => (config, true),
-        Ok(None) => (InspectorServerConfig::for_debug_build()?, false),
+        Ok(None) => (
+            InspectorServerConfig::for_debug_build(framework_version)?,
+            false,
+        ),
         Err(error) => {
             tracing::warn!(
                 target: "waterui::inspector",
@@ -703,7 +716,16 @@ impl InspectorRuntime {
         spawn("waterui-inspector-accept", {
             let hub = Arc::clone(&self.hub);
             let token = config.token.clone();
-            move || server::accept_loop(&listener, &hub, token.as_str(), &target, available)
+            move || {
+                server::accept_loop(
+                    &listener,
+                    &hub,
+                    token.as_str(),
+                    &build_identity(config.framework_version.clone()),
+                    &target,
+                    available,
+                );
+            }
         })?;
 
         tracing::info!(

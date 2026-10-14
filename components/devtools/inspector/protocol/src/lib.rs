@@ -80,13 +80,33 @@ impl fmt::Display for InspectorProtocolInfo {
     }
 }
 
-/// Identity an Inspector application reports about itself.
+/// A build's full handshake identity — framework version and protocol.
+///
+/// The framework half is what makes two released apps on the same protocol
+/// version distinguishable: a mismatch there is a protocol disagreement the
+/// wire format cannot explain away, so peers compare the whole identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InspectorClientIdentity {
-    /// Version of the compiled `waterui` facade the app links.
+pub struct InspectorBuildIdentity {
+    /// Version of the compiled `waterui` facade the peer links.
     pub framework_version: String,
     /// Protocol identity of this build.
     pub protocol: InspectorProtocolInfo,
+}
+
+impl fmt::Display for InspectorBuildIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "waterui {} / {}", self.framework_version, self.protocol)
+    }
+}
+
+/// Returns this build's full identity for handshakes — the caller's compiled
+/// `waterui` facade version plus this crate's protocol identity.
+#[must_use]
+pub fn build_identity(framework_version: impl Into<String>) -> InspectorBuildIdentity {
+    InspectorBuildIdentity {
+        framework_version: framework_version.into(),
+        protocol: protocol_info(),
+    }
 }
 
 /// Description of the application being inspected.
@@ -107,8 +127,8 @@ pub enum InspectorClientMessage {
     Hello {
         /// One-time session token.
         token: String,
-        /// Protocol build of the inspector, checked against the target's.
-        protocol: InspectorProtocolInfo,
+        /// Full build identity of the inspector, checked against the target's.
+        identity: InspectorBuildIdentity,
         /// Channels to subscribe to immediately.
         channels: ChannelSet,
     },
@@ -126,8 +146,8 @@ pub enum InspectorClientMessage {
 pub enum InspectorServerMessage {
     /// Handshake accepted.
     Welcome {
-        /// Protocol build of the target.
-        protocol: InspectorProtocolInfo,
+        /// Full build identity of the target.
+        identity: InspectorBuildIdentity,
         /// What is being inspected.
         target: TargetInfo,
         /// Channels this target can actually produce.
@@ -190,7 +210,7 @@ mod tests {
         let mut bytes = Vec::new();
         let sent = InspectorClientMessage::Hello {
             token: String::from("token"),
-            protocol: super::protocol_info(),
+            identity: super::build_identity("0.0.1"),
             channels: ChannelSet::default_subscription(),
         };
         transport::write_frame_blocking(&mut bytes, &sent).unwrap();
@@ -199,8 +219,11 @@ mod tests {
             transport::read_frame_blocking(&mut bytes.as_slice()).unwrap();
         match received {
             InspectorClientMessage::Hello {
-                token, channels, ..
+                token,
+                channels,
+                identity,
             } => {
+                assert_eq!(identity.framework_version, "0.0.1");
                 assert_eq!(token, "token");
                 assert_eq!(channels, ChannelSet::default_subscription());
             }
@@ -246,9 +269,35 @@ mod tests {
         let local = super::protocol_info();
         let older = InspectorProtocolInfo {
             version: "0.0.0".to_string(),
-            build_commit: local.build_commit.clone(),
+            build_commit: local.build_commit,
         };
         assert!(!older.is_compatible());
+    }
+
+    #[test]
+    fn build_identities_round_trip_through_the_transport() {
+        let mut bytes = Vec::new();
+        let sent = InspectorServerMessage::Welcome {
+            identity: super::build_identity("0.0.2"),
+            target: super::TargetInfo {
+                pid: 42,
+                name: String::from("round-trip"),
+                backend: String::from("test"),
+            },
+            available: ChannelSet::default_subscription(),
+        };
+        transport::write_frame_blocking(&mut bytes, &sent).unwrap();
+        let received: InspectorServerMessage =
+            transport::read_frame_blocking(&mut bytes.as_slice()).unwrap();
+        match received {
+            InspectorServerMessage::Welcome {
+                identity, target, ..
+            } => {
+                assert_eq!(identity, super::build_identity("0.0.2"));
+                assert_eq!(target.name, "round-trip");
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
     }
 
     #[test]

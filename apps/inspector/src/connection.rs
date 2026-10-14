@@ -13,7 +13,7 @@ use smol::net::TcpStream;
 use waterui::prelude::*;
 use waterui_inspector_protocol::transport::{read_frame, write_frame};
 use waterui_inspector_protocol::{
-    ChannelSet, InspectorClientMessage, InspectorEvent, InspectorServerMessage, protocol_info,
+    ChannelSet, InspectorClientMessage, InspectorEvent, InspectorServerMessage, build_identity,
 };
 
 use crate::model::{Connection, Model};
@@ -98,7 +98,7 @@ async fn session(
         &mut writer,
         &InspectorClientMessage::Hello {
             token: target.token.clone(),
-            protocol: protocol_info(),
+            identity: build_identity(waterui::FRAMEWORK_VERSION),
             channels: model.subscribed.snapshot(),
         },
     )
@@ -111,14 +111,14 @@ async fn session(
         .map_err(|error| format!("handshake failed: {error}"))?
     {
         InspectorServerMessage::Welcome {
-            protocol,
+            identity,
             target: info,
             available,
         } => {
-            if !protocol.is_compatible() {
+            let local = build_identity(waterui::FRAMEWORK_VERSION);
+            if identity != local {
                 return Err(format!(
-                    "protocol mismatch: inspector is {}, target is {protocol}",
-                    protocol_info()
+                    "protocol mismatch: inspector is {local}, target is {identity}"
                 ));
             }
             model.available.set(available);
@@ -203,7 +203,7 @@ fn apply(model: &Model, message: InspectorServerMessage) -> Option<String> {
 mod tests {
     use super::*;
     use smol::net::TcpListener;
-    use waterui_inspector_protocol::{InspectorProtocolInfo, TargetInfo, protocol_info};
+    use waterui_inspector_protocol::{InspectorBuildIdentity, TargetInfo, protocol_info};
 
     /// How long a handshake fixture may run before it is counted hung.
     const TEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -256,16 +256,24 @@ mod tests {
         (addr, server)
     }
 
-    fn foreign_protocol() -> InspectorProtocolInfo {
-        let local = protocol_info();
-        InspectorProtocolInfo {
-            version: local.version.clone(),
-            build_commit: if local.build_commit.is_some() {
-                None
-            } else {
-                Some(String::from("0000000000000000000000000000000000000000"))
-            },
+    /// Same protocol build as this test binary, but a foreign framework
+    /// version — the exact case `version + commit` alone could not reject.
+    fn foreign_framework_identity() -> InspectorBuildIdentity {
+        InspectorBuildIdentity {
+            framework_version: String::from("0.0.2"),
+            protocol: protocol_info(),
         }
+    }
+
+    /// A foreign protocol inside this framework's identity.
+    fn foreign_protocol_identity() -> InspectorBuildIdentity {
+        let mut identity = build_identity(waterui::FRAMEWORK_VERSION);
+        identity.protocol.build_commit = if identity.protocol.build_commit.is_some() {
+            None
+        } else {
+            Some(String::from("0000000000000000000000000000000000000000"))
+        };
+        identity
     }
 
     fn fixture_target(addr: SocketAddr) -> Target {
@@ -276,10 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn a_welcome_with_a_foreign_protocol_is_never_live() {
+    fn a_welcome_with_a_foreign_framework_is_never_live() {
         smol::block_on(async {
             let (addr, server) = fake_target(InspectorServerMessage::Welcome {
-                protocol: foreign_protocol(),
+                identity: foreign_framework_identity(),
                 target: TargetInfo {
                     pid: 0,
                     name: "fixture".into(),
@@ -313,10 +321,33 @@ mod tests {
     }
 
     #[test]
+    fn a_welcome_with_a_foreign_protocol_is_never_live() {
+        smol::block_on(async {
+            let (addr, server) = fake_target(InspectorServerMessage::Welcome {
+                identity: foreign_protocol_identity(),
+                target: TargetInfo {
+                    pid: 0,
+                    name: "fixture".into(),
+                    backend: "test".into(),
+                },
+                available: ChannelSet::default_subscription(),
+            })
+            .await;
+            let model = Model::new();
+            let (_subscriptions, receiver) = subscription_channel();
+            let result = bounded_session(&model, &fixture_target(addr), &receiver, server)
+                .await
+                .expect_err("a foreign protocol is rejected");
+            assert!(result.contains("protocol mismatch"), "{result}");
+            assert_ne!(model.connection.snapshot(), Connection::Live);
+        });
+    }
+
+    #[test]
     fn a_compatible_welcome_marks_the_connection_live() {
         smol::block_on(async {
             let (addr, server) = fake_target(InspectorServerMessage::Welcome {
-                protocol: protocol_info(),
+                identity: build_identity(waterui::FRAMEWORK_VERSION),
                 target: TargetInfo {
                     pid: 0,
                     name: "fixture".into(),

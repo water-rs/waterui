@@ -13,7 +13,7 @@
 compile_error!("waterui-inspector desktop binary supports ARM64 macOS, Linux and Windows only");
 
 use clap::Parser;
-use waterui_inspector_protocol::InspectorClientIdentity;
+use waterui_inspector_protocol::InspectorBuildIdentity;
 
 /// Command line for the Inspector.
 #[derive(clap::Parser)]
@@ -33,10 +33,8 @@ fn main() -> std::process::ExitCode {
     let args = Args::parse();
     if args.identity {
         // Headless metadata: report before any environment or window exists.
-        let identity = InspectorClientIdentity {
-            framework_version: waterui::FRAMEWORK_VERSION.to_string(),
-            protocol: waterui_inspector_protocol::protocol_info(),
-        };
+        let identity =
+            waterui_inspector_protocol::build_identity(waterui::FRAMEWORK_VERSION);
         if let Err(error) = write_identity(&mut std::io::stdout().lock(), &identity) {
             tracing::error!(%error, "failed to write the inspector identity");
             return std::process::ExitCode::FAILURE;
@@ -56,7 +54,7 @@ fn main() -> std::process::ExitCode {
 /// a stdout write is output, not a best-effort log.
 fn write_identity(
     writer: &mut impl std::io::Write,
-    identity: &InspectorClientIdentity,
+    identity: &InspectorBuildIdentity,
 ) -> std::io::Result<()> {
     serde_json::to_writer(&mut *writer, identity).map_err(std::io::Error::other)?;
     writer.write_all(b"\n")?;
@@ -94,11 +92,8 @@ mod tests {
         }
     }
 
-    fn identity() -> InspectorClientIdentity {
-        InspectorClientIdentity {
-            framework_version: String::from("0.0.0"),
-            protocol: waterui_inspector_protocol::protocol_info(),
-        }
+    fn identity() -> InspectorBuildIdentity {
+        waterui_inspector_protocol::build_identity("0.0.0")
     }
 
     #[test]
