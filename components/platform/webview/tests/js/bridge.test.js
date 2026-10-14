@@ -11,9 +11,8 @@
 //     unreachable from a page for as long as the feature had existed;
 //   * integers past 2^53 lost their low bits in both directions.
 //
-// Each of those is one assertion here. Run with `bun test` from the repository
-// root; this is deliberately not wired into CI, so run it yourself when you
-// touch anything under `src/js/`.
+// Each of those is one assertion here. Cargo does not execute the injected
+// JavaScript, so run `bun test` on this directory whenever `src/js/` changes.
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -166,6 +165,115 @@ describe("mirrored state", () => {
     stop();
     page.__wateruiState.apply({ theme: { v: "ignored", e: 2 } });
     expect(seen).toEqual(["dark", "sepia"]);
+  });
+
+  // Unsubscribe owns a registration, not a callback slot: deliveries run
+  // over a snapshot, so cancel or subscribe inside a call never reorders
+  // what this notification still owes.
+  describe.each([["local"], ["patch"]])("watcher ownership (%s)", (mode) => {
+    const change = (value) => {
+      if (mode === "local") {
+        waterui.state.theme = value;
+      } else {
+        page.__wateruiState.apply({ theme: { v: value, e: 1, w: true } });
+      }
+    };
+
+    test("a watcher that unsubscribes itself stops only its own calls", () => {
+      const seen = [];
+      const stopA = waterui.watch("theme", (value) => {
+        seen.push(["A", value]);
+        stopA();
+      });
+      waterui.watch("theme", (value) => seen.push(["B", value]));
+      waterui.watch("theme", (value) => seen.push(["C", value]));
+
+      change("dark");
+      change("sepia");
+      expect(seen).toEqual([
+        ["A", "dark"],
+        ["B", "dark"],
+        ["C", "dark"],
+        ["B", "sepia"],
+        ["C", "sepia"],
+      ]);
+    });
+
+    test("cancelling a later watcher before its turn skips only it", () => {
+      const seen = [];
+      let stopB;
+      waterui.watch("theme", (value) => {
+        seen.push(["A", value]);
+        // Idempotent: the second call is a no-op, not a fresh removal.
+        stopB();
+        stopB();
+      });
+      stopB = waterui.watch("theme", (value) => seen.push(["B", value]));
+      waterui.watch("theme", (value) => seen.push(["C", value]));
+
+      change("dark");
+      // A registration cancelled mid-delivery must not be invoked, and
+      // removing it must not move a still-active callback past the loop.
+      expect(seen).toEqual([
+        ["A", "dark"],
+        ["C", "dark"],
+      ]);
+      change("sepia");
+      expect(seen).toEqual([
+        ["A", "dark"],
+        ["C", "dark"],
+        ["A", "sepia"],
+        ["C", "sepia"],
+      ]);
+    });
+
+    test("a watcher registered during a notification starts on the next one", () => {
+      const seen = [];
+      let added = false;
+      waterui.watch("theme", (value) => {
+        seen.push(["A", value]);
+        if (!added) {
+          added = true;
+          waterui.watch("theme", (next) => seen.push(["B", next]));
+        }
+      });
+      change("dark");
+      // A registration made inside a delivery belongs to the next one.
+      expect(seen).toEqual([["A", "dark"]]);
+      change("sepia");
+      expect(seen).toEqual([
+        ["A", "dark"],
+        ["A", "sepia"],
+        ["B", "sepia"],
+      ]);
+      change("third");
+      expect(seen).toEqual([
+        ["A", "dark"],
+        ["A", "sepia"],
+        ["B", "sepia"],
+        ["A", "third"],
+        ["B", "third"],
+      ]);
+    });
+
+    test("two handles on the same callback unsubscribe independently", () => {
+      const seen = [];
+      const callback = (value) => seen.push(value);
+      const stopFirst = waterui.watch("theme", callback);
+      const stopSecond = waterui.watch("theme", callback);
+
+      change("dark");
+      expect(seen).toEqual(["dark", "dark"]);
+
+      stopFirst();
+      stopFirst(); // already inactive — not a second removal
+      change("sepia");
+      expect(seen).toEqual(["dark", "dark", "sepia"]);
+
+      stopSecond();
+      change("third");
+      expect(seen).toEqual(["dark", "dark", "sepia"]);
+    });
   });
 
   // A patch used to hand watchers the raw wire value while the mirror held the

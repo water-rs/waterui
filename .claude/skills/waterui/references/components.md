@@ -191,7 +191,7 @@ let open = binding(false);
 button("Options")
     .action({ let open = open.clone(); move || open.toggle() })
     .anchored_overlay(
-        AnchoredOverlay::new(&open, popover_body())   // AnyView content, measured at ideal size
+        AnchoredOverlay::new(&open, move || popover_body()) // a fresh view per presentation
             .edge(AnchorEdge::Top)                     // Top / Bottom / Leading / Trailing
             .alignment(EdgeAlignment::Center)          // Start / Center / End along the edge
             .gap(4.0)                                  // points away from the anchor
@@ -203,8 +203,10 @@ button("Options")
 
 Leading/trailing follow the layout direction; `Start`/`End` are leading/trailing along
 the top and bottom edges and top/bottom along the leading and trailing edges. Unlike
-`.context_menu`, the overlay takes arbitrary `impl View` content — this is the popover
-primitive (the M3 tooltip rides it: top edge, center, 4 pt gap, flip, 2 pt clamp).
+`.context_menu`, the overlay takes a `move ||` builder producing arbitrary `impl View`
+content — every presentation calls it, so state shared between presentations lives in
+`Binding`s the caller owns and the builder captures. This is the popover primitive (the
+M3 tooltip rides it: top edge, center, 4 pt gap, flip, 2 pt clamp).
 
 ## Scrolling
 
@@ -462,15 +464,17 @@ List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
 `AppState` is an owned `#[state]` type (SKILL.md rule 3), so handlers take it bare.
 
 For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
-modifiers, `VStack`/`HStack` have `for_each` too, and `collection_transition` animates
-membership changes (insert/remove fade and collapse along the stack axis):
+modifiers, `VStack`/`HStack` have `for_each` too; membership animation is declared per row
+with `.transition(...)` plus `.animation(...)` (a removed row's ghost holds its slot
+while it fades):
 
 ```rust
-use waterui::layout::collection_transition;
 use waterui::layout::stack::VStack;
 
+let row_view = |row: Row| text(row.title)
+    .transition(PropertyTransition::opacity())
+    .animation(Animation::ease_in_out(Duration::from_millis(250)));
 let drawer = VStack::for_each(rows.clone(), row_view).spacing(4.0);
-collection_transition(drawer, Animation::ease_in_out(Duration::from_millis(250)))
 ```
 
 Heterogeneous / sectioned static content — rows are *builders*, so the list can rebuild a

@@ -1026,7 +1026,7 @@ dependencies = [
  "cfg-if 1.0.5",
  "libc",
  "miniz_oxide 0.8.9",
- "object",
+ "object 0.37.3",
  "rustc-demangle",
  "windows-link 0.2.1",
 ]
@@ -4568,7 +4568,7 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?rev=00fe165b8221b74bd0da21dbdd4555c418881555#00fe165b8221b74bd0da21dbdd4555c418881555"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#39330dc727b54686af09e7457aa0ee6bb0b64454"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
@@ -7814,6 +7814,15 @@ version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff76201f031d8863c38aa7f905eca4f53abbfa15f609db4277d44cd8938f33fe"
 dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "object"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd229a0361b9d0d4396176e02d65897f487eebeab7caa6d443855ee152ca0b9c"
+dependencies = [
  "flate2",
  "memchr",
  "ruzstd",
@@ -9452,9 +9461,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -9535,9 +9544,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "ruzstd"
-version = "0.8.3"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 dependencies = [
  "twox-hash",
 ]
@@ -12012,9 +12021,9 @@ dependencies = [
 
 [[package]]
 name = "wasmparser"
-version = "0.236.1"
+version = "0.255.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a9b1e81f3eb254cf7404a82cee6926a4a3ccc5aad80cc3d43608a070c67aa1d7"
+checksum = "e8e329ef4b5d46e73b91d3ac6924417cad55a8cbbf869c199283383427c3320b"
 dependencies = [
  "bitflags 2.13.2",
 ]
@@ -12697,7 +12706,7 @@ dependencies = [
 
 [[package]]
 name = "waterui-cli"
-version = "0.4.5"
+version = "0.4.6"
 dependencies = [
  "aither-core",
  "aither-mcp",
@@ -12741,7 +12750,7 @@ dependencies = [
  "libc",
  "nix 0.31.3",
  "notify",
- "object",
+ "object 0.40.0",
  "pathdiff",
  "plist",
  "rcgen",
@@ -12774,6 +12783,7 @@ dependencies = [
  "ttf-parser",
  "unicode-ident",
  "url",
+ "uuid",
  "walkdir",
  "waterui-assets-core",
  "waterui-assets-planner",
@@ -13023,7 +13033,7 @@ dependencies = [
  "futures",
  "nami",
  "native-executor",
- "object",
+ "object 0.37.3",
  "pastey 0.2.3",
  "pulldown-cmark",
  "robius-open",
@@ -13414,7 +13424,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hydrolysis-m3",
  "nami",
- "object",
+ "object 0.37.3",
  "rustc-demangle",
  "serde",
  "serde_json",
@@ -13466,7 +13476,7 @@ name = "waterui-ts-schema"
 version = "0.1.0"
 dependencies = [
  "const-fnv1a-hash",
- "object",
+ "object 0.37.3",
  "serde",
  "serde_json",
  "suiteki",

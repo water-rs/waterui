@@ -1528,18 +1528,25 @@ mod tests {
         );
         assert!(activity.contains("HydrolysisHostView"), "{activity}");
 
-        // The environment reaches the app through `waterui.env.*` intent
-        // extras applied by `Os.setenv`, landing in the host's
-        // `applyEnvironmentOverrides` slot — after the asset sync, before
-        // the library load; nothing reads system properties.
+        // The environment reaches the app through the launch-environment
+        // handoff, claimed off the main thread in the host's
+        // `prepareEnvironmentOverrides` slot — after the asset sync, before
+        // the library load; nothing travels intent extras or system
+        // properties.
         assert!(
-            activity.contains("override fun applyEnvironmentOverrides()"),
+            activity.contains("override fun prepareEnvironmentOverrides("),
             "{activity}"
         );
         assert!(
-            activity.contains("setupEnvironmentFromIntent(intent)"),
+            activity.contains("LaunchEnvironmentLoader(this).prepare("),
             "{activity}"
         );
+        assert!(
+            activity.contains("waterui.launch.environment"),
+            "{activity}"
+        );
+        assert!(!activity.contains("waterui.env."), "{activity}");
+        assert!(!activity.contains("Os.setenv"), "{activity}");
         assert!(!activity.contains("SystemProperties"), "{activity}");
 
         // The host owns the asset sync off the main thread and the library

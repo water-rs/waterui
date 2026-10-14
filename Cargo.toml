@@ -81,11 +81,10 @@ categories = ["gui"]
 # the same facts from the checked-out manifest directly.
 [package.metadata.waterui]
 # The lowest CLI version that may consume this framework revision.
-# 0.4.5 is the first CLI without the Kotlin Android runtime: it reads no
-# Kotlin runtime pin out of this table, and it scaffolds an Apple-only
-# companion crate. An older CLI would look for metadata keys and a crate
-# this revision no longer carries.
-minimum-cli-version = "0.4.5"
+# 0.4.6 is the first CLI whose generated Android apps carry the private
+# launch-environment provider; apps built by older CLIs would fail the
+# handoff.
+minimum-cli-version = "0.4.6"
 # Native Apple deployment targets, carried into every project's Cargo config.
 apple-deployment-targets = { macos = "26.0", ios = "26.0", tvos = "26.0", watchos = "26.0", visionos = "2.5" }
 # The Android API floor the native runtime supports; the backend's Gradle
@@ -605,7 +604,7 @@ waterui-webview = { path = "components/platform/webview" }
 # split tabs-bar surface and divider calls (#1982). Drop the git pin once a
 # release has both changes.
 hydrolysis = { path = "backends/hydrolysis" }
-hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "00fe165b8221b74bd0da21dbdd4555c418881555" }
+hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "dev" }
 # `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
 # turning on `assets` (still images) built `cros-libva` against the system
 # libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.

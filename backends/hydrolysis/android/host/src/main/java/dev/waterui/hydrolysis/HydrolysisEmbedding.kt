@@ -86,7 +86,8 @@ object HydrolysisEmbedding {
      * is what the host shows immediately — an empty view while
      * [HydrolysisEnvironment]'s asset sync runs off the main thread; the
      * mount continues on the main thread once it finishes: environment
-     * overrides land through [applyEnvironmentOverrides], the library loads,
+     * overrides prepare off it through [prepareEnvironmentOverrides] — the
+     * apply closure it delivers lands here — the library loads,
      * the session is retained in a ViewModel of [viewModelStoreOwner] under
      * [key], and its content view joins the container. [onMounted] runs last,
      * after the content view is wired. An owner whose lifecycle reaches
@@ -110,7 +111,7 @@ object HydrolysisEmbedding {
         nativeLibraryName: String,
         key: String = nativeLibraryName,
         logLevel: String? = null,
-        applyEnvironmentOverrides: () -> Unit = {},
+        prepareEnvironmentOverrides: ((() -> Unit) -> Unit) -> Unit = { it({}) },
         createContentView: (HydrolysisSession) -> View,
         onCloseRequested: () -> Unit,
         onMounted: () -> Unit = {},
@@ -118,14 +119,21 @@ object HydrolysisEmbedding {
         val container = FrameLayout(context)
         HydrolysisEnvironment.prepare(context) {
             if (lifecycleOwner.lifecycle.currentState != Lifecycle.State.DESTROYED) {
-                applyEnvironmentOverrides()
-                NativeBridge.load(nativeLibraryName, logLevel)
-                mountSession(
-                    container, context, lifecycleOwner, viewModelStoreOwner,
-                    onBackPressedDispatcher, key, createContentView,
-                    onCloseRequested,
-                )
-                onMounted()
+                // The preparer delivers its apply closure back on the main
+                // executor; the owner is checked again here because it may
+                // have reached DESTROYED while that delivery was queued.
+                prepareEnvironmentOverrides { apply ->
+                    if (lifecycleOwner.lifecycle.currentState != Lifecycle.State.DESTROYED) {
+                        apply()
+                        NativeBridge.load(nativeLibraryName, logLevel)
+                        mountSession(
+                            container, context, lifecycleOwner, viewModelStoreOwner,
+                            onBackPressedDispatcher, key, createContentView,
+                            onCloseRequested,
+                        )
+                        onMounted()
+                    }
+                }
             }
         }
         return container
