@@ -190,6 +190,11 @@ fn apply(model: &Model, message: InspectorServerMessage) -> Option<String> {
         // A pong needs no action, and a second welcome is a target repeating
         // itself; neither is an error.
         InspectorServerMessage::Pong | InspectorServerMessage::Welcome { .. } => None,
+        // An identity answer belongs to a handshake-time `Identify` query;
+        // a target that sends one on a live connection is speaking nonsense.
+        InspectorServerMessage::Identity { .. } => {
+            Some(String::from("target answered an identity query mid-stream"))
+        }
         // Someone picked "inspect element" in the application: show it.
         InspectorServerMessage::Select { node } => {
             model.apply_select(node.0);
@@ -341,6 +346,24 @@ mod tests {
             assert!(result.contains("protocol mismatch"), "{result}");
             assert_ne!(model.connection.snapshot(), Connection::Live);
         });
+    }
+
+    /// A target that answers `Identify` mid-stream is speaking nonsense —
+    /// the message belongs to a handshake-time query and surfaces as an
+    /// error, never as live state.
+    #[test]
+    fn a_midstream_identity_is_an_error() {
+        let model = Model::new();
+        let error = apply(
+            &model,
+            InspectorServerMessage::Identity {
+                identity: build_identity(waterui::FRAMEWORK_VERSION),
+            },
+        );
+        assert_eq!(
+            error.as_deref(),
+            Some("target answered an identity query mid-stream")
+        );
     }
 
     #[test]

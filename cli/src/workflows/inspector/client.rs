@@ -16,7 +16,7 @@ use eyre::{Context as _, Result, bail, eyre};
 use futures_util::future::{Either, select};
 use target_lexicon::Triple;
 use tracing::info;
-use waterui_inspector_protocol::{InspectorBuildIdentity, InspectorProtocolInfo};
+use waterui_inspector_protocol::InspectorBuildIdentity;
 use zenwave::ResponseExt as _;
 
 use crate::build::BuildProgress;
@@ -36,7 +36,7 @@ const RELEASE_METADATA_TIMEOUT: Duration = Duration::from_secs(30);
 /// short enough to fail a stuck transfer.
 const ARCHIVE_TIMEOUT: Duration = Duration::from_secs(120);
 /// The directory inside the archive/cache that holds the client package.
-const CLIENT_PACKAGE: &str = "waterui-inspector";
+pub(super) const CLIENT_PACKAGE: &str = "waterui-inspector";
 /// The receipt a published cache package carries — the verified binary's
 /// hash, checked before a cached binary ever runs.
 const CACHE_RECEIPT: &str = ".cache.json";
@@ -65,19 +65,6 @@ enum FacadeSource {
     },
     /// A crates.io version — the client is the published binary release.
     Registry,
-}
-
-impl SelectedPackages {
-    /// The handshake identity a client binary of this project must report.
-    fn expected(&self, protocol_commit: Option<String>) -> InspectorBuildIdentity {
-        InspectorBuildIdentity {
-            framework_version: self.framework_version.clone(),
-            protocol: InspectorProtocolInfo {
-                version: self.protocol_version.clone(),
-                build_commit: protocol_commit,
-            },
-        }
-    }
 }
 
 /// `future` with a deadline — a call that never completes fails clearly
@@ -228,21 +215,72 @@ async fn checkout_head(host: &Host, dir: &Path) -> Result<String> {
 
 /// Resolve, build or fetch the client binary for this project.
 ///
+/// The running endpoint's identity is the source of truth: an endpoint
+/// whose protocol carries no source revision is a released build, so its
+/// matching released client is fetched — the project's manifest never
+/// enters that decision. An endpoint reporting a checkout revision needs a
+/// client built from that checkout; the project's resolution must name the
+/// same source and revision before any compile or download starts.
+///
 /// # Errors
 /// Returns an error when the project's `WaterUI` source cannot be resolved,
-/// the build fails, or the fetched artifact cannot be verified.
+/// the build fails, the fetched artifact cannot be verified, or the
+/// project and the endpoint disagree about versions or revisions.
 pub(super) async fn prepare_client(
     host: &Host,
     project_path: &Path,
+    identity: &InspectorBuildIdentity,
     progress: Option<BuildProgress>,
 ) -> Result<Artifact> {
+    let semver = |field: &str, version: &str| -> Result<semver::Version> {
+        version.parse().wrap_err_with(|| {
+            format!("the endpoint reports a malformed {field} version {version:?}")
+        })
+    };
+    semver("framework", &identity.framework_version)?;
+    semver("protocol", &identity.protocol.version)?;
+
+    let Some(commit) = &identity.protocol.build_commit else {
+        // A released endpoint: fetch the release of the identity it
+        // reported — Cargo metadata is never consulted.
+        let selected = SelectedPackages {
+            framework_version: identity.framework_version.clone(),
+            protocol_version: identity.protocol.version.clone(),
+            source: FacadeSource::Registry,
+        };
+        return fetch_release(host, &selected, identity).await;
+    };
+    eyre::ensure!(
+        commit.len() == 40 && commit.bytes().all(|b| b.is_ascii_hexdigit()),
+        "the endpoint reports a malformed source revision {commit:?}"
+    );
+
     let selected = resolve_packages(host, project_path).await?;
-    match &selected.source {
-        FacadeSource::Checkout { root } => {
-            build_from_checkout(host, root, &selected, progress).await
-        }
-        FacadeSource::Registry => fetch_release(host, &selected).await,
-    }
+    let FacadeSource::Checkout { root } = &selected.source else {
+        bail!(
+            "the endpoint is an unreleased checkout ({}) but the project \
+             resolves `waterui` from a registry — rebuild the target against \
+             a released `waterui` or select a matching checkout",
+            commit
+        );
+    };
+    let head = checkout_head(host, root).await?;
+    eyre::ensure!(
+        head == *commit,
+        "the endpoint was built at {commit} but the project's checkout is \
+         at {head} — rebuild the target or select a matching checkout"
+    );
+    eyre::ensure!(
+        selected.framework_version == identity.framework_version
+            && selected.protocol_version == identity.protocol.version,
+        "the endpoint reports waterui {} / protocol {} but the project \
+         resolves {} / {} — select a matching release or checkout",
+        identity.framework_version,
+        identity.protocol.version,
+        selected.framework_version,
+        selected.protocol_version
+    );
+    build_from_checkout(host, root, identity, progress).await
 }
 
 /// The package directory a source build publishes into — named by the
@@ -262,11 +300,9 @@ fn package_name(binary_sha256: &str) -> String {
 async fn build_from_checkout(
     host: &Host,
     root: &Path,
-    selected: &SelectedPackages,
+    expected: &InspectorBuildIdentity,
     progress: Option<BuildProgress>,
 ) -> Result<Artifact> {
-    let commit = checkout_head(host, root).await?;
-    let expected = selected.expected(Some(commit));
     let mut build = RustBuild::new(
         &host.clone().with_cwd(root),
         root.join("apps/inspector"),
@@ -308,7 +344,7 @@ async fn build_from_checkout(
     if package_dir.is_dir() {
         // Identical bytes published before: the existing package still
         // proves itself rather than being re-staged.
-        verify_identity(host, &binary, &expected, IDENTITY_TIMEOUT).await?;
+        verify_identity(host, &binary, expected, IDENTITY_TIMEOUT).await?;
         return Ok(Artifact::new("dev.waterui.inspector", binary));
     }
 
@@ -316,7 +352,7 @@ async fn build_from_checkout(
     verify_identity(
         host,
         &stage.path().join(binary_name()),
-        &expected,
+        expected,
         IDENTITY_TIMEOUT,
     )
     .await?;
@@ -331,7 +367,7 @@ async fn build_from_checkout(
     Ok(Artifact::new("dev.waterui.inspector", binary))
 }
 
-fn binary_name() -> String {
+pub(super) fn binary_name() -> String {
     if cfg!(windows) {
         format!("{CLIENT_BINARY}.exe")
     } else {
@@ -382,8 +418,11 @@ struct CachedClient {
 
 /// Fetch the published `waterui-inspector-<triple>.zip` for the project's
 /// released `waterui` version, or serve the verified cache.
-async fn fetch_release(host: &Host, selected: &SelectedPackages) -> Result<Artifact> {
-    let expected = selected.expected(None);
+async fn fetch_release(
+    host: &Host,
+    selected: &SelectedPackages,
+    expected: &InspectorBuildIdentity,
+) -> Result<Artifact> {
     let triple = Triple::host().to_string();
     let cache_dir = cache_root(host)?
         .join(&selected.framework_version)
@@ -392,13 +431,13 @@ async fn fetch_release(host: &Host, selected: &SelectedPackages) -> Result<Artif
     let binary = package.join(binary_name());
 
     if package.exists() {
-        serve_cached(host, &package, &binary, &expected).await?;
+        serve_cached(host, &package, &binary, expected).await?;
         info!("Using the cached inspector at {}", package.display());
         return Ok(Artifact::new("dev.waterui.inspector", binary));
     }
 
     let asset = release_asset(host, selected, &triple).await?;
-    download_and_publish(host, &asset, &expected, &cache_dir).await?;
+    download_and_publish(host, &asset, expected, &cache_dir).await?;
     Ok(Artifact::new("dev.waterui.inspector", binary))
 }
 
@@ -726,6 +765,7 @@ mod tests {
     use std::io::Write as _;
 
     use sha2::Digest as _;
+    use waterui_inspector_protocol::InspectorProtocolInfo;
 
     use super::*;
     use crate::toolchain::testing::TestMachine;
@@ -1266,13 +1306,15 @@ mod tests {
             )
             .with_http_response(&url, zenwave::Response::new(zenwave::Body::from(archive)));
 
-        let artifact = smol::block_on(fetch_release(&host, &selected)).expect("first fetch");
+        let artifact = smol::block_on(fetch_release(&host, &selected, &expected_identity()))
+            .expect("first fetch");
         let package = cached_package(&machine, &selected);
         assert_eq!(artifact.path(), &package.join(binary_name()));
         assert!(package.join(CACHE_RECEIPT).is_file());
 
         // Warm cache: no HTTP fixture remains — a request would panic.
-        smol::block_on(fetch_release(&host, &selected)).expect("warm cache serves");
+        smol::block_on(fetch_release(&host, &selected, &expected_identity()))
+            .expect("warm cache serves");
     }
 
     #[test]
@@ -1287,7 +1329,8 @@ mod tests {
                 None
             )])),
         );
-        let error = smol::block_on(fetch_release(&host, &selected)).expect_err("no asset");
+        let error = smol::block_on(fetch_release(&host, &selected, &expected_identity()))
+            .expect_err("no asset");
         assert!(error.to_string().contains("publishes no"), "{error}");
     }
 
@@ -1303,7 +1346,8 @@ mod tests {
                 asset_json(&name, "https://x/b.zip", None),
             ])),
         );
-        let error = smol::block_on(fetch_release(&host, &selected)).expect_err("duplicate");
+        let error = smol::block_on(fetch_release(&host, &selected, &expected_identity()))
+            .expect_err("duplicate");
         assert!(error.to_string().contains("duplicate"), "{error}");
     }
 
@@ -1317,7 +1361,8 @@ mod tests {
             &api_url(&selected),
             release_json(serde_json::json!([asset_json(&name, &url, None)])),
         );
-        let error = smol::block_on(fetch_release(&host, &selected)).expect_err("no digest");
+        let error = smol::block_on(fetch_release(&host, &selected, &expected_identity()))
+            .expect_err("no digest");
         assert!(error.to_string().contains("sha256"), "{error}");
     }
 
@@ -1329,7 +1374,8 @@ mod tests {
         *response.status_mut() = zenwave::StatusCode::NOT_FOUND;
         let host = identity_host(&machine, &expected_identity(), [])
             .with_http_response(&api_url(&selected), response);
-        let error = smol::block_on(fetch_release(&host, &selected)).expect_err("404");
+        let error =
+            smol::block_on(fetch_release(&host, &selected, &expected_identity())).expect_err("404");
         assert!(error.to_string().contains("404"), "{error}");
     }
 
@@ -1353,7 +1399,8 @@ mod tests {
                 &url,
                 zenwave::Response::new(zenwave::Body::from(fixture_zip())),
             );
-        let error = smol::block_on(fetch_release(&host, &selected)).expect_err("hash mismatch");
+        let error = smol::block_on(fetch_release(&host, &selected, &expected_identity()))
+            .expect_err("hash mismatch");
         assert!(error.to_string().contains("hashed"), "{error}");
         // Nothing published — not even an empty package dir.
         let cache = cached_package(&machine, &selected);
@@ -1385,7 +1432,8 @@ mod tests {
                 )])),
             )
             .with_http_response(&url, zenwave::Response::new(zenwave::Body::from(archive)));
-        let error = smol::block_on(fetch_release(&host, &selected)).expect_err("foreign");
+        let error = smol::block_on(fetch_release(&host, &selected, &expected_identity()))
+            .expect_err("foreign");
         assert!(error.to_string().contains("reports"), "{error}");
         assert!(!cached_package(&machine, &selected).exists());
     }
@@ -1397,7 +1445,8 @@ mod tests {
         let package = cached_package(&machine, &selected);
         std::fs::create_dir_all(&package).expect("package dir");
         let host = identity_host(&machine, &expected_identity(), []);
-        let error = smol::block_on(fetch_release(&host, &selected)).expect_err("no receipt");
+        let error = smol::block_on(fetch_release(&host, &selected, &expected_identity()))
+            .expect_err("no receipt");
         assert!(error.to_string().contains("receipt"), "{error}");
     }
 
@@ -1416,7 +1465,8 @@ mod tests {
         )
         .expect("receipt");
         let host = identity_host(&machine, &expected_identity(), []);
-        let error = smol::block_on(fetch_release(&host, &selected)).expect_err("no binary");
+        let error = smol::block_on(fetch_release(&host, &selected, &expected_identity()))
+            .expect_err("no binary");
         assert!(error.to_string().contains("no"), "{error}");
     }
 
@@ -1439,7 +1489,8 @@ mod tests {
         )
         .expect("receipt");
         let host = identity_host(&machine, &expected_identity(), []);
-        let error = smol::block_on(fetch_release(&host, &selected)).expect_err("tampered");
+        let error = smol::block_on(fetch_release(&host, &selected, &expected_identity()))
+            .expect_err("tampered");
         assert!(error.to_string().contains("does not match"), "{error}");
     }
 
@@ -1478,7 +1529,8 @@ mod tests {
             .expect("stage parent")
             .to_path_buf();
         smol::block_on(async {
-            let mut fetch = std::pin::pin!(fetch_release(&host, &selected));
+            let expected = expected_identity();
+            let mut fetch = std::pin::pin!(fetch_release(&host, &selected, &expected));
             // Drive the fetch until the staged fixture binary's hanging
             // probe records its pid, then drop the fetch mid-verification.
             for _ in 0..250 {
@@ -1553,16 +1605,203 @@ mod tests {
             .expect("cli/ has a workspace root")
             .to_path_buf();
         let host = Host::current();
-        let artifact = smol::block_on(prepare_client(&host, &workspace, None))
+        // The endpoint this client would serve reports this checkout's own
+        // revision and the resolved package versions — resolved through the
+        // same production path the launcher takes.
+        let selected = smol::block_on(resolve_packages(&host, &workspace))
+            .expect("the enclosing workspace resolves waterui");
+        let head = smol::block_on(checkout_head(&host, &workspace))
+            .expect("the enclosing checkout has a HEAD");
+        let expected = InspectorBuildIdentity {
+            framework_version: selected.framework_version,
+            protocol: InspectorProtocolInfo {
+                version: selected.protocol_version,
+                build_commit: Some(head),
+            },
+        };
+        let artifact = smol::block_on(prepare_client(&host, &workspace, &expected, None))
             .expect("prepare_client on this checkout");
         assert!(artifact.path().is_file());
+        let package_dir = artifact.path().parent().expect("package dir");
         assert!(
-            artifact
-                .path()
-                .parent()
-                .expect("package dir")
-                .join("resources/waterui_assets")
-                .is_dir()
+            package_dir.join("resources/waterui_assets").is_dir(),
+            "the packaged client carries its asset directory"
         );
+        assert!(
+            package_dir.join("resources/fonts").is_dir(),
+            "the packaged client carries its declared fonts"
+        );
+        // A second preparation of the same bytes reuses the published
+        // package — same path, same binary.
+        let second = smol::block_on(prepare_client(&host, &workspace, &expected, None))
+            .expect("the warm preparation serves");
+        assert_eq!(artifact.path(), second.path());
+    }
+
+    /// An endpoint built at `HEAD_B` rejects a checkout sitting at `HEAD_A` —
+    /// before any build runs.
+    #[test]
+    fn an_unreleased_endpoint_rejects_a_different_checkout_revision() {
+        let machine = TestMachine::new();
+        machine.install("cargo");
+        machine.install("git");
+        let root = machine.dir("checkout");
+        machine.file(
+            "checkout/apps/inspector/Cargo.toml",
+            "[package]\nname = \"waterui-inspector-app\"\n",
+        );
+        let project = machine.dir("project");
+        machine.respond(
+            "CARGO_METADATA",
+            &serde_json::json!({
+                "packages": [
+                    package_json("the-app", "0.1.0", None, &project.join("Cargo.toml")),
+                    package_json("waterui", "0.5.2", None, &root.join("Cargo.toml")),
+                    package_json(
+                        "waterui-inspector-protocol",
+                        "0.5.1",
+                        None,
+                        &root.join("components/devtools/inspector/protocol/Cargo.toml")
+                    ),
+                ],
+                "workspace_members": ["path+file://app#0.1.0"],
+                "resolve": null,
+                "target_directory": "/tmp/fixture/target",
+                "version": 0,
+                "workspace_root": project,
+                "metadata": {},
+            })
+            .to_string(),
+        );
+        // The checkout sits at a different revision than the endpoint's.
+        machine.respond("GIT_HEAD", &"a".repeat(40));
+        let host = machine.host(Vec::<(String, String)>::new());
+        let identity = InspectorBuildIdentity {
+            framework_version: String::from("0.5.2"),
+            protocol: InspectorProtocolInfo {
+                version: String::from("0.5.1"),
+                build_commit: Some("b".repeat(40)),
+            },
+        };
+        let error = smol::block_on(prepare_client(&host, &project, &identity, None))
+            .expect_err("a different revision is rejected before the build");
+        assert!(error.to_string().contains("was built at"), "{error}");
+    }
+
+    /// Same checkout, same revision — but a different resolved version
+    /// tuple fails the endpoint's identity just as early.
+    #[test]
+    fn an_unreleased_endpoint_rejects_a_version_tuple_mismatch() {
+        let machine = TestMachine::new();
+        machine.install("cargo");
+        machine.install("git");
+        let root = machine.dir("checkout");
+        machine.file(
+            "checkout/apps/inspector/Cargo.toml",
+            "[package]\nname = \"waterui-inspector-app\"\n",
+        );
+        let project = machine.dir("project");
+        machine.respond(
+            "CARGO_METADATA",
+            &serde_json::json!({
+                "packages": [
+                    package_json("the-app", "0.1.0", None, &project.join("Cargo.toml")),
+                    package_json("waterui", "0.9.9", None, &root.join("Cargo.toml")),
+                    package_json(
+                        "waterui-inspector-protocol",
+                        "0.5.1",
+                        None,
+                        &root.join("components/devtools/inspector/protocol/Cargo.toml")
+                    ),
+                ],
+                "workspace_members": ["path+file://app#0.1.0"],
+                "resolve": null,
+                "target_directory": "/tmp/fixture/target",
+                "version": 0,
+                "workspace_root": project,
+                "metadata": {},
+            })
+            .to_string(),
+        );
+        let head = "a".repeat(40);
+        machine.respond("GIT_HEAD", &head);
+        let host = machine.host(Vec::<(String, String)>::new());
+        let identity = InspectorBuildIdentity {
+            framework_version: String::from("0.5.2"),
+            protocol: InspectorProtocolInfo {
+                version: String::from("0.5.1"),
+                build_commit: Some(head),
+            },
+        };
+        let error = smol::block_on(prepare_client(&host, &project, &identity, None))
+            .expect_err("a version mismatch is rejected before the build");
+        assert!(error.to_string().contains("select a matching"), "{error}");
+    }
+    /// A released endpoint — `build_commit: None` — is served from the
+    /// release its identity names; the project's manifest is never read,
+    /// and no `cargo` or `git` exists on this host to answer if it were.
+    #[cfg(unix)]
+    #[test]
+    fn a_released_endpoint_never_reads_the_project() {
+        let machine = TestMachine::new();
+        let identity = expected_identity();
+        let selected = registry_selected();
+        let archive = fixture_zip();
+        let (url, digest) = valid_release_fixture(&selected, &archive);
+        let name = format!("{CLIENT_BINARY}-{}.zip", Triple::host());
+        let host = identity_host(&machine, &identity, [])
+            .with_http_response(
+                &api_url(&selected),
+                release_json(serde_json::json!([asset_json(
+                    &name,
+                    &url,
+                    Some(&format!("sha256:{digest}")),
+                )])),
+            )
+            .with_http_response(&url, zenwave::Response::new(zenwave::Body::from(archive)));
+
+        // An empty directory stands in for the project — a metadata call
+        // would fail on spawn, so a returned artifact proves it never ran.
+        let empty = machine.dir("no-project");
+        let artifact = smol::block_on(prepare_client(&host, &empty, &identity, None))
+            .expect("a released endpoint needs no project");
+        assert!(artifact.path().is_file());
+    }
+
+    /// An endpoint reporting a checkout revision must not be served by a
+    /// registry `waterui` — the mismatch fails before any build or fetch.
+    #[test]
+    fn an_unreleased_endpoint_rejects_a_registry_project() {
+        let machine = TestMachine::new();
+        machine.install("cargo");
+        let dir = machine.dir("project");
+        machine.respond(
+            "CARGO_METADATA",
+            &serde_json::json!({
+                "packages": [
+                    package_json("the-app", "0.1.0", None, &dir.join("Cargo.toml")),
+                    package_json("waterui", "0.5.2", Some("registry+https://github.com/rust-lang/crates.io-index"), &dir.join("x/Cargo.toml")),
+                    package_json("waterui-inspector-protocol", "0.5.1", Some("registry+https://github.com/rust-lang/crates.io-index"), &dir.join("y/Cargo.toml")),
+                ],
+                "workspace_members": ["path+file://app#0.1.0"],
+                "resolve": null,
+                "target_directory": "/tmp/fixture/target",
+                "version": 0,
+                "workspace_root": dir,
+                "metadata": {},
+            })
+            .to_string(),
+        );
+        let host = machine.host(Vec::<(String, String)>::new());
+        let identity = InspectorBuildIdentity {
+            framework_version: String::from("0.5.2"),
+            protocol: InspectorProtocolInfo {
+                version: String::from("0.5.1"),
+                build_commit: Some("a".repeat(40)),
+            },
+        };
+        let error = smol::block_on(prepare_client(&host, &dir, &identity, None))
+            .expect_err("a registry project cannot serve a checkout endpoint");
+        assert!(error.to_string().contains("registry"), "{error}");
     }
 }

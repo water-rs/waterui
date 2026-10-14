@@ -139,6 +139,16 @@ pub enum InspectorClientMessage {
     },
     /// Liveness probe.
     Ping,
+    /// Ask the endpoint for its build identity.
+    ///
+    /// The endpoint-first query a launcher makes before it knows which
+    /// client to build or fetch: the endpoint answers
+    /// [`InspectorServerMessage::Identity`] and closes — no session, no
+    /// channel subscription, no hub registration.
+    Identify {
+        /// One-time session token.
+        token: String,
+    },
 }
 
 /// Messages sent by the target application to the inspector.
@@ -184,6 +194,11 @@ pub enum InspectorServerMessage {
     Error {
         /// Human-readable reason.
         message: String,
+    },
+    /// The endpoint's build identity, answering [`InspectorClientMessage::Identify`].
+    Identity {
+        /// Full build identity of the target.
+        identity: InspectorBuildIdentity,
     },
 }
 
@@ -295,6 +310,44 @@ mod tests {
             } => {
                 assert_eq!(identity, super::build_identity("0.0.2"));
                 assert_eq!(target.name, "round-trip");
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn identify_and_identity_round_trip_through_the_transport() {
+        let mut bytes = Vec::new();
+        transport::write_frame_blocking(
+            &mut bytes,
+            &InspectorClientMessage::Identify {
+                token: String::from("session-token"),
+            },
+        )
+        .unwrap();
+        let received: InspectorClientMessage =
+            transport::read_frame_blocking(&mut bytes.as_slice()).unwrap();
+        match received {
+            InspectorClientMessage::Identify { token } => {
+                assert_eq!(token, "session-token");
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+
+        let mut bytes = Vec::new();
+        let identity = super::build_identity("0.0.2");
+        transport::write_frame_blocking(
+            &mut bytes,
+            &InspectorServerMessage::Identity {
+                identity: identity.clone(),
+            },
+        )
+        .unwrap();
+        let received: InspectorServerMessage =
+            transport::read_frame_blocking(&mut bytes.as_slice()).unwrap();
+        match received {
+            InspectorServerMessage::Identity { identity: reported } => {
+                assert_eq!(reported, identity);
             }
             other => panic!("unexpected message: {other:?}"),
         }

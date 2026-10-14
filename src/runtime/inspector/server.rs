@@ -52,7 +52,7 @@ pub(super) fn accept_loop(
 
         let peer = socket.peer_addr().ok();
         match handshake(socket, token, identity, target, available) {
-            Ok((socket, channels)) => {
+            Ok(Some((socket, channels))) => {
                 tracing::debug!(
                     target: "waterui::inspector",
                     peer = ?peer,
@@ -60,6 +60,15 @@ pub(super) fn accept_loop(
                     "Inspector connected"
                 );
                 spawn_client(hub, socket, channels);
+            }
+            // An `Identify` was answered and the peer closed cleanly —
+            // answered, not rejected.
+            Ok(None) => {
+                tracing::debug!(
+                    target: "waterui::inspector",
+                    peer = ?peer,
+                    "Answered an inspector identity query"
+                );
             }
             Err(error) => {
                 tracing::warn!(
@@ -80,23 +89,43 @@ fn handshake(
     identity: &InspectorBuildIdentity,
     target: &TargetInfo,
     available: ChannelSet,
-) -> io::Result<(TcpStream, ChannelSet)> {
+) -> io::Result<Option<(TcpStream, ChannelSet)>> {
     socket.set_nodelay(true)?;
     // A peer that connects and says nothing must not hold a thread forever.
     socket.set_read_timeout(Some(super::HANDSHAKE_TIMEOUT))?;
 
-    let hello: InspectorClientMessage = read_frame_blocking(&mut socket)?;
-    let InspectorClientMessage::Hello {
-        token,
-        identity: peer,
-        channels,
-    } = hello
-    else {
-        return Err(reject(
-            &mut socket,
-            io::ErrorKind::InvalidInput,
-            "expected a Hello message",
-        ));
+    let first: InspectorClientMessage = read_frame_blocking(&mut socket)?;
+    let (token, peer, channels) = match first {
+        InspectorClientMessage::Identify { token } => {
+            // Answer the endpoint-first query and close — no client
+            // registration, no subscription, the socket is done.
+            if token != expected_token {
+                return Err(reject(
+                    &mut socket,
+                    io::ErrorKind::PermissionDenied,
+                    "invalid inspector token",
+                ));
+            }
+            write_frame_blocking(
+                &mut socket,
+                &InspectorServerMessage::Identity {
+                    identity: identity.clone(),
+                },
+            )?;
+            return Ok(None);
+        }
+        InspectorClientMessage::Hello {
+            token,
+            identity,
+            channels,
+        } => (token, identity, channels),
+        _ => {
+            return Err(reject(
+                &mut socket,
+                io::ErrorKind::InvalidInput,
+                "expected a Hello or Identify message",
+            ));
+        }
     };
 
     if token != expected_token {
@@ -129,7 +158,7 @@ fn handshake(
         },
     )?;
 
-    Ok((socket, channels & available))
+    Ok(Some((socket, channels & available)))
 }
 
 /// Tells the peer why it was rejected, then reports the same reason locally.
@@ -193,6 +222,16 @@ fn read_control_messages(hub: &EventHub, client: ClientId, mut socket: TcpStream
                     target: "waterui::inspector",
                     "Inspector sent a second Hello; ignoring"
                 );
+            }
+            Ok(InspectorClientMessage::Identify { .. }) => {
+                // Identity queries live at handshake time only — an
+                // established client that asks again is speaking nonsense
+                // (its token is deliberately not logged).
+                tracing::warn!(
+                    target: "waterui::inspector",
+                    "Inspector sent Identify on an established connection; closing"
+                );
+                return;
             }
             Err(error) => {
                 tracing::debug!(
@@ -357,7 +396,10 @@ mod tests {
     fn run_handshake(
         identity: InspectorBuildIdentity,
         hello: &InspectorClientMessage,
-    ) -> (io::Result<(TcpStream, ChannelSet)>, InspectorServerMessage) {
+    ) -> (
+        io::Result<Option<(TcpStream, ChannelSet)>>,
+        InspectorServerMessage,
+    ) {
         let (server_end, mut client) = socket_pair();
         let server = thread::spawn(move || {
             handshake(
@@ -405,12 +447,54 @@ mod tests {
             channels: ChannelSet::default_subscription(),
         };
         let (result, reply) = run_handshake(server_identity.clone(), &hello);
-        result.expect("a matching identity handshakes");
+        assert!(result.expect("a matching identity handshakes").is_some());
         match reply {
             InspectorServerMessage::Welcome { identity, .. } => {
                 assert_eq!(identity, server_identity);
             }
             other => panic!("expected a Welcome reply, got {other:?}"),
+        }
+    }
+
+    /// An `Identify` with the session's token is answered with the server's
+    /// own build identity and no session — the socket is done, the client
+    /// was never registered.
+    #[test]
+    fn a_valid_identify_is_answered_without_a_session() {
+        let server_identity = build_identity("0.0.1");
+        let identify = InspectorClientMessage::Identify {
+            token: String::from("token"),
+        };
+        let (result, reply) = run_handshake(server_identity.clone(), &identify);
+        assert!(result.expect("a valid Identify answers").is_none(),);
+        match reply {
+            InspectorServerMessage::Identity { identity } => {
+                assert_eq!(identity, server_identity);
+            }
+            other => panic!("expected an Identity reply, got {other:?}"),
+        }
+    }
+
+    /// An `Identify` with a wrong token is refused the same way a wrong
+    /// `Hello` token is — an Error, never the identity.
+    #[test]
+    fn a_wrong_token_identify_is_refused() {
+        let server_identity = build_identity("0.0.1");
+        let identify = InspectorClientMessage::Identify {
+            token: String::from("not-the-token"),
+        };
+        let (result, reply) = run_handshake(server_identity, &identify);
+        let error = result.expect_err("a wrong token is refused");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        match reply {
+            InspectorServerMessage::Error { message } => {
+                assert_eq!(message, "invalid inspector token");
+                assert!(
+                    !message.contains("not-the-token"),
+                    "the refusal must not echo the credential: {message}"
+                );
+            }
+            other => panic!("expected an Error reply, got {other:?}"),
         }
     }
 }

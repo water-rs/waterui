@@ -558,6 +558,7 @@ git)
     done
     case "$*" in
         *"rev-parse --is-shallow-repository"*) respond GIT_SHALLOW ;;
+        *"rev-parse HEAD") respond GIT_HEAD ;;
         *"rev-parse --verify refs/remotes/origin/dev"*) respond GIT_HEAD ;;
         *"rev-parse --verify"*) respond GIT_REVISION ;;
         *"--unshallow"*) : > .fake-git-unshallowed ;;

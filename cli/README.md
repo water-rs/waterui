@@ -90,17 +90,20 @@ water inspector --platform macos --target 127.0.0.1:7777
 water inspector --platform android --device <serial> --target 127.0.0.1:<device-port>
 ```
 
-The CLI selects the inspector client from the project's own dependency
-resolution: a `path` or `git` `waterui` builds `apps/inspector` from that
-checkout, while a crates.io `waterui` downloads the
-`waterui-inspector-<triple>.zip` asset of release `v<resolved-version>`,
-verifies its `sha256` digest, and caches it under
-`~/.water/inspector/releases/`; every produced client answers `--identity`
-before it may launch, so a foreign or corrupted package fails loudly. The
-endpoint token never travels on a command line — the runtime supplies it
-through `WATERUI_INSPECTOR_TOKEN`, either from the endpoint's discovery
-record or set directly for a `--target` the CLI cannot discover, and the
-client probes run with that environment stripped.
+The endpoint is asked which build it is first (`Identify`/`Identity` on the
+same framed socket), and that answer selects the client: an endpoint
+reporting a source revision needs a client built from a checkout at that
+revision — `--path` must resolve `waterui` to that checkout — while a
+released endpoint names its own release, so the CLI downloads the
+`waterui-inspector-<triple>.zip` asset of `v<endpoint-version>` without
+reading the project manifest at all. The release is verified against its
+`sha256` digest and cached under `~/.water/inspector/releases/`; every
+produced client answers `--identity` before it may launch, so a foreign or
+corrupted package fails loudly. The endpoint token never travels on a
+command line — the runtime supplies it through `WATERUI_INSPECTOR_TOKEN`,
+either from the endpoint's discovery record or set directly for a
+`--target` the CLI cannot discover, and the client probes run with that
+environment stripped.
 
 `--token` on the command line is rejected: the credential comes from the
 discovery record or `WATERUI_INSPECTOR_TOKEN`, never an argument.

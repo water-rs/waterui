@@ -9,7 +9,7 @@ use eyre::Result;
 use crate::shell::Shell;
 use crate::{header, note, success};
 use waterui_cli::inspector::{
-    InspectorLaunchOptions, InspectorTarget, PreparedInspector, explicit_token, prepare_inspector,
+    InspectorLaunchOptions, InspectorTarget, explicit_token, start_inspector,
 };
 
 /// Where the application being inspected runs.
@@ -112,16 +112,17 @@ impl Args {
     }
 }
 
-/// The resource-free half of the command: project canonicalisation,
-/// endpoint discovery or parse, target-device selection, and the client's
-/// build — everything that can be interrupted without leaving a forward,
-/// a credential or a process behind.
+/// The resource-free half of the command: project canonicalisation and
+/// endpoint or target-device selection — nothing here acquires a forward,
+/// a credential-in-argv or a process, so interrupting it leaves nothing.
+/// The endpoint query and the client's build run inside
+/// `start_inspector`, which owns the connection.
 async fn prepare_selected_inspector(
     shell: &Shell,
     host: &waterui_cli::toolchain::Host,
     args: Args,
     token_override: Option<String>,
-) -> Result<(PreparedInspector, InspectorLaunchOptions)> {
+) -> Result<(PathBuf, InspectorLaunchOptions)> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
 
     header!(shell, "Inspector");
@@ -180,9 +181,8 @@ async fn prepare_selected_inspector(
         | CliInspectorPlatform::Ios => InspectorTarget::Direct(target),
     };
 
-    let prepared = prepare_inspector(host, &project_path, Some(shell.build_progress())).await?;
     Ok((
-        prepared,
+        project_path,
         InspectorLaunchOptions {
             target: inspector_target,
             token,
@@ -212,21 +212,33 @@ pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<
         token_override.as_deref(),
     )?;
 
-    // Everything in `prepare_selected_inspector` acquires nothing that can
-    // leak, so an interrupt while devices scan or the client builds just
-    // returns.
-    let prepared = Box::pin(crate::until_interrupt(
+    // `prepare_selected_inspector` acquires nothing that can leak, so an
+    // interrupt while devices scan just returns; the endpoint connection
+    // and its forward belong to `start_inspector`'s cleanup.
+    let selected = Box::pin(crate::until_interrupt(
         prepare_selected_inspector(shell, &host, args, token_override),
         &interrupts,
     ))
     .await?;
-    let Some((prepared, options)) = prepared else {
+    let Some((project_path, options)) = selected else {
         return Ok(());
     };
 
-    // From here the session owns what it acquires: an interruption goes to
-    // the supervised client, not around it.
-    let session = prepared.launch(options).await?;
+    // The endpoint connection and any forward it acquires stay owned
+    // outside the interruptible work inside `start_inspector` — an
+    // interruption drops the query or preparation first, then the
+    // connection removes its own forward.
+    let Some(session) = start_inspector(
+        &host,
+        &project_path,
+        options,
+        Some(shell.build_progress()),
+        interrupts.clone(),
+    )
+    .await?
+    else {
+        return Ok(());
+    };
     success!(shell, "Inspector app launched");
     note!(
         shell,

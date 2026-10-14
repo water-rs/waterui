@@ -6,7 +6,8 @@ mod launcher;
 
 pub use forward::AndroidForward;
 pub use launcher::{
-    InspectorLaunchOptions, InspectorSession, InspectorTarget, PreparedInspector, prepare_inspector,
+    InspectorLaunchOptions, InspectorSession, InspectorTarget, PreparedInspector,
+    prepare_inspector, start_inspector,
 };
 
 /// An explicit session credential from `WATERUI_INSPECTOR_TOKEN`, used

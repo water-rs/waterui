@@ -29,8 +29,9 @@ The release record's per-asset `digest` field must carry
 bytes against that digest, extracts, runs `waterui-inspector --identity`
 (10s bound, no credentials in the environment) and caches the package under
 `~/.water/inspector/releases/<version>/<triple>/` only when the reported
-identity matches the project's resolved `waterui` and
-`waterui-inspector-protocol` versions.
+identity matches the identity the endpoint answered `Identify` with —
+framework version, protocol version and, for a checkout build, the source
+revision.
 
 A release archive is built with `WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE=release`
 so the protocol's build script stamps no checkout commit into
