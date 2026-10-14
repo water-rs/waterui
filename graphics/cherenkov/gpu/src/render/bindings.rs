@@ -33,7 +33,10 @@ pub enum Kind {
     /// A read-only storage buffer.
     StorageRead,
     /// A sampled `texture_2d<f32>`.
-    Texture,
+    Texture {
+        /// Whether a filtering sampler may bind it.
+        filterable: bool,
+    },
     /// A sampled `texture_2d<u32>` (external frame planes are code-bearing
     /// uint textures the shader decodes itself).
     TextureUint,
@@ -87,9 +90,16 @@ impl Entry {
         Self {
             binding,
             stages: FRAGMENT,
-            kind: Kind::Texture,
+            kind: Kind::Texture { filterable: true },
             dynamic_offset: false,
             min_size: 0,
+        }
+    }
+
+    const fn texture_unfilterable(binding: u32) -> Self {
+        Self {
+            kind: Kind::Texture { filterable: false },
+            ..Self::texture(binding)
         }
     }
 
@@ -256,6 +266,16 @@ pub const RESOLVE_GROUPS: &[&[Entry]] = &[RESOLVE_GROUP0];
 #[allow(dead_code)]
 pub const REDUCE_GROUPS: &[&[Entry]] = &[REDUCE_GROUP0];
 
+/// Silhouette convolution: unfilterable source and the uploaded kernel.
+pub const SHADOW_GROUP0: &[Entry] = &[
+    Entry::texture_unfilterable(0),
+    Entry::storage_read(1, FRAGMENT),
+];
+
+/// The silhouette convolution's single bind group.
+#[allow(dead_code)]
+pub const SHADOW_GROUPS: &[&[Entry]] = &[SHADOW_GROUP0];
+
 /// Group 1 of the Vulkan native external-frame module: `EXTERNAL_GROUP1`
 /// plus the designated texture/sampler pair at bindings 5–6 that the
 /// `external_native` build lowering merges into the combined sampled
@@ -335,7 +355,7 @@ pub fn metal_plan(groups: &[&[Entry]], stage: u8) -> StagePlan {
                     target.buffer = Some(buffers);
                     buffers += 1;
                 }
-                Kind::Texture | Kind::TextureUint => {
+                Kind::Texture { .. } | Kind::TextureUint => {
                     target.texture = Some(textures);
                     textures += 1;
                 }

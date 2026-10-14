@@ -114,6 +114,18 @@ const VS_FS_PROJECTIVE: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
     },
 ];
 
+/// `vs` + `fs`, the silhouette convolution's entry points.
+const SHADOW_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
+    wgpu::PassthroughShaderEntryPoint {
+        name: Cow::Borrowed("vs"),
+        workgroup_size: (0, 0, 0),
+    },
+    wgpu::PassthroughShaderEntryPoint {
+        name: Cow::Borrowed("fs"),
+        workgroup_size: (0, 0, 0),
+    },
+];
+
 /// The `VARIANT = 0` specialization of `shader.wgsl` (simple).
 ///
 /// Every `ENGINE_WGSL` constant is the `engineN.wgsl` `build.rs` wrote
@@ -218,6 +230,12 @@ pub mod spirv {
     pub const RESOLVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/resolve.spv"));
     /// `reduce.wgsl`.
     pub const REDUCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.spv"));
+    /// Silhouette convolution with fractional sampling.
+    pub const SHADOW_FRACTIONAL: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shadow_fractional.spv"));
+    /// Silhouette convolution with integral sampling.
+    pub const SHADOW_INTEGRAL: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shadow_integral.spv"));
     /// `external_native.spv` — the Vulkan native module: `vs_main`,
     /// `fs_external` and `fs_external_format`, with the external-format
     /// pair merged into a combined sampled image by the build's
@@ -277,6 +295,16 @@ const RESOLVE_METALLIB: &[u8] = &[];
 const REDUCE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.metallib"));
 #[cfg(not(target_vendor = "apple"))]
 const REDUCE_METALLIB: &[u8] = &[];
+#[cfg(target_vendor = "apple")]
+const SHADOW_FRACTIONAL_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/shadow_fractional.metallib"));
+#[cfg(not(target_vendor = "apple"))]
+const SHADOW_FRACTIONAL_METALLIB: &[u8] = &[];
+#[cfg(target_vendor = "apple")]
+const SHADOW_INTEGRAL_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/shadow_integral.metallib"));
+#[cfg(not(target_vendor = "apple"))]
+const SHADOW_INTEGRAL_METALLIB: &[u8] = &[];
 
 /// The six `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
@@ -386,6 +414,24 @@ const REDUCE: Fixed = Fixed {
     entries: VS_FS_MAIN,
 };
 
+/// General silhouette convolution, with host-bounded taps and explicit texel bounds.
+const SHADOW: [Fixed; 2] = [
+    Fixed {
+        wgsl: include_str!(concat!(env!("OUT_DIR"), "/shadow_fractional.wgsl")),
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::SHADOW_FRACTIONAL,
+        metallib: SHADOW_FRACTIONAL_METALLIB,
+        entries: SHADOW_ENTRIES,
+    },
+    Fixed {
+        wgsl: include_str!(concat!(env!("OUT_DIR"), "/shadow_integral.wgsl")),
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::SHADOW_INTEGRAL,
+        metallib: SHADOW_INTEGRAL_METALLIB,
+        entries: SHADOW_ENTRIES,
+    },
+];
+
 /// How the fixed engine modules reach the device — a property of the
 /// selected backend, not a runtime fallback.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -485,6 +531,20 @@ impl ShaderDelivery {
     #[must_use]
     pub fn reduce_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
         self.module(device, "cherenkov reduce", &REDUCE)
+    }
+
+    /// The general silhouette convolution module.
+    #[must_use]
+    pub fn shadow_module(
+        self,
+        device: &wgpu::Device,
+        integral_sampling: bool,
+    ) -> wgpu::ShaderModule {
+        self.module(
+            device,
+            "cherenkov silhouette convolution",
+            &SHADOW[usize::from(integral_sampling)],
+        )
     }
 
     fn module(

@@ -1684,8 +1684,8 @@ pub fn layout_entries(entries: &[bindings::Entry]) -> Vec<wgpu::BindGroupLayoutE
                     has_dynamic_offset: entry.dynamic_offset,
                     min_binding_size: wgpu::BufferSize::new(entry.min_size),
                 },
-                bindings::Kind::Texture => wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                bindings::Kind::Texture { filterable } => wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable },
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
@@ -9289,7 +9289,9 @@ impl GpuRenderer {
                 // First shadow of the engine's life builds the blur
                 // pipeline here (#170).
                 self.shadow_blur
-                    .get_or_insert_with(|| shadow::Blur::new(&self.device, self.scratch_format))
+                    .get_or_insert_with(|| {
+                        shadow::Blur::new(&self.device, self.shader_delivery, self.scratch_format)
+                    })
                     .apply(
                         &self.device,
                         &mut encoder,

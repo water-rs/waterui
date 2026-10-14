@@ -148,6 +148,7 @@ fn main() {
         mip,
         resolve,
         reduce,
+        shadow,
         native,
         tile,
     ] = [
@@ -161,6 +162,7 @@ fn main() {
         "mip",
         "resolve",
         "reduce",
+        "shadow",
         "external_native",
         "composite/tile",
     ]
@@ -193,6 +195,7 @@ fn main() {
         mip: &mip,
         resolve: &resolve,
         reduce: &reduce,
+        shadow: &shadow,
         tile: &tile,
     });
 
@@ -216,15 +219,16 @@ struct Modules<'a> {
     mip: &'a str,
     resolve: &'a str,
     reduce: &'a str,
+    shadow: &'a str,
     /// The Vulkan tile stage interfaces around the fragment bodies.
     tile: &'a str,
 }
 
 /// The fixed module set `render` creates: six VARIANT specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
-/// `projective`, `mip`, `resolve` and `reduce`. The engine, external
-/// and projective modules share the `shared.wgsl` prelude; the engine
-/// and projective tails share the `blend.wgsl` compositing helpers.
+/// `projective`, `mip`, `resolve`, `reduce` and the two shadow sampling modules.
+/// The engine, external and projective modules share the `shared.wgsl` prelude.
+/// Engine and projective tails share the `blend.wgsl` compositing helpers.
 /// Variant 3 (Union) additionally prepends `UNION_MAX_MEMBERS` and links
 /// `union.wgsl`; the plain variants drop every `// union-stub` span, so
 /// their modules carry no union fold or member-cap arrays.
@@ -299,6 +303,16 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             attachment: false,
         });
     }
+    for (name, integral_sampling) in [("shadow_fractional", false), ("shadow_integral", true)] {
+        specs.push(Spec {
+            name: name.into(),
+            source: shadow_source(m.shadow, integral_sampling),
+            groups: bindings::SHADOW_GROUPS,
+            metal: true,
+            merge_pair: None,
+            attachment: false,
+        });
+    }
     // The Vulkan tile executor's composition module (issue #2191): the
     // stripped no-union variant, like the Apple `engine_tile` metallib,
     // plus the tile stage interfaces. A union member samples its group's
@@ -313,6 +327,35 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         attachment: true,
     });
     specs
+}
+
+/// Freeze the sampling choice before any backend compiles the module.
+fn shadow_source(source: &str, integral_sampling: bool) -> String {
+    let module = naga::front::wgsl::parse_str(source).expect("parse silhouette convolution");
+    let mut validator = Validator::new(ValidationFlags::all(), Capabilities::empty());
+    let info = validator
+        .validate(&module)
+        .expect("validate silhouette convolution");
+    let constants = naga::back::PipelineConstants::from_iter([(
+        String::from("INTEGRAL_SAMPLING"),
+        if integral_sampling { 1.0 } else { 0.0 },
+    )]);
+    let (module, _) =
+        naga::back::pipeline_constants::process_overrides(&module, &info, None, &constants)
+            .expect("resolve silhouette sampling constant");
+    let mut module = module.into_owned();
+    // Resolution replaces uses with constants but retains override declarations.
+    // Prune those declarations before serializing the fixed module.
+    naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
+    assert!(
+        module.overrides.is_empty(),
+        "fixed shadow module retains an override"
+    );
+    let info = validator
+        .validate(&module)
+        .expect("validate fixed silhouette convolution");
+    naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())
+        .expect("serialize fixed silhouette convolution")
 }
 
 fn compile_specs(out_dir: &Path, specs: &[Spec]) {

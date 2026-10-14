@@ -147,6 +147,28 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
 }
 
 split_test! {
+fn silhouette_shadow_emits() {
+    for (name, integral_sampling, source) in [
+        ("fractional", false, include_str!(concat!(env!("OUT_DIR"), "/shadow_fractional.wgsl"))),
+        ("integral", true, include_str!(concat!(env!("OUT_DIR"), "/shadow_integral.wgsl"))),
+    ] {
+        let module = wgsl::parse_str(source).expect("fixed silhouette WGSL");
+        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+            .validate(&module).expect("valid fixed silhouette module");
+        assert!(module.overrides.is_empty());
+        let constant = module.constants.iter()
+            .find(|(_, constant)| constant.name.as_deref() == Some("INTEGRAL_SAMPLING"))
+            .expect("sampling constant remains named").1;
+        assert!(matches!(
+            module.global_expressions[constant.init],
+            naga::Expression::Literal(naga::Literal::Bool(value)) if value == integral_sampling
+        ));
+        effect_emits(name, &module, &info);
+    }
+}
+}
+
+split_test! {
 /// The registered-effect module parses, validates and translates through
 /// every naga backend — for each built-in effect kind's semantics as a
 /// user source would use them (sample, SDF normal and displacement), and
