@@ -4,8 +4,10 @@
 //! Mirrors `WuiToggle`: the `toggle` `Binding<bool>` drives `set_on` with the
 //! watcher metadata's animation, the control's action writes user edits back
 //! into the binding, `Disabled` pushes `set_enabled`, and the label renders
-//! as a mounted child beside the control. Style picks the control — iOS's
-//! automatic is the switch, macOS's the checkbox, exactly the Swift table.
+//! as a mounted child beside the control. The payload's style arrives
+//! resolved — `ToggleStyle::resolved` owns the platform default — and picks
+//! the control; the payload's stretch axis picks how the row fills its
+//! offer (`docs/layout-spec.md` §3, §6).
 
 use waterui::animation::Animation;
 use waterui::component::toggle::{ToggleConfig, ToggleStyle};
@@ -29,22 +31,16 @@ mod platform {
 
 use platform::{Kind, StateChange, Toggle};
 
-/// The control a style draws on this platform — `makeToggleControl`'s table.
-#[cfg(target_os = "ios")]
+/// The control a resolved style draws. The native payload never carries
+/// `Automatic`: `ToggleConfig`'s resolver replaces it with the platform
+/// default before the backend sees the config.
 const fn kind(style: ToggleStyle) -> Kind {
     match style {
-        ToggleStyle::Automatic | ToggleStyle::Switch => Kind::Switch,
-        ToggleStyle::Checkbox => Kind::Checkbox,
-        _ => panic!("unsupported WaterUI toggle style"),
-    }
-}
-
-/// The control a style draws on this platform — `makeToggleControl`'s table.
-#[cfg(target_os = "macos")]
-const fn kind(style: ToggleStyle) -> Kind {
-    match style {
-        ToggleStyle::Automatic | ToggleStyle::Checkbox => Kind::Checkbox,
         ToggleStyle::Switch => Kind::Switch,
+        ToggleStyle::Checkbox => Kind::Checkbox,
+        ToggleStyle::Automatic => {
+            panic!("the toggle payload reached the backend with an unresolved Automatic style")
+        }
         _ => panic!("unsupported WaterUI toggle style"),
     }
 }
@@ -96,12 +92,16 @@ fn state_change(metadata: &Metadata) -> StateChange {
     }
 }
 
-/// The toggle row's layout face: horizontally stretching, measured from the
-/// control's intrinsic size plus a live read of the label child — the
-/// `sizeThatFits` contract.
+/// The toggle row's layout face, measured from the control's intrinsic size
+/// plus a live read of the label child. A switch with a visible label is
+/// `Horizontal` and answers the proposed width; a checkbox or a hidden label
+/// is `None` and answers the row's intrinsic size.
 struct ToggleSubView {
     /// The kit row; its `control_size` is the control's share of a measure.
     toggle: Toggle,
+    /// The payload's `NativeView::stretch_axis` — the one statement of the
+    /// rule, read once at install.
+    stretch: StretchAxis,
     /// The mounted label, measured under an unspecified proposal each time —
     /// natively hosted children measure against their ideal, not their frame.
     label: Mounted,
@@ -140,27 +140,17 @@ impl SubView for ToggleSubView {
         } else {
             (control.width as f32, control.height as f32)
         };
-        // A phone's toggle fills the row it's offered when a label shares it;
-        // a Mac's takes its own width — the box pushed to the far edge of a
-        // window is not a thing macOS draws.
-        #[cfg(target_os = "ios")]
-        let width = if has_label && let Some(proposed) = proposal.width {
-            proposed.max(intrinsic_width)
-        } else {
-            intrinsic_width
-        };
-        #[cfg(target_os = "macos")]
-        let width = {
-            let _ = proposal;
-            intrinsic_width
+        let width = match (self.stretch, proposal.width) {
+            (StretchAxis::Horizontal, Some(proposed)) if proposed.is_finite() => {
+                proposed.max(intrinsic_width)
+            }
+            _ => intrinsic_width,
         };
         ViewDimensions::new(Size::new(width, height))
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        // `WuiToggle` answers the default `.none` on both platforms; the iOS
-        // row fill comes from `measure` echoing the proposed width instead.
-        StretchAxis::None
+        self.stretch
     }
 
     fn priority(&self) -> i32 {
@@ -174,6 +164,7 @@ impl SubView for ToggleSubView {
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<ToggleConfig>(|config, ctx| {
         let mtm = ctx.mtm();
+        let stretch = waterui_core::NativeView::stretch_axis(&config);
         let toggle = Toggle::new(mtm, kind(config.style), config.toggle.snapshot());
         let disabled = Disabled::resolve(ctx.env(), false);
 
@@ -191,6 +182,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             toggle.container(),
             ToggleSubView {
                 toggle: toggle.clone(),
+                stretch,
                 label: mounted,
             },
         );
@@ -232,7 +224,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kind_maps_styles_like_the_swift_table() {
+    fn kind_maps_resolved_styles_like_the_swift_table() {
         #[cfg(target_os = "macos")]
         let table = [
             (ToggleStyle::Automatic, Kind::Checkbox),
@@ -246,8 +238,14 @@ mod tests {
             (ToggleStyle::Checkbox, Kind::Checkbox),
         ];
         for (style, expected) in table {
-            assert_eq!(kind(style), expected);
+            assert_eq!(kind(style.resolved()), expected);
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "unresolved Automatic style")]
+    fn kind_rejects_an_unresolved_automatic_style() {
+        let _ = kind(ToggleStyle::Automatic);
     }
 
     #[cfg(target_os = "ios")]

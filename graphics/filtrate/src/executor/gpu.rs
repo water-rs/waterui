@@ -412,9 +412,9 @@ fn scale_words(input: (u32, u32), output: (u32, u32)) -> Vec<u32> {
 impl GpuPass {
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "the wasm32 WebGPU device is !Send; the executor's futures run on the page's event loop"
+            reason = "setup runs on the page's event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     async fn new(
@@ -783,9 +783,9 @@ pub fn filterable(format: wgpu::TextureFormat, features: wgpu::Features) -> bool
 /// Fails setup when the device cannot render to the intermediates.
 #[cfg_attr(
     target_arch = "wasm32",
-    expect(
+    allow(
         clippy::future_not_send,
-        reason = "the wasm32 WebGPU device is !Send; the executor's futures run on the page's event loop"
+        reason = "setup runs on the page's event loop; wgpu handles' Send bound varies with Cargo feature unification"
     )
 )]
 async fn probe_intermediate_format(device: &wgpu::Device) -> Result<(), EffectSetupError> {

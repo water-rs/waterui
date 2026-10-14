@@ -103,7 +103,6 @@ mod platform {
     use super::{Fill, Mounted, mount_tabs};
     use alloc::rc::Rc;
     use alloc::vec::Vec;
-    use core::cell::RefCell;
 
     use crate::contract::{NativeLeaf, RenderContext};
     use cocoa_ui::geometry::Rect;
@@ -124,17 +123,20 @@ mod platform {
     /// retains the accessory's `contentView` inside the controller's view
     /// hierarchy, so the mounted child must detach explicitly — the leaf
     /// owns the mount, and its watchers die with it.
+    ///
+    /// The host's handlers hold the mount strongly; clearing them leaves
+    /// this struct the mount's only owner, so `_mounted` — declared before
+    /// `host` — detaches the child while the host is still retained.
     struct BottomAccessory {
         tabs: Retained<TabsController>,
-        mounted: Rc<RefCell<Option<crate::contract::Mounted>>>,
+        _mounted: Rc<crate::contract::Mounted>,
+        host: Retained<HostView>,
     }
 
     impl Drop for BottomAccessory {
         fn drop(&mut self) {
             self.tabs.setBottomAccessory(None);
-            if let Some(mounted) = self.mounted.borrow_mut().take() {
-                drop(mounted.unmount());
-            }
+            self.host.clear_handlers();
         }
     }
 
@@ -198,6 +200,24 @@ mod platform {
                 icon_leaf.view(),
                 cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
             );
+            #[cfg(feature = "gpu_surface")]
+            {
+                // The raster cannot run synchronously under `CAMetalLayer`:
+                // the item waits, and the task the central capture completes
+                // installs the image — `keep` cancels it on unmount.
+                let bounds = view::bounds(icon_leaf.view());
+                if bounds.size.width > 0.0 && bounds.size.height > 0.0 {
+                    let icon_view = view::retain_base(icon_leaf.view());
+                    let env = ctx.env().clone();
+                    let tabs = tabs.clone();
+                    keep.keep(executor_core::spawn_local(async move {
+                        let image =
+                            crate::capture_image::template_image(&icon_view, &env, 25.0).await;
+                        tabs.tab_item(index).setImage(Some(&image));
+                    }));
+                }
+            }
+            #[cfg(not(feature = "gpu_surface"))]
             if let Some(image) = cocoa_ui::bitmap::view_template_image(icon_leaf.view(), 25.0) {
                 tabs.tab_item(index).setImage(Some(&image));
             }
@@ -236,26 +256,18 @@ mod platform {
         // sizing and collapse.
         if let Some(accessory) = layout.bottom_accessory.take() {
             let accessory_host = HostView::new(mtm, Rect::ZERO);
-            let mounted = Rc::new(RefCell::new(Some(
-                ctx.render(accessory).mount(&accessory_host),
-            )));
+            let mounted = Rc::new(ctx.render(accessory).mount(&accessory_host));
             accessory_host.set_measure_handler({
                 let mounted = Rc::clone(&mounted);
                 move |_host, proposal| {
-                    let Some(measured) = mounted.borrow().as_ref().map(|mounted| {
-                        #[expect(
-                            clippy::cast_possible_truncation,
-                            reason = "the layout contract is f32; measured points always fit"
-                        )]
-                        mounted.layout().measure(ProposalSize::new(
-                            proposal.width.map(|width| width as f32),
-                            proposal.height.map(|height| height as f32),
-                        ))
-                    }) else {
-                        // The leaf unmounted the child — the host can still
-                        // be asked while `UIKit` keeps it in the hierarchy.
-                        return cocoa_ui::geometry::Size::new(0.0, 0.0);
-                    };
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        reason = "the layout contract is f32; measured points always fit"
+                    )]
+                    let measured = mounted.layout().measure(ProposalSize::new(
+                        proposal.width.map(|width| width as f32),
+                        proposal.height.map(|height| height as f32),
+                    ));
                     cocoa_ui::geometry::Size::new(
                         f64::from(measured.size.width),
                         f64::from(measured.size.height),
@@ -279,28 +291,19 @@ mod platform {
                     let Some(sub) = subviews.first() else {
                         return;
                     };
-                    let (frame, proposal) = {
-                        let slot = mounted.borrow();
-                        let Some(mounted) = slot.as_ref() else {
-                            return;
-                        };
-                        let proposal = ProposalSize::new(
-                            Some(bounds.size.width as f32),
-                            Some(bounds.size.height as f32),
-                        );
-                        let measured = mounted.layout().measure(proposal).size;
-                        let width = f64::from(measured.width);
-                        let height = f64::from(measured.height);
-                        (
-                            Rect::new(
-                                (bounds.size.width - width) / 2.0,
-                                (bounds.size.height - height) / 2.0,
-                                width,
-                                height,
-                            ),
-                            proposal,
-                        )
-                    };
+                    let proposal = ProposalSize::new(
+                        Some(bounds.size.width as f32),
+                        Some(bounds.size.height as f32),
+                    );
+                    let measured = mounted.layout().measure(proposal).size;
+                    let width = f64::from(measured.width);
+                    let height = f64::from(measured.height);
+                    let frame = Rect::new(
+                        (bounds.size.width - width) / 2.0,
+                        (bounds.size.height - height) / 2.0,
+                        width,
+                        height,
+                    );
                     crate::proposal::deliver(sub, proposal);
                     view::set_frame(sub, frame);
                 }
@@ -308,10 +311,10 @@ mod platform {
             let accessory = UITabAccessory::initWithContentView(mtm.alloc(), &accessory_host);
             tabs.setBottomAccessory(Some(&accessory));
             keep.keep(accessory);
-            keep.keep(accessory_host);
             keep.keep(BottomAccessory {
                 tabs: tabs.clone(),
-                mounted,
+                _mounted: mounted,
+                host: accessory_host,
             });
         }
 

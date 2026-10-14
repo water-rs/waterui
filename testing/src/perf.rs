@@ -1,7 +1,7 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use hydrolysis::Style;
+use hydrolysis::{PointerKind, Style};
 use waterui_core::{AnyView, View};
 
 use crate::app::{OffscreenApp, Styled, UiBuilder};
@@ -348,7 +348,7 @@ impl PerfRun<'_> {
         self.app
             .app
             .runtime
-            .push_input_event(driver::pointer_move_event(x, y));
+            .push_input_event(driver::pointer_move_event(PointerKind::Mouse, x, y));
     }
 
     /// Queues a primary pointer down for the next measured frame without settling the app.
@@ -356,7 +356,7 @@ impl PerfRun<'_> {
         self.app
             .app
             .runtime
-            .push_input_event(driver::pointer_down_event(x, y));
+            .push_input_event(driver::pointer_down_event(PointerKind::Mouse, x, y));
     }
 
     /// Queues a primary pointer up for the next measured frame without settling the app.
@@ -364,7 +364,7 @@ impl PerfRun<'_> {
         self.app
             .app
             .runtime
-            .push_input_event(driver::pointer_up_event(x, y));
+            .push_input_event(driver::pointer_up_event(PointerKind::Mouse, x, y));
     }
 
     /// Queues a wheel/trackpad scroll event for the next measured frame without settling the app.

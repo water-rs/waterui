@@ -50,11 +50,40 @@ struct DraggableLeafState {
     /// no drag is pending.
     #[cfg(target_os = "macos")]
     drag_origin: Option<Point>,
+    /// The pointer-press generation a drag snapshot belongs to: a
+    /// `mouseDown:` or a completed session ends the generation, and a
+    /// raster landing under another press is dropped.
+    #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+    drag_generation: u64,
+    /// The in-flight drag snapshot; replacing or dropping it cancels the
+    /// raster.
+    #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+    drag_task: Option<executor_core::AnyLocalExecutorTask<()>>,
 }
 
 impl core::fmt::Debug for DraggableLeafState {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("DraggableLeafState").finish_non_exhaustive()
+    }
+}
+
+/// The leaf's hold on a pending drag snapshot: dropping the leaf — the
+/// mount's logical end, even while the native view or the event handlers
+/// still retain it — cancels the raster and ends the press generation, so
+/// no `begin_drag` can fire for an unmounted subtree.
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+struct DragSnapshotGuard {
+    /// The leaf state whose snapshot task is cancelled on drop.
+    state: Rc<RefCell<DraggableLeafState>>,
+}
+
+#[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+impl Drop for DragSnapshotGuard {
+    fn drop(&mut self) {
+        let mut state = self.state.borrow_mut();
+        state.drag_origin = None;
+        state.drag_generation += 1;
+        state.drag_task = None;
     }
 }
 
@@ -89,19 +118,22 @@ impl SubView for DraggableSubView {
 /// `WuiDraggable.mouseDragged`: text and URL are single items, files are
 /// one item per URL (like Finder), and an in-process payload only carries
 /// the routing marker. Each item drags a snapshot of the view's bounds.
-fn drag_items(host: &HostView, payload: &DragPayload) -> Vec<kit::DragItemSpec> {
+fn drag_items(
+    host: &cocoa_ui::objc2_app_kit::NSView,
+    payload: &DragPayload,
+    image: &cocoa_ui::Retained<cocoa_ui::objc2_app_kit::NSImage>,
+) -> Vec<kit::DragItemSpec> {
     let frame = view::bounds(host);
-    let image = kit::view_snapshot(host);
     match payload.platform_representation() {
         PlatformRepresentation::Text(text) => vec![kit::DragItemSpec {
             item: kit::text_item(text.as_str()),
             frame: frame.into(),
-            image,
+            image: image.clone(),
         }],
         PlatformRepresentation::Url(url) => vec![kit::DragItemSpec {
             item: kit::url_item(url.as_str()),
             frame: frame.into(),
-            image,
+            image: image.clone(),
         }],
         PlatformRepresentation::Files(files) => files
             .urls()
@@ -115,12 +147,16 @@ fn drag_items(host: &HostView, payload: &DragPayload) -> Vec<kit::DragItemSpec> 
         PlatformRepresentation::InProcess => vec![kit::DragItemSpec {
             item: kit::marker_item(IN_PROCESS_TYPE),
             frame: frame.into(),
-            image,
+            image: image.clone(),
         }],
     }
 }
 
 /// Installs the `draggable` handler on the dispatcher.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the drag session's press, preview, and capture stages stay in one handler"
+)]
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<Metadata<Draggable>>(|metadata, ctx| {
         let mtm = ctx.mtm();
@@ -134,6 +170,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
             draggable: metadata.value,
             #[cfg(target_os = "macos")]
             drag_origin: None,
+            #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+            drag_generation: 0,
+            #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+            drag_task: None,
         }));
 
         // The content always fills the wrapper — `contentView.frame = bounds`.
@@ -155,16 +195,25 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         #[cfg(target_os = "macos")]
         {
-            // `mouseDown:` stores where the drag might start.
+            // `mouseDown:` stores where the drag might start — and ends any
+            // outstanding snapshot's press generation.
             host.set_mouse_down_handler({
                 let state = Rc::clone(&state);
                 move |_view, event| {
-                    state.borrow_mut().drag_origin = Some(event.locationInWindow().into());
+                    let mut state = state.borrow_mut();
+                    state.drag_origin = Some(event.locationInWindow().into());
+                    #[cfg(feature = "gpu_surface")]
+                    {
+                        state.drag_generation += 1;
+                        state.drag_task = None;
+                    }
                 }
             });
             // `mouseDragged:` beyond 3pt begins the dragging session.
             host.set_mouse_dragged_handler({
                 let state = Rc::clone(&state);
+                #[cfg(feature = "gpu_surface")]
+                let env = ctx.env().clone();
                 move |view, event| {
                     let origin = state.borrow().drag_origin;
                     let Some(origin) = origin else { return };
@@ -173,11 +222,66 @@ pub fn install(dispatcher: &mut Dispatcher) {
                     if distance <= 3.0 {
                         return;
                     }
-                    state.borrow_mut().drag_origin = None;
-                    let payload = state.borrow().draggable.payload();
-                    let local: Rc<dyn core::any::Any> = Rc::new(payload.clone());
-                    let items = drag_items(view, &payload);
-                    let _session = kit::begin_drag(view, event, items, Some(local), || {});
+                    #[cfg(feature = "gpu_surface")]
+                    {
+                        // The drag image cannot raster synchronously under
+                        // `CAMetalLayer`: snapshot asynchronously and begin
+                        // the session only if the same press is still held
+                        // when the image lands.
+                        let generation = {
+                            let mut state = state.borrow_mut();
+                            state.drag_origin = None;
+                            state.drag_generation += 1;
+                            state.drag_generation
+                        };
+                        let view = view::retain_base(view);
+                        // SAFETY: `event` is the live `NSEvent` AppKit handed
+                        // this callback; `retain` takes our own reference
+                        // for the snapshot wait.
+                        let event = unsafe {
+                            cocoa_ui::Retained::retain(std::ptr::from_ref(event).cast_mut())
+                        }
+                        .expect("a live NSEvent");
+                        let payload = state.borrow().draggable.payload();
+                        let env = env.clone();
+                        let weak = Rc::downgrade(&state);
+                        let task = executor_core::spawn_local(async move {
+                            let image = crate::capture_image::drag_image(&view, &env).await;
+                            let Some(state) = weak.upgrade() else {
+                                return;
+                            };
+                            if state.borrow().drag_generation != generation {
+                                return;
+                            }
+                            let local: Rc<dyn core::any::Any> = Rc::new(payload.clone());
+                            let items = drag_items(&view, &payload, &image);
+                            let _session =
+                                kit::begin_drag(&view, &event, items, Some(local), || {});
+                        });
+                        state.borrow_mut().drag_task = Some(task);
+                    }
+                    #[cfg(not(feature = "gpu_surface"))]
+                    {
+                        state.borrow_mut().drag_origin = None;
+                        let payload = state.borrow().draggable.payload();
+                        let local: Rc<dyn core::any::Any> = Rc::new(payload.clone());
+                        let image = kit::view_snapshot(view);
+                        let items = drag_items(view, &payload, &image);
+                        let _session = kit::begin_drag(view, event, items, Some(local), || {});
+                    }
+                }
+            });
+            // `mouseUp:` ends the press generation: a snapshot still
+            // waiting for its raster is dropped before it can begin a
+            // session on a released button.
+            #[cfg(feature = "gpu_surface")]
+            host.set_mouse_up_handler({
+                let state = Rc::clone(&state);
+                move |_view, _event| {
+                    let mut state = state.borrow_mut();
+                    state.drag_origin = None;
+                    state.drag_generation += 1;
+                    state.drag_task = None;
                 }
             });
         }
@@ -221,6 +325,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
             },
         );
         leaf.keep(sink_guard);
+        #[cfg(all(target_os = "macos", feature = "gpu_surface"))]
+        leaf.keep(DragSnapshotGuard {
+            state: Rc::clone(&state),
+        });
         leaf.keep(state);
         #[cfg(target_os = "ios")]
         leaf.keep(drag_source);

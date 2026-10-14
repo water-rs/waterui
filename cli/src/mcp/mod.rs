@@ -32,6 +32,8 @@ pub use proxy::ChildProxy;
 /// One `water mcp` session.
 #[derive(Debug)]
 pub struct McpSessionRequest {
+    /// The host this session's builds and spawned processes run on.
+    pub host: crate::toolchain::Host,
     /// `WaterUI` project directory.
     pub project_path: PathBuf,
     /// Viewport width in logical pixels.
@@ -64,6 +66,7 @@ pub struct McpSessionRequest {
 /// runtime condition.
 pub async fn serve_mcp(request: McpSessionRequest) -> Result<()> {
     let McpSessionRequest {
+        host,
         project_path,
         width,
         height,
@@ -73,6 +76,7 @@ pub async fn serve_mcp(request: McpSessionRequest) -> Result<()> {
     } = request;
 
     let proxy = Arc::new(ChildProxy::new(
+        host.clone(),
         project_path.clone(),
         width,
         height,
@@ -85,7 +89,7 @@ pub async fn serve_mcp(request: McpSessionRequest) -> Result<()> {
     // machinery rather than the running app, and must answer before the
     // child's first build finishes.
     tools
-        .register(preview::PreviewTool::new(project_path, sccache_path))
+        .register(preview::PreviewTool::new(host, project_path, sccache_path))
         .expect("static tool registration cannot fail");
 
     // Schedule the first build before the server starts so it is already

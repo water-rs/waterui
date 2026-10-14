@@ -4,7 +4,6 @@ extern crate alloc;
 
 /// Color types and conversion utilities.
 pub mod color;
-/// cbindgen:ignore
 #[cfg(feature = "effects")]
 mod effects;
 #[cfg(feature = "gpu")]
@@ -19,13 +18,21 @@ mod scene;
 #[cfg(feature = "gpu")]
 pub mod shader_paint;
 
-/// The engine this crate records for, re-exported so every consumer names
-/// the same `Content`, `Paint`, `Shape`, `Recorder` and colour types.
+/// The recorder vocabulary this crate records with: `Recorder`, `Draw`,
+/// `Content`, `Paint`, `Shape`, the colour types and the plain resource ids.
+/// Always available — it carries no engine.
+pub use cherenkov_record as draw;
+
+/// The engine this crate records for, re-exported so consumers that own an
+/// engine name the same `Engine`, `Surface` and backend types.
+#[cfg(feature = "cherenkov")]
 pub use cherenkov;
 
 pub use color::{Color, ColorScheme, Colorspace, CurrentColorScheme, WorkingColor};
 #[cfg(feature = "effects")]
 pub use effects::filter_view;
+#[cfg(feature = "gpu")]
+pub use filter_view::WithEffect;
 #[cfg(feature = "effects")]
 pub use filter_view::{
     AnyEffect, BackgroundReplace, BlendWithImage, Bloom, Blur, Brightness, BumpDistortion,
@@ -37,10 +44,10 @@ pub use filter_view::{
     MorphologyMax, MorphologyMin, MotionBlur, OutputSize, ParamGuards, PerspectiveCorrection,
     PerspectiveTransform, PhotoEffectChrome, PhotoEffectFade, PhotoEffectInstant, PhotoEffectMono,
     PhotoEffectNoir, PhotoEffectProcess, PhotoEffectTonal, PhotoEffectTransfer, PinchDistortion,
-    Pixellate, Prewitt, RadialTransitionToImage, Reactive, Saturation, Sepia, Sharpen, Sobel,
-    SwipeTransitionToImage, TemperatureTint, TemporalDenoise, ToneCurve, TransitionToImage,
-    TwirlDistortion, UnsharpMask, Vibrance, Vignette, VortexDistortion, WhitePoint, ZoomBlur,
-    ZoomTransitionToImage,
+    Pixellate, Prewitt, RadialTransitionToImage, Reactive, RenderTransfer, Saturation, Sepia,
+    Sharpen, Sobel, SwipeTransitionToImage, TemperatureTint, TemporalDenoise, ToneCurve,
+    TransitionToImage, TwirlDistortion, UnsharpMask, Vibrance, Vignette, VortexDistortion,
+    WhitePoint, ZoomBlur, ZoomTransitionToImage,
 };
 #[cfg(feature = "gpu")]
 pub use gpu::{
@@ -61,15 +68,21 @@ pub use input::{
 #[cfg(any(feature = "gpu", feature = "cpu"))]
 pub use offscreen::{OffscreenError, OffscreenImage, OffscreenRenderer, OffscreenSize};
 pub use scene::picture::{Picture, PictureRecording, PictureSource};
+#[cfg(feature = "cherenkov")]
+pub use scene::resources::SceneCaps;
 pub use scene::resources::{
-    EngineResource, HeldResources, RecordingResources, Registered, SceneBackend, SceneResources,
-    ShaderBackend,
+    Handle, HeldResources, PlainId, RecordingResources, Registered, ResourceHandle, SceneBackend,
+    SceneResources, ShaderBackend,
 };
 pub use scene::scene_view::{
     SceneContent, SceneInvalidator, SceneView, SceneViewMergeToParent, invalidate_on_change,
     resolve_scene_proposal, scene_stretch_axis,
 };
-pub use scene::{picture, resources, scene_view};
+pub use scene::source::{
+    FontSource, Format, ImageColorSpace, ImageData, ImageFormat, ResourceError, Rgba8, Rgba16F,
+    ShaderLanguage, ShaderSource,
+};
+pub use scene::{picture, resources, scene_view, source};
 #[cfg(feature = "gpu")]
 pub use shader_paint::ShaderPaintView;
 
@@ -88,6 +101,11 @@ pub use cherenkov_gpu;
 /// filter written against it is the one the engine runs.
 #[cfg(feature = "effects")]
 pub use filtrate;
+
+/// The application-supplied post-process shader `.effect(..)` applies, its
+/// parameter bound, and the error its construction returns.
+#[cfg(feature = "gpu")]
+pub use filtrate::{SHADER_EFFECT_MAX_PARAMS, ShaderEffect, ShaderEffectError};
 
 /// The exact `wgpu` this build links, re-exported so applications implementing
 /// [`GpuContent`] cannot end up with a version-mismatched `wgpu`.

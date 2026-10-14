@@ -40,7 +40,7 @@ fn a_glyph_keeps_its_path_clip_mask_when_composed() {
         style: GlyphStyle::Fill,
     };
     let surface = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let clip = Rect::new(14., 0., 24., 64.);
     surface.update(|tx| {

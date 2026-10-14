@@ -16,11 +16,18 @@ split_fn! {
 /// Compare engine-sampled live rotation to explicitly placed retained content.
 pub fn component_animation<B: Backend>(config: B::Config) {
     let engine = wait!(Engine::<B>::new(config)).expect("backend required");
+    let wakes = Arc::new(AtomicUsize::new(0));
+    let wake = |wakes: &Arc<AtomicUsize>| {
+        let wakes = Arc::clone(wakes);
+        move || {
+            wakes.fetch_add(1, Ordering::Relaxed);
+        }
+    };
     let actual = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), wake(&wakes)))
         .expect("surface");
     let reference = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), wake(&wakes)))
         .expect("reference");
     let layer = actual.layer();
     let fixed = Picture::record(|r| {
@@ -100,11 +107,9 @@ pub fn component_animation<B: Backend>(config: B::Config) {
             }
         }
     }
-    let wakes = Arc::new(AtomicUsize::new(0));
-    let count = wakes.clone();
-    engine.set_waker(move || {
-        count.fetch_add(1, Ordering::Relaxed);
-    });
+    // Count only the wakes from here on: the animation woke the host
+    // while it ran.
+    wakes.store(0, Ordering::Relaxed);
     angle.set(0.);
     assert_eq!(
         wakes.load(Ordering::Relaxed),

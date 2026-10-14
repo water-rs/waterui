@@ -289,8 +289,11 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
         });
 
         guards.push(Box::new(font.watch({
-            let state = Rc::clone(state);
+            let state = Rc::downgrade(state);
             move |ctx| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
                 let duration = cross_dissolve_duration(ctx.metadata());
                 let mut state = state.borrow_mut();
                 state.chunks[index].font = ctx.into_value();
@@ -299,8 +302,11 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
         })));
         if let Some(signal) = foreground {
             guards.push(Box::new(signal.watch({
-                let state = Rc::clone(state);
+                let state = Rc::downgrade(state);
                 move |ctx| {
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
                     let duration = cross_dissolve_duration(ctx.metadata());
                     let mut state = state.borrow_mut();
                     state.chunks[index].foreground = Some(ctx.into_value());
@@ -310,8 +316,11 @@ fn apply_styled(state: &Rc<RefCell<TextState>>, styled: &StyledStr) {
         }
         if let Some(signal) = background {
             guards.push(Box::new(signal.watch({
-                let state = Rc::clone(state);
+                let state = Rc::downgrade(state);
                 move |ctx| {
+                    let Some(state) = state.upgrade() else {
+                        return;
+                    };
                     let duration = cross_dissolve_duration(ctx.metadata());
                     let mut state = state.borrow_mut();
                     state.chunks[index].background = Some(ctx.into_value());
@@ -463,8 +472,11 @@ fn label_leaf(
     let default_foreground = Foreground.resolve(ctx.env());
     let initial_foreground = default_foreground.snapshot();
     let foreground_guard = default_foreground.watch({
-        let state = Rc::clone(&state);
+        let state = Rc::downgrade(&state);
         move |ctx| {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
             let duration = cross_dissolve_duration(ctx.metadata());
             let mut state = state.borrow_mut();
             state.default_foreground = ctx.into_value();

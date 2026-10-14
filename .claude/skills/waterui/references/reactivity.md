@@ -287,8 +287,8 @@ Lazy::hstack(ForEach::new(rows.clone(), row_view))
 `ForEach` implements `Views` (a collection of views), not `View`, so a container has to
 consume it. `Lazy::for_each` / `Lazy::vstack` / `Lazy::hstack` defer realization;
 `VStack::for_each` / `HStack::for_each` build an ordinary stack over the same collection
-when you want stack modifiers and eager layout (see components.md for
-`collection_transition`, which animates membership changes).
+when you want stack modifiers and eager layout (see components.md for the
+per-row `.transition(PropertyTransition::opacity())` membership animation).
 
 Items must derive `Identifiable` (`use waterui::Identifiable;` — the derive is not in the
 prelude) with an `#[id]` field that is stable across updates of the same logical row.

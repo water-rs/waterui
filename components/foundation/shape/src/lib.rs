@@ -35,10 +35,12 @@ use std::time::Instant;
 use waterui_core::Binding;
 use waterui_core::{Environment, View, easing::EasingCurve, metadata::MetadataKey};
 #[cfg(feature = "gpu")]
-use waterui_graphics::cherenkov::kurbo::Rect;
-#[cfg(feature = "gpu")]
-use waterui_graphics::cherenkov::{Draw as _, Recorder, Shader, ShaderPaint, ShaderSource};
+use waterui_graphics::ShaderSource;
 use waterui_graphics::color::Color;
+#[cfg(feature = "gpu")]
+use waterui_graphics::draw::kurbo::Rect;
+#[cfg(feature = "gpu")]
+use waterui_graphics::draw::{Draw as _, Recorder, ShaderId, ShaderPaint};
 #[cfg(feature = "gpu")]
 use waterui_graphics::scene_view::{SceneContent, SceneInvalidator, SceneView};
 #[cfg(feature = "gpu")]
@@ -1244,7 +1246,7 @@ struct MorphContent {
     color: Computed<WorkingColor>,
     progress: Computed<f32>,
     driver: Option<MorphDriver>,
-    shader: Option<Registered<Shader>>,
+    shader: Option<Registered<ShaderId>>,
 }
 
 #[cfg(feature = "gpu")]

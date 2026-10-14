@@ -121,9 +121,17 @@ impl WebAccessibilityBridge {
                 .root
                 .owner_document()
                 .expect("accessibility root has no document");
-            let already_focused =
-                document.active_element().as_ref() == Some(focused.element.as_ref());
-            if !already_focused && focused.element.tab_index() >= 0 {
+            let active = document.active_element();
+            let already_focused = active.as_ref() == Some(focused.element.as_ref());
+            // DOM focus follows Hydrolysis focus only while it already lives
+            // in this tree, as it does for a screen-reader user. Otherwise it
+            // sits on the runtime's input surfaces — the canvas for keys, the
+            // hidden input for text — and moving it here would take keyboard
+            // and text input away from the app.
+            let focus_in_tree = active
+                .as_ref()
+                .is_some_and(|active| self.root.contains(Some(active.as_ref())));
+            if focus_in_tree && !already_focused && focused.element.tab_index() >= 0 {
                 focused
                     .element
                     .focus()
@@ -146,7 +154,8 @@ impl WebAccessibilityBridge {
             .dyn_into::<HtmlElement>()
             .expect("DOM accessibility node is not an HtmlElement");
         element.style().set_css_text(
-            "position:absolute;pointer-events:none;color:transparent;background:transparent;",
+            // Hydrolysis draws its own focus ring; the mirror draws none.
+            "position:absolute;pointer-events:none;color:transparent;background:transparent;outline:none;",
         );
 
         let click_actions = Rc::clone(&self.actions);

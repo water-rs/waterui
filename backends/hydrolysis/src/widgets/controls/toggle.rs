@@ -2,7 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, InteractionKey, RenderContext, WidgetRenderContext,
-    measure_label_intrinsic, transformed_rect,
+    measure_label_intrinsic,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -13,11 +13,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use waterui_controls::toggle::{ToggleConfig, ToggleStyle};
 use waterui_core::layout::Size as LayoutSize;
-use waterui_core::layout::{ProposalSize, ViewDimensions};
+use waterui_core::layout::{ProposalSize, StretchAxis, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 
-use crate::renderer::RetainedSubview;
-use crate::renderer::local_interaction_state;
+use crate::renderer::{RetainedSubview, local_interaction_state};
 use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 
 /// The retained render state of a toggle: the cloneable [`ToggleConfig`] drives the
@@ -76,8 +75,9 @@ pub fn toggle_accessibility(
             AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
                 env,
                 match toggle.style {
-                    ToggleStyle::Automatic | ToggleStyle::Switch => AccessibilityNodeRole::Switch,
+                    ToggleStyle::Switch => AccessibilityNodeRole::Switch,
                     ToggleStyle::Checkbox => AccessibilityNodeRole::CheckBox,
+                    ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
                     _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
                 },
             ));
@@ -117,11 +117,21 @@ pub fn toggle_accessibility(
     }
 }
 
+/// The native payload's style is resolved before a backend sees it
+/// (`ToggleConfig`'s resolver owns the platform default), so `Automatic`
+/// reaching a match here is a broken contract, not a style to draw.
+const UNRESOLVED_STYLE: &str =
+    "the toggle payload reached hydrolysis with an unresolved Automatic style";
+
 /// Measures a retained toggle leaf from its [`ToggleRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and render agree.
+///
+/// A switch with a visible label (`StretchAxis::Horizontal`) answers a finite
+/// width proposal, never below its intrinsic width; every other toggle
+/// answers its intrinsic size (`docs/layout-spec.md` §6).
 pub fn measure_toggle_node(
     render_state: &ToggleRenderState,
-    _proposal: ProposalSize,
+    proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
@@ -135,6 +145,15 @@ pub fn measure_toggle_node(
         metrics.width
     };
     let height = f64::from(label_size.height).max(metrics.height);
+    let width = match (
+        waterui_core::NativeView::stretch_axis(&render_state.config),
+        proposal.width,
+    ) {
+        (StretchAxis::Horizontal, Some(proposed)) if proposed.is_finite() => {
+            f64::from(proposed).max(width)
+        }
+        _ => width,
+    };
     ViewDimensions::new(LayoutSize::new(
         crate::num_cast::f64_as_f32(width),
         crate::num_cast::f64_as_f32(height),
@@ -164,6 +183,10 @@ pub fn render_toggle_node(
     render_toggle_parts(ctx, state, env);
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the render sequence is one continuous scenario; splitting it would obscure the order"
+)]
 pub fn render_toggle_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<ToggleRenderState>>,
@@ -171,6 +194,7 @@ pub fn render_toggle_parts(
 ) {
     let visual_interaction_key = InteractionKey::for_rc(state, 0);
     let activation_interaction_key = InteractionKey::for_rc(state, 1);
+    let owner = state;
     let theme = ctx.theme();
     let mut state = state.borrow_mut();
     let style = state.config.style;
@@ -192,21 +216,27 @@ pub fn render_toggle_parts(
         // alpha (Material: on-surface at 38% for default-colored labels).
         // The label's semantics are merged into the toggle's own node by
         // `toggle_accessibility`, so the sub-view flushes visual-only.
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             label_bounds,
             |ctx| {
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(label_bounds);
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        label_view.flush_in_rect(
+                        label_view.place(
                             renderer,
                             render_ctx,
                             env,
                             ProposalSize::UNSPECIFIED,
                             label_bounds,
+                            label_area,
                         );
                     });
             },
@@ -219,20 +249,21 @@ pub fn render_toggle_parts(
     let (thumb_progress, selected) = {
         let binding = state.config.toggle.clone();
         ctx.renderer_mut()
-            .resolve_toggle_progress(&binding, theme.toggle_value_animation())
+            .resolve_toggle_progress(&binding, owner, theme.toggle_value_animation())
     };
-    let visual_hit_bounds = transformed_rect(ctx.hit_transform, control_bounds);
-    let activation_hit_bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+    let visual_hit_bounds = control_bounds;
+    let activation_hit_bounds = ctx.bounds;
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
     let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
         visual_interaction_key.clone(),
         visual_hit_bounds,
         env,
         disabled,
     );
-    let interaction = local_interaction_state(interaction, ctx.hit_transform);
+    let interaction = local_interaction_state(interaction, hit_transform);
     {
         ctx.draw_context(|draw| match style {
-            ToggleStyle::Automatic | ToggleStyle::Switch => {
+            ToggleStyle::Switch => {
                 theme.draw_toggle_switch(
                     &mut *draw,
                     control_bounds,
@@ -257,6 +288,7 @@ pub fn render_toggle_parts(
                     interaction,
                 );
             }
+            ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
             _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
         });
     }
@@ -362,7 +394,7 @@ fn toggle_control_and_label_bounds(
                 ),
             )
         }
-        ToggleStyle::Automatic | ToggleStyle::Switch => {
+        ToggleStyle::Switch => {
             let control_x0 = (bounds.x1 - metrics.width).max(bounds.x0);
             let control = kurbo::Rect::new(
                 control_x0,
@@ -386,6 +418,7 @@ fn toggle_control_and_label_bounds(
                 ),
             )
         }
+        ToggleStyle::Automatic => panic!("{UNRESOLVED_STYLE}"),
         _ => panic!("hydrolysis ToggleStyle variant is not implemented"),
     }
 }
@@ -448,11 +481,7 @@ mod tests {
     fn label_shares_the_control_centre_line() {
         let metrics = ToggleMetrics::new(52.0, 32.0, 8.0);
         let bounds = Rect::new(16.0, 20.0, 320.0, 60.0);
-        for style in [
-            ToggleStyle::Automatic,
-            ToggleStyle::Switch,
-            ToggleStyle::Checkbox,
-        ] {
+        for style in [ToggleStyle::Switch, ToggleStyle::Checkbox] {
             let metrics = match style {
                 ToggleStyle::Checkbox => ToggleMetrics::new(18.0, 18.0, 8.0),
                 _ => metrics,

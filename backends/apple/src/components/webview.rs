@@ -5,10 +5,15 @@
 //! Mirrors `WuiWebView`'s `WebViewWrapper` semantics exactly: the shared
 //! bridge script rides a single `__wateruiSend` script-message transport,
 //! handlers dispatch by name with replacement registration, bridge calls are
-//! authenticated against the `OriginPolicy` in the main frame only,
-//! `waterui://localhost` is answered through the asset server, replies travel
-//! back through `bridge::Reply::resolve_script` + `evaluateJavaScript`, and
-//! `emitWillNavigate` dedupes against the last navigation URL unless the
+//! authenticated against the `OriginPolicy` in the main frame only, and the
+//! transport, bridge and keyed scripts are rebuilt per main-frame
+//! navigation and per server redirect so only an admitted document ever
+//! receives them — `WKUserContentController` has no per-origin filter, so
+//! the admission decision is the injection itself. `waterui://localhost`
+//! is answered through the asset server, replies travel back through the
+//! `WKScriptMessageHandlerWithReply` channel — bound to the document that
+//! sent the message, so `WebKit` drops a reply whose sender navigated away —
+//! and `emitWillNavigate` dedupes against the last navigation URL unless the
 //! action repeats it (reload, back/forward, form submit). The measured
 //! size is `WuiWebViewComponent.sizeThatFits`: the proposal's axes where
 //! given, 320×480 otherwise; the leaf stretches both ways.
@@ -42,20 +47,6 @@ use crate::dispatch::Dispatcher;
 /// which is also the name the script-message transport registers under.
 const SEND_FUNCTION: &str = bridge::SEND_FUNCTION;
 
-/// Adapts the shared bridge's one-function transport onto `WebKit`'s
-/// message-handler channel — the same `window.webkit.messageHandlers`
-/// shim `WebViewWrapper.transportScript` injected.
-const TRANSPORT_SCRIPT: &str = concat!(
-    "globalThis.__wateruiSend = function (envelope) {",
-    "window.webkit.messageHandlers.__wateruiSend.postMessage(envelope);",
-    "};"
-);
-
-/// The script key order must keep ahead of the bridge and every seed —
-/// `WebViewWrapper`'s `waterui:wk-transport` and `waterui:bridge`.
-const TRANSPORT_KEY: &str = "waterui:wk-transport";
-const BRIDGE_KEY: &str = "waterui:bridge";
-
 /// A user script as the leaf tracks it: the registry key the platform
 /// cannot remove by, its source, and its injection time.
 struct UserScript {
@@ -66,8 +57,8 @@ struct UserScript {
 
 /// What the handle and the kit's delegate closures share.
 ///
-/// The kit closures capture `Weak`s into this — a handler that outlives its
-/// web view has nowhere to deliver a reply, which is exactly what upgrading
+/// The kit closures capture `Weak`s into this — a callback that outlives its
+/// web view has no state left to touch, which is exactly what upgrading
 /// answers. `view` is a `OnceCell`: the controller is constructed with
 /// closures that already point at this state, so it arrives last.
 struct Shared {
@@ -86,12 +77,19 @@ struct Shared {
     redirects_enabled: Cell<bool>,
     /// The redirect signal and its guard, for `set_redirects_enabled`.
     redirects: RefCell<Option<(Computed<bool>, BoxWatcherGuard)>>,
-    /// Whether the transport + bridge scripts and the message handler were
-    /// installed — `ensureBridgeInstalled`.
-    bridge_installed: Cell<bool>,
-    /// Injected user scripts by key, in injection order — replacement
-    /// rebuilds the whole list, and a stable order keeps transport ahead of
-    /// bridge ahead of the seeds.
+    /// Whether the `__wateruiSend` script-message handler is registered —
+    /// one handler serves every `WaterUI` handler name, so it goes in once.
+    transport_registered: Cell<bool>,
+    /// Whether the document being loaded is one the admission policy
+    /// admits. `WKUserContentController` has no per-origin injection
+    /// filter, so the filter is the injection itself: the scripts are
+    /// rebuilt for every main-frame navigation and on every server
+    /// redirect, and installed only when its destination is admitted.
+    bridge_admitted: Cell<bool>,
+    /// Keyed user scripts, in injection order — replacement rebuilds the
+    /// whole list, and the order is kept so a re-rendered seed runs where
+    /// it always did. Transport and bridge are not keyed: every rebuild
+    /// puts them first.
     scripts: RefCell<Vec<UserScript>>,
     /// The origin this view serves bundled assets under, when armed.
     asset_origin: Option<Url>,
@@ -137,54 +135,107 @@ impl Shared {
         });
     }
 
-    /// `ensureBridgeInstalled` — transport first, then the shared bridge
-    /// script, then the single `__wateruiSend` handler every message rides.
-    fn ensure_bridge_installed(self: &Rc<Self>) {
-        if self.bridge_installed.get() {
+    /// Registers the single `__wateruiSend` script-message handler every
+    /// bridge message rides.
+    ///
+    /// The registration is `WKScriptMessageHandlerWithReply`: the reply each
+    /// message earns travels the channel `WebKit` binds to the sending
+    /// document, so a document that navigated away mid-await cannot receive
+    /// an answer meant for it — and cannot donate one to its successor. The
+    /// handler itself is unconditional: what a non-admitted document never
+    /// receives is `__wateruiSend`'s JavaScript shim, and a page that
+    /// reaches the transport anyway is refused by `frame_may_use_bridge`.
+    fn ensure_transport_registered(self: &Rc<Self>) {
+        if self.transport_registered.replace(true) {
             return;
         }
-        self.bridge_installed.set(true);
-        self.inject_script(
-            TRANSPORT_KEY,
-            TRANSPORT_SCRIPT,
-            web_kit::InjectionTime::DocumentStart,
-        );
-        self.inject_script(
-            BRIDGE_KEY,
-            DOCUMENT_START_SCRIPT,
-            web_kit::InjectionTime::DocumentStart,
-        );
         let shared = Rc::downgrade(self);
         self.view().add_script_message_handler(
             SEND_FUNCTION,
-            Rc::new(move |message| {
+            Rc::new(move |message, reply| {
                 let Some(shared) = shared.upgrade() else {
+                    // `reply`'s `Drop` still answers the document, since
+                    // `WebKit` requires the channel to be used once.
                     return;
                 };
-                shared.on_script_message(&message);
+                shared.on_script_message(&message, reply);
             }),
         );
+    }
+
+    /// Whether a document at `url` may be given the bridge — the
+    /// [`OriginPolicy`] decides, which is the same policy that authenticates
+    /// bridge messages in `frame_may_use_bridge`.
+    ///
+    /// No policy means no bridge: a handle whose origins were never chosen
+    /// has nothing to authenticate a page against, and the seed script
+    /// carries the live value of every exposed binding. The URL is parsed
+    /// with `FromStr`, not `Url::parse`: the policy's own `allows` handles
+    /// `file:` documents and `BridgeOrigins::Any`, which `Url::parse`'s
+    /// web-only filter would refuse before the policy could see them.
+    fn admits(&self, url: &str) -> bool {
+        let policy = self.bridge_origins.borrow();
+        let Some(policy) = policy.as_ref() else {
+            return false;
+        };
+        url.parse::<Url>().is_ok_and(|url| policy.allows(&url))
+    }
+
+    /// Re-decides whether the document at `url` gets the bridge and rebuilds
+    /// the injected scripts to match.
+    fn admit_document(&self, url: &str) {
+        self.bridge_admitted.set(self.admits(url));
+        self.rebuild_user_scripts();
+    }
+
+    /// Installs the scripts the document being loaded may run.
+    ///
+    /// `WKUserContentController` can only remove its scripts as a set, so a
+    /// rebuild starts from empty — which is also what makes replacing a
+    /// keyed script work. A document outside the policy gets no transport,
+    /// no bridge and no keyed scripts: the mirrored-state seed is one of
+    /// them, and it declares the current value of every exposed `Binding`,
+    /// so handing it to a non-admitted page would publish the app's state.
+    /// Transport goes first, since the shared bridge script calls the
+    /// `__wateruiSend` it defines.
+    fn rebuild_user_scripts(&self) {
+        self.view().remove_all_user_scripts();
+        if !self.bridge_admitted.get() {
+            return;
+        }
+        self.view().add_user_script(
+            bridge::WEBKIT_TRANSPORT,
+            web_kit::InjectionTime::DocumentStart,
+            true,
+        );
+        self.view().add_user_script(
+            DOCUMENT_START_SCRIPT,
+            web_kit::InjectionTime::DocumentStart,
+            true,
+        );
+        for entry in self.scripts.borrow().iter() {
+            self.view().add_user_script(&entry.source, entry.time, true);
+        }
     }
 
     /// `injectScript` — keyed replacement that preserves each key's original
     /// position, since `WKUserContentController` has no per-script removal.
     fn inject_script(&self, key: &str, source: &str, time: web_kit::InjectionTime) {
-        let mut scripts = self.scripts.borrow_mut();
-        if let Some(entry) = scripts.iter_mut().find(|entry| entry.key == key) {
-            entry.source = source.to_string();
-            entry.time = time;
-            self.view().remove_all_user_scripts();
-            for entry in scripts.iter() {
-                self.view().add_user_script(&entry.source, entry.time, true);
+        {
+            let mut scripts = self.scripts.borrow_mut();
+            match scripts.iter_mut().find(|entry| entry.key == key) {
+                Some(entry) => {
+                    entry.source = source.to_string();
+                    entry.time = time;
+                }
+                None => scripts.push(UserScript {
+                    key: key.to_string(),
+                    source: source.to_string(),
+                    time,
+                }),
             }
-        } else {
-            scripts.push(UserScript {
-                key: key.to_string(),
-                source: source.to_string(),
-                time,
-            });
-            self.view().add_user_script(source, time, true);
         }
+        self.rebuild_user_scripts();
     }
 
     /// `frameMayUseBridge`: main frame only, origin authenticated by the
@@ -207,21 +258,28 @@ impl Shared {
     /// `handleScriptMessage`: authenticate the frame, parse the envelope,
     /// dispatch by name; anything else is a rejected promise, not a panic —
     /// page script reaches this transport directly.
-    fn on_script_message(self: &Rc<Self>, message: &web_kit::ScriptMessage) {
+    ///
+    /// Every path answers through `reply`: `WebKit` requires the reply
+    /// channel to be used exactly once, which [`web_kit::ScriptReply`]
+    /// enforces by construction.
+    fn on_script_message(&self, message: &web_kit::ScriptMessage, reply: web_kit::ScriptReply) {
         if !self.frame_may_use_bridge(message) {
             tracing::warn!(
                 "a document outside the bridge origin policy tried to call a WaterUI handler"
             );
+            reply.reject("this document is not allowed to use the WaterUI bridge");
             return;
         }
         let Some(body) = message.body.as_deref() else {
             tracing::warn!("WaterUI bridge received a non-string message body");
+            reply.reject("the WaterUI bridge takes a string message body");
             return;
         };
         let request = match bridge::Request::parse(body) {
             Ok(request) => request,
             Err(error) => {
                 tracing::warn!(%error, "WaterUI bridge rejected a malformed envelope");
+                reply.reject(&error.to_string());
                 return;
             }
         };
@@ -233,35 +291,26 @@ impl Shared {
                 handler = %request.name,
                 "page script called a WaterUI handler that is not registered"
             );
-            self.deliver_reply(
-                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name)),
-                request.id,
+            reply.resolve(
+                &bridge::Reply::failure(&format!("no WaterUI handler named `{}`", request.name))
+                    .to_json(),
             );
             return;
         };
 
         // Handlers are asynchronous; the page's promise settles when the
-        // future completes. The reply path holds a `Weak` — a view that died
-        // mid-await has no page to answer.
+        // future completes. The reply needs no view: the channel answers the
+        // document that asked, and `ScriptReply`'s `Drop` covers a view that
+        // died mid-await.
         let future = handler(&request.payload);
-        let shared = Rc::downgrade(self);
         executor_core::spawn_local(async move {
-            let reply = match future.await {
-                Ok(reply) => bridge::Reply::from(reply),
+            let answer = match future.await {
+                Ok(answer) => bridge::Reply::from(answer),
                 Err(message) => bridge::Reply::Failure(message),
             };
-            if let Some(shared) = shared.upgrade() {
-                shared.deliver_reply(&reply, request.id);
-            }
+            reply.resolve(&answer.to_json());
         })
         .detach();
-    }
-
-    /// `MessageReplyContext`: render the reply script and evaluate it in the
-    /// top frame, where the pending promise lives.
-    fn deliver_reply(&self, reply: &bridge::Reply, request_id: u64) {
-        self.view()
-            .evaluate_javascript(&reply.resolve_script(request_id), |_| {});
     }
 }
 
@@ -296,7 +345,8 @@ impl WkWebViewHandle {
             // `WebViewWrapper`'s default: redirects allowed.
             redirects_enabled: Cell::new(true),
             redirects: RefCell::new(None),
-            bridge_installed: Cell::new(false),
+            transport_registered: Cell::new(false),
+            bridge_admitted: Cell::new(false),
             scripts: RefCell::new(Vec::new()),
             asset_origin,
         });
@@ -372,6 +422,16 @@ impl Shared {
             return web_kit::Policy::Cancel;
         }
         if info.target_is_main {
+            // Document-start scripts have to be chosen before the load
+            // begins, and this is the last callback that runs first. The
+            // bridge and every keyed script — the mirrored-state seed among
+            // them — are installed here or not at all: the seed declares
+            // the current value of every exposed `Binding`, so handing it
+            // to a page the policy does not admit would publish that state
+            // to it. Sub-frame navigations are ignored: the scripts are
+            // main-frame only, and letting an iframe decide would let it
+            // revoke the main frame's bridge.
+            self.admit_document(&url);
             self.emit_will_navigate(&url, allow_repeat);
         }
         web_kit::Policy::Allow
@@ -450,6 +510,12 @@ impl Shared {
                     self.view().stop_loading();
                     return;
                 }
+                // The document that commits is the redirect's target, which
+                // no `decidePolicyForNavigationAction` ever named — the
+                // callback does not run again for a server redirect — so
+                // admission is re-decided here, against where the load
+                // actually lands.
+                self.admit_document(&to);
                 self.emit_will_navigate(&to, true);
             }
             web_kit::Event::Finished => {
@@ -525,7 +591,7 @@ impl WebViewHandle for WkWebViewHandle {
             .handlers
             .borrow_mut()
             .insert(name.to_string(), Rc::from(handler));
-        self.shared.ensure_bridge_installed();
+        self.shared.ensure_transport_registered();
     }
 
     fn remove_handler(&self, name: &str) {
@@ -534,6 +600,11 @@ impl WebViewHandle for WkWebViewHandle {
 
     fn set_bridge_origins(&self, policy: OriginPolicy) {
         self.shared.bridge_origins.replace(Some(policy));
+        // The policy decides what is injected as well as what is answered,
+        // so the document being shown or loaded is re-judged against the new
+        // one; an admission decided under the old policy must not outlive it.
+        let url = self.controller().url_string().unwrap_or_default();
+        self.shared.admit_document(&url);
     }
 
     fn set_cookie(&self, cookie: Cookie<'static>) {
@@ -565,16 +636,20 @@ impl WebViewHandle for WkWebViewHandle {
         clippy::future_not_send,
         reason = "WebKit and WaterUI view state are confined to the UI thread"
     )]
-    async fn get_cookies(&self) -> Vec<Cookie<'static>> {
+    async fn get_cookies(&self) -> Result<Vec<Cookie<'static>>, waterui_core::Error> {
         let (sender, receiver) = async_channel::bounded(1);
         self.controller().all_cookies(move |records| {
             let cookies = records
                 .into_iter()
                 .map(cookie_record::into_cookie)
-                .collect();
+                .collect::<Result<Vec<_>, _>>();
             let _ = sender.try_send(cookies);
         });
-        receiver.recv().await.unwrap_or_default()
+        receiver.recv().await.map_err(|error| {
+            waterui_core::Error::msg(format!(
+                "the WKWebView cookie query ended without an answer: {error}"
+            ))
+        })?
     }
 
     #[expect(
@@ -616,12 +691,19 @@ impl WebViewHandle for WkWebViewHandle {
 /// with unknown `SameSite` values dropped like it does.
 mod cookie_record {
     use super::{Cookie, web_kit};
-    use cookie::time::OffsetDateTime;
 
     /// Converts the kit's cookie record into the cookie type the handle
     /// contract answers with.
-    pub(super) fn into_cookie(record: web_kit::CookieRecord) -> Cookie<'static> {
-        let mut builder = Cookie::build((record.name, record.value))
+    ///
+    /// # Errors
+    ///
+    /// Fails when `record.expires` names no representable date; the error
+    /// names the cookie and the raw value.
+    pub(super) fn into_cookie(
+        record: web_kit::CookieRecord,
+    ) -> Result<Cookie<'static>, waterui_core::Error> {
+        let name = record.name;
+        let mut builder = Cookie::build((name.clone(), record.value))
             .domain(record.domain)
             .path(record.path)
             .secure(record.secure)
@@ -639,22 +721,10 @@ mod cookie_record {
                 }
             }
         }
-        if let Some(expires) = record.expires {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "cookie expiries are positive unix seconds that fit i64"
-            )]
-            match OffsetDateTime::from_unix_timestamp(expires as i64) {
-                Ok(expires) => builder = builder.expires(expires),
-                Err(error) => {
-                    tracing::warn!(
-                        %error,
-                        "ignoring a cookie expiry that is outside the representable range"
-                    );
-                }
-            }
+        if let Some(seconds) = record.expires {
+            builder = builder.expires(waterui_webview::cookie_expiry(&name, seconds)?);
         }
-        builder.build()
+        Ok(builder.build())
     }
 }
 
@@ -765,7 +835,7 @@ fn asset_scheme(server: &assets::AssetServer) -> web_kit::SchemeHandler {
 /// `installWebViewController` performed, so an application bundling its own
 /// engine keeps the controller it installed during `app(env)`.
 ///
-pub(crate) fn install_service(env: &mut Environment) {
+pub fn install_service(env: &mut Environment) {
     if env.get::<waterui_webview::WebViewController>().is_none() {
         env.insert(waterui_webview::WebViewController::new(
             AppleWebViewController,
@@ -825,7 +895,7 @@ mod tests {
             http_only: true,
             same_site: Some(String::from("Strict")),
         };
-        let cookie = cookie_record::into_cookie(record);
+        let cookie = cookie_record::into_cookie(record).expect("the expiry is representable");
         let header = cookie.to_string();
         assert!(header.contains("session=abc"));
         assert!(header.contains("Domain=example.com"));
@@ -850,6 +920,7 @@ mod tests {
         };
         assert!(
             !cookie_record::into_cookie(record)
+                .expect("no expiry is a session cookie")
                 .to_string()
                 .contains("SameSite")
         );
@@ -858,14 +929,14 @@ mod tests {
     #[test]
     fn bridge_envelope_parse_and_reply() {
         // The transport contract: a JSON envelope parses into id/name/payload,
-        // and a reply renders back into a script the page can evaluate.
+        // and a reply serializes into the JSON the reply channel hands the page.
         let request =
             bridge::Request::parse(r#"{"id":7,"name":"alert","payload":{"message":"hi"}}"#)
                 .expect("a well-formed envelope parses");
         assert_eq!(request.id, 7);
         assert_eq!(request.name, "alert");
 
-        let script = bridge::Reply::failure("boom").resolve_script(request.id);
-        assert!(script.contains("boom"));
+        let json = bridge::Reply::failure("boom").to_json();
+        assert!(json.contains("boom"));
     }
 }

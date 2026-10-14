@@ -15,8 +15,9 @@ use alloc::borrow::Cow;
 use alloc::vec::Vec;
 use core::fmt;
 
-use cherenkov::kurbo::Rect;
-use cherenkov::{Draw, Recorder, Shader, ShaderPaint, ShaderSource};
+use crate::draw::kurbo::Rect;
+use crate::draw::{Draw, Recorder, ShaderId, ShaderPaint};
+use crate::scene::source::{ShaderLanguage, ShaderSource};
 use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt};
 use waterui_core::layout::StretchAxis;
@@ -33,6 +34,7 @@ use crate::scene_view::{SceneContent, SceneInvalidator, SceneView, invalidate_on
 /// Stretches on both axes; constrain it with `.frame()`.
 pub struct ShaderPaintView {
     fragment: Cow<'static, str>,
+    language: ShaderLanguage,
     animated: Computed<bool>,
     uniforms: Computed<Vec<f32>>,
 }
@@ -55,6 +57,7 @@ impl ShaderPaintView {
     pub fn from_source(source: ShaderSource) -> Self {
         Self {
             fragment: source.source,
+            language: source.language,
             animated: nami::constant(source.animated).computed(),
             uniforms: nami::constant(Vec::new()).computed(),
         }
@@ -83,6 +86,7 @@ impl View for ShaderPaintView {
     fn body(self, _env: &Environment) -> impl View {
         SceneView::new(ShaderContent {
             fragment: self.fragment,
+            language: self.language,
             animated: self.animated,
             uniforms: self.uniforms,
             shader: None,
@@ -97,10 +101,11 @@ impl View for ShaderPaintView {
 
 struct ShaderContent {
     fragment: Cow<'static, str>,
+    language: ShaderLanguage,
     animated: Computed<bool>,
     uniforms: Computed<Vec<f32>>,
     /// The registration drawn, and whether it is the animated source.
-    shader: Option<(bool, Registered<Shader>)>,
+    shader: Option<(bool, Registered<ShaderId>)>,
     /// Re-records the scene when `animated` changes, while mounted.
     animation_watch: Option<BoxWatcherGuard>,
 }
@@ -123,6 +128,7 @@ impl SceneContent for ShaderContent {
             _ => {
                 let source = ShaderSource {
                     source: self.fragment.clone(),
+                    language: self.language,
                     animated,
                 };
                 let shader = resources

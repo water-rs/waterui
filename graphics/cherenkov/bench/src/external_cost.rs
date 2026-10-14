@@ -301,10 +301,73 @@ fn query_chunks(device: &wgpu::Device, query_count: u32) -> Vec<QueryChunk> {
     chunks
 }
 
+/// How path `c`'s convert submission is stamped.
+trait Stamps: Send + 'static {
+    /// Encodes whatever precedes the plane copies for render call `frame`.
+    fn open(&self, encoder: &mut wgpu::CommandEncoder, frame: u32);
+    /// The convert pass's timestamp writes for render call `frame`.
+    fn convert_writes(&self, frame: u32) -> Option<wgpu::RenderPassTimestampWrites<'_>>;
+}
+
+/// No stamps: `composite_frame`'s correctness renders need none.
+struct Unstamped;
+
+impl Stamps for Unstamped {
+    fn open(&self, _encoder: &mut wgpu::CommandEncoder, _frame: u32) {}
+    fn convert_writes(&self, _frame: u32) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        None
+    }
+}
+
+/// The timed run's stamps: a marker-pass end stamp bracketing the
+/// plane copies plus the convert pass's own beginning and end.
+struct HandoffStamps {
+    /// One entry per query chunk, in order.
+    queries: Vec<Arc<wgpu::QuerySet>>,
+    query_span: u32,
+    /// The 1×1 renderable the marker pass clears.
+    marker: wgpu::TextureView,
+}
+
+impl Stamps for HandoffStamps {
+    fn open(&self, encoder: &mut wgpu::CommandEncoder, frame: u32) {
+        let (chunk, base) = locate(frame, self.query_span);
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("external-cost stamp"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.marker,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Discard,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: Some(wgpu::RenderPassTimestampWrites {
+                query_set: &self.queries[chunk],
+                beginning_of_pass_write_index: None,
+                end_of_pass_write_index: Some(base),
+            }),
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+    }
+
+    fn convert_writes(&self, frame: u32) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+        let (chunk, base) = locate(frame, self.query_span);
+        Some(wgpu::RenderPassTimestampWrites {
+            query_set: &self.queries[chunk],
+            beginning_of_pass_write_index: Some(base + 1),
+            end_of_pass_write_index: Some(base + 2),
+        })
+    }
+}
+
 /// The `GpuContent` producer of path `c`: one fullscreen triangle
 /// sampling the copied planes through the engine's decode into the
 /// layer's working-space attachment.
-struct Convert {
+struct Convert<S: Stamps> {
     y: wgpu::Texture,
     uv: wgpu::Texture,
     y_view: wgpu::TextureView,
@@ -316,14 +379,11 @@ struct Convert {
     /// holds the planes `stage()` wrote for this render's own counter.
     staging: [wgpu::Buffer; RING],
     layout: PlaneLayout,
-    /// One entry per query chunk, in order.
-    queries: Vec<Arc<wgpu::QuerySet>>,
-    query_span: u32,
-    /// The 1×1 renderable the marker pass clears.
-    marker: wgpu::TextureView,
+    /// The stamps this submission's passes write.
+    stamps: S,
     /// Render calls. Independent of the pattern frame `composite_frame`
-    /// asks the producer to draw: this counter starts at 0, so a
-    /// one-frame composite writes stamps 0, 1 and 2 into a set of 3.
+    /// asks the producer to draw: this counter selects the staging slot
+    /// and, when timed, the stamp slots.
     frame: u32,
     /// Built on the render thread in `setup`.
     live: Option<Live>,
@@ -335,7 +395,7 @@ struct Live {
     bind: wgpu::BindGroup,
 }
 
-impl GpuContent for Convert {
+impl<S: Stamps> GpuContent for Convert<S> {
     fn setup(&mut self, ctx: &wgpu::Context<'_>) -> impl Future<Output = ()> {
         let u32_tex = |binding| wgpu::BindGroupLayoutEntry {
             binding,
@@ -441,42 +501,19 @@ impl GpuContent for Convert {
         let Live { pipeline, bind } = self.live.as_ref().expect("setup ran before render");
         let f = self.frame;
         self.frame += 1;
-        let (chunk, base) = locate(f, self.query_span);
-        let queries = &self.queries[chunk];
         let staging = &self.staging[f as usize % RING];
         let layout = self.layout;
         // One submission. The marker's end stamp, the two plane copies
-        // and the convert pass share an encoder, so the interval is GPU
-        // work only. Draining the queue before a separate marker would
-        // still time the CPU gap (`write_texture`, lowering) and would
-        // let a tiled GPU run that marker beside frame f−1.
+        // and the convert pass share an encoder, so the timed interval
+        // is GPU work only. Draining the queue before a separate marker
+        // would still time the CPU gap (`write_texture`, lowering) and
+        // would let a tiled GPU run that marker beside frame f−1.
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("external-cost convert"),
             });
-        {
-            let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("external-cost stamp"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.marker,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                        store: wgpu::StoreOp::Discard,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: Some(wgpu::RenderPassTimestampWrites {
-                    query_set: queries,
-                    beginning_of_pass_write_index: None,
-                    end_of_pass_write_index: Some(base),
-                }),
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-        }
+        self.stamps.open(&mut encoder, f);
         let copy = |encoder: &mut wgpu::CommandEncoder, offset, stride, rows, texture, width| {
             encoder.copy_buffer_to_texture(
                 wgpu::TexelCopyBufferInfo {
@@ -529,11 +566,7 @@ impl GpuContent for Convert {
                     },
                 })],
                 depth_stencil_attachment: None,
-                timestamp_writes: Some(wgpu::RenderPassTimestampWrites {
-                    query_set: queries,
-                    beginning_of_pass_write_index: Some(base + 1),
-                    end_of_pass_write_index: Some(base + 2),
-                }),
+                timestamp_writes: self.stamps.convert_writes(f),
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
@@ -548,21 +581,13 @@ impl GpuContent for Convert {
     }
 }
 
-/// Path `c`'s host-side state: the copy targets, the staging ring and
-/// the stamp resolution buffers.
+/// Path `c`'s host-side state: the copy targets and the staging ring.
+/// Stamp-free, so it builds on adapters without `TIMESTAMP_QUERY`.
 struct CopyPath {
     y: wgpu::Texture,
     uv: wgpu::Texture,
-    /// 1×1 clear target. Four bytes, counted in [`Self::gpu_bytes`].
-    marker_tex: wgpu::Texture,
-    marker: wgpu::TextureView,
     staging: [wgpu::Buffer; RING],
     layout: PlaneLayout,
-    chunks: Vec<QueryChunk>,
-    query_span: u32,
-    /// Reused across chunks. Large enough for the biggest chunk.
-    resolve: wgpu::Buffer,
-    readback: wgpu::Buffer,
     params: wgpu::Buffer,
     /// Staging slot of the next [`Self::stage`]. Starts at 0, as
     /// [`Convert::frame`] does, and both advance once per frame.
@@ -570,13 +595,8 @@ struct CopyPath {
 }
 
 impl CopyPath {
-    fn new(shared: &SharedDevice, spec: &Spec, query_count: u32) -> Result<Self, BenchError> {
+    fn new(shared: &SharedDevice, spec: &Spec) -> Self {
         let device = &shared.device;
-        if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
-            return Err(BenchError::Gpu(
-                "external-cost --path c needs TIMESTAMP_QUERY for the handoff stamps".into(),
-            ));
-        }
         let (y_format, uv_format) = spec.formats();
         let layout = PlaneLayout::new(spec);
         let plane_texture = |name, width, height, format| {
@@ -607,21 +627,6 @@ impl CopyPath {
             spec.height.div_ceil(2),
             uv_format,
         );
-        let marker_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("external-cost stamp marker"),
-            size: wgpu::Extent3d {
-                width: 1,
-                height: 1,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let marker = marker_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let staging = std::array::from_fn(|_| {
             device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("external-cost plane staging"),
@@ -629,20 +634,6 @@ impl CopyPath {
                 usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             })
-        });
-        let chunks = query_chunks(device, query_count);
-        let resolve_queries = chunks.iter().map(|chunk| chunk.count).max().unwrap_or(0);
-        let resolve = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("external-cost stamp resolve"),
-            size: u64::from(resolve_queries) * 8,
-            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("external-cost stamp readback"),
-            size: u64::from(resolve_queries) * 8,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
         });
         let params = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("external-cost convert params"),
@@ -653,25 +644,19 @@ impl CopyPath {
         shared
             .queue
             .write_buffer(&params, 0, bytemuck::bytes_of(&frame_params(spec)));
-        Ok(Self {
+        Self {
             y,
             uv,
-            marker_tex,
-            marker,
             staging,
             layout,
-            chunks,
-            query_span: query_span(),
-            resolve,
-            readback,
             params,
             cursor: Cell::new(0),
-        })
+        }
     }
 
     /// The [`Convert`] installed once for the run. Its frame counter
     /// starts at 0, matching [`Self::cursor`].
-    fn converter(&self) -> Convert {
+    fn converter<S: Stamps>(&self, stamps: S) -> Convert<S> {
         Convert {
             y: self.y.clone(),
             uv: self.uv.clone(),
@@ -680,13 +665,7 @@ impl CopyPath {
             params: self.params.clone(),
             staging: self.staging.clone(),
             layout: self.layout,
-            queries: self
-                .chunks
-                .iter()
-                .map(|chunk| Arc::clone(&chunk.set))
-                .collect(),
-            query_span: self.query_span,
-            marker: self.marker.clone(),
+            stamps,
             frame: 0,
             live: None,
         }
@@ -759,6 +738,101 @@ impl CopyPath {
         copied?;
         self.cursor.set(self.cursor.get() + 1);
         Ok(())
+    }
+
+    /// Path `c`'s copy-side GPU bytes: the copy textures, the staging
+    /// ring and the uniform.
+    fn gpu_bytes(&self, spec: &Spec) -> u64 {
+        let code = u64::try_from(spec.code_bytes()).expect("code bytes fit u64");
+        let y = self.y.size();
+        let uv = self.uv.size();
+        let y_bytes =
+            u64::from(y.width) * u64::from(y.height) * u64::from(y.depth_or_array_layers) * code;
+        let uv_bytes = u64::from(uv.width)
+            * u64::from(uv.height)
+            * u64::from(uv.depth_or_array_layers)
+            * code
+            * 2;
+        let buffers = self.staging.iter().map(wgpu::Buffer::size).sum::<u64>() + self.params.size();
+        y_bytes + uv_bytes + buffers
+    }
+}
+
+/// Path `c` for the timed run: [`CopyPath`] plus the handoff stamps.
+struct TimedCopyPath {
+    path: CopyPath,
+    /// 1×1 clear target. Four bytes, counted in [`Self::gpu_bytes`].
+    marker_tex: wgpu::Texture,
+    marker: wgpu::TextureView,
+    chunks: Vec<QueryChunk>,
+    query_span: u32,
+    /// Reused across chunks. Large enough for the biggest chunk.
+    resolve: wgpu::Buffer,
+    readback: wgpu::Buffer,
+}
+
+impl TimedCopyPath {
+    /// The stamps need `TIMESTAMP_QUERY`; without it the timed run
+    /// fails before allocating anything.
+    fn new(shared: &SharedDevice, spec: &Spec, query_count: u32) -> Result<Self, BenchError> {
+        let device = &shared.device;
+        if !device.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+            return Err(BenchError::Gpu(
+                "external-cost --path c needs TIMESTAMP_QUERY for the handoff stamps".into(),
+            ));
+        }
+        let path = CopyPath::new(shared, spec);
+        let marker_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("external-cost stamp marker"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let marker = marker_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let chunks = query_chunks(device, query_count);
+        let resolve_queries = chunks.iter().map(|chunk| chunk.count).max().unwrap_or(0);
+        let resolve = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("external-cost stamp resolve"),
+            size: u64::from(resolve_queries) * 8,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("external-cost stamp readback"),
+            size: u64::from(resolve_queries) * 8,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Ok(Self {
+            path,
+            marker_tex,
+            marker,
+            chunks,
+            query_span: query_span(),
+            resolve,
+            readback,
+        })
+    }
+
+    /// The [`Convert`] installed once for the timed run.
+    fn converter(&self) -> Convert<HandoffStamps> {
+        self.path.converter(HandoffStamps {
+            queries: self
+                .chunks
+                .iter()
+                .map(|chunk| Arc::clone(&chunk.set))
+                .collect(),
+            query_span: self.query_span,
+            marker: self.marker.clone(),
+        })
     }
 
     /// Resolves every chunk and returns per measured frame
@@ -834,29 +908,15 @@ impl CopyPath {
             .collect())
     }
 
-    /// Path `c`'s own GPU bytes: copy textures, the staging ring, the
-    /// uniform, the query resolve and readback, and the 1×1 marker.
+    /// Path `c`'s own GPU bytes: [`CopyPath::gpu_bytes`] plus the
+    /// query resolve and readback and the 1×1 marker.
     fn gpu_bytes(&self, spec: &Spec) -> u64 {
-        let code = u64::try_from(spec.code_bytes()).expect("code bytes fit u64");
-        let y = self.y.size();
-        let uv = self.uv.size();
         let marker = self.marker_tex.size();
-        let y_bytes =
-            u64::from(y.width) * u64::from(y.height) * u64::from(y.depth_or_array_layers) * code;
-        let uv_bytes = u64::from(uv.width)
-            * u64::from(uv.height)
-            * u64::from(uv.depth_or_array_layers)
-            * code
-            * 2;
         let marker_bytes = u64::from(marker.width)
             * u64::from(marker.height)
             * u64::from(marker.depth_or_array_layers)
             * 4;
-        let buffers = self.staging.iter().map(wgpu::Buffer::size).sum::<u64>()
-            + self.params.size()
-            + self.resolve.size()
-            + self.readback.size();
-        y_bytes + uv_bytes + marker_bytes + buffers
+        self.path.gpu_bytes(spec) + marker_bytes + self.resolve.size() + self.readback.size()
     }
 }
 
@@ -926,7 +986,7 @@ struct CostReport {
     /// Path `e`'s import binding (`planes`, `external-format`, `rgb`).
     /// `null` on path `c`, which does not import.
     import_form: Option<&'static str>,
-    /// Path `c`'s own GPU resources. See [`CopyPath::gpu_bytes`].
+    /// Path `c`'s own GPU resources. See [`TimedCopyPath::gpu_bytes`].
     /// Zero on path `e`.
     bench_gpu_bytes: u64,
     /// `git rev-parse HEAD` at the bench build.
@@ -1037,7 +1097,7 @@ pub(crate) fn run(args: &ExternalCostArgs) -> Result<(), BenchError> {
     let idle = memory_snapshot(&engine, &shared, SampleDetail::Full);
     let mut producer = platform::Producer::new(&spec, &shared)?;
     let surface = engine
-        .surface(offscreen(&spec))
+        .surface(offscreen(&spec), || {})
         .map_err(|e| BenchError::Gpu(format!("external-cost surface: {e}")))?;
     let layer = surface.layer();
     let total = warmup
@@ -1057,8 +1117,8 @@ pub(crate) fn run(args: &ExternalCostArgs) -> Result<(), BenchError> {
             None
         }
         ExternalPath::Copy => {
-            let copy = CopyPath::new(&shared, &spec, query_count)?;
-            let producer = engine.gpu_producer(GpuContentBox::new(copy.converter(), || {}));
+            let copy = TimedCopyPath::new(&shared, &spec, query_count)?;
+            let producer = engine.gpu_producer(GpuContentBox::new(copy.converter()));
             surface.update(|tx| {
                 tx[surface.root()].push(&layer);
                 tx[&layer].content(producer.at((spec.width, spec.height)));
@@ -1121,6 +1181,7 @@ pub(crate) fn run(args: &ExternalCostArgs) -> Result<(), BenchError> {
             ExternalPath::Copy => {
                 copy.as_ref()
                     .expect("path c has copy state")
+                    .path
                     .stage(&producer, frame, &shared)?;
             }
         }
@@ -1292,8 +1353,8 @@ pub(crate) fn run(args: &ExternalCostArgs) -> Result<(), BenchError> {
 /// returns the composited working-space pixels — the E-vs-C pair the
 /// correctness test (`tests/external_cost.rs`) compares.
 ///
-/// The pattern frame and the stamp slot are separate. `frame` selects
-/// the gradient; the convert pass writes stamps 0, 1 and 2.
+/// `frame` selects the gradient. The composite writes no timestamp
+/// queries, so it runs on adapters without `TIMESTAMP_QUERY`.
 ///
 /// # Errors
 /// Device, producer, engine and readback failures.
@@ -1307,7 +1368,7 @@ pub fn composite_frame(
     let (engine, shared) = engine_and_device()?;
     let mut producer = platform::Producer::new(&spec, &shared)?;
     let surface = engine
-        .surface(offscreen(&spec))
+        .surface(offscreen(&spec), || {})
         .map_err(|e| BenchError::Gpu(format!("external-cost surface: {e}")))?;
     let layer = surface.layer();
 
@@ -1323,8 +1384,8 @@ pub fn composite_frame(
             });
         }
         ExternalPath::Copy => {
-            let copy = CopyPath::new(&shared, &spec, 3)?;
-            let gpu = engine.gpu_producer(GpuContentBox::new(copy.converter(), || {}));
+            let copy = CopyPath::new(&shared, &spec);
+            let gpu = engine.gpu_producer(GpuContentBox::new(copy.converter(Unstamped)));
             surface.update(|tx| {
                 tx[surface.root()].push(&layer);
                 tx[&layer].content(gpu.at((spec.width, spec.height)));

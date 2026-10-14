@@ -8,6 +8,7 @@
 use waterui::Binding;
 use waterui::Signal;
 use waterui::component::badge::Badge;
+use waterui::component::toggle::ToggleStyle;
 use waterui::widget::accordion::Accordion;
 use waterui::widget::card::Card;
 use waterui_testing::{Role, SemanticApp, UiBuilder};
@@ -66,9 +67,12 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
         )
     });
 
+    // The header is a button that reports whether its content is showing,
+    // so assistive technology can operate it as the control it is.
     app.query()
         .role(Role::BUTTON)
         .label("Details")
+        .expanded(false)
         .assert_exists();
     app.query()
         .role(Role::LABEL)
@@ -79,8 +83,13 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
     header.tap(&mut app);
     assert!(
         expanded.snapshot(),
-        "tapping the header must expand the accordion"
+        "activating the header must expand the accordion"
     );
+    app.query()
+        .role(Role::BUTTON)
+        .label("Details")
+        .expanded(true)
+        .assert_exists();
     app.query()
         .role(Role::LABEL)
         .label("Hidden specifics")
@@ -90,7 +99,7 @@ fn accordion_tap_expands_and_collapses_content(ui: UiBuilder) {
     header.tap(&mut app);
     assert!(
         !expanded.snapshot(),
-        "tapping the header again must collapse the accordion"
+        "activating the header again must collapse the accordion"
     );
     app.query()
         .role(Role::LABEL)
@@ -134,7 +143,8 @@ fn derived_form_edits_flow_back_into_the_struct_binding(ui: UiBuilder) {
         "text input edits must reach the derived struct binding"
     );
 
-    app.query().role(Role::SWITCH).tap();
+    // A derived bool field is a default-style toggle: the platform's style.
+    app.query().role(Role::toggle(ToggleStyle::Automatic)).tap();
     assert!(
         profile.snapshot().active,
         "toggle flips must reach the derived struct binding"

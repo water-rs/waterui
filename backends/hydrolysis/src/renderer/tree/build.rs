@@ -7,22 +7,56 @@
 use super::*;
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::platform_view::PlatformView;
+use core::any::Any;
 use waterui_core::views::ViewSnapshot;
+use waterui_layout::BackgroundLayout;
+
+/// A retained node's layout-dirty mark and the callback its input
+/// subscriptions fire: the callback sets the mark, which an enclosing
+/// `RetainedSubview` consumes through [`RenderNode::take_layout_dirty`], and
+/// marks the owning node's cell layout-dirty so the pump relayouts it.
+fn layout_invalidation(
+    cell: &Rc<NodeCell>,
+) -> (
+    Rc<Cell<bool>>,
+    waterui_core::layout::LayoutInvalidationCallback,
+) {
+    let layout_dirty = Rc::new(Cell::new(false));
+    let invalidate = {
+        let layout_dirty = Rc::clone(&layout_dirty);
+        let cell = Rc::downgrade(cell);
+        Rc::new(move || {
+            layout_dirty.set(true);
+            if let Some(cell) = cell.upgrade() {
+                cell.mark_layout();
+            }
+        })
+    };
+    (layout_dirty, invalidate)
+}
 
 impl RenderNode {
-    /// Build a node from a view, capturing live reactive inputs. Native leaves
-    /// and layout containers map to concrete nodes; composite views expand via
-    /// `body()` once and recurse.
+    /// Builds a node from a view, capturing live reactive inputs. Native
+    /// leaves and layout containers map to concrete nodes; composite views
+    /// expand via `body()` once and recurse. Then it wires the subtree's cell
+    /// parent links (`attach_subtree`): the tree root attaches to the
+    /// window's root cell, every other node to its structural parent's cell.
+    pub(crate) fn build(view: AnyView, env: &Environment, renderer: &mut SemanticCore) -> Self {
+        let node = Self::build_view(view, env, renderer);
+        node.attach_subtree();
+        node
+    }
+
     #[expect(
         clippy::too_many_lines,
         reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
     )]
-    pub(crate) fn build(view: AnyView, env: &Environment, renderer: &mut SemanticCore) -> Self {
+    fn build_view(view: AnyView, env: &Environment, renderer: &mut SemanticCore) -> Self {
         renderer.state.counters.semantic_builds += 1;
         let view = match view.downcast::<Native<Color>>() {
             Ok(color) => {
                 return Self::Color(ColorNode {
-                    render_id: RenderId::next(),
+                    core: renderer.new_core(),
                     color: (*color).into_inner().resolve(env),
                 });
             }
@@ -31,91 +65,103 @@ impl RenderNode {
         let view = match view.downcast::<Native<TextConfig>>() {
             Ok(text) => {
                 let config = (*text).into_inner();
+                let core = renderer.new_core();
+                let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
+                let guards = [
+                    config.content.watch({
+                        let invalidate = Rc::clone(&invalidate);
+                        move |_| invalidate()
+                    }),
+                    config.paragraph_alignment.watch(move |_| invalidate()),
+                ];
                 return Self::Text(Box::new(TextNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
                     accessibility_identity: Rc::new(()),
-                    render_id: RenderId::next(),
+                    core,
                     content: config.content,
                     alignment: config.paragraph_alignment,
                     line_limit: config.line_limit.map(core::num::NonZeroUsize::get),
-                }));
-            }
-            Err(view) => view,
-        };
-        let view = match view.downcast::<Native<FixedContainer>>() {
-            Ok(container) => {
-                let (layout, children) = (*container).into_inner().into_inner();
-                let layout_dirty = Rc::new(Cell::new(false));
-                let signals = renderer.signals.clone();
-                let guards = layout.watch_invalidation({
-                    let layout_dirty = Rc::clone(&layout_dirty);
-                    Rc::new(move || {
-                        layout_dirty.set(true);
-                        signals.request_refresh();
-                    })
-                });
-                #[cfg(feature = "accessibility")]
-                let accessibility_child_env = accessibility_container_child_environment(env);
-                #[cfg(feature = "accessibility")]
-                let child_env = accessibility_child_env.as_ref().unwrap_or(env);
-                #[cfg(not(feature = "accessibility"))]
-                let child_env = env;
-                let children = children
-                    .into_iter()
-                    .map(|child| {
-                        Self::build(normalize_layout_view(child, child_env), child_env, renderer)
-                    })
-                    .collect();
-                return Self::Container(Box::new(ContainerNode {
-                    memo_gate: Cell::default(),
-                    memo_slots: RefCell::default(),
-                    accessibility_identity: Rc::new(()),
-                    render_id: RenderId::next(),
-                    layout,
-                    children,
-                    #[cfg(feature = "accessibility")]
-                    accessibility_child_env,
-                    placed: Vec::new(),
-                    #[cfg(feature = "accessibility")]
-                    resolved: Rect::from_size(Size::zero()),
                     layout_dirty,
                     _guards: guards,
                 }));
             }
             Err(view) => view,
         };
+        // A plain `FixedContainer` has not run `body()` yet: its layout
+        // object is still the one the modifier built — the only moment
+        // `BackgroundLayout` is identifiable, before `body` wraps it in
+        // `DirectionalLayout`. `FixedContainer::body` is what produces the
+        // `Native<FixedContainer>` the next arm rebuilds.
+        let view = match view.downcast::<FixedContainer>() {
+            Ok(container) => {
+                let background_slot = (container.as_parts().0 as &dyn Any)
+                    .is::<BackgroundLayout>()
+                    .then_some(0);
+                let container = *AnyView::new(container.body(env))
+                    .downcast::<Native<FixedContainer>>()
+                    .expect("FixedContainer::body produces Native<FixedContainer>");
+                return Self::build_fixed_container(container, env, renderer, background_slot);
+            }
+            Err(view) => view,
+        };
+        let view = match view.downcast::<Native<FixedContainer>>() {
+            Ok(container) => {
+                return Self::build_fixed_container(*container, env, renderer, None);
+            }
+            Err(view) => view,
+        };
         let view = match view.downcast::<Native<LazyContainer>>() {
             Ok(container) => {
                 let direction = container.as_inner().direction();
+                // Whether the items statically declared `.transition(...)`,
+                // read before `into_inner` consumes the container.
+                let wants_transition = container.as_inner().declares_transitions();
                 let (layout, children) = (*container).into_inner().into_inner();
                 // The collection's own layout inputs (stack spacing, absolute
                 // pins, …) are signals too: subscribe them through
                 // `watch_invalidation` like a FixedContainer's, so a change
-                // schedules the refresh that re-derives the collection's
-                // extents and item rects.
+                // marks the owning node layout-dirty. Which node that is —
+                // collection or lazy stack — is decided after the watch
+                // installs, so the guard marks through a shared target the
+                // built node fills in.
+                let layout_mark = Rc::new(RefCell::new(Weak::<NodeCell>::new()));
                 let layout_guards = {
-                    let signals = renderer.signals.clone();
+                    let layout_mark = Rc::clone(&layout_mark);
                     layout.watch_invalidation(Rc::new(move || {
-                        signals.request_refresh();
+                        if let Some(cell) = layout_mark.borrow().upgrade() {
+                            cell.mark_layout();
+                        }
                     }))
                 };
-                // A viewport-virtualizable stack layout (and not opting into a
-                // membership transition, which must retain every item) becomes a
-                // virtualized LazyStack: only visible rows are built/measured.
-                let wants_transition = env
-                    .get::<waterui_layout::collection_transition::CollectionTransition>()
-                    .is_some();
+                // A viewport-virtualizable stack layout becomes a virtualized
+                // LazyStack — unless the items declared `.transition(...)`,
+                // which must retain every member so a removal can hold its
+                // ghost slot (layout-spec.md §4.5).
                 if let Some(axis) =
                     lazy_stack_axis_config(layout.as_ref(), direction).filter(|_| !wants_transition)
                 {
-                    return Self::build_lazy_stack(axis, &children, env, renderer, layout_guards);
+                    return Self::build_lazy_stack(
+                        axis,
+                        &children,
+                        env,
+                        renderer,
+                        layout_guards,
+                        &layout_mark,
+                    );
                 }
                 // A non-virtualizable layout (AbsoluteLayout/ZStack overlay) or a
                 // transition collection: a retained reactive collection that
                 // reconciles membership by id (recursing into each item, so inner
                 // SceneView/Dynamic reach their dedicated nodes).
-                return Self::build_collection(layout, &children, env, renderer, layout_guards);
+                return Self::build_collection(
+                    layout,
+                    &children,
+                    env,
+                    renderer,
+                    layout_guards,
+                    &layout_mark,
+                );
             }
             Err(view) => view,
         };
@@ -123,9 +169,9 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return Self::Opacity(Box::new(OpacityNode {
-                    render_id: RenderId::next(),
+                    core: renderer.new_core(),
                     value,
-                    child: Self::build(content, env, renderer),
+                    child: Self::build_view(content, env, renderer),
                 }));
             }
             Err(view) => view,
@@ -134,9 +180,9 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return Self::Scale(Box::new(ScaleNode {
-                    render_id: RenderId::next(),
+                    core: renderer.new_core(),
                     value,
-                    child: Self::build(content, env, renderer),
+                    child: Self::build_view(content, env, renderer),
                 }));
             }
             Err(view) => view,
@@ -145,9 +191,9 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return Self::Rotation(Box::new(RotationNode {
-                    render_id: RenderId::next(),
+                    core: renderer.new_core(),
                     value,
-                    child: Self::build(content, env, renderer),
+                    child: Self::build_view(content, env, renderer),
                 }));
             }
             Err(view) => view,
@@ -156,9 +202,9 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return Self::Offset(Box::new(OffsetNode {
-                    render_id: RenderId::next(),
+                    core: renderer.new_core(),
                     value,
-                    child: Self::build(content, env, renderer),
+                    child: Self::build_view(content, env, renderer),
                 }));
             }
             Err(view) => view,
@@ -175,9 +221,9 @@ impl RenderNode {
                 // Carry the scoped environment in the node (not flattened away), so
                 // it is also the env used at flush/measure/layout — text shaping and
                 // a11y read env every frame.
-                let child = Self::build(content, &scoped_env, renderer);
+                let child = Self::build_view(content, &scoped_env, renderer);
                 return Self::Env(Box::new(EnvNode {
-                    render_id: RenderId::next(),
+                    core: renderer.new_core(),
                     env: scoped_env,
                     child,
                 }));
@@ -188,12 +234,22 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return Self::Retain(Box::new(RetainNode {
-                    render_id: RenderId::next(),
+                    core: renderer.new_core(),
                     _retain: value,
-                    child: Self::build(content, env, renderer),
+                    child: Self::build_view(content, env, renderer),
                 }));
             }
             Err(view) => view,
+        };
+        // A `.transition(...)` reached outside a structural site (retained
+        // collections peel the spec before this arm ever sees it — see
+        // `split_transition`): with no structural owner there is no clock
+        // and no honest rendering path — fail fast rather than draw through.
+        let Err(view) = view.downcast::<Metadata<waterui_core::transition::TransitionSpec>>()
+        else {
+            panic!(
+                "Hydrolysis: transition metadata requires a structural transition owner; this site is not implemented (water-rs/waterui#1593)"
+            );
         };
         // Accessibility metadata are environment-scoping wrappers (the dispatch
         // handlers just `env.insert(value)` then render the content), so the tree
@@ -218,9 +274,9 @@ impl RenderNode {
         // `a11y_scoped_env_for_view` — the List-row hoist reads the same table.
         let view = match a11y_scoped_env_for_view(view, env) {
             Ok((content, scoped)) => {
-                let child = Self::build(content, &scoped, renderer);
+                let child = Self::build_view(content, &scoped, renderer);
                 return Self::Env(Box::new(EnvNode {
-                    render_id: RenderId::next(),
+                    core: renderer.new_core(),
                     env: scoped,
                     child,
                 }));
@@ -235,9 +291,9 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 let scoped = a11y_scoped_env(env, &value);
-                let child = Self::build(content, &scoped, renderer);
+                let child = Self::build_view(content, &scoped, renderer);
                 return Self::Env(Box::new(EnvNode {
-                    render_id: RenderId::next(),
+                    core: renderer.new_core(),
                     env: scoped,
                     child,
                 }));
@@ -248,25 +304,25 @@ impl RenderNode {
         // render the content (no-ops in Hydrolysis), so the tree unwraps them to
         // the content directly — fully transparent, keeping reactive descendants live.
         let view = match view.downcast::<Metadata<Secure>>() {
-            Ok(meta) => return Self::build(meta.content, env, renderer),
+            Ok(meta) => return Self::build_view(meta.content, env, renderer),
             Err(view) => view,
         };
         // Dynamic-range metadata used to scope a preference read by the retired
         // GPU-surface path; Cherenkov's engine owns headroom per surface, so
         // both pass through to the content like `Secure` above.
         let view = match view.downcast::<Metadata<StandardDynamicRange>>() {
-            Ok(meta) => return Self::build(meta.content, env, renderer),
+            Ok(meta) => return Self::build_view(meta.content, env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<HighDynamicRange>>() {
-            Ok(meta) => return Self::build(meta.content, env, renderer),
+            Ok(meta) => return Self::build_view(meta.content, env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<IgnoreSafeArea>>() {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 return Self::build_wrapper(
-                    WrapperEffect::IgnoreSafeArea(value.edges),
+                    WrapperEffect::IgnoreSafeArea(value),
                     content,
                     env,
                     renderer,
@@ -275,11 +331,11 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<ContextMenu>>() {
-            Ok(meta) => return Self::build(meta.content, env, renderer),
+            Ok(meta) => return Self::build_view(meta.content, env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<Background>>() {
-            Ok(meta) => return Self::build(meta.content, env, renderer),
+            Ok(meta) => return Self::build_view(meta.content, env, renderer),
             Err(view) => view,
         };
         let view = match view.downcast::<Metadata<NavigationTransitionSource>>() {
@@ -307,7 +363,33 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<IgnorableMetadata<MaterialBackground>>() {
-            Ok(meta) => return Self::build(meta.content, env, renderer),
+            Ok(meta) => {
+                let IgnorableMetadata {
+                    content,
+                    value: MaterialBackground(material),
+                } = *meta;
+                return Self::build_wrapper(
+                    WrapperEffect::Material(crate::renderer::material::WithinWindowLevel::of(
+                        material,
+                    )),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
+        let view = match view.downcast::<IgnorableMetadata<MaterialGroup>>() {
+            // The modifier takes no value: the wrapper's own render identity is
+            // the group scope its member materials join at flush.
+            Ok(meta) => {
+                return Self::build_wrapper(
+                    WrapperEffect::MaterialGroup,
+                    meta.content,
+                    env,
+                    renderer,
+                );
+            }
             Err(view) => view,
         };
         // Transparent metadata wrappers: each applies its visual/interaction
@@ -340,7 +422,7 @@ impl RenderNode {
             Ok(meta) => {
                 let Metadata { content, value } = *meta;
                 let AnchoredOverlay {
-                    content: overlay_content,
+                    content: overlay_builder,
                     is_presented,
                     placed_edge,
                     placement,
@@ -348,11 +430,29 @@ impl RenderNode {
                 } = value;
                 return Self::build_wrapper(
                     WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
-                        content: Rc::new(RefCell::new(Some(RetainedSubview::new(overlay_content)))),
+                        builder: overlay_builder,
+                        content: Rc::new(RefCell::new(None)),
                         is_presented,
                         placed_edge,
                         placement,
                         dismissal,
+                        marker: Rc::new(()),
+                    }),
+                    content,
+                    env,
+                    renderer,
+                );
+            }
+            Err(view) => view,
+        };
+        let view = match view.downcast::<Metadata<waterui::dialog::Dialog>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                let layer = RetainedSubview::new(AnyView::new(value.modal_layer()));
+                return Self::build_wrapper(
+                    WrapperEffect::Dialog(DialogEffect {
+                        content: Rc::new(RefCell::new(layer)),
+                        dialog: value,
                         marker: Rc::new(()),
                     }),
                     content,
@@ -520,13 +620,17 @@ impl RenderNode {
                     ..
                 } = (*scroll).into_inner().into_inner();
                 let content = normalize_layout_view(content, env);
+                // A scroll surface owns §7.1 for its subtree: the layout
+                // pass hands the surface its facts and the child lays out
+                // with no safe-area context — the surface insets and
+                // scrolls its own content instead.
                 return Self::Scroll(Box::new(ScrollNode {
                     memo_gate: Cell::default(),
                     memo_slots: RefCell::default(),
                     accessibility_identity: Rc::new(()),
-                    render_id: RenderId::next(),
+                    core: renderer.new_core(),
                     axis,
-                    child: Self::build(content, env, renderer),
+                    child: Self::build_view(content, env, renderer),
                     controller,
                     offset,
                     applied_scroll_generation: Cell::new(0),
@@ -535,6 +639,7 @@ impl RenderNode {
                     viewport: Size::zero(),
                     non_scrolling_minimum: Cell::new(None),
                     env: env.clone(),
+                    surface: std::rc::Rc::default(),
                 }));
             }
             Err(view) => view,
@@ -552,13 +657,13 @@ impl RenderNode {
         // step with the tree and hand a leaf another leaf's runtime.
         let view = match view.downcast::<Native<GpuContentView>>() {
             Ok(view) => {
-                return Self::build_gpu_content((*view).into_inner());
+                return Self::build_gpu_content((*view).into_inner(), renderer);
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Native<ExternalFrameView>>() {
             Ok(view) => {
-                return Self::build_external_frame((*view).into_inner());
+                return Self::build_external_frame((*view).into_inner(), renderer);
             }
             Err(view) => view,
         };
@@ -568,7 +673,7 @@ impl RenderNode {
         // panics at build naming the missing piece.
         let view = match view.downcast::<Native<PlatformView>>() {
             Ok(platform_view) => {
-                return Self::build_platform_view(&(*platform_view).into_inner(), env);
+                return Self::build_platform_view(renderer, &(*platform_view).into_inner(), env);
             }
             Err(view) => view,
         };
@@ -590,12 +695,12 @@ impl RenderNode {
         // instead of freezing in a one-shot `Captured` bake.
         let view = match view.downcast::<Native<ButtonConfig>>() {
             Ok(button) => {
-                return Self::build_button((*button).into_inner(), env);
+                return Self::build_button(renderer, (*button).into_inner(), env);
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Native<ResolvedMenu>>() {
-            Ok(menu) => return Self::build_menu((*menu).into_inner(), env),
+            Ok(menu) => return Self::build_menu(renderer, (*menu).into_inner(), env),
             Err(view) => view,
         };
         let view = match view.downcast::<Native<ToggleConfig>>() {
@@ -657,7 +762,7 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<Native<TableConfig>>() {
-            Ok(table) => return Self::build_table((*table).into_inner(), env),
+            Ok(table) => return Self::build_table(renderer, (*table).into_inner(), env),
             Err(view) => view,
         };
         let view = match view.downcast::<Native<SystemIcon>>() {
@@ -665,15 +770,15 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<Native<waterui_graphics::Gradient>>() {
-            Ok(gradient) => return Self::build_gradient((*gradient).into_inner(), env),
+            Ok(gradient) => return Self::build_gradient(renderer, (*gradient).into_inner(), env),
             Err(view) => view,
         };
         let view = match view.downcast::<Native<ResolvedShape>>() {
-            Ok(shape) => return Self::build_shape((*shape).into_inner(), env),
+            Ok(shape) => return Self::build_shape(renderer, (*shape).into_inner(), env),
             Err(view) => view,
         };
         let view = match view.downcast::<Native<ResolvedMorphShape>>() {
-            Ok(shape) => return Self::build_morph_shape((*shape).into_inner(), env),
+            Ok(shape) => return Self::build_morph_shape(renderer, (*shape).into_inner(), env),
             Err(view) => view,
         };
         let Err(view) = view.downcast::<Native<MapConfig>>() else {
@@ -686,9 +791,14 @@ impl RenderNode {
         // the macOS bridge a page handle from another engine.
         let view = match view.downcast::<WebView>() {
             Ok(webview) if env.get::<Hook<WebView>>().is_none() => {
-                return Self::build_webview(*webview, env, renderer);
+                return Self::build_webview(&webview, env, renderer);
             }
             Ok(webview) => AnyView::new(*webview),
+            Err(view) => view,
+        };
+        #[cfg(hydrolysis_hosted)]
+        let view = match view.downcast::<Native<crate::hosted::HostedView>>() {
+            Ok(hosted) => return Self::build_hosted((*hosted).into_inner(), env, renderer),
             Err(view) => view,
         };
         // Navigation containers (navigation view / split / stack / tabs): each is a
@@ -710,7 +820,7 @@ impl RenderNode {
         };
         let view = match view.downcast::<Native<NavigationStack<(), ()>>>() {
             Ok(stack) => {
-                return Self::build_navigation_stack((*stack).into_inner(), env);
+                return Self::build_navigation_stack(renderer, (*stack).into_inner(), env);
             }
             Err(view) => view,
         };
@@ -719,29 +829,29 @@ impl RenderNode {
             Err(view) => view,
         };
         let view = match view.downcast::<Native<Spacer>>() {
-            Ok(spacer) => return Self::build_spacer((*spacer).into_inner(), env),
+            Ok(spacer) => return Self::build_spacer(renderer, (*spacer).into_inner(), env),
             Err(view) => view,
         };
         // `Native<()>` carries no data — drop the wrapper and build the empty leaf.
         let Err(view) = view.downcast::<Native<()>>() else {
-            return Self::build_empty(env);
+            return Self::build_empty(renderer, env);
         };
         // `Divider` and `Str` are registered renderers (not `Native<…>` leaves), so
         // they are downcast as their value type directly and built into persistent
         // `Widget` nodes that re-render from a retained cell each flush.
         let view = match view.downcast::<Divider>() {
-            Ok(divider) => return Self::build_divider(*divider, env),
+            Ok(divider) => return Self::build_divider(renderer, *divider, env),
             Err(view) => view,
         };
         let view = match view.downcast::<Str>() {
-            Ok(text) => return Self::build_str(*text, env),
+            Ok(text) => return Self::build_str(renderer, *text, env),
             Err(view) => view,
         };
         // Every native leaf and metadata wrapper now has a dedicated `RenderNode`
         // build arm above. Anything reaching here is a composite, expanded via
         // `body()` once. A native leaf with no build arm panics here in `body()` —
         // the acceptable fast-fail for a missing arm.
-        Self::build(AnyView::new(view.body(env)), env, renderer)
+        Self::build_view(AnyView::new(view.body(env)), env, renderer)
     }
 
     /// Build a transparent wrapper node: capture the per-flush effect and recurse
@@ -762,32 +872,48 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut SemanticCore,
     ) -> Self {
-        let child = Self::build(content, env, renderer);
+        let child = Self::build_view(content, env, renderer);
         let env = if effect.captures_environment() {
             Self::resolved_handler_env(&child, env).clone()
         } else {
             env.clone()
         };
-        Self::Wrapper(Box::new(WrapperNode {
+        let is_material_group = matches!(effect, WrapperEffect::MaterialGroup);
+        let node = Self::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),
-            render_id: RenderId::next(),
+            core: renderer.new_core(),
             effect,
             env,
+            released_offsets: Cell::default(),
             child,
-        }))
+        }));
+        if is_material_group {
+            // The marker is a property of the node, not of a record: flag the
+            // cell at build so a partial descent into a descendant subtree can
+            // find every enclosing scope from the ancestry (#2268).
+            node.core().cell.material_group_scope.set(true);
+        }
+        node
     }
 
     /// The environment a metadata-carried callback captures: the one its
     /// modified view resolves in. Walks down the child's leading env-only
     /// wrappers — `Env` nodes (`With`/`Metadata<Environment>` installs and
-    /// env-scoped metadata) and handler wrappers of the same modifier chain —
-    /// until the first node that is neither. Resolving on the *built* node
-    /// means each `With` was already expanded exactly once into the `Env` node
-    /// that carries its scoped env.
+    /// env-scoped metadata), `.material_group()` scope markers and handler
+    /// wrappers of the same modifier chain — until the first node that is
+    /// none of them. Resolving on the *built* node means each `With` was
+    /// already expanded exactly once into the `Env` node that carries its
+    /// scoped env.
     fn resolved_handler_env<'a>(node: &'a Self, env: &'a Environment) -> &'a Environment {
         match node {
             Self::Env(node) => Self::resolved_handler_env(&node.child, &node.env),
             Self::Wrapper(node) if node.effect.captures_environment() => {
+                Self::resolved_handler_env(&node.child, &node.env)
+            }
+            // A `.material_group()` is a pure scope marker — a handler
+            // wrapped through it still captures the env its modifier chain
+            // resolved.
+            Self::Wrapper(node) if matches!(node.effect, WrapperEffect::MaterialGroup) => {
                 Self::resolved_handler_env(&node.child, &node.env)
             }
             _ => env,
@@ -809,7 +935,7 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut SemanticCore,
     ) -> Self {
-        let child = Self::build(content, env, renderer);
+        let child = Self::build_view(content, env, renderer);
         let env = Self::resolved_handler_env(&child, env).clone();
         let effect = match hook.lifecycle() {
             LifeCycle::Appear => LifeCycleEffect {
@@ -824,9 +950,10 @@ impl RenderNode {
         };
         Self::Wrapper(Box::new(WrapperNode {
             accessibility_identity: Rc::new(()),
-            render_id: RenderId::next(),
+            core: renderer.new_core(),
             effect: WrapperEffect::LifeCycle(effect),
             env,
+            released_offsets: Cell::default(),
             child,
         }))
     }
@@ -840,11 +967,11 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut SemanticCore,
         layout_guards: Vec<BoxWatcherGuard>,
+        layout_mark: &Rc<RefCell<Weak<NodeCell>>>,
     ) -> Self {
+        let core = renderer.new_core();
+        let cell = Rc::downgrade(&core.cell);
         let dirty = Rc::new(Cell::new(false));
-        let dirty_key = Rc::new(());
-        let key = Rc::as_ptr(&dirty_key) as usize;
-        let signals = renderer.signals.clone();
         let replaced_ids = Rc::new(RefCell::new(std::collections::HashSet::new()));
         let replaced_for_watch = Rc::clone(&replaced_ids);
         // The node retains one immutable row set per applied event: the
@@ -853,6 +980,9 @@ impl RenderNode {
         // the live source while applying an older change.
         let applied = Rc::new(RefCell::new(views.snapshot()));
         let applied_for_watch = Rc::clone(&applied);
+        // A rebuild in progress already recaptures the whole membership —
+        // a fire inside one must not mark the cell the build is writing.
+        let rebuild_active = renderer.rebuild_active_flag();
         let guard = views.watch(.., {
             let dirty = Rc::clone(&dirty);
             move |ctx, change| {
@@ -864,7 +994,11 @@ impl RenderNode {
                     &mut replaced_for_watch.borrow_mut(),
                 );
                 *applied_for_watch.borrow_mut() = event_snapshot;
-                signals.mark_collection_dirty(key, 0);
+                if !rebuild_active.get()
+                    && let Some(cell) = cell.upgrade()
+                {
+                    cell.mark(Dirty::STRUCTURE);
+                }
             }
         });
         // A collection carrying accessibility naming metadata is a container like
@@ -881,6 +1015,7 @@ impl RenderNode {
         // by a *later* change animate (`reconcile` marks phases). Every entry
         // is built from the one snapshot, so ids and views stay coherent even
         // if a nested build mutates the source mid-materialization.
+        *layout_mark.borrow_mut() = Rc::downgrade(&core.cell);
         let snapshot = applied.borrow().clone();
         let entries = snapshot
             .range()
@@ -891,17 +1026,18 @@ impl RenderNode {
                 let view = snapshot
                     .get_view(index)
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
-                CollectionEntry::stable(
-                    id,
-                    Self::build(normalize_layout_view(view, env), env, renderer),
-                )
+                let entry_core = renderer.new_core();
+                entry_core.cell.set_parent(&core.cell);
+                let (spec, content) = split_transition(view);
+                let node = Self::build_view(normalize_layout_view(content, env), env, renderer);
+                node.core().cell.set_parent(&entry_core.cell);
+                CollectionEntry::new(id, node, entry_core, spec)
             })
             .collect();
-        let transition = collection_transition_runtime(env, layout.as_ref());
         Self::Collection(Box::new(CollectionNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
-            render_id: RenderId::next(),
+            core,
             layout,
             snapshot: applied,
             env: env.clone(),
@@ -912,10 +1048,15 @@ impl RenderNode {
             placed: Vec::new(),
             #[cfg(feature = "accessibility")]
             resolved: Rect::from_size(Size::zero()),
-            transition,
+            ghosts: Vec::new(),
+            ghost_placed: Vec::new(),
+            reduce_motion: env
+                .get::<waterui_core::transition::ReduceMotion>()
+                .is_some_and(|flag| flag.0),
+            direction: waterui_layout::layout_direction(env).snapshot(),
+            ghost_seq: Cell::new(0),
             dirty,
             replaced_ids,
-            _dirty_key: dirty_key,
             _guard: guard,
             _layout_guards: layout_guards,
         }))
@@ -934,11 +1075,11 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut SemanticCore,
         layout_guards: Vec<BoxWatcherGuard>,
+        layout_mark: &Rc<RefCell<Weak<NodeCell>>>,
     ) -> Self {
-        let dirty_key = Rc::new(());
+        let core = renderer.new_core();
+        let cell = Rc::downgrade(&core.cell);
         let dirty = Rc::new(Cell::new(true));
-        let key = Rc::as_ptr(&dirty_key) as usize;
-        let signals = renderer.signals.clone();
         let dirty_for_watch = Rc::clone(&dirty);
         let replaced_ids = Rc::new(RefCell::new(std::collections::HashSet::new()));
         let replaced_for_watch = Rc::clone(&replaced_ids);
@@ -948,23 +1089,39 @@ impl RenderNode {
         // the same coherent membership rather than the live source.
         let snapshot = Rc::new(RefCell::new(views.snapshot()));
         let snapshot_for_watch = Rc::clone(&snapshot);
-        let guard = views.watch(.., move |ctx, change| {
-            // Membership changed: request a fine-grained refresh; the flush
-            // re-resolves the visible window over the event's own snapshot.
-            // The reported replaced positions accumulate their ids so the
-            // patch invalidates exactly those rows.
-            dirty_for_watch.set(true);
-            let event_snapshot = ctx.into_value();
-            collect_replaced_ids(
-                &event_snapshot,
-                &change,
-                &mut replaced_for_watch.borrow_mut(),
-            );
-            *snapshot_for_watch.borrow_mut() = event_snapshot;
-            signals.mark_collection_dirty(key, 0);
+
+        let rebuild_active = renderer.rebuild_active_flag();
+        let guard = views.watch(.., {
+            let cell = Weak::clone(&cell);
+            move |ctx, change| {
+                // Membership changed: request a fine-grained refresh; the flush
+                // re-resolves the visible window over the event's own snapshot.
+                // The reported replaced positions accumulate their ids so the
+                // patch invalidates exactly those rows. Registration itself
+                // fires the initial snapshot — gated like the collection's.
+                dirty_for_watch.set(true);
+                let event_snapshot = ctx.into_value();
+                collect_replaced_ids(
+                    &event_snapshot,
+                    &change,
+                    &mut replaced_for_watch.borrow_mut(),
+                );
+                *snapshot_for_watch.borrow_mut() = event_snapshot;
+                if !rebuild_active.get()
+                    && let Some(cell) = cell.upgrade()
+                {
+                    cell.mark(Dirty::STRUCTURE);
+                }
+            }
         });
-        let signals = renderer.signals.clone();
-        let direction_guard = axis.direction().watch(move |_| signals.request_refresh());
+        let direction_guard = axis.direction().watch({
+            let cell = Weak::clone(&cell);
+            move |_| {
+                if let Some(cell) = cell.upgrade() {
+                    cell.mark_layout();
+                }
+            }
+        });
         // As for [`RenderNode::build_collection`]: naming metadata names the stack,
         // and its rows are materialized under the shielded environment.
         #[cfg(feature = "accessibility")]
@@ -973,6 +1130,7 @@ impl RenderNode {
         let accessibility_container_env = item_env.as_ref().map(|_| env.clone());
         #[cfg(feature = "accessibility")]
         let env = item_env.as_ref().unwrap_or(env);
+        *layout_mark.borrow_mut() = Rc::downgrade(&core.cell);
         Self::LazyStack(Box::new(LazyStackNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
@@ -980,7 +1138,8 @@ impl RenderNode {
             snapshot,
             env: env.clone(),
             accessibility_identity: Rc::new(()),
-            render_id: RenderId::next(),
+            core,
+            safe_area: None,
             #[cfg(feature = "accessibility")]
             accessibility_container_env,
             extent_index: RefCell::new(VirtualExtentIndex::default()),
@@ -992,7 +1151,6 @@ impl RenderNode {
             floor_sample: Cell::new(None),
             dirty,
             replaced_ids,
-            _dirty_key: dirty_key,
             _guard: guard,
             _direction_guard: direction_guard,
             _layout_guards: layout_guards,
@@ -1006,14 +1164,17 @@ impl RenderNode {
     )]
     fn build_scene_view_node(scene_view: Native<SceneView>, renderer: &mut SemanticCore) -> Self {
         let mut content = scene_view.into_inner().into_content();
-        let signals = renderer.signals.clone();
+        let core = renderer.new_core();
+        let cell = Rc::downgrade(&core.cell);
         let invalidator: waterui_graphics::SceneInvalidator = Rc::new(move || {
-            signals.request_refresh();
+            if let Some(cell) = cell.upgrade() {
+                cell.mark(Dirty::PAINT);
+            }
         });
         content.set_invalidator(Some(Rc::clone(&invalidator)));
         Self::SceneView(Box::new(SceneViewNode {
             accessibility_identity: Rc::new(()),
-            render_id: RenderId::next(),
+            core,
             content: Rc::new(RefCell::new(content)),
             invalidator,
             association: Rc::new(RefCell::new(None)),
@@ -1022,12 +1183,12 @@ impl RenderNode {
 
     /// Build a `GpuContentView` node owning its [`GpuContentRuntime`] — the
     /// view keeps its UI-side hooks (input, frame pump, ime caret, a11y); the
-    /// producer inside is taken exactly once, when the node's first
-    /// `GpuContentLayer` installs it on the window's engine.
-    fn build_gpu_content(view: GpuContentView) -> Self {
+    /// producer inside is taken exactly once, when the node's install layer
+    /// first commits it on the window's engine.
+    fn build_gpu_content(view: GpuContentView, renderer: &SemanticCore) -> Self {
         Self::GpuContent(Box::new(GpuContentNode {
             accessibility_identity: Rc::new(()),
-            render_id: RenderId::next(),
+            core: renderer.new_core(),
             runtime: Rc::new(RefCell::new(GpuContentRuntime::new(view))),
         }))
     }
@@ -1035,10 +1196,10 @@ impl RenderNode {
     /// Build an `ExternalFrameView` node owning its [`ExternalFrameRuntime`] —
     /// the view keeps its UI-side hooks (measure, a11y); the compositor starts
     /// the stream's source the first time a persistent mount installs it.
-    fn build_external_frame(view: ExternalFrameView) -> Self {
+    fn build_external_frame(view: ExternalFrameView, renderer: &SemanticCore) -> Self {
         Self::ExternalFrame(Box::new(ExternalFrameNode {
             accessibility_identity: Rc::new(()),
-            render_id: RenderId::next(),
+            core: renderer.new_core(),
             runtime: Rc::new(RefCell::new(ExternalFrameRuntime::new(view))),
         }))
     }
@@ -1057,9 +1218,9 @@ impl RenderNode {
             guards,
         } = filtered;
         let runtime = Rc::new(RefCell::new(FilteredRuntime::new(effect, guards)));
-        let child = Self::build(normalize_layout_view(content, env), env, renderer);
+        let child = Self::build_view(normalize_layout_view(content, env), env, renderer);
         Self::Filtered(Box::new(FilteredNode {
-            render_id: RenderId::next(),
+            core: renderer.new_core(),
             runtime,
             child,
             env: env.clone(),
@@ -1077,25 +1238,37 @@ impl RenderNode {
         let pending: Rc<RefCell<Option<AnyView>>> = Rc::new(RefCell::new(None));
         let source = dynamic.clone();
         let signals = renderer.signals.clone();
+        let core = renderer.new_core();
+        let cell = Rc::downgrade(&core.cell);
+        // The connect itself delivers the pending initial content through
+        // the receiver: the rebuild that produced this node already renders
+        // exactly that view, so it is never a change to mark.
+        let render_generation = signals.rebuild_generation();
+        let rebuild_active = renderer.rebuild_active_flag();
         dynamic.connect_with_pending_view(Rc::clone(&pending), {
             let pending = Rc::clone(&pending);
             move |update| {
                 let is_initial = update
                     .metadata()
                     .try_get::<DynamicInitialContent>()
-                    .is_some();
+                    .is_some()
+                    || signals.initial_dynamic_content_already_rendered(render_generation);
                 *pending.borrow_mut() = Some(update.into_value());
-                // A real content change schedules a fine-grained patch; the
-                // render tree rebuilds only this node's child on the next frame.
-                if !is_initial {
-                    signals.mark_dynamic_dirty(identity, 0);
+                // A real content change marks the host structure-dirty; the
+                // flush rebuilds only this node's child. A rebuild already in
+                // flight covers it, so the mark is gated on one not running.
+                if !is_initial
+                    && !rebuild_active.get()
+                    && let Some(cell) = cell.upgrade()
+                {
+                    cell.mark(Dirty::STRUCTURE);
                 }
             }
         });
         let initial = pending.borrow_mut().take();
         let child = match initial {
-            Some(content) => Self::build(content, env, renderer),
-            None => Self::build(AnyView::new(()), env, renderer),
+            Some(content) => Self::build_view(content, env, renderer),
+            None => Self::build_view(AnyView::new(()), env, renderer),
         };
         let child = Rc::new(RefCell::new(child));
         // The dispatch measure (`measure_dynamic`) reaches this child through
@@ -1105,12 +1278,105 @@ impl RenderNode {
             .measurement
             .register_dynamic_node(identity, &child);
         Self::Dynamic(Box::new(DynamicHostNode {
-            render_id: RenderId::next(),
+            core,
+            safe_area: None,
             source,
             pending,
             env: env.clone(),
             child,
             layout_dirty: Cell::new(false),
         }))
+    }
+}
+impl RenderNode {
+    /// Builds the [`RenderNode::Container`] for a `Native<FixedContainer>`
+    /// whose background slot was already identified — `Some(slot)` wraps the
+    /// slot's fill in [`RenderNode::Fill`], the type §7.1's paint extension
+    /// records on. The identification happens once here, while the layout
+    /// type is still concrete (normalization rebuilds the `FixedContainer`
+    /// from its parts instead of running `body` early); a declaration
+    /// wrapping the fill (`.ignore_safe_area` on the fill itself) stops the
+    /// predicate, so it replaces the default rather than stacking with it.
+    fn build_fixed_container(
+        container: Native<FixedContainer>,
+        env: &Environment,
+        renderer: &mut SemanticCore,
+        background_slot: Option<usize>,
+    ) -> Self {
+        let (layout, children) = container.into_inner().into_inner();
+        let core = renderer.new_core();
+        let (layout_dirty, invalidate) = layout_invalidation(&core.cell);
+        let guards = layout.watch_invalidation(invalidate);
+        #[cfg(feature = "accessibility")]
+        let accessibility_child_env = accessibility_container_child_environment(env);
+        #[cfg(feature = "accessibility")]
+        let child_env = accessibility_child_env.as_ref().unwrap_or(env);
+        #[cfg(not(feature = "accessibility"))]
+        let child_env = env;
+        let children: Vec<Self> = children
+            .into_iter()
+            .enumerate()
+            .map(|(index, child)| {
+                let node =
+                    Self::build_view(normalize_layout_view(child, child_env), child_env, renderer);
+                if Some(index) == background_slot && is_background_fill_leaf(&node) {
+                    Self::Fill(Box::new(FillNode::new(node, renderer.new_core())))
+                } else {
+                    node
+                }
+            })
+            .collect();
+        Self::Container(Box::new(ContainerNode {
+            memo_gate: Cell::default(),
+            memo_slots: RefCell::default(),
+            accessibility_identity: Rc::new(()),
+            core,
+            layout,
+            children,
+            #[cfg(feature = "accessibility")]
+            accessibility_child_env,
+            placed: Vec::new(),
+            #[cfg(feature = "accessibility")]
+            resolved: Rect::from_size(Size::zero()),
+            layout_dirty,
+            _guards: guards,
+        }))
+    }
+}
+
+/// Whether the node a [`BackgroundLayout`] slot holds paints a fill §7.1
+/// extends: a `Color` leaf, or the gradient's fill-widget leaf — read only
+/// through wrappers that never read their bounds, so the extended rect
+/// reaches nothing that draws or registers against it: `Opacity`,
+/// `Env` (accessibility and other scoped metadata), `Retain`, and the
+/// `Wrapper` effects with no geometry — `LayoutPriority`, `LifeCycle`,
+/// `Focused`, `OnKeyPress` and `MaterialGroup` (a pure scope marker).
+/// So `Color.opacity(..)` or an accessibility-scoped env in the slot is
+/// still a fill, while a clipped, bordered, scaled or hit-registered
+/// color is just another background view and never extends (§7.1's fill
+/// is a solid color, a gradient or a material).
+///
+/// An `.ignore_safe_area` wrapper on the fill is NOT transparent to this:
+/// a declaration on the fill replaces the default extension — the
+/// wrapper's own release (§7.1 rule 3) is the whole extension, so the node
+/// is not a fill and gets no [`RenderNode::Fill`].
+fn is_background_fill_leaf(node: &RenderNode) -> bool {
+    match node {
+        RenderNode::Color(_) => true,
+        RenderNode::Widget(widget) => widget.fill_leaf,
+        RenderNode::Opacity(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Retain(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Env(node) => is_background_fill_leaf(&node.child),
+        RenderNode::Wrapper(node) => {
+            matches!(
+                node.effect,
+                WrapperEffect::LayoutPriority(_)
+                    | WrapperEffect::LifeCycle(_)
+                    | WrapperEffect::Focused(_)
+                    | WrapperEffect::OnKeyPress(_)
+                    | WrapperEffect::MaterialGroup
+            ) && is_background_fill_leaf(&node.child)
+        }
+        _ => false,
     }
 }

@@ -222,7 +222,8 @@ mod tests {
     /// [`crate::build::app_library_artifact`] applies to a real target build,
     /// so these tests read exactly the artifact a `water` build produces.
     fn built_lib_fixture(fixture: &Path, extra_args: &[&str]) -> PathBuf {
-        let output = std::process::Command::new("cargo")
+        let output = crate::toolchain::Host::current()
+            .std_command("cargo")
             .args(["build", "--lib", "--message-format=json-render-diagnostics"])
             .args(extra_args)
             .current_dir(fixture)
@@ -279,7 +280,8 @@ mod tests {
     #[test]
     fn release_rlib_carries_no_meta_statics() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meta_static");
-        let status = std::process::Command::new("cargo")
+        let status = crate::toolchain::Host::current()
+            .std_command("cargo")
             .args(["build", "--lib", "--release"])
             .current_dir(&fixture)
             .status()

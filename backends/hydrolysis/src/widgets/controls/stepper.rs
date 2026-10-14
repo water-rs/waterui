@@ -2,7 +2,7 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, WidgetRenderContext, local_interaction_state,
-    measure_label_intrinsic, transformed_rect,
+    measure_label_intrinsic,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -228,21 +228,27 @@ pub fn render_stepper_parts(
     if label_bounds.width() > 0.0 {
         // A disabled control dims its label to the theme's disabled-content
         // alpha (Material: on-surface at 38% for default-colored labels).
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             label_bounds,
             |ctx| {
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(label_bounds);
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        label_view.flush_in_rect(
+                        label_view.place(
                             renderer,
                             render_ctx,
                             env,
                             ProposalSize::UNSPECIFIED,
                             label_bounds,
+                            label_area,
                         );
                     });
             },
@@ -261,9 +267,9 @@ pub fn render_stepper_parts(
         controls_bounds.x1,
         controls_bounds.y1,
     );
-    let hit_transform = ctx.hit_transform;
-    let minus_hit_bounds = transformed_rect(hit_transform, minus_bounds);
-    let plus_hit_bounds = transformed_rect(hit_transform, plus_bounds);
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
+    let minus_hit_bounds = minus_bounds;
+    let plus_hit_bounds = plus_bounds;
     let (minus_interaction, minus_press_slot, _) = ctx
         .renderer_mut()
         .bind_control_interaction_target(minus_interaction_key, minus_hit_bounds, env, disabled);
@@ -272,8 +278,12 @@ pub fn render_stepper_parts(
         .bind_control_interaction_target(plus_interaction_key, plus_hit_bounds, env, disabled);
     let minus_interaction = local_interaction_state(minus_interaction, hit_transform);
     let plus_interaction = local_interaction_state(plus_interaction, hit_transform);
-    ctx.with_clip_rect_scope_if(
+    ctx.with_scope_if(
         disabled,
+        crate::renderer::mount::ScopeKey {
+            role: "controls-dim",
+            item: 0,
+        },
         theme.disabled_content_alpha(),
         controls_bounds,
         |ctx| {
@@ -441,6 +451,6 @@ mod tests {
             stepper_control_and_label_bounds(Rect::new(16.0, 20.0, 320.0, 60.0), metrics, 16.0);
         assert_eq!(controls, Rect::new(248.0, 24.0, 320.0, 56.0));
         assert_eq!(label, Rect::new(16.0, 32.0, 240.0, 48.0));
-        assert_eq!(label.center().y, controls.center().y);
+        approx::assert_relative_eq!(label.center().y, controls.center().y);
     }
 }

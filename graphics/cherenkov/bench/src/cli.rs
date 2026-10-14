@@ -236,6 +236,14 @@ enum Sub {
         /// 2752x2064 --rate 120` for an iPad Pro).
         #[arg(long, value_name = "WxH")]
         native: Option<String>,
+        /// Record the #2547 composition attribution with every frame
+        /// sample: the epochs the frame kept on chip, the images it
+        /// materialized with the planner's reason for each, the
+        /// attachment bytes split into reserved, committed and backed,
+        /// and the logical intermediate traffic. The collection allocates per
+        /// frame, so a run that compares timings leaves it off.
+        #[arg(long)]
+        composition: bool,
     },
     /// Record the #169 allocation-event diagnostic for one scene.
     ///
@@ -561,6 +569,7 @@ fn run(cli: Cli) -> Result<(), BenchError> {
             rate,
             energy,
             native,
+            composition,
         } => measure_cmd(
             &engine,
             MeasureOpts {
@@ -575,6 +584,7 @@ fn run(cli: Cli) -> Result<(), BenchError> {
                 rate,
                 energy,
                 native: native.as_deref(),
+                composition,
             },
         ),
         Sub::AllocDiag {
@@ -903,6 +913,7 @@ struct MeasureOpts<'a> {
     rate: Option<f64>,
     energy: bool,
     native: Option<&'a str>,
+    composition: bool,
 }
 
 /// Wall-clock seconds a `render` scene (or a whole pass) spent in each
@@ -1153,6 +1164,27 @@ fn parse_native(arg: Option<&str>) -> Result<Option<(u32, u32)>, BenchError> {
     Ok(Some((w, h)))
 }
 
+/// The adapter a `measure` run uses: with `--composition`, the Cherenkov
+/// GPU adapter carrying the #2547 attribution sink.
+///
+/// The attribution is the planner's own, so no other adapter can answer
+/// for it: asking fails rather than reporting an empty section.
+fn measure_engine(engine: &str, composition: bool) -> Result<Box<dyn Engine>, BenchError> {
+    if !composition {
+        return create_engine(engine);
+    }
+    #[cfg(feature = "cherenkov")]
+    if engine == crate::cherenkov_ad::Cherenkov::NAME {
+        return Ok(Box::new(
+            crate::cherenkov_ad::Cherenkov::with_composition_diag()?,
+        ));
+    }
+    Err(BenchError::Engine(format!(
+        "--composition reports the Cherenkov GPU planner's own decisions; \
+         the {engine:?} adapter has none"
+    )))
+}
+
 fn measure_cmd(engine: &str, opts: MeasureOpts<'_>) -> Result<(), BenchError> {
     if let Some(rate) = opts.rate {
         if !(rate.is_finite() && rate > 0.0) {
@@ -1184,7 +1216,7 @@ fn measure_cmd(engine: &str, opts: MeasureOpts<'_>) -> Result<(), BenchError> {
         // inherits the mask.
         affinity::pin_current_thread(cpus)?;
     }
-    let mut engine = create_engine(engine)?;
+    let mut engine = measure_engine(engine, opts.composition)?;
     let idle_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
     for dir in scene_dirs(opts.scene, opts.corpus)? {
         let out_path = match (opts.out, opts.out_dir) {
@@ -1264,6 +1296,33 @@ fn log_measure_details(dir: &Path, report: &MeasureReport, out_path: &Path) {
             p50 = phase.seconds[0],
             p99 = phase.seconds[2],
             "phase"
+        );
+    }
+    // The last measured frame's composition attribution (#2547): the
+    // steady state, after first-use pipeline creation has settled. Every
+    // frame's own counters stay in the report's samples.
+    if let Some(composition) = report
+        .samples
+        .last()
+        .and_then(|sample| sample.composition.as_ref())
+    {
+        tracing::info!(
+            scene = %dir.display(),
+            epochs = composition.epochs,
+            passes = composition.passes,
+            on_chip_images = composition.on_chip_images,
+            on_chip_logical_bytes = composition.on_chip_logical_bytes,
+            materialized_images = composition.materialized_images,
+            materialized_logical_bytes = composition.materialized_logical_bytes,
+            reasons = ?composition.reasons,
+            reserved_bytes = composition.peak_reserved_bytes,
+            committed_bytes = ?composition.peak_committed_bytes,
+            backed_bytes = composition.peak_backed_bytes,
+            written = composition.logical_bytes_written,
+            read = composition.logical_bytes_read,
+            copied = composition.logical_bytes_copied,
+            barriers = composition.barriers,
+            "composition"
         );
     }
 }
@@ -1579,6 +1638,7 @@ fn run_frames(
                 migrated: matches!((cpu_start, cpu_end), (Some(a), Some(b)) if a != b),
                 passes: Vec::new(),
                 phases: submit.phases.map(phase_samples).unwrap_or_default(),
+                composition: submit.composition.clone(),
             });
         }
         attribute_gpu(&mut samples, warmup, submit.gpu);

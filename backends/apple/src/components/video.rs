@@ -24,26 +24,33 @@ use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
+use crate::main_queue_owned::{Shared, shared};
+#[cfg(feature = "video")]
+use cocoa_ui::avkit::PlayerLayerView;
 use cocoa_ui::avkit::{
-    ItemStatus, LoadGuard, MediaCharacteristic, PipEvent, Player, PlayerItem, PlayerLayerView,
-    PlayerView, TimeControlStatus, VideoGravity, media_option_is_forced, media_option_label,
-    media_option_language, media_option_roles, variant_codec_fourccs, variant_declared_bit_rate,
-    variant_is_hdr, variant_presentation_size,
+    ItemStatus, LoadGuard, MediaCharacteristic, Player, PlayerItem, TimeControlStatus,
+    VideoGravity, media_option_is_forced, media_option_label, media_option_language,
+    media_option_roles, variant_codec_fourccs, variant_declared_bit_rate, variant_is_hdr,
+    variant_presentation_size,
 };
+#[cfg(feature = "video_player")]
+use cocoa_ui::avkit::{PipEvent, PlayerView};
 use cocoa_ui::objc2_av_foundation::{AVAssetVariant, AVMediaSelectionGroup};
 use cocoa_ui::{MainThreadMarker, Retained, Size as CocoaSize, main_queue};
-use dispatch2::MainThreadBound;
 use waterkit_audio::{
     MediaCommand, MediaMetadata as SessionMetadata, MediaSession, PlaybackState as SessionState,
     PlaybackStatus as SessionStatus, QueueNavigationControls,
 };
 use waterui::reactive::{Binding, Computed, Signal};
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
+#[cfg(feature = "video")]
+use waterui_video::video::NativeVideoConfig;
+#[cfg(feature = "video_player")]
+use waterui_video::video::NativeVideoPlayerConfig;
 use waterui_video::video::{
     AudioTrackInfo, AudioTrackSelection, BoundVideoEventHandler, ContentMode, Event,
-    NativeVideoConfig, NativeVideoPlayerConfig, PlaybackMetrics, PlaybackOutputPath,
-    PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo, SubtitleTrackOrigin, TrackCatalog,
-    VideoTrackInfo, VideoTrackSelection,
+    PlaybackMetrics, PlaybackOutputPath, PlaybackPowerPolicy, SubtitleSelection, SubtitleTrackInfo,
+    SubtitleTrackOrigin, TrackCatalog, VideoTrackInfo, VideoTrackSelection,
 };
 use waterui_video::{
     Delivery, LiveWindow, MediaItem, PlaybackPhase, PlaybackPolicy, PlayerController, RepeatMode,
@@ -55,7 +62,6 @@ use crate::dispatch::Dispatcher;
 #[cfg(all(target_os = "ios", feature = "video_player"))]
 use cocoa_ui::uikit::HostView;
 
-#[cfg(feature = "video_player")]
 /// Registers both video leaves; each is still gated by its own feature.
 pub fn install(dispatcher: &mut Dispatcher) {
     #[cfg(feature = "video")]
@@ -64,17 +70,27 @@ pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<NativeVideoPlayerConfig>(render_video_player);
 }
 
-/// Fallback bounds while the item's own size is unknown — the Swift
-/// `sizeThatFits` answered `320×180`.
+/// Fallback bounds while the item's own size is unknown: 320 wide, and the
+/// 16:9 height at that width.
 const FALLBACK_WIDTH: f32 = 320.0;
-const FALLBACK_HEIGHT: f32 = 180.0;
+const FALLBACK_HEIGHT: f32 = FALLBACK_WIDTH / waterui_video::DEFAULT_ASPECT;
 
 /// The coordinator's periodic-observer cadence, matching the Swift 1/4s.
 const PERIODIC_SECONDS: f64 = 0.25;
 
-/// Reported-buffering threshold: stalls shorter than a second stay silent,
-/// matching the coordinator's `systemUptime` gate.
-const BUFFERING_REPORT_SECONDS: f64 = 1.0;
+/// Report a transition when the player's empty/waiting state changes.
+const fn buffering_event(buffering: &mut bool, empty: bool, waiting: bool) -> Option<Event> {
+    let now = empty && waiting;
+    if now == *buffering {
+        return None;
+    }
+    *buffering = now;
+    Some(if now {
+        Event::Buffering
+    } else {
+        Event::BufferingEnded
+    })
+}
 
 /// Duck volume multiplier while audio focus is lossy, per the Swift apply.
 const DUCK_SCALE: f32 = 0.2;
@@ -97,17 +113,40 @@ const fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
     }
 }
 
-/// The leaf's measure: the proposal, falling back to `320×180` per side.
-fn measure(proposal: ProposalSize) -> ViewDimensions {
-    ViewDimensions::new(Size::new(
-        proposal.width.unwrap_or(FALLBACK_WIDTH),
-        proposal.height.unwrap_or(FALLBACK_HEIGHT),
-    ))
+/// The leaf's measure (`docs/layout-spec.md`, §6). A `Fit` video answers the
+/// proposed width and the height `source`'s aspect ratio gives at that width
+/// (16:9 until the item reports its size), whatever height is offered; to an
+/// unspecified width its natural size (320×180 until reported); to a maximum
+/// width an unbounded width at its natural height. `Fill` and `Stretch` fill
+/// the proposal, falling back to 320×180 on an unspecified axis.
+fn measure(mode: ContentMode, source: Option<Size>, proposal: ProposalSize) -> ViewDimensions {
+    match mode {
+        ContentMode::Fit => {
+            let aspect = source.map_or(waterui_video::DEFAULT_ASPECT, |size| {
+                size.width / size.height
+            });
+            let natural = source.map_or(FALLBACK_WIDTH, |size| size.width);
+            ViewDimensions::new(match proposal.width {
+                // A maximum probe: the leaf stretches horizontally, and its
+                // height stays the one its natural width gives.
+                Some(width) if width.is_infinite() => Size::new(f32::INFINITY, natural / aspect),
+                Some(width) => Size::new(width, width / aspect),
+                None => Size::new(natural, natural / aspect),
+            })
+        }
+        ContentMode::Fill | ContentMode::Stretch => ViewDimensions::new(Size::new(
+            proposal.width.unwrap_or(FALLBACK_WIDTH),
+            proposal.height.unwrap_or(FALLBACK_HEIGHT),
+        )),
+    }
 }
 
 /// Layout face shared by both leaves.
 struct VideoSubView {
-    stretch: StretchAxis,
+    mode: ContentMode,
+    /// The item's presentation size, once it reports one: written by the
+    /// coordinator, which relayouts the leaf when it changes.
+    source: Rc<core::cell::Cell<Option<Size>>>,
 }
 
 impl core::fmt::Debug for VideoSubView {
@@ -118,11 +157,11 @@ impl core::fmt::Debug for VideoSubView {
 
 impl SubView for VideoSubView {
     fn measure(&self, proposal: ProposalSize) -> ViewDimensions {
-        measure(proposal)
+        measure(self.mode, self.source.get(), proposal)
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        self.stretch
+        leaf_stretch_axis(self.mode)
     }
 
     fn priority(&self) -> i32 {
@@ -309,7 +348,6 @@ struct State {
     loops: bool,
     emit: Option<Rc<BoundVideoEventHandler>>,
     buffering: bool,
-    buffering_since: Option<f64>,
     ducked: bool,
     resume_after_transient_loss: bool,
     seen_seek_generation: u64,
@@ -320,6 +358,11 @@ struct State {
     session: MediaSessionBridge,
     /// Whether the current item's end was already handled.
     ended: bool,
+    /// The item's presentation size, shared with the leaf's measure.
+    source_size: Rc<core::cell::Cell<Option<Size>>>,
+    /// Relayouts the leaf after `source_size` changed; installed once the
+    /// leaf's view exists.
+    relayout: Option<Box<dyn Fn()>>,
     /// Binding writes, events, and session pushes queued while this cell
     /// is borrowed; [`update`] applies them after it is released.
     deferred: Vec<Deferred>,
@@ -421,8 +464,8 @@ impl State {
         self.guards.clear();
         self.item = None;
         self.ended = false;
+        self.set_source_size(None);
         self.buffering = false;
-        self.buffering_since = None;
         self.last_buffer_level_ms = None;
         self.started_at = uptime_seconds();
         self.deferred.push(Deferred::DurationSeconds(0.0));
@@ -558,6 +601,13 @@ impl State {
         match item.status() {
             ItemStatus::Unknown => {}
             ItemStatus::ReadyToPlay => {
+                let size = item.presentation_size();
+                if size.width > 0.0 && size.height > 0.0 {
+                    self.set_source_size(Some(Size::new(
+                        f64_as_f32(size.width),
+                        f64_as_f32(size.height),
+                    )));
+                }
                 self.emit(Event::ReadyToPlay);
                 self.set_phase(PlaybackPhase::Ready);
                 self.report_duration(&item);
@@ -582,31 +632,36 @@ impl State {
         }
     }
 
-    /// Buffering bookkeeping + events, gated on ≥1s of continuous stall.
+    /// Records the item's presentation size and relayouts the leaf when it
+    /// changed: a `Fit` leaf's height follows its aspect ratio.
+    fn set_source_size(&self, size: Option<Size>) {
+        if self.source_size.get() == size {
+            return;
+        }
+        self.source_size.set(size);
+        if let Some(relayout) = &self.relayout {
+            relayout();
+        }
+    }
+
+    /// Emit both ends of observed buffering transitions without a duration gate.
     fn buffer_did_change(&mut self) {
         let Some(item) = &self.item else { return };
         let empty = item.is_playback_buffer_empty();
-        let waiting = self.player.time_control_status() == TimeControlStatus::WaitingToPlay;
-        let now_buffering = empty && waiting;
-        if now_buffering && !self.buffering {
-            self.buffering = true;
-            self.buffering_since = Some(uptime_seconds());
-            self.emit(Event::Buffering);
-            self.set_phase(PlaybackPhase::Buffering);
-        } else if !now_buffering && self.buffering {
-            self.buffering = false;
-            if let Some(since) = self.buffering_since.take()
-                && uptime_seconds() - since >= BUFFERING_REPORT_SECONDS
-            {
-                self.emit(Event::BufferingEnded);
-            }
-            self.set_phase(
-                if self.player.time_control_status() == TimeControlStatus::Playing {
-                    PlaybackPhase::Playing
-                } else {
-                    PlaybackPhase::Paused
-                },
-            );
+        let status = self.player.time_control_status();
+        if let Some(event) = buffering_event(
+            &mut self.buffering,
+            empty,
+            status == TimeControlStatus::WaitingToPlay,
+        ) {
+            self.emit(event);
+            self.set_phase(if self.buffering {
+                PlaybackPhase::Buffering
+            } else if status == TimeControlStatus::Playing {
+                PlaybackPhase::Playing
+            } else {
+                PlaybackPhase::Paused
+            });
         }
         self.defer_push_playback_state();
     }
@@ -1056,7 +1111,10 @@ impl State {
                 Ok(session) => {
                     let receiver = session.command_receiver();
                     let alive = self.session.pump_alive.clone();
-                    let bound = Arc::new(MainThreadBound::new(self.weak.clone(), self.mtm));
+                    // The pump thread holds the only handle — its last
+                    // drop lands off-main, so the weak must release
+                    // through the queue, not `exec_sync` (#1776).
+                    let bound = shared(self.weak.clone(), self.mtm);
                     if std::thread::Builder::new()
                         .name("video-media-commands".into())
                         .spawn(move || pump_media_commands(receiver, bound, alive))
@@ -1200,7 +1258,7 @@ impl State {
 #[allow(clippy::needless_pass_by_value)]
 fn pump_media_commands(
     receiver: async_channel::Receiver<MediaCommand>,
-    bound: Arc<MainThreadBound<Weak<RefCell<State>>>>,
+    bound: Shared<Weak<RefCell<State>>>,
     alive: Arc<AtomicBool>,
 ) {
     while alive.load(Ordering::Acquire) {
@@ -1284,6 +1342,12 @@ const fn f64_as_u32(value: f64) -> u32 {
     }
 }
 
+/// f64 → f32 for a presentation size, which is far inside `f32`'s range.
+#[allow(clippy::cast_possible_truncation)]
+const fn f64_as_f32(value: f64) -> f32 {
+    value as f32
+}
+
 /// Sort key for a variant: declared bitrate first, then pixel count — the
 /// Swift catalog ordering.
 fn variant_quality(variant: &AVAssetVariant) -> f64 {
@@ -1319,9 +1383,18 @@ fn codec_string(fourcc: u32) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Uptime in seconds — `systemUptime`'s equivalent for the buffering gate.
+/// Uptime in seconds — `systemUptime` for the session-elapsed metrics.
 fn uptime_seconds() -> f64 {
     cocoa_ui::process::time_since_start().map_or(0.0, |duration| duration.as_secs_f64())
+}
+
+/// Lets the coordinator relayout `leaf` when the item's size changes.
+fn install_relayout(leaf: &NativeLeaf, coordinator: &Coordinator) {
+    let view = cocoa_ui::view::retain_base(leaf.view());
+    coordinator.state.borrow_mut().relayout = Some(Box::new(move || {
+        crate::measure_memo::invalidate();
+        cocoa_ui::view::invalidate_layout(&view);
+    }));
 }
 
 /// The coordinator the leaf keeps alive; dropping it tears everything down.
@@ -1388,7 +1461,6 @@ fn coordinator(
         emit: playback.on_event.map(Rc::new),
         deferred: Vec::new(),
         buffering: false,
-        buffering_since: None,
         ducked: false,
         resume_after_transient_loss: false,
         seen_seek_generation: 0,
@@ -1398,6 +1470,8 @@ fn coordinator(
         started_at: uptime_seconds(),
         session: MediaSessionBridge::new(),
         ended: false,
+        source_size: Rc::new(core::cell::Cell::new(None)),
+        relayout: None,
     }));
     state.borrow_mut().weak = Rc::downgrade(&state);
 
@@ -1408,6 +1482,7 @@ fn coordinator(
         move || {
             if let Some(state) = state.upgrade() {
                 update(&state, |state| {
+                    state.buffer_did_change();
                     match state.player.time_control_status() {
                         TimeControlStatus::Playing => state.set_phase(PlaybackPhase::Playing),
                         TimeControlStatus::Paused => {
@@ -1415,7 +1490,7 @@ fn coordinator(
                                 state.set_phase(PlaybackPhase::Paused);
                             }
                         }
-                        TimeControlStatus::WaitingToPlay => state.buffer_did_change(),
+                        TimeControlStatus::WaitingToPlay => {}
                     }
                     state.defer_push_playback_state();
                 });
@@ -1615,9 +1690,11 @@ fn render_video(config: NativeVideoConfig, ctx: &RenderContext<'_>) -> NativeLea
     let mut leaf = NativeLeaf::new(
         surface.view(),
         VideoSubView {
-            stretch: leaf_stretch_axis(config.content_mode),
+            mode: config.content_mode,
+            source: Rc::clone(&coordinator.state.borrow().source_size),
         },
     );
+    install_relayout(&leaf, &coordinator);
     bind(&mut leaf, &coordinator);
     leaf.keep(surface);
     leaf.keep(coordinator);
@@ -1655,7 +1732,9 @@ fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>)
         }
     });
 
-    let mut leaf = build_player_leaf(&view, config.content_mode, mtm);
+    let source = Rc::clone(&coordinator.state.borrow().source_size);
+    let mut leaf = build_player_leaf(&view, config.content_mode, source, mtm);
+    install_relayout(&leaf, &coordinator);
     bind(&mut leaf, &coordinator);
     leaf.keep(coordinator);
     leaf.keep(view);
@@ -1669,6 +1748,7 @@ fn render_video_player(config: NativeVideoPlayerConfig, ctx: &RenderContext<'_>)
 fn build_player_leaf(
     view: &Rc<PlayerView>,
     mode: ContentMode,
+    source: Rc<core::cell::Cell<Option<Size>>>,
     mtm: MainThreadMarker,
 ) -> NativeLeaf {
     #[cfg(target_os = "ios")]
@@ -1693,24 +1773,14 @@ fn build_player_leaf(
                 }
             }
         });
-        let mut leaf = NativeLeaf::new(
-            &*host,
-            VideoSubView {
-                stretch: leaf_stretch_axis(mode),
-            },
-        );
+        let mut leaf = NativeLeaf::new(&*host, VideoSubView { mode, source });
         leaf.keep(host);
         leaf
     }
     #[cfg(target_os = "macos")]
     {
         let _ = mtm;
-        NativeLeaf::new(
-            view.view(),
-            VideoSubView {
-                stretch: leaf_stretch_axis(mode),
-            },
-        )
+        NativeLeaf::new(view.view(), VideoSubView { mode, source })
     }
 }
 
@@ -1742,18 +1812,49 @@ mod tests {
     }
 
     #[test]
-    fn measure_falls_back_to_320x180() {
-        let empty = measure(ProposalSize::new(None, None));
+    fn measure_fill_falls_back_to_320x180() {
+        let empty = measure(ContentMode::Fill, None, ProposalSize::new(None, None));
         assert!(f32::abs(empty.size.width - FALLBACK_WIDTH) < f32::EPSILON);
         assert!(f32::abs(empty.size.height - FALLBACK_HEIGHT) < f32::EPSILON);
     }
 
     #[test]
-    fn measure_uses_proposal() {
+    fn measure_fill_uses_proposal() {
         let proposal = ProposalSize::new(Some(640.0), Some(360.0));
-        let measured = measure(proposal);
+        let measured = measure(ContentMode::Stretch, None, proposal);
         assert!(f32::abs(measured.size.width - 640.0) < f32::EPSILON);
         assert!(f32::abs(measured.size.height - 360.0) < f32::EPSILON);
+    }
+
+    /// A `Fit` leaf takes the proposed width and the height its source's
+    /// aspect gives at that width, whatever height is offered — 16:9 until
+    /// the item reports its size.
+    #[test]
+    fn measure_fit_follows_the_source_aspect() {
+        let proposal = ProposalSize::new(Some(640.0), Some(100.0));
+        let unknown = measure(ContentMode::Fit, None, proposal);
+        assert!(f32::abs(unknown.size.width - 640.0) < f32::EPSILON);
+        assert!(f32::abs(unknown.size.height - 360.0) < 1e-3);
+        let square = measure(ContentMode::Fit, Some(Size::new(1080.0, 1080.0)), proposal);
+        assert!(f32::abs(square.size.height - 640.0) < f32::EPSILON);
+        let unspecified = measure(
+            ContentMode::Fit,
+            Some(Size::new(1280.0, 720.0)),
+            ProposalSize::new(None, None),
+        );
+        assert!(f32::abs(unspecified.size.width - 1280.0) < f32::EPSILON);
+        assert!(f32::abs(unspecified.size.height - 720.0) < f32::EPSILON);
+        let maximum = measure(
+            ContentMode::Fit,
+            Some(Size::new(1280.0, 720.0)),
+            ProposalSize::new(Some(f32::INFINITY), None),
+        );
+        assert!(maximum.size.width.is_infinite());
+        assert!(f32::abs(maximum.size.height - 720.0) < f32::EPSILON);
+        let minimum = measure(ContentMode::Fit, None, ProposalSize::new(Some(0.0), None));
+        assert!(
+            minimum.size.width.abs() < f32::EPSILON && minimum.size.height.abs() < f32::EPSILON
+        );
     }
 
     #[test]
@@ -1784,5 +1885,72 @@ mod tests {
     #[test]
     fn codec_string_decodes_fourcc() {
         assert_eq!(codec_string(u32::from_be_bytes(*b"avc1")), "avc1");
+    }
+
+    /// A stall reports its beginning and its end immediately — a stall
+    /// shorter than a second still closes, so `Buffering` never stands
+    /// alone.
+    #[test]
+    fn a_buffering_start_and_end_pair_immediately() {
+        let mut buffering = false;
+        assert!(matches!(
+            buffering_event(&mut buffering, true, true),
+            Some(Event::Buffering)
+        ));
+        assert!(buffering);
+        assert!(matches!(
+            buffering_event(&mut buffering, false, true),
+            Some(Event::BufferingEnded)
+        ));
+        assert!(!buffering);
+    }
+
+    /// A stall also ends when the player itself recovers — `Playing` or
+    /// `Paused` arriving while the buffer-empty property is stale still
+    /// emits `BufferingEnded`.
+    #[test]
+    fn a_stall_ends_when_the_player_recovers() {
+        let mut buffering = false;
+        assert!(matches!(
+            buffering_event(&mut buffering, true, true),
+            Some(Event::Buffering)
+        ));
+        assert!(matches!(
+            buffering_event(&mut buffering, true, false),
+            Some(Event::BufferingEnded)
+        ));
+    }
+
+    /// State that has not moved emits nothing — no duplicate `Buffering`
+    /// while a stall holds, and none after it ended.
+    #[test]
+    fn unchanged_buffering_emits_nothing() {
+        let mut buffering = false;
+        assert!(matches!(
+            buffering_event(&mut buffering, true, true),
+            Some(Event::Buffering)
+        ));
+        assert!(buffering_event(&mut buffering, true, true).is_none());
+        assert!(matches!(
+            buffering_event(&mut buffering, false, false),
+            Some(Event::BufferingEnded)
+        ));
+        assert!(buffering_event(&mut buffering, false, false).is_none());
+    }
+
+    /// Two stalls back to back report two begin/end pairs.
+    #[test]
+    fn every_stall_reports_its_own_pair() {
+        let mut buffering = false;
+        for _ in 0..2 {
+            assert!(matches!(
+                buffering_event(&mut buffering, true, true),
+                Some(Event::Buffering)
+            ));
+            assert!(matches!(
+                buffering_event(&mut buffering, false, false),
+                Some(Event::BufferingEnded)
+            ));
+        }
     }
 }

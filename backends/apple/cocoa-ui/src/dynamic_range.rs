@@ -14,12 +14,10 @@
 //! `NSNumber` objects retained by the Objective-C runtime for the lifetime
 //! of the association.
 
-use core::ffi::c_void;
-
 use objc2::ffi::{
     OBJC_ASSOCIATION_RETAIN_NONATOMIC, objc_getAssociatedObject, objc_setAssociatedObject,
 };
-use objc2::runtime::{AnyObject, Sel};
+use objc2::runtime::AnyObject;
 use objc2_foundation::NSNumber;
 use objc2_quartz_core::{CADynamicRangeHigh, CADynamicRangeStandard, CALayer};
 
@@ -40,15 +38,6 @@ impl DynamicRange {
     }
 }
 
-fn association_key() -> *const c_void {
-    // The selector string is the storage key used by the platform-side
-    // compatibility layer; registering the same string yields the same key.
-    let selector = Sel::register(c"dev.cocoaui.dynamicRangeMode");
-    // SAFETY: `Sel` is `repr(transparent)` over the selector pointer the
-    // associated-object API expects as the key.
-    unsafe { core::mem::transmute::<Sel, *const c_void>(selector) }
-}
-
 fn tag_object(object: *mut AnyObject, mode: DynamicRange) {
     let value = NSNumber::numberWithBool(mode.is_high());
     // SAFETY: `object` is a live Objective-C object supplied by a caller on
@@ -56,7 +45,7 @@ fn tag_object(object: *mut AnyObject, mode: DynamicRange) {
     unsafe {
         objc_setAssociatedObject(
             object,
-            association_key(),
+            crate::view::association_key(c"dev.cocoaui.dynamicRangeMode"),
             (&raw const *value).cast_mut().cast::<AnyObject>(),
             OBJC_ASSOCIATION_RETAIN_NONATOMIC,
         );
@@ -66,7 +55,12 @@ fn tag_object(object: *mut AnyObject, mode: DynamicRange) {
 fn object_tag(object: *const AnyObject) -> Option<DynamicRange> {
     // SAFETY: `object` is a live Objective-C object supplied by a caller on
     // the main thread; the returned pointer is only borrowed for this call.
-    let value = unsafe { objc_getAssociatedObject(object, association_key()) };
+    let value = unsafe {
+        objc_getAssociatedObject(
+            object,
+            crate::view::association_key(c"dev.cocoaui.dynamicRangeMode"),
+        )
+    };
     if value.is_null() {
         return None;
     }

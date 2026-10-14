@@ -71,6 +71,14 @@ impl WpeRuntimePaths {
             "bundled WPE bridge is missing at {}. Package or run the app through `water` so WPE WebKit {WPE_WEBKIT_VERSION} is staged",
             bridge.display()
         );
+        let extension = self
+            .root
+            .join("lib/waterui-wpe/extensions/waterui_wpe_extension.so");
+        assert!(
+            extension.is_file(),
+            "bundled WPE web-process extension is missing at {}",
+            extension.display()
+        );
         let manifest = self.root.join("runtime.json");
         assert!(
             manifest.is_file(),

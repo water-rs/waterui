@@ -9,8 +9,10 @@
 
 use std::sync::Arc;
 
+pub use cherenkov_record::ResourceError;
+
 use crate::frame::OffscreenFormat;
-use crate::resource::ResourceId;
+use cherenkov_record::{Extend, ResourceId};
 
 /// Engine initialization or engine-wide failure.
 #[derive(Debug, thiserror::Error)]
@@ -48,30 +50,6 @@ pub enum SurfaceError {
     /// A zero-size surface cannot hold a target.
     #[error("surface size must be non-zero")]
     ZeroSize,
-    /// The render thread is gone.
-    #[error("the render thread is gone")]
-    Lost,
-}
-
-/// Resource registration failure.
-#[derive(Debug, thiserror::Error)]
-pub enum ResourceError {
-    /// The font data could not be parsed.
-    #[error("font: {0}")]
-    Font(String),
-    /// The image data is malformed or unsupported by the backend.
-    #[error("image: {0}")]
-    Image(String),
-    /// The shader source failed validation or pipeline creation.
-    #[error("shader: {0}")]
-    Shader(String),
-    /// The resource needs a feature this backend does not implement; the
-    /// string is the feature name.
-    #[error("unsupported: {0}")]
-    Unsupported(&'static str),
-    /// Reading the resource failed.
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
     /// The render thread is gone.
     #[error("the render thread is gone")]
     Lost,
@@ -120,6 +98,10 @@ pub enum RenderError {
     /// A render pass failed.
     #[error("render: {0}")]
     Render(String),
+    /// A radial gradient with identical circles uses [`Extend::Repeat`] or
+    /// [`Extend::Reflect`], which have no limit there.
+    #[error("radial gradient with identical circles cannot use extend {0:?}")]
+    IdenticalRadialCircles(Extend),
     /// A glyph run references a font that is not registered.
     #[error("font: {0}")]
     Font(String),
@@ -146,6 +128,20 @@ pub enum RenderError {
         /// The projective layer.
         layer: crate::LayerId,
         /// What limit was exceeded, with the required size.
+        reason: String,
+    },
+    /// A layer whose content is shown only on a system-compositor plane —
+    /// a [`Hosted`](crate::Hosted) system layer — cannot be placed on one:
+    /// the surface has no system-compositor parent, or the layer fails the
+    /// mandatory-plane rule (a backdrop sampled on or above it, a
+    /// non-default blend, a filter or isolating opacity on its path, a
+    /// transform, clip or opacity the system layer cannot carry, or a spent
+    /// plane budget). There is no fallback to engine composition.
+    #[error("layer {layer:?} is shown only on a system-compositor plane, but {reason}")]
+    Unplaceable {
+        /// The layer.
+        layer: crate::LayerId,
+        /// The rule it fails.
         reason: String,
     },
     /// A draw names a resource the backend rejected after its handle was

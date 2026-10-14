@@ -23,7 +23,6 @@ use core::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use cocoa_ui::{Retained, view};
-use waterui::animation::Animation;
 use waterui::component::table::{TableColumn, TableConfig};
 use waterui::id::{Id as RawId, SelfId};
 use waterui::reactive::watcher::Metadata;
@@ -61,35 +60,6 @@ const NATIVE_HEADER_HEIGHT: f64 = 24.0;
 const MIN_HEADER_HEIGHT: f64 = 28.0;
 /// The minimum row height (`max(28, ...)`).
 const MIN_ROW_HEIGHT: f64 = 28.0;
-
-/// `withPlatformAnimation`: the watcher metadata's `Animation` mapped to a
-/// kit timing — the same mapping `container` applies.
-fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
-    let timing = match metadata.try_get::<Animation>() {
-        None => return body(),
-        Some(Animation::Default) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        },
-        Some(Animation::Spring { stiffness, damping }) => {
-            cocoa_ui::core_animation::Timing::Spring {
-                stiffness: f64::from(stiffness),
-                damping: f64::from(damping),
-            }
-        }
-    };
-    cocoa_ui::core_animation::animate_with(timing, body);
-}
 
 /// A cell's platform view.
 #[cfg(target_os = "ios")]
@@ -436,7 +406,7 @@ fn drain_table(state: &Rc<RefCell<TableState>>, pending: &Rc<RefCell<TablePendin
         // `record`/watch callback there would collide with it.
         let columns_event = pending.borrow_mut().columns.take();
         if let Some((columns, metadata)) = columns_event {
-            with_platform_animation(&metadata, {
+            crate::animation::with_platform_animation(&metadata, {
                 let state = Rc::clone(state);
                 let pending = Rc::clone(pending);
                 move || reconcile_columns(&state, &pending, columns)
@@ -494,7 +464,7 @@ fn deliver_column_rows(
             break;
         };
         let applied = Rc::new(Cell::new(false));
-        with_platform_animation(&metadata, {
+        crate::animation::with_platform_animation(&metadata, {
             let state = Rc::clone(state);
             let snapshot = snapshot.clone();
             let ids = ids.clone();

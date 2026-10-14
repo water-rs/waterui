@@ -147,11 +147,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The instrumented run executes the styled test targets, which
-      # resolve the installed test-font families and read the generated
-      # fixtures — the repository stores none of them.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # The instrumented nextest run executes the styled test targets;
+      # nextest's fixture setup scripts produce their fonts and media
+      # through `uv run` (`.config/nextest.toml`).
+      - uses: astral-sh/setup-uv@v6
       # The instrumented nextest run executes the Cherenkov tests that
       # read the generated fonts and scenes/corpus. Neither is committed.
       - name: Generate Cherenkov scene assets
@@ -213,62 +212,9 @@ jobs:
       # where it is legal.
       - run: cargo hack check --locked --each-feature --exclude-features "skia-metal webgl" --profile=ci-check
 
-  # The Gradle half of the Android backend (#1429): the host library and the
-  # test application, built once a day. It stays out of the per-change gate
-  # — an AGP + Kotlin + NDK + cargo build costs several minutes and the only
-  # way a diff reaches it is the same path filter the fast clippy leg in
-  # ci.yml already pays for. The arm64-v8a debug APK uploads as a run
-  # artifact so a device check needs no local build.
-  android-backend:
-    name: Android backend (Gradle)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-rust
-        with:
-          targets: aarch64-linux-android
-          cache: "false"
-      # Reads the shared `cargo-sources` archive owned by this OS's single
-      # writer job; read-only lanes never save, so they cannot evict caches.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-      - uses: ./.github/actions/setup-linux-deps
-      # Same NDK prologue the ci.yml Android legs run — this job's graph
-      # also reaches cherenkov-gpu's spirv-opt and waterkit's kotlinc.
-      - uses: ./.github/actions/setup-android-ndk
-        with:
-          spirv-tools: "true"
-          kotlin: "true"
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-      - name: Read the pinned Gradle version
-        run: |
-          set -euo pipefail
-          props="backends/android/gradle/wrapper/gradle-wrapper.properties"
-          version="$(sed -n 's|^distributionUrl=.*gradle-\([0-9.]*\)-bin\.zip|\1|p' "$props")"
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9.]+$ ]]; then
-            echo "::error file=$props::cannot read the pinned Gradle version (got '$version')"
-            exit 1
-          fi
-          echo "GRADLE_VERSION=$version" >> "$GITHUB_ENV"
-      # No gradle-wrapper.jar is committed; CI provisions the pinned release.
-      - uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: ${{ env.GRADLE_VERSION }}
-      - name: Build the host library and the test application
-        working-directory: backends/android
-        run: gradle :host:assemble :tests:app:assembleDebug
-      - uses: actions/upload-artifact@v4
-        with:
-          name: waterui-android-test-app-debug-apk
-          path: backends/android/tests/app/build/outputs/apk/debug/app-debug.apk
-
   # The cli's `#[ignore]`d suite (water-rs/cli's nightly `ignored` job,
   # #1446): the tests that build real framework source or hit the network —
-  # the android-backend pin fetch, the workspace-resolved example graphs,
+  # the workspace-resolved example graphs,
   # the inspector app layout, the Xcode drives on macOS. The checkout the
   # tests resolve is this tree itself, so the signal is "the cli matches the
   # framework it ships with".
@@ -299,11 +245,15 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The cli's test binaries `include_bytes!` the generated Roboto fixture.
-      - uses: ./.github/actions/generate-test-assets
+      # The nextest run's `cli-roboto` setup script invokes `uv run`.
+      - uses: astral-sh/setup-uv@v6
       # The `create --template web` tests scaffold and build a Vite frontend.
       - uses: oven-sh/setup-bun@v2
       - run: cargo nextest run --locked --profile ci -p waterui-cli --run-ignored ignored-only
+      # The hydrolysis ignored suite — the Android WebView bridge's
+      # composed-script round trip through a real JS engine. `bun` is on
+      # PATH from the step above.
+      - run: cargo nextest run --locked --profile ci -p hydrolysis --run-ignored ignored-only
 
   # The cli's fresh-user end-to-end suite (water-rs/cli's nightly `e2e` job,
   # #1446): the installed CLI as a brand-new OS user. `water doctor --fix`
@@ -335,7 +285,9 @@ jobs:
   # smoke-runs the app as the runner (console) user. Linux runs the GTK4 app
   # under `xvfb-run` inside the fresh account; `xvfb` is test harness, not a
   # doctor-managed dependency. Windows launches the whole flow as the fresh
-  # user via `Start-Process -Credential` in the runner's session.
+  # user via `Start-Process -Credential` in the runner's session. The Android
+  # leg on Ubuntu stops at packaging — `water run` needs a device — and
+  # packages both the debug and the release APK (#2290).
   cli-e2e:
     name: CLI fresh user / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -356,6 +308,10 @@ jobs:
             os: ubuntu-latest
             platform: linux
             backend: gtk4
+          - name: Android
+            os: ubuntu-latest
+            platform: android
+            backend: hydrolysis
 
     env:
       E2E_USER: watere2e
@@ -373,17 +329,6 @@ jobs:
           shared-key: cli-e2e-${{ runner.os }}
           # One writer per OS cache key: the schedule.
           save-if: ${{ github.event_name == 'schedule' }}
-
-      # Compile-time dependencies of the CLI itself — libudev for serialport
-      # (esp32). These belong to building the binary under the runner
-      # account, not to anything doctor manages for the fresh user.
-      - name: Install CLI build dependencies (Ubuntu)
-        if: runner.os == 'Linux'
-        shell: bash
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq libudev-dev pkg-config
 
       - name: Install the CLI under test
         shell: bash
@@ -505,13 +450,39 @@ jobs:
           New-Item -ItemType Directory -Force "C:\Users\$env:E2E_USER\.cargo\bin" | Out-Null
           Copy-Item $cliBin "C:\Users\$env:E2E_USER\.cargo\bin\water.exe" -Force
 
+      # The Android leg's toolchain is mostly the hosted image's: the SDK is
+      # system-wide, the JDK and NDK land through actions, and `sdkmanager` —
+      # the remedy doctor's own messages name — installs the platform the
+      # scaffolded app's `compileSdk` requires. What no action provides is
+      # installed inside the e2e script as the fresh user, because outside a
+      # project `doctor` scopes every Android item optional and `--fix`
+      # skips it.
+      - name: Setup Java 21 (Android)
+        if: matrix.platform == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Setup Android NDK (Android)
+        if: matrix.platform == 'android'
+        uses: ./.github/actions/setup-android-ndk
+
+      - name: Install the scaffolded compileSdk platform (Android)
+        if: matrix.platform == 'android'
+        uses: ./.github/actions/install-android-platform
+
       - name: Doctor, scaffold, build and package as the fresh user (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           sudo -u "$E2E_USER" -H env E2E_PLATFORM="$E2E_PLATFORM" E2E_BACKEND="$E2E_BACKEND" \
-            WATERUI_SRC="$GITHUB_WORKSPACE" bash -s <<'SCRIPT'
+            WATERUI_SRC="$GITHUB_WORKSPACE" \
+            ANDROID_HOME="${ANDROID_HOME:-}" ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-}" \
+            ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT:-}" ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-}" \
+            JAVA_HOME="${JAVA_HOME:-}" \
+            bash -s <<'SCRIPT'
           set -uo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
           mkdir -p "$HOME/e2e-logs"
@@ -546,19 +517,48 @@ jobs:
           # refuses to read the submodule pins `water create` resolves
           # through.
           git config --global --add safe.directory '*'
+
           phase "water create e2eapp"
           water create e2eapp --waterui-path "$WATERUI_SRC" \
             2>&1 | tee e2e-logs/create-app.log || fail "water create failed"
           [ -f e2eapp/Water.toml ] || fail "e2eapp scaffold has no Water.toml"
 
+          if [ "$E2E_PLATFORM" = "android" ]; then
+            # Outside a project doctor leaves the Android group optional, so
+            # the repair above skipped it; inside the project it is in
+            # scope, and `--fix` provisions the managed Kotlin and the Rust
+            # targets the toolchain check wants.
+            export PATH="$JAVA_HOME/bin:$PATH"
+            phase "water doctor --fix (Android project)"
+            (cd e2eapp && water doctor --fix 2>&1 | tee ../e2e-logs/doctor-fix-android.log)
+            if grep -q 'Failed to install' e2e-logs/doctor-fix-android.log; then
+              fail "doctor --fix reported failed installs in the Android project"
+            fi
+          fi
           phase "water build e2eapp"
           (cd e2eapp && water build --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
             2>&1 | tee ../e2e-logs/build-app.log) || fail "water build failed"
-          phase "water package e2eapp"
-          (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
-            2>&1 | tee ../e2e-logs/package-app.log) || fail "water package failed"
-          grep -q 'Packaged at' e2e-logs/package-app.log \
-            || fail "water package produced no artifact line"
+          if [ "$E2E_PLATFORM" = "android" ]; then
+            # Both APK profiles: debug signs with the generated debug
+            # keystore, release goes unsigned — a fresh project carries no
+            # [signing.android] config.
+            phase "water package e2eapp (debug)"
+            (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --arch arm64 --debug --yes \
+              2>&1 | tee ../e2e-logs/package-debug.log) || fail "water package (debug) failed"
+            grep -q 'Packaged at' e2e-logs/package-debug.log \
+              || fail "water package produced no artifact line"
+            phase "water package e2eapp (release, unsigned)"
+            (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --arch arm64 --release --unsigned --yes \
+              2>&1 | tee ../e2e-logs/package-release.log) || fail "water package (release) failed"
+            grep -q 'Packaged at' e2e-logs/package-release.log \
+              || fail "water package produced no artifact line"
+          else
+            phase "water package e2eapp"
+            (cd e2eapp && water package --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
+              2>&1 | tee ../e2e-logs/package-app.log) || fail "water package failed"
+            grep -q 'Packaged at' e2e-logs/package-app.log \
+              || fail "water package produced no artifact line"
+          fi
 
           # `water preview` compiles a crate the CLI generates from its own
           # templates against the framework the project resolves, which no
@@ -577,6 +577,16 @@ jobs:
               --output ../e2e-logs/preview.png 2>&1 | tee ../e2e-logs/preview.log) \
               || fail "water preview failed"
             [ -s e2e-logs/preview.png ] || fail "water preview wrote no PNG"
+
+            phase "water preview e2eapp (apple)"
+            # The default Apple preview renders in-process through the
+            # generated preview package — its templates drift the same way
+            # the Hydrolysis renderer's do.
+            (cd e2eapp && water preview main --platform macos \
+              --output ../e2e-logs/preview-apple.png 2>&1 \
+              | tee ../e2e-logs/preview-apple.log) \
+              || fail "water preview failed"
+            [ -s e2e-logs/preview-apple.png ] || fail "water preview wrote no PNG"
           fi
           SCRIPT
 
@@ -815,8 +825,10 @@ jobs:
           fi
           [ "$started" -eq 0 ] || exit 1
 
+      # The Android leg has no launchable target — `water run` needs a
+      # device or emulator — so the Xvfb run belongs to the Linux leg alone.
       - name: Run the app (Ubuntu, fresh user under Xvfb)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && matrix.platform == 'linux'
         shell: bash
         run: |
           set -euo pipefail
@@ -915,7 +927,7 @@ jobs:
 
   promote:
     name: Certify nightly
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, test-report, android-backend, apple-e2e, cli-ignored, cli-e2e]
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, test-report, apple-e2e, cli-ignored, cli-e2e]
     if: github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -955,12 +967,12 @@ jobs:
           TAG: ${{ steps.snapshot.outputs.tag }}
         run: gh release edit "$TAG" --draft=false --prerelease --latest=false
 
-  # One issue per broken nightly, updated in place while it stays red, so a
+  # One issue per broken nightly on dev, updated in place while it stays red, so a
   # failure that nobody was watching at 08:11 UTC is on the board by morning.
   report:
     name: Report failure
-    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, android-backend, promote, apple-e2e, cli-ignored, cli-e2e]
-    if: failure()
+    needs: [test, windows, coverage, feature-checks, webview-js, ts-js, msrv, promote, apple-e2e, cli-ignored, cli-e2e]
+    if: failure() && github.ref == 'refs/heads/dev'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

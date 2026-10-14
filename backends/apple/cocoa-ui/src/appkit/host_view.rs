@@ -70,6 +70,7 @@ pub struct HostViewIvars {
     hidden: RefCell<Option<HiddenHandler>>,
     mouse_down: RefCell<Option<MouseHandler>>,
     mouse_dragged: RefCell<Option<MouseHandler>>,
+    mouse_up: RefCell<Option<MouseHandler>>,
     drop: RefCell<Option<Rc<DropHandlers>>>,
     pointer: RefCell<Option<PointerHandler>>,
     /// Which pointer events the pointer handler wants.
@@ -86,11 +87,20 @@ pub struct HostViewIvars {
     /// Whether the view's own content is laid out against its bounds — the
     /// answer to "does this view manage its own safe area".
     manages_safe_area: std::cell::Cell<bool>,
+    /// Whether this view declares itself a fill — the color, gradient and
+    /// material leaves do — through `cocoaUiIsFill`. `AppKit` has no
+    /// keyboard region; the answer is kept for sibling parity.
+    is_fill: std::cell::Cell<bool>,
+    /// Which `BackgroundLayout` child slot this fixed-container host was
+    /// rendered as, when a `register_view` claim marked it.
+    background_slot: std::cell::Cell<Option<usize>>,
     /// Whether the Auto Layout width is tracked for intrinsic size; see
     /// [`set_intrinsic_auto_layout`](HostView::set_intrinsic_auto_layout).
     intrinsic_auto_layout: std::cell::Cell<bool>,
     /// The width the intrinsic-content-size query was last invalidated for.
     last_auto_layout_width: std::cell::Cell<f64>,
+    /// The capturable surface the mounted leaf stored on this view.
+    capturable: crate::capture::CapturableSlot,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -109,11 +119,14 @@ impl fmt::Debug for HostViewIvars {
             .field("hidden", &self.hidden.borrow().is_some())
             .field("mouse_down", &self.mouse_down.borrow().is_some())
             .field("mouse_dragged", &self.mouse_dragged.borrow().is_some())
+            .field("mouse_up", &self.mouse_up.borrow().is_some())
             .field("drop", &self.drop.borrow().is_some())
             .field("backing_changed", &self.backing_changed.borrow().is_some())
             .field("last_auto_layout_width", &self.last_auto_layout_width.get())
             .field("measure", &self.measure.borrow().is_some())
             .field("manages_safe_area", &self.manages_safe_area.get())
+            .field("is_fill", &self.is_fill.get())
+            .field("background_slot", &self.background_slot.get())
             .field("intrinsic_auto_layout", &self.intrinsic_auto_layout.get())
             .field("pointer", &self.pointer.borrow().is_some())
             .field("pointer_events", &self.pointer_events.get())
@@ -121,6 +134,7 @@ impl fmt::Debug for HostViewIvars {
             .field("tracking_area", &self.tracking_area.borrow().is_some())
             .field("key", &self.key.borrow().is_some())
             .field("right_mouse", &self.right_mouse.borrow().is_some())
+            .field("capturable", &self.capturable.get().is_some())
             .finish()
     }
 }
@@ -225,6 +239,14 @@ define_class!(
         }
 
         // SAFETY: see the module safety note. Exposed under a `cocoaUi`
+        // selector for the sibling backend's fill detection; it reads an
+        // ivar and performs no layout.
+        #[unsafe(method(cocoaUiIsFill))]
+        fn is_fill_override(&self) -> bool {
+            self.ivars().is_fill.get()
+        }
+
+        // SAFETY: see the module safety note. Exposed under a `cocoaUi`
         // selector for the sibling backend's primary-content chain.
         #[unsafe(method_id(cocoaUiPrimaryContent))]
         fn primary_content_override(&self) -> Option<Retained<NSView>> {
@@ -307,6 +329,20 @@ define_class!(
                 } else {
                     // SAFETY: see the module safety note.
                     let _: () = unsafe { msg_send![super(self), mouseDragged: event] };
+                }
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up_override(&self, event: &NSEvent) {
+            guarded("HostView mouseUp:", || {
+                let handler = self.ivars().mouse_up.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self, event);
+                } else {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), mouseUp: event] };
                 }
             });
         }
@@ -534,6 +570,17 @@ impl HostView {
         self.ivars().layout.replace(Some(Rc::new(handler)));
     }
 
+    /// The capturable surface a mounted leaf stored on this view, if any.
+    #[must_use]
+    pub fn capturable(&self) -> Option<Rc<dyn crate::capture::CapturableSurface>> {
+        self.ivars().capturable.get()
+    }
+
+    /// The view's capturable slot — install once, clear on unmount.
+    pub fn capturable_slot(&self) -> &crate::capture::CapturableSlot {
+        &self.ivars().capturable
+    }
+
     /// Calls `handler` with the new size every time the view's size changes,
     /// replacing any handler set before.
     pub fn set_resize_handler(&self, handler: impl Fn(&Self, Size) + 'static) {
@@ -622,6 +669,46 @@ impl HostView {
         self.ivars().measure.replace(Some(Rc::new(handler)));
     }
 
+    /// Drops the installed measure handler, after which measurements fall
+    /// back to `NSView`'s own intrinsic size.
+    pub fn clear_measure_handler(&self) {
+        self.ivars().measure.replace(None);
+    }
+
+    /// Drops every installed handler — the release boundary of the
+    /// view's owner.
+    ///
+    /// Each `set_*_handler` slot answers `None` afterwards, so a callback
+    /// `AppKit` delivers to this view does nothing by construction rather
+    /// than reaching state the owner released, and the handlers no longer
+    /// keep that state alive: layout, resize, hit-test, backing-changed,
+    /// window, superview, measure, primary content, scroll surface,
+    /// hidden, mouse, drop, pointer, key and right-mouse. The pointer
+    /// tracking area is removed as well, since it exists only to serve the
+    /// pointer handler.
+    pub fn clear_handlers(&self) {
+        let ivars = self.ivars();
+        ivars.layout.replace(None);
+        ivars.resize.replace(None);
+        ivars.hit_test.replace(None);
+        ivars.window.replace(None);
+        ivars.superview.replace(None);
+        ivars.measure.replace(None);
+        ivars.primary_content.replace(None);
+        ivars.scroll_surface_candidates.replace(None);
+        ivars.hidden.replace(None);
+        ivars.mouse_down.replace(None);
+        ivars.mouse_dragged.replace(None);
+        self.set_drop_handlers(&[], None);
+        ivars.pointer.replace(None);
+        ivars.pointer_events.set(PointerEvents::NONE);
+        ivars.pointer_inside.set(false);
+        self.updateTrackingAreas();
+        ivars.key.replace(None);
+        ivars.right_mouse.replace(None);
+        ivars.backing_changed.replace(None);
+    }
+
     /// Whether the intrinsic content size reports the height the current
     /// Auto Layout width produces.
     ///
@@ -639,6 +726,32 @@ impl HostView {
     /// `cocoaUiManagesSafeArea` selector.
     pub fn set_manages_safe_area(&self, manages: bool) {
         self.ivars().manages_safe_area.set(manages);
+    }
+
+    /// Whether this view is a fill — the color, gradient and material
+    /// leaves mark themselves through `cocoaUiIsFill`, and the wrappers the
+    /// sibling backend considers transparent propagate the answer.
+    pub fn set_is_fill(&self, fill: bool) {
+        self.ivars().is_fill.set(fill);
+    }
+
+    /// Whether this view answers `cocoaUiIsFill` — reads the ivar directly
+    /// for a caller holding the typed view.
+    #[must_use]
+    pub fn is_fill(&self) -> bool {
+        self.ivars().is_fill.get()
+    }
+
+    /// Which `BackgroundLayout` slot this host renders — the child index
+    /// that owns the background fill, `None` on an ordinary container.
+    pub fn set_background_slot(&self, slot: Option<usize>) {
+        self.ivars().background_slot.set(slot);
+    }
+
+    /// The `BackgroundLayout` slot marked at mount, if any.
+    #[must_use]
+    pub fn background_slot(&self) -> Option<usize> {
+        self.ivars().background_slot.get()
     }
 
     /// The primary content the sibling backend's wrappers descend to — the
@@ -686,6 +799,12 @@ impl HostView {
     /// Without a handler the event goes to `NSView`'s implementation.
     pub fn set_mouse_dragged_handler(&self, handler: impl Fn(&Self, &NSEvent) + 'static) {
         self.ivars().mouse_dragged.replace(Some(Rc::new(handler)));
+    }
+
+    /// Calls `handler` on `mouseUp`, replacing any handler set before.
+    /// Without a handler the event goes to `NSView`'s implementation.
+    pub fn set_mouse_up_handler(&self, handler: impl Fn(&Self, &NSEvent) + 'static) {
+        self.ivars().mouse_up.replace(Some(Rc::new(handler)));
     }
 
     /// Makes the view a drop destination reporting to `handlers`, replacing

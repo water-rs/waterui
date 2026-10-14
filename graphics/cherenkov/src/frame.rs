@@ -3,11 +3,16 @@
 //!
 //! [`Engine::render`]: crate::Engine::render
 
+use cherenkov_record::RefreshRange;
+
 use crate::Instant;
-use std::ops::RangeInclusive;
 
 /// The presentation timestamp handed to [`Engine::render`](crate::Engine::render).
-#[derive(Clone, Copy, Debug)]
+///
+/// Two timestamps are equal when they name the same instant — a host that
+/// batches one engine frame per production target timestamp deduplicates on
+/// this, not on an approximation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrameTime(pub Instant);
 
 impl FrameTime {
@@ -23,9 +28,6 @@ impl FrameTime {
         Self(Instant::now())
     }
 }
-
-/// An inclusive refresh-rate range in hertz.
-pub type RefreshRange = RangeInclusive<u32>;
 
 /// The refresh range a surface requests when its host does not set one: up
 /// to 120 Hz, the performance target on current high-refresh displays.

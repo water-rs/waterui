@@ -9,6 +9,43 @@
 //!
 //! watchOS is the documented asymmetry: it ships no `JavaScriptCore`, and the
 //! TypeScript runtime is unsupported there.
+//!
+//! # What this crate is
+//!
+//! [`TsRuntime`] is one engine with one bundle loaded into it. The bundle is
+//! the JavaScript library in `src/js` plus the application's compiled modules;
+//! it publishes [`RuntimeGlobal`], and the runtime installs a [`HostTable`]
+//! through it so JSX becomes real `WaterUI` views.
+//!
+//! Between the two sits the [`Bridge`]: the reactive seam. A JavaScript signal
+//! that reaches a native view becomes a real [`Binding<T>`], an accessor
+//! becomes a [`Computed<T>`], and a Rust binding handed to TypeScript becomes
+//! a JavaScript signal — each one pushed in both directions, with backends
+//! reading the Rust value and never crossing into the engine to `get`.
+//! [`IntoJs`] and [`FromJs`] are the value half of the same seam, implementing
+//! exactly the mapping [`schema`] declares.
+//!
+//! Materialization is lazy: a signal a TypeScript module never hands to a
+//! native view creates nothing on the Rust side.
+//!
+//! # Bundles, at launch and over the air
+//!
+//! The bundle a launch runs is chosen by the [`Loader`]: the [`Baseline`]
+//! built into the binary, verified against the [`Requirement`] the binary was
+//! compiled with, or — with the `ota` feature — the newest verified bundle
+//! in the bundle store (`BundleStore`) that has not failed, falling through
+//! to the baseline. [`Launched`] is the result, carrying the environment the
+//! application root renders under. `Ota` is the update client: it fetches a
+//! signed manifest and the bundle it names, verifies both, and caches them
+//! for the next launch. `OTA.md` beside this crate spells the contract out.
+//!
+//! A host that mounts a view outside an application — a `waterui-testing`
+//! session, the `water preview` support app — has no bundle loader of its
+//! own: it installs the runtime [`configured_runtime`] loads from the bundle
+//! the `water` CLI names in [`BUNDLE_VARIABLE`].
+//!
+//! [`Binding<T>`]: nami::Binding
+//! [`Computed<T>`]: nami::Computed
 
 #[cfg(target_os = "watchos")]
 compile_error!(
@@ -19,7 +56,52 @@ compile_error!(
      not faked."
 );
 
+// The `TsType`/`TsProps` derives expand to `::waterui_ts::…` for a crate that
+// reaches this one directly, so the name has to resolve inside this crate too.
+extern crate self as waterui_ts;
+
+mod bridge;
+mod bundle;
+mod callback;
+mod cell;
+mod convert;
+mod environment;
+mod error;
+mod host;
+mod library;
+mod mount;
+#[cfg(feature = "ota")]
+mod ota;
+mod runtime;
+mod runtime_global;
+mod tether;
+mod view;
+
 pub use waterui_ts_engine as engine;
+
+/// The props contract a mounted TypeScript view module is typed against.
+///
+/// This is `waterui-ts-schema` re-exported, so a `TsType`/`TsProps` derive on
+/// a crate that consumes the facade can name `waterui::ts::schema` and find
+/// every item the expansion uses.
+pub use waterui_ts_schema as schema;
+
+pub use bridge::{Bridge, MountScope, ReactiveSource, ScopeOwner, WeakBridge};
+pub use bundle::{
+    BUNDLE_VARIABLE, Baseline, BundleError, LaunchError, Launched, Loader, Rejection,
+    RequiredModule, Requirement, configured_runtime,
+};
+pub use convert::{FromJs, IntoJs, expected, support};
+pub use environment::{HostLocale, Theme, locale, theme};
+pub use error::{TsError, kind_of};
+pub use host::HostTable;
+pub use library::{LIBRARY_HALF_ENCODED, LIBRARY_HASH};
+pub use mount::{Mount, NoProps, RuntimeHandle};
+#[cfg(feature = "ota")]
+pub use ota::{BundleStore, FetchError, MANIFEST_SIZE_LIMIT, Ota, OtaError, Outcome, StoreError};
+pub use runtime::TsRuntime;
+pub use runtime_global::RuntimeGlobal;
+pub use view::{JsViewBuilder, ViewSlot};
 
 /// The JavaScript engine implementation for this target.
 #[cfg(all(target_vendor = "apple", not(target_os = "watchos")))]

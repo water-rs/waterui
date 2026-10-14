@@ -115,7 +115,8 @@ impl Dispatcher {
         feature = "scale",
         feature = "secure",
         feature = "shadow",
-        feature = "env"
+        feature = "env",
+        feature = "fixed_container"
     ))]
     pub(crate) fn register_view<T: 'static>(
         &mut self,
@@ -150,6 +151,14 @@ impl Dispatcher {
     /// The handler claiming `type_id`, if any.
     fn handler(&self, type_id: TypeId) -> Option<&Handler> {
         self.handlers.get(&type_id)
+    }
+
+    /// Whether a registered handler claims `view` — distinguishes a
+    /// handler-owned leaf (a `Native` payload or a claimed metadata
+    /// wrapper) from a composite that still needs `body()` expansion,
+    /// without evaluating the view.
+    pub(crate) fn claims(&self, view: &AnyView) -> bool {
+        self.handler(view.type_id()).is_some()
     }
 
     /// Renders `view` under `env` into the platform view it becomes.

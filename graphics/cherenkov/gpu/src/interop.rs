@@ -2,8 +2,9 @@
 
 pub use crate::render::filter::EffectBox;
 pub use crate::render::present::{
-    DestinationPrimaries, DisplayProbe, OutputAlpha, OutputColor, OutputSelection, Presenter,
-    SelectionReason, TextureOutput, TransferEncoding,
+    ColorRange, ColorRangeInterval, ColorSpaceRequest, DestinationPrimaries, DisplayProbe,
+    OutputAlpha, OutputColor, OutputRequest, OutputSelection, Presenter, SelectionReason,
+    TextureOutput, TransferEncoding, select_output, surface_output_alpha,
 };
 pub use crate::render::shaders::{ShaderDelivery, delivery as shader_delivery};
 use std::future::Future;
@@ -90,17 +91,16 @@ impl std::fmt::Debug for GpuContentBox {
 }
 
 impl GpuContentBox {
-    /// Creates a producer with the host's event-loop wake callback.
-    /// The callback must be safe to invoke from a producer thread, including
-    /// while the engine is idle (for example, a window event-loop proxy).
+    /// Boxes a producer. Its redraw requests wake the hosts of the
+    /// surfaces that draw it, each through the wake the surface was
+    /// created with.
     #[must_use]
-    pub fn new(content: impl GpuContent, wake: impl Fn() + Send + Sync + 'static) -> Self {
+    pub fn new(content: impl GpuContent) -> Self {
         Self {
             content: Box::new(content),
             redraw: RedrawHandle {
                 dirty: Arc::new(AtomicBool::new(true)),
-                gate: Arc::new(cherenkov::WakeGate::default()),
-                wake: Arc::new(wake),
+                wakes: Arc::new(cherenkov::SurfaceWakes::default()),
             },
         }
     }
@@ -116,9 +116,8 @@ impl GpuContentBox {
 #[derive(Clone)]
 pub struct RedrawHandle {
     pub(crate) dirty: Arc<AtomicBool>,
-    /// Open while the content is composed on a visible surface.
-    pub(crate) gate: Arc<cherenkov::WakeGate>,
-    wake: Arc<dyn Fn() + Send + Sync>,
+    /// The wakes of the surfaces whose frames draw the content.
+    pub(crate) wakes: Arc<cherenkov::SurfaceWakes>,
 }
 
 impl std::fmt::Debug for RedrawHandle {
@@ -130,13 +129,15 @@ impl std::fmt::Debug for RedrawHandle {
 }
 
 impl RedrawHandle {
-    /// Marks the producer's output stale. Requests coalesce until consumed.
-    /// Detached or removed content, and content on a surface the host has
-    /// announced hidden, retains the request without waking the host; the
-    /// frame that draws it again draws its latest state.
+    /// Marks the producer's output stale and wakes the host of each
+    /// surface whose frames draw it, through the surface's own wake.
+    /// Requests coalesce until a frame consumes them. Detached or removed
+    /// content, and content on a surface the host has announced hidden,
+    /// retains the request without waking the host; the frame that draws
+    /// it again draws its latest state.
     pub fn request_redraw(&self) {
-        if !self.dirty.swap(true, Ordering::AcqRel) && self.gate.is_open() {
-            (self.wake)();
+        if !self.dirty.swap(true, Ordering::AcqRel) {
+            self.wakes.wake();
         }
     }
 
@@ -177,28 +178,6 @@ impl<C: GpuContent> Content for C {
     }
 }
 
-/// A host event-loop callback callable from the engine or producer threads.
-#[derive(Clone)]
-pub struct RedrawCallback(Arc<dyn Fn() + Send + Sync>);
-
-impl RedrawCallback {
-    /// Wraps the host's display-link or event-loop wake operation.
-    pub fn new(wake: impl Fn() + Send + Sync + 'static) -> Self {
-        Self(Arc::new(wake))
-    }
-
-    /// Asks the host to schedule an engine frame.
-    pub fn wake(&self) {
-        (self.0)();
-    }
-}
-
-impl std::fmt::Debug for RedrawCallback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedrawCallback").finish_non_exhaustive()
-    }
-}
-
 /// An existing device shared with a native presentation host.
 /// All four handles must belong to the same device creation chain.
 ///
@@ -217,6 +196,54 @@ pub struct SharedDevice {
     pub device: wgpu::Device,
     /// This device's submission queue.
     pub queue: wgpu::Queue,
+}
+
+impl SharedDevice {
+    /// Whether the device can run compute passes.
+    ///
+    /// Compute is a capability, not part of the engine's hardware floor:
+    /// strategies that can use it — the GPU coverage route of #2536 —
+    /// read it here, and every raster path runs without it. The flag is
+    /// read off the adapter of this creation chain, the same source the
+    /// device's own `COMPUTE_SHADERS` support comes from.
+    #[must_use]
+    pub fn has_compute(&self) -> bool {
+        supports_compute(
+            self.adapter.get_downlevel_capabilities().flags,
+            &self.adapter.limits(),
+        )
+    }
+}
+
+/// Opens a Vulkan device for a [`SharedDevice`] the engine composes on.
+///
+/// A host that creates its own Vulkan device with `request_device` gets a
+/// device without the engine's capabilities: the external-frame and YCbCr
+/// extensions of issue #166, and the dynamic-rendering local-read and
+/// rasterization-order attachment access of issue #2191. None of them can
+/// be turned on after `vkCreateDevice`, so a device opened any other way
+/// composes every intermediate through memory for the rest of its life.
+/// This is the engine's own creation path, exported for exactly that
+/// handoff: pass the same descriptor a host would pass to
+/// `Adapter::request_device`, and put the device and queue it answers
+/// with into [`SharedDevice`].
+///
+/// # Errors
+/// [`EngineError`] when `adapter` is not a Vulkan adapter, or when the
+/// device cannot be created.
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+pub fn open_vulkan_device(
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+) -> Result<(wgpu::Device, wgpu::Queue), crate::EngineError> {
+    crate::render::create_vulkan_device(adapter, descriptor)
+}
+
+/// The compute predicate: wgpu reports the stage as a downlevel flag plus
+/// the workgroup limits it dispatches on.
+const fn supports_compute(flags: wgpu::DownlevelFlags, limits: &wgpu::Limits) -> bool {
+    flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+        && limits.max_compute_workgroups_per_dimension > 0
 }
 
 /// A surface whose engine-owned linear P3 texture is handed to a native host.
@@ -477,7 +504,7 @@ impl FrameColor {
         reference_white: 203.0,
         hlg_peak: 0.0,
     };
-    /// BT.2020 full-range video with PQ transfer on BT.2020 primaries.
+    /// BT.2020 studio-range video with PQ transfer on BT.2020 primaries.
     pub const BT2020_PQ: Self = Self {
         matrix: YuvMatrix::Bt2020,
         range: YuvRange::Video,
@@ -759,38 +786,40 @@ impl ExternalFrame {
 
 /// Native external-frame import on Vulkan (issue #166).
 ///
-/// [`Device`] imports a producer [`FrameSource`] — a Linux [`DmaBuf`] or an
-/// Android `AHardwareBuffer` — as a [`Frame`] on the engine's shared
-/// `VkDevice`, synchronised through a Vulkan semaphore on the GPU. Install
-/// the frame on a layer through [`ExternalFrame::native`].
+/// [`Device`](vulkan::Device) imports a producer
+/// [`FrameSource`](vulkan::FrameSource) — a Linux [`DmaBuf`](vulkan::DmaBuf)
+/// or an Android `AHardwareBuffer` — as a [`Frame`](vulkan::Frame) on the
+/// engine's shared `VkDevice`, synchronised through a Vulkan semaphore on
+/// the GPU. Install the frame on a layer through [`ExternalFrame::native`].
 #[cfg(all(unix, not(target_vendor = "apple")))]
 pub mod vulkan {
     #[cfg(target_os = "android")]
     pub use crate::render::external::vulkan::Ahb;
     // The producer-facing surface: import descriptors, the imported frame,
-    // its capability record and the sync contract. The encode-side
+    // its capability record, the per-device context `Device::shared` and
+    // `Native::new` carry, and the sync contract. The encode-side
     // machinery (`Release`, `Views`, `submit_waits`, `mark_submitted`,
     // `drain_releases`, `create_pool`, `KIND_*`) stays `pub(crate)`;
     // `Generation`/`State` and the staging pair remain public for the
     // standalone Android device-test binary, recorded in docs/api.md.
     pub use crate::render::external::vulkan::{
         Caps, Device, DmaBuf, DmaBufPlane, Frame, FrameSource, Generation, Native, NativeError,
-        PendingAcquire, PendingWait, QueueFamily, ReleaseSync, Repr, State, Wait, cancel_staged,
-        stage_acquire,
+        PendingAcquire, PendingWait, QueueFamily, ReleaseSync, Repr, Shared, State, Wait,
+        cancel_staged, stage_acquire,
     };
 }
 
 /// Linux interop: presenting through exported DMA-BUFs (#1687).
 ///
-/// [`DmabufTarget`] is the zero-copy present target for hosts that can
-/// import Linux dma-bufs (e.g. `GdkDmabufTexture`, a Wayland compositor,
-/// GStreamer): the engine renders each frame into one image of a small
-/// pool of exportable Vulkan images and hands the host the image's
-/// planes, an explicit DRM format modifier and a sync-file acquire
-/// fence. The host returns each image with a release sync file; an image
-/// is reused only after that release has signalled, and a surface with
-/// no free image waits for a release rather than allocating — never a
-/// CPU wait on the render thread.
+/// [`DmabufTarget`](dmabuf::DmabufTarget) is the zero-copy present target
+/// for hosts that can import Linux dma-bufs (e.g. `GdkDmabufTexture`, a
+/// Wayland compositor, GStreamer): the engine renders each frame into one
+/// image of a small pool of exportable Vulkan images and hands the host the
+/// image's planes, an explicit DRM format modifier and a sync-file acquire
+/// fence. The host returns each image with a release sync file; an image is
+/// reused only after that release has signalled, and a surface with no free
+/// image waits for a release rather than allocating — never a CPU wait on
+/// the render thread.
 #[cfg(target_os = "linux")]
 pub mod dmabuf {
     use std::os::fd::OwnedFd;
@@ -1015,6 +1044,7 @@ pub mod dmabuf {
 #[cfg(target_os = "android")]
 pub mod android {
     pub use crate::render::surface_control::ffi::{ASurfaceControl, CreateFailed, SurfaceControl};
+    pub use crate::render::surface_control::planes::HostedSurface;
 
     /// A surface realized as child surface controls of a host's parent
     /// surface control.
@@ -1080,6 +1110,15 @@ pub mod android {
             Self::SurfaceControl(target)
         }
     }
+}
+
+/// Apple interop: system objects hosted on the engine's planes.
+#[cfg(target_vendor = "apple")]
+pub mod apple {
+    #[cfg(not(target_os = "macos"))]
+    pub use crate::render::planes::apple::HostedLayer;
+    #[cfg(target_os = "macos")]
+    pub use crate::render::planes::apple::HostedView;
 }
 
 /// Apple interop: importing Metal resources onto the shared device.
@@ -1174,6 +1213,8 @@ pub mod metal {
 /// same thread, and nothing is boxed behind an unsafe `Send`.
 #[cfg(target_arch = "wasm32")]
 pub mod web {
+    pub use crate::render::planes::web::{DomTarget, HostedElement};
+
     use super::{InvalidFrame, wgpu};
     use wasm_bindgen::JsCast;
     use wgpu::webgpu;
@@ -1337,11 +1378,12 @@ pub mod web {
     ///
     /// The provider contract is validated by reflection (format, size,
     /// usage, mip and sample count, owning device token) and by a
-    /// submission probe: an empty pass bound to the wrapper inside a
+    /// submission probe: an empty render pass bound to the wrapper inside a
     /// validation error scope is the only place a destroyed or cross-device
     /// `GPUTexture` provably errors, since JavaScript exposes no liveness
-    /// flag and creation-time calls accept destroyed textures. A rejection
-    /// releases the lease before returning.
+    /// flag and creation-time calls accept destroyed textures. The pass
+    /// stays a render pass so the probe asks nothing of the device's
+    /// compute support. A rejection releases the lease before returning.
     ///
     /// `queue` must be the engine's submission queue, so the probe orders
     /// behind the producer's pending work on the same device.
@@ -1391,7 +1433,7 @@ pub mod web {
                 label: Some("external frame probe"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -1410,10 +1452,43 @@ pub mod web {
                     ),
                 }],
             });
+            // The 1×1 attachment exists only so the pass has one: what the
+            // probe needs is a submitted pass that references the wrapper's
+            // bind group, and a render pass asks nothing of the device's
+            // compute support.
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("external frame probe"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("external frame probe"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target.create_view(&wgpu::TextureViewDescriptor::default()),
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
                 pass.set_bind_group(0, &group, &[]);
             }
             queue.submit([encoder.finish()]);
@@ -1424,5 +1499,31 @@ pub mod web {
             return Err(InvalidWebTexture::Unusable);
         }
         Ok(wrapped)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_needs_the_flag_and_a_workgroup_dimension() {
+        // A WebGPU-capable adapter reports both.
+        assert!(supports_compute(
+            wgpu::DownlevelFlags::COMPUTE_SHADERS,
+            &wgpu::Limits::default()
+        ));
+        // A WebGL2-class adapter has no compute at all: no flag and zero
+        // workgroup dimensions.
+        assert!(!supports_compute(
+            wgpu::DownlevelFlags::empty(),
+            &wgpu::Limits::downlevel_webgl2_defaults()
+        ));
+        // The flag alone is not enough — an adapter can advertise the stage
+        // yet report no workgroup dimension to dispatch on.
+        assert!(!supports_compute(
+            wgpu::DownlevelFlags::COMPUTE_SHADERS,
+            &wgpu::Limits::downlevel_webgl2_defaults()
+        ));
     }
 }

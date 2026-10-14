@@ -2,7 +2,7 @@
 //!
 //! Workload: a 200-row list of mixed-length body text plus one long
 //! paragraph, re-measured at three wrap widths — the pattern a live resize
-//! or list rebuild drives through `text_dimensions_from_layout`. This is the
+//! or list rebuild drives through `TextService::dimensions`. This is the
 //! regression gate for the ink-extent work that measure performs per glyph
 //! since #237.
 //!
@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use hydrolysis::HeadlessRuntime;
-use hydrolysis_m3::Material3;
+use hydrolysis::testing::TestStyle;
 use nami::Binding;
 use nami::collection::SignalCollection;
 use waterui::prelude::text;
@@ -80,7 +80,7 @@ fn bench_remeasure_at_three_widths(c: &mut Criterion) {
 
     let mut env = Environment::new();
     hydrolysis::testing::install_theme(&mut env);
-    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 800, 600, Material3::defaults());
+    let mut runtime = HeadlessRuntime::new_for_tests(env, builder, 800, 600, TestStyle::new());
     let at = Instant::now();
     // Settle: first layout, font decode and shader warm-up happen here, not
     // inside the measured loop.

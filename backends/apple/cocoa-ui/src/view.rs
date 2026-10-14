@@ -116,10 +116,47 @@ pub fn frame(view: &PlatformView) -> Rect {
     view.frame().into()
 }
 
+/// The alignment rectangle `view`'s frame maps to.
+///
+/// This is the edge Auto Layout pins when it solves the view's anchors. A
+/// control's frame can overshoot it: a `UISwitch` frame runs 2 pt past its
+/// pinned trailing edge.
+#[must_use]
+pub fn alignment_frame(view: &PlatformView) -> Rect {
+    #[cfg(target_os = "ios")]
+    {
+        view.alignmentRectForFrame(view.frame()).into()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: `view` is a live `NSView`; `alignmentRectForFrame:` is a
+        // documented `NSView` method the `objc2-app-kit` bindings do not
+        // generate.
+        let rect: objc2_core_foundation::CGRect =
+            unsafe { objc2::msg_send![view, alignmentRectForFrame: view.frame()] };
+        rect.into()
+    }
+}
+
 /// The bounds in the view's own coordinate space.
 #[must_use]
 pub fn bounds(view: &PlatformView) -> Rect {
     view.bounds().into()
+}
+
+/// Whether `view`'s y axis runs top-down — `NSView.isFlipped` on `AppKit`.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn is_flipped(view: &PlatformView) -> bool {
+    view.isFlipped()
+}
+
+/// Whether `view`'s y axis runs top-down — `UIKit`'s coordinate space is
+/// natively top-left, so `true`.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub const fn is_flipped(_view: &PlatformView) -> bool {
+    true
 }
 
 /// Moves and resizes `view` in its superview's coordinate space.
@@ -176,6 +213,18 @@ pub fn invalidate_captured_rendering(view: &PlatformView) {
 /// Adds `child` above `parent`'s existing subviews.
 pub fn add_subview(parent: &PlatformView, child: &PlatformView) {
     parent.addSubview(child);
+}
+
+/// Adds `child` below `parent`'s existing subviews.
+pub fn add_subview_at_bottom(parent: &PlatformView, child: &PlatformView) {
+    #[cfg(target_os = "macos")]
+    parent.addSubview_positioned_relativeTo(
+        child,
+        objc2_app_kit::NSWindowOrderingMode::Below,
+        None,
+    );
+    #[cfg(target_os = "ios")]
+    parent.insertSubview_atIndex(child, 0);
 }
 
 /// Detaches `view` from its superview; does nothing when it has none.
@@ -308,6 +357,40 @@ pub fn is_hidden_in_hierarchy(view: &PlatformView) -> bool {
         }
         false
     }
+}
+
+/// `hasVisibleAncestry` — this view and every ancestor visible: neither
+/// hidden nor fully transparent.
+///
+/// A hidden or alpha-0 view ancestor parks the surface. On `UIKit` the
+/// terminal ancestor is the `UIWindow` itself (a `UIView`): a *hidden*
+/// window still rejects, but its alpha is outside content visibility —
+/// an ordered, unrevealed window holds `alpha = 0` until first paint and
+/// must not reject the way a transparent view ancestor does. `AppKit`
+/// windows sit outside the `NSView` chain, so behavior is unchanged.
+#[must_use]
+pub fn has_visible_ancestry(view: &PlatformView) -> bool {
+    let mut node = Some(retain_base(view));
+    while let Some(current) = node {
+        if is_hidden(&current) || (!is_window_view(&current) && alpha(&current) <= 0.0) {
+            return false;
+        }
+        node = superview(&current);
+    }
+    true
+}
+
+/// Whether `view` is the window itself. Only `UIKit` keeps the window in
+/// the view-ancestor chain (`UIWindow` is a `UIView`); `AppKit` windows
+/// never appear there.
+#[cfg(target_os = "ios")]
+fn is_window_view(view: &PlatformView) -> bool {
+    use objc2::ClassType;
+    view.isKindOfClass(objc2_ui_kit::UIWindow::class())
+}
+#[cfg(not(target_os = "ios"))]
+const fn is_window_view(_view: &PlatformView) -> bool {
+    false
 }
 
 /// `view`'s opacity (`alphaValue`/`alpha`).
@@ -563,6 +646,44 @@ pub fn primary_content(view: &PlatformView) -> Option<Retained<PlatformView>> {
     }
 }
 
+/// Whether `view` declares itself a kit scroll surface through
+/// `cocoaUiIsScrollSurface`.
+///
+/// The `ScrollView` and `TableView` classes answer `true`; a foreign
+/// `UIScrollView` such as `UITextView` does not answer it, so a view
+/// nested inside one keeps its own region contract.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn is_scroll_surface(view: &PlatformView) -> bool {
+    view.respondsToSelector(objc2::sel!(cocoaUiIsScrollSurface))
+        // SAFETY: kit classes declaring `cocoaUiIsScrollSurface` declare
+        // it `-> bool`.
+        && unsafe { objc2::msg_send![view, cocoaUiIsScrollSurface] }
+}
+
+/// Whether a kit scroll surface sits above `view`.
+///
+/// This is the ancestor walk the keyboard-region marking refuses to
+/// descend: a scroll surface's subtree sees no keyboard region — the
+/// surface already moved its content clear — so nothing under it is a
+/// region reader, and a surface nested inside another neither insets
+/// nor scrolls for the keyboard itself (the field clears once, through
+/// the innermost surface that sees the band). A foreign `UIScrollView`
+/// — a `UITextView` — does not answer `cocoaUiIsScrollSurface` and does
+/// not count.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn inside_scroll_surface(view: &PlatformView) -> bool {
+    let mut ancestor = superview(view);
+    while let Some(current) = ancestor {
+        if is_scroll_surface(&current) {
+            return true;
+        }
+        ancestor = superview(&current);
+    }
+    false
+}
+
 /// The scroll-surface candidates `view` declares through
 /// `cocoaUiScrollSurfaceCandidates`.
 ///
@@ -730,4 +851,17 @@ pub fn set_accessibility_content(view: &PlatformView, label: Option<&str>, value
     if label.is_some() || value.is_some() {
         view.setIsAccessibilityElement(true, mtm);
     }
+}
+
+/// An associated-object storage key derived from a selector name.
+///
+/// Registering the same string yields the same key at every call, so a
+/// platform-side compatibility layer using the same name shares the
+/// association.
+#[must_use]
+pub fn association_key(name: &core::ffi::CStr) -> *const core::ffi::c_void {
+    let selector = objc2::runtime::Sel::register(name);
+    // SAFETY: `Sel` is `repr(transparent)` over the selector pointer the
+    // associated-object API expects as the key.
+    unsafe { core::mem::transmute::<objc2::runtime::Sel, *const core::ffi::c_void>(selector) }
 }

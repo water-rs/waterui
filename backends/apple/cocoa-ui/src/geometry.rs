@@ -202,6 +202,13 @@ impl From<objc2_foundation::NSEdgeInsets> for EdgeInsets {
     }
 }
 
+#[cfg(target_os = "ios")]
+impl From<objc2_ui_kit::UIEdgeInsets> for EdgeInsets {
+    fn from(insets: objc2_ui_kit::UIEdgeInsets) -> Self {
+        Self::new(insets.top, insets.left, insets.bottom, insets.right)
+    }
+}
+
 impl From<CGSize> for Size {
     fn from(size: CGSize) -> Self {
         Self::new(size.width, size.height)
@@ -253,13 +260,14 @@ impl Rect {
     }
 
     /// `self` grown to `chrome` on every edge where it touches `within`,
-    /// within a half point.
+    /// within `tolerance` — half a physical pixel for safe-area edges, so a
+    /// frame at display resolution counts as ending on the boundary.
     ///
     /// A content rect inset by a safe area: a child laid out inside `within`
     /// that manages its own obscured edges is extended through `within` to
     /// `chrome` on the edges it touches.
     #[must_use]
-    pub fn extended_through(self, within: Self, chrome: Self) -> Self {
+    pub fn extended_through(self, within: Self, chrome: Self, tolerance: f64) -> Self {
         let mut result = self;
         let (min_x, max_x) = (self.origin.x, self.origin.x + self.size.width);
         let (min_y, max_y) = (self.origin.y, self.origin.y + self.size.height);
@@ -267,18 +275,18 @@ impl Rect {
         let (safe_min_y, safe_max_y) = (within.origin.y, within.origin.y + within.size.height);
         let (chrome_min_x, chrome_max_x) = (chrome.origin.x, chrome.origin.x + chrome.size.width);
         let (chrome_min_y, chrome_max_y) = (chrome.origin.y, chrome.origin.y + chrome.size.height);
-        if (min_x - safe_min_x).abs() < 0.5 {
+        if (min_x - safe_min_x).abs() < tolerance {
             result.origin.x = chrome_min_x;
             result.size.width += min_x - chrome_min_x;
         }
-        if (max_x - safe_max_x).abs() < 0.5 {
+        if (max_x - safe_max_x).abs() < tolerance {
             result.size.width += chrome_max_x - max_x;
         }
-        if (min_y - safe_min_y).abs() < 0.5 {
+        if (min_y - safe_min_y).abs() < tolerance {
             result.origin.y = chrome_min_y;
             result.size.height += min_y - chrome_min_y;
         }
-        if (max_y - safe_max_y).abs() < 0.5 {
+        if (max_y - safe_max_y).abs() < tolerance {
             result.size.height += chrome_max_y - max_y;
         }
         result

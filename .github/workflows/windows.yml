@@ -75,11 +75,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # nextest runs the styled test targets, which resolve the installed
-      # test-font families through system font discovery and read the
-      # generated fixtures — the repository stores none of them.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # nextest's fixture setup scripts run the pinned generators through
+      # `uv run` (`.config/nextest.toml`) — the styled test targets resolve
+      # the installed test-font families through system font discovery.
+      - uses: astral-sh/setup-uv@v6
       # Same for the Cherenkov test targets the workspace pass below
       # compiles and runs: their fonts and corpus scenes are generated,
       # not committed. The all-features pass also runs the bench tests
@@ -117,10 +116,7 @@ jobs:
       # runs red here until the Cherenkov pin picks up the upload-staging
       # timeout fix — that is the honest state of the leg.
       #
-      # One full-workspace pass under default features. A workspace-wide
-      # `--all-features` pass is structurally impossible — `waterui-ffi`
-      # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
-      # enabling `c-api` and `android-jni` together can never build.
+      # One full-workspace pass under default features.
       - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci
       - name: Test (examples that carry tests)
         run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
@@ -193,10 +189,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The all-features pass runs the styled test targets too; their
-      # font families must be installed — the repository stores none.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # The all-features pass runs the styled test targets too; nextest's
+      # fixture setup scripts install their fonts through `uv run`
+      # (`.config/nextest.toml`).
+      - uses: astral-sh/setup-uv@v6
       - name: Test (root crate, every feature but dynamic_linking)
         run: cargo nextest run --locked --features all --profile ci
       # The `trybuild_*` binaries each drive a cold fixture build that is
@@ -211,7 +207,6 @@ jobs:
             --exclude waterui-dylib `
             --exclude '*-example' `
             --exclude waterui-core `
-            --exclude waterui-ffi `
             --exclude waterui-browser-cef `
             --exclude skill_snippets `
             --exclude filtrate `
@@ -265,11 +260,6 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
-      # `--all-targets` clippy compiles waterui-cli's `#[cfg(test)]` module,
-      # which `include_bytes!`s the generated Roboto fixture the repository
-      # does not store.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
       # cherenkov-oracle, cherenkov-gpu, and cherenkov-cpu compile
       # `include_bytes!` of fonts only `scenes/tools/generate.py` writes;
       # `--all-targets` compiles them, so the fonts must exist first.

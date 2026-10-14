@@ -79,6 +79,10 @@ pub enum NavigationSplitColumnVisibility {
     DetailOnly = 3,
 }
 
+// A constant visibility is a signal too, so `column_visibility` takes a plain
+// value as readily as a binding.
+nami::impl_constant!(NavigationSplitColumnVisibility);
+
 /// Native split presentation selected by a public split style.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,6 +317,12 @@ waterui_core::impl_debug!(NavigationSplitView);
 
 impl NavigationSplitView {
     /// Creates a two-column split driven by a caller-owned optional selection.
+    ///
+    /// At compact widths exactly one column is visible: the detail while
+    /// `selection` is `Some`, and the sidebar while it is `None`. The platform
+    /// back control (including a completed back gesture) writes `None` into
+    /// the selection. Start with `None` to open on the sidebar; the binding is
+    /// the single source of truth for the visible compact column.
     pub fn new<T, Sidebar, Detail>(
         selection: &Binding<Option<T>>,
         sidebar: Sidebar,

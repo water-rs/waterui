@@ -1332,6 +1332,35 @@ mod tests {
         );
     }
 
+    /// A crate-declared environment entitlement reaches the profile check
+    /// like any other: a development profile without `aps-environment` is
+    /// rejected as missing it, one granting the development environment is
+    /// accepted.
+    #[test]
+    fn a_declared_aps_environment_requires_a_profile_granting_it() {
+        let mut profile =
+            profile_fixture(TEAM, &format!("{TEAM}.{BUNDLE}"), Some(vec![UDID]), false);
+        let mut entitlements = plist::Dictionary::new();
+        entitlements.insert(
+            "aps-environment".to_string(),
+            plist::Value::String("development".to_string()),
+        );
+        assert_eq!(
+            evaluate(&profile, &request(&entitlements)),
+            Err(ProfileRejection::MissingEntitlements {
+                keys: vec!["aps-environment".to_string()]
+            })
+        );
+        let Some(plist::Value::Dictionary(grants)) = profile.get_mut("Entitlements") else {
+            panic!("the fixture profile carries Entitlements");
+        };
+        grants.insert(
+            "aps-environment".to_string(),
+            plist::Value::String("development".to_string()),
+        );
+        assert!(evaluate(&profile, &request(&entitlements)).is_ok());
+    }
+
     #[test]
     fn grants_a_wildcarded_entitlement_value() {
         let profile = profile_fixture(TEAM, &format!("{TEAM}.{BUNDLE}"), Some(vec![UDID]), false);

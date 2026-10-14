@@ -6,8 +6,6 @@ use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize
 use waterui_core::{Environment, Native};
 use waterui_text::styled::StyledStr;
 
-#[cfg(feature = "accessibility")]
-use crate::renderer::transformed_rect;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, measure_transient_view_intrinsic, measure_view_dimensions_with_proposal,
@@ -116,12 +114,14 @@ pub fn render_badge_parts(
     {
         let render_ctx = ctx.render_context();
         let mut state = state.borrow_mut();
-        state.content.flush_in_rect(
+        let content_area = ctx.safe_area_for(bounds);
+        state.content.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
             ProposalSize::UNSPECIFIED,
             bounds,
+            content_area,
         );
     }
 
@@ -197,7 +197,7 @@ pub fn render_badge_parts(
     {
         let mut node = AccessibilityNode::new(AccessibilityNodeRole::Label);
         node.set_label(value.to_string());
-        let node_bounds = transformed_rect(ctx.hit_transform, rect);
+        let node_bounds = rect;
         let _ = ctx
             .renderer_mut()
             .register_accessibility_node(node, node_bounds, env, None);
@@ -211,11 +211,10 @@ pub fn render_badge_parts(
         rect.y1,
     );
     let text_ctx = RenderContext {
-        transform: ctx.transform,
-        hit_transform: ctx.hit_transform,
+        local: ctx.local,
         bounds: text_rect,
     };
-    let (hydro, scene) = ctx.renderer_mut().state_and_scene_mut();
+    let (hydro, scene) = ctx.renderer_mut().state_and_run_mut();
     HydrolysisRenderer::render_styled_text(
         hydro,
         scene,

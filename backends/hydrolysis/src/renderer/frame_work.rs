@@ -5,9 +5,8 @@
 //! frame actually did readable from a [`crate::runner::FrameCounters`]. The
 //! whole-frame numbers (`semantic builds`, `recorded view contents`, `font
 //! and image registrations`, `host wakeups`) are what a steady frame drives
-//! to zero, while the fine-grained numbers (`live operand updates`, `layer
-//! creations`, `layer removals`) carry the signal that only the touched
-//! operands moved.
+//! to zero, while the fine-grained numbers (`layer creations`, `layer
+//! removals`) carry the signal that only the touched operands moved.
 //!
 //! A counter counts the operation the runner performed this frame, at the
 //! point the work was done — not what the engine does with it downstream.
@@ -38,9 +37,6 @@ pub struct FrameWorkCounters {
     /// flush, theme widget render). The engine calls these content
     /// recordings, and a steady frame drives the count to zero.
     pub(crate) recorded_view_contents: u64,
-    /// Live-operand updates reaching the engine this frame — the signal that
-    /// a reactive change moved only its operands.
-    pub(crate) live_operand_updates: u64,
     /// Retained engine layer mounts this frame.
     pub(crate) layer_creations: u64,
     /// Retained engine layer removals this frame.
@@ -82,7 +78,6 @@ impl FrameWorkCounters {
             ("measure_calls", self.measure_calls),
             ("layout_calls", self.layout_calls),
             ("recorded_view_contents", self.recorded_view_contents),
-            ("live_operand_updates", self.live_operand_updates),
             ("layer_creations", self.layer_creations),
             ("layer_removals", self.layer_removals),
             ("font_registrations", self.font_registrations),

@@ -3,7 +3,7 @@ use core::str::FromStr;
 use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
-use cherenkov::WorkingColor;
+use crate::draw::WorkingColor;
 
 use super::{
     HexColorError, P3, WithOpacity, linear_srgb_to_p3, linear_to_srgb,

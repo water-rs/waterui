@@ -6,16 +6,15 @@
 //!
 //! `flush_window_semantics` used to diverge on both frame boundaries: it
 //! cleared the pure-emission registries before the structural patch instead
-//! of after it, and it ran `lifecycle.finish_rebuild_frame` — which releases
-//! the frame's retained signal-watch guards — before
-//! `navigation.finish_rebuild_frame`, where the rendered pump runs it after.
+//! of after it, and it released the frame's signal-watch guards before
+//! `navigation.finish_rebuild_frame`, where the rendered pump ran it after.
 //! The probes below pin one `Retain` to each boundary: a `Retain` on a view
 //! inside a `when` subtree dies when the patch drops the subtree, a `Retain`
 //! installed in a navigation slot dies at the navigation teardown when the
-//! slot's retained owner leaves the tree, and a `signal_watches` entry not
-//! refreshed this frame dies at the lifecycle rollover's stale-entry prune.
-//! The rendered order is `[patch, navigation, lifecycle]`; the old semantic
-//! order was `[patch, lifecycle, navigation]`.
+//! slot's retained owner leaves the tree, and a watcher guard installed
+//! outside any recording node dies when the flush's finish prunes outside
+//! watches the frame did not re-read.
+//! The order is `[patch, navigation, watch-guard]`.
 
 use std::any::TypeId;
 use std::cell::RefCell;
@@ -30,6 +29,7 @@ use waterui_text::text;
 
 use crate::renderer::navigation::navigation_state::{NavigationKey, NavigationSlot};
 use crate::renderer::{FontFamilyResolution, SemanticCore};
+use crate::text::SessionTextEngine;
 
 /// Logs `tag` into `drops` when its last owner drops it.
 struct DropTag {
@@ -79,13 +79,16 @@ fn semantic_flush_releases_frame_state_in_renderer_order() {
             })
         }
     };
-    let mut core = SemanticCore::new(Instant::now(), FontFamilyResolution::Strict);
+    let mut core = SemanticCore::new(
+        Instant::now(),
+        SessionTextEngine::system(FontFamilyResolution::Strict),
+    );
     core.capture_window_semantics(AnyView::new(view), &env);
 
     // A navigation slot whose retained owner left the tree dies at
     // `navigation.finish_rebuild_frame`'s prune.
     let owner = Rc::new(());
-    let slot = NavigationSlot::new(core.signals.clone());
+    let slot = NavigationSlot::new();
     slot.controller
         .retain(Retain::new(DropTag::into_rc("navigation", &drops)));
     core.navigation
@@ -93,13 +96,16 @@ fn semantic_flush_releases_frame_state_in_renderer_order() {
         .insert(NavigationKey::for_rc(&owner), slot);
     drop(owner);
 
-    // A signal watch not refreshed this frame dies at
-    // `lifecycle.finish_rebuild_frame`'s stale-entry prune.
-    core.lifecycle.signal_watches.insert(
+    // A signal watch not refreshed this frame dies at the flush's finish,
+    // when the outside-watch prune drops the entries this frame never read.
+    core.outside_watches.insert(
         usize::MAX,
-        TypeId::of::<()>(),
-        Box::new(()),
-        Retain::new(DropTag::into_rc("watch-guard", &drops)),
+        crate::renderer::OutsideWatch {
+            _signal: Box::new(()),
+            signal_type: TypeId::of::<()>(),
+            _guard: Retain::new(DropTag::into_rc("watch-guard", &drops)),
+            last_seen: 0,
+        },
     );
 
     show.set(false);

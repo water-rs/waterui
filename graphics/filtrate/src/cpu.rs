@@ -1,17 +1,23 @@
 //! SIMD CPU kernels for colour filters.
 //!
-//! Every kernel here is a linear map on premultiplied RGBA, so each builds a
-//! 4x4 matrix from its parameters and runs the shared SIMD loop: one `f32x4`
-//! per pixel, the output accumulated column by column with fused
-//! multiply-adds.
+//! A kernel runs on premultiplied RGBA in its stage's operating space. Most
+//! kernels are linear maps in the linear working space itself, so each
+//! builds a 4x4 matrix from its parameters and runs the shared SIMD loop:
+//! one `f32x4` per pixel, the output accumulated column by column with
+//! fused multiply-adds. A kernel whose stage declares
+//! [`OperatingSpace::Srgb`] runs on sRGB-encoded pixels; the generated
+//! `apply_cpu` brackets it in `filtrate_core`'s [`to_srgb`]/[`from_srgb`],
+//! the CPU twins of the executor's `to_srgb`/`from_srgb` conversion stages
+//! (`shaders/space/{to,from}_srgb.wgsl`).
 
 use filtrate_core::{
-    AuxData, AuxFormat, AuxImage, CpuFilter, CpuFilterError, CpuImage, FilterParam, SpatialFilter,
-    WorkingSpace,
+    AuxData, AuxFormat, AuxImage, CpuFilter, CpuFilterError, CpuImage, FilterParam, OperatingSpace,
+    SpatialFilter, WorkingSpace,
+    space::{convert, from_srgb, to_srgb},
 };
 use wide::f32x4;
 
-use crate::filters::{BlendWithImage, Blur, GAUSSIAN_RADIUS_PER_SIGMA, GaussianBlur};
+use crate::filters::{BlendWithImage, Blur, GAUSSIAN_RADIUS_PER_SIGMA, GaussianBlur, SRGB_LUMA};
 
 /// A 4x4 matrix on premultiplied RGBA, stored as columns: the output is
 /// `c[0] * r + c[1] * g + c[2] * b + c[3] * a`.
@@ -121,6 +127,30 @@ pub fn color_matrix(params: [f32; 12], _space: &WorkingSpace, pixels: &mut [[f32
     .apply(pixels);
 }
 
+/// [`LumaCurve`](crate::filters::LumaCurve): the Bézier tone curve on the
+/// sRGB luma plus the chroma gain, on premultiplied sRGB colour — the
+/// stage's declared operating space is sRGB, so the kernel runs between
+/// [`to_srgb`](filtrate_core::space::to_srgb) and
+/// [`from_srgb`](filtrate_core::space::from_srgb).
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "preserves the WGSL Bézier evaluation order"
+)]
+pub fn luma_curve(params: [f32; 7], _space: &WorkingSpace, pixels: &mut [[f32; 4]]) {
+    let [v0, v1, v2, v3, amount, chroma, offset] = params;
+    convert(pixels, |straight| {
+        let luma = straight[0].mul_add(
+            SRGB_LUMA[0],
+            straight[1].mul_add(SRGB_LUMA[1], straight[2] * SRGB_LUMA[2]),
+        );
+        let t = luma.clamp(0.0, 1.0);
+        let u = 1.0 - t;
+        let curve = u * u * u * v0 + 3.0 * t * u * u * v1 + 3.0 * t * t * u * v2 + t * t * t * v3;
+        let tone = amount.mul_add(curve - luma, luma) + offset;
+        straight.map(|channel| tone + chroma * (channel - luma))
+    });
+}
+
 impl<T: FilterParam> CpuFilter for GaussianBlur<T> {
     fn cpu_footprint(params: &Self::Params) -> filtrate_core::Footprint {
         Self::footprint_of(params)
@@ -132,7 +162,14 @@ impl<T: FilterParam> CpuFilter for GaussianBlur<T> {
         _space: &WorkingSpace,
         image: &mut CpuImage<'_>,
     ) -> Result<(), CpuFilterError> {
-        gaussian_blur(params[0], image);
+        match self.space {
+            OperatingSpace::Working => gaussian_blur(params[0], image),
+            OperatingSpace::Srgb => {
+                to_srgb(image.pixels);
+                gaussian_blur(params[0], image);
+                from_srgb(image.pixels);
+            }
+        }
         Ok(())
     }
 }

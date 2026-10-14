@@ -5,7 +5,7 @@ use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
 
-use cherenkov::RenderTransfer;
+use super::RenderTransfer;
 use filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
     EffectSetupResult, Executor, Filter,

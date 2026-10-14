@@ -14,6 +14,7 @@
 //! producer's release fence before the plane's lease on the frame ends.
 
 use std::os::fd::OwnedFd;
+use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -25,8 +26,8 @@ use rustc_hash::FxHashMap;
 use super::buffer::{self, Buffer, State};
 use super::ffi::{SurfaceControl, Transaction};
 use super::plan::{
-    self, BufferTransform, Dataspace, Encoding, Geometry, IRect, Inexpressible, Op, Placement,
-    Properties, Slot,
+    self, BufferTransform, Dataspace, Encoding, Geometry, HostedProperties, IRect, Inexpressible,
+    Op, Placement, Properties, Slot,
 };
 use crate::interop::android::SurfaceControlTarget;
 use crate::interop::{
@@ -38,6 +39,82 @@ use crate::render::present::Presenter;
 
 /// Buffers per engine part: one shown, one queued, one being drawn.
 const BUFFERS_PER_PART: usize = 3;
+
+/// A `SurfaceControl` the host supplies, shown on a plane of its own
+/// (`cherenkov::HostedLayers`).
+///
+/// The host goes on drawing into it — a `SurfaceControlViewHost`'s
+/// surface package, another renderer's container — and keeps its own
+/// reference. While it is bound, the engine reparents it under the
+/// surface's container and sets its z-order, visibility, crop, scale and
+/// position in the frame's transaction; its own coordinate space is
+/// mapped onto the layer's content space.
+#[derive(Clone)]
+pub struct HostedSurface(Arc<HostedInner>);
+
+struct HostedInner {
+    surface: SurfaceControl,
+    /// The engine container it is reparented under, null when it is under
+    /// none: an object bound on a second surface moves there, and the
+    /// first surface's next transaction must not take it back off the
+    /// display.
+    parent: AtomicPtr<super::ffi::ASurfaceControl>,
+}
+
+impl HostedSurface {
+    /// Wraps the host's reference to `surface`.
+    #[must_use]
+    pub fn new(surface: SurfaceControl) -> Self {
+        Self(Arc::new(HostedInner {
+            surface,
+            parent: AtomicPtr::new(std::ptr::null_mut()),
+        }))
+    }
+
+    /// Whether `self` and `other` hold the same surface control.
+    #[must_use]
+    pub fn is(&self, other: &Self) -> bool {
+        self.0.surface.as_ptr() == other.0.surface.as_ptr()
+    }
+
+    /// Records the reparenting under `root` in `transaction`.
+    fn attach(&self, transaction: &mut Transaction, root: &SurfaceControl) {
+        transaction.reparent(&self.0.surface, Some(root));
+        self.0.parent.store(root.as_ptr(), Ordering::Relaxed);
+    }
+
+    /// Records taking the surface off the display in `transaction` — only
+    /// while it is still under `root`.
+    fn detach(&self, transaction: &mut Transaction, root: &SurfaceControl) {
+        if self
+            .0
+            .parent
+            .compare_exchange(
+                root.as_ptr(),
+                std::ptr::null_mut(),
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            transaction.reparent(&self.0.surface, None);
+        }
+    }
+}
+
+impl std::fmt::Debug for HostedSurface {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("HostedSurface")
+            .field(&self.0.surface.as_ptr())
+            .finish()
+    }
+}
+
+/// A hosted surface control's place in the stack.
+struct HostedPlane {
+    object: HostedSurface,
+    shown: Option<HostedProperties>,
+}
 
 /// A promoted external frame's place in the stack.
 struct Promotion<'a> {
@@ -62,6 +139,12 @@ enum Entry<'a> {
     },
     /// A frame shown on its own plane.
     Frame(Promotion<'a>),
+    /// A hosted surface control.
+    Hosted {
+        layer: LayerId,
+        object: &'a HostedSurface,
+        properties: HostedProperties,
+    },
 }
 
 /// Why a frame's buffer cannot be shown on an Android plane.
@@ -184,6 +267,18 @@ fn stack<'a>(composition: &Composition<'a>) -> Result<Vec<Entry<'a>>, RenderErro
         let layer = plane.placement.layer;
         let (frame, generation) = match &plane.content {
             PlaneContent::Frame { frame, generation } => (frame, generation),
+            PlaneContent::Hosted { object, extent } => {
+                entries.push(Entry::Hosted {
+                    layer,
+                    object,
+                    properties: HostedProperties {
+                        z: 0,
+                        placement: plan::hosted(plane.placement, *extent, composition.size)
+                            .map_err(|e| cannot_show(layer, &e))?,
+                    },
+                });
+                continue;
+            }
             PlaneContent::Raster { view, generation } => {
                 entries.push(Entry::Engine {
                     view: *view,
@@ -338,6 +433,10 @@ pub struct Planes {
     parts: Vec<Part>,
     /// The planes showing promoted frames, by layer.
     promoted: FxHashMap<LayerId, Plane>,
+    /// The hosted surface controls the last transaction placed, by layer.
+    hosted: FxHashMap<LayerId, HostedPlane>,
+    /// `refresh`'s validated hosted placements, staged like `updates`.
+    hosted_updates: Vec<(LayerId, HostedProperties)>,
     /// `refresh`'s validated updates, staged while its transaction is
     /// built and drained once it is — the buffer is reused across calls.
     updates: Vec<Update>,
@@ -400,6 +499,8 @@ impl Planes {
             submit_lock,
             parts: Vec::new(),
             promoted: FxHashMap::default(),
+            hosted: FxHashMap::default(),
+            hosted_updates: Vec::new(),
             updates: Vec::new(),
             raster_updates: Vec::new(),
             retiring: Vec::new(),
@@ -525,7 +626,7 @@ impl Planes {
             .iter()
             .filter_map(|entry| match entry {
                 Entry::Engine { raster, .. } => Some(raster),
-                Entry::Frame(_) => None,
+                Entry::Frame(_) | Entry::Hosted { .. } => None,
             })
             .enumerate()
         {
@@ -635,7 +736,7 @@ impl Planes {
         });
         let mut sources = stack.iter().filter_map(|entry| match entry {
             Entry::Engine { view, raster, .. } => Some((*view, raster)),
-            Entry::Frame(_) => None,
+            Entry::Frame(_) | Entry::Hosted { .. } => None,
         });
         for (part, &at) in chosen.iter().enumerate() {
             let (source, raster) = sources.next().expect("one source per part");
@@ -725,6 +826,24 @@ impl Planes {
             transaction.set(&self.root, Op::Visible(true));
             self.root_shown = true;
         }
+        // A hosted object that left the stack leaves the display — before
+        // any entry below reparents an object, so one that only moved to
+        // another layer of this stack stays.
+        let hosted_in = |object: &HostedSurface| {
+            stack.iter().any(
+                |entry| matches!(entry, Entry::Hosted { object: placed, .. } if placed.is(object)),
+            )
+        };
+        self.hosted.retain(|layer, plane| {
+            let kept = stack.iter().any(|entry| {
+                matches!(entry, Entry::Hosted { layer: at, object, .. }
+                    if at == layer && object.is(&plane.object))
+            });
+            if !kept && !hosted_in(&plane.object) {
+                plane.object.detach(&mut transaction, &self.root);
+            }
+            kept
+        });
         let mut part = 0;
         let mut seen = Vec::new();
         for (index, entry) in stack.iter().enumerate() {
@@ -818,6 +937,26 @@ impl Planes {
                     }
                     plane.shown = Some(properties);
                 }
+                Entry::Hosted {
+                    layer,
+                    object,
+                    properties,
+                } => {
+                    let properties = HostedProperties { z, ..*properties };
+                    let plane = self.hosted.entry(*layer).or_insert_with(|| {
+                        object.attach(&mut transaction, &self.root);
+                        HostedPlane {
+                            object: (*object).clone(),
+                            shown: None,
+                        }
+                    });
+                    self.ops.clear();
+                    plan::diff_hosted(plane.shown.as_ref(), &properties, &mut self.ops);
+                    for &op in &self.ops {
+                        transaction.set(&plane.object.0.surface, op);
+                    }
+                    plane.shown = Some(properties);
+                }
             }
         }
         let gone: Vec<LayerId> = self
@@ -901,11 +1040,16 @@ impl Planes {
         // drops no staged release.
         self.updates.clear();
         self.raster_updates.clear();
+        self.hosted_updates.clear();
         let mut transaction = Transaction::new();
         for update in frames {
             let layer = update.placement.layer;
             let (frame, generation) = match &update.content {
                 PlaneContent::Frame { frame, generation } => (frame, generation),
+                PlaneContent::Hosted { extent, .. } => {
+                    self.refresh_hosted(&mut transaction, update.placement, *extent)?;
+                    continue;
+                }
                 PlaneContent::Raster { generation, .. } => {
                     let (index, part) = self
                         .parts
@@ -990,7 +1134,41 @@ impl Planes {
         for (index, properties) in self.raster_updates.drain(..) {
             self.parts[index].shown = Some(properties);
         }
+        for (layer, properties) in self.hosted_updates.drain(..) {
+            self.hosted.get_mut(&layer).expect("validated above").shown = Some(properties);
+        }
         Self::apply(transaction, &self.release, pending);
+        Ok(())
+    }
+
+    /// Records a committed hosted plane's new placement in `transaction`
+    /// and stages it for `refresh`'s bookkeeping.
+    ///
+    /// # Errors
+    /// [`RenderError`] when the placement is not expressible.
+    fn refresh_hosted(
+        &mut self,
+        transaction: &mut Transaction,
+        placement: &crate::render::planes::Placement,
+        extent: cherenkov::kurbo::Size,
+    ) -> Result<(), RenderError> {
+        let layer = placement.layer;
+        let plane = self
+            .hosted
+            .get(&layer)
+            .expect("refresh names a committed hosted plane");
+        let shown = plane.shown.expect("committed hosted properties");
+        let properties = HostedProperties {
+            placement: plan::hosted(placement, extent, self.size)
+                .map_err(|e| cannot_show(layer, &e))?,
+            ..shown
+        };
+        self.ops.clear();
+        plan::diff_hosted(Some(&shown), &properties, &mut self.ops);
+        for &op in &self.ops {
+            transaction.set(&plane.object.0.surface, op);
+        }
+        self.hosted_updates.push((layer, properties));
         Ok(())
     }
 
@@ -1007,6 +1185,11 @@ impl Planes {
         for part in self.parts.drain(..) {
             transaction.reparent(&part.surface, None);
             surfaces.push(part.surface);
+        }
+        // The host's surfaces leave the display with the engine's; the
+        // host keeps its references.
+        for (_, plane) in self.hosted.drain() {
+            plane.object.detach(&mut transaction, &self.root);
         }
         transaction.reparent(&self.root, None);
         transaction.apply(move |completion| {
@@ -1026,9 +1209,15 @@ impl Planes {
 
 impl Compositor for Planes {
     const BUDGET: usize = plan::BUDGET;
+    // `setBufferAlpha` fades a buffer only; a hosted container has none.
+    const HOSTS_OPACITY: bool = false;
 
     fn expresses_transform(transform: Affine) -> bool {
         plan::expresses_transform(transform)
+    }
+
+    fn hosts_transform(transform: Affine) -> bool {
+        plan::hosts_transform(transform)
     }
 
     fn expresses_clip(clip: &ShapeData) -> bool {
@@ -1041,6 +1230,10 @@ impl Compositor for Planes {
 }
 
 impl SystemPlanes for Planes {
+    // Android parts present inside `Transaction::apply` on the render
+    // thread; nothing travels to a platform compositor thread.
+    type Commit = ();
+
     fn captured_bytes(&self) -> u64 {
         self.parts
             .iter()
@@ -1053,12 +1246,12 @@ impl SystemPlanes for Planes {
     fn compose(
         &mut self,
         composition: Composition<'_>,
-    ) -> Result<crate::render::planes::Presentation, RenderError> {
+    ) -> Result<(crate::render::planes::Presentation, ()), RenderError> {
         self.present(composition).map(|shown| {
             if shown {
-                crate::render::planes::Presentation::Presented
+                (crate::render::planes::Presentation::Presented, ())
             } else {
-                crate::render::planes::Presentation::Retry
+                (crate::render::planes::Presentation::Retry, ())
             }
         })
     }

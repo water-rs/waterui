@@ -34,7 +34,34 @@
 
 use std::ops::Range;
 
+use crate::platform::KeyCode;
 use crate::renderer::{FocusedEditorSnapshot, InteractionKey, SemanticCore, TextContextMenuAction};
+use crate::text::{SessionTextLayout, TextLayout as _, TextPosition};
+
+/// Decodes the W3C `KeyboardEvent.key` value the Kotlin host's `w3cKey`
+/// reports for a `sendKeyEvent` key: the W3C logical key, and the legacy
+/// [`KeyCode`] derived from it. `w3cKey` resolves a character key with the
+/// Ctrl and Meta modifiers masked out of the lookup (Alt only when the
+/// layout maps no Alt character), so a chorded letter reports as the letter
+/// itself — the space bar stays the character `" "`, and a Ctrl+letter
+/// chord still matches on the logical key — while a dead key reports as
+/// `"Dead"`, not as its spacing accent.
+///
+/// # Panics
+///
+/// On a string that is no W3C key value: the host promises one.
+pub fn hardware_key(key: &str) -> (KeyCode, keyboard_types::Key) {
+    let logical_key: keyboard_types::Key = key.parse().unwrap_or_else(|_| {
+        panic!(
+            "the Android host reported the key `{key}`, which is not a W3C KeyboardEvent.key value"
+        )
+    });
+    let code = match &logical_key {
+        keyboard_types::Key::Character(character) => KeyCode::Character(character.clone()),
+        keyboard_types::Key::Named(named) => KeyCode::Named(named.to_string()),
+    };
+    (code, logical_key)
+}
 
 /// `InputConnection.CURSOR_UPDATE_IMMEDIATE` — send the anchor info once.
 pub const CURSOR_UPDATE_IMMEDIATE: i32 = 0x01;
@@ -881,7 +908,7 @@ impl EditingSession {
     }
 }
 
-fn layout_of(snapshot: &FocusedEditorSnapshot) -> &parley::Layout<[u8; 4]> {
+const fn layout_of(snapshot: &FocusedEditorSnapshot) -> &SessionTextLayout {
     &snapshot.display_layout
 }
 
@@ -889,22 +916,13 @@ fn layout_of(snapshot: &FocusedEditorSnapshot) -> &parley::Layout<[u8; 4]> {
 /// at its start extended to the next character's caret x — the convention
 /// `CursorAnchorInfo.Builder.addCharacterBounds` expects.
 fn char_rect(
-    layout: &parley::Layout<[u8; 4]>,
+    layout: &SessionTextLayout,
     display: &str,
     byte_start: usize,
     byte_next: usize,
 ) -> kurbo::Rect {
-    let affinity = |byte: usize| {
-        if byte >= display.len() {
-            parley::Affinity::Upstream
-        } else {
-            parley::Affinity::Downstream
-        }
-    };
-    let start = parley::Cursor::from_byte_index(layout, byte_start, affinity(byte_start))
-        .geometry(layout, 1.0);
-    let end = parley::Cursor::from_byte_index(layout, byte_next, affinity(byte_next))
-        .geometry(layout, 1.0);
+    let start = layout.caret_rect(TextPosition::in_text(byte_start, display.len()));
+    let end = layout.caret_rect(TextPosition::in_text(byte_next, display.len()));
     let x0 = start.x0.min(end.x0);
     let x1 = start.x0.max(end.x0).max(x0 + 1.0);
     kurbo::Rect::new(x0, start.y0, x1, start.y1)
@@ -1348,5 +1366,40 @@ mod tests {
         let filtered = session.anchor_info(&snapshot).expect("subscribed");
         assert_eq!(filtered.char_bounds, []);
         assert!(filtered.editor_bounds.is_none());
+    }
+
+    #[test]
+    fn hardware_keys_decode_to_their_w3c_values() {
+        use keyboard_types::{Key, NamedKey};
+        for (reported, code, logical) in [
+            (
+                " ",
+                KeyCode::Character(" ".into()),
+                Key::Character(" ".into()),
+            ),
+            (
+                "a",
+                KeyCode::Character("a".into()),
+                Key::Character("a".into()),
+            ),
+            (
+                "Enter",
+                KeyCode::Named("Enter".into()),
+                Key::Named(NamedKey::Enter),
+            ),
+            ("F5", KeyCode::Named("F5".into()), Key::Named(NamedKey::F5)),
+        ] {
+            assert_eq!(
+                super::hardware_key(reported),
+                (code, logical),
+                "`{reported}`"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "not a W3C KeyboardEvent.key value")]
+    fn a_hardware_key_outside_the_w3c_vocabulary_panics() {
+        let _ = super::hardware_key("\n");
     }
 }

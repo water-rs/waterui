@@ -12,10 +12,11 @@ use core::fmt;
 use core::num::NonZeroU32;
 use std::path::Path;
 
-use cherenkov::kurbo::Affine;
+use crate::draw::kurbo::Affine;
+use crate::draw::{Content, Draw as _, Recorder};
 use cherenkov::{
-    Backend, Content, Draw as _, Engine, EngineError, FrameTime, Offscreen, OffscreenFormat,
-    Readback, Recorder, RenderError, Rgba8, Rgba16F, Surface, SurfaceError, Uploads,
+    Backend, Engine, EngineError, FrameTime, Offscreen, OffscreenFormat, Readback, RenderError,
+    Rgba8, Rgba16F, Surface, SurfaceError, Uploads,
 };
 #[cfg(feature = "cpu")]
 use cherenkov_cpu::{Raster, RasterConfig};
@@ -221,9 +222,9 @@ impl OffscreenRenderer<Gpu> {
     /// [`EngineError`] when no adapter is available.
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     pub async fn new() -> Result<Self, OffscreenError> {
@@ -262,7 +263,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     pub fn with_config(config: B::Config) -> Result<Self, OffscreenError> {
         let engine = Rc::new(Engine::<B>::new(config)?);
         Ok(Self {
-            resources: SceneResources::new(Rc::clone(&engine)),
+            resources: B::resources(engine.clone()),
             engine,
         })
     }
@@ -275,7 +276,7 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     pub async fn with_config(config: B::Config) -> Result<Self, OffscreenError> {
         let engine = Rc::new(Engine::<B>::new(config).await?);
         Ok(Self {
-            resources: SceneResources::new(Rc::clone(&engine)),
+            resources: B::resources(engine.clone()),
             engine,
         })
     }
@@ -308,10 +309,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ) -> Result<OffscreenImage, OffscreenError> {
         let width = pixels_to_points(size.width(), scale);
         let height = pixels_to_points(size.height(), scale);
-        let surface = self.engine.surface(Offscreen::new(
-            (size.width(), size.height()),
-            OffscreenFormat::LinearF16,
-        ))?;
+        let surface = self.engine.surface(
+            Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+            || {},
+        )?;
         let mut resources = self.resources.recording();
         let recorded = surface.record(|recorder: &mut Recorder| {
             recorder.transform(Affine::scale(f64::from(scale)), |recorder| {
@@ -351,10 +352,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
         let height = pixels_to_points(size.height(), scale);
         let surface = self
             .engine
-            .surface(Offscreen::new(
-                (size.width(), size.height()),
-                OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+                || {},
+            )
             .await?;
         let mut resources = self.resources.recording();
         let recorded = surface.record(|recorder: &mut Recorder| {
@@ -389,10 +390,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
         size: OffscreenSize,
         transform: Affine,
     ) -> Result<OffscreenImage, OffscreenError> {
-        let surface = self.engine.surface(Offscreen::new(
-            (size.width(), size.height()),
-            OffscreenFormat::LinearF16,
-        ))?;
+        let surface = self.engine.surface(
+            Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+            || {},
+        )?;
         let picture = picture.rebuild_for_engine(&self.resources);
         let mut resources = self.resources.recording();
         resources.hold(picture.held());
@@ -435,10 +436,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ) -> Result<OffscreenImage, OffscreenError> {
         let surface = self
             .engine
-            .surface(Offscreen::new(
-                (size.width(), size.height()),
-                OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+                || {},
+            )
             .await?;
         let picture = picture.rebuild_for_engine(&self.resources);
         let mut resources = self.resources.recording();
@@ -524,10 +525,9 @@ mod tests {
     mod cpu {
         use alloc::sync::Arc;
 
-        use cherenkov::kurbo::{Affine, Rect};
-        use cherenkov::{
-            Draw, ImageColorSpace, ImageData, Rgba8, Sampling, StaticRecorder, WorkingColor,
-        };
+        use crate::draw::kurbo::{Affine, Rect};
+        use crate::draw::{Draw, Sampling, StaticRecorder, WorkingColor};
+        use crate::scene::source::{ImageColorSpace, ImageData, Rgba8};
         use cherenkov_cpu::Raster;
 
         use crate::offscreen::{OffscreenImage, OffscreenRenderer, OffscreenSize};

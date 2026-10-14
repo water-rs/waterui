@@ -10,7 +10,7 @@ use cherenkov_cpu::{Raster, RasterConfig};
 fn sweep_wraps_negative_spans_and_applies_paint_coordinates() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let gradient = SweepGradient::new((8.5, 16.5), 0.0, -std::f64::consts::PI)
         .stop(0.0, WorkingColor::new([1.0, 0.0, 0.0, 1.0]))
@@ -35,7 +35,7 @@ fn sweep_wraps_negative_spans_and_applies_paint_coordinates() {
 fn nonfinite_sweep_angles_are_errors() {
     let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
     let surface = engine
-        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     for end in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN] {
         surface.update(|tx| {

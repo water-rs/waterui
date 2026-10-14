@@ -4,6 +4,6 @@ pub mod debug;
 pub mod device;
 pub mod diff;
 pub mod elf;
+pub mod environment;
 pub mod gesture;
 pub mod inspector;
-pub mod rustc_wrapper;

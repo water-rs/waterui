@@ -8,18 +8,14 @@ packages with `publish = false` are excluded.
 ## Before merging the release pull request
 
 1. Verify `dev` and `main` share history and GitHub can compare them normally.
-2. Confirm `android-backend-revision` in the root manifest's
-   `[package.metadata.waterui]` names a published backend revision; the Apple
-   backend is in-tree at `backends/apple` and rides the framework commit
-   (`apple-backend-path`), so there is no Apple pin to confirm.
-3. Run the workspace CI matrix and the declared Rust 1.95 MSRV check.
-4. Package every publishable crate in the workspace.
-5. Rehearse registry publication in dependency order, then install the
+2. Run the workspace CI matrix and the declared Rust 1.95 MSRV check.
+3. Package every publishable crate in the workspace.
+4. Rehearse registry publication in dependency order, then install the
    newest published `waterui-cli` that satisfies the workspace's
    `minimum-cli-version` and run `water create` followed by `water build`.
-6. Build and smoke-test both WPE runtime architectures from their packaged ZIP
+5. Build and smoke-test both WPE runtime architectures from their packaged ZIP
    files.
-7. Review [the 0.3 migration guide](MIGRATION_0.3.md) and every changelog entry.
+6. Review [the 0.3 migration guide](MIGRATION_0.3.md) and every changelog entry.
 
 ## Release
 

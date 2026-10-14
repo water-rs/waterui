@@ -36,7 +36,7 @@ fn render_blend(
     engine: &Engine<Gpu>,
     mode: BlendMode,
 ) -> Result<([f32; 4], u32), Box<dyn std::error::Error>> {
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(Rect::new(0., 0., 32., 64.), RED);
@@ -135,7 +135,7 @@ fn extend_none_is_transparent_outside_the_range() -> Result<(), Box<dyn std::err
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -162,8 +162,9 @@ fn extend_none_is_transparent_outside_the_range() -> Result<(), Box<dyn std::err
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let rb = wait!(surface.readback())?;
     let px = |x: u32, y: u32| rb.pixels[(y * rb.width + x) as usize];
-    assert_eq!(px(4, 32), [0.0; 4], "left of range must be clear");
-    assert_eq!(px(60, 32), [0.0; 4], "right of range must be clear");
+    // Outside the gradient's range nothing is drawn: the cleared zero.
+    assert_eq!(px(4, 32).map(f32::to_bits), [0.0; 4].map(f32::to_bits), "left of range must be clear");
+    assert_eq!(px(60, 32).map(f32::to_bits), [0.0; 4].map(f32::to_bits), "right of range must be clear");
     assert!(px(32, 32)[3] > 0.99, "mid-range must be opaque");
     Ok(())
 }
@@ -175,7 +176,7 @@ fn a_sweep_gradient_resolves_angles() -> Result<(), Box<dyn std::error::Error>> 
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -222,7 +223,7 @@ fn blended_descendant_isolates_its_normal_group() -> Result<(), Box<dyn std::err
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(Rect::new(0., 0., 8., 8.), RED);
@@ -241,7 +242,8 @@ fn blended_descendant_isolates_its_normal_group() -> Result<(), Box<dyn std::err
     // background. Without outer isolation the `Clear` reached the scene
     // framebuffer and every pixel came out transparent.
     for (i, px) in rb.pixels.iter().enumerate() {
-        assert_eq!(*px, [1.0, 0.0, 0.0, 1.0], "pixel {i}");
+        // The isolated `Clear` leaves the opaque red background unchanged.
+        assert_eq!((*px).map(f32::to_bits), [1.0, 0.0, 0.0, 1.0].map(f32::to_bits), "pixel {i}");
     }
     Ok(())
 }
@@ -252,7 +254,7 @@ fn tree_layer_isolates_blended_child_layer() -> Result<(), Box<dyn std::error::E
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let background = surface.layer();
     let pass = surface.layer();
     let cutout = surface.layer();
@@ -291,7 +293,7 @@ fn tree_layer_isolates_blended_content_group() -> Result<(), Box<dyn std::error:
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let background = surface.layer();
     let pass = surface.layer();
     surface.update(|tx| {
@@ -326,7 +328,7 @@ fn nested_tree_layers_isolate_at_the_blending_parent() -> Result<(), Box<dyn std
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let background = surface.layer();
     let outer = surface.layer();
     let inner = surface.layer();
@@ -372,7 +374,7 @@ fn plus_lighter_saturates_alpha_not_colour() -> Result<(), Box<dyn std::error::E
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(Rect::new(0., 0., 32., 64.), HDR_RED);
@@ -412,7 +414,7 @@ fn clipped_blend_layer_scales_source_by_clip_coverage() -> Result<(), Box<dyn st
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((12, 12), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((12, 12), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(Rect::new(0.0, 0.0, 12.0, 12.0), GREY);
@@ -489,7 +491,7 @@ fn destructive_child_of_root_clears_the_surface_clear_colour()
         ),
         (BlendMode::Src, BLUE, WorkingColor::new([0.0; 4])),
     ] {
-        let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+        let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
         surface.clear_color(GREY);
         let cutout = surface.layer();
         surface.update(|tx| {
@@ -527,7 +529,7 @@ fn destructive_child_of_an_intermediate_layer_stays_isolated()
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     surface.clear_color(GREY);
     let pass = surface.layer();
     let cutout = surface.layer();
@@ -564,7 +566,7 @@ fn srgb_encoded_members_composite_in_the_encoded_space() -> Result<(), Box<dyn s
     let Some(engine) = wait!(engine()) else {
         return Ok(());
     };
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let red = Color::<Srgb>::new([1.0, 0.0, 0.0, 1.0]).to_working();
     let blue = Color::<Srgb>::new([0.0, 0.0, 1.0, 0.5]).to_working();
     surface.update(|tx| {

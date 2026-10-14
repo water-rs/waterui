@@ -6,58 +6,54 @@ use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
     NavigationTransitionDirection,
 };
-use waterui_backend_core::widget::NavigationMotion;
+use waterui_backend_core::widget::{ModalInteraction, NavigationMotion};
 use waterui_core::id::Id;
 
 pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
 
+/// A page a navigation transition presents: the entry the stack's
+/// `("page", identity)` scope lists.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NavigationPage {
+    pub(crate) identity: u64,
+}
+
+/// A matched-geometry element as its page recorded it this frame.
 #[derive(Clone)]
 pub struct NavigationMatchedElement {
+    /// The element's bounds in its page's space.
     pub(crate) bounds: kurbo::Rect,
-    pub scene: Recording,
+    /// The element's record space into its page's space.
+    pub(crate) to_page: kurbo::Affine,
+    /// The element's own placement transform, which its frame keeps under
+    /// a matched scope.
+    pub(crate) frame: kurbo::Affine,
+    pub(crate) cell: Rc<crate::renderer::mount::NodeCell>,
 }
 
-#[derive(Clone, Default)]
-pub struct NavigationCapturedScene {
-    pub(crate) scene: Recording,
+/// The matched elements one page record declared.
+#[derive(Default)]
+pub struct NavigationRecordedPage {
     pub(crate) sources: BTreeMap<Id, NavigationMatchedElement>,
     pub(crate) destinations: BTreeMap<Id, NavigationMatchedElement>,
-    /// The leading bar reserve the page was recorded under. A scene captured
-    /// before a compact split injected the reserve replays a title painted in
-    /// the chevron's space, so cache lookups reject a reserve mismatch.
-    pub(crate) leading_reserve: f64,
 }
 
-impl NavigationCapturedScene {
-    pub(crate) fn composed(&self) -> Recording {
-        let mut scene = self.scene.clone();
-        for element in self.sources.values().chain(self.destinations.values()) {
-            scene.append(&element.scene, kurbo::Affine::IDENTITY);
+impl NavigationRecordedPage {
+    pub(crate) fn element(&self, source: bool, id: Id) -> Option<&NavigationMatchedElement> {
+        if source {
+            self.sources.get(&id)
+        } else {
+            self.destinations.get(&id)
         }
-        scene
-    }
-
-    pub(crate) fn composed_without(&self, source: bool, id: Id) -> Recording {
-        let mut scene = self.scene.clone();
-        for (element_id, element) in &self.sources {
-            if !source || *element_id != id {
-                scene.append(&element.scene, kurbo::Affine::IDENTITY);
-            }
-        }
-        for (element_id, element) in &self.destinations {
-            if source || *element_id != id {
-                scene.append(&element.scene, kurbo::Affine::IDENTITY);
-            }
-        }
-        scene
     }
 }
 
-#[derive(Default)]
-pub struct NavigationSceneCapture {
-    sources: BTreeMap<Id, NavigationMatchedElement>,
-    destinations: BTreeMap<Id, NavigationMatchedElement>,
-    capturing_element: bool,
+/// A page being recorded: its scope's placement and the elements a matched
+/// transition lists outside it.
+pub struct NavigationPageRecord {
+    base: Rc<crate::renderer::mount::Placement>,
+    matched: Vec<(bool, Id)>,
+    page: NavigationRecordedPage,
 }
 
 pub struct HydroNavigationEntry {
@@ -107,6 +103,7 @@ pub type NavigationEvents = Rc<RefCell<Vec<HydroNavigationEvent>>>;
 #[derive(Default)]
 pub struct NavigationState {
     pub slots: BTreeMap<NavigationKey, NavigationSlot>,
+    pub(crate) page_records: Vec<NavigationPageRecord>,
     /// Addresses bound this frame. Held as plain addresses rather than keys so
     /// the slot map holds the only strong lease on each retained stack, which
     /// is what [`NavigationKey::is_retained_elsewhere`] measures.
@@ -137,12 +134,15 @@ pub struct NavigationSlot {
     pub entries: NavigationEntries,
     pub(crate) events: NavigationEvents,
     pub(crate) controller: NavigationController,
+    /// The cell controller-side mutations mark — the owning stack widget's
+    /// cell, bound at each `bind_navigation_entries`; shared with the
+    /// controller's `HydroNavigationController::target`.
+    pub(crate) target: Rc<RefCell<Weak<NodeCell>>>,
     pub(crate) last_depth: usize,
     pub(crate) active_identity: u64,
     pub(crate) root_state: Option<NavigationDestinationState>,
     pub(crate) root_is_active: bool,
-    pub(crate) last_scene: Option<NavigationCapturedScene>,
-    pub(crate) scene_cache: BTreeMap<u64, NavigationCapturedScene>,
+    pub(crate) last_page: Option<NavigationPage>,
     pub(crate) transition: Option<NavigationTransitionState>,
     /// Entries that left the stack this transaction. Held behind the same
     /// `Rc<RefCell>` lease as `entries` because a departing page stays
@@ -159,8 +159,8 @@ pub struct NavigationSlot {
 pub struct NavigationTransitionState {
     pub style: AnyNavigationTransition,
     pub(crate) direction: NavigationTransitionDirection,
-    pub(crate) from_scene: NavigationCapturedScene,
-    pub(crate) to_scene: NavigationCapturedScene,
+    pub(crate) from_page: NavigationPage,
+    pub(crate) to_page: NavigationPage,
     pub(crate) started_at: Instant,
     pub(crate) duration: Duration,
 }
@@ -169,7 +169,18 @@ pub struct HydroNavigationController {
     pub entries: NavigationEntries,
     pub(crate) events: NavigationEvents,
     pub(crate) next_entry_identity: u64,
-    pub(crate) signals: FrameSignals,
+    /// The cell a controller-side mutation marks — the owning stack widget's
+    /// cell once the slot is bound (see `NavigationSlot::target`).
+    pub(crate) target: Rc<RefCell<Weak<NodeCell>>>,
+}
+
+impl HydroNavigationController {
+    /// An entries mutation is layout-affecting: mark the stack's cell.
+    fn mark_layout(&self) {
+        if let Some(cell) = self.target.borrow().upgrade() {
+            cell.mark_layout();
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -185,13 +196,57 @@ pub enum NavigationInteractivePopPhase {
     },
 }
 
+/// How an interactive pop leaves the dragging phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NavigationInteractivePopOutcome {
+    /// Commit when progress is at least one half; otherwise cancel.
+    ByProgress,
+    /// Commit whatever the current progress.
+    Commit,
+    /// Cancel whatever the current progress.
+    Cancel,
+}
+
+/// One navigation stack that can receive system back for this frame.
+///
+/// Registered while the stack renders at depth greater than zero, in the
+/// same place as the edge-drag target. The last registration of the frame is
+/// the frontmost stack.
+#[derive(Clone)]
+pub struct NavigationBackTarget {
+    /// The node cell that registered the target.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
+    pub(crate) slot_key: NavigationKey,
+    pub(crate) width: f64,
+    pub(crate) from_page: NavigationPage,
+    pub(crate) to_page: NavigationPage,
+    pub(crate) controller: NavigationController,
+}
+
+/// The system-back gesture currently in flight.
+///
+/// Kept across frames, like the active pointer drag: the per-frame back-target
+/// list is rebuilt, but a gesture that started against the previous frame's
+/// frontmost target continues until that gesture ends.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SystemBackGesture {
+    /// No system-back gesture is in flight.
+    #[default]
+    Idle,
+    /// The gesture's `Started` was refused. Later phases of this gesture do
+    /// nothing until the next `Started`.
+    Ignored,
+    /// A predictive pop is in flight on this stack.
+    Active(NavigationKey),
+}
+
 pub struct NavigationInteractivePop {
     pub(crate) start_x: f64,
     pub width: f64,
     pub(crate) progress: f64,
     pub(crate) phase: NavigationInteractivePopPhase,
-    pub(crate) from_scene: NavigationCapturedScene,
-    pub(crate) to_scene: NavigationCapturedScene,
+    pub(crate) from_page: NavigationPage,
+    pub(crate) to_page: NavigationPage,
 }
 
 impl NavigationState {
@@ -213,26 +268,27 @@ impl NavigationState {
 }
 
 impl NavigationSlot {
-    pub(crate) fn new(signals: FrameSignals) -> Self {
+    pub(crate) fn new() -> Self {
         let entries = Rc::new(RefCell::new(Vec::new()));
         let events = Rc::new(RefCell::new(Vec::new()));
+        let target = Rc::new(RefCell::new(Weak::new()));
         let controller = NavigationController::new(HydroNavigationController {
             entries: Rc::clone(&entries),
             events: Rc::clone(&events),
             next_entry_identity: 1,
-            signals,
+            target: Rc::clone(&target),
         });
 
         Self {
             entries,
             events,
             controller,
+            target,
             last_depth: 0,
             active_identity: ROOT_NAVIGATION_IDENTITY,
             root_state: None,
             root_is_active: false,
-            last_scene: None,
-            scene_cache: BTreeMap::new(),
+            last_page: None,
             transition: None,
             pending_removed: Rc::new(RefCell::new(Vec::new())),
             pending_appearance: false,
@@ -247,8 +303,8 @@ impl NavigationInteractivePop {
     pub(crate) fn new(
         start_x: f64,
         width: f64,
-        from_scene: NavigationCapturedScene,
-        to_scene: NavigationCapturedScene,
+        from_page: NavigationPage,
+        to_page: NavigationPage,
     ) -> Self {
         assert!(width > 0.0, "interactive navigation width must be positive");
         Self {
@@ -256,8 +312,8 @@ impl NavigationInteractivePop {
             width,
             progress: 0.0,
             phase: NavigationInteractivePopPhase::Dragging,
-            from_scene,
-            to_scene,
+            from_page,
+            to_page,
         }
     }
 
@@ -273,8 +329,34 @@ impl NavigationInteractivePop {
         true
     }
 
-    pub(crate) fn finish(&mut self, now: Instant, cancelled: bool) {
-        self.phase = if cancelled || self.progress < 0.5 {
+    /// Sets the dragging progress directly, as a platform back gesture reports it.
+    ///
+    /// `progress` is clamped into `0..=1`. A non-finite value is a contract
+    /// breach. Returns whether the stored progress changed. A pop that has
+    /// already left the dragging phase ignores the report.
+    pub(crate) fn set_progress(&mut self, progress: f64) -> bool {
+        assert!(
+            progress.is_finite(),
+            "interactive navigation progress must be finite"
+        );
+        if !matches!(self.phase, NavigationInteractivePopPhase::Dragging) {
+            return false;
+        }
+        let progress = progress.clamp(0.0, 1.0);
+        if (progress - self.progress).abs() <= f64::EPSILON {
+            return false;
+        }
+        self.progress = progress;
+        true
+    }
+
+    pub(crate) fn finish(&mut self, now: Instant, outcome: NavigationInteractivePopOutcome) {
+        let cancel = match outcome {
+            NavigationInteractivePopOutcome::Cancel => true,
+            NavigationInteractivePopOutcome::Commit => false,
+            NavigationInteractivePopOutcome::ByProgress => self.progress < 0.5,
+        };
+        self.phase = if cancel {
             NavigationInteractivePopPhase::Cancelling {
                 started_at: now,
                 initial_progress: self.progress,
@@ -325,16 +407,16 @@ impl NavigationTransitionState {
     pub(crate) const fn new(
         style: AnyNavigationTransition,
         direction: NavigationTransitionDirection,
-        from_scene: NavigationCapturedScene,
-        to_scene: NavigationCapturedScene,
+        from_page: NavigationPage,
+        to_page: NavigationPage,
         started_at: Instant,
         duration: Duration,
     ) -> Self {
         Self {
             style,
             direction,
-            from_scene,
-            to_scene,
+            from_page,
+            to_page,
             started_at,
             duration,
         }
@@ -400,7 +482,7 @@ impl CustomNavigationController for HydroNavigationController {
             current_identity,
             removed,
         });
-        self.signals.request_refresh();
+        self.mark_layout();
     }
 }
 
@@ -535,29 +617,229 @@ impl SemanticCore {
 
     pub(crate) fn bind_navigation_entries(&mut self, key: &NavigationKey) -> NavigationEntries {
         self.navigation.active.insert(key.address());
+        // A navigation controller marks the stack widget's cell (the spec's
+        // 77-site mapping); the reading cell is it, or the root before a
+        // reader exists.
+        let cell = self.reader_cell().unwrap_or_else(|| Rc::clone(&self.root));
         let slot = self
             .navigation
             .slots
             .entry(key.clone())
-            .or_insert_with(|| NavigationSlot::new(self.signals.clone()));
+            .or_insert_with(NavigationSlot::new);
+        *slot.target.borrow_mut() = Rc::downgrade(&cell);
         Rc::clone(&slot.entries)
     }
 
-    pub(crate) fn finish_interactive_navigation_pop(&mut self, cancelled: bool) -> bool {
+    pub(crate) fn finish_interactive_navigation_pop(
+        &mut self,
+        outcome: NavigationInteractivePopOutcome,
+    ) -> bool {
         let now = self.frame_instant();
-        let mut changed = false;
-        for slot in self.navigation.slots.values_mut() {
+        // A system-back gesture owns its stack's pop until the platform says
+        // the gesture ended. A pointer release must not apply the drag
+        // threshold to that pop.
+        let system_back_slot = match &self.hit_test.system_back {
+            SystemBackGesture::Active(key) => Some(key.clone()),
+            SystemBackGesture::Idle | SystemBackGesture::Ignored => None,
+        };
+        let mut owners = Vec::new();
+        for (key, slot) in &mut self.navigation.slots {
+            if system_back_slot.as_ref() == Some(key) {
+                continue;
+            }
             if let Some(interactive) = slot.interactive_pop.as_mut()
                 && matches!(interactive.phase, NavigationInteractivePopPhase::Dragging)
             {
-                interactive.finish(now, cancelled);
-                changed = true;
+                interactive.finish(now, outcome);
+                owners.push(slot.target.borrow().clone());
             }
         }
-        if changed {
-            self.signals.request_refresh();
+        let changed = !owners.is_empty();
+        for owner in owners {
+            Self::mark_owner(&owner, crate::renderer::mount::Dirty::LAYOUT);
         }
         changed
+    }
+
+    /// Records one stack as a system-back target.
+    ///
+    /// The last materialized entry is the frontmost one — the retained list
+    /// keeps paint order, the same sequence the per-frame pushes gave.
+    pub(crate) fn register_back_target(&mut self, target: NavigationBackTarget) {
+        self.register_retained(target, kurbo::Rect::ZERO, |regs| &mut regs.back_targets);
+    }
+
+    /// Whether the frame that just rendered registered any system-back target.
+    #[cfg_attr(
+        not(any(target_os = "android", test)),
+        expect(
+            dead_code,
+            reason = "the Android runner reports this after each frame, and the navigation-back tests read it"
+        )
+    )]
+    #[must_use]
+    pub(crate) fn has_back_navigation_target(&self) -> bool {
+        !self.hit_test.back_targets.is_empty()
+            || self
+                .hit_test
+                .modal_interaction
+                .as_ref()
+                .is_some_and(ModalInteraction::is_active)
+    }
+
+    /// Drives one system-back phase against the frontmost target.
+    ///
+    /// `Started` runs the pop-attempt policy. A refusal ignores the rest of
+    /// that gesture. An allowed gesture begins an interactive pop the same
+    /// way an edge drag does. `Invoked` with no preceding `Started` runs the
+    /// policy and, when it allows the pop, requests the ordinary animated pop.
+    pub(crate) fn handle_back_navigation(
+        &mut self,
+        event: crate::BackNavigation,
+        env: &Environment,
+    ) -> bool {
+        // A modal scope owns system back while it is up: the gesture never
+        // reaches a navigation stack beneath it, and only a committed back
+        // runs the scope's escape action — the presented dialog's cancel path,
+        // shared with Escape (water-rs/waterui#1210). A started, progressing
+        // or cancelled gesture answers nothing, so a back swipe the user
+        // abandons leaves the dialog up.
+        if let Some(modal) = self
+            .hit_test
+            .modal_interaction
+            .clone()
+            .filter(|modal| modal.is_active() && modal.close_on_escape())
+        {
+            if matches!(event, crate::BackNavigation::Invoked) {
+                modal.handle_escape(env);
+            }
+            return true;
+        }
+        match event {
+            crate::BackNavigation::Started { .. } => self.begin_system_back(env),
+            crate::BackNavigation::Progressed { progress } => self.progress_system_back(progress),
+            crate::BackNavigation::Cancelled => {
+                self.end_system_back(NavigationInteractivePopOutcome::Cancel)
+            }
+            crate::BackNavigation::Invoked => self.invoke_system_back(env),
+        }
+    }
+
+    fn begin_system_back(&mut self, env: &Environment) -> bool {
+        // A new gesture replaces one that was still running.
+        if let SystemBackGesture::Active(key) = self.hit_test.system_back.clone() {
+            if let Some(slot) = self.navigation.slots.get_mut(&key) {
+                slot.interactive_pop = None;
+            }
+            self.hit_test.system_back = SystemBackGesture::Idle;
+        }
+        let Some(target) = self.hit_test.back_targets.last().cloned() else {
+            self.hit_test.system_back = SystemBackGesture::Ignored;
+            return false;
+        };
+        if !self.attempt_navigation_pop(&target.slot_key, env) {
+            self.hit_test.system_back = SystemBackGesture::Ignored;
+            return false;
+        }
+        let slot = self
+            .navigation
+            .slots
+            .get_mut(&target.slot_key)
+            .expect("Hydrolysis navigation slot missing");
+        slot.transition = None;
+        slot.interactive_pop = Some(NavigationInteractivePop::new(
+            0.0,
+            target.width,
+            target.from_page,
+            target.to_page,
+        ));
+        self.hit_test.system_back = SystemBackGesture::Active(target.slot_key);
+        Self::mark_owner(&target.owner, crate::renderer::mount::Dirty::LAYOUT);
+        true
+    }
+
+    fn progress_system_back(&mut self, progress: f64) -> bool {
+        let SystemBackGesture::Active(key) = self.hit_test.system_back.clone() else {
+            return false;
+        };
+        let changed = self
+            .navigation
+            .slots
+            .get_mut(&key)
+            .and_then(|slot| slot.interactive_pop.as_mut())
+            .is_some_and(|pop| pop.set_progress(progress));
+        if changed {
+            let owner = self
+                .navigation
+                .slots
+                .get(&key)
+                .map(|slot| slot.target.borrow().clone())
+                .unwrap_or_default();
+            Self::mark_owner(&owner, crate::renderer::mount::Dirty::LAYOUT);
+        }
+        changed
+    }
+
+    fn end_system_back(&mut self, outcome: NavigationInteractivePopOutcome) -> bool {
+        match self.hit_test.system_back.clone() {
+            SystemBackGesture::Idle => false,
+            SystemBackGesture::Ignored => {
+                self.hit_test.system_back = SystemBackGesture::Idle;
+                false
+            }
+            SystemBackGesture::Active(key) => {
+                self.hit_test.system_back = SystemBackGesture::Idle;
+                self.finish_system_back_slot(&key, outcome)
+            }
+        }
+    }
+
+    fn invoke_system_back(&mut self, env: &Environment) -> bool {
+        match self.hit_test.system_back.clone() {
+            SystemBackGesture::Active(key) => {
+                self.hit_test.system_back = SystemBackGesture::Idle;
+                self.finish_system_back_slot(&key, NavigationInteractivePopOutcome::Commit)
+            }
+            SystemBackGesture::Ignored => {
+                self.hit_test.system_back = SystemBackGesture::Idle;
+                false
+            }
+            SystemBackGesture::Idle => self.invoke_back_without_gesture(env),
+        }
+    }
+
+    fn invoke_back_without_gesture(&mut self, env: &Environment) -> bool {
+        let Some(target) = self.hit_test.back_targets.last().cloned() else {
+            return false;
+        };
+        if !self.attempt_navigation_pop(&target.slot_key, env) {
+            return false;
+        }
+        target.controller.request_pop(1);
+        true
+    }
+
+    fn finish_system_back_slot(
+        &mut self,
+        key: &NavigationKey,
+        outcome: NavigationInteractivePopOutcome,
+    ) -> bool {
+        let now = self.frame_instant();
+        let slot = self
+            .navigation
+            .slots
+            .get_mut(key)
+            .expect("Hydrolysis navigation slot missing");
+        let Some(interactive) = slot.interactive_pop.as_mut() else {
+            return false;
+        };
+        if !matches!(interactive.phase, NavigationInteractivePopPhase::Dragging) {
+            return false;
+        }
+        interactive.finish(now, outcome);
+        let owner = slot.target.borrow().clone();
+        Self::mark_owner(&owner, crate::renderer::mount::Dirty::LAYOUT);
+        true
     }
 
     pub(crate) fn attempt_navigation_pop(
@@ -705,9 +987,6 @@ impl SemanticCore {
                 .expect("Hydrolysis navigation slot missing during transaction completion");
             let appearance_identity = slot.pending_appearance.then_some(slot.active_identity);
             slot.pending_appearance = false;
-            for entry in slot.pending_removed.borrow().iter() {
-                slot.scene_cache.remove(&entry.identity);
-            }
             (
                 core::mem::take(&mut *slot.pending_removed.borrow_mut()),
                 appearance_identity,
@@ -742,65 +1021,56 @@ impl SemanticCore {
 }
 
 impl HydrolysisRenderer {
-    pub(crate) fn begin_navigation_scene_capture(&mut self) {
-        self.navigation_captures
-            .push(NavigationSceneCapture::default());
+    /// Starts recording a page inside its open `("page", identity)` scope.
+    /// `matched` names the elements a matched transition lists in its own
+    /// scopes instead of in their page.
+    pub(crate) fn begin_navigation_page(&mut self, matched: Vec<(bool, Id)>) {
+        let base = self.current_placement();
+        self.navigation.page_records.push(NavigationPageRecord {
+            base,
+            matched,
+            page: NavigationRecordedPage::default(),
+        });
     }
 
-    pub(crate) fn finish_navigation_scene_capture(
-        &mut self,
-        scene: Recording,
-    ) -> NavigationCapturedScene {
-        let capture = self
-            .navigation_captures
+    pub(crate) fn finish_navigation_page(&mut self) -> NavigationRecordedPage {
+        self.navigation
+            .page_records
             .pop()
-            .expect("navigation scene capture must be active");
-        assert!(
-            !capture.capturing_element,
-            "navigation element capture must finish before its page capture"
-        );
-        NavigationCapturedScene {
-            scene,
-            sources: capture.sources,
-            destinations: capture.destinations,
-            leading_reserve: 0.0,
-        }
+            .expect("navigation page record must be active")
+            .page
     }
 
-    pub(crate) fn begin_navigation_element_capture(&mut self) -> bool {
-        let Some(capture) = self.navigation_captures.last_mut() else {
-            return false;
+    /// Whether the page being recorded lists this element in a matched
+    /// scope rather than under its parent.
+    pub(crate) fn navigation_element_matched(&self, source: bool, id: Id) -> bool {
+        self.navigation
+            .page_records
+            .last()
+            .is_some_and(|record| record.matched.contains(&(source, id)))
+    }
+
+    /// Notes a matched-geometry element of the page being recorded; the
+    /// element's own program is the recording one.
+    pub(crate) fn note_navigation_element(&mut self, source: bool, id: Id, bounds: kurbo::Rect) {
+        let cell = Rc::clone(self.program().cell());
+        let world = self.record_world(kurbo::Affine::IDENTITY);
+        let Some(record) = self.navigation.page_records.last_mut() else {
+            return;
         };
-        assert!(
-            !capture.capturing_element,
-            "navigation transition metadata cannot be nested"
-        );
-        capture.capturing_element = true;
-        true
-    }
-
-    pub(crate) fn finish_navigation_element_capture(
-        &mut self,
-        source: bool,
-        id: Id,
-        bounds: kurbo::Rect,
-        scene: Recording,
-    ) {
-        let capture = self
-            .navigation_captures
-            .last_mut()
-            .expect("navigation element capture requires an active page capture");
-        assert!(
-            capture.capturing_element,
-            "navigation element capture was not started"
-        );
-        capture.capturing_element = false;
+        let to_page = record.base.resolved_transform(true).inverse() * world;
+        let element = NavigationMatchedElement {
+            bounds: to_page.transform_rect_bbox(bounds),
+            to_page,
+            frame: cell.placement().transform(),
+            cell,
+        };
         let elements = if source {
-            &mut capture.sources
+            &mut record.page.sources
         } else {
-            &mut capture.destinations
+            &mut record.page.destinations
         };
-        let previous = elements.insert(id, NavigationMatchedElement { bounds, scene });
+        let previous = elements.insert(id, element);
         assert!(
             previous.is_none(),
             "navigation transition id {id:?} was declared more than once in one page"
@@ -810,7 +1080,10 @@ impl HydrolysisRenderer {
 
 #[cfg(test)]
 mod tests {
-    use super::{NavigationCapturedScene, NavigationInteractivePop};
+    use super::{
+        NavigationInteractivePop, NavigationInteractivePopOutcome, NavigationInteractivePopPhase,
+        NavigationPage,
+    };
     use std::time::{Duration, Instant};
     use waterui_backend_core::widget::NavigationMotion;
     use waterui_core::EasingCurve;
@@ -830,11 +1103,11 @@ mod tests {
         let mut pop = NavigationInteractivePop::new(
             0.0,
             100.0,
-            NavigationCapturedScene::default(),
-            NavigationCapturedScene::default(),
+            NavigationPage::default(),
+            NavigationPage::default(),
         );
         assert!(pop.update(60.0));
-        pop.finish(started_at, false);
+        pop.finish(started_at, NavigationInteractivePopOutcome::ByProgress);
 
         let (progress, completed, cancelled) = pop.sample(
             started_at + Duration::from_millis(90),
@@ -855,11 +1128,11 @@ mod tests {
         let mut pop = NavigationInteractivePop::new(
             0.0,
             100.0,
-            NavigationCapturedScene::default(),
-            NavigationCapturedScene::default(),
+            NavigationPage::default(),
+            NavigationPage::default(),
         );
         assert!(pop.update(40.0));
-        pop.finish(started_at, false);
+        pop.finish(started_at, NavigationInteractivePopOutcome::ByProgress);
 
         let (progress, completed, cancelled) = pop.sample(
             started_at + Duration::from_millis(90),
@@ -872,5 +1145,39 @@ mod tests {
         );
         assert!(!completed);
         assert!(!cancelled);
+    }
+
+    #[test]
+    fn explicit_commit_completes_below_the_drag_threshold() {
+        let started_at = Instant::now();
+        let mut pop = NavigationInteractivePop::new(
+            0.0,
+            100.0,
+            NavigationPage::default(),
+            NavigationPage::default(),
+        );
+        assert!(pop.set_progress(0.2));
+        pop.finish(started_at, NavigationInteractivePopOutcome::Commit);
+        assert!(matches!(
+            pop.phase,
+            NavigationInteractivePopPhase::Completing { .. }
+        ));
+    }
+
+    #[test]
+    fn explicit_cancel_retreats_above_the_drag_threshold() {
+        let started_at = Instant::now();
+        let mut pop = NavigationInteractivePop::new(
+            0.0,
+            100.0,
+            NavigationPage::default(),
+            NavigationPage::default(),
+        );
+        assert!(pop.set_progress(0.8));
+        pop.finish(started_at, NavigationInteractivePopOutcome::Cancel);
+        assert!(matches!(
+            pop.phase,
+            NavigationInteractivePopPhase::Cancelling { .. }
+        ));
     }
 }

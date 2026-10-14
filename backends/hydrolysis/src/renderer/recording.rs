@@ -2,7 +2,7 @@
 //!
 //! [`Recording`] keeps the fixed imperative API drawing code records through;
 //! internally it is an ordered op list. The flush lowers each contiguous run
-//! into a [`cherenkov::Content`] the mounted engine layer shows, so engine
+//! into a [`waterui_graphics::draw::Content`] the mounted engine layer shows, so engine
 //! mounts and hierarchy persist across frames while only the content payload
 //! is replaced.
 //!
@@ -17,12 +17,14 @@ use peniko::{BlendMode, Fill, FontData};
 use rustc_hash::FxHashMap;
 use std::sync::Arc;
 
-use cherenkov::{
+use waterui_graphics::draw::{
     BlendSpace, ColorStop, Content, Draw, EvenOdd, Extend, Glyph as EngineGlyph, GlyphStyle, Group,
-    ImageColorSpace, ImageData, ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient,
-    Paint, RadialGradient, Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
+    ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient, Paint, RadialGradient,
+    Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
 };
-use waterui_graphics::{HeldResources, RecordingResources};
+use waterui_graphics::{
+    FontSource, HeldResources, ImageColorSpace, ImageData, RecordingResources, Rgba8,
+};
 
 /// One positioned glyph in a shaped run — the currency text shaping hands
 /// the recording.
@@ -136,7 +138,7 @@ enum Op {
     },
     Picture {
         transform: Affine,
-        picture: cherenkov::Picture,
+        picture: waterui_graphics::draw::Picture,
     },
     PopLayer,
 }
@@ -168,6 +170,35 @@ pub fn assert_well_formed_image(image: &peniko::ImageData) {
     );
 }
 
+/// `image`'s RGBA8 bytes fitted to `limits`: an admitted source passes
+/// through with its own pixels; a larger one — a decoded photo past the
+/// device's texture limit or its per-image budget — is Lanczos3-resampled
+/// to the largest admitted size at the same aspect ratio, so the
+/// registration below still holds the engine's contract rather than
+/// panicking on it. Returns `(width, height, bytes)`.
+fn fit_image_to_limits(
+    image: &peniko::ImageData,
+    limits: waterui_graphics::draw::ImageLimits,
+) -> (u32, u32, Arc<[u8]>) {
+    let (width, height) = limits.fit(image.width, image.height);
+    assert!(
+        (width, height) != (0, 0),
+        "hydrolysis renderer: engine image limits admit no image at all"
+    );
+    if (width, height) == (image.width, image.height) {
+        return (width, height, Arc::from(image.data.data()));
+    }
+    let source = image::RgbaImage::from_raw(image.width, image.height, image.data.data().to_vec())
+        .expect("hydrolysis renderer: a well-formed image fits RgbaImage::from_raw");
+    let resized = image::imageops::resize(
+        &source,
+        width,
+        height,
+        image::imageops::FilterType::Lanczos3,
+    );
+    (width, height, Arc::from(resized.into_raw()))
+}
+
 /// Engine-facing caches shared by every lowered scene: registered fonts and
 /// images, keyed by the identity of the peniko resource they came from.
 ///
@@ -181,9 +212,11 @@ pub struct SceneResources {
     /// The `SceneContent::build_scene` resource table, shared with every scene
     /// view this engine draws.
     inner: waterui_graphics::SceneResources,
-    fonts: std::cell::RefCell<FxHashMap<FontKey, waterui_graphics::Registered<cherenkov::Font>>>,
+    fonts: std::cell::RefCell<
+        FxHashMap<FontKey, waterui_graphics::Registered<waterui_graphics::draw::FontId>>,
+    >,
     images: std::cell::RefCell<
-        FxHashMap<ImageKey, waterui_graphics::Registered<cherenkov::Image<cherenkov::Rgba8>>>,
+        FxHashMap<ImageKey, waterui_graphics::Registered<waterui_graphics::draw::ImageId>>,
     >,
     /// Fresh engine registrations since the last
     /// [`Self::take_registration_stats`] — the frame-work counters' evidence
@@ -218,9 +251,9 @@ impl fmt::Debug for SceneResources {
 
 impl SceneResources {
     /// Creates caches served by `engine`.
-    pub(crate) fn new(engine: std::rc::Rc<crate::engine::GpuEngine>) -> Self {
+    pub(crate) fn new(engine: &std::rc::Rc<crate::engine::GpuEngine>) -> Self {
         Self {
-            inner: waterui_graphics::SceneResources::new(engine),
+            inner: waterui_graphics::SceneResources::with_shaders(engine.clone(), engine.clone()),
             fonts: std::cell::RefCell::new(FxHashMap::default()),
             images: std::cell::RefCell::new(FxHashMap::default()),
             font_registrations: std::cell::Cell::new(0),
@@ -251,7 +284,7 @@ impl SceneResources {
         &self,
         names: &mut RecordingResources<'_>,
         font: &FontData,
-    ) -> cherenkov::FontId {
+    ) -> waterui_graphics::draw::FontId {
         let key = FontKey {
             blob: font.data.id(),
             index: font.index,
@@ -259,8 +292,7 @@ impl SceneResources {
         if let Some(registered) = self.fonts.borrow().get(&key) {
             return names.name(registered);
         }
-        let source = cherenkov::FontSource::bytes(Arc::<[u8]>::from(font.data.data()))
-            .with_index(font.index);
+        let source = FontSource::bytes(Arc::<[u8]>::from(font.data.data())).with_index(font.index);
         let registered = self
             .inner
             .font(source)
@@ -296,11 +328,12 @@ impl SceneResources {
             image.format
         );
         assert_well_formed_image(image);
-        let bytes = image.data.data();
-        let data =
-            ImageData::<cherenkov::Rgba8>::new(image.width, image.height, Arc::<[u8]>::from(bytes))
-                .expect("hydrolysis renderer: well-formed Rgba8 image rejected")
-                .color_space(ImageColorSpace::Srgb);
+        // A decoded image can exceed what the engine holds: resample to
+        // the limits' fit so the registration is the contract it asserts.
+        let (width, height, bytes) = fit_image_to_limits(image, self.inner.image_limits());
+        let data = ImageData::<Rgba8>::new(width, height, bytes)
+            .expect("hydrolysis renderer: well-formed Rgba8 image rejected")
+            .color_space(ImageColorSpace::Srgb);
         let data = if image.alpha_type == peniko::ImageAlphaType::AlphaPremultiplied {
             data.premultiplied()
         } else {
@@ -354,18 +387,16 @@ impl Recording {
         Self::default()
     }
 
+    /// Whether nothing was recorded.
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.ops.is_empty()
+    }
+
     /// Clears all recorded commands.
+    #[cfg(test)]
     pub(crate) fn reset(&mut self) {
         self.ops.clear();
         self.open_layers = 0;
-    }
-
-    /// Whether the recording encodes any visible content.
-    ///
-    /// Layer scopes alone emit clip geometry in the lowered content, matching
-    /// what the old encoder counted as non-empty.
-    pub(crate) const fn is_empty(&self) -> bool {
-        self.ops.is_empty()
     }
 
     /// Fills `shape` under `transform` with `brush`.
@@ -454,7 +485,11 @@ impl Recording {
 
     /// Draws a recorded picture under `transform` — the content of a child
     /// view recorded against the same engine.
-    pub(crate) fn draw_picture(&mut self, transform: Affine, picture: cherenkov::Picture) {
+    pub(crate) fn draw_picture(
+        &mut self,
+        transform: Affine,
+        picture: waterui_graphics::draw::Picture,
+    ) {
         self.ops.push(Op::Picture { transform, picture });
     }
 
@@ -622,10 +657,48 @@ impl Recording {
             }));
     }
 
-    /// Push scopes still open, for the tracked-stack invariant the flush
-    /// asserts.
-    pub(crate) const fn open_clip_count(&self) -> u32 {
-        self.open_layers
+    /// Each clip/opacity scope's clip rect with the transform it was pushed
+    /// under, in op order — `transform` maps the clip's own rect into scene
+    /// space, so `transform * clip` is the rect the scope clips to. For
+    /// tests asserting clip geometry.
+    #[cfg(test)]
+    pub(crate) fn clip_scopes(&self) -> impl Iterator<Item = (Affine, Rect)> {
+        self.ops.iter().filter_map(|op| match op {
+            Op::PushGroup {
+                transform, clip, ..
+            } => Some((*transform, clip.bounds())),
+            _ => None,
+        })
+    }
+
+    /// Opens a plain clip scope of `clip` under `transform` — for tests
+    /// flattening committed layer clips back into one recording.
+    #[cfg(test)]
+    pub(crate) fn push_clip_data(&mut self, transform: Affine, clip: ShapeData) {
+        self.open_layers += 1;
+        self.ops.push(Op::PushGroup {
+            rule: Fill::NonZero,
+            blend: BlendMode::default(),
+            opacity: 1.0,
+            transform,
+            clip,
+        });
+    }
+
+    /// Each fill op's shape bounds with the transform it was drawn under,
+    /// in op order — `transform * shape` is the rect the fill paints. For
+    /// tests asserting paint geometry.
+    #[cfg(test)]
+    pub(crate) fn fill_bounds(&self) -> impl Iterator<Item = (Affine, Rect)> {
+        self.ops.iter().filter_map(|op| match op {
+            Op::Fill {
+                transform, shape, ..
+            }
+            | Op::FillPaint {
+                transform, shape, ..
+            } => Some((*transform, shape.bounds())),
+            _ => None,
+        })
     }
 
     /// Each recorded glyph run's transform and run-local glyph offsets, in op
@@ -746,7 +819,7 @@ fn lower(
                     peniko::Style::Fill(_) => GlyphStyle::Fill,
                     peniko::Style::Stroke(stroke) => GlyphStyle::Stroke(stroke.clone()),
                 };
-                let run = cherenkov::GlyphRun {
+                let run = waterui_graphics::draw::GlyphRun {
                     font,
                     size: *font_size,
                     coords: coords.to_vec().into(),
@@ -810,7 +883,7 @@ fn lower(
                         // under the push site's ambient, restored inside the
                         // scope to keep it from compounding onto every op.
                         r.transform(transform.inverse(), |r| {
-                            if alpha >= 1.0 && blend == cherenkov::BlendMode::Normal {
+                            if alpha >= 1.0 && blend == waterui_graphics::draw::BlendMode::Normal {
                                 lower(ops, index, r, resources, names);
                             } else {
                                 let group = Group {
@@ -835,13 +908,19 @@ fn lower(
 fn shape_data<S: Shape + 'static>(rule: Fill, shape: &S) -> ShapeData {
     match rule {
         Fill::NonZero => ShapeData::of(shape),
-        Fill::EvenOdd => ShapeData::of(&EvenOdd(shape.to_path(cherenkov::PATH_TOLERANCE))),
+        Fill::EvenOdd => ShapeData::of(&EvenOdd(
+            shape.to_path(waterui_graphics::draw::PATH_TOLERANCE),
+        )),
     }
 }
 
 /// The working colour of a peniko sRGB colour.
 pub fn working_color(color: peniko::Color) -> WorkingColor {
-    WorkingColor::new(color.convert::<cherenkov::LinearDisplayP3>().components)
+    WorkingColor::new(
+        color
+            .convert::<waterui_graphics::draw::LinearDisplayP3>()
+            .components,
+    )
 }
 
 /// The engine paint of a peniko gradient.
@@ -887,8 +966,12 @@ fn gradient_paint(gradient: &peniko::Gradient) -> Paint {
 /// The working colour of a run-time colour space colour.
 fn dynamic_working_color(color: peniko::color::DynamicColor) -> WorkingColor {
     let linear = color.convert(peniko::color::ColorSpaceTag::LinearSrgb);
-    let alpha = linear.to_alpha_color::<cherenkov::LinearSrgb>();
-    WorkingColor::new(alpha.convert::<cherenkov::LinearDisplayP3>().components)
+    let alpha = linear.to_alpha_color::<waterui_graphics::draw::LinearSrgb>();
+    WorkingColor::new(
+        alpha
+            .convert::<waterui_graphics::draw::LinearDisplayP3>()
+            .components,
+    )
 }
 
 /// The gradient interpolation space the engine supports; any other space is
@@ -922,37 +1005,37 @@ const fn sampling(quality: peniko::ImageQuality) -> Sampling {
 /// one combined mode; peniko's separable pair collapses where Porter-Duff and
 /// CSS compositing overlap, and the remaining combinations have no engine
 /// equivalent.
-fn blend_mode(mode: BlendMode) -> cherenkov::BlendMode {
+fn blend_mode(mode: BlendMode) -> waterui_graphics::draw::BlendMode {
     use peniko::{Compose, Mix};
     match (mode.mix, mode.compose) {
-        (Mix::Normal, Compose::SrcOver) => cherenkov::BlendMode::Normal,
-        (Mix::Multiply, Compose::SrcOver) => cherenkov::BlendMode::Multiply,
-        (Mix::Screen, Compose::SrcOver) => cherenkov::BlendMode::Screen,
-        (Mix::Overlay, Compose::SrcOver) => cherenkov::BlendMode::Overlay,
-        (Mix::Darken, Compose::SrcOver) => cherenkov::BlendMode::Darken,
-        (Mix::Lighten, Compose::SrcOver) => cherenkov::BlendMode::Lighten,
-        (Mix::ColorDodge, Compose::SrcOver) => cherenkov::BlendMode::ColorDodge,
-        (Mix::ColorBurn, Compose::SrcOver) => cherenkov::BlendMode::ColorBurn,
-        (Mix::HardLight, Compose::SrcOver) => cherenkov::BlendMode::HardLight,
-        (Mix::SoftLight, Compose::SrcOver) => cherenkov::BlendMode::SoftLight,
-        (Mix::Difference, Compose::SrcOver) => cherenkov::BlendMode::Difference,
-        (Mix::Exclusion, Compose::SrcOver) => cherenkov::BlendMode::Exclusion,
-        (Mix::Hue, Compose::SrcOver) => cherenkov::BlendMode::Hue,
-        (Mix::Saturation, Compose::SrcOver) => cherenkov::BlendMode::Saturation,
-        (Mix::Color, Compose::SrcOver) => cherenkov::BlendMode::Color,
-        (Mix::Luminosity, Compose::SrcOver) => cherenkov::BlendMode::Luminosity,
-        (Mix::Normal, Compose::Clear) => cherenkov::BlendMode::Clear,
-        (Mix::Normal, Compose::Copy) => cherenkov::BlendMode::Src,
-        (Mix::Normal, Compose::Dest) => cherenkov::BlendMode::Dst,
-        (Mix::Normal, Compose::DestOver) => cherenkov::BlendMode::DestOver,
-        (Mix::Normal, Compose::SrcIn) => cherenkov::BlendMode::SrcIn,
-        (Mix::Normal, Compose::DestIn) => cherenkov::BlendMode::DestIn,
-        (Mix::Normal, Compose::SrcOut) => cherenkov::BlendMode::SrcOut,
-        (Mix::Normal, Compose::DestOut) => cherenkov::BlendMode::DestOut,
-        (Mix::Normal, Compose::SrcAtop) => cherenkov::BlendMode::SrcAtop,
-        (Mix::Normal, Compose::DestAtop) => cherenkov::BlendMode::DestAtop,
-        (Mix::Normal, Compose::Xor) => cherenkov::BlendMode::Xor,
-        (Mix::Normal, Compose::PlusLighter) => cherenkov::BlendMode::PlusLighter,
+        (Mix::Normal, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Normal,
+        (Mix::Multiply, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Multiply,
+        (Mix::Screen, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Screen,
+        (Mix::Overlay, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Overlay,
+        (Mix::Darken, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Darken,
+        (Mix::Lighten, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Lighten,
+        (Mix::ColorDodge, Compose::SrcOver) => waterui_graphics::draw::BlendMode::ColorDodge,
+        (Mix::ColorBurn, Compose::SrcOver) => waterui_graphics::draw::BlendMode::ColorBurn,
+        (Mix::HardLight, Compose::SrcOver) => waterui_graphics::draw::BlendMode::HardLight,
+        (Mix::SoftLight, Compose::SrcOver) => waterui_graphics::draw::BlendMode::SoftLight,
+        (Mix::Difference, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Difference,
+        (Mix::Exclusion, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Exclusion,
+        (Mix::Hue, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Hue,
+        (Mix::Saturation, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Saturation,
+        (Mix::Color, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Color,
+        (Mix::Luminosity, Compose::SrcOver) => waterui_graphics::draw::BlendMode::Luminosity,
+        (Mix::Normal, Compose::Clear) => waterui_graphics::draw::BlendMode::Clear,
+        (Mix::Normal, Compose::Copy) => waterui_graphics::draw::BlendMode::Src,
+        (Mix::Normal, Compose::Dest) => waterui_graphics::draw::BlendMode::Dst,
+        (Mix::Normal, Compose::DestOver) => waterui_graphics::draw::BlendMode::DestOver,
+        (Mix::Normal, Compose::SrcIn) => waterui_graphics::draw::BlendMode::SrcIn,
+        (Mix::Normal, Compose::DestIn) => waterui_graphics::draw::BlendMode::DestIn,
+        (Mix::Normal, Compose::SrcOut) => waterui_graphics::draw::BlendMode::SrcOut,
+        (Mix::Normal, Compose::DestOut) => waterui_graphics::draw::BlendMode::DestOut,
+        (Mix::Normal, Compose::SrcAtop) => waterui_graphics::draw::BlendMode::SrcAtop,
+        (Mix::Normal, Compose::DestAtop) => waterui_graphics::draw::BlendMode::DestAtop,
+        (Mix::Normal, Compose::Xor) => waterui_graphics::draw::BlendMode::Xor,
+        (Mix::Normal, Compose::PlusLighter) => waterui_graphics::draw::BlendMode::PlusLighter,
         (mix, compose) => panic!(
             "hydrolysis renderer: blend mode ({mix:?}, {compose:?}) has no engine equivalent"
         ),
@@ -992,7 +1075,7 @@ pub fn transform_paint(paint: Paint, transform: Option<Affine>) -> Paint {
             Paint::Sweep(gradient)
         }
         Paint::Mesh(mesh) => Paint::Mesh(
-            cherenkov::MeshGradient::new(
+            waterui_graphics::draw::MeshGradient::new(
                 mesh.columns(),
                 mesh.rows(),
                 mesh.points().iter().map(|p| transform * *p).collect(),
@@ -1040,8 +1123,8 @@ impl Recording {
 
 #[cfg(test)]
 mod tests {
-    use cherenkov::{MeshColorInterpolation, MeshGradient};
     use kurbo::Point;
+    use waterui_graphics::draw::{MeshColorInterpolation, MeshGradient};
 
     use super::*;
 
@@ -1074,5 +1157,30 @@ mod tests {
             MeshColorInterpolation::Smoothstep
         );
         assert_eq!(transformed.points()[0], Point::new(4.0, 2.0));
+    }
+
+    /// A decoded source the engine's limits admit keeps its own pixels;
+    /// a larger one is resampled to the fit before it reaches the
+    /// registration — the oversized-decode case from water-rs/waterui#1806.
+    #[test]
+    fn an_oversized_image_is_resampled_to_the_engine_limits() {
+        let source = peniko::ImageData {
+            data: peniko::Blob::from(vec![255u8; 16 * 4 * 4]),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: 16,
+            height: 4,
+        };
+        let limits = waterui_graphics::draw::ImageLimits {
+            max_dimension: 8,
+            max_texels: 64,
+        };
+        let (width, height, bytes) = fit_image_to_limits(&source, limits);
+        assert_eq!((width, height), (8, 2));
+        assert_eq!(bytes.len(), 8 * 2 * 4);
+        let (width, height, bytes) =
+            fit_image_to_limits(&source, waterui_graphics::draw::ImageLimits::UNLIMITED);
+        assert_eq!((width, height), (16, 4));
+        assert_eq!(&*bytes, &[255u8; 16 * 4 * 4][..]);
     }
 }

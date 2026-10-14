@@ -45,6 +45,22 @@ pub trait View: 'static {
     /// WARNING: This method should not be called directly by user.
     fn body(self, _env: &Environment) -> impl View;
 
+    /// Animates structural insertion and removal of this view.
+    ///
+    /// Value updates do not trigger a transition. Applied to a `Dynamic`, this
+    /// decorates its replacing content; applied to a collection item, it follows
+    /// that item's membership. Removal immediately ends semantic membership,
+    /// while the backend retains a non-interactive visual and a fixed-size slot.
+    fn transition(
+        self,
+        transition: impl crate::transition::Transition,
+    ) -> Metadata<crate::transition::TransitionSpec>
+    where
+        Self: Sized,
+    {
+        Metadata::new(self, crate::transition::TransitionSpec::new(transition))
+    }
+
     #[doc(hidden)]
     /// Returns the stretch axis for this view.
     ///

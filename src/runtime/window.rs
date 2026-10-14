@@ -2,9 +2,15 @@
 //!
 //! # Window Backgrounds
 //!
-//! Windows support solid color backgrounds. For blur effects, use `Material`:
-//! `Material` is delegated to platform backends as `MaterialBackground` metadata
-//! and is best-effort (quality and behavior may vary by platform).
+//! A window's background is what lies behind its content: the theme's
+//! background colour, a solid colour (translucent through its alpha), or a
+//! [`Material`]. A material window background is that window's material. The
+//! mainline backends realize it at the window — within-window levels as a
+//! backdrop treatment of the window behind its content, behind-window levels
+//! by letting the desktop show through the window; a backend that does not
+//! realize materials draws the window opaque in the theme's background
+//! colour. See [`WindowBackground::Material`] for the per-platform
+//! realizations.
 //!
 //! ```rust
 //! use waterui::prelude::*;
@@ -14,29 +20,31 @@
 //! let tinted = Window::new("Tinted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
 //!     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
 //!
-//! // Frosted glass window (opaque window + material blur on content)
+//! // Frosted glass window: the desktop shows through, blurred on macOS;
+//! // on Hydrolysis tinted, and blurred where the compositor
+//! // supports it
 //! let frosted = Window::new("Frosted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
-//!     .background(Material::Regular);
+//!     .background(Material::UltraThin);
 //! ```
 
-use std::{fmt::Debug, rc::Rc};
+use std::{fmt::Debug, future::Future, rc::Rc, sync::Arc};
 
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
-use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
-use waterui_core::{AnyView, Dynamic, Environment, IgnorableMetadata, View, flatten_signal};
+use waterui_core::handler::{AnyViewBuilder, Handler, ViewBuilder, boxed_action};
+use waterui_core::{AnyView, Dynamic, Environment, View, flatten_signal};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
+
+pub use super::window_close::CloseReply;
+use super::window_close::{CloseRequest, Question};
 
 use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
 use crate::snackbar::SnackbarManager;
 use crate::{
-    ViewExt,
-    background::{Material, MaterialBackground},
-    component::label::LabelDisplayMode,
-    prelude::FullScreenOverlayManager,
-    theme::color::Background,
+    ViewExt, background::Material, component::label::LabelDisplayMode,
+    prelude::FullScreenOverlayManager, theme::color::Background,
 };
 
 /// Represents a window in the UI.
@@ -48,7 +56,12 @@ pub struct Window {
     pub title: Computed<Str>,
     /// Whether the window is closable.
     ///
-    /// Notice that it may not be supported on all platforms.
+    /// How each platform honours `false`:
+    ///
+    /// - **macOS and Windows:** the close button is disabled.
+    /// - **Linux (X11 and Wayland):** the button stays drawn and enabled,
+    ///   but the close request it sends is ignored.
+    /// - **iOS, Android and web:** there is no window close.
     pub closable: bool,
     /// Whether the window is resizable.
     ///
@@ -78,8 +91,9 @@ pub struct Window {
     ///
     /// Use this to create transparent or frosted glass windows. Reactive:
     /// backends re-apply the background when the binding changes after the
-    /// window is shown, including a switch between [`WindowBackground::Opaque`]
-    /// and a translucent [`WindowBackground::Color`]. Backends paint what
+    /// window is shown, including a switch between [`WindowBackground::Opaque`],
+    /// a translucent [`WindowBackground::Color`] and a
+    /// [`WindowBackground::Material`]. Backends realize what
     /// [`Window::resolved_background`] resolves it to.
     ///
     /// Notice that it may not be supported on all platforms.
@@ -183,6 +197,142 @@ pub struct Window {
     /// Platform support: hydrolysis/winit (X11 `WM_NORMAL_HINTS`, macOS),
     /// macOS (`NSWindow.contentResizeIncrements`). Others ignore it.
     pub resize_increments: Option<Computed<Size>>,
+    /// The window's own icon, or `None` for the application icon.
+    ///
+    /// Reactive: backends observe the binding and re-apply the icon to a
+    /// shown window, so an app can switch icons at runtime — following a
+    /// theme change, say — through [`WindowHandle::set_icon`] or its own
+    /// binding. `None`, the default, keeps the application icon the `water`
+    /// CLI stages next to the asset bundle, and setting the binding back to
+    /// `None` restores it.
+    ///
+    /// Platform support: hydrolysis/winit's `set_window_icon` realizes the
+    /// icon on X11, and on Windows alongside `set_taskbar_icon` (the
+    /// taskbar and Alt-Tab read the separate big icon). Wayland and macOS
+    /// are unsupported — winit 0.30 cannot set a window icon there — and
+    /// Hydrolysis on Android has no per-window icon. `AppKit` and `UIKit`
+    /// identify an application by one icon: unsupported there, not faked
+    /// through the Dock. The attribute does not cross the C ABI.
+    pub icon: Binding<Option<WindowIcon>>,
+    /// The close-request machine [`Self::on_close_request`] installs into,
+    /// shared by `Rc` with [`WindowHandle`] and armed by the backend when the
+    /// window is realized.
+    close_request: CloseRequest,
+}
+
+/// A window's own icon: straight-alpha sRGB RGBA8 pixels and their size.
+///
+/// Cloning shares the pixels, so a [`Binding`] snapshot is cheap. Platforms
+/// pick or scale the size they show; a square image of 32 or 64 pixels suits
+/// title bars and taskbars.
+#[derive(Clone)]
+pub struct WindowIcon {
+    width: u32,
+    height: u32,
+    rgba: Arc<[u8]>,
+}
+
+impl WindowIcon {
+    /// An icon of `width × height` pixels, `rgba` holding them row by row,
+    /// top to bottom, four bytes each — red, green, blue and straight
+    /// (non-premultiplied) alpha.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the icon has no pixels, or when `rgba` is not exactly
+    /// `width * height * 4` bytes long.
+    #[must_use]
+    pub fn new(width: u32, height: u32, rgba: impl Into<Arc<[u8]>>) -> Self {
+        let rgba = rgba.into();
+        assert!(
+            width > 0 && height > 0,
+            "WindowIcon::new: a window icon needs at least one pixel, got {width}x{height}"
+        );
+        let expected = usize::try_from(width)
+            .ok()
+            .and_then(|width| width.checked_mul(usize::try_from(height).ok()?))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .unwrap_or_else(|| {
+                panic!("WindowIcon::new: a {width}x{height} icon does not fit in memory")
+            });
+        assert_eq!(
+            rgba.len(),
+            expected,
+            "WindowIcon::new: a {width}x{height} icon takes {expected} RGBA8 bytes, got {}",
+            rgba.len()
+        );
+        Self {
+            width,
+            height,
+            rgba,
+        }
+    }
+
+    /// Width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The pixels, `width * height * 4` bytes of straight-alpha RGBA, row by
+    /// row from the top.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
+impl PartialEq for WindowIcon {
+    fn eq(&self, other: &Self) -> bool {
+        // Snapshots of one binding share their pixels, so the common
+        // comparison — has the icon changed since the last sync? — never
+        // reads them.
+        self.width == other.width
+            && self.height == other.height
+            && (Arc::ptr_eq(&self.rgba, &other.rgba) || self.rgba == other.rgba)
+    }
+}
+
+impl Eq for WindowIcon {}
+
+impl Debug for WindowIcon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowIcon")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Converts a fixed icon or an application-owned icon binding into the
+/// reactive value carried by a [`Window`].
+pub trait IntoWindowIcon {
+    /// Converts this value into a window-icon binding.
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>>;
+}
+
+impl IntoWindowIcon for WindowIcon {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        Binding::container(Some(self))
+    }
+}
+
+impl IntoWindowIcon for Option<WindowIcon> {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        Binding::container(self)
+    }
+}
+
+impl IntoWindowIcon for Binding<Option<WindowIcon>> {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        self
+    }
 }
 
 /// A connected display, as the backend resolved it for a window's placement.
@@ -315,18 +465,19 @@ pub enum WindowStyle {
     FullSizeContentView,
 }
 
-/// The background style of a window.
-///
-/// This only supports opaque or solid color backgrounds.
-/// For blur effects, use `Material` which wraps content with `MaterialBackground` metadata.
+/// The background style of a window: what lies behind its content.
 ///
 /// # Platform Support
+///
+/// [`Opaque`](Self::Opaque) and [`Color`](Self::Color):
 ///
 /// - **macOS**: `NSWindow.backgroundColor` and `isOpaque`.
 /// - **Android**: `Window.setBackgroundDrawable()`.
 /// - **Linux (GTK)**: window CSS background.
 /// - **Windows (`WinUI`)**: the content root's background brush.
 /// - **Hydrolysis**: the surface clear colour and composite alpha mode.
+///
+/// [`Material`](Self::Material) is described on the variant.
 #[derive(Debug, Clone, Default)]
 pub enum WindowBackground {
     /// Opaque background in the theme's [`Background`] colour.
@@ -334,23 +485,55 @@ pub enum WindowBackground {
     Opaque,
     /// Solid color background (can be semi-transparent via alpha).
     Color(Color),
-}
-
-impl WindowBackground {
-    /// The colour this background paints: the theme's [`Background`] colour
-    /// for [`Self::Opaque`], the declared colour otherwise.
-    #[must_use]
-    pub fn color(&self) -> Color {
-        match self {
-            Self::Opaque => Color::new(Background),
-            Self::Color(color) => color.clone(),
-        }
-    }
+    /// The window's material: every level is allowed, and each backend
+    /// realizes the level's own blending, as it does for a view's
+    /// [`Material`] background.
+    ///
+    /// Within-window levels ([`Material::Regular`], [`Material::Thick`],
+    /// [`Material::UltraThick`]) are a backdrop treatment over the window's
+    /// opaque theme [`Background`]. Behind-window levels
+    /// ([`Material::UltraThin`], [`Material::Thin`]) make the window
+    /// translucent so the desktop shows through it.
+    ///
+    /// - **macOS**: an `NSVisualEffectView` filling the window behind its
+    ///   content, with the level's blending mode; for a behind-window level
+    ///   the window is non-opaque with a clear background, so the desktop
+    ///   shows through blurred.
+    /// - **iOS**: a `UIVisualEffectView` filling the window behind its
+    ///   content, over the theme background — nothing lies behind an iOS
+    ///   window.
+    /// - **Hydrolysis on a desktop**: a within-window level mounts the
+    ///   window's content over the level's backdrop treatment of the opaque
+    ///   theme background. A behind-window level makes the window and its
+    ///   surface transparent and composites the level's colour treatment as
+    ///   the closest source-over tint under the content; blurring the desktop
+    ///   is the compositor's job. The desktop is blurred where the platform's
+    ///   blur-behind is wired — an `NSVisualEffectView` behind the window on
+    ///   macOS, the DWM's acrylic system backdrop on Windows 11 22H2 and
+    ///   later, `_KDE_NET_WM_BLUR_BEHIND_REGION` under a window manager that
+    ///   honours it (`KWin`) on X11, and `ext-background-effect-v1` on
+    ///   Wayland, whose compositor applies blur by its own policy — and
+    ///   shows through tinted but unblurred elsewhere: older Windows, other
+    ///   X11 window managers and Wayland compositors not advertising the
+    ///   global.
+    /// - **Hydrolysis on Android**: a within-window level is realized as on a
+    ///   desktop. Window transparency is not realized on Android yet, so a
+    ///   behind-window level renders as an opaque window
+    ///   (water-rs/waterui#1966).
+    /// - **Experimental backends** that do not implement material backgrounds
+    ///   draw the window opaque in the theme's background colour.
+    Material(Material),
 }
 
 impl From<Color> for WindowBackground {
     fn from(color: Color) -> Self {
         Self::Color(color)
+    }
+}
+
+impl From<Material> for WindowBackground {
+    fn from(material: Material) -> Self {
+        Self::Material(material)
     }
 }
 
@@ -360,46 +543,68 @@ impl From<WindowBackground> for Binding<WindowBackground> {
     }
 }
 
-/// Resolves a reactive window background to the concrete colour a backend
-/// paints behind the window's content.
+/// A window background resolved for the frame a backend realizes: the
+/// concrete colour to paint behind the content, or the material to realize
+/// at the window.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ResolvedWindowBackground {
+    /// Paint this colour behind the window's content. An opacity below one
+    /// asks for a translucent window. [`WindowBackground::Opaque`] resolves
+    /// to the theme's [`Background`] colour.
+    Color(WorkingColor),
+    /// Realize this material at the window. See
+    /// [`WindowBackground::Material`].
+    Material(Material),
+}
+
+/// Resolves a reactive window background to what a backend realizes behind
+/// the window's content.
 ///
 /// The result follows both a change of the background itself — including a
-/// switch between [`WindowBackground::Opaque`] and [`WindowBackground::Color`]
-/// — and a change of the colour it currently resolves to, such as a theme
-/// switch. A colour whose opacity is below one asks for a translucent window.
+/// switch between [`WindowBackground::Opaque`], [`WindowBackground::Color`]
+/// and [`WindowBackground::Material`] — and a change of the colour it
+/// currently resolves to, such as a theme switch.
 #[must_use]
-pub fn resolve_background<S>(background: &S, env: &Environment) -> Computed<WorkingColor>
+pub fn resolve_background<S>(
+    background: &S,
+    env: &Environment,
+) -> Computed<ResolvedWindowBackground>
 where
     S: Signal<Output = WindowBackground>,
 {
     let env = env.clone();
-    flatten_signal(background.map(move |background| background.color().resolve(&env)))
+    flatten_signal(background.map(move |background| {
+        let color = match background {
+            WindowBackground::Opaque => Color::new(Background),
+            WindowBackground::Color(color) => color,
+            WindowBackground::Material(material) => {
+                return Computed::constant(ResolvedWindowBackground::Material(material));
+            }
+        };
+        color
+            .resolve(&env)
+            .map(ResolvedWindowBackground::Color)
+            .into_computed()
+    }))
 }
 
 /// Input type for `Window::background()` method.
 ///
-/// Allows setting window background via a `Color`, a [`WindowBackground`], a
-/// `Binding<WindowBackground>` the app keeps to change it later, or a
-/// `Material`. When `Material` is used, the window becomes opaque and the
-/// content is wrapped with a `MaterialBackground` metadata for native blur
-/// effects.
+/// Accepts a `Color`, a [`Material`], a [`WindowBackground`], or a
+/// `Binding<WindowBackground>` the app keeps to change the background later;
+/// a colour and a material each become the matching [`WindowBackground`].
 #[derive(Debug)]
-pub enum WindowBackgroundInput {
-    /// A reactive background: a fixed colour or `Opaque`, or a binding.
-    Background(Binding<WindowBackground>),
-    /// A material blur effect (wraps content, window stays opaque).
-    Material(Material),
-}
+pub struct WindowBackgroundInput(Binding<WindowBackground>);
 
 impl From<WindowBackground> for WindowBackgroundInput {
     fn from(background: WindowBackground) -> Self {
-        Self::Background(background.into())
+        Self(background.into())
     }
 }
 
 impl From<Binding<WindowBackground>> for WindowBackgroundInput {
     fn from(background: Binding<WindowBackground>) -> Self {
-        Self::Background(background)
+        Self(background)
     }
 }
 
@@ -411,7 +616,7 @@ impl From<Color> for WindowBackgroundInput {
 
 impl From<Material> for WindowBackgroundInput {
     fn from(material: Material) -> Self {
-        Self::Material(material)
+        WindowBackground::Material(material).into()
     }
 }
 
@@ -484,6 +689,7 @@ impl Window {
             AnyView::new(content)
         });
 
+        let close_request = CloseRequest::new(&state);
         Self {
             title: title.into_computed(),
             closable: true,
@@ -503,6 +709,8 @@ impl Window {
             level: Computed::constant(WindowLevel::Normal),
             attention: Binding::container(None),
             resize_increments: None,
+            icon: Binding::container(None),
+            close_request,
         }
     }
 
@@ -565,6 +773,18 @@ impl Window {
         self
     }
 
+    /// Set the window's own icon.
+    ///
+    /// Takes a [`WindowIcon`] for a fixed icon, an `Option<WindowIcon>`, or a
+    /// `Binding<Option<WindowIcon>>` the app keeps to change the icon after
+    /// the window is shown. See [`Self::icon`] for the default and platform
+    /// support notes.
+    #[must_use]
+    pub fn icon(mut self, icon: impl IntoWindowIcon) -> Self {
+        self.icon = icon.into_window_icon();
+        self
+    }
+
     /// Set whether the window is resizable.
     #[must_use]
     pub const fn resizable(mut self, resizable: bool) -> Self {
@@ -622,12 +842,10 @@ impl Window {
 
     /// Set the background style of the window.
     ///
-    /// Accepts a `Color` for solid backgrounds, a [`WindowBackground`] or a
-    /// `Binding<WindowBackground>` to change the background after the window
-    /// is shown, or a `Material` for blur effects. When using `Material`, the
-    /// window stays opaque and the content is wrapped with
-    /// `MaterialBackground` metadata handled by the native backend on a
-    /// best-effort basis.
+    /// Accepts a `Color` for solid backgrounds, a `Material` for the window's
+    /// material, or a [`WindowBackground`] or a `Binding<WindowBackground>` to
+    /// change the background after the window is shown — between a colour,
+    /// [`WindowBackground::Opaque`] and a material alike.
     ///
     /// # Examples
     ///
@@ -639,35 +857,22 @@ impl Window {
     /// let tinted = Window::new("Tinted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
     ///     .background(Color::srgb(0, 0, 0).with_opacity(0.8));
     ///
-    /// // Frosted glass window (opaque + material blur on content)
+    /// // Frosted glass window: the desktop shows through, blurred on macOS;
+    /// // on Hydrolysis tinted, and blurred where the compositor
+    /// // supports it
     /// let frosted = Window::new("Frosted", binding::<WindowState>(WindowState::default()), || text!("Hello"))
-    ///     .background(Material::Regular);
+    ///     .background(Material::UltraThin);
     /// ```
     #[must_use]
     pub fn background(mut self, background: impl Into<WindowBackgroundInput>) -> Self {
-        match background.into() {
-            WindowBackgroundInput::Background(background) => {
-                self.background = background;
-            }
-            WindowBackgroundInput::Material(material) => {
-                // Keep window opaque, wrap content with MaterialBackground metadata
-                self.background = Binding::container(WindowBackground::Opaque);
-                let content = self.content;
-                self.content = AnyViewBuilder::new(move || {
-                    AnyView::new(IgnorableMetadata::new(
-                        content.build(),
-                        MaterialBackground(material),
-                    ))
-                });
-            }
-        }
+        self.background = background.into().0;
         self
     }
 
-    /// The colour a backend paints behind the window's content, following the
+    /// What a backend realizes behind the window's content, following the
     /// reactive [`Self::background`]. See [`resolve_background`].
     #[must_use]
-    pub fn resolved_background(&self, env: &Environment) -> Computed<WorkingColor> {
+    pub fn resolved_background(&self, env: &Environment) -> Computed<ResolvedWindowBackground> {
         resolve_background(&self.background, env)
     }
 
@@ -731,6 +936,72 @@ impl Window {
             .unwrap_or_else(|| self.display_app_id())
     }
 
+    /// Asks `handler` before the window closes.
+    ///
+    /// Every close request — the title-bar close button, the window
+    /// manager's close (X11 `WM_DELETE_WINDOW`, Wayland
+    /// `xdg_toplevel.close`, `WM_CLOSE`), a Close Window menu command,
+    /// `performClose:` or [`WindowHandle::request_close`] — runs the handler
+    /// and applies its [`CloseReply`]: [`Close`](CloseReply::Close) writes
+    /// `state =` [`WindowState::Closed`] and the normal teardown runs,
+    /// [`Cancel`](CloseReply::Cancel) leaves the window open and writes
+    /// nothing. A request arriving while a question is already open is
+    /// dropped — the machine asks one question per window.
+    ///
+    /// Writing `state` to [`WindowState::Closed`] yourself, or
+    /// [`WindowHandle::close`], is not a request and never runs the handler;
+    /// a programmatic close while a question is open drops its future,
+    /// cancelling it. `closable == false` drops a request before the handler
+    /// runs.
+    ///
+    /// The handler extracts from the environment the window renders under —
+    /// a `State`, a service — and its future runs on the runner's local
+    /// executor, so the reply never arrives inside a platform delegate call.
+    ///
+    /// Platform support: Hydrolysis desktop and `AppKit`. Hydrolysis Android,
+    /// `UIKit` and web have no window close request — the handler never runs
+    /// there, and [`WindowHandle::request_close`] panics.
+    #[must_use]
+    pub fn on_close_request<H, Args, Fut>(self, handler: H) -> Self
+    where
+        H: Handler<Args, Fut>,
+        Fut: Future<Output = CloseReply> + 'static,
+    {
+        let mut action = boxed_action(handler);
+        self.close_request
+            .set_hook(Box::new(move |env| Box::pin(action(env)) as Question));
+        self
+    }
+
+    /// Arms close requests with the environment the window renders under —
+    /// a backend calls it when it realizes the window, so
+    /// [`WindowHandle::request_close`] can file before any platform request
+    /// arrives.
+    #[doc(hidden)]
+    pub fn arm_close_requests(&self, env: &Environment) {
+        self.close_request.arm(env, self.closable);
+    }
+
+    /// Files a user close request — the one entry point a backend calls when
+    /// the platform asks to close the window. `env` is the environment the
+    /// window renders under; the call arms the machine with it, so the
+    /// handler extracts from it. `closable == false` drops the request before
+    /// the handler runs.
+    #[doc(hidden)]
+    pub fn request_close(&self, env: &Environment) {
+        self.arm_close_requests(env);
+        self.close_request.request();
+    }
+
+    /// Whether an [`on_close_request`](Self::on_close_request) handler is
+    /// installed — the synchronous verdict a delegate like
+    /// `windowShouldClose:` needs.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_close_handler(&self) -> bool {
+        self.close_request.has_handler()
+    }
+
     /// Get a handle to control the window after showing it.
     #[must_use]
     pub fn handle(&self) -> WindowHandle {
@@ -740,6 +1011,8 @@ impl Window {
             attention: self.attention.clone(),
             style: self.style.clone(),
             background: self.background.clone(),
+            icon: self.icon.clone(),
+            close_request: self.close_request.clone(),
         }
     }
 
@@ -840,9 +1113,25 @@ pub struct WindowHandle {
     attention: Binding<Option<UserAttention>>,
     style: Binding<WindowStyle>,
     background: Binding<WindowBackground>,
+    icon: Binding<Option<WindowIcon>>,
+    close_request: CloseRequest,
 }
 
 impl WindowHandle {
+    /// Files a close request the window's
+    /// [`on_close_request`](Window::on_close_request) handler decides, as the
+    /// title-bar close button would. With no handler installed the window
+    /// closes immediately; `closable == false` drops the request.
+    /// [`Self::close`] closes without asking.
+    ///
+    /// # Panics
+    ///
+    /// When the window has not been realized yet, and on the platforms with
+    /// no window close request — Hydrolysis Android, `UIKit` and web.
+    pub fn request_close(&self) {
+        self.close_request.request();
+    }
+
     /// Close the window.
     pub fn close(&self) {
         self.state.set(WindowState::Closed);
@@ -895,6 +1184,13 @@ impl WindowHandle {
     pub fn set_background(&self, background: impl Into<WindowBackground>) {
         self.background.set(background.into());
     }
+
+    /// Set the window's own icon, or `None` for the application icon; the
+    /// backend re-applies it to the shown window. See [`Window::icon`] for
+    /// platform support.
+    pub fn set_icon(&self, icon: impl Into<Option<WindowIcon>>) {
+        self.icon.set(icon.into());
+    }
 }
 
 #[cfg(test)]
@@ -902,35 +1198,130 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     use nami::{Binding, Signal};
-    use waterui_core::Environment;
-    use waterui_graphics::Color;
+    use waterui_core::{Environment, plugin::Plugin as _};
+    use waterui_graphics::{
+        Color,
+        color::{WorkingColor, working::from_linear_srgb},
+    };
 
-    use super::{WindowBackground, resolve_background};
+    use super::{
+        ResolvedWindowBackground, Window, WindowBackground, WindowIcon, WindowState,
+        resolve_background,
+    };
+    use crate::background::Material;
+    use crate::theme::{
+        ColorSettings, Theme,
+        color::{Accent, Background},
+    };
+
+    fn color(resolved: ResolvedWindowBackground) -> WorkingColor {
+        match resolved {
+            ResolvedWindowBackground::Color(color) => color,
+            ResolvedWindowBackground::Material(material) => {
+                panic!("expected a colour, resolved Material::{material:?}")
+            }
+        }
+    }
+
+    /// `Window::background(Material)` stores the material as the window's
+    /// background instead of wrapping the content.
+    #[test]
+    fn a_material_is_the_window_background() {
+        let window = Window::new("", Binding::container(WindowState::Normal), || ())
+            .background(Material::Thin);
+        assert!(matches!(
+            window.background.snapshot(),
+            WindowBackground::Material(Material::Thin)
+        ));
+        assert_eq!(
+            window.resolved_background(&Environment::new()).snapshot(),
+            ResolvedWindowBackground::Material(Material::Thin)
+        );
+    }
 
     /// The resolved background follows a replacement of the background
-    /// itself, not only a change of the colour it started with.
+    /// itself — colour to colour, to a material, to `Opaque` — and, while a
+    /// colour is set, a theme change of the colour it resolves through.
     #[test]
     fn resolved_background_follows_a_replaced_background() {
-        let env = Environment::new();
+        let green = from_linear_srgb([0.0, 1.0, 0.0], 1.0);
+        let red = from_linear_srgb([1.0, 0.0, 0.0], 1.0);
+        let accent = Binding::container(green);
+        let mut env = Environment::new();
+        Theme::new()
+            .colors(
+                ColorSettings::new()
+                    .background(from_linear_srgb([0.5, 0.5, 0.5], 1.0))
+                    .accent(accent.clone()),
+            )
+            .install(&mut env);
+
         let background = Binding::container(WindowBackground::Color(Color::srgb(255, 0, 0)));
         let resolved = resolve_background(&background, &env);
         // Components are linear Display P3 red, green, blue, alpha: sRGB red
         // lands near 0.82 in the wider P3 gamut.
-        assert!(resolved.snapshot().components[0] > 0.8);
+        assert!(color(resolved.snapshot()).components[0] > 0.8);
 
         let seen = Rc::new(RefCell::new(Vec::new()));
         let _guard = resolved.watch({
             let seen = seen.clone();
             move |ctx| seen.borrow_mut().push(ctx.into_value())
         });
+        let last = || *seen.borrow().last().expect("a change was delivered");
+
         background.set(WindowBackground::Color(
             Color::srgb(0, 0, 255).with_opacity(0.5),
         ));
+        let blue = color(last());
+        assert!(blue.components[2] > 0.9 && blue.components[0] < 0.05);
+        assert!((blue.components[3] - 0.5).abs() < 1e-6);
+        assert!((color(resolved.snapshot()).components[3] - 0.5).abs() < 1e-6);
 
-        let seen = seen.borrow();
-        let last = seen.last().expect("the replaced background was delivered");
-        assert!(last.components[2] > 0.9 && last.components[0] < 0.05);
-        assert!((last.components[3] - 0.5).abs() < 1e-6);
-        assert!((resolved.snapshot().components[3] - 0.5).abs() < 1e-6);
+        background.set(WindowBackground::Material(Material::UltraThin));
+        assert_eq!(
+            last(),
+            ResolvedWindowBackground::Material(Material::UltraThin)
+        );
+        assert_eq!(
+            resolved.snapshot(),
+            ResolvedWindowBackground::Material(Material::UltraThin)
+        );
+
+        background.set(WindowBackground::Opaque);
+        assert_eq!(
+            color(last()),
+            Color::new(Background).resolve(&env).snapshot(),
+            "`Opaque` resolves to the theme background"
+        );
+
+        // A theme change while a colour is set reaches the resolved colour.
+        background.set(WindowBackground::Color(Color::new(Accent)));
+        assert_eq!(color(last()), green);
+        accent.set(red);
+        assert_eq!(color(last()), red);
+        assert_eq!(color(resolved.snapshot()), red);
+    }
+
+    /// The icon validates its pixel buffer against its size.
+    #[test]
+    #[should_panic(expected = "a 2x1 icon takes 8 RGBA8 bytes, got 4")]
+    fn window_icon_rejects_a_short_buffer() {
+        let _ = WindowIcon::new(2, 1, vec![0_u8; 4]);
+    }
+
+    /// An icon without pixels is rejected rather than handed to a platform.
+    #[test]
+    #[should_panic(expected = "at least one pixel")]
+    fn window_icon_rejects_an_empty_icon() {
+        let _ = WindowIcon::new(0, 4, Vec::<u8>::new());
+    }
+
+    /// Icons compare by their pixels, whether or not they share them.
+    #[test]
+    fn window_icons_compare_by_pixels() {
+        let icon = WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]);
+        assert_eq!(icon, icon.clone());
+        assert_eq!(icon, WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]));
+        assert_ne!(icon, WindowIcon::new(1, 1, vec![1_u8, 2, 3, 5]));
     }
 }

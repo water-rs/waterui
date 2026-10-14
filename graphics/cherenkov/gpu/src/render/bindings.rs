@@ -115,7 +115,9 @@ impl Entry {
 }
 
 /// Group 0 of the engine pipelines (`shader.wgsl`): the per-pass globals
-/// window, the instance and gradient-stop buffers, and the glyph atlas.
+/// window, the instance and gradient-stop buffers and the glyph atlas.
+/// Backdrop union member records ride in the stops buffer, so the group
+/// stays fixed at four entries.
 pub const ENGINE_GROUP0: &[Entry] = &[
     // One 32-byte Globals window; the dynamic offset selects the pass's slot.
     Entry::uniform(0, VERTEX | FRAGMENT, true, 32),
@@ -172,6 +174,28 @@ pub const PROJECTIVE_GROUP1: &[Entry] = &[
 /// The mip pipeline's single group (`mip.wgsl`): the previous level.
 pub const MIP_GROUP0: &[Entry] = &[Entry::texture(0)];
 
+/// `min_size` of the resolve pipeline's uniform: a pass's `Globals` slot
+/// (32 bytes) followed by the resolve parameters (`resolve.wgsl`).
+pub const RESOLVE_PARAMS_SIZE: u64 = 64;
+
+/// The backdrop capture resolve pipeline's single group (`resolve.wgsl`):
+/// the pass's globals slot with the resolve parameters, and the source.
+pub const RESOLVE_GROUP0: &[Entry] = &[
+    Entry::uniform(0, FRAGMENT, true, RESOLVE_PARAMS_SIZE),
+    Entry::texture(1),
+];
+
+/// `min_size` of the reduce pipeline's uniform: a pass's `Globals` slot
+/// (32 bytes) followed by the reduce parameters (`reduce.wgsl`).
+pub const REDUCE_PARAMS_SIZE: u64 = 64;
+
+/// The capture pyramid reduce pipeline's single group (`reduce.wgsl`):
+/// the globals slot with the reduce parameters, and the source level.
+pub const REDUCE_GROUP0: &[Entry] = &[
+    Entry::uniform(0, FRAGMENT, true, REDUCE_PARAMS_SIZE),
+    Entry::texture(1),
+];
+
 /// The engine pipelines' two groups, in declaration order.
 ///
 /// Used by `build.rs`; the crate addresses the groups directly.
@@ -182,6 +206,23 @@ pub const ENGINE_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, ENGINE_GROUP1];
 /// Used by `build.rs`; the crate addresses the group directly.
 #[allow(dead_code)]
 pub const PRESENT_GROUPS: &[&[Entry]] = &[PRESENT_GROUP0];
+
+/// The descriptor set the Vulkan tile executor's input attachments
+/// occupy, after the two engine groups (issue #2191).
+///
+/// These three are not `Entry` tables: an input attachment has no wgpu
+/// binding type, so the set exists only in the executor's own
+/// descriptor set layout and in the tile SPIR-V's decorations. They are
+/// the one definition both read.
+#[allow(dead_code)]
+pub const TILE_INPUT_GROUP: u32 = 2;
+/// The tile input attachment bindings, the draw's own slot first.
+#[allow(dead_code)]
+pub const TILE_INPUT_BINDINGS: [u32; 2] = [0, 1];
+/// The input attachment index the source slot is mapped to when it is
+/// not the draw's own slot.
+#[allow(dead_code)]
+pub const TILE_SOURCE_INDEX: u32 = 1;
 
 /// The external-frame pipelines' two groups, in declaration order: the
 /// shared engine group 0 followed by `EXTERNAL_GROUP1`.
@@ -202,6 +243,18 @@ pub const PROJECTIVE_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, PROJECTIVE_GROUP1];
 /// Used by `build.rs`; the crate addresses the group directly.
 #[allow(dead_code)]
 pub const MIP_GROUPS: &[&[Entry]] = &[MIP_GROUP0];
+
+/// The resolve pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const RESOLVE_GROUPS: &[&[Entry]] = &[RESOLVE_GROUP0];
+
+/// The reduce pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const REDUCE_GROUPS: &[&[Entry]] = &[REDUCE_GROUP0];
 
 /// Group 1 of the Vulkan native external-frame module: `EXTERNAL_GROUP1`
 /// plus the designated texture/sampler pair at bindings 5–6 that the

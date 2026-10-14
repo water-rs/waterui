@@ -17,14 +17,6 @@ inputs:
       out to the spirv-opt the NDK bundles, so the probe belongs here
       rather than inside a build script.
     default: "false"
-  kotlin:
-    description: >-
-      Also install kotlinc at the version pinned in
-      backends/android/gradle/libs.versions.toml. Jobs whose graph includes
-      waterkit need it — the waterkit build scripts run kotlinc when the
-      target is Android, and the catalog pin keeps this job, the host
-      library, and the app agreeing on one version.
-    default: "false"
 outputs:
   ndk-path:
     description: The installed NDK's root directory.
@@ -84,16 +76,3 @@ runs:
           fi
           echo "$shaders" >> "$GITHUB_PATH"
         fi
-    - name: Install the Kotlin compiler
-      if: inputs.kotlin == 'true'
-      shell: bash
-      run: |
-        set -euo pipefail
-        version="$(sed -n 's/^kotlin = "\(.*\)"$/\1/p' backends/android/gradle/libs.versions.toml)"
-        if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-          echo "::error file=backends/android/gradle/libs.versions.toml::cannot read the pinned Kotlin version (got '$version')"
-          exit 1
-        fi
-        curl -fsSL -o /tmp/kotlinc.zip "https://github.com/JetBrains/kotlin/releases/download/v$version/kotlin-compiler-$version.zip"
-        unzip -q /tmp/kotlinc.zip -d "$RUNNER_TEMP"
-        echo "KOTLIN_HOME=$RUNNER_TEMP/kotlinc" >> "$GITHUB_ENV"

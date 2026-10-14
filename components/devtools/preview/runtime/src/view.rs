@@ -446,9 +446,9 @@ impl DylibCache {
 
     /// Records a library that also exists on disk.
     ///
-    /// Loading a preview dylib is a unix-only path — the preview system targets
-    /// macOS, the iOS Simulator and Android — so both callers sit behind
-    /// `cfg(unix)` and this is dead code anywhere else.
+    /// Loading a preview dylib is a unix-only path — the preview system's
+    /// support apps target macOS and the iOS Simulator — so both callers sit
+    /// behind `cfg(unix)` and this is dead code anywhere else.
     #[cfg(unix)]
     fn insert_persistent(&mut self, id: DylibId, library: PreviewLibrary) {
         self.disk_present.insert(id);
@@ -735,6 +735,10 @@ async fn handle_render(
 
     let load_view_start = Instant::now();
     let view = load_preview_view(cache, id, symbol)?;
+    // Before the renderer evaluates the view: a `tsx!` mount looks the
+    // runtime up in the environment its body runs in.
+    #[cfg(feature = "ts")]
+    let view = crate::ts::with_configured_runtime(env, view)?;
     let load_view_ms = elapsed_ms(load_view_start);
     tracing::info!(
         dylib_id = %id,
@@ -757,7 +761,9 @@ async fn handle_render(
     await_local_quiescence(task_baseline).await;
 
     let render_start = Instant::now();
-    let result = renderer.render(view, render_size).await;
+    let result = renderer.render(view, render_size).await.map_err(|error| {
+        PreviewError::RenderFailed(format!("{:#}", waterui_core::Error::from(error)))
+    })?;
     let render_ms = elapsed_ms(render_start);
     tracing::info!(
         dylib_id = %id,
@@ -766,7 +772,9 @@ async fn handle_render(
         "Preview support app rendered view"
     );
     let png_start = Instant::now();
-    let png_data = result.into_png().map_err(PreviewError::RenderFailed)?;
+    let png_data = result
+        .into_png()
+        .map_err(|error| PreviewError::RenderFailed(error.to_string()))?;
     let png_encode_ms = elapsed_ms(png_start);
     let total_ms = elapsed_ms(total_start);
     tracing::info!(

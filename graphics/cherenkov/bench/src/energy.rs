@@ -9,7 +9,7 @@
 //!   the window's energy. The rails are root-only, so the bench runs
 //!   via `su -c`.
 //! - **macOS `powermetrics`** — `sudo -n powermetrics --samplers
-//!   cpu_power,gpu_power -i <ms> --format plist` spawned for exactly the
+//!   cpu_power,gpu_power,thermal -i <ms> --format plist` spawned for exactly the
 //!   measured window; its per-sample CPU/GPU/ANE energies are summed.
 //! - **iOS process counter** — `proc_pid_rusage` v6 reports cumulative
 //!   `ri_energy_nj`. This measures the calling process, excluding the
@@ -419,7 +419,7 @@ pub mod odpm {
 
 /// macOS `powermetrics` energy metering (root required).
 ///
-/// `sudo -n powermetrics --samplers cpu_power,gpu_power -i <ms>
+/// `sudo -n powermetrics --samplers cpu_power,gpu_power,thermal -i <ms>
 /// --format plist` emits one NUL-separated XML plist per sample. The
 /// `processor` dictionary carries per-sample energies in mJ —
 /// `cpu_energy`, `gpu_energy`, `ane_energy`, `dram_energy` on Apple
@@ -773,7 +773,7 @@ pub mod powermetrics {
             }
         }
 
-        /// Spawns `sudo -n powermetrics --samplers cpu_power,gpu_power
+        /// Spawns `sudo -n powermetrics --samplers cpu_power,gpu_power,thermal
         /// -i <ms> --format plist` for the window about to open.
         /// `window_hint` picks the sample interval (~1/10 of the
         /// window, clamped to 100–1000 ms).
@@ -788,7 +788,7 @@ pub mod powermetrics {
                 .arg("-n")
                 .arg("powermetrics")
                 .arg("--samplers")
-                .arg("cpu_power,gpu_power")
+                .arg("cpu_power,gpu_power,thermal")
                 .arg("-i")
                 .arg(interval_ms.to_string())
                 .arg("--format")
@@ -1073,6 +1073,15 @@ mod tests {
 
     use super::*;
 
+    /// Energy figures are derived decimals: equal up to f64 rounding.
+    #[track_caller]
+    fn assert_close(actual: f64, expected: f64) {
+        assert!(
+            (actual - expected).abs() < 1e-12,
+            "{actual} is not {expected}"
+        );
+    }
+
     /// Real `enabled_rails` content as produced by the Pixel kernel —
     /// `CH<idx>[<RAIL>]:<subsystem>` per line.
     const ENABLED_RAILS: &str = "\
@@ -1213,10 +1222,10 @@ CH7(T=349894)[S1M_VDD_MIF], 21091363
         let report = odpm::diff_report(&before, &after, Duration::from_secs(2), 40).unwrap();
         // 2 J over 40 frames / 2 s: 0.05 J/frame, 1 W.
         let cpu = &report.rails["CPU"];
-        assert_eq!(cpu.joules, 2.0);
-        assert_eq!(cpu.joules_per_frame, 0.05);
-        assert_eq!(cpu.watts, 1.0);
-        assert_eq!(report.total_joules, 2.2);
+        assert_close(cpu.joules, 2.0);
+        assert_close(cpu.joules_per_frame, 0.05);
+        assert_close(cpu.watts, 1.0);
+        assert_close(report.total_joules, 2.2);
     }
 
     #[test]
@@ -1311,10 +1320,10 @@ CH7(T=349894)[S1M_VDD_MIF], 21091363
         assert_eq!(samples[0].end, Duration::from_millis(500));
         assert_eq!(samples[1].start, Duration::from_millis(500));
         assert_eq!(samples[1].end, Duration::from_secs(1));
-        assert_eq!(samples[0].joules["cpu"], 0.64);
-        assert_eq!(samples[0].joules["gpu"], 0.305);
-        assert_eq!(samples[0].joules["ane"], 0.012);
-        assert_eq!(samples[0].joules["dram"], 0.089);
+        assert_close(samples[0].joules["cpu"], 0.64);
+        assert_close(samples[0].joules["gpu"], 0.305);
+        assert_close(samples[0].joules["ane"], 0.012);
+        assert_close(samples[0].joules["dram"], 0.089);
         // The package counter is kept beside the domains, never as a
         // rail of its own.
         assert_eq!(samples[0].package, Some(1.046));
@@ -1348,7 +1357,7 @@ CH7(T=349894)[S1M_VDD_MIF], 21091363
         assert_eq!(samples.len(), 1);
         // The only Intel counter feeds the cpu rail and the package
         // total alike — the report's total is not doubled.
-        assert_eq!(samples[0].joules["cpu"], 2.5);
+        assert_close(samples[0].joules["cpu"], 2.5);
         assert_eq!(samples[0].package, Some(2.5));
     }
 
@@ -1382,7 +1391,7 @@ CH7(T=349894)[S1M_VDD_MIF], 21091363
             Duration::from_millis(10),
             Duration::from_millis(30),
         );
-        assert_eq!(a.joules["cpu"], 2.0);
+        assert_close(a.joules["cpu"], 2.0);
         assert_eq!(a.package, Some(4.0));
     }
 
@@ -1399,7 +1408,7 @@ CH7(T=349894)[S1M_VDD_MIF], 21091363
             Duration::from_millis(22),
             Duration::from_millis(38),
         );
-        assert_eq!(a.joules["cpu"], 3.2);
+        assert_close(a.joules["cpu"], 3.2);
         assert_eq!(a.package, Some(6.4));
     }
 

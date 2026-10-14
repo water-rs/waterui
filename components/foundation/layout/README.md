@@ -226,6 +226,7 @@ pub fn constrained_content() -> impl View {
 - **`LazyContainer`** - Efficient container for dynamic collections with `ForEach`
 - **`IgnoreSafeArea`** - Metadata to extend content into safe area regions
   - `EdgeSet` - Bitflags for specifying which edges ignore safe area
+  - `SafeAreaRegions` - The container and keyboard regions (`KEYBOARD.on(EdgeSet::BOTTOM)` lays a view under the keyboard but above the container inset)
 
 ### Alignment Types
 
@@ -257,7 +258,8 @@ Layouts communicate with native backends through the `Layout` trait's protocol:
 2. Backend calls `place(bounds, children)` to get child rectangles
 3. Backend renders native widgets at the calculated positions
 
-The FFI layer in `waterui-ffi` handles the Rust ↔ Native boundary.
+Each backend implements this protocol directly — `waterui-apple` bridges it
+to AppKit/UIKit and Hydrolysis maps it onto its Cherenkov renderer.
 
 ### Performance Characteristics
 

@@ -18,13 +18,11 @@ the gap.
 Device plumbing (settle detection, ANR dismissal, golden comparison,
 gfxinfo/meminfo capture, perfetto) is the imported android-backend
 implementation in scripts/e2e.py — imported verbatim and hash-pinned by
-toolchain-lock.json so the old backend's measurement semantics are the
-baseline, not a re-derivation.
+toolchain-lock.json as a frozen record of the old backend's measurement
+semantics. Those scripts cannot run against the current CLI.
 
-APK production is parameterized: android-backend fixtures come from
-`water package --backend android`; the hydrolysis host's packaging lands
-with the plan's step 7 — until then `--apk-dir` maps fixture names to
-locally built APKs.
+APK production is parameterized: supply fixtures with `--apk-dir`, or build
+the Hydrolysis APKs with `water package --platform android`.
 
 The Gradle trees (`reference/` here, `android/` for the host) are the
 callers of `scripts/fetch-gradle-wrapper.py`: their `gradlew` scripts

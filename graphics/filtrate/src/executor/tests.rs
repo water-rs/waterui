@@ -22,6 +22,9 @@ use crate::{
     ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace, filters,
     kind,
 };
+use filtrate_core::space::{
+    P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
+};
 
 // ============================================================================
 // Test filters for the declarations no built-in uses yet
@@ -87,31 +90,30 @@ impl SpatialFilter for UndeclaredShape {
     }
 }
 
-/// Inverts in sRGB, the way a CSS `invert()` does.
+/// The premultiplied `a - rgb` invert: the identity on encoded values plus
+/// a known encoded-space operation — the kernel the reproduction uses to
+/// see what space it was handed.
+fn encoded_invert(_: [f32; 0], _space: &WorkingSpace, pixels: &mut [[f32; 4]]) {
+    for pixel in pixels {
+        let [r, g, b, a] = *pixel;
+        *pixel = [a - r, a - g, a - b, a];
+    }
+}
+
+/// Inverts in sRGB, the way a CSS `invert()` does — and the reproduction
+/// of #1942: an sRGB stage whose kernel is the identity on encoded values
+/// plus a known encoded-space operation, so the CPU path must convert into
+/// the stage's declared space before the kernel and back after it, like
+/// the GPU executor's conversion bracket.
+#[derive(Filter)]
+#[filter(
+    color,
+    shader = "color/transform/invert.wgsl",
+    linear = false,
+    space = srgb,
+    cpu = encoded_invert
+)]
 struct CssInvert;
-
-impl Filter for CssInvert {
-    type Kind = kind::Color;
-    type Params = [f32; 0];
-
-    fn params(&self) -> [f32; 0] {
-        []
-    }
-
-    fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
-        const STAGE: ColorStage = ColorStage {
-            name: "css_invert",
-            source: include_str!("../shaders/color/transform/invert.wgsl"),
-            params: &[],
-            space: OperatingSpace::Srgb,
-        };
-        collector.color(Placed::new(&STAGE));
-    }
-}
-
-impl ColorFilter for CssInvert {
-    const LINEAR: bool = false;
-}
 
 /// One filtered sample at `uv * 0.5` — a pure bilinear read of the input.
 struct SampleHalf;
@@ -284,7 +286,7 @@ fn every_builtin_composes_into_valid_passes() {
     assert_composes("twirl", &TwirlDistortion([0.5_f32, 0.5, 0.3, 90.0]));
     assert_composes("vortex", &VortexDistortion([0.5_f32, 0.5, 0.3, 90.0]));
     assert_composes("blur", &Blur(3.0_f32));
-    assert_composes("gaussian_blur", &GaussianBlur(2.0_f32));
+    assert_composes("gaussian_blur", &GaussianBlur::new(2.0_f32));
     assert_composes("motion_blur", &MotionBlur(4.0_f32, 30.0_f32));
     assert_composes("zoom_blur", &ZoomBlur(0.2_f32, 0.5_f32, 0.5_f32));
     assert_composes("convolution3x3", &Convolution3x3([0.1_f32; 9]));
@@ -637,18 +639,30 @@ fn linear_colour_filters_are_linear_maps() {
     assert_linear("photo_effect_tonal", &PhotoEffectTonal);
 }
 
-/// Runs a filter's CPU kernel and its shader on the same pixels.
+/// Runs a filter's CPU kernel and its shader on the same pixels. An sRGB
+/// stage's shader is evaluated inside the conversion bracket the GPU
+/// executor plans and the CPU kernel applies (the CPU conversion — the
+/// evaluator does not evaluate the conversion stages' matrices).
 fn assert_kernel_matches_shader<F: CpuKernel>(name: &str, filter: &F) {
     let stage = colour_stage(filter);
     let params = filter.params();
     let mut flattened = vec![0.0; <F::Params as ParamArray>::LEN];
     params.write_to(&mut flattened);
+    let srgb = stage.space == OperatingSpace::Srgb;
     let mut pixels = COLOURS;
     F::apply_cpu(&params, &WorkingSpace::LINEAR_DISPLAY_P3, &mut pixels);
     for (cpu, colour) in pixels.iter().zip(COLOURS) {
+        let mut expected = [colour];
+        if srgb {
+            to_srgb(&mut expected);
+        }
+        expected[0] = evaluate(stage, &flattened, expected[0]);
+        if srgb {
+            from_srgb(&mut expected);
+        }
         assert_close(
             *cpu,
-            evaluate(stage, &flattened, colour),
+            expected[0],
             &format!("{name}'s CPU kernel disagrees with its shader"),
         );
     }
@@ -668,8 +682,18 @@ fn cpu_kernels_match_their_shaders() {
             0.9_f32, 0.1, 0.0, 0.05, 0.1, 0.8, 0.1, -0.02, 0.0, 0.2, 0.7, 0.1,
         ]),
     );
-    // A chain's kernel runs its halves in order.
-    let chain = Saturation(0.5_f32).then(Brightness(0.1_f32));
+    // sRGB kernels: the generated `apply_cpu` converts into the declared
+    // space before the kernel and back after it.
+    assert_kernel_matches_shader("css_invert", &CssInvert);
+    assert_kernel_matches_shader(
+        "luma_curve",
+        &luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1),
+    );
+    // A chain's kernel runs its halves in order, each link converting to
+    // its own operating space.
+    let chain = Saturation(0.5_f32)
+        .then(Brightness(0.1_f32))
+        .then(luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1));
     let mut chained = COLOURS;
     <filters::Saturation<f32> as CpuKernel>::apply_cpu(
         &[0.5],
@@ -681,9 +705,74 @@ fn cpu_kernels_match_their_shaders() {
         &WorkingSpace::LINEAR_DISPLAY_P3,
         &mut chained,
     );
+    <filters::LumaCurve<f32> as CpuKernel>::apply_cpu(
+        &[0.9, 0.83, 0.925, 0.815, 0.75, 0.375, 0.1],
+        &WorkingSpace::LINEAR_DISPLAY_P3,
+        &mut chained,
+    );
     let mut pixels = COLOURS;
     chain.apply_cpu_now(&WorkingSpace::LINEAR_DISPLAY_P3, &mut pixels);
     assert_eq!(pixels, chained);
+}
+
+/// A luma curve with constant parameters.
+const fn luma_curve(
+    curve: [f32; 4],
+    amount: f32,
+    chroma: f32,
+    offset: f32,
+) -> filters::LumaCurve<f32> {
+    filters::LumaCurve {
+        curve,
+        amount,
+        chroma,
+        offset,
+    }
+}
+
+/// The luma curve's formula, evaluated independently in f64 on one
+/// premultiplied sRGB colour.
+fn luma_curve_reference(filter: &filters::LumaCurve<f32>, colour: [f32; 4]) -> [f32; 4] {
+    let alpha = f64::from(colour[3]);
+    let straight: [f64; 3] = core::array::from_fn(|i| f64::from(colour[i]) / alpha);
+    let luma = [0.2126, 0.7152, 0.0722]
+        .iter()
+        .zip(straight)
+        .map(|(weight, channel)| weight * channel)
+        .sum::<f64>();
+    let t = luma.clamp(0.0, 1.0);
+    let u = 1.0 - t;
+    let bezier = [u * u * u, 3.0 * t * u * u, 3.0 * t * t * u, t * t * t]
+        .iter()
+        .zip(filter.curve)
+        .map(|(weight, value)| weight * f64::from(value))
+        .sum::<f64>();
+    let amount = f64::from(filter.amount);
+    let tone = amount.mul_add(bezier - luma, luma) + f64::from(filter.offset);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the f64 reference is compared at f32 precision"
+    )]
+    let channel =
+        |i: usize| (f64::from(filter.chroma).mul_add(straight[i] - luma, tone) * alpha) as f32;
+    [channel(0), channel(1), channel(2), colour[3]]
+}
+
+#[test]
+fn luma_curve_moves_luma_along_the_curve_and_scales_chroma() {
+    let filter = luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1);
+    let stage = colour_stage(&filter);
+    let params = filter.params();
+    // Extended colours whose straight luma lies above 1 and below 0, where
+    // the curve evaluates at the nearer end of its domain.
+    let outside = [[1.5, 1.2, 1.1, 1.0], [-0.24, -0.08, 0.16, 0.8]];
+    for colour in COLOURS.into_iter().chain(outside) {
+        assert_close(
+            evaluate(stage, &params, colour),
+            luma_curve_reference(&filter, colour),
+            "the luma curve disagrees with its formula",
+        );
+    }
 }
 
 #[test]
@@ -1289,7 +1378,9 @@ fn gpu_chains_match_their_cpu_kernels() {
     let chain = filters::Saturation(1.4_f32)
         .then(filters::Grayscale(0.3_f32))
         .then(filters::HueRotation(60.0_f32))
-        .then(filters::Brightness(-0.1_f32));
+        .then(filters::Brightness(-0.1_f32))
+        .then(CssInvert)
+        .then(luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1));
     let mut pixels: Vec<[f32; 4]> = rgba
         .chunks(4)
         .map(|texel| core::array::from_fn(|i| from_unorm(texel[i])))
@@ -1305,7 +1396,7 @@ fn gpu_chains_match_their_cpu_kernels() {
         &output,
         &expected,
         1,
-        "saturation, grayscale, hue rotation, brightness",
+        "saturation, grayscale, hue rotation, brightness, css invert, luma curve",
     );
 }
 
@@ -1347,48 +1438,8 @@ fn gpu_shape_mask_reaches_the_stage() {
     );
 }
 
-/// The sRGB transfer, mirrored through zero.
-fn srgb_encode(linear: f32) -> f32 {
-    let magnitude = linear.abs();
-    let curve = if magnitude > 0.003_130_8 {
-        1.055f32.mul_add(magnitude.powf(1.0 / 2.4), -0.055)
-    } else {
-        magnitude * 12.92
-    };
-    curve.copysign(linear)
-}
-
-fn srgb_decode(encoded: f32) -> f32 {
-    let magnitude = encoded.abs();
-    let curve = if magnitude > 0.040_45 {
-        ((magnitude + 0.055) / 1.055).powf(2.4)
-    } else {
-        magnitude / 12.92
-    };
-    curve.copysign(encoded)
-}
-
-fn transform(matrix: [[f32; 3]; 3], rgb: [f32; 3]) -> [f32; 3] {
-    core::array::from_fn(|row| {
-        matrix[row][0].mul_add(
-            rgb[0],
-            matrix[row][1].mul_add(rgb[1], matrix[row][2] * rgb[2]),
-        )
-    })
-}
-
 #[test]
 fn gpu_srgb_stages_run_in_srgb() {
-    const P3_TO_SRGB: [[f32; 3]; 3] = [
-        [1.224_94, -0.224_94, 0.0],
-        [-0.042_057, 1.042_057, 0.0],
-        [-0.019_637_6, -0.078_636, 1.098_274],
-    ];
-    const SRGB_TO_P3: [[f32; 3]; 3] = [
-        [0.822_462, 0.177_538, 0.0],
-        [0.033_194_2, 0.966_805_8, 0.0],
-        [0.017_082_6, 0.072_397_4, 0.910_519_9],
-    ];
     let gpu = create_test_device();
     let size = (16, 4);
     let rgba = test_pixels(size.0 * size.1);
@@ -1397,14 +1448,30 @@ fn gpu_srgb_stages_run_in_srgb() {
         .chunks(4)
         .flat_map(|texel| {
             let linear = core::array::from_fn(|i| from_unorm(texel[i]));
-            let encoded = transform(P3_TO_SRGB, linear).map(srgb_encode);
+            let encoded = transform(&P3_TO_SRGB, linear).map(srgb_encode);
             let inverted = encoded.map(|value| 1.0 - value);
-            let [r, g, b] = transform(SRGB_TO_P3, inverted.map(srgb_decode)).map(to_unorm);
+            let [r, g, b] = transform(&SRGB_TO_P3, inverted.map(srgb_decode)).map(to_unorm);
             [r, g, b, 255]
         })
         .collect();
     let output = run(&gpu, CssInvert, size, &rgba, ShapeTextures::default());
     assert_rgba8_close(&output, &expected, 2, "invert in sRGB");
+
+    // The reproduction of #1942: the stage's CPU kernel runs on the sRGB
+    // pixels its declared space hands it, and the CPU output matches the
+    // GPU's.
+    let mut cpu_pixels: Vec<[f32; 4]> = rgba
+        .chunks(4)
+        .map(|texel| core::array::from_fn(|i| from_unorm(texel[i])))
+        .collect();
+    CssInvert.apply_cpu_now(&WorkingSpace::LINEAR_DISPLAY_P3, &mut cpu_pixels);
+    let cpu_output: Vec<u8> = cpu_pixels
+        .iter()
+        .flatten()
+        .map(|&value| to_unorm(value))
+        .collect();
+    assert_rgba8_close(&cpu_output, &expected, 2, "invert in sRGB on the CPU");
+    assert_rgba8_close(&cpu_output, &output, 1, "CPU kernel vs GPU output");
 }
 
 /// The executor's manual bilinear, as a CPU reference over f32 texels.
@@ -1886,7 +1953,7 @@ fn gpu_reactive_output_sizes_keep_each_encodes_uniforms() {
     let policy = Rc::clone(&size);
     // Spatial passes materialize at input resolution. A final colour pass
     // resizes that result, preserving each encode's uniforms before submit.
-    let mut executor = Executor::new(filters::GaussianBlur(0.0_f32))
+    let mut executor = Executor::new(filters::GaussianBlur::new(0.0_f32))
         .with_output_size(move |_, _| policy.get())
         .then(filters::Brightness(0.0_f32));
     setup(&gpu, &mut executor);
@@ -2047,13 +2114,30 @@ fn premultiplied_input(size: (usize, usize)) -> Vec<[f32; 4]> {
         .collect()
 }
 
+/// How far an f16 executor run may stray from the f32 CPU result, relative
+/// to `max(|value|, 1)`: a few f16 ulps, `2^-11` just below one.
+const F16_TOLERANCE: f32 = 2.0e-3;
+
+/// [`F16_TOLERANCE`] for a stage in encoded sRGB. The GPU these tests were
+/// measured on rounds toward zero when it writes `Rgba16Float`, so the
+/// sRGB path's five f16 intermediates (against two for a blur in the
+/// working space) drift downward cumulatively rather than averaging out,
+/// and decoding near white amplifies that drift by about 2.3: the worst
+/// measured error is 3.31e-3, on the black|white edge, and a flat white
+/// comes back as 0.99756.
+const F16_SRGB_TOLERANCE: f32 = 5.0e-3;
+
+/// Runs `filter` on the wgpu executor over f16 textures and on the CPU,
+/// checks they agree within `tolerance` relative to `max(|value|, 1)`, and
+/// returns the GPU output.
 fn assert_f16_matches_cpu<F: Filter + CpuFilter>(
     gpu: &TestGpu,
     filter: F,
     size: (u32, u32),
     input: &[[f32; 4]],
+    tolerance: f32,
     label: &str,
-) {
+) -> Vec<[f32; 4]> {
     let params = filter.params();
     let mut expected = input
         .iter()
@@ -2105,13 +2189,31 @@ fn assert_f16_matches_cpu<F: Filter + CpuFilter>(
         for channel in 0..4 {
             assert!(
                 (actual[channel] - expected[channel]).abs()
-                    <= 2.0e-3 * expected[channel].abs().max(1.0),
+                    <= tolerance * expected[channel].abs().max(1.0),
                 "{label}, pixel {index}, channel {channel}: GPU {}, CPU {}",
                 actual[channel],
                 expected[channel]
             );
         }
     }
+    actual
+}
+
+/// Where a row of opaque greys crosses half in encoded sRGB, in pixels from
+/// the row's left edge: interpolated between the two pixel centres around
+/// the first crossing.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the test rows are a few dozen pixels wide"
+)]
+fn encoded_half_crossing(row: &[[f32; 4]]) -> f32 {
+    let encoded: Vec<f32> = row.iter().map(|pixel| srgb_encode(pixel[0])).collect();
+    let x = encoded
+        .windows(2)
+        .position(|pair| pair[0] < 0.5 && pair[1] >= 0.5)
+        .expect("the row crosses half");
+    let fraction = (0.5 - encoded[x]) / (encoded[x + 1] - encoded[x]);
+    x as f32 + 0.5 + fraction
 }
 
 #[test]
@@ -2119,13 +2221,70 @@ fn cpu_blurs_match_the_wgpu_executor_and_window_aprons() {
     let gpu = create_test_device();
     let size = (23_usize, 17_usize);
     let input = premultiplied_input(size);
-    let gaussian = filters::GaussianBlur(1.7_f32);
-    assert_f16_matches_cpu(&gpu, gaussian, (23, 17), &input, "GaussianBlur");
+    let gaussian = filters::GaussianBlur::new(1.7_f32);
+    assert_f16_matches_cpu(
+        &gpu,
+        gaussian,
+        (23, 17),
+        &input,
+        F16_TOLERANCE,
+        "GaussianBlur",
+    );
+    let encoded = gaussian.in_space(OperatingSpace::Srgb);
+    assert_f16_matches_cpu(
+        &gpu,
+        encoded,
+        (23, 17),
+        &input,
+        F16_SRGB_TOLERANCE,
+        "GaussianBlur in sRGB",
+    );
     let box_blur = filters::Blur(2.0_f32);
-    assert_f16_matches_cpu(&gpu, box_blur, (23, 17), &input, "Blur");
+    assert_f16_matches_cpu(&gpu, box_blur, (23, 17), &input, F16_TOLERANCE, "Blur");
 
-    assert_window_matches_full(&filters::GaussianBlur(1.0_f32), &input, size, 4);
+    assert_window_matches_full(&filters::GaussianBlur::new(1.0_f32), &input, size, 4);
+    let encoded = filters::GaussianBlur::new(1.0_f32).in_space(OperatingSpace::Srgb);
+    assert_window_matches_full(&encoded, &input, size, 4);
     assert_window_matches_full(&filters::Blur(2.0_f32), &input, size, 2);
+
+    // Over a black|white edge at x = 16, a blur averaging encoded sRGB
+    // crosses encoded half at the edge; one averaging linear light crosses
+    // half in light there, which encodes to about 0.735, so its encoded half
+    // lies on the dark side.
+    let step: Vec<[f32; 4]> = (0..32 * 3)
+        .map(|index| {
+            let grey = if index % 32 < 16 { 0.0 } else { 1.0 };
+            [grey, grey, grey, 1.0]
+        })
+        .collect();
+    let middle = 32..64;
+    let gaussian = filters::GaussianBlur::new(3.0_f32);
+    let blurred = assert_f16_matches_cpu(
+        &gpu,
+        gaussian.in_space(OperatingSpace::Srgb),
+        (32, 3),
+        &step,
+        F16_SRGB_TOLERANCE,
+        "GaussianBlur in sRGB over an edge",
+    );
+    let crossing = encoded_half_crossing(&blurred[middle.clone()]);
+    assert!(
+        (crossing - 16.0).abs() < 0.05,
+        "the sRGB blur crosses encoded half at {crossing}, not at the edge"
+    );
+    let blurred = assert_f16_matches_cpu(
+        &gpu,
+        gaussian,
+        (32, 3),
+        &step,
+        F16_TOLERANCE,
+        "GaussianBlur over an edge",
+    );
+    let crossing = encoded_half_crossing(&blurred[middle]);
+    assert!(
+        crossing < 15.0,
+        "the linear blur crosses encoded half at {crossing}, not on the dark side"
+    );
 }
 
 fn assert_window_matches_full<F: Filter + CpuFilter>(
@@ -2201,7 +2360,7 @@ fn cpu_image_blend_modes_match_the_wgpu_executor() {
             mode,
         };
         let label = format!("BlendWithImage::{mode:?}");
-        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, &label);
+        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, F16_TOLERANCE, &label);
     }
 
     let auxiliary_f16: Vec<half::f16> = (0..7 * 5 * 4)
@@ -2231,7 +2390,7 @@ fn cpu_image_blend_modes_match_the_wgpu_executor() {
             amount: 0.73_f32,
             mode: filters::BlendMode::Multiply,
         };
-        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, label);
+        assert_f16_matches_cpu(&gpu, filter, (23, 17), &input, F16_TOLERANCE, label);
     }
 }
 
@@ -2252,7 +2411,7 @@ fn image_blend_hsl_and_screen_match_gpu_at_alpha_edges() {
             mode,
         };
         let label = format!("BlendWithImage::{mode:?}, alpha edges");
-        assert_f16_matches_cpu(&gpu, filter, (4, 1), &input, &label);
+        assert_f16_matches_cpu(&gpu, filter, (4, 1), &input, F16_TOLERANCE, &label);
     }
 }
 
@@ -2450,12 +2609,21 @@ fn gpu_export_filter_gallery_images() {
     export_filter!("brightness.png", Brightness(0.2_f32));
     export_filter!("contrast.png", Contrast(1.4_f32));
     export_filter!("saturation.png", Saturation(1.8_f32));
+    export_filter!(
+        "luma_curve.png",
+        LumaCurve {
+            curve: [0.9_f32, 0.83, 0.925, 0.815],
+            amount: 0.75,
+            chroma: 0.375,
+            offset: 0.1,
+        }
+    );
     export_filter!("grayscale.png", Grayscale(1.0_f32));
     export_filter!("hue_rotation.png", HueRotation(120.0_f32));
     export_filter!("sepia.png", Sepia(1.0_f32));
     export_filter!("invert.png", Invert);
     export_filter!("blur.png", Blur(3.0_f32));
-    export_filter!("gaussian_blur.png", GaussianBlur(2.0_f32));
+    export_filter!("gaussian_blur.png", GaussianBlur::new(2.0_f32));
     export_filter!("motion_blur.png", MotionBlur(6.0_f32, 30.0_f32));
     export_filter!("zoom_blur.png", ZoomBlur(0.2_f32, 0.5_f32, 0.5_f32));
     export_filter!("sharpen.png", Sharpen(1.5_f32));
@@ -2590,7 +2758,7 @@ fn gpu_export_filter_gallery_images() {
 fn gpu_one_effect_two_sizes_one_encoder() {
     use filters::GaussianBlur;
     let gpu = create_test_device();
-    let mut executor = Executor::new(GaussianBlur(8.0_f32));
+    let mut executor = Executor::new(GaussianBlur::new(8.0_f32));
     setup(&gpu, &mut executor);
     let size_a = (64, 64);
     let size_b = (64, 32);
@@ -2643,14 +2811,14 @@ fn gpu_one_effect_two_sizes_one_encoder() {
     // References: the same effect, one encode per submission.
     let want_a = run(
         &gpu,
-        GaussianBlur(8.0_f32),
+        GaussianBlur::new(8.0_f32),
         size_a,
         &rgba_a,
         ShapeTextures::default(),
     );
     let want_b = run(
         &gpu,
-        GaussianBlur(8.0_f32),
+        GaussianBlur::new(8.0_f32),
         size_b,
         &rgba_b,
         ShapeTextures::default(),
@@ -2724,7 +2892,7 @@ fn gpu_intermediates_evicted_when_size_unused() {
             .clone()
     }
     let gpu = create_test_device();
-    let mut executor = Executor::new(GaussianBlur(4.0_f32));
+    let mut executor = Executor::new(GaussianBlur::new(4.0_f32));
     setup(&gpu, &mut executor);
     let size_a = (64, 64);
     let size_b = (64, 32);

@@ -8,8 +8,8 @@
 //! instrument the frame model is measured against — a fixture's whole-frame
 //! values (`semantic builds`, `recorded view contents`, `font and image
 //! registrations`, `gpu submissions`, `host wakeups`) are what a steady
-//! frame drives to zero, while the fine-grained counters (`live operand
-//! updates`, `layer creations`, `layer removals`) carry the nonzero signal.
+//! frame drives to zero, while the fine-grained counters (`layer
+//! creations`, `layer removals`) carry the nonzero signal.
 //!
 //! The fixtures deliberately assert *which* counter families moved rather
 //! than exact counts: exact numbers are baseline data, and an exact
@@ -26,7 +26,7 @@
 //! * popup opening → `popup_opening_counts` (accessibility)
 //! * scrolling → `scrolling_counts`
 //! * GPU content under clips/effects → `gpu_content_under_clips_and_effects`
-//! * native-view interleaving → documented only: `record_native_view_layer`
+//! * native-view interleaving → documented only: the `WebView` record
 //!   exists solely under `hydrolysis_macos_system_webview` (winit + macOS +
 //!   webview-system) and the `WKWebView` bridge requires a real window — no
 //!   headless harness can mount it.
@@ -44,7 +44,7 @@ use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_graphics::cherenkov::{Draw, Recorder};
+use waterui_graphics::draw::{Draw, Recorder};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent};
 use waterui_layout::frame::Frame;
@@ -130,26 +130,31 @@ fn runtime_with(view: impl View) -> HeadlessRuntime {
     )
 }
 
-/// The frame-work values a fixture reads back. Transient presentations
-/// (popup windows, drawn context menus) install no retained engine layers:
-/// every retained-engine field stays zero on their frames.
+/// The frame-work values a fixture reads back. A popup window is a
+/// separate window: the presenting window's retained-engine fields stay
+/// zero on its frames.
 fn assert_engine_counters_zero(counters: &FrameCounters) {
     let m = counters.frame_work;
-    assert_eq!(m.live_operand_updates, 0, "no live operands update");
     assert_eq!(m.layer_creations, 0, "no retained engine layers mount");
     assert_eq!(m.layer_removals, 0, "no retained engine layers unmount");
 }
 
+/// A drawn context menu presents through the window's retained
+/// context-menu host: its opening frame mounts the menu's layers.
+fn assert_presentation_mounts(counters: &FrameCounters) {
+    let m = counters.frame_work;
+    assert!(
+        m.layer_creations >= 1,
+        "the context-menu host mounts the menu's layers"
+    );
+}
+
 /// The retained-engine counters a fixture whose content mounts as retained
 /// scene layers reads back: the engine mounts its layers on the presented
-/// frame (`layer_creations >= 1`), while a fixture with no reactive input
-/// and no unmount sees no live-operand updates and no removals.
+/// frame (`layer_creations >= 1`), while a fixture with no unmount sees no
+/// removals.
 fn assert_retained_engine_counters(counters: &FrameCounters) {
     let m = counters.frame_work;
-    assert_eq!(
-        m.live_operand_updates, 0,
-        "nothing reactive runs in this fixture"
-    );
     assert!(
         m.layer_creations >= 1,
         "the retained engine mounts the fixture's layers"
@@ -190,7 +195,7 @@ fn nested_clip_blend_opacity_counts() {
 /// alive on the pane: releasing it unregisters the image under a recording
 /// that still names it.
 struct ImagePane {
-    image: Option<waterui_graphics::Registered<cherenkov::Image<cherenkov::Rgba8>>>,
+    image: Option<waterui_graphics::Registered<waterui_graphics::draw::ImageId>>,
 }
 
 impl SceneContent for ImagePane {
@@ -201,8 +206,8 @@ impl SceneContent for ImagePane {
         _width: f32,
         _height: f32,
     ) -> bool {
-        use cherenkov::{Extend, ImagePattern, Paint, Sampling};
         use kurbo::Affine;
+        use waterui_graphics::draw::{Extend, ImagePattern, Paint, Sampling};
 
         if self.image.is_none() {
             self.image = Some(
@@ -249,13 +254,13 @@ impl SceneContent for ImagePane {
 
 /// An opaque red image — semitransparent fixtures read back white over the
 /// window's white clear, so the probe must be opaque to be detectable.
-fn solid_image() -> cherenkov::ImageData<cherenkov::Rgba8> {
+fn solid_image() -> waterui_graphics::ImageData<waterui_graphics::Rgba8> {
     let mut data = vec![0xFFu8; 16 * 16 * 4];
     for px in data.as_chunks_mut::<4>().0 {
         px[1] = 0x00;
         px[2] = 0x00;
     }
-    cherenkov::ImageData::new(16, 16, std::sync::Arc::<[u8]>::from(data))
+    waterui_graphics::ImageData::new(16, 16, std::sync::Arc::<[u8]>::from(data))
         .expect("a well-formed Rgba8 image")
         .premultiplied()
 }
@@ -470,7 +475,7 @@ fn context_menu_holes_render() {
         m.structural_patches + m.semantic_builds > 0,
         "mounting the menu mutates the retained tree"
     );
-    assert_engine_counters_zero(&result.profile.counters);
+    assert_presentation_mounts(&result.profile.counters);
 }
 
 /// Popup opening: a mounted popup is a second window the pump's merged a11y

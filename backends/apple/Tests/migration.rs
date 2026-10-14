@@ -63,7 +63,7 @@ pub fn trials() -> Vec<Trial> {
                 Ok(())
             }),
             Trial::test("migration::uikit::compact_split", || {
-                uikit_surface::compact_split_shows_the_sidebar();
+                uikit_surface::compact_split_follows_selection();
                 Ok(())
             }),
             Trial::test("migration::uikit::stable_id_row_replace", || {
@@ -313,13 +313,19 @@ mod signals {
 #[cfg(target_os = "ios")]
 mod uikit_surface {
     use cocoa_ui::objc2_core_foundation::{CGPoint, CGRect, CGSize};
-    use cocoa_ui::objc2_ui_kit::{UILabel, UITableView, UITextBorderStyle};
+    use cocoa_ui::objc2_foundation::NSIndexPath;
+    use cocoa_ui::objc2_ui_kit::{
+        NSIndexPathUIKitAdditions, UILabel, UITableView, UITextBorderStyle,
+    };
     use waterui::Str;
     use waterui::component::list::{List, ListItem};
     use waterui::prelude::theme_color::{Accent, Foreground};
     use waterui::prelude::*;
     use waterui::reactive::binding;
     use waterui::shape::Circle;
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, drain_main_queue, pump_main_until,
+    };
     use waterui_backend_core::AnyView;
 
     use crate::{PlatformView, Retained, mtm};
@@ -484,7 +490,7 @@ mod uikit_surface {
     /// intersecting frame, including the nested inbox stacks.
     pub fn list_cells_give_nested_text_real_frames() {
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(inbox()),
             &env,
@@ -528,7 +534,7 @@ mod uikit_surface {
     pub fn text_field_renders_plain_with_a_real_height() {
         let value = binding(Str::from("x"));
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(TextField::new("", &value)),
             &env,
@@ -566,7 +572,7 @@ mod uikit_surface {
     pub fn list_row_height_pitches_and_respects_the_floor() {
         for (height, metric) in [(24.0_f32, "row24Height"), (4.0, "row4Height")] {
             let env = crate::resolve::env();
-            let mount = waterui_apple::native_test_support::mount_uikit(
+            let mount = waterui_apple::native_test_support::mount_uikit_in(
                 mtm(),
                 AnyView::new(List::content((move || {
                     ListItem::new(Color::srgb(255, 0, 0).height(height))
@@ -600,15 +606,44 @@ mod uikit_surface {
         }
     }
 
-    pub fn compact_split_shows_the_sidebar() {
-        use cocoa_ui::objc2_ui_kit::{UISplitViewController, UISplitViewControllerColumn};
+    pub fn compact_split_follows_selection() {
+        use cocoa_ui::objc2_ui_kit::{
+            UINavigationController, UISplitViewController, UISplitViewControllerColumn,
+            UIViewController,
+        };
         use waterui::navigation::{NavigationSplitView, NavigationView};
+
+        fn column_root(
+            split: &UISplitViewController,
+            column: UISplitViewControllerColumn,
+        ) -> Retained<UIViewController> {
+            let controller = split
+                .viewControllerForColumn(column)
+                .expect("column exists");
+            controller
+                .downcast_ref::<UINavigationController>()
+                .map_or_else(
+                    || controller.clone(),
+                    |nav| {
+                        nav.viewControllers()
+                            .firstObject()
+                            .expect("column root exists")
+                    },
+                )
+        }
+
+        fn visible(controller: &UIViewController) -> bool {
+            controller.viewIfLoaded().is_some_and(|view| {
+                view.window().is_some() && !cocoa_ui::view::is_hidden_in_hierarchy(&view)
+            })
+        }
+
         let selection = binding(Some(1_i32));
         let split = NavigationSplitView::new(&selection, text("Sidebar"), |id: i32| {
             NavigationView::new(format!("Detail {id}"), text("detail"))
         });
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(split),
             &env,
@@ -625,34 +660,60 @@ mod uikit_surface {
             controller.isCollapsed(),
             "a compact window collapses the split"
         );
-        let sidebar = controller
-            .viewControllerForColumn(UISplitViewControllerColumn::Primary)
-            .expect("the primary column exists");
+        let sidebar = column_root(&controller, UISplitViewControllerColumn::Primary);
+        let detail = column_root(&controller, UISplitViewControllerColumn::Secondary);
         assert!(
-            sidebar
-                .viewIfLoaded()
-                .is_some_and(|view| view.window().is_some()),
-            "the collapsed sidebar is attached to the window"
+            pump_main_until(MAIN_QUEUE_DEADLINE, || visible(&detail)
+                && !visible(&sidebar)
+                && detail.transitionCoordinator().is_none()),
+            "Some initially shows only the detail"
         );
-        if let Some(detail) =
-            controller.viewControllerForColumn(UISplitViewControllerColumn::Secondary)
-        {
-            assert!(
-                detail
-                    .viewIfLoaded()
-                    .is_none_or(|view| view.window().is_none()),
-                "an existing secondary column must not be visible"
-            );
-        }
+        assert_eq!(selection.snapshot(), Some(1));
+
+        selection.set(None);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || visible(&sidebar)
+                && !visible(&detail)
+                && sidebar.transitionCoordinator().is_none()),
+            "setting None returns to only the sidebar"
+        );
+
+        selection.set(Some(2));
+        assert!(
+            drain_main_queue(mtm()),
+            "the selection update drains the main queue"
+        );
+        let detail = column_root(&controller, UISplitViewControllerColumn::Secondary);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || visible(&detail)
+                && !visible(&sidebar)
+                && detail.transitionCoordinator().is_none()),
+            "setting Some opens only the new detail"
+        );
+        assert_eq!(selection.snapshot(), Some(2));
+
+        let nav = controller
+            .childViewControllers()
+            .firstObject()
+            .expect("the compact split has a child controller")
+            .downcast::<UINavigationController>()
+            .expect("the compact split navigates between its columns");
+        assert!(
+            nav.popViewControllerAnimated(false).is_some(),
+            "native back pops the detail column"
+        );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || selection.snapshot().is_none()
+                && visible(&sidebar)
+                && !visible(&detail)),
+            "native back clears selection and returns to only the sidebar"
+        );
     }
 
     /// `items.set` on a surviving `ItemId` is a `replaced` change: the row's
     /// mounted leaf must be re-materialized and its measured contract
     /// re-derived, not reused — the `#306` regression.
     pub fn stable_id_payload_replace_remateries_the_row() {
-        use cocoa_ui::objc2_foundation::{NSDate, NSIndexPath, NSRunLoop};
-        use cocoa_ui::objc2_ui_kit::NSIndexPathUIKitAdditions;
-
         let items = ReactiveList::from(vec![
             ProbeRow { id: 1, tall: false },
             ProbeRow { id: 2, tall: false },
@@ -666,25 +727,36 @@ mod uikit_surface {
             ListItem::new(content)
         });
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
             cocoa_ui::Rect::new(0.0, 0.0, 393.0, 852.0),
         );
         let table = table(mount.content.view());
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        let first_row = NSIndexPath::indexPathForRow_inSection(0, 0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || cell_height(&table, &first_row)
+                .is_some()),
+            "the first row materializes once deferred work drains"
+        );
         let first = table
-            .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(0, 0))
+            .cellForRowAtIndexPath(&first_row)
             .expect("the first row stays mounted");
         let short = first.frame().size.height;
 
         let _ = items.set(0, ProbeRow { id: 1, tall: true });
         mount.window.layoutIfNeeded();
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                cell_height(&table, &first_row).is_some_and(|height| height > short + 10.0)
+                    && cell_shows(&table, &first_row, "updated tall row")
+            }),
+            "the replaced row re-materializes on its new contract"
+        );
 
         let cell = table
-            .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(0, 0))
+            .cellForRowAtIndexPath(&first_row)
             .expect("the replaced row stays mounted");
         let tall = cell.frame().size.height;
         assert!(
@@ -692,10 +764,9 @@ mod uikit_surface {
             "the replaced row re-measures on its new contract ({short} -> {tall})"
         );
         assert!(
-            descendants(&cell.contentView())
+            label_texts(&cell.contentView())
                 .iter()
-                .filter_map(|view| view.downcast_ref::<UILabel>().and_then(UILabel::text))
-                .any(|text| text.to_string().contains("updated tall row")),
+                .any(|text| text.contains("updated tall row")),
             "the replaced row re-materializes its leaf"
         );
 
@@ -705,9 +776,15 @@ mod uikit_surface {
         let _ = items.remove(0);
         items.insert(0, ProbeRow { id: 1, tall: false });
         mount.window.layoutIfNeeded();
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                cell_height(&table, &first_row).is_some_and(|height| (height - short).abs() < 1.0)
+                    && !cell_shows(&table, &first_row, "updated tall row")
+            }),
+            "the reinserted row re-materializes on its own contract"
+        );
         let cell = table
-            .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(0, 0))
+            .cellForRowAtIndexPath(&first_row)
             .expect("the reinserted row stays mounted");
         let back = cell.frame().size.height;
         assert!(
@@ -715,22 +792,47 @@ mod uikit_surface {
             "the reinserted row returns to its own contract ({short} -> {back})"
         );
         assert!(
-            descendants(&cell.contentView())
+            !label_texts(&cell.contentView())
                 .iter()
-                .filter_map(|view| view.downcast_ref::<UILabel>().and_then(UILabel::text))
-                .all(|text| !text.to_string().contains("updated tall row")),
+                .any(|text| text.contains("updated tall row")),
             "the reinserted row does not keep the replaced leaf"
         );
 
-        // Mixed replacement + membership + new id in one turn: the newest
-        // snapshot must win over every queued emission.
+        mixed_membership_turn_lands_each_contract(&mount, &table, &items, &first_row, short);
+    }
+
+    /// Mixed replacement + membership + new id in one turn: the newest
+    /// snapshot must win over every queued emission.
+    fn mixed_membership_turn_lands_each_contract(
+        mount: &waterui_apple::native_test_support::UIKitMount,
+        table: &UITableView,
+        items: &ReactiveList<ProbeRow>,
+        first_row: &NSIndexPath,
+        short: f64,
+    ) {
         let _ = items.set(1, ProbeRow { id: 2, tall: true });
         let _ = items.remove(0);
         items.push(ProbeRow { id: 3, tall: false });
         mount.window.layoutIfNeeded();
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        let pushed_row = NSIndexPath::indexPathForRow_inSection(1, 0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                cell_height(table, first_row).is_some_and(|height| height > short + 10.0)
+                    && cell_height(table, &pushed_row)
+                        .is_some_and(|height| (height - short).abs() < 1.0)
+            }),
+            "the moved and pushed rows land on their own contracts"
+        );
+        // The newest state has landed; an older queued flush would apply
+        // after it. Drain the main queue past every queued emission and lay
+        // out again so such an overwrite would show in the cells below.
+        assert!(
+            drain_main_queue(mtm()),
+            "the queued emissions drain off the main queue"
+        );
+        mount.window.layoutIfNeeded();
         let moved = table
-            .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(0, 0))
+            .cellForRowAtIndexPath(first_row)
             .expect("the moved row stays mounted");
         let moved_height = moved.frame().size.height;
         assert!(
@@ -738,7 +840,7 @@ mod uikit_surface {
             "id 2 carries its replaced contract to index 0 ({moved_height})"
         );
         let fresh = table
-            .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(1, 0))
+            .cellForRowAtIndexPath(&pushed_row)
             .expect("the pushed row is mounted");
         assert!(
             (fresh.frame().size.height - short).abs() < 1.0,
@@ -750,9 +852,6 @@ mod uikit_surface {
     /// `reloadData` path — a multi-group list must still evict the replaced
     /// row's measured contract — a `#307` regression.
     pub fn stable_id_payload_replace_in_sectioned_rows() {
-        use cocoa_ui::objc2_foundation::{NSDate, NSIndexPath, NSRunLoop};
-        use cocoa_ui::objc2_ui_kit::NSIndexPathUIKitAdditions;
-
         let env = crate::resolve::env();
 
         // Sectioned shape: a section marker produces a multi-group list,
@@ -781,18 +880,26 @@ mod uikit_surface {
                 }
             },
         ));
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
             cocoa_ui::Rect::new(0.0, 0.0, 393.0, 852.0),
         );
         let sectioned_table = table(mount.content.view());
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        let untouched_row = NSIndexPath::indexPathForRow_inSection(1, 0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || cell_height(
+                &sectioned_table,
+                &untouched_row
+            )
+            .is_some()),
+            "the sectioned rows materialize once deferred work drains"
+        );
         // The marker labels the group id 10 starts; id 11 has no marker and
         // stays inside it — the labeled group takes the `reloadData` path.
         let short = sectioned_table
-            .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(1, 0))
+            .cellForRowAtIndexPath(&untouched_row)
             .expect("the untouched sectioned row is mounted")
             .frame()
             .size
@@ -805,19 +912,26 @@ mod uikit_surface {
             },
         );
         mount.window.layoutIfNeeded();
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        let replaced_row = NSIndexPath::indexPathForRow_inSection(0, 0);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                cell_height(&sectioned_table, &replaced_row)
+                    .is_some_and(|height| (height - short).abs() < 1.0)
+                    && sectioned_table
+                        .cellForRowAtIndexPath(&replaced_row)
+                        .is_some_and(|cell| {
+                            label_texts(&cell.contentView())
+                                .iter()
+                                .any(|text| text == "row")
+                        })
+            }),
+            "the replaced sectioned row re-materializes on its short contract"
+        );
         let cell = sectioned_table
-            .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(0, 0))
+            .cellForRowAtIndexPath(&replaced_row)
             .expect("the replaced sectioned row stays mounted");
         let sectioned_height = cell.frame().size.height;
-        let sectioned_text: Vec<String> = descendants(&cell.contentView())
-            .iter()
-            .filter_map(|v| {
-                v.downcast_ref::<UILabel>()
-                    .and_then(UILabel::text)
-                    .map(|s| s.to_string())
-            })
-            .collect();
+        let sectioned_text = label_texts(&cell.contentView());
         assert!(
             (sectioned_height - short).abs() < 1.0,
             "a replaced sectioned row re-measures under reloadData: {sectioned_height} vs {short}"
@@ -832,9 +946,6 @@ mod uikit_surface {
     /// records a reentrant emission; a newer update recorded before that
     /// queued flush drains must win — a `#307` regression.
     pub fn stable_id_payload_replace_under_reentrant_emission() {
-        use cocoa_ui::objc2_foundation::{NSDate, NSIndexPath, NSRunLoop};
-        use cocoa_ui::objc2_ui_kit::NSIndexPathUIKitAdditions;
-
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
         let items = ReactiveList::from(vec![
@@ -864,21 +975,30 @@ mod uikit_surface {
                 ListItem::new(content)
             }
         });
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
             cocoa_ui::Rect::new(0.0, 0.0, 393.0, 852.0),
         );
         let reentrant_table = table(mount.content.view());
-        // A pump materializes the rows and drains the body's reentrant
-        // emission — the update below is then unambiguously newer, and an
-        // older queued snapshot may never overwrite it.
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        let first_row = NSIndexPath::indexPathForRow_inSection(0, 0);
+        let untouched_row = NSIndexPath::indexPathForRow_inSection(1, 0);
+        // Pumping until the re-emitted payload lands materializes the rows
+        // and drains the body's reentrant emission — the update below is
+        // then unambiguously newer, and an older queued snapshot may never
+        // overwrite it.
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                cell_shows(&reentrant_table, &first_row, "updated tall row")
+                    && cell_height(&reentrant_table, &untouched_row).is_some()
+            }),
+            "the body's reentrant emission applies while the rows materialize"
+        );
         // Row 1 (id 21) is untouched at this point — its contract is the
         // short baseline for this mounted list.
         let short = reentrant_table
-            .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(1, 0))
+            .cellForRowAtIndexPath(&untouched_row)
             .expect("the untouched row is mounted")
             .frame()
             .size
@@ -892,21 +1012,32 @@ mod uikit_surface {
         );
         let _ = items.set(1, ProbeRow { id: 21, tall: true });
         mount.window.layoutIfNeeded();
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                cell_height(&reentrant_table, &first_row)
+                    .is_some_and(|height| (height - short).abs() < 1.0)
+                    && cell_shows(&reentrant_table, &first_row, "reentrant row")
+                    && cell_height(&reentrant_table, &untouched_row)
+                        .is_some_and(|height| height > short + 10.0)
+            }),
+            "the newest emission wins over the queued reentrant one"
+        );
+        // The newest state has landed; the queued reentrant flush would
+        // apply after it. Drain the main queue past every queued emission
+        // and lay out again so such an overwrite would show in the cells
+        // below.
+        assert!(
+            drain_main_queue(mtm()),
+            "the queued emissions drain off the main queue"
+        );
+        mount.window.layoutIfNeeded();
         let cell = reentrant_table
-            .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(0, 0))
+            .cellForRowAtIndexPath(&first_row)
             .expect("the reentrant row stays mounted");
         let reentrant_height = cell.frame().size.height;
-        let reentrant_text: Vec<String> = descendants(&cell.contentView())
-            .iter()
-            .filter_map(|v| {
-                v.downcast_ref::<UILabel>()
-                    .and_then(UILabel::text)
-                    .map(|s| s.to_string())
-            })
-            .collect();
+        let reentrant_text = label_texts(&cell.contentView());
         let moved = reentrant_table
-            .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(1, 0))
+            .cellForRowAtIndexPath(&untouched_row)
             .expect("the second row stays mounted");
         let moved_height = moved.frame().size.height;
         assert!(
@@ -930,9 +1061,6 @@ mod uikit_surface {
     /// next applied snapshot reflects the new membership. Reproduces
     /// the `render_row` live-read abort (`#307`/`#1418`).
     pub fn reentrant_remove_realizes_the_retained_snapshot() {
-        use cocoa_ui::objc2_foundation::{NSDate, NSIndexPath, NSRunLoop};
-        use cocoa_ui::objc2_ui_kit::NSIndexPathUIKitAdditions;
-
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
         let rendered = Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -966,20 +1094,33 @@ mod uikit_surface {
                 ListItem::new(content)
             }
         });
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
             cocoa_ui::Rect::new(0.0, 0.0, 393.0, 852.0),
         );
         let remove_table = table(mount.content.view());
-        // A pump materializes the rows: the body's `remove(0)` runs
-        // mid-pass, so every realization after it must still read the
-        // retained snapshot. UIKit realizes cells repeatedly, so the log
-        // interleaves — the decisive entries are rows whose retained id
-        // no longer exists at the same live position (id 30 while live is
-        // `[31, 32]`), which a live read could never produce.
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        // Pumping until the retained realizations land materializes the
+        // rows: the body's `remove(0)` runs mid-pass, so every realization
+        // after it must still read the retained snapshot. UIKit realizes
+        // cells repeatedly, so the log interleaves — the decisive entries
+        // are rows whose retained id no longer exists at the same live
+        // position (id 30 while live is `[31, 32]`), which a live read
+        // could never produce.
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                if remove_table.numberOfRowsInSection(0) != 2 {
+                    return false;
+                }
+                let log = rendered.borrow();
+                log.first() == Some(&(30, 3))
+                    && [30_u64, 31, 32]
+                        .iter()
+                        .all(|id| log.iter().any(|&(entry, len)| entry == *id && len == 2))
+            }),
+            "the retained snapshot realizes every row while the removal applies"
+        );
         {
             let log = rendered.borrow();
             assert_eq!(
@@ -1007,30 +1148,48 @@ mod uikit_surface {
         let cell = remove_table
             .cellForRowAtIndexPath(&NSIndexPath::indexPathForRow_inSection(0, 0))
             .expect("the surviving first row stays mounted");
-        let cell_text: Vec<String> = descendants(&cell.contentView())
-            .iter()
-            .filter_map(|v| {
-                v.downcast_ref::<UILabel>()
-                    .and_then(UILabel::text)
-                    .map(|s| s.to_string())
-            })
-            .collect();
+        let cell_text = label_texts(&cell.contentView());
         assert!(
             cell_text.iter().any(|t| t == "row"),
             "the re-materialized row shows its retained payload, got {cell_text:?}"
         );
     }
 
-    /// `row`-prefixed `UILabel` texts anywhere under `view`, sorted —
-    /// membership evidence for the container/table reentrant probes.
-    fn row_labels(view: &PlatformView) -> Vec<String> {
-        let mut labels: Vec<String> = descendants(view)
+    /// Every `UILabel` text anywhere under `view` — the observable
+    /// payload a mounted leaf settles to once queued work drains.
+    fn label_texts(view: &PlatformView) -> Vec<String> {
+        descendants(view)
             .iter()
             .filter_map(|view| {
                 view.downcast_ref::<UILabel>()
                     .and_then(UILabel::text)
                     .map(|text| text.to_string())
             })
+            .collect()
+    }
+
+    /// The mounted cell's height at `index` — `None` while the row has
+    /// not materialized.
+    fn cell_height(table: &UITableView, index: &NSIndexPath) -> Option<f64> {
+        table
+            .cellForRowAtIndexPath(index)
+            .map(|cell| cell.frame().size.height)
+    }
+
+    /// The mounted cell at `index` shows `needle` in one of its labels.
+    fn cell_shows(table: &UITableView, index: &NSIndexPath, needle: &str) -> bool {
+        table.cellForRowAtIndexPath(index).is_some_and(|cell| {
+            label_texts(&cell.contentView())
+                .iter()
+                .any(|text| text.contains(needle))
+        })
+    }
+
+    /// `row`-prefixed `UILabel` texts anywhere under `view`, sorted —
+    /// membership evidence for the container/table reentrant probes.
+    fn row_labels(view: &PlatformView) -> Vec<String> {
+        let mut labels: Vec<String> = label_texts(view)
+            .into_iter()
             .filter(|text| text.starts_with("row "))
             .collect();
         labels.sort();
@@ -1042,7 +1201,6 @@ mod uikit_surface {
     /// notification — it must record and deliver at the next safe
     /// boundary, never collide with the in-flight borrow (`#319`).
     pub fn reentrant_container_remove_applies_at_boundary() {
-        use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
         use waterui::component::lazy::Lazy;
         use waterui::views::ForEach;
 
@@ -1070,13 +1228,18 @@ mod uikit_surface {
                 text(format!("row {}", row.id))
             }
         }));
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(container),
             &env,
             cocoa_ui::Rect::new(0.0, 0.0, 393.0, 852.0),
         );
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.5));
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                row_labels(mount.content.view()) == ["row 41", "row 42"]
+            }),
+            "the reentrant emission applies once the borrow releases"
+        );
         let labels = row_labels(mount.content.view());
         assert_eq!(
             labels,
@@ -1091,7 +1254,6 @@ mod uikit_surface {
     /// first generator call fires during the initial sync before the
     /// column lands, so its emission must also survive that window.
     pub fn reentrant_table_rows_apply_at_boundary() {
-        use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
         use waterui::component::table::{col, table};
         use waterui::views::ForEach;
 
@@ -1128,20 +1290,31 @@ mod uikit_surface {
             }
         });
         let view = table(vec![col("c", rows)]);
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(view),
             &env,
             cocoa_ui::Rect::new(0.0, 0.0, 393.0, 852.0),
         );
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                row_labels(mount.content.view()) == ["row 50", "row 51", "row 52"]
+            }),
+            "the first reentrant rows emission applies once the borrow releases"
+        );
         // The post-mount apply runs under the table borrow; the row-53
         // generator emits reentrantly inside it.
         items.push(ProbeRow {
             id: 53,
             tall: false,
         });
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.5));
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                row_labels(mount.content.view())
+                    == ["row 50", "row 51", "row 52", "row 53", "row 54"]
+            }),
+            "both reentrant emissions apply once the borrow releases"
+        );
         let labels = row_labels(mount.content.view());
         assert_eq!(
             labels,
@@ -1157,7 +1330,6 @@ mod uikit_surface {
     /// inside the emission's own animation and draining the recorded
     /// reload with the transaction.
     pub fn reentrant_columns_and_label_apply_at_boundary() {
-        use cocoa_ui::objc2_foundation::{NSDate, NSRunLoop};
         use core::cell::OnceCell;
         use waterui::component::table::{TableColumn, col, table};
         use waterui::reactive::binding;
@@ -1220,13 +1392,18 @@ mod uikit_surface {
         let _ = first_column.set(column.clone());
         columns.set(vec![column]);
         let view = table(columns);
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(view),
             &env,
             cocoa_ui::Rect::new(0.0, 0.0, 393.0, 852.0),
         );
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.2));
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                row_labels(mount.content.view()) == ["row 60"]
+            }),
+            "the initial column rows materialize"
+        );
         // The post-mount apply runs under the table borrow; the row-61
         // generator emits the label and columns notifications reentrantly
         // inside it.
@@ -1234,7 +1411,12 @@ mod uikit_surface {
             id: 61,
             tall: false,
         });
-        NSRunLoop::currentRunLoop().runUntilDate(&NSDate::dateWithTimeIntervalSinceNow(0.5));
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                row_labels(mount.content.view()) == ["row 60", "row 61", "row 62", "row 70"]
+            }),
+            "the recorded emissions deliver at the boundary"
+        );
         let labels = row_labels(mount.content.view());
         assert_eq!(
             labels,

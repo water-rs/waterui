@@ -2,8 +2,10 @@
 //! with the labelled row a toggle lays out.
 //!
 //! `Toggle` owns a plain `NSView` container holding the control and an
-//! optional label, arranged the way a Mac reads them — control first, then
-//! its title — and carries the platform's animation and action plumbing.
+//! optional label, arranged by kind — a checkbox reads box first, then its
+//! title; a switch puts its title at the leading edge and the switch at the
+//! trailing edge of the row — and carries the platform's animation and
+//! action plumbing.
 //!
 //! # Safety
 //!
@@ -136,8 +138,10 @@ impl Toggle {
         }
     }
 
-    /// Installs `label` as the container's second subview: the control pinned
-    /// leading, the label after it, both vertically centered.
+    /// Installs `label` beside the control, both vertically centered. A
+    /// checkbox pins the box leading and the label `LABEL_SPACING` after it;
+    /// a switch pins the label leading and the switch trailing, so the free
+    /// space of a row wider than its content falls between them.
     ///
     /// # Panics
     ///
@@ -158,25 +162,45 @@ impl Toggle {
             NSLayoutConstraintOrientation::Horizontal,
         );
 
-        let constraints = NSArray::from_slice(&[
-            &*control
-                .leadingAnchor()
-                .constraintEqualToAnchor(&self.container.leadingAnchor()),
-            &*control
+        let container = &self.container;
+        let centered = [
+            control
                 .centerYAnchor()
-                .constraintEqualToAnchor(&self.container.centerYAnchor()),
-            &*label.leadingAnchor().constraintEqualToAnchor_constant(
-                &self.container.leadingAnchor(),
-                self.label_leading(),
-            ),
-            &*label
+                .constraintEqualToAnchor(&container.centerYAnchor()),
+            label
                 .centerYAnchor()
-                .constraintEqualToAnchor(&self.container.centerYAnchor()),
-            &*label
-                .trailingAnchor()
-                .constraintLessThanOrEqualToAnchor(&self.container.trailingAnchor()),
-        ]);
-        NSLayoutConstraint::activateConstraints(&constraints);
+                .constraintEqualToAnchor(&container.centerYAnchor()),
+        ];
+        let placed = match &self.control {
+            Control::Checkbox(_) => [
+                control
+                    .leadingAnchor()
+                    .constraintEqualToAnchor(&container.leadingAnchor()),
+                label
+                    .leadingAnchor()
+                    .constraintEqualToAnchor_constant(&control.trailingAnchor(), LABEL_SPACING),
+                label
+                    .trailingAnchor()
+                    .constraintLessThanOrEqualToAnchor(&container.trailingAnchor()),
+            ],
+            Control::Switch(_) => [
+                label
+                    .leadingAnchor()
+                    .constraintEqualToAnchor(&container.leadingAnchor()),
+                control
+                    .trailingAnchor()
+                    .constraintEqualToAnchor(&container.trailingAnchor()),
+                label
+                    .trailingAnchor()
+                    .constraintLessThanOrEqualToAnchor_constant(
+                        &control.leadingAnchor(),
+                        -LABEL_SPACING,
+                    ),
+            ],
+        };
+        let constraints: Vec<&NSLayoutConstraint> =
+            centered.iter().chain(&placed).map(|c| &**c).collect();
+        NSLayoutConstraint::activateConstraints(&NSArray::from_slice(&constraints));
     }
 
     /// The control's intrinsic size — the row's share of a measure.
@@ -185,23 +209,15 @@ impl Toggle {
         self.control().intrinsicContentSize().into()
     }
 
-    /// The label's leading offset inside the row: the control's intrinsic
-    /// width plus `LABEL_SPACING`. `set_label` pins the label there, and a
-    /// measure of the row reads the same number — the row's composition
-    /// lives in one place.
-    #[must_use]
-    pub fn label_leading(&self) -> f64 {
-        self.control_size().width + LABEL_SPACING
-    }
-
     /// The row's composed size beside a label of `label_size`: control,
-    /// `LABEL_SPACING`, label wide; the taller of the two high — the same
-    /// arithmetic the `set_label` constraints place.
+    /// `LABEL_SPACING` and label wide, the taller of the two high — the
+    /// content `set_label`'s constraints place, in either order.
     #[must_use]
     pub fn row_size(&self, label_size: Size) -> Size {
+        let control = self.control_size();
         Size::new(
-            self.label_leading() + label_size.width,
-            self.control_size().height.max(label_size.height),
+            control.width + LABEL_SPACING + label_size.width,
+            control.height.max(label_size.height),
         )
     }
 

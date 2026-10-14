@@ -1,0 +1,3 @@
+[package]
+name = "app"
+bundle_identifier = "dev.waterui.fixture"

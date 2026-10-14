@@ -7,6 +7,9 @@
 //! declares, `AppKit` sends them on the main thread, and the delegate stays
 //! alive for as long as the application runs with it, because
 //! [`Application::run`] owns it for that long.
+//!
+//! The menu module's standard items send their selectors with no target,
+//! so `AppKit` delivers them only to a responder that implements them.
 
 use std::cell::Cell;
 use std::fmt;
@@ -15,7 +18,8 @@ use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSRequestUserAttentionType,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
+    NSApplicationTerminateReply, NSRequestUserAttentionType,
 };
 use objc2_foundation::{NSNotification, NSObject, NSObjectProtocol};
 
@@ -40,6 +44,20 @@ impl ActivationPolicy {
             Self::Regular => NSApplicationActivationPolicy::Regular,
             Self::Accessory => NSApplicationActivationPolicy::Accessory,
             Self::Prohibited => NSApplicationActivationPolicy::Prohibited,
+        }
+    }
+
+    /// The policy a native `NSApplicationActivationPolicy` reads —
+    /// [`Self::native`]'s inverse.
+    fn from_native(policy: NSApplicationActivationPolicy) -> Self {
+        if policy == NSApplicationActivationPolicy::Regular {
+            Self::Regular
+        } else if policy == NSApplicationActivationPolicy::Accessory {
+            Self::Accessory
+        } else {
+            // `Prohibited`, and anything the platform adds later — an
+            // unlisted policy is at least as hidden.
+            Self::Prohibited
         }
     }
 }
@@ -72,8 +90,33 @@ impl AttentionRequest {
 #[must_use = "an uncancelled request bounces until the application is activated"]
 pub struct AttentionRequestToken(isize);
 
+/// How the application answers a request to quit —
+/// `NSApplicationTerminateReply`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TerminateReply {
+    /// Quit now: `applicationWillTerminate:` follows and the process exits.
+    Now,
+    /// Keep running; a logout, restart or shutdown that asked is cancelled.
+    Cancel,
+    /// Decide later: the application keeps processing events, in the modal
+    /// panel run-loop mode, until [`Application::reply_to_should_terminate`]
+    /// answers.
+    Later,
+}
+
+impl TerminateReply {
+    const fn native(self) -> NSApplicationTerminateReply {
+        match self {
+            Self::Now => NSApplicationTerminateReply::TerminateNow,
+            Self::Cancel => NSApplicationTerminateReply::TerminateCancel,
+            Self::Later => NSApplicationTerminateReply::TerminateLater,
+        }
+    }
+}
+
 type OnceHandler = Box<dyn FnOnce(MainThreadMarker)>;
 type QueryHandler = Box<dyn Fn(MainThreadMarker) -> bool>;
+type TerminateHandler = Box<dyn Fn(MainThreadMarker) -> TerminateReply>;
 
 /// What the application does at each point of its life, given to
 /// [`Application::run`].
@@ -84,6 +127,7 @@ type QueryHandler = Box<dyn Fn(MainThreadMarker) -> bool>;
 #[must_use = "handlers do nothing until they are passed to `Application::run`"]
 pub struct ApplicationHandlers {
     did_finish_launching: Option<OnceHandler>,
+    should_terminate: Option<TerminateHandler>,
     should_terminate_after_last_window_closed: Option<QueryHandler>,
     will_terminate: Option<OnceHandler>,
 }
@@ -101,6 +145,18 @@ impl ApplicationHandlers {
         handler: impl FnOnce(MainThreadMarker) + 'static,
     ) -> Self {
         self.did_finish_launching = Some(Box::new(handler));
+        self
+    }
+
+    /// Asks `handler` whether the application may quit, whenever something
+    /// sends it `terminate:` — the Quit menu item and its ⌘Q, Quit in the
+    /// Dock menu, a quit Apple event, a logout, restart or shutdown, and
+    /// [`Application::terminate`]. Without a handler it quits at once.
+    pub fn should_terminate(
+        mut self,
+        handler: impl Fn(MainThreadMarker) -> TerminateReply + 'static,
+    ) -> Self {
+        self.should_terminate = Some(Box::new(handler));
         self
     }
 
@@ -125,6 +181,7 @@ impl fmt::Debug for ApplicationHandlers {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ApplicationHandlers")
             .field("did_finish_launching", &self.did_finish_launching.is_some())
+            .field("should_terminate", &self.should_terminate.is_some())
             .field(
                 "should_terminate_after_last_window_closed",
                 &self.should_terminate_after_last_window_closed.is_some(),
@@ -147,6 +204,12 @@ impl Application {
         Self {
             app: NSApplication::sharedApplication(mtm),
         }
+    }
+
+    /// The policy the process currently holds — `activationPolicy`.
+    #[must_use]
+    pub fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::from_native(self.app.activationPolicy())
     }
 
     /// Sets how the application presents itself.
@@ -197,9 +260,18 @@ impl Application {
     }
 
     /// Terminates the application: the equivalent of Quit — the delegate's
-    /// `will_terminate` runs and the process exits.
+    /// `should_terminate` is asked, and once it agrees `will_terminate` runs
+    /// and the process exits.
     pub fn terminate(&self) {
         self.app.terminate(None);
+    }
+
+    /// Answers a quit the delegate's `should_terminate` deferred with
+    /// [`TerminateReply::Later`]: `true` quits, `false` keeps the
+    /// application running and cancels a logout, restart or shutdown that
+    /// asked.
+    pub fn reply_to_should_terminate(&self, terminate: bool) {
+        self.app.replyToApplicationShouldTerminate(terminate);
     }
 
     /// Runs the application's event loop, calling `handlers` as its events
@@ -222,6 +294,7 @@ impl Application {
 
 struct DelegateIvars {
     did_finish_launching: Cell<Option<OnceHandler>>,
+    should_terminate: Option<TerminateHandler>,
     should_terminate_after_last_window_closed: Option<QueryHandler>,
     will_terminate: Cell<Option<OnceHandler>>,
 }
@@ -247,6 +320,20 @@ define_class!(
                     handler(self.mtm());
                 }
             });
+        }
+
+        #[unsafe(method(applicationShouldTerminate:))]
+        fn application_should_terminate(
+            &self,
+            _sender: &NSApplication,
+        ) -> NSApplicationTerminateReply {
+            guarded("applicationShouldTerminate:", || {
+                self.ivars()
+                    .should_terminate
+                    .as_ref()
+                    .map_or(TerminateReply::Now, |handler| handler(self.mtm()))
+                    .native()
+            })
         }
 
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
@@ -277,6 +364,7 @@ impl Delegate {
     fn new(mtm: MainThreadMarker, handlers: ApplicationHandlers) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(DelegateIvars {
             did_finish_launching: Cell::new(handlers.did_finish_launching),
+            should_terminate: handlers.should_terminate,
             should_terminate_after_last_window_closed: handlers
                 .should_terminate_after_last_window_closed,
             will_terminate: Cell::new(handlers.will_terminate),

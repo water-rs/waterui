@@ -1,8 +1,9 @@
 //! Scene serde round-trip and path/shape helper checks.
 
+const NONZERO: std::num::NonZeroU32 = std::num::NonZeroU32::MIN;
 use cherenkov_scene::{
-    BlendMode, Color, ColorSpace, Feature, FillRule, Glyph, GlyphRun, GradientStop, Item,
-    LinearGradient, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
+    BackdropGroup, BlendMode, Color, ColorSpace, Feature, FillRule, Glyph, GlyphRun, GradientStop,
+    Item, LinearGradient, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
 };
 use kurbo::{Affine, BezPath, Point, Rect};
 
@@ -307,7 +308,7 @@ fn image_encodings_roundtrip() {
 
 #[test]
 fn backdrop_effect_specs_roundtrip() {
-    use cherenkov_scene::{BackdropEffectSpec, BackdropFilter, SceneError};
+    use cherenkov_scene::{BackdropEffectSpec, BackdropFilter};
     let specs = [
         BackdropEffectSpec::ColorMatrix {
             matrix: [
@@ -333,7 +334,12 @@ fn backdrop_effect_specs_roundtrip() {
         assert_eq!(*spec, back);
 
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }]);
+        b.backdrop_group(BackdropGroup::new(
+            1,
+            vec![BackdropFilter::GaussianBlur { sigma: 4.0 }],
+            1.0,
+            1,
+        ));
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(1);
@@ -346,10 +352,15 @@ fn backdrop_effect_specs_roundtrip() {
         let loaded = Scene::load(&scene_dir).unwrap();
         assert_eq!(scene, loaded);
     }
+}
 
+#[test]
+fn backdrop_effect_validation_cases() {
+    use cherenkov_scene::{BackdropEffectSpec, SceneError};
+    let dir = std::env::temp_dir().join(format!("cherenkov-scene-fxv-{}", std::process::id()));
     // A member without an effect keeps `backdrop_effect` out of the JSON.
     let mut b = Scene::builder(64, 64);
-    b.backdrop_group(1, Vec::new());
+    b.backdrop_group(BackdropGroup::new(1, Vec::new(), 1.0, 1));
     b.root().layer(|m| {
         m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
         m.backdrop(1);
@@ -401,7 +412,7 @@ fn backdrop_effect_specs_roundtrip() {
         },
     ] {
         let mut b = Scene::builder(64, 64);
-        b.backdrop_group(1, Vec::new());
+        b.backdrop_group(BackdropGroup::new(1, Vec::new(), 1.0, 1));
         b.root().layer(|m| {
             m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
             m.backdrop(1);
@@ -415,5 +426,336 @@ fn backdrop_effect_specs_roundtrip() {
             "{bad:?} must be rejected, got {result:?}"
         );
     }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn backdrop_scale_loads_inside_its_range_only() {
+    use cherenkov_scene::{BackdropFilter, BackdropGroup, SceneError};
+    let dir = std::env::temp_dir().join(format!("cherenkov-scene-scale-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let scene = |scale| {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_group(BackdropGroup::new(
+            7,
+            vec![BackdropFilter::GaussianBlur { sigma: 2.0 }],
+            scale,
+            1,
+        ));
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(7);
+        });
+        b.build()
+    };
+
+    let quarter = scene(0.25);
+    assert!(quarter.features.contains(&Feature::BackdropScale));
+    quarter.save(&dir.join("quarter")).unwrap();
+    assert_eq!(Scene::load(&dir.join("quarter")).unwrap(), quarter);
+
+    // Non-finite scales cannot be expressed in JSON (serde emits `null`),
+    // so these exercise the range.
+    for (i, bad) in [0.0, -0.25, 1.5].into_iter().enumerate() {
+        let scene_dir = dir.join(format!("bad-{i}"));
+        scene(bad).save(&scene_dir).unwrap();
+        let result = Scene::load(&scene_dir);
+        assert!(
+            matches!(result, Err(SceneError::InvalidBackdropScale(7))),
+            "scale {bad} must be rejected, got {result:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn backdrop_levels_load_inside_their_range_only() {
+    use cherenkov_scene::{BackdropFilter, BackdropGroup, SceneError};
+    let dir = std::env::temp_dir().join(format!("cherenkov-scene-levels-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let scene = |levels| {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_group(BackdropGroup::new(
+            7,
+            vec![BackdropFilter::GaussianBlur { sigma: 2.0 }],
+            0.5,
+            levels,
+        ));
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(7);
+        });
+        b.build()
+    };
+
+    let deepest = scene(BackdropGroup::MAX_LEVELS);
+    deepest.save(&dir.join("deepest")).unwrap();
+    assert_eq!(Scene::load(&dir.join("deepest")).unwrap(), deepest);
+
+    for bad in [0, 9] {
+        let scene_dir = dir.join(format!("bad-{bad}"));
+        scene(bad).save(&scene_dir).unwrap();
+        let result = Scene::load(&scene_dir);
+        assert!(
+            matches!(result, Err(SceneError::InvalidBackdropLevels(7))),
+            "levels {bad} must be rejected, got {result:?}"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn backdrop_levels_default_to_one_and_skip_one() {
+    let dir = std::env::temp_dir().join(format!(
+        "cherenkov-scene-levels-default-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    let scene = |levels| {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_group(BackdropGroup::new(7, Vec::new(), 1.0, levels));
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(7);
+        });
+        b.build()
+    };
+    let json = |name: &str| std::fs::read_to_string(dir.join(name).join("scene.json")).unwrap();
+
+    let single = scene(1);
+    single.save(&dir.join("single")).unwrap();
+    assert!(
+        !json("single").contains("\"levels\""),
+        "a one-level group omits `levels`: {}",
+        json("single")
+    );
+    let loaded = Scene::load(&dir.join("single")).unwrap();
+    assert_eq!(loaded.backdrop_groups[0].levels, 1);
+    assert_eq!(loaded, single);
+
+    let pyramid = scene(3);
+    pyramid.save(&dir.join("pyramid")).unwrap();
+    assert!(json("pyramid").contains("\"levels\""));
+    assert_eq!(Scene::load(&dir.join("pyramid")).unwrap(), pyramid);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn backdrop_union_and_outer_roundtrip_and_validate() {
+    use cherenkov_scene::{BackdropFilter, BackdropGroup, SceneError};
+    let dir = std::env::temp_dir().join(format!("cherenkov-scene-union-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    // A union group plus an `outer` member round-trips.
+    let mut b = Scene::builder(64, 64);
+    b.backdrop_group(BackdropGroup {
+        union: Some(12.0),
+        ..BackdropGroup::new(3, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0, 1)
+    });
+    b.backdrop_group(BackdropGroup::new(4, Vec::new(), 1.0, 1));
+    let l = &mut b.root();
+    l.layer(|m| {
+        m.clip(Shape::rect(8.0, 8.0, 32.0, 32.0));
+        m.backdrop(3);
+    });
+    l.layer(|m| {
+        m.clip(Shape::rect(36.0, 8.0, 56.0, 32.0));
+        m.backdrop(3);
+        m.backdrop_outer(6.0);
+    });
+    l.layer(|m| {
+        m.clip(Shape::rect(8.0, 40.0, 56.0, 56.0));
+        m.backdrop(4);
+        m.backdrop_outer(2.5);
+    });
+    let scene = b.build();
+    assert!(scene.features.contains(&Feature::BackdropUnion));
+    assert!(scene.features.contains(&Feature::BackdropOuter));
+    let scene_dir = dir.join("union");
+    scene.save(&scene_dir).unwrap();
+    assert_eq!(Scene::load(&scene_dir).unwrap(), scene);
+
+    // A `backdrop_outer` of 0 is the default and stays out of the JSON.
+    let mut b = Scene::builder(64, 64);
+    b.backdrop_group(BackdropGroup::new(4, Vec::new(), 1.0, 1));
+    b.root().layer(|m| {
+        m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+        m.backdrop(4);
+    });
+    let scene = b.build();
+    assert!(
+        !serde_json::to_string(&scene)
+            .unwrap()
+            .contains("backdrop_outer")
+    );
+
+    // Invalid values are rejected at load: a non-positive union, a
+    // negative outer, and an outer on a layer sampling no group.
+    let bad_union = {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_group(BackdropGroup {
+            union: Some(0.0),
+            ..BackdropGroup::new(3, Vec::new(), 1.0, 1)
+        });
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(3);
+        });
+        b.build()
+    };
+    let scene_dir = dir.join("bad-union");
+    bad_union.save(&scene_dir).unwrap();
+    let result = Scene::load(&scene_dir);
+    assert!(
+        matches!(result, Err(SceneError::InvalidBackdropUnion(3))),
+        "union 0 must be rejected, got {result:?}"
+    );
+
+    let bad_outer = {
+        let mut b = Scene::builder(64, 64);
+        b.backdrop_group(BackdropGroup::new(4, Vec::new(), 1.0, 1));
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop(4);
+            m.backdrop_outer(-1.0);
+        });
+        b.build()
+    };
+    let scene_dir = dir.join("bad-outer");
+    bad_outer.save(&scene_dir).unwrap();
+    let result = Scene::load(&scene_dir);
+    assert!(
+        matches!(result, Err(SceneError::InvalidBackdropOuter(4))),
+        "outer −1 must be rejected, got {result:?}"
+    );
+
+    let lone_outer = {
+        let mut b = Scene::builder(64, 64);
+        b.root().layer(|m| {
+            m.clip(Shape::rect(8.0, 8.0, 56.0, 56.0));
+            m.backdrop_outer(2.0);
+        });
+        b.build()
+    };
+    let scene_dir = dir.join("lone-outer");
+    lone_outer.save(&scene_dir).unwrap();
+    let result = Scene::load(&scene_dir);
+    assert!(
+        matches!(result, Err(SceneError::BackdropOuterWithoutGroup)),
+        "a group-less outer must be rejected, got {result:?}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A backdrop group anchored at the scene root is rejected by validation
+/// with the named error — the anchor must be a listed layer so the
+/// capture has a paint position.
+#[test]
+fn a_group_anchor_at_the_scene_root_is_rejected() {
+    let mut b = Scene::builder(8, 8);
+    b.root().id(NONZERO);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(NONZERO),
+        ..BackdropGroup::new(1, Vec::new(), 1.0, 1)
+    });
+    let scene = b.build();
+    assert!(
+        matches!(
+            scene.validate(),
+            Err(cherenkov_scene::SceneError::BackdropAnchorAtRoot(1))
+        ),
+        "unexpected result {:?}",
+        scene.validate()
+    );
+}
+
+/// A backdrop group anchored at a projective layer is rejected: the
+/// projective subtree is its own canvas, so the anchor's paint position
+/// is not in the members' canvas.
+#[test]
+fn a_group_anchor_at_a_projective_layer_is_rejected() {
+    let mut b = Scene::builder(8, 8);
+    b.root().layer(|m| {
+        m.projection(cherenkov_scene::Projection {
+            matrix: cherenkov_scene::Projection::perspective(100.0),
+            ..cherenkov_scene::Projection::default()
+        });
+        m.id(NONZERO);
+    });
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(NONZERO),
+        ..BackdropGroup::new(1, Vec::new(), 1.0, 1)
+    });
+    let scene = b.build();
+    assert!(
+        matches!(
+            scene.validate(),
+            Err(cherenkov_scene::SceneError::BackdropAnchorProjective(1))
+        ),
+        "unexpected result {:?}",
+        scene.validate()
+    );
+}
+
+/// A backdrop group anchored at a `Layer::id` no layer carries is
+/// rejected: the anchor must name a mounted layer.
+#[test]
+fn a_group_anchor_at_an_unknown_layer_is_rejected() {
+    let mut b = Scene::builder(8, 8);
+    b.backdrop_group(BackdropGroup {
+        anchor: Some(NONZERO),
+        ..BackdropGroup::new(1, Vec::new(), 1.0, 1)
+    });
+    let scene = b.build();
+    assert!(
+        matches!(
+            scene.validate(),
+            Err(cherenkov_scene::SceneError::UnknownBackdropAnchor(1))
+        ),
+        "unexpected result {:?}",
+        scene.validate()
+    );
+}
+
+/// Two layers carrying the same `id` are rejected unconditionally — an
+/// anchor could not tell them apart.
+#[test]
+fn a_duplicate_anchor_layer_id_is_rejected() {
+    let mut b = Scene::builder(8, 8);
+    b.root().layer(|m| {
+        m.id(NONZERO);
+    });
+    b.root().layer(|m| {
+        m.id(NONZERO);
+    });
+    let scene = b.build();
+    assert!(
+        matches!(
+            scene.validate(),
+            Err(cherenkov_scene::SceneError::DuplicateBackdropAnchor(1))
+        ),
+        "unexpected result {:?}",
+        scene.validate()
+    );
+}
+
+/// A layer `id` of `0` in `scene.json` is a parse error, not a silent
+/// `None`: the field is a `NonZeroU32`.
+#[test]
+fn a_zero_layer_id_is_a_parse_error() {
+    let dir = std::env::temp_dir().join(format!("cherenkov-scene-zero-id-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    Scene::builder(8, 8).build().save(&dir).unwrap();
+    let path = dir.join("scene.json");
+    let mut json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    json["root"]["id"] = serde_json::json!(0);
+    std::fs::write(&path, serde_json::to_string(&json).unwrap()).unwrap();
+    let result = Scene::load(&dir);
+    assert!(
+        matches!(result, Err(cherenkov_scene::SceneError::Json(_))),
+        "a zero id must fail parsing, got {result:?}"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }

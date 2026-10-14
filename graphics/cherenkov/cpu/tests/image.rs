@@ -34,7 +34,7 @@ fn encoded_premultiplied_upload_matches_straight_alpha() {
         )
         .expect("premul");
     let surface = engine
-        .surface(Offscreen::new((4, 2), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((4, 2), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -64,7 +64,7 @@ fn image_destination_is_live_and_static_picture_stays_retained() {
         .image(ImageData::<Rgba8>::new(1, 1, vec![255, 255, 255, 255]).expect("data"))
         .expect("image");
     let surface = engine
-        .surface(Offscreen::new((24, 24), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((24, 24), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let dst = Binding::container(Rect::new(4.0, 4.0, 8.0, 8.0));
     let fixed = Picture::record(|c| c.fill(Rect::new(0.0, 0.0, 2.0, 2.0), WorkingColor::WHITE));
@@ -154,7 +154,7 @@ fn rgba16f_upload_keeps_hdr_and_wide_gamut() {
         )
         .expect("image");
     let surface = engine
-        .surface(Offscreen::new((8, 2), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((8, 2), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {

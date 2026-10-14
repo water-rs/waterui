@@ -15,7 +15,7 @@
 mod oklch;
 pub use oklch::Oklch;
 pub mod working;
-pub use cherenkov::WorkingColor;
+pub use crate::draw::WorkingColor;
 mod p3;
 pub use p3::P3;
 mod srgb;
@@ -535,6 +535,7 @@ environment_color!(
     ErrorForegroundColor,
     "Error-foreground color key for environment queries."
 );
+environment_color!(ScrimColor, "Scrim color key for environment queries.");
 
 /// The light or dark appearance the application is drawn in.
 ///

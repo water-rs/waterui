@@ -9,6 +9,8 @@ pub mod component;
 mod interaction_support;
 pub use interaction_support::{cursor, drag_drop, gesture, interaction};
 mod runtime;
+#[cfg(feature = "dialog")]
+pub use runtime::dialog;
 #[cfg(all(feature = "inspector", not(target_arch = "wasm32")))]
 pub use runtime::inspector;
 #[cfg(feature = "snackbar")]
@@ -60,6 +62,8 @@ pub mod prelude {
     pub use crate::include_markdown;
 
     pub use super::color::*;
+    #[cfg(feature = "dialog")]
+    pub use super::dialog::{Dialog, DialogAction, DialogRole};
     pub use super::fullscreen::*;
     #[cfg(feature = "snackbar")]
     pub use super::snackbar::{Snackbar, SnackbarManager, SnackbarPosition, SnackbarTheme};
@@ -86,7 +90,8 @@ pub mod prelude {
         List, ListContent, ListItem, ListMinRowHeight, ListSection, Row, Section, detail_row, row,
     };
     pub use super::component::menu::{
-        Command, CommandExt, CommandRole, Menu, MenuItem, Shortcut, ShortcutModifiers,
+        Command, CommandExt, CommandRole, Menu, MenuItem, NamedKey, Shortcut, ShortcutKey,
+        ShortcutModifiers,
     };
     pub use super::metadata::context_menu::{ContextMenu, DismissContextMenu};
 
@@ -171,46 +176,8 @@ pub use waterui_navigation as navigation;
 #[cfg(feature = "gpu")]
 pub use waterui_svg as svg;
 pub use waterui_text as text;
-/// TypeScript-facing surface.
 #[cfg(feature = "ts")]
-pub mod ts {
-    /// The props contract schema a mounted TypeScript view module is typed
-    /// against.
-    ///
-    /// This is `waterui-ts-schema` re-exported, so a `TsType`/`TsProps` derive
-    /// on a crate that consumes the facade can name `waterui::ts::schema` and
-    /// find every item the expansion uses.
-    pub mod schema {
-        pub use waterui_ts_schema::*;
-    }
-
-    /// `crate::ts::schema` is the path `ts_schema_path` emits for expansions
-    /// inside `waterui-internal`; deriving here exercises that arm, so a typo
-    /// in it fails this crate's own tests.
-    #[cfg(all(test, feature = "ts"))]
-    mod tests {
-        use super::schema::{TsProps, contract_hash};
-        use crate::Binding;
-
-        /// Props crossing to a mounted TypeScript view.
-        #[derive(TsProps)]
-        #[expect(
-            dead_code,
-            reason = "the schema is derived from the declaration; nothing constructs the fixture"
-        )]
-        struct SidebarProps {
-            unread: Binding<u32>,
-        }
-
-        #[test]
-        fn ts_props_derives_through_the_internal_crate_path() {
-            assert_eq!(
-                SidebarProps::CONTRACT_HASH,
-                contract_hash(SidebarProps::ENCODED)
-            );
-        }
-    }
-}
+pub mod ts;
 #[cfg(feature = "video")]
 pub use waterui_video as video;
 #[cfg(feature = "webview")]
@@ -254,6 +221,12 @@ pub use waterui_core::{
     views,
 };
 
+// Selective re-exports only: `waterui::transition` stays free for the
+// `waterui-transition` pixel-effects crate re-export (#1389).
+pub use waterui_core::transition::{
+    AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition,
+};
+
 /// Haptic feedback intensity for the `on_*_haptic` modifiers.
 #[cfg(feature = "std")]
 #[doc(inline)]
@@ -277,20 +250,18 @@ pub use tracing as log;
 ///
 /// Symbol format: `waterui_preview_{crate_name}_{fn_name}`
 ///
-/// The export exists only when the emitting crate's `dev` feature is on: the
-/// generated backend enables `<app>/dev` on every development-linkage build
-/// (`water run`/`preview`/`build`), and `dev` is what pulls in the
-/// `dynamic_linking` runtime a preview host loads the app through. A packaged
-/// static-linkage build never enables it, so the exported entry point — and
-/// the view it would force into the artifact — stays out of shipped binaries.
+/// The export exists in debug builds of the emitting crate — the same gate
+/// the compiler-emitted `waterui_meta_*` records use — so a release build
+/// never carries the entry point or the view it forces into the artifact.
+/// The preview host loads it from the debug artifact, whether that is the
+/// dynamic-linking desktop dylib or the static Android cdylib.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __export_preview {
     ($fn_name:expr, $body:block) => {
         $crate::pastey::paste! {
             #[doc(hidden)]
-            #[allow(unexpected_cfgs)]
-            #[cfg(feature = "dev")]
+            #[cfg(debug_assertions)]
             #[unsafe(no_mangle)]
             pub unsafe extern "C" fn [<waterui_preview_ env!("CARGO_PKG_NAME") _ $fn_name>]() -> *mut () {
                 $body

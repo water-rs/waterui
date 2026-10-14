@@ -2,11 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
 {% for permission in ctx.android_permissions %}
-    <uses-permission android:name="{{ permission.name }}" />
+    <uses-permission android:name="{{ permission }}" />
 {% endfor %}
 
     <application
         android:allowBackup="true"
+        android:enableOnBackInvokedCallback="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:resizeableActivity="true"
@@ -17,6 +18,7 @@
             android:name=".MainActivity"
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation|keyboardHidden"
             android:exported="true"
+            android:windowSoftInputMode="adjustNothing"
             android:launchMode="singleTask"
             android:theme="@style/Theme.WaterUIApp.Launch">
             <intent-filter>
@@ -24,6 +26,14 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <provider
+            android:name="dev.waterui.hydrolysis.LaunchEnvironmentProvider"
+            android:authorities="${applicationId}.waterui.launch-environment"
+            android:exported="true"
+            android:permission="android.permission.DUMP"
+            android:grantUriPermissions="false" />
+        <!-- begin waterui android manifest components -->
+        <!-- end waterui android manifest components -->
     </application>
 
 </manifest>

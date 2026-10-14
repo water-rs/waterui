@@ -26,12 +26,12 @@ use std::time::{Duration, Instant};
 
 use accesskit::{
     Action as AccessibilityAction, ActionRequest as AccessibilityActionRequest, NodeId,
-    Rect as AccessibilityRect, TreeId as AccessibilityTreeId,
+    Rect as AccessibilityRect, Role as AccessibilityRole, TreeId as AccessibilityTreeId,
 };
+use hydrolysis::testing::TestStyle;
 use hydrolysis::{
     AccessibilityActivationPointError, HeadlessRuntime, InputEvent, PointerButton, PointerKind,
 };
-use hydrolysis_m3::Material3;
 use waterui::component::list::{List, ListItem};
 use waterui::component::{hstack, spacer, text};
 use waterui::id::SelfId;
@@ -43,12 +43,10 @@ use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment};
 use waterui_layout::frame::Frame;
 use waterui_layout::scroll::scroll_horizontal;
-use waterui_testing::{Role, ui};
 
-/// A 40 pt scroll leaves the first one-line row (56 pt under Material 3)
-/// straddling the viewport's top edge with a 16 pt visible sliver — and that
-/// sliver is padding only: the row's `on_tap` strip, centred inside the row
-/// at content height, already lies fully above the viewport.
+/// A 40 pt scroll leaves the first one-line row straddling the viewport's
+/// top edge with a padding-only sliver: the row's `on_tap` strip, centred
+/// inside the row at content height, already lies fully above the viewport.
 const SCROLL: f32 = 40.0;
 /// A shallower scroll leaves the same row straddling with its `on_tap` strip
 /// partially visible: the strip's own top is clipped away while its lower
@@ -64,18 +62,12 @@ fn row_label(row: i32) -> String {
     format!("Row {row}")
 }
 
-/// Mounts a fixture's rendered twin on a headless runtime — the surface
-/// `accessibility_activation_point` resolves against. Both mounts shape
-/// through the same font collection, so a point resolved on one lands on the
-/// other.
+/// Mounts a fixture on a headless runtime under [`TestStyle`] — the surface
+/// `accessibility_activation_point` resolves against. The clip projection is
+/// a property of the rendered tree, not of a style package's chrome, so the
+/// minimal style mounts these tests.
 fn headless(content: AnyViewBuilder<AnyView>, width: u32, height: u32) -> HeadlessRuntime {
-    HeadlessRuntime::new_for_tests(
-        Environment::new(),
-        content,
-        width,
-        height,
-        Material3::defaults(),
-    )
+    HeadlessRuntime::new_for_tests(Environment::new(), content, width, height, TestStyle::new())
 }
 
 /// Pumps one frame per virtual display interval until the runtime reports
@@ -112,6 +104,17 @@ fn node_bounds(tree: &accesskit::TreeUpdate, label: &str) -> AccessibilityRect {
         .find(|(_, node)| node.label() == Some(label))
         .and_then(|(_, node)| node.bounds())
         .unwrap_or_else(|| panic!("no bounded accessibility node labelled {label}"))
+}
+
+fn node_bounds_with_role(
+    tree: &accesskit::TreeUpdate,
+    role: AccessibilityRole,
+) -> AccessibilityRect {
+    tree.nodes
+        .iter()
+        .find(|(_, node)| node.role() == role)
+        .and_then(|(_, node)| node.bounds())
+        .unwrap_or_else(|| panic!("no bounded accessibility node with role {role:?}"))
 }
 
 fn semantic_click(runtime: &mut HeadlessRuntime, at: &mut Instant, node: NodeId) {
@@ -245,30 +248,6 @@ fn a_list_row_straddling_the_viewport_edge_activates_its_retained_action() {
         })
         .selection(&binding)
     };
-    let mut app = ui()
-        .theme(Material3::defaults())
-        .viewport(360, 240)
-        .mount_offscreen(list_view.clone());
-    app.settle();
-    app.scroll_at(180.0, 120.0, 0.0, -SCROLL, false);
-    app.pump_for(Duration::from_millis(500));
-
-    let list = app.query().role(Role::LIST).single().bounds();
-    let row = app
-        .query()
-        .role(Role::LIST_ITEM)
-        .label_contains(row_label(1))
-        .single()
-        .bounds();
-    assert!(
-        row.y() < list.y() && row.y() + row.height() > list.y(),
-        "the straddling row reports its full logical bounds: row={row:?} list={list:?}"
-    );
-
-    // The projection projects the interaction owner's region — the `on_tap`
-    // strip — through its clip, not the row's logical rectangle: at this
-    // scroll the strip is fully clipped, so the query fails loudly instead
-    // of producing a point on the padding sliver that taps into nothing.
     let mut runtime = headless(AnyViewBuilder::new(list_view).erase(), 360, 240);
     let mut at = Instant::now();
     settle(&mut runtime, &mut at);
@@ -283,6 +262,21 @@ fn a_list_row_straddling_the_viewport_edge_activates_its_retained_action() {
     let tree = runtime
         .accessibility_tree()
         .expect("a mounted window emits a tree");
+
+    let list = node_bounds_with_role(&tree, AccessibilityRole::List);
+    let row = node_bounds(&tree, &row_label(1));
+    // The clip edge lies strictly inside the row's extent: the row
+    // straddles it, so its logical bounds run past both sides.
+    let clip_cuts_row_interior = list.y0 - row.y0 > 0.0 && row.y1 - list.y0 > 0.0;
+    assert!(
+        clip_cuts_row_interior,
+        "the straddling row reports its full logical bounds: row={row:?} list={list:?}"
+    );
+
+    // The projection projects the interaction owner's region — the `on_tap`
+    // strip — through its clip, not the row's logical rectangle: at this
+    // scroll the strip is fully clipped, so the query fails loudly instead
+    // of producing a point on the padding sliver that taps into nothing.
     let straddled = node_id(&tree, &row_label(1));
     assert_eq!(
         runtime.accessibility_activation_point(straddled, 0.5, 0.5),
@@ -292,10 +286,7 @@ fn a_list_row_straddling_the_viewport_edge_activates_its_retained_action() {
 
     // The semantic Click still dispatches the retained activation — the row
     // stands in for the silenced gesture and never needed a point.
-    app.query()
-        .role(Role::LIST_ITEM)
-        .label_contains(row_label(1))
-        .tap();
+    semantic_click(&mut runtime, &mut at, straddled);
     assert_eq!(
         reactions.get(),
         1,
@@ -326,26 +317,6 @@ fn a_list_row_partially_straddling_resolves_a_point_inside_the_strip() {
         })
         .selection(&binding)
     };
-    let mut app = ui()
-        .theme(Material3::defaults())
-        .viewport(360, 240)
-        .mount_offscreen(list_view.clone());
-    app.settle();
-    app.scroll_at(180.0, 120.0, 0.0, -PARTIAL_SCROLL, false);
-    app.pump_for(Duration::from_millis(500));
-
-    let list = app.query().role(Role::LIST).single().bounds();
-    let row = app
-        .query()
-        .role(Role::LIST_ITEM)
-        .label_contains(row_label(1))
-        .single()
-        .bounds();
-    assert!(
-        row.y() < list.y() && row.y() + row.height() > list.y(),
-        "the straddling row reports its full logical bounds: row={row:?} list={list:?}"
-    );
-
     let mut runtime = headless(AnyViewBuilder::new(list_view).erase(), 360, 240);
     let mut at = Instant::now();
     settle(&mut runtime, &mut at);
@@ -360,6 +331,16 @@ fn a_list_row_partially_straddling_resolves_a_point_inside_the_strip() {
     let tree = runtime
         .accessibility_tree()
         .expect("a mounted window emits a tree");
+
+    let list = node_bounds_with_role(&tree, AccessibilityRole::List);
+    let row = node_bounds(&tree, &row_label(1));
+    // The clip edge lies strictly inside the row's extent: the row
+    // straddles it, so its logical bounds run past both sides.
+    let clip_cuts_row_interior = list.y0 - row.y0 > 0.0 && row.y1 - list.y0 > 0.0;
+    assert!(
+        clip_cuts_row_interior,
+        "the straddling row reports its full logical bounds: row={row:?} list={list:?}"
+    );
     let straddled = node_id(&tree, &row_label(1));
 
     // The strip's top edge is gone: asking for it clamps onto the clip's own
@@ -369,7 +350,7 @@ fn a_list_row_partially_straddling_resolves_a_point_inside_the_strip() {
         .accessibility_activation_point(straddled, 0.5, 0.0)
         .expect("a partially visible strip resolves a hittable point");
     assert!(
-        top.y <= f64::from(list.y()) + 1.0,
+        top.y <= list.y0 + 1.0,
         "the strip's clipped top edge resolves at the clip, not inside the strip: {top:?} list={list:?}"
     );
 
@@ -377,7 +358,7 @@ fn a_list_row_partially_straddling_resolves_a_point_inside_the_strip() {
         .accessibility_activation_point(straddled, 0.5, 0.5)
         .expect("a partially visible strip resolves a hittable point");
     assert!(
-        point.y >= f64::from(list.y()),
+        point.y >= list.y0,
         "the resolved point lands inside the viewport: {point:?} list={list:?}"
     );
     pointer_tap(&mut runtime, &mut at, point.x, point.y);
