@@ -298,6 +298,15 @@ cargo)
                 [ -e "$_dest" ] || /bin/cp "$0" "$_dest"
             fi
             ;;
+        *)
+            # Any other subcommand (build, rustc, check) records its argv
+            # and the inspector identity mode — the build fails for want of
+            # an artifact, and the log is the assertion.
+            if [ -n "${WATERUI_FAKE_CARGO_LOG-}" ]; then
+                printf 'argv: %s\n' "$*" >> "$WATERUI_FAKE_CARGO_LOG"
+                printf 'mode: %s\n' "${WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE-}" >> "$WATERUI_FAKE_CARGO_LOG"
+            fi
+            ;;
     esac
     exit 0
     ;;

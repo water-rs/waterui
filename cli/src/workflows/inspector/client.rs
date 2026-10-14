@@ -16,7 +16,7 @@ use eyre::{Context as _, Result, bail, eyre};
 use futures_util::future::{Either, select};
 use target_lexicon::Triple;
 use tracing::info;
-use waterui_inspector_protocol::InspectorBuildIdentity;
+use waterui_inspector_protocol::{InspectorBuildIdentity, InspectorProtocolInfo};
 use zenwave::ResponseExt as _;
 
 use crate::build::BuildProgress;
@@ -290,31 +290,49 @@ fn package_name(binary_sha256: &str) -> String {
     format!("{CLIENT_PACKAGE}-{binary_sha256}")
 }
 
-/// Build `apps/inspector` from the project's own checkout and publish the
-/// immutable build artifact with its resources under the build's profile
-/// directory.
-///
-/// Cargo always decides whether to rebuild — the snapshot's hash only names
-/// the package directory, so a second session building identical bytes
-/// reuses the published client while any changed artifact gets a fresh one.
-async fn build_from_checkout(
+/// The protocol build script's identity mode — `checkout` stamps the
+/// source revision into the protocol identity, `release` stamps none.
+const BUILD_MODE_ENV: &str = "WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE";
+
+/// The `RustBuild` that produces the inspector client: the workspace's own
+/// `apps/inspector` crate for this machine's triple, its identity stamped
+/// for the build's profile — `checkout` for a development build's source
+/// revision, `release` for a package whose identity carries none.
+fn client_build(
     host: &Host,
     root: &Path,
-    expected: &InspectorBuildIdentity,
+    release: bool,
     progress: Option<BuildProgress>,
-) -> Result<Artifact> {
+) -> RustBuild {
     let mut build = RustBuild::new(
         &host.clone().with_cwd(root),
         root.join("apps/inspector"),
         Triple::host(),
     )
-    .with_feature("desktop");
+    .with_feature("desktop")
+    .with_env(BUILD_MODE_ENV, if release { "release" } else { "checkout" });
     if let Some(progress) = progress {
         build = build.with_progress(progress);
     }
-    info!("Building the inspector from the project's own WaterUI checkout...");
-    let built_client = build
-        .build_binary(CLIENT_BINARY, false)
+    build
+}
+
+/// Build the client and snapshot its immutable artifact — still under the
+/// held artifact lock — into a staging directory beside the build's own
+/// profile directory. Returns the staged package body, the profile
+/// directory, and the snapshot binary's sha256.
+///
+/// Cargo always decides whether to rebuild; the hash only names a package,
+/// never gates one.
+async fn build_and_stage(
+    host: &Host,
+    root: &Path,
+    release: bool,
+    progress: Option<BuildProgress>,
+) -> Result<(tempfile::TempDir, PathBuf, String)> {
+    info!("Building the inspector client from the WaterUI checkout...");
+    let built_client = client_build(host, root, release, progress)
+        .build_binary(CLIENT_BINARY, release)
         .await
         .map_err(|e| eyre!("failed to build the inspector client: {e}"))?;
 
@@ -323,7 +341,6 @@ async fn build_from_checkout(
     // a rebuild rewrites the bytes under it; copying under the held lock is
     // what makes the snapshot immutable.
     let stage_parent = built_client.profile_dir.clone();
-    let app_manifest = root.join("apps/inspector/Cargo.toml");
     let stage = smol::unblock(move || tempfile::TempDir::with_prefix_in("client-", &stage_parent))
         .await
         .wrap_err("could not stage the inspector package")?;
@@ -334,12 +351,27 @@ async fn build_from_checkout(
         .await
         .wrap_err("could not hash the staged inspector binary")?;
     drop(built_client); // the lock was held until the snapshot existed
-
-    let package_dir = stage
+    let profile_dir = stage
         .path()
         .parent()
         .expect("the staging directory has a parent")
-        .join(package_name(&binary_sha256));
+        .to_path_buf();
+    Ok((stage, profile_dir, binary_sha256))
+}
+
+/// Build `apps/inspector` from the project's own checkout and publish the
+/// immutable build artifact with its resources under the build's profile
+/// directory — named by the binary's own content, so a rebuild that changed
+/// the artifact lands beside the previous one instead of overwriting a
+/// client another session holds.
+async fn build_from_checkout(
+    host: &Host,
+    root: &Path,
+    expected: &InspectorBuildIdentity,
+    progress: Option<BuildProgress>,
+) -> Result<Artifact> {
+    let (stage, profile_dir, binary_sha256) = build_and_stage(host, root, false, progress).await?;
+    let package_dir = profile_dir.join(package_name(&binary_sha256));
     let binary = package_dir.join(binary_name());
     if package_dir.is_dir() {
         // Identical bytes published before: the existing package still
@@ -348,6 +380,7 @@ async fn build_from_checkout(
         return Ok(Artifact::new("dev.waterui.inspector", binary));
     }
 
+    let app_manifest = root.join("apps/inspector/Cargo.toml");
     stage_resources(host, &app_manifest, stage.path()).await?;
     verify_identity(
         host,
@@ -365,6 +398,164 @@ async fn build_from_checkout(
             )
         })?;
     Ok(Artifact::new("dev.waterui.inspector", binary))
+}
+
+/// Package the inspector's release archive from a `WaterUI` checkout.
+///
+/// `workspace` is the `WaterUI` checkout whose `apps/inspector` builds the
+/// client — its resolved `waterui`/`waterui-inspector-protocol` versions
+/// name the release identity (a released package carries no source
+/// revision). The archive lands at
+/// `output_dir/waterui-inspector-<host triple>.zip`, verified against the
+/// staged binary's `--identity` answer before any archive exists; an
+/// existing file is never truncated.
+///
+/// Producing the archive implies nothing about publication — it is one
+/// artifact on disk.
+///
+/// # Errors
+/// Fails when `workspace` does not resolve `waterui` from a checkout, the
+/// build or the identity probe fails, the archive cannot be written, or
+/// the destination already exists.
+pub async fn package_release_client(
+    host: &Host,
+    workspace: &Path,
+    output_dir: &Path,
+) -> Result<PathBuf> {
+    let selected = resolve_packages(host, workspace).await?;
+    let FacadeSource::Checkout { root } = &selected.source else {
+        bail!(
+            "a release package builds from a WaterUI checkout — {} resolves \
+             `waterui` from a registry",
+            workspace.display()
+        );
+    };
+    // A released client's identity carries the resolved versions and no
+    // source revision — the same shape the endpoint answers `Identify`
+    // with after a release-mode protocol stamp.
+    let expected = InspectorBuildIdentity {
+        framework_version: selected.framework_version.clone(),
+        protocol: InspectorProtocolInfo {
+            version: selected.protocol_version.clone(),
+            build_commit: None,
+        },
+    };
+
+    let (stage, _profile_dir, _sha) = build_and_stage(host, root, true, None).await?;
+    let app_manifest = root.join("apps/inspector/Cargo.toml");
+    stage_resources(host, &app_manifest, stage.path()).await?;
+    package_staged_client(host, stage.path(), &expected, output_dir).await
+}
+
+/// Verify the staged package body's binary, then archive it.
+///
+/// Split so a failed probe never writes an archive — and so the caller's
+/// cancellation between the two cannot publish a staged package.
+async fn package_staged_client(
+    host: &Host,
+    package_root: &Path,
+    expected: &InspectorBuildIdentity,
+    output_dir: &Path,
+) -> Result<PathBuf> {
+    verify_identity(
+        host,
+        &package_root.join(binary_name()),
+        expected,
+        IDENTITY_TIMEOUT,
+    )
+    .await?;
+    write_release_archive(package_root, output_dir).await
+}
+
+/// The release archive's file name for this host.
+fn release_archive_name() -> String {
+    format!("{CLIENT_BINARY}-{}.zip", Triple::host())
+}
+
+/// Write `package_root`'s contents as `waterui-inspector-*.zip` under
+/// `output_dir` — every entry rooted at `waterui-inspector/` with `/`
+/// separators, deflate compressed, file modes preserved, files sorted for
+/// a stable archive.
+///
+/// The zip is written into a temporary file beside the destination and
+/// published with `persist_noclobber`: an existing destination is never
+/// truncated, and a failed write leaves no partial archive. Cancellation
+/// cannot interrupt the blocking worker; it may finish publishing a complete
+/// archive, but never exposes its temporary output at the destination.
+async fn write_release_archive(package_root: &Path, output_dir: &Path) -> Result<PathBuf> {
+    smol::fs::create_dir_all(output_dir)
+        .await
+        .wrap_err_with(|| format!("could not create {}", output_dir.display()))?;
+    let destination = output_dir.join(release_archive_name());
+    let package_root = package_root.to_path_buf();
+    let dest = destination.clone();
+    let out_dir = output_dir.to_path_buf();
+    smol::unblock(move || -> Result<()> {
+        let mut staged = tempfile::NamedTempFile::new_in(&out_dir)
+            .wrap_err("could not stage the release archive")?;
+        {
+            let mut zip = zip::ZipWriter::new(staged.as_file_mut());
+            let mut entries = Vec::new();
+            for entry in walkdir::WalkDir::new(&package_root).sort_by_file_name() {
+                entries.push(entry?.into_path());
+            }
+            entries.sort();
+            for path in entries {
+                let relative = path
+                    .strip_prefix(&package_root)
+                    .expect("entries stay under the package root");
+                if relative.as_os_str().is_empty() {
+                    continue;
+                }
+                // The cache receipt is a local-cache artifact, never release
+                // content.
+                if relative == Path::new(CACHE_RECEIPT) {
+                    continue;
+                }
+                // '/' separators on every platform — ZIP names are
+                // component lists, not host path strings.
+                let mut name = String::from(CLIENT_PACKAGE);
+                for component in relative {
+                    name.push('/');
+                    name.push_str(
+                        component.to_str().ok_or_else(|| {
+                            eyre!("non-UTF-8 package path {}", relative.display())
+                        })?,
+                    );
+                }
+                let metadata = path.metadata()?;
+                if metadata.is_dir() {
+                    zip.add_directory(name, zip::write::SimpleFileOptions::default())?;
+                    continue;
+                }
+                let mut options = zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Deflated);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt as _;
+                    options = options.unix_permissions(metadata.permissions().mode() & 0o777);
+                }
+                zip.start_file(name, options)?;
+                let mut source = std::fs::File::open(&path)?;
+                std::io::copy(&mut source, &mut zip)?;
+            }
+            zip.finish()
+                .wrap_err("failed to finalize the release archive")?;
+        }
+        staged
+            .persist_noclobber(&dest)
+            .map_err(|error| error.error)
+            .wrap_err_with(|| {
+                format!(
+                    "refusing to overwrite an existing release archive at {}",
+                    dest.display()
+                )
+            })?;
+        Ok(())
+    })
+    .await
+    .wrap_err("failed to write the release archive")?;
+    Ok(destination)
 }
 
 pub(super) fn binary_name() -> String {
@@ -1803,5 +1994,282 @@ mod tests {
         let error = smol::block_on(prepare_client(&host, &dir, &identity, None))
             .expect_err("a registry project cannot serve a checkout endpoint");
         assert!(error.to_string().contains("registry"), "{error}");
+    }
+
+    // ----- release packaging -----
+
+    /// A staged package body: binary, a declared font, the asset dir, a
+    /// runtime sibling, and a deliberate cache receipt the exporter must
+    /// not carry into the archive.
+    fn staged_package(machine: &TestMachine) -> PathBuf {
+        let package = machine.dir("package");
+        std::fs::create_dir_all(package.join("resources/fonts")).unwrap();
+        std::fs::create_dir_all(package.join("resources/waterui_assets")).unwrap();
+        std::fs::write(package.join(binary_name()), b"#!binary").unwrap();
+        std::fs::write(package.join("resources/fonts/F.ttf"), b"font bytes").unwrap();
+        std::fs::write(package.join("resources/waterui_assets/index"), b"assets").unwrap();
+        std::fs::write(package.join("dxc.dll"), b"runtime sibling").unwrap();
+        std::fs::write(package.join(CACHE_RECEIPT), br#"{"binary_sha256":"x"}"#).unwrap();
+        package
+    }
+
+    /// The entry names inside an archive, in the order they were written.
+    fn archive_names(archive: &Path) -> Vec<String> {
+        zip::ZipArchive::new(std::fs::File::open(archive).unwrap())
+            .unwrap()
+            .file_names()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// The archive holds every package file under `waterui-inspector/` with
+    /// '/' separators, byte-identical, and carries no cache receipt.
+    #[test]
+    fn a_release_archive_roundtrips_the_package() {
+        let machine = TestMachine::new();
+        let package = staged_package(&machine);
+        let out = machine.dir("out");
+        let archive =
+            smol::block_on(write_release_archive(&package, &out)).expect("archive written");
+        assert_eq!(
+            archive.file_name().unwrap(),
+            release_archive_name().as_str(),
+            "the contract name waterui-inspector-<triple>.zip"
+        );
+
+        let names = archive_names(&archive);
+        assert!(
+            names
+                .iter()
+                .all(|name| name.starts_with("waterui-inspector/")),
+            "every entry lives under the package root: {names:?}"
+        );
+        assert!(
+            names.iter().all(|name| !name.contains('\\')),
+            "entry names use '/' separators: {names:?}"
+        );
+        assert!(
+            !names.iter().any(|name| name.ends_with(CACHE_RECEIPT)),
+            "the receipt never enters a release archive: {names:?}"
+        );
+
+        let extracted = machine.dir("extracted");
+        extract_zip(&std::fs::read(&archive).unwrap(), &extracted).expect("the archive extracts");
+        let root = extracted.join(CLIENT_PACKAGE);
+        assert_eq!(
+            std::fs::read(root.join(binary_name())).unwrap(),
+            b"#!binary"
+        );
+        assert_eq!(
+            std::fs::read(root.join("resources/fonts/F.ttf")).unwrap(),
+            b"font bytes"
+        );
+        assert_eq!(
+            std::fs::read(root.join("resources/waterui_assets/index")).unwrap(),
+            b"assets"
+        );
+        assert_eq!(
+            std::fs::read(root.join("dxc.dll")).unwrap(),
+            b"runtime sibling"
+        );
+    }
+
+    /// The executable mode survives the archive on platforms that carry
+    /// one.
+    #[cfg(unix)]
+    #[test]
+    fn a_release_archive_preserves_the_executable_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let machine = TestMachine::new();
+        let package = staged_package(&machine);
+        std::fs::set_permissions(
+            package.join(binary_name()),
+            std::fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        let out = machine.dir("out");
+        let archive =
+            smol::block_on(write_release_archive(&package, &out)).expect("archive written");
+
+        let extracted = machine.dir("extracted");
+        extract_zip(&std::fs::read(&archive).unwrap(), &extracted).expect("the archive extracts");
+        assert_eq!(
+            extracted
+                .join(CLIENT_PACKAGE)
+                .join(binary_name())
+                .metadata()
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o755,
+            "the executable bit survives the archive"
+        );
+    }
+
+    /// A missing output directory is created so the archive lands.
+    #[test]
+    fn a_fresh_output_directory_is_created() {
+        let machine = TestMachine::new();
+        let package = staged_package(&machine);
+        let out = machine.root().join("nested/out");
+        let archive = smol::block_on(write_release_archive(&package, &out))
+            .expect("the output directory is created");
+        assert!(archive.is_file(), "the archive exists at {archive:?}");
+    }
+
+    /// An existing destination is never truncated — the error carries the
+    /// refusal and the file keeps its bytes.
+    #[test]
+    fn a_release_archive_refuses_to_overwrite() {
+        let machine = TestMachine::new();
+        let package = staged_package(&machine);
+        let out = machine.dir("out");
+        let existing = out.join(release_archive_name());
+        std::fs::write(&existing, b"previous release bytes").unwrap();
+
+        let error = smol::block_on(write_release_archive(&package, &out))
+            .expect_err("an existing archive refuses");
+        assert!(
+            format!("{error:#}").contains("refusing to overwrite"),
+            "{error:#}"
+        );
+        assert_eq!(
+            std::fs::read(&existing).unwrap(),
+            b"previous release bytes",
+            "the existing archive is untouched"
+        );
+        // And no staged leftovers sit beside it.
+        let leftovers: Vec<_> = std::fs::read_dir(&out)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(leftovers.len(), 1, "only the preexisting archive remains");
+    }
+
+    /// A source that fails mid-archive leaves no final file — the staged
+    /// temporary is the worker's and is dropped with it.
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_source_never_exposes_a_partial_archive() {
+        let machine = TestMachine::new();
+        let package = staged_package(&machine);
+        // A broken symlink's metadata read fails inside the writer.
+        std::os::unix::fs::symlink(package.join("missing-target"), package.join("dangling"))
+            .unwrap();
+        let out = machine.dir("out");
+        let _ = smol::block_on(write_release_archive(&package, &out))
+            .expect_err("a broken source fails the archive");
+        assert!(
+            !out.join(release_archive_name()).exists(),
+            "no partial archive was published"
+        );
+        let leftovers: Vec<_> = std::fs::read_dir(&out).unwrap().collect();
+        assert!(leftovers.is_empty(), "no staged leftovers either");
+    }
+
+    /// A staged binary that reports a foreign identity refuses before the
+    /// archive exists — verification gates publication.
+    #[cfg(unix)]
+    #[test]
+    fn a_wrong_identity_never_archives() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let machine = TestMachine::new();
+        let package = staged_package(&machine);
+        let binary = package.join(binary_name());
+        std::fs::write(&binary, include_bytes!("testdata/fake_client.sh")).unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let out = machine.dir("out");
+        let mut foreign = expected_identity();
+        foreign.framework_version = String::from("9.9.9");
+        let host = identity_host(&machine, &foreign, []);
+        let error = smol::block_on(package_staged_client(
+            &host,
+            &package,
+            &expected_identity(),
+            &out,
+        ))
+        .expect_err("a foreign binary refuses");
+        assert!(format!("{error:#}").contains("reports"), "{error:#}");
+        assert!(
+            !out.join(release_archive_name()).exists(),
+            "no archive was written"
+        );
+    }
+
+    /// The release build asks cargo for `--release` and stamps the release
+    /// identity; a debug build passes neither — and a mode the caller's
+    /// environment happened to set is overridden, never inherited.
+    #[test]
+    fn the_release_build_runs_cargo_in_release_mode() {
+        let machine = TestMachine::new();
+        machine.install("cargo");
+        let log = machine.root().join("cargo.log");
+        let root = machine.dir("checkout");
+        std::fs::create_dir_all(root.join("apps/inspector")).unwrap();
+        // Enough metadata for the build's own target-directory resolution.
+        machine.respond(
+            "CARGO_METADATA",
+            &serde_json::json!({
+                "packages": [],
+                "workspace_members": [],
+                "workspace_default_members": [],
+                "resolve": null,
+                "workspace_root": root,
+                "workspace_metadata": null,
+                "target_directory": machine.dir("target"),
+                "version": 1,
+            })
+            .to_string(),
+        );
+
+        // `rustc` fails on the missing artifact — the argv/env log it left
+        // is the assertion.
+        let host = machine.host([
+            (
+                "WATERUI_FAKE_CARGO_LOG".to_string(),
+                log.display().to_string(),
+            ),
+            // A hostile inherited mode: the release stamp must override it.
+            (
+                "WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE".to_string(),
+                "checkout".to_string(),
+            ),
+        ]);
+        let _ = smol::block_on(build_and_stage(&host, &root, true, None))
+            .expect_err("the fake cargo emits no artifact");
+        let logged = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            logged.contains("--release"),
+            "the release build passes --release: {logged}"
+        );
+        assert!(
+            logged.contains("mode: release"),
+            "the release stamp overrides the host's checkout mode: {logged}"
+        );
+
+        std::fs::remove_file(&log).unwrap();
+        let host = machine.host([(
+            "WATERUI_FAKE_CARGO_LOG".to_string(),
+            log.display().to_string(),
+        )]);
+        let _ = smol::block_on(build_and_stage(&host, &root, false, None))
+            .expect_err("the fake cargo emits no artifact");
+        let logged = std::fs::read_to_string(&log).unwrap();
+        let rustc_invocations: Vec<&str> = logged
+            .lines()
+            .filter(|line| line.starts_with("argv: rustc"))
+            .collect();
+        assert!(
+            !rustc_invocations.is_empty()
+                && rustc_invocations
+                    .iter()
+                    .all(|line| !line.contains("--release")),
+            "the checkout build stays debug: {logged}"
+        );
+        assert!(
+            logged.contains("mode: checkout"),
+            "debug stamps checkout: {logged}"
+        );
     }
 }

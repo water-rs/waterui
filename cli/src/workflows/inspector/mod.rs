@@ -4,6 +4,7 @@ mod client;
 mod forward;
 mod launcher;
 
+pub use client::package_release_client;
 pub use forward::AndroidForward;
 pub use launcher::{
     InspectorLaunchOptions, InspectorSession, InspectorTarget, PreparedInspector,

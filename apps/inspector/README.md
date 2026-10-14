@@ -36,3 +36,16 @@ revision.
 A release archive is built with `WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE=release`
 so the protocol's build script stamps no checkout commit into
 `InspectorBuildIdentity`; a checkout build resolves `HEAD` itself.
+
+Produce one from a WaterUI checkout with the CLI's internal example:
+
+```console
+cargo run -p waterui-cli --locked --example package_inspector_client -- <checkout> <output-dir>
+```
+
+It resolves the workspace's `waterui`/`waterui-inspector-protocol` versions,
+builds `apps/inspector` with the release profile, verifies the binary's
+`--identity` against them, and writes `waterui-inspector-<host triple>.zip` —
+never overwriting an existing file. The release pipeline does not call it
+yet; wiring that in is the remaining producer work, not part of this
+interface.
