@@ -117,6 +117,23 @@ jobs:
           cargo build --locked --release -p cherenkov-bench --features cherenkov --bin cherenkov-bench
           cp target/release/cherenkov-bench ir-results/bench-head
           cp -a --reflink=auto target "$BASE_DIRECTORY/target"
+          # Copied workspace artifacts can retain the candidate's manifest
+          # paths and freshness timestamps. Reuse dependencies, rebuild the
+          # baseline's workspace packages from its own source tree.
+          python3 - <<'PY'
+          import json, os, subprocess
+          base = os.environ["BASE_DIRECTORY"]
+          metadata = json.loads(subprocess.check_output(
+              ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+              cwd=base, timeout=120,
+          ))
+          members = set(metadata["workspace_members"])
+          packages = [package["name"] for package in metadata["packages"] if package["id"] in members]
+          subprocess.run(
+              ["cargo", "clean", *[argument for package in packages for argument in ("--package", package)]],
+              cwd=base, check=True, timeout=120,
+          )
+          PY
       - name: Generate the baseline's compile-time fonts
         working-directory: ${{ steps.refs.outputs.base_directory }}/graphics/cherenkov
         run: |
