@@ -31,4 +31,4 @@ pub(crate) use project_model::{assets, patch_tables, support_app, templates};
 pub use project_model::{framework, project, project_types, water_dir, web};
 pub use runtime::{build_info, utils};
 pub(crate) use runtime::{runtime_compat, runtime_fingerprint};
-pub use workflows::{build, capture, debug, device, diff, elf, gesture, inspector};
+pub use workflows::{build, capture, debug, device, diff, elf, environment, gesture, inspector};

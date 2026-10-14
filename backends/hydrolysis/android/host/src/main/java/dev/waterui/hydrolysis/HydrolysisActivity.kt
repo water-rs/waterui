@@ -28,12 +28,15 @@ abstract class HydrolysisActivity : ComponentActivity() {
     protected abstract fun createContentView(session: HydrolysisSession): View
 
     /**
-     * Environment overrides, applied on the main thread after
-     * [HydrolysisEnvironment]'s sync installed its defaults and before the
-     * native library loads — where the generated `MainActivity` puts the
-     * launch intent's `waterui.env.*` extras.
+     * Environment overrides, prepared off the main thread after
+     * [HydrolysisEnvironment]'s sync installed its defaults. The callback
+     * receives an apply closure to run before the native library loads —
+     * where the generated `MainActivity` claims its launch-environment
+     * handoff. The default launches nothing extra.
      */
-    protected open fun applyEnvironmentOverrides() {}
+    protected open fun prepareEnvironmentOverrides(callback: (() -> Unit) -> Unit) {
+        callback {}
+    }
 
     /**
      * Runs on the main thread once the session's content view has mounted —
@@ -57,7 +60,7 @@ abstract class HydrolysisActivity : ComponentActivity() {
                 onBackPressedDispatcher,
                 nativeLibraryName,
                 logLevel = intent.getStringExtra(LOG_LEVEL_EXTRA),
-                applyEnvironmentOverrides = ::applyEnvironmentOverrides,
+                prepareEnvironmentOverrides = ::prepareEnvironmentOverrides,
                 createContentView = ::createContentView,
                 onCloseRequested = ::finish,
                 onMounted = ::onSessionMounted,

@@ -399,8 +399,22 @@ adb)
                 exec cp -R "$4" "$remote"
                 ;;
             *" shell "*)
-                # The command line is the last argument.
-                for line; do :; done
+                # Real adb joins every word after `shell` into one remote
+                # command line; `-T` is a client flag, not a remote word.
+                line=""
+                _take=""
+                for _a in "$@"; do
+                    if [ "$_a" = "shell" ]; then
+                        _take=1
+                        continue
+                    fi
+                    if [ "$_a" = "-T" ]; then
+                        continue
+                    fi
+                    if [ -n "$_take" ]; then
+                        line="${line:+$line }$_a"
+                    fi
+                done
                 line=$(printf '%s' "$line" | sed "s#/data/local/tmp#$WATERUI_FAKE_DEVICE_TMP#g")
                 cd / || exit 1
                 exec sh -c "$line"

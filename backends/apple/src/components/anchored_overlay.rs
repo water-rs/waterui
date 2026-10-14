@@ -25,13 +25,14 @@ use waterui::metadata::anchored_overlay::{
 };
 use waterui::reactive::{Binding, Signal};
 use waterui_backend_core::overlay::{PhysicalEdge, logical_edge, place_anchored_overlay};
+use waterui_core::handler::AnyViewBuilder;
 use waterui_core::layout::{
     LayoutDirection, Point, ProposalSize, Rect, Size, StretchAxis, SubView, ViewDimensions,
     layout_direction,
 };
 use waterui_core::{Computed, Metadata};
 
-use crate::contract::{Mounted, NativeLeaf};
+use crate::contract::{Mounted, NativeLeaf, Renderer};
 use crate::dispatch::Dispatcher;
 
 #[cfg(target_os = "macos")]
@@ -48,8 +49,13 @@ struct OverlayState {
     host: Retained<HostView>,
     /// The anchor's content, laid out over the host's full bounds.
     child: Mounted,
-    /// The overlay content, moved into the presentation surface while shown.
-    overlay: NativeLeaf,
+    /// Builds a fresh overlay view for each presentation.
+    builder: AnyViewBuilder,
+    /// A `'static` render handle the builder's output mounts through.
+    renderer: Renderer,
+    /// The overlay content, moved into the presentation surface while shown;
+    /// rebuilt from `builder` on each presentation.
+    overlay: RefCell<Option<NativeLeaf>>,
     /// Whether the overlay is presented; platform dismissal writes back.
     is_presented: Binding<bool>,
     /// The logical edge the last placement landed on, written here.
@@ -158,8 +164,10 @@ fn mirror(rect: KitRect, container: KitRect) -> KitRect {
 /// The overlay's ideal size bounded by the surface it presents in —
 /// `measureOverlay`: `sizeThatFits` against the container, clamped to it.
 fn measure_overlay(state: &OverlayState, container: Size) -> Size {
-    let ideal = state
-        .overlay
+    let overlay = state.overlay.borrow();
+    let ideal = overlay
+        .as_ref()
+        .expect("overlay content is built before it is measured")
         .layout()
         .measure(ProposalSize::new(
             Some(container.width),
@@ -208,7 +216,9 @@ fn attachment_changed(state: &Rc<OverlayState>) {
 /// back to the leaf.
 fn dismiss(state: &Rc<OverlayState>) {
     state.presentation.borrow_mut().take();
-    view::remove_from_superview(state.overlay.view());
+    if let Some(overlay) = state.overlay.borrow_mut().take() {
+        view::remove_from_superview(overlay.view());
+    }
 }
 
 // MARK: - iOS presentation
@@ -254,8 +264,10 @@ fn present(state: &Rc<OverlayState>) {
             }
         });
         let window_view: &PlatformView = &window;
+        let overlay = state.renderer.render(state.builder.build());
         view::add_subview(window_view, host_view);
-        view::add_subview(host_view, state.overlay.view());
+        view::add_subview(host_view, overlay.view());
+        *state.overlay.borrow_mut() = Some(overlay);
         *state.presentation.borrow_mut() = Some(Presentation { host });
     }
     reposition(state);
@@ -279,7 +291,19 @@ fn reposition(state: &Rc<OverlayState>) {
     let placed = place_anchored_overlay(anchor, container, size, state.placement, direction);
     let frame = to_kit(placed.frame);
     state.overlay_frame.set(frame);
-    view::set_frame(state.overlay.view(), frame);
+    // Retain the overlay's view inside a short borrow — `set_frame` may
+    // re-enter layout through the platform, and `report_edge` invokes
+    // watchers; neither may see this RefCell still borrowed.
+    let overlay_view = {
+        let overlay = state.overlay.borrow();
+        view::retain_base(
+            overlay
+                .as_ref()
+                .expect("overlay content exists while its presentation does")
+                .view(),
+        )
+    };
+    view::set_frame(&overlay_view, frame);
     report_edge(state, placed.edge, direction);
 }
 
@@ -295,8 +319,10 @@ fn present(state: &Rc<OverlayState>) {
     };
     if state.presentation.borrow().is_none() {
         let panel = Panel::new(state.mtm);
+        let overlay = state.renderer.render(state.builder.build());
         panel.attach(&parent);
-        panel.set_content(state.overlay.view());
+        panel.set_content(overlay.view());
+        *state.overlay.borrow_mut() = Some(overlay);
         let monitor = cocoa_ui::appkit::event::on_mouse_down({
             let state = Rc::downgrade(state);
             move |event_window| {
@@ -326,7 +352,6 @@ fn present(state: &Rc<OverlayState>) {
 /// the way in and out; the panel takes a screen-space frame.
 #[cfg(target_os = "macos")]
 fn reposition(state: &Rc<OverlayState>) {
-    let presentation = state.presentation.borrow();
     let Some(parent) = window_of(&state.host) else {
         return;
     };
@@ -337,11 +362,16 @@ fn reposition(state: &Rc<OverlayState>) {
     let placed =
         place_anchored_overlay(anchor, to_core(container), size, state.placement, direction);
     let frame_window = mirror(to_kit(placed.frame), container);
-    if let Some(shown) = presentation.as_ref() {
-        shown
-            .panel
-            .set_frame(cocoa_ui::appkit::convert_to_screen(&parent, frame_window));
+    {
+        let presentation = state.presentation.borrow();
+        if let Some(shown) = presentation.as_ref() {
+            shown
+                .panel
+                .set_frame(cocoa_ui::appkit::convert_to_screen(&parent, frame_window));
+        }
     }
+    // The borrow ends before the watcher callbacks — `report_edge` may
+    // re-enter the overlay state.
     report_edge(state, placed.edge, direction);
 }
 
@@ -424,13 +454,14 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host_view: &PlatformView = &host;
         let mounted = ctx.render(metadata.content).mount(host_view);
         crate::primary_content::forward(&host, mounted.view());
-        let overlay = ctx.render(metadata.value.content);
 
         let state = Rc::new(OverlayState {
             mtm,
             host: host.clone(),
             child: mounted,
-            overlay,
+            builder: metadata.value.content,
+            renderer: ctx.renderer(),
+            overlay: RefCell::new(None),
             is_presented: metadata.value.is_presented,
             placed_edge: metadata.value.placed_edge,
             placement: metadata.value.placement,

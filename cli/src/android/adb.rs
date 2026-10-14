@@ -307,17 +307,78 @@ impl Adb {
         input: impl smol::io::AsyncRead,
         timeout: Duration,
     ) -> eyre::Result<String> {
-        let operation = "running a shell command with input on the device";
-        let args = shell_byte_channel_args(serial, words)?;
-        let invocation = command_string(self.path(), &args);
-        let output = bounded_adb(
-            host.output_with_input(self.path(), &args, input),
-            operation,
-            invocation.clone(),
+        let (output, invocation) =
+            shell_input_output(self, host, serial, words, input, timeout).await?;
+        Ok(checked_stdout(
+            &output,
+            "running a shell command with input on the device",
+            &invocation,
+        )?)
+    }
+
+    /// The `content write` side of the launch-environment handoff. The SDK
+    /// tool reports provider failures on stderr while still exiting zero,
+    /// so its status alone is not the verdict: a successful write is a
+    /// zero status with an empty stderr. stdout carries no signal either
+    /// way and is discarded — never parsed.
+    ///
+    /// A reported error's stderr can echo the payload body, and the SDK
+    /// may write either stream, so the child's output is suppressed under
+    /// a quiet host regardless of the caller's `std_output` policy — and a
+    /// failure surfaces as a fixed operation/status-only message with no
+    /// stream content.
+    ///
+    /// # Errors
+    /// Returns an error if the write fails, `content` reports an error, or
+    /// the command exceeds `timeout`. The message names the operation and
+    /// exit status only — never the URI's id or the payload.
+    pub(crate) async fn content_write(
+        &self,
+        host: &Host,
+        serial: &str,
+        uri: &url::Url,
+        input: impl smol::io::AsyncRead,
+        timeout: Duration,
+    ) -> eyre::Result<()> {
+        let quiet_host = host.with_std_output(false);
+        let (output, _) = shell_input_output(
+            self,
+            &quiet_host,
+            serial,
+            &["content", "write", "--uri", uri.as_str()],
+            input,
             timeout,
         )
         .await?;
-        Ok(checked_stdout(&output, operation, &invocation)?)
+        require_empty_stderr(&output, "content write")
+    }
+
+    /// The `content delete` rollback for a staged handoff — the same
+    /// status-plus-empty-stderr contract as [`Self::content_write`],
+    /// streamed to nowhere.
+    ///
+    /// # Errors
+    /// Returns an error if the delete fails, `content` reports an error,
+    /// or the command exceeds `timeout`; the message names the operation
+    /// and exit status only.
+    pub(crate) async fn content_delete(
+        &self,
+        host: &Host,
+        serial: &str,
+        uri: &url::Url,
+        timeout: Duration,
+    ) -> eyre::Result<()> {
+        let quiet_host = host.with_std_output(false);
+        let args = shell_byte_channel_args(serial, &["content", "delete", "--uri", uri.as_str()])?;
+        let output = run_bounded_adb_output(
+            &quiet_host,
+            self,
+            args,
+            "removing the launch-environment handoff",
+            timeout,
+        )
+        .await?;
+        require_empty_stderr(&output, "content delete")
     }
 
     /// The `versionCode` the device reports for `package`, `None` when it is
@@ -539,6 +600,44 @@ where
         timeout,
     )
     .await
+}
+
+/// The shared `shell -T` byte channel behind [`Adb::shell_with_input`]
+/// and [`Adb::content_write`]: the full [`Output`] and the rendered
+/// invocation, unexamined — verdicts are the caller's.
+async fn shell_input_output(
+    adb: &Adb,
+    host: &Host,
+    serial: &str,
+    words: &[&str],
+    input: impl smol::io::AsyncRead,
+    timeout: Duration,
+) -> eyre::Result<(Output, String)> {
+    let operation = "running a shell command with input on the device";
+    let args = shell_byte_channel_args(serial, words)?;
+    let invocation = command_string(adb.path(), &args);
+    let output = bounded_adb(
+        host.output_with_input(adb.path(), &args, input),
+        operation,
+        invocation.clone(),
+        timeout,
+    )
+    .await?;
+    Ok((output, invocation))
+}
+
+/// The `content` tool's verdict: a zero exit with an empty stderr — the
+/// SDK reports provider errors on stderr without a status. stdout is
+/// discarded entirely. The error names the verb and status only, because
+/// the tool's own text can carry the payload it was fed.
+fn require_empty_stderr(output: &Output, verb: &str) -> eyre::Result<()> {
+    if output.status.success() && output.stderr.is_empty() {
+        return Ok(());
+    }
+    Err(eyre::eyre!(
+        "`{verb}` did not complete successfully: {}",
+        output.status
+    ))
 }
 
 /// Bound one spawned `adb` invocation by `timeout`. The command future

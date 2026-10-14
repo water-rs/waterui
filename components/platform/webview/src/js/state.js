@@ -30,15 +30,20 @@
 
   // A watcher is page code. One that throws is reported like any uncaught
   // error, and neither stops the watchers after it nor the pull loop that
-  // delivers every later change.
+  // delivers every later change. Deliveries iterate a snapshot, so what a
+  // watcher does inside its own call never reorders this notification.
   function notify(key, value) {
     var list = watchers[key];
     if (list === undefined) {
       return;
     }
-    for (var index = 0; index < list.length; index += 1) {
+    var snapshot = list.slice();
+    for (var index = 0; index < snapshot.length; index += 1) {
+      if (!snapshot[index].active) {
+        continue;
+      }
       try {
-        list[index](value);
+        snapshot[index].callback(value);
       } catch (error) {
         globalThis.reportError(error);
       }
@@ -178,12 +183,16 @@
         throw new ReferenceError("unknown WaterUI state key '" + key + "'");
       }
       var list = watchers[key] || (watchers[key] = []);
-      list.push(callback);
+      var registration = { callback: callback, active: true };
+      list.push(registration);
+      // A handle owns exactly its registration: `active` is the one source
+      // of truth, so a repeat call cannot remove a sibling's record.
       return function () {
-        var index = list.indexOf(callback);
-        if (index >= 0) {
-          list.splice(index, 1);
+        if (!registration.active) {
+          return;
         }
+        registration.active = false;
+        list.splice(list.indexOf(registration), 1);
       };
     },
     enumerable: true,

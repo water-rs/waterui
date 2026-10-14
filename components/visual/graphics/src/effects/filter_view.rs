@@ -301,10 +301,8 @@ impl ParamGuards {
         Reactive(slot)
     }
 
-    /// Keeps a subscription that is not a bound signal: the watcher guard a
-    /// `filtrate` `watch_param`/`watch_animated` binding returns.
-    #[cfg(feature = "gpu")]
-    fn keep(&mut self, guard: WatchGuard) {
+    /// Retains a UI-side subscription until this filtered view is dropped.
+    pub fn retain(&mut self, guard: impl Any) {
         self.0.push(Box::new(guard));
     }
 
@@ -913,7 +911,7 @@ impl<V: View> WithEffect<V, filtrate::ShaderEffect> {
         let param = self.guards.bind(value);
         let (effect, guard) = self.effect.watch_param(&param);
         self.effect = effect;
-        self.guards.keep(guard);
+        self.guards.retain(guard);
         self
     }
 
@@ -925,7 +923,7 @@ impl<V: View> WithEffect<V, filtrate::ShaderEffect> {
         let flag = self.guards.bind(animated.into_computed().map(f32::from));
         let (effect, guard) = self.effect.watch_animated(&flag);
         self.effect = effect;
-        self.guards.keep(guard);
+        self.guards.retain(guard);
         self
     }
 }

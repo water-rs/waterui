@@ -27,13 +27,14 @@ use waterui::metadata::anchored_overlay::{AnchorEdge, AnchoredOverlay};
 use waterui::prelude::text;
 use waterui::theme::ColorScheme;
 use waterui::widget::condition::when;
+use waterui_backend_core::View;
 use waterui_controls::button::button;
 use waterui_core::AnyView;
 use waterui_core::env::Store;
 use waterui_core::extract::Use;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_layout::collection_transition::collection_transition;
+use waterui_core::transition::PropertyTransition;
 use waterui_layout::scroll;
 use waterui_layout::stack::{VStack, hstack, vstack, zstack};
 
@@ -548,10 +549,9 @@ fn a_material_in_an_anchored_overlay_does_not_join_the_outer_group() {
                 vstack((
                     member(Material::Regular),
                     button("host").action(|| {}).anchored_overlay(
-                        AnchoredOverlay::new(
-                            &open,
-                            AnyView::new(().size(60.0, 20.0).background(Material::Regular)),
-                        )
+                        AnchoredOverlay::new(&open, move || {
+                            AnyView::new(().size(60.0, 20.0).background(Material::Regular))
+                        })
                         .edge(AnchorEdge::Bottom),
                     ),
                 ))
@@ -1183,7 +1183,7 @@ fn a_partial_re_record_keeps_the_scope_anchored() {
     );
 }
 
-/// A `.material_group()` row leaving a `collection_transition` stack moves
+/// A `.material_group()` row leaving a `.transition()` stack moves
 /// between two mount lists mid-flight: while its exit transition runs, the
 /// row's scope cell flushes inside the departing entry's `Item::Scope` list
 /// instead of the collection's item list. The scope keeps exactly one anchor
@@ -1197,12 +1197,12 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
         let builder = AnyViewBuilder::<AnyView>::new(move || {
             let rows = rows.clone();
             let collection = VStack::for_each(rows, move |_| {
-                AnyView::new(member(Material::Regular).material_group())
+                member(Material::Regular)
+                    .material_group()
+                    .transition(PropertyTransition::opacity())
+                    .animation(Animation::linear(Duration::from_millis(1_000)))
             });
-            AnyView::new(collection_transition(
-                collection,
-                Animation::linear(Duration::from_millis(1_000)),
-            ))
+            AnyView::new(collection)
         });
         let mut runtime = HeadlessRuntime::new_for_tests(
             pumped_test_environment(),
@@ -1276,12 +1276,12 @@ fn a_scope_enter_completion_keeps_one_direct_owner() {
         AnyViewBuilder::<AnyView>::new(move || {
             let rows = rows.clone();
             let collection = VStack::for_each(rows, move |_| {
-                AnyView::new(member(Material::Regular).material_group())
+                member(Material::Regular)
+                    .material_group()
+                    .transition(PropertyTransition::opacity())
+                    .animation(Animation::linear(Duration::from_millis(1_000)))
             });
-            AnyView::new(collection_transition(
-                collection,
-                Animation::linear(Duration::from_millis(1_000)),
-            ))
+            AnyView::new(collection)
         })
     };
     let mut runtime = HeadlessRuntime::new_for_tests(
@@ -1340,12 +1340,12 @@ fn a_scope_reinserted_during_exit_keeps_one_direct_owner() {
         AnyViewBuilder::<AnyView>::new(move || {
             let rows = rows.clone();
             let collection = VStack::for_each(rows, move |_| {
-                AnyView::new(member(Material::Regular).material_group())
+                member(Material::Regular)
+                    .material_group()
+                    .transition(PropertyTransition::opacity())
+                    .animation(Animation::linear(Duration::from_millis(1_000)))
             });
-            AnyView::new(collection_transition(
-                collection,
-                Animation::linear(Duration::from_millis(1_000)),
-            ))
+            AnyView::new(collection)
         })
     };
     let mut runtime = HeadlessRuntime::new_for_tests(
