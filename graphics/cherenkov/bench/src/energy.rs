@@ -9,7 +9,7 @@
 //!   the window's energy. The rails are root-only, so the bench runs
 //!   via `su -c`.
 //! - **macOS `powermetrics`** — `sudo -n powermetrics --samplers
-//!   cpu_power,gpu_power -i <ms> --format plist` spawned for exactly the
+//!   cpu_power,gpu_power,thermal -i <ms> --format plist` spawned for exactly the
 //!   measured window; its per-sample CPU/GPU/ANE energies are summed.
 //! - **iOS process counter** — `proc_pid_rusage` v6 reports cumulative
 //!   `ri_energy_nj`. This measures the calling process, excluding the
@@ -419,7 +419,7 @@ pub mod odpm {
 
 /// macOS `powermetrics` energy metering (root required).
 ///
-/// `sudo -n powermetrics --samplers cpu_power,gpu_power -i <ms>
+/// `sudo -n powermetrics --samplers cpu_power,gpu_power,thermal -i <ms>
 /// --format plist` emits one NUL-separated XML plist per sample. The
 /// `processor` dictionary carries per-sample energies in mJ —
 /// `cpu_energy`, `gpu_energy`, `ane_energy`, `dram_energy` on Apple
@@ -773,7 +773,7 @@ pub mod powermetrics {
             }
         }
 
-        /// Spawns `sudo -n powermetrics --samplers cpu_power,gpu_power
+        /// Spawns `sudo -n powermetrics --samplers cpu_power,gpu_power,thermal
         /// -i <ms> --format plist` for the window about to open.
         /// `window_hint` picks the sample interval (~1/10 of the
         /// window, clamped to 100–1000 ms).
@@ -788,7 +788,7 @@ pub mod powermetrics {
                 .arg("-n")
                 .arg("powermetrics")
                 .arg("--samplers")
-                .arg("cpu_power,gpu_power")
+                .arg("cpu_power,gpu_power,thermal")
                 .arg("-i")
                 .arg(interval_ms.to_string())
                 .arg("--format")
