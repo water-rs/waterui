@@ -349,7 +349,6 @@ impl InspectorRuntime {
             tracing::info!(
                 target: "waterui::inspector",
                 inspector_addr = %endpoint.addr,
-                token = %endpoint.token,
                 "Inspect requested; attach from your computer with `water inspector`"
             );
             return;
@@ -362,30 +361,15 @@ impl InspectorRuntime {
             tracing::warn!(
                 target: "waterui::inspector",
                 inspector_addr = %endpoint.addr,
-                token = %endpoint.token,
-                "Could not find the `water` CLI; attach with `water inspect --target <addr> --token <token>`,                  or point WATERUI_CLI at the binary"
+                "Could not find the `water` CLI; attach with `water inspector --target <addr>` and the credential from the endpoint's discovery record, or point WATERUI_CLI at the binary"
             );
             return;
         };
 
-        let mut command = std::process::Command::new(&cli);
-        command
-            .arg("inspector")
-            .arg("--target")
-            .arg(endpoint.addr.to_string())
-            .arg("--token")
-            .arg(&endpoint.token);
-
-        // The CLI builds the inspector against the project it is inspecting, and
-        // reads that project from its working directory. A launched application
-        // has none worth the name — a macOS app gets `/` — so `water run` tells
-        // it where the project is and it is passed straight through.
-        if let Some(project) = std::env::var_os("WATERUI_PROJECT_DIR") {
-            command.arg("--path").arg(project);
-        }
+        let project_dir = std::env::var_os("WATERUI_PROJECT_DIR");
+        let mut command = inspector_launch_command(&cli, &endpoint, project_dir.as_deref());
 
         let addr = endpoint.addr;
-        let token = endpoint.token;
 
         // A launched application's streams do not reach whoever started it, so
         // anything the CLI says about a failure is lost unless it is captured
@@ -417,7 +401,6 @@ impl InspectorRuntime {
                             target: "waterui::inspector",
                             status = %output.status,
                             inspector_addr = %addr,
-                            token = %token,
                             stderr = %String::from_utf8_lossy(&output.stderr).trim_end(),
                             stdout = %String::from_utf8_lossy(&output.stdout).trim_end(),
                             "`water inspector` failed"
@@ -441,7 +424,6 @@ impl InspectorRuntime {
                 target: "waterui::inspector",
                 error = %error,
                 inspector_addr = %addr,
-                token = %token,
                 "Could not launch `water inspector`; attach manually"
             ),
         }
@@ -495,6 +477,31 @@ pub fn install(environment: &mut Environment, inspector: Option<InspectorRuntime
     environment.insert(inspector.frame_recorder());
     environment.insert(inspector.tree_recorder());
     environment.insert(inspector);
+}
+
+/// The `water inspector` invocation for one endpoint.
+///
+/// The credential is never an argument — arguments land in process lists and
+/// logs. The CLI reads `WATERUI_INSPECTOR_TOKEN` from the environment it is
+/// launched with, so it is passed there instead.
+fn inspector_launch_command(
+    cli: &std::path::Path,
+    endpoint: &InspectorEndpointInfo,
+    project_dir: Option<&std::ffi::OsStr>,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(cli);
+    command
+        .arg("inspector")
+        .arg("--target")
+        .arg(endpoint.addr.to_string())
+        .env("WATERUI_INSPECTOR_TOKEN", &endpoint.token);
+    // The CLI uses the selected project to prepare its matching client. A
+    // launched application may have `/` as its working directory, so forward
+    // the project directory supplied by `water run`.
+    if let Some(project) = project_dir {
+        command.arg("--path").arg(project);
+    }
+    command
 }
 
 /// Where the `water` CLI is, if it can be found.
@@ -754,4 +761,76 @@ fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> io::Result<()> {
         .spawn(body)
         .map(drop)
         .map_err(|error| io::Error::other(format!("failed to spawn {name} thread: {error}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn endpoint(addr: &str, token: &str) -> InspectorEndpointInfo {
+        InspectorEndpointInfo {
+            addr: addr.parse().expect("a socket address"),
+            token: token.to_string(),
+        }
+    }
+
+    #[test]
+    fn inspector_launch_command_args_target_not_token() {
+        let command = inspector_launch_command(
+            std::path::Path::new("/usr/bin/false"),
+            &endpoint("127.0.0.1:23106", "a-real-token"),
+            None,
+        );
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(args, ["inspector", "--target", "127.0.0.1:23106"]);
+        let env: Vec<_> = command.get_envs().collect();
+        assert_eq!(
+            env,
+            [(
+                std::ffi::OsStr::new("WATERUI_INSPECTOR_TOKEN"),
+                Some(std::ffi::OsStr::new("a-real-token"))
+            )]
+        );
+    }
+
+    #[test]
+    fn inspector_launch_command_project_path_with_spaces_is_one_arg() {
+        let command = inspector_launch_command(
+            std::path::Path::new("/usr/bin/false"),
+            &endpoint("127.0.0.1:23106", "a-real-token"),
+            Some(std::ffi::OsStr::new("/path/with spaces/app")),
+        );
+        let args: Vec<_> = command.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "inspector",
+                "--target",
+                "127.0.0.1:23106",
+                "--path",
+                "/path/with spaces/app"
+            ]
+        );
+        // The only environment override is the credential.
+        assert_eq!(command.get_envs().count(), 1);
+    }
+
+    #[test]
+    fn inspector_launch_command_env_tracks_the_endpoint_not_the_process() {
+        let command = inspector_launch_command(
+            std::path::Path::new("/usr/bin/false"),
+            &endpoint("127.0.0.1:23106", "first-token"),
+            None,
+        );
+        let env: Vec<_> = command.get_envs().collect();
+        assert_eq!(env[0].1, Some(std::ffi::OsStr::new("first-token")));
+
+        let command = inspector_launch_command(
+            std::path::Path::new("/usr/bin/false"),
+            &endpoint("127.0.0.1:23107", "second-token"),
+            None,
+        );
+        let env: Vec<_> = command.get_envs().collect();
+        assert_eq!(env[0].1, Some(std::ffi::OsStr::new("second-token")));
+    }
 }
