@@ -9,8 +9,9 @@
 //!   the window's energy. The rails are root-only, so the bench runs
 //!   via `su -c`.
 //! - **macOS `powermetrics`** — `sudo -n powermetrics --samplers
-//!   cpu_power,gpu_power,thermal -i <ms> --format plist` spawned for exactly the
-//!   measured window; its per-sample CPU/GPU/ANE energies are summed.
+//!   cpu_power,gpu_power,thermal -i <ms> --format plist --buffer-size 0`.
+//!   Sample timing is anchored to first-byte receipt; interval energies
+//!   are clipped to the measured frame window.
 //! - **iOS process counter** — `proc_pid_rusage` v6 reports cumulative
 //!   `ri_energy_nj`. This measures the calling process, excluding the
 //!   display and other processes such as the system compositor.
@@ -420,15 +421,15 @@ pub mod odpm {
 /// macOS `powermetrics` energy metering (root required).
 ///
 /// `sudo -n powermetrics --samplers cpu_power,gpu_power,thermal -i <ms>
-/// --format plist` emits one NUL-separated XML plist per sample. The
+/// --format plist --buffer-size 0` emits NUL-separated XML samples. The
 /// `processor` dictionary carries per-sample energies in mJ —
 /// `cpu_energy`, `gpu_energy`, `ane_energy`, `dram_energy` on Apple
 /// silicon, `package_joules` on Intel — plus the package total
 /// (`package_energy`/`package_joules`) and a `thermal_pressure` word.
 ///
-/// Samples are placed on a timeline anchored at the spawn, each
-/// covering `elapsed_ns`; energy inside the measured window is found
-/// by overlap — boundary samples are scaled to the fraction of their
+/// The first sample's first-byte receipt and `elapsed_ns` establish the
+/// sampling origin; serialization and reader scheduling add measurement
+/// latency. Boundary samples are scaled to the fraction of their
 /// interval inside it. The process is stopped with SIGTERM (which
 /// `sudo` forwards so `powermetrics` flushes and exits) only after a
 /// sample boundary past the window's end has arrived.
@@ -441,12 +442,12 @@ pub mod powermetrics {
 
     use super::{BenchError, EnergyReport, Outcome, RailEnergy};
 
-    /// One decoded `powermetrics` interval on the spawn timeline.
+    /// One decoded `powermetrics` interval on the sampling timeline.
     #[derive(Debug)]
     pub(crate) struct Sample {
-        /// Interval bounds as offsets from the meter's spawn.
+        /// Interval start as an offset from the first sample's start.
         pub start: Duration,
-        /// Interval end as an offset from the meter's spawn.
+        /// Interval end as an offset from the first sample's start.
         pub end: Duration,
         /// Joules per domain over the interval (`cpu`, `gpu`, `ane`,
         /// `dram`).
@@ -501,7 +502,7 @@ pub mod powermetrics {
     }
 
     /// Decodes one plist document into a [`Sample`] whose interval is
-    /// `[offset, offset + elapsed_ns]` on the spawn timeline. Documents
+    /// `[offset, offset + elapsed_ns]` on the sampling timeline. Documents
     /// that fail to decode — e.g. the truncated tail after a kill —
     /// return `None`.
     pub(crate) fn parse_doc(chunk: &[u8], offset: Duration) -> Option<Sample> {
@@ -645,21 +646,29 @@ pub mod powermetrics {
         )))
     }
 
+    /// A document and the time its first bytes reached the pipe reader.
+    #[derive(Debug)]
+    struct Document {
+        bytes: Vec<u8>,
+        /// Receipt of the first bytes emitted after the sample was taken.
+        /// The following NUL may arrive only with the next sample.
+        first_byte_at: Instant,
+    }
+
     /// A running `powermetrics` subprocess metering the window.
     #[derive(Debug)]
     pub struct Run {
         child: Option<Child>,
-        /// Instant the process spawned — origin of the sample
-        /// timeline, before the measured window opens.
-        spawned_at: Instant,
+        /// Process launch, retained for startup diagnostics only.
+        launched_at: Instant,
         /// The requested `-i` sample interval.
         interval: Duration,
         /// Complete plist documents as `powermetrics` emits them.
-        samples_rx: Receiver<Vec<u8>>,
+        samples_rx: Receiver<Document>,
         /// Documents taken off the channel before the consumer runs
         /// — `spawn` receives the first one to prove startup —
         /// replayed in arrival order ahead of `samples_rx`.
-        pending: VecDeque<Vec<u8>>,
+        pending: VecDeque<Document>,
         /// Drains stdout, splitting the NUL-separated stream into
         /// documents.
         out: Option<std::thread::JoinHandle<()>>,
@@ -672,29 +681,46 @@ pub mod powermetrics {
     /// after a kill is sent too and the parser skips it.
     fn doc_reader(
         pipe: Option<impl Read + Send + 'static>,
-        tx: Sender<Vec<u8>>,
+        tx: Sender<Document>,
     ) -> std::thread::JoinHandle<()> {
         std::thread::spawn(move || {
             let Some(mut pipe) = pipe else {
                 return;
             };
-            let mut buf = Vec::new();
+            let mut document: Option<Document> = None;
             let mut chunk = [0_u8; 16 * 1024];
             loop {
-                match pipe.read(&mut chunk) {
+                let count = match pipe.read(&mut chunk) {
                     Ok(0) | Err(_) => break,
-                    Ok(n) => buf.extend_from_slice(&chunk[..n]),
-                }
-                while let Some(pos) = buf.iter().position(|&b| b == 0) {
-                    let doc: Vec<u8> = buf.drain(..pos).collect();
-                    buf.remove(0);
-                    if !doc.is_empty() && tx.send(doc).is_err() {
+                    Ok(n) => n,
+                };
+                let received_at = Instant::now();
+                for part in chunk[..count].split_inclusive(|&byte| byte == 0) {
+                    let terminated = part.last() == Some(&0);
+                    let bytes = if terminated {
+                        &part[..part.len() - 1]
+                    } else {
+                        part
+                    };
+                    if !bytes.is_empty() {
+                        document
+                            .get_or_insert_with(|| Document {
+                                bytes: Vec::new(),
+                                first_byte_at: received_at,
+                            })
+                            .bytes
+                            .extend_from_slice(bytes);
+                    }
+                    if terminated
+                        && let Some(doc) = document.take()
+                        && tx.send(doc).is_err()
+                    {
                         return;
                     }
                 }
             }
-            if !buf.is_empty() {
-                let _ = tx.send(buf);
+            if let Some(doc) = document {
+                let _ = tx.send(doc);
             }
         })
     }
@@ -754,17 +780,16 @@ pub mod powermetrics {
         /// the stand-ins the tests drive share this path so both get
         /// the reader threads and the terminating [`Drop`].
         ///
-        /// `spawned_at` anchors the sample timeline; the caller
-        /// captures it at the spawn call, before the reader threads
-        /// start.
-        pub(crate) fn from_child(child: Child, interval: Duration, spawned_at: Instant) -> Self {
+        /// `launched_at` records process startup for diagnostics. Sample
+        /// timing is established from the first document independently.
+        pub(crate) fn from_child(child: Child, interval: Duration, launched_at: Instant) -> Self {
             let (tx, samples_rx) = std::sync::mpsc::channel();
             let mut child = child;
             let out = doc_reader(child.stdout.take(), tx);
             let err = reader(child.stderr.take());
             Self {
                 child: Some(child),
-                spawned_at,
+                launched_at,
                 interval,
                 samples_rx,
                 pending: VecDeque::new(),
@@ -774,7 +799,7 @@ pub mod powermetrics {
         }
 
         /// Spawns `sudo -n powermetrics --samplers cpu_power,gpu_power,thermal
-        /// -i <ms> --format plist` for the window about to open.
+        /// -i <ms> --format plist --buffer-size 0` for the window about to open.
         /// `window_hint` picks the sample interval (~1/10 of the
         /// window, clamped to 100–1000 ms).
         ///
@@ -783,7 +808,7 @@ pub mod powermetrics {
         /// isn't permitted (the process exits immediately).
         pub fn spawn(window_hint: Duration) -> Result<Self, BenchError> {
             let interval_ms = (window_hint.as_millis() / 10).clamp(100, 1000);
-            let spawned_at = Instant::now();
+            let launched_at = Instant::now();
             let child = Command::new("sudo")
                 .arg("-n")
                 .arg("powermetrics")
@@ -793,6 +818,10 @@ pub mod powermetrics {
                 .arg(interval_ms.to_string())
                 .arg("--format")
                 .arg("plist")
+                // First-byte arrival anchors the sample clock. Do not
+                // let stdio retain documents before the pipe reader.
+                .arg("--buffer-size")
+                .arg("0")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
@@ -802,7 +831,7 @@ pub mod powermetrics {
             let mut run = Self::from_child(
                 child,
                 Duration::from_millis(u64::try_from(interval_ms).unwrap_or(1000)),
-                spawned_at,
+                launched_at,
             );
             // Startup is proven by the first document: one arriving
             // means the meter is sampling, while `sudo -n` refusing
@@ -838,7 +867,7 @@ pub mod powermetrics {
         /// the channel — a document `spawn` received while proving
         /// startup belongs on the timeline exactly as if it had
         /// arrived now.
-        fn recv_doc(&mut self, timeout: Duration) -> Result<Vec<u8>, RecvTimeoutError> {
+        fn recv_doc(&mut self, timeout: Duration) -> Result<Document, RecvTimeoutError> {
             if let Some(doc) = self.pending.pop_front() {
                 return Ok(doc);
             }
@@ -847,7 +876,7 @@ pub mod powermetrics {
 
         /// Non-blocking counterpart of [`Run::recv_doc`]; `None` when
         /// neither `pending` nor the channel holds a document.
-        fn try_recv_doc(&mut self) -> Option<Vec<u8>> {
+        fn try_recv_doc(&mut self) -> Option<Document> {
             self.pending
                 .pop_front()
                 .or_else(|| self.samples_rx.try_recv().ok())
@@ -862,10 +891,42 @@ pub mod powermetrics {
         /// Whether the received samples cover through `end` — a sample
         /// whose interval boundary lands past `end` makes the tail
         /// sample complete.
-        fn covered(&self, samples: &[Sample], end: Instant) -> bool {
-            samples
-                .last()
-                .is_some_and(|s| self.spawned_at + s.end >= end)
+        fn covered(origin: Instant, samples: &[Sample], end: Instant) -> bool {
+            samples.last().is_some_and(|s| origin + s.end >= end)
+        }
+
+        fn recv_sample(
+            &mut self,
+            deadline: Instant,
+            offset: Duration,
+        ) -> Result<(Sample, Instant), BenchError> {
+            let timeout = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    BenchError::Engine(
+                        "energy: powermetrics produced no sample past the window's end".into(),
+                    )
+                })?;
+            let document = self.recv_doc(timeout).map_err(|error| {
+                BenchError::Engine(
+                    match error {
+                        RecvTimeoutError::Timeout => {
+                            "energy: timed out waiting for a powermetrics sample"
+                        }
+                        RecvTimeoutError::Disconnected => {
+                            "energy: powermetrics exited before covering the window"
+                        }
+                    }
+                    .into(),
+                )
+            })?;
+            let sample = parse_doc(&document.bytes, offset).ok_or_else(|| {
+                BenchError::Engine(format!(
+                    "energy: could not decode a powermetrics sample ({} bytes)",
+                    document.bytes.len()
+                ))
+            })?;
+            Ok((sample, document.first_byte_at))
         }
 
         /// Receives documents until a sample whose interval boundary
@@ -878,43 +939,33 @@ pub mod powermetrics {
         /// `elapsed_ns` is lost and with it the timeline), or no
         /// covering sample arrives within a few intervals of `end`.
         /// Partial coverage is never returned.
-        fn collect_samples(&mut self, end: Instant) -> Result<Vec<Sample>, BenchError> {
-            let mut offset = Duration::ZERO;
-            let mut samples = Vec::new();
+        fn collect_samples(&mut self, end: Instant) -> Result<(Instant, Vec<Sample>), BenchError> {
             // The boundary sample lands within about an interval of
             // `end`; a dead or hung `powermetrics` must not hang the
             // bench either.
             let deadline = end + self.interval.saturating_mul(4).max(Duration::from_secs(2));
-            while !self.covered(&samples, end) {
-                let Some(timeout) = deadline.checked_duration_since(Instant::now()) else {
-                    return Err(BenchError::Engine(
-                        "energy: powermetrics produced no sample past the window's end".into(),
-                    ));
-                };
-                match self.recv_doc(timeout) {
-                    Ok(chunk) => {
-                        let Some(sample) = parse_doc(&chunk, offset) else {
-                            return Err(BenchError::Engine(format!(
-                                "energy: could not decode a powermetrics sample ({} bytes)",
-                                chunk.len()
-                            )));
-                        };
-                        offset = sample.end;
-                        samples.push(sample);
-                    }
-                    Err(RecvTimeoutError::Timeout) => {
-                        return Err(BenchError::Engine(
-                            "energy: timed out waiting for a powermetrics sample".into(),
-                        ));
-                    }
-                    Err(RecvTimeoutError::Disconnected) => {
-                        return Err(BenchError::Engine(
-                            "energy: powermetrics exited before covering the window".into(),
-                        ));
-                    }
-                }
+            let (first, observed_end) = self.recv_sample(deadline, Duration::ZERO)?;
+            // elapsed_ns starts with sampling, after process initialization.
+            // Receipt of the document's first bytes approximates its end;
+            // serialization and pipe scheduling remain measurement latency.
+            let origin = observed_end.checked_sub(first.end).ok_or_else(|| {
+                BenchError::Engine(
+                    "energy: powermetrics sample predates the monotonic clock".into(),
+                )
+            })?;
+            tracing::debug!(
+                startup_offset = ?origin.checked_duration_since(self.launched_at),
+                first_interval = ?first.end,
+                "powermetrics sample clock aligned"
+            );
+            let mut offset = first.end;
+            let mut samples = vec![first];
+            while !Self::covered(origin, &samples, end) {
+                let (sample, _) = self.recv_sample(deadline, offset)?;
+                offset = sample.end;
+                samples.push(sample);
             }
-            Ok(samples)
+            Ok((origin, samples))
         }
 
         /// SIGTERMs the child and reaps it within
@@ -1009,7 +1060,7 @@ pub mod powermetrics {
             end: Instant,
             frames: u32,
         ) -> Result<Outcome, BenchError> {
-            let mut samples = self.collect_samples(end)?;
+            let (origin, mut samples) = self.collect_samples(end)?;
             let stop_err = self.stop();
             // The sampler flushes a final document on SIGTERM; the
             // reader finishes on pipe EOF, then anything it delivered
@@ -1018,8 +1069,8 @@ pub mod powermetrics {
                 let _ = out.join();
             }
             let mut offset = samples.last().map_or(Duration::ZERO, |s| s.end);
-            while let Some(chunk) = self.try_recv_doc() {
-                if let Some(sample) = parse_doc(&chunk, offset) {
+            while let Some(document) = self.try_recv_doc() {
+                if let Some(sample) = parse_doc(&document.bytes, offset) {
                     offset = sample.end;
                     samples.push(sample);
                 }
@@ -1054,8 +1105,8 @@ pub mod powermetrics {
                 ));
             }
             let window = (
-                start.saturating_duration_since(self.spawned_at),
-                end.saturating_duration_since(self.spawned_at),
+                start.saturating_duration_since(origin),
+                end.saturating_duration_since(origin),
             );
             let attributed = attribute(&samples, window.0, window.1);
             let window_s = end.saturating_duration_since(start).as_secs_f64();
@@ -1063,6 +1114,105 @@ pub mod powermetrics {
                 report: report(&attributed, window_s, frames),
                 thermal_pressure: attributed.thermal_pressure,
             })
+        }
+    }
+
+    #[cfg(test)]
+    mod stream_tests {
+        use super::*;
+
+        /// Each new read acknowledges that the previous chunk was processed.
+        struct Chunks {
+            ready: Sender<()>,
+            chunks: Receiver<Vec<u8>>,
+        }
+
+        impl Read for Chunks {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                self.ready.send(()).expect("test is waiting for the reader");
+                self.chunks.recv().map_or(Ok(0), |chunk| {
+                    buffer[..chunk.len()].copy_from_slice(&chunk);
+                    Ok(chunk.len())
+                })
+            }
+        }
+
+        #[test]
+        fn powermetrics_document_timestamp_precedes_its_delimiter() {
+            let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+            let (chunk_tx, chunk_rx) = std::sync::mpsc::channel();
+            let (document_tx, document_rx) = std::sync::mpsc::channel();
+            let reader = doc_reader(
+                Some(Chunks {
+                    ready: ready_tx,
+                    chunks: chunk_rx,
+                }),
+                document_tx,
+            );
+            let bound = Duration::from_secs(5);
+            ready_rx.recv_timeout(bound).expect("first read");
+            chunk_tx.send(b"first".to_vec()).expect("reader alive");
+            ready_rx.recv_timeout(bound).expect("first chunk processed");
+            let before_delimiter = Instant::now();
+            chunk_tx
+                .send(b"\0second\0tail".to_vec())
+                .expect("reader alive");
+            let first = document_rx.recv_timeout(bound).expect("first document");
+            let second = document_rx.recv_timeout(bound).expect("second document");
+            assert_eq!(first.bytes, b"first");
+            assert!(first.first_byte_at <= before_delimiter);
+            assert_eq!(second.bytes, b"second");
+            assert!(second.first_byte_at >= before_delimiter);
+            drop(chunk_tx);
+            let tail = document_rx.recv_timeout(bound).expect("unterminated tail");
+            assert_eq!(tail.bytes, b"tail");
+            assert_eq!(tail.first_byte_at, second.first_byte_at);
+            reader.join().expect("reader exits at EOF");
+        }
+
+        #[test]
+        fn powermetrics_window_uses_sample_origin_after_delayed_startup() {
+            let observed_end = Instant::now()
+                .checked_sub(Duration::from_millis(750))
+                .unwrap();
+            let bytes = super::super::tests::SAMPLE_PLIST.as_bytes().to_vec();
+            let (_tx, samples_rx) = std::sync::mpsc::channel();
+            let mut run = Run {
+                child: None,
+                launched_at: observed_end.checked_sub(Duration::from_secs(3)).unwrap(),
+                interval: Duration::from_millis(500),
+                samples_rx,
+                pending: VecDeque::from([
+                    Document {
+                        bytes: bytes.clone(),
+                        first_byte_at: observed_end,
+                    },
+                    Document {
+                        bytes,
+                        first_byte_at: observed_end + Duration::from_millis(500),
+                    },
+                ]),
+                out: None,
+                err: None,
+            };
+            let end = observed_end + Duration::from_millis(250);
+            let (origin, samples) = run.collect_samples(end).expect("window is covered");
+            assert_eq!(
+                origin,
+                observed_end
+                    .checked_sub(Duration::from_millis(500))
+                    .unwrap()
+            );
+            assert_eq!(samples.len(), 2);
+            let attributed = attribute(
+                &samples,
+                observed_end.duration_since(origin),
+                end.duration_since(origin),
+            );
+            // Exactly half of the second 500 ms sample belongs to the
+            // window. Launch latency contributes neither time nor energy.
+            assert!((attributed.joules["cpu"] - 0.32).abs() < 1e-12);
+            assert!((attributed.package.expect("package energy") - 0.523).abs() < 1e-12);
         }
     }
 }
@@ -1254,7 +1404,7 @@ CH7(T=349894)[S1M_VDD_MIF], 21091363
 
     /// A `powermetrics --format plist` sample on Apple silicon —
     /// one NUL-separated XML plist per sample.
-    const SAMPLE_PLIST: &str = "\
+    pub(super) const SAMPLE_PLIST: &str = "\
 <?xml version=\"1.0\" encoding=\"UTF-8\"?>
 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
 <plist version=\"1.0\">
