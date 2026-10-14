@@ -16,7 +16,7 @@ use cherenkov::{GlyphRun, GlyphStyle};
 use super::instance::{
     EXTEND_NONE, EXTEND_PAD, EXTEND_REFLECT, EXTEND_REPEAT, FLAG_HAS_INNER, INTERP_SRGB,
     INTERP_WORKING, KIND_FILL, KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR,
-    PAINT_MESH, PAINT_RADIAL, PAINT_SOLID, PAINT_SWEEP, Shape, Stop,
+    PAINT_MESH, PAINT_RADIAL, PAINT_SOLID, PAINT_SWEEP, Shape, Stop, check_color,
 };
 use super::path;
 use crate::names;
@@ -182,7 +182,7 @@ fn push_stops(
     gradient_stops: &[cherenkov::ColorStop],
     interpolation: Interpolation,
     extend: Extend,
-) -> (u32, u32) {
+) -> Result<(u32, u32), RenderError> {
     let first = u32::try_from(stops.len()).unwrap_or(u32::MAX);
     let mut sorted = gradient_stops.to_vec();
     sorted.sort_by(|a, b| a.offset.total_cmp(&b.offset));
@@ -200,7 +200,7 @@ fn push_stops(
             [r, g, b, a]
         };
         stops.push(Stop {
-            color,
+            color: check_color(color)?,
             offset: stop.offset,
             pad: [0.0; 3],
         });
@@ -209,7 +209,7 @@ fn push_stops(
         Interpolation::Working => INTERP_WORKING,
         Interpolation::SrgbEncoded => INTERP_SRGB,
     };
-    (first, count | (interp << 16) | (extend_code(extend) << 20))
+    Ok((first, count | (interp << 16) | (extend_code(extend) << 20)))
 }
 
 const fn extend_code(extend: Extend) -> u32 {
@@ -239,7 +239,7 @@ fn paint_data(
         ..PaintData::default()
     };
     match paint {
-        Paint::Solid(c) => data.color = c.components,
+        Paint::Solid(c) => data.color = check_color(c.components)?,
         Paint::Linear(g) => {
             data.kind = PAINT_LINEAR;
             let start = to_local * g.start;
@@ -250,7 +250,7 @@ fn paint_data(
                 f32_f64(end.x),
                 f32_f64(end.y),
             ];
-            let (first, packed) = push_stops(stops, &g.stops, g.interpolation, g.extend);
+            let (first, packed) = push_stops(stops, &g.stops, g.interpolation, g.extend)?;
             data.first_stop = first;
             data.packed = packed;
         }
@@ -269,7 +269,7 @@ fn paint_data(
                 if identical { 1.0 } else { 0.0 },
                 0.0,
             ];
-            let (first, packed) = push_stops(stops, &g.stops, g.interpolation, g.extend);
+            let (first, packed) = push_stops(stops, &g.stops, g.interpolation, g.extend)?;
             data.first_stop = first;
             data.packed = packed;
         }
@@ -278,7 +278,7 @@ fn paint_data(
             let center = to_local * g.center;
             data.grad = [f32_f64(center.x), f32_f64(center.y), 0.0, 0.0];
             data.grad2 = [f32_f64(g.start_angle), f32_f64(g.end_angle), 0.0, 0.0];
-            let (first, packed) = push_stops(stops, &g.stops, g.interpolation, g.extend);
+            let (first, packed) = push_stops(stops, &g.stops, g.interpolation, g.extend)?;
             data.first_stop = first;
             data.packed = packed;
         }
@@ -366,7 +366,7 @@ fn mesh_paint(
             for index in indices {
                 let [red, green, blue, alpha] = mesh.colors()[index].components;
                 stops.push(Stop {
-                    color: [red * alpha, green * alpha, blue * alpha, alpha],
+                    color: check_color([red * alpha, green * alpha, blue * alpha, alpha])?,
                     offset: 0.0,
                     pad: [0.0; 3],
                 });
@@ -386,7 +386,7 @@ fn resolve(
     images: &FxHashMap<u64, GpuImage>,
 ) -> Result<ResolvedPaint, RenderError> {
     if let Paint::Solid(color) = paint {
-        return Ok(ResolvedPaint::Solid(color.components));
+        return Ok(ResolvedPaint::Solid(check_color(color.components)?));
     }
     resolve_resources(paint, to_local, images)
 }
@@ -445,7 +445,7 @@ fn resolve_transformed(
         })));
     }
     if let Paint::Solid(color) = paint {
-        return Ok(ResolvedPaint::Solid(color.components));
+        return Ok(ResolvedPaint::Solid(check_color(color.components)?));
     }
     if let Paint::Image(pattern) = paint {
         // Images already carry a full sampling affine. Compose in f64 once,

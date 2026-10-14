@@ -25,7 +25,7 @@ use crate::render::instance::{
     FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
     KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
     KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID, PAINT_TEXTURE, Shape, Stop,
-    affine, blend_code,
+    affine, blend_code, check_color, color_alpha, pack_color, pack_uv, unpack_uv,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -439,7 +439,7 @@ fn interior_tier(inst: &Instance) -> u32 {
         || f64::from(inst.bounds[2] - inst.bounds[0]) * f64::from(inst.bounds[3] - inst.bounds[1])
             < ELLIPSE_TIER16_MIN_AREA
         || s.radii != [s.half[0]; 4]
-        || inst.color[3] * inst.params[1] != 1.0
+        || color_alpha(inst.color) * inst.params[1] != 1.0
     {
         return 0;
     }
@@ -682,7 +682,7 @@ struct InstanceTemplate {
     affine: [f32; 6],
     shape: Shape,
     inner: Shape,
-    color: [f32; 4],
+    color: [u32; 2],
     grad: [f32; 4],
     grad2: [f32; 4],
     params: [f32; 2],
@@ -736,7 +736,7 @@ impl RetainedInstance {
     fn restore(self, template: &InstanceTemplate, stop_base: u32) -> Instance {
         let mut inst = template.restore();
         inst.bounds = self.bounds;
-        inst.uv[..2].copy_from_slice(&self.uv);
+        inst.uv[0] = pack_uv(self.uv[0], self.uv[1]);
         inst.meta[0] = self.kind;
         inst.meta[2] = self.first_stop
             + if self.kind == KIND_REGION {
@@ -2917,8 +2917,8 @@ impl<'a> Lowering<'a> {
             inst.grad[2] = scale.get();
             // `grad.w` is the group's level count for `backdrop_sample_level`.
             inst.grad[3] = spec.levels().get() as f32;
-            // `color.x` is the member's recording scale, `px.scale`.
-            inst.color[0] = sample.recording_scale().get();
+            // `inner.aspect` is the member's recording scale, `px.scale`.
+            inst.inner.aspect = sample.recording_scale().get();
             // The span's bounds are device space, so its affine is free:
             // it carries the member layer's transform, `px.local`'s
             // inverse.
@@ -2939,11 +2939,11 @@ impl<'a> Lowering<'a> {
             }
         }
         if let Some(base) = entry.union {
-            // `uv.xy` bitcast carries the record run's base and the
+            // `inner.half` bitcast carries the record run's base and the
             // member's index; `params.x` the member's outer extent.
             inst.meta[3] |= FLAG_UNION << 24;
-            inst.uv[0] = f32::from_bits(base);
-            inst.uv[1] = f32::from_bits(entry.ord);
+            inst.inner.half[0] = f32::from_bits(base);
+            inst.inner.half[1] = f32::from_bits(entry.ord);
             inst.params[0] = entry.outer;
         }
         if let Some(effect) = effect
@@ -3007,7 +3007,8 @@ impl<'a> Lowering<'a> {
 
     /// Opens the pass a member blending in a space unlike the pass's
     /// storage composites in: its backdrop copy covers the instance,
-    /// `color.yz` carries the copy's device origin, and `FLAG_BLEND_SRC`
+    /// `inner.exponent`/`inner.radii[0]` carry the copy's device origin,
+    /// and `FLAG_BLEND_SRC`
     /// marks the member's space. The result is written unblended, so a
     /// source-over composite becomes `Replace`.
     #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
@@ -3017,8 +3018,8 @@ impl<'a> Lowering<'a> {
         if let Some(open) = &mut self.frame.open {
             open.backdrop_copy = Some(copy);
         }
-        inst.color[1] = copy[0] as f32;
-        inst.color[2] = copy[1] as f32;
+        inst.inner.exponent = copy[0] as f32;
+        inst.inner.radii[0] = copy[1] as f32;
         inst.meta[3] |= FLAG_BLEND_SRC << 24;
         if *pipeline == PipelineKind::SrcOver {
             *pipeline = PipelineKind::Replace;
@@ -3116,8 +3117,7 @@ impl<'a> Lowering<'a> {
                 inst.meta[3] |= FLAG_HAS_MASK << 24;
                 match mask {
                     ClipMask::Cell(cell) => {
-                        inst.uv[2] = cell.atlas[0];
-                        inst.uv[3] = cell.atlas[1];
+                        inst.uv[1] = pack_uv(cell.atlas[0], cell.atlas[1]);
                     }
                     ClipMask::Texture(..) => {
                         inst.meta[3] |= FLAG_MASK_TEXTURE << 24;
@@ -3767,7 +3767,7 @@ impl<'a> Lowering<'a> {
                         reason = "a binding size is a pixel extent within the device limit"
                     )]
                     let quad = [binding.size.0 as f32, binding.size.1 as f32, 0.0, 0.0];
-                    inst.uv = quad;
+                    inst.uv = [pack_uv(quad[0], quad[1]), pack_uv(quad[2], quad[3])];
                     self.set_image(Some(ImageSource::Content(binding.producer())));
                     self.push_shaped(inst, transform, boxed.bounds, margin);
                     // The frame draw is its own range: following siblings
@@ -3986,7 +3986,7 @@ impl<'a> Lowering<'a> {
             .extend(self.frame.instances[first_instance..].iter().map(|inst| {
                 let retained = RetainedInstance {
                     bounds: inst.bounds,
-                    uv: [inst.uv[0], inst.uv[1]],
+                    uv: unpack_uv(inst.uv[0]),
                     kind: inst.meta[0],
                     first_stop: if inst.meta[0] == KIND_REGION {
                         inst.meta[2]
@@ -4070,7 +4070,7 @@ impl<'a> Lowering<'a> {
                 .resize(first + retained.len(), template);
             for (inst, source) in self.frame.instances[first..].iter_mut().zip(retained) {
                 inst.bounds = source.bounds;
-                inst.uv[..2].copy_from_slice(&source.uv);
+                inst.uv[0] = pack_uv(source.uv[0], source.uv[1]);
                 inst.meta[0] = source.kind;
                 inst.meta[2] = source.first_stop
                     + if source.kind == KIND_REGION {
@@ -4265,7 +4265,7 @@ impl<'a> Lowering<'a> {
                 }
                 inst.params[0] = *param_x;
                 let paint = self.shaped_paint(paint, *bounds, *local, *extra_margin)?;
-                inst.color = paint.color;
+                inst.color = pack_color(paint.color);
                 inst.grad = paint.grad;
                 inst.grad2 = paint.grad2;
                 inst.meta[1] = paint.kind;
@@ -4287,7 +4287,7 @@ impl<'a> Lowering<'a> {
                 inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
                 inst.shape = *shape;
                 inst.params[0] = f32_f64(*sigma_eff);
-                inst.color = *color;
+                inst.color = pack_color(check_color(*color)?);
                 inst.meta[1] = PAINT_SOLID;
                 self.push_shadow_quads(&inst, b, cover);
             }
@@ -4747,7 +4747,7 @@ impl<'a> Lowering<'a> {
             .copied()
             .unwrap_or_else(|| self.resolved_paint(paint));
         let mut template = Self::base(KIND_SPAN, affine(self.transform), self.clip);
-        template.color = paint.color;
+        template.color = pack_color(paint.color);
         template.grad = paint.grad;
         template.grad2 = paint.grad2;
         template.meta[1] = paint.kind;
@@ -4806,7 +4806,7 @@ impl<'a> Lowering<'a> {
                 f32_f64(f64::from(rect[2]) + offset.x),
                 f32_f64(f64::from(rect[3]) + offset.y),
             ];
-            inst.uv[..2].copy_from_slice(&uv);
+            inst.uv[0] = pack_uv(uv[0], uv[1]);
             if interior != 0 && inst.meta[1] == PAINT_SOLID {
                 inst.meta[0] = KIND_REGION;
                 inst.meta[2] = interior;
@@ -5016,7 +5016,7 @@ impl<'a> Lowering<'a> {
                 f32_f64(rect.x1),
                 f32_f64(rect.y1),
             ];
-            inst.uv = [f32::from(entry.x), f32::from(entry.y), 0.0, 0.0];
+            inst.uv = [pack_uv(f32::from(entry.x), f32::from(entry.y)), 0];
             self.push_instance(&inst);
             if let Some(pending) = pending {
                 let patch = (instance_index(self.frame.instances.len() - 1), pending, 0);
@@ -5069,7 +5069,7 @@ impl<'a> Lowering<'a> {
             let mut inst = *template.get_or_insert_with(|| {
                 let mut inst = Self::base(KIND_GLYPH, affine(self.transform), self.clip);
                 let data = self.resolved_paint(paint);
-                inst.color = data.color;
+                inst.color = pack_color(data.color);
                 inst.grad = data.grad;
                 inst.grad2 = data.grad2;
                 inst.meta[1] = data.kind;
@@ -5080,7 +5080,7 @@ impl<'a> Lowering<'a> {
             let x0 = f32_f64(ix + f64::from(entry.left));
             let y0 = f32_f64(iy + f64::from(entry.top));
             inst.bounds = [x0, y0, x0 + f32::from(entry.w), y0 + f32::from(entry.h)];
-            inst.uv = [f32::from(entry.x), f32::from(entry.y), 0.0, 0.0];
+            inst.uv = [pack_uv(f32::from(entry.x), f32::from(entry.y)), 0];
             self.push_instance(&inst);
             if let Some(pending) = pending {
                 let patch = (instance_index(self.frame.instances.len() - 1), pending, 0);

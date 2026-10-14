@@ -109,7 +109,7 @@ const VS_FS_PROJECTIVE: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
 /// pipelines plain draws use contain neither the union fold nor its
 /// member-cap arrays.
 const ENGINE_WGSL0: &str = concat!(
-    "const VARIANT: u32 = 0u;\n",
+    "enable f16;\nconst VARIANT: u32 = 0u;\n",
     include_str!("shared.wgsl"),
     include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
     "\n",
@@ -117,7 +117,7 @@ const ENGINE_WGSL0: &str = concat!(
 );
 /// The `VARIANT = 1` specialization (shadow).
 const ENGINE_WGSL1: &str = concat!(
-    "const VARIANT: u32 = 1u;\n",
+    "enable f16;\nconst VARIANT: u32 = 1u;\n",
     include_str!("shared.wgsl"),
     include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
     "\n",
@@ -125,7 +125,7 @@ const ENGINE_WGSL1: &str = concat!(
 );
 /// The `VARIANT = 2` specialization (full).
 const ENGINE_WGSL2: &str = concat!(
-    "const VARIANT: u32 = 2u;\n",
+    "enable f16;\nconst VARIANT: u32 = 2u;\n",
     include_str!("shared.wgsl"),
     include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
     "\n",
@@ -135,7 +135,7 @@ const ENGINE_WGSL2: &str = concat!(
 /// `UNION_MAX_MEMBERS` prepend — `BackdropUnion::MAX_MEMBERS` verbatim,
 /// emitted by `build.rs` — and the `union.wgsl` fold.
 const ENGINE_WGSL3: &str = concat!(
-    "const VARIANT: u32 = 3u;\n",
+    "enable f16;\nconst VARIANT: u32 = 3u;\n",
     include_str!(concat!(env!("OUT_DIR"), "/union_max_members.wgsl")),
     include_str!("shared.wgsl"),
     include_str!("shader.wgsl"),
@@ -186,7 +186,11 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
     // creation on the render thread, which reports it as a rejection.
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::default(),
+        // SHADER_FLOAT16 is on the engine floor: the shared prelude the
+        // user source joins carries f16 arithmetic.
+        naga::valid::Capabilities::default()
+            .union(naga::valid::Capabilities::SHADER_FLOAT16)
+            .union(naga::valid::Capabilities::SHADER_FLOAT16_IN_FLOAT32),
     )
     .validate(&module)
     .map_err(|error| ResourceError::Shader(error.emit_to_string(text)))?;
