@@ -8413,7 +8413,7 @@ pub mod inspector {
     /// The Inspector's user interface is a real crate rather than template
     /// text, so it is compiled, linted, and tested with the rest of the
     /// workspace. The scaffolded app is a shim that depends on it.
-    const INSPECTOR_APP_CRATE: &str = "components/devtools/inspector/app";
+    const INSPECTOR_APP_CRATE: &str = "apps/inspector";
 
     async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
         use std::collections::BTreeMap;

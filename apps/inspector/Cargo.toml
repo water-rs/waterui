@@ -5,8 +5,9 @@ edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
-readme = "../../../../README.md"
+readme = "../../README.md"
 repository.workspace = true
+publish = false
 description = "The WaterUI Inspector, written in WaterUI"
 keywords.workspace = true
 categories.workspace = true
@@ -21,6 +22,26 @@ smol = "2.0.2"
 futures-lite = "2.6"
 async-channel.workspace = true
 tracing.workspace = true
+
+# `desktop` gates the `waterui-inspector` binary: enabling it pulls the
+# desktop runner and theme so mobile/wasm workspace checks never build the
+# desktop binary.
+[features]
+desktop = ["dep:hydrolysis", "dep:hydrolysis-m3"]
+
+[dependencies.hydrolysis]
+workspace = true
+features = ["winit"]
+optional = true
+
+[dependencies.hydrolysis-m3]
+workspace = true
+optional = true
+
+[[bin]]
+name = "waterui-inspector"
+path = "src/main.rs"
+required-features = ["desktop"]
 
 [dev-dependencies]
 waterui-testing.workspace = true

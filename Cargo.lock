@@ -12997,6 +12997,7 @@ version = "0.5.2"
 dependencies = [
  "async-channel",
  "futures-lite",
+ "hydrolysis",
  "hydrolysis-m3",
  "smol",
  "tracing",
