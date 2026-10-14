@@ -684,6 +684,9 @@ impl InspectorRuntime {
             name: config.app_name.clone(),
             backend: backend.to_string(),
         };
+        // One identity serves the handshake and the advertisement — a reader
+        // and a real connection check the same thing.
+        let identity = build_identity(config.framework_version.clone());
 
         spawn("waterui-inspector-dispatch", {
             let hub = Arc::clone(&self.hub);
@@ -699,6 +702,7 @@ impl InspectorRuntime {
             backend: target.backend.clone(),
             addr,
             token: config.token.clone(),
+            identity: identity.clone(),
         };
         match advertisement.publish() {
             Ok(path) => tracing::info!(
@@ -721,7 +725,7 @@ impl InspectorRuntime {
                     &listener,
                     &hub,
                     token.as_str(),
-                    &build_identity(config.framework_version.clone()),
+                    &identity,
                     &target,
                     available,
                 );

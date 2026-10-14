@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::InspectorBuildIdentity;
+
 /// What a running application publishes about its inspector endpoint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Advertisement {
@@ -35,6 +37,12 @@ pub struct Advertisement {
     pub addr: SocketAddr,
     /// Token the endpoint requires.
     pub token: String,
+    /// The build identity the endpoint handshakes with.
+    ///
+    /// A reader sees exactly what a real connection would check: the compiled
+    /// `waterui` facade version and protocol build of the application — not
+    /// the tool's own version.
+    pub identity: InspectorBuildIdentity,
 }
 
 impl Advertisement {
@@ -215,6 +223,7 @@ mod tests {
             backend: String::from("hydrolysis"),
             addr: "127.0.0.1:23106".parse().expect("a valid address"),
             token: String::from("token"),
+            identity: crate::build_identity("0.0.1"),
         }
     }
 
@@ -235,6 +244,9 @@ mod tests {
         let listed = list().expect("the directory is readable");
         assert_eq!(listed.len(), 1, "got {listed:?}");
         assert_eq!(listed[0].pid, std::process::id());
+        // The advertised identity is the handshake's: a reader sees exactly
+        // what a real connection would have to match.
+        assert_eq!(listed[0].identity, crate::build_identity("0.0.1"));
 
         mine.withdraw().expect("withdrawing removes the file");
         let listed = list().expect("still readable");
