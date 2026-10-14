@@ -1596,7 +1596,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
     }
 }
 
-const fn backend_name(backend: TargetBackend) -> &'static str {
+pub(super) const fn backend_name(backend: TargetBackend) -> &'static str {
     match backend {
         TargetBackend::Apple => "Apple",
         TargetBackend::Gtk4 => "GTK4",
@@ -1653,7 +1653,7 @@ fn validate_log_pipeline_args(
 
 /// Handle a device event.
 ///
-fn handle_device_event(
+pub(super) fn handle_device_event(
     shell: &Shell,
     host: &waterui_cli::toolchain::Host,
     event: DeviceEvent,

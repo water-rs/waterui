@@ -1,9 +1,12 @@
 //! Inspector app launcher and lifecycle utilities.
 
+mod client;
+mod forward;
 mod launcher;
 
+pub use forward::AndroidForward;
 pub use launcher::{
-    InspectorLaunchOptions, InspectorPlatform, InspectorSession, launch_inspector_session,
+    InspectorLaunchOptions, InspectorSession, InspectorTarget, PreparedInspector, prepare_inspector,
 };
 
 /// An explicit session credential from `WATERUI_INSPECTOR_TOKEN`, used

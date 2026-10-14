@@ -41,7 +41,15 @@ fn main() -> std::process::ExitCode {
         return std::process::ExitCode::SUCCESS;
     }
 
-    let env = waterui::configure_environment!(waterui::env::Environment::new());
+    // The packaged client resolves fonts and assets from the directories
+    // beside its executable; install that context before the app exists.
+    let env = match waterui::ResourceContext::application() {
+        Ok(resources) => inspector_environment(resources),
+        Err(error) => {
+            tracing::error!(%error, "could not locate the inspector's resources");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
     hydrolysis::run(
         waterui_inspector_app::app(env),
         hydrolysis_m3::Material3::defaults(),
@@ -58,6 +66,15 @@ fn write_identity(
     serde_json::to_writer(&mut *writer, identity).map_err(std::io::Error::other)?;
     writer.write_all(b"\n")?;
     writer.flush()
+}
+
+/// The environment the GUI branch runs under: the configured environment
+/// plus the packaged resource context — one factory so `main` and its test
+/// exercise the same construction.
+fn inspector_environment(resources: waterui::ResourceContext) -> waterui::env::Environment {
+    let mut env = waterui::configure_environment!(waterui::env::Environment::new());
+    env.insert(resources);
+    env
 }
 
 #[cfg(test)]
@@ -115,5 +132,16 @@ mod tests {
             serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("valid JSON");
         assert_eq!(parsed["framework_version"], "0.0.0");
         assert_eq!(bytes[bytes.len() - 1], b'\n');
+    }
+
+    #[test]
+    fn the_environment_carries_the_application_resource_context() {
+        // The packaged client resolves fonts and assets from beside its
+        // executable — the same context `main` installs before the app runs.
+        let env = inspector_environment(
+            waterui::ResourceContext::application()
+                .expect("the app's own executable has a resource context"),
+        );
+        assert!(env.get::<waterui::ResourceContext>().is_some());
     }
 }

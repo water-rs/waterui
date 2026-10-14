@@ -9,46 +9,89 @@ use eyre::Result;
 use crate::shell::Shell;
 use crate::{header, note, success};
 use waterui_cli::inspector::{
-    InspectorLaunchOptions, InspectorPlatform, explicit_token, launch_inspector_session,
+    InspectorLaunchOptions, InspectorTarget, PreparedInspector, explicit_token, prepare_inspector,
 };
 
-/// Target platform for inspector app.
-#[derive(Debug, Clone, Copy, ValueEnum)]
+/// Where the application being inspected runs.
+///
+/// This describes the server — the endpoint compiled into the inspected
+/// application — and how the client reaches it. The inspector client itself
+/// always runs on this machine, whatever the target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CliInspectorPlatform {
-    /// iOS Simulator.
-    Ios,
-    /// macOS.
+    /// An application running on this machine; its endpoint is discovered
+    /// or given with `--target`.
+    Local,
+    /// A macOS application, dialed directly at `--target`. On a Mac that is
+    /// this machine's own apps; elsewhere it is a remote endpoint.
     Macos,
-    /// Android Emulator / Device.
+    /// A Linux application, dialed directly at `--target`. On Linux that is
+    /// this machine's own apps; elsewhere it is a remote endpoint.
+    Linux,
+    /// A Windows application, dialed directly at `--target`. On Windows that
+    /// is this machine's own apps; elsewhere it is a remote endpoint.
+    Windows,
+    /// An iOS application, dialed directly at `--target`. A simulator shares
+    /// this machine's loopback (`127.0.0.1:<port>`); a device needs its
+    /// routable address on the network.
+    Ios,
+    /// An application on an Android device or emulator; reached through
+    /// `adb forward` (`--device` selects the adb target).
     Android,
 }
 
-impl From<CliInspectorPlatform> for InspectorPlatform {
-    fn from(platform: CliInspectorPlatform) -> Self {
-        match platform {
-            CliInspectorPlatform::Ios => Self::IosSimulator,
-            CliInspectorPlatform::Macos => Self::Macos,
-            CliInspectorPlatform::Android => Self::Android,
+impl CliInspectorPlatform {
+    /// The flag spelling of this platform, for error messages.
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Macos => "macos",
+            Self::Linux => "linux",
+            Self::Windows => "windows",
+            Self::Ios => "ios",
+            Self::Android => "android",
         }
+    }
+
+    /// Whether the platform's server can run on this machine — `local`, or
+    /// a desktop OS equal to the one this binary runs on (its own
+    /// `cfg!(target_os)` proves it: the `water` binary always runs on the
+    /// developer machine). Only those can be discovered or have a token
+    /// looked up here; every other platform is a remote endpoint reached
+    /// through `--target` and `WATERUI_INSPECTOR_TOKEN` (or, for Android,
+    /// `adb forward`).
+    const fn can_run_on_this_machine(self) -> bool {
+        let host_desktop = match self {
+            Self::Macos => cfg!(target_os = "macos"),
+            Self::Linux => cfg!(target_os = "linux"),
+            Self::Windows => cfg!(target_os = "windows"),
+            Self::Local | Self::Ios | Self::Android => false,
+        };
+        matches!(self, Self::Local) || host_desktop
     }
 }
 
 /// Arguments for `water inspector`.
 #[derive(ClapArgs, Debug)]
 pub struct Args {
-    /// Runtime app debug endpoint (`host:port`), dialled from the device the
-    /// inspector runs on.
+    /// Runtime app debug endpoint (`host:port`).
     ///
     /// Omit it to attach to a debug build running on this machine, which
-    /// publishes where it is listening. `--platform android` requires it: the
-    /// inspector runs on the device, so an app on that same device is
-    /// `127.0.0.1:<port>`. An explicit credential comes from
+    /// publishes where it is listening. Every `--platform` whose server
+    /// cannot run here requires it — `ios`, `android`, and a desktop OS
+    /// different from this machine's. For iOS it is the endpoint as the
+    /// device or simulator sees it (a simulator shares this machine's
+    /// loopback, a device needs its routable address); for Android it is
+    /// the endpoint the application bound on the device — the port is what
+    /// `adb forward` carries. An explicit credential comes from
     /// `WATERUI_INSPECTOR_TOKEN`, never a command-line argument.
     #[arg(long)]
     target: Option<String>,
 
-    /// Target platform for the inspector app.
-    #[arg(short, long, value_enum, default_value = "macos")]
+    /// Where the application being inspected runs. The inspector client
+    /// always runs on this machine; the platform only says how the target's
+    /// endpoint is reached.
+    #[arg(short, long, value_enum, default_value = "local")]
     platform: CliInspectorPlatform,
 
     /// Android device serial or AVD name (only with `--platform android`).
@@ -69,16 +112,16 @@ impl Args {
     }
 }
 
-/// Run the inspector command.
-pub async fn run(shell: &Shell, args: Args) -> Result<()> {
-    let host = waterui_cli::toolchain::Host::current();
-    let platform = InspectorPlatform::from(args.platform);
-    if args.device.is_some() && platform != InspectorPlatform::Android {
-        eyre::bail!("`--device` is supported only with `--platform android`.");
-    }
-    let token_override = explicit_token(&host)?;
-    require_device_endpoint(platform, args.target.as_deref(), token_override.as_deref())?;
-
+/// The resource-free half of the command: project canonicalisation,
+/// endpoint discovery or parse, target-device selection, and the client's
+/// build — everything that can be interrupted without leaving a forward,
+/// a credential or a process behind.
+async fn prepare_selected_inspector(
+    shell: &Shell,
+    host: &waterui_cli::toolchain::Host,
+    args: Args,
+    token_override: Option<String>,
+) -> Result<(PreparedInspector, InspectorLaunchOptions)> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
 
     header!(shell, "Inspector");
@@ -100,65 +143,124 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     note!(shell, "Target runtime endpoint: {}", target);
 
-    let android = if platform == InspectorPlatform::Android {
-        let spinner = shell.spinner("Scanning for devices...");
-        let target = super::select_android_target(
-            shell,
-            &host,
-            waterui_cli::water_dir::device_memory_key(
-                waterui_cli::platform::TargetBackend::Hydrolysis,
-                waterui_cli::platform::TargetPlatform::Android,
-            ),
-            args.device.as_deref(),
-            spinner.as_ref(),
-        )
-        .await;
-        if let Some(pb) = spinner {
-            pb.finish_and_clear();
+    let inspector_target = match args.platform {
+        CliInspectorPlatform::Android => {
+            let spinner = shell.spinner("Scanning for devices...");
+            let device = super::select_android_target(
+                shell,
+                host,
+                waterui_cli::water_dir::device_memory_key(
+                    waterui_cli::platform::TargetBackend::Hydrolysis,
+                    waterui_cli::platform::TargetPlatform::Android,
+                ),
+                args.device.as_deref(),
+                spinner.as_ref(),
+            )
+            .await;
+            if let Some(pb) = spinner {
+                pb.finish_and_clear();
+            }
+            // An emulator has no serial before it boots, and adb cannot
+            // forward to a device that is not up.
+            let serial = device?.launch(host).await?.identifier().to_owned();
+            note!(
+                shell,
+                "Forwarding a local port to {} on {serial}",
+                target.port()
+            );
+            InspectorTarget::AndroidDevice {
+                serial,
+                port: target.port(),
+            }
         }
-        Some(target?)
-    } else {
-        None
+        CliInspectorPlatform::Local
+        | CliInspectorPlatform::Macos
+        | CliInspectorPlatform::Linux
+        | CliInspectorPlatform::Windows
+        | CliInspectorPlatform::Ios => InspectorTarget::Direct(target),
     };
 
-    let mut session = launch_inspector_session(
-        &host,
-        &project_path,
-        platform,
-        android,
+    let prepared = prepare_inspector(host, &project_path, Some(shell.build_progress())).await?;
+    Ok((
+        prepared,
         InspectorLaunchOptions {
-            target_addr: target.to_string(),
-            token: token.clone(),
+            target: inspector_target,
+            token,
         },
-        Some(shell.build_progress()),
-    )
-    .await?;
+    ))
+}
 
-    // Keep the inspector app alive after CLI exits.
-    session.detach();
+/// Run the inspector command.
+///
+/// The command stays up for the session's whole life: closing the client
+/// ends it normally, and Ctrl-C asks the supervised client to stop — the
+/// session still owns the `adb forward` and removes it itself.
+pub async fn run(shell: &Shell, args: Args, interrupts: smol::channel::Receiver<()>) -> Result<()> {
+    // The client never runs where the inspected application is: a phone or
+    // simulator cannot show the inspector and keep the inspected application
+    // answering — Android freezes whichever of the two is in the background
+    // (water-rs/waterui#2230). A target's platform only chooses how its
+    // endpoint is reached.
+    if args.device.is_some() && args.platform != CliInspectorPlatform::Android {
+        eyre::bail!("`--device` is supported only with `--platform android`.");
+    }
+    let host = waterui_cli::toolchain::Host::current();
+    let token_override = explicit_token(&host)?;
+    require_device_endpoint(
+        args.platform,
+        args.target.as_deref(),
+        token_override.as_deref(),
+    )?;
+
+    // Everything in `prepare_selected_inspector` acquires nothing that can
+    // leak, so an interrupt while devices scan or the client builds just
+    // returns.
+    let prepared = Box::pin(crate::until_interrupt(
+        prepare_selected_inspector(shell, &host, args, token_override),
+        &interrupts,
+    ))
+    .await?;
+    let Some((prepared, options)) = prepared else {
+        return Ok(());
+    };
+
+    // From here the session owns what it acquires: an interruption goes to
+    // the supervised client, not around it.
+    let session = prepared.launch(options).await?;
     success!(shell, "Inspector app launched");
     note!(
         shell,
-        "Ensure the target app runs with WATERUI_INSPECTOR_TOKEN set to the matching credential and a matching inspector endpoint."
+        "The inspector stays attached until its client closes — Ctrl-C stops it."
     );
-    Ok(())
+
+    session
+        .supervise(interrupts, |event| {
+            super::run::handle_device_event(
+                shell,
+                &host,
+                event,
+                super::run::backend_name(super::TargetBackend::Hydrolysis),
+            )
+        })
+        .await
 }
 
-/// An Android inspector needs the endpoint and credential spelled out.
+/// Inspecting an application off this machine needs the endpoint and
+/// credential spelled out.
 ///
-/// Discovery lists the endpoints advertised on this computer, and the device
-/// the inspector runs on cannot dial their loopback addresses, so there is
-/// nothing to discover for it.
+/// Discovery lists the endpoints advertised on this computer; an
+/// application on a device, a simulator, or another machine's OS
+/// advertises nothing here, so there is nothing to discover for it.
 fn require_device_endpoint(
-    platform: InspectorPlatform,
+    platform: CliInspectorPlatform,
     target: Option<&str>,
     token: Option<&str>,
 ) -> Result<()> {
-    if platform == InspectorPlatform::Android && (target.is_none() || token.is_none()) {
+    if !platform.can_run_on_this_machine() && (target.is_none() || token.is_none()) {
         eyre::bail!(
-            "`--platform android` needs --target <addr:port> (the endpoint as the device sees it; \
-             127.0.0.1:<port> for an app on the same device) and WATERUI_INSPECTOR_TOKEN set \
-             to the matching credential"
+            "`--platform {}` needs --target <addr:port> and WATERUI_INSPECTOR_TOKEN: the \
+             endpoint and matching credential of the application",
+            platform.name()
         );
     }
     Ok(())
@@ -236,13 +338,8 @@ fn token_for(addr: SocketAddr) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use clap::Parser as _;
-    use waterui_cli::inspector::InspectorPlatform;
 
-    use super::{Args, require_device_endpoint};
-
-    const ANDROID_ERROR: &str = "`--platform android` needs --target <addr:port> (the endpoint as \
-        the device sees it; 127.0.0.1:<port> for an app on the same device) and \
-        WATERUI_INSPECTOR_TOKEN set to the matching credential";
+    use super::{Args, CliInspectorPlatform, require_device_endpoint};
 
     #[derive(clap::Parser, Debug)]
     struct TestCli {
@@ -258,29 +355,177 @@ mod tests {
         assert!(!error.to_string().contains("cli-test-credential"));
     }
 
+    /// Ctrl-C while devices scan never reaches preparation: the queued
+    /// interrupt returns `None` before any forward could be opened, and
+    /// the hanging `adb` spawn is dropped with the raced future.
+    #[cfg(unix)]
     #[test]
-    fn android_requires_both_the_target_and_the_token() {
+    fn an_interrupt_during_preparation_acquires_nothing() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = tempfile::tempdir().expect("a scratch machine");
+        let bin = temp.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        let log = temp.path().join("adb-argv.log");
+        // `adb` that records its argv then hangs: any probe blocks until
+        // the spawned sleep dies with the dropped future.
+        let adb = bin.join("adb");
+        std::fs::write(&adb, include_str!("testdata/hanging_adb.sh")).expect("hanging adb");
+        let mut permissions = std::fs::metadata(&adb).expect("adb").permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&adb, permissions).expect("chmod");
+
+        let host = waterui_cli::toolchain::Host::new(
+            [bin],
+            [
+                (
+                    std::ffi::OsString::from("HOME"),
+                    temp.path().join("home").into_os_string(),
+                ),
+                (
+                    std::ffi::OsString::from("USERPROFILE"),
+                    temp.path().join("home").into_os_string(),
+                ),
+                (
+                    std::ffi::OsString::from("WATERUI_FAKE_ADB_LOG"),
+                    log.clone().into_os_string(),
+                ),
+                (
+                    std::ffi::OsString::from("WATERUI_INSPECTOR_TOKEN"),
+                    std::ffi::OsString::from("token"),
+                ),
+            ],
+        )
+        .with_cwd(temp.path().to_path_buf());
+        let args = Args {
+            target: Some(String::from("127.0.0.1:23106")),
+            platform: CliInspectorPlatform::Android,
+            device: Some(String::from("pixel-9-pro:5555")),
+            path: temp.path().to_path_buf(),
+        };
+        let shell = crate::shell::Shell::new(true);
+
+        let (interrupts_tx, interrupts) = smol::channel::unbounded::<()>();
+        interrupts_tx.try_send(()).expect("the interrupt is queued");
+
+        smol::block_on(smol::future::or(
+            async {
+                let result = Box::pin(crate::until_interrupt(
+                    super::prepare_selected_inspector(
+                        &shell,
+                        &host,
+                        args,
+                        super::explicit_token(&host).expect("declared credential"),
+                    ),
+                    &interrupts,
+                ))
+                .await;
+                assert!(matches!(result, Ok(None)), "{result:?}");
+            },
+            async {
+                smol::Timer::after(std::time::Duration::from_secs(2)).await;
+                panic!("preparation did not cancel within two seconds");
+            },
+        ));
+
+        // Whatever adb argv was captured, no forward was ever opened.
+        let recorded = match std::fs::read_to_string(&log) {
+            Ok(recorded) => recorded,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(error) => panic!("read the fake adb argv log: {error}"),
+        };
+        assert!(
+            !recorded.contains("forward"),
+            "nothing acquired: {recorded}"
+        );
+    }
+
+    fn expected_error(platform: CliInspectorPlatform) -> String {
+        format!(
+            "`--platform {}` needs --target <addr:port> and WATERUI_INSPECTOR_TOKEN: the \
+             endpoint and matching credential of the application",
+            platform.name()
+        )
+    }
+
+    /// The desktop-OS platform matching the machine these tests run on.
+    const fn host_desktop() -> CliInspectorPlatform {
+        if cfg!(target_os = "macos") {
+            CliInspectorPlatform::Macos
+        } else if cfg!(target_os = "windows") {
+            CliInspectorPlatform::Windows
+        } else {
+            CliInspectorPlatform::Linux
+        }
+    }
+
+    /// A platform whose server can never be on this machine.
+    const REMOTE_PLATFORMS: &[CliInspectorPlatform] = if cfg!(target_os = "macos") {
+        &[
+            CliInspectorPlatform::Ios,
+            CliInspectorPlatform::Android,
+            CliInspectorPlatform::Linux,
+            CliInspectorPlatform::Windows,
+        ]
+    } else if cfg!(target_os = "windows") {
+        &[
+            CliInspectorPlatform::Ios,
+            CliInspectorPlatform::Android,
+            CliInspectorPlatform::Macos,
+            CliInspectorPlatform::Linux,
+        ]
+    } else {
+        &[
+            CliInspectorPlatform::Ios,
+            CliInspectorPlatform::Android,
+            CliInspectorPlatform::Macos,
+            CliInspectorPlatform::Windows,
+        ]
+    };
+
+    #[test]
+    fn platforms_off_this_machine_require_the_target_and_the_token() {
         for (target, token) in [
             (None, None),
             (Some("127.0.0.1:47123"), None),
             (None, Some("token")),
         ] {
-            let error = require_device_endpoint(InspectorPlatform::Android, target, token)
-                .expect_err("an Android inspector cannot discover its endpoint");
-            assert_eq!(error.to_string(), ANDROID_ERROR);
+            for &platform in REMOTE_PLATFORMS {
+                let error = require_device_endpoint(platform, target, token)
+                    .expect_err("an application off this machine advertises nothing on it");
+                assert_eq!(error.to_string(), expected_error(platform));
+            }
         }
-        require_device_endpoint(
-            InspectorPlatform::Android,
-            Some("127.0.0.1:47123"),
-            Some("token"),
-        )
-        .expect("both flags given");
     }
 
     #[test]
-    fn desktop_platforms_may_discover_their_endpoint() {
-        for platform in [InspectorPlatform::Macos, InspectorPlatform::IosSimulator] {
+    fn a_remote_platform_accepts_both_flags() {
+        for &platform in REMOTE_PLATFORMS {
+            require_device_endpoint(platform, Some("10.0.0.2:47123"), Some("token"))
+                .expect("both flags given");
+        }
+    }
+
+    #[test]
+    fn platforms_on_this_machine_may_be_discovered() {
+        for platform in [CliInspectorPlatform::Local, host_desktop()] {
             require_device_endpoint(platform, None, None).expect("discovery is available");
+        }
+    }
+
+    #[test]
+    fn the_host_desktop_is_the_only_desktop_platform_on_this_machine() {
+        for platform in [
+            CliInspectorPlatform::Macos,
+            CliInspectorPlatform::Linux,
+            CliInspectorPlatform::Windows,
+        ] {
+            assert_eq!(
+                platform.can_run_on_this_machine(),
+                platform == host_desktop(),
+                "{} should match the host iff it is the host's OS",
+                platform.name()
+            );
         }
     }
 }
