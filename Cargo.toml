@@ -32,6 +32,9 @@ members = [
     # The Android debug app's Rust half is a package nested inside the
     # backend's directory, so it joins the workspace explicitly.
     "backends/hydrolysis/android/test-app/rust",
+    # Standalone applications built on the framework — each carries its own
+    # binary target under `apps/`.
+    "apps/inspector",
     # The engine family under `graphics/` (#1449): the `cherenkov` crates in
     # `graphics/cherenkov/` and the `filtrate` family in `graphics/filtrate/`.
     # The stand-alone apps under `graphics/cherenkov/gpu/examples/` and the
@@ -284,7 +287,7 @@ waterui-assets-core = { version = "0.5.1", path = "components/assets/core" }
 waterui-assets-planner = { version = "0.5.1", path = "components/assets/planner" }
 waterui-assets-macros = { version = "0.5.1", path = "components/assets/macros" }
 waterui-inspector-protocol = { version = "0.5.1", path = "components/devtools/inspector/protocol" }
-waterui-inspector-app = { version = "0.5.2", path = "components/devtools/inspector/app" }
+waterui-inspector-app = { version = "0.5.2", path = "apps/inspector" }
 waterui-preview-protocol = { version = "0.5.1", path = "components/devtools/preview/protocol" }
 waterui-mcp-protocol = { version = "0.5.1", path = "components/devtools/mcp/protocol" }
 waterui-mcp = { version = "0.5.1", path = "components/devtools/mcp/server" }

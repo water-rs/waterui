@@ -72,7 +72,6 @@ pub fn scaffold_template_digest() -> String {
         &embedded::HYDROLYSIS,
         &embedded::PREVIEW,
         &embedded::APPLE_PREVIEW_MODULE,
-        &embedded::INSPECTOR,
         &embedded::APPLE_COMPANION,
         &embedded::TUI,
     ] {
@@ -107,7 +106,6 @@ pub mod embedded {
     pub static PREVIEW: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/preview");
     pub static APPLE_PREVIEW_MODULE: Dir<'_> =
         include_dir!("$CARGO_MANIFEST_DIR/src/templates/apple_preview_module");
-    pub static INSPECTOR: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/inspector");
     pub static TUI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/tui");
     pub static WINUI: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates/winui");
     pub static ROOT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/src/templates");
@@ -1305,7 +1303,6 @@ enum TemplateNamespace {
     HydrolysisAndroidPreview,
     HydrolysisAndroidShared,
     HydrolysisAndroidEmbedded,
-    Inspector,
     Preview,
     ApplePreviewModule,
     Tui,
@@ -1325,7 +1322,6 @@ impl TemplateNamespace {
             Self::HydrolysisAndroidPreview => "src/templates/hydrolysis_android_preview",
             Self::HydrolysisAndroidShared => "src/templates/hydrolysis_android_shared",
             Self::HydrolysisAndroidEmbedded => "src/templates/hydrolysis_android_embedded",
-            Self::Inspector => "src/templates/inspector",
             Self::Preview => "src/templates/preview",
             Self::ApplePreviewModule => "src/templates/apple_preview_module",
             Self::Tui => "src/templates/tui",
@@ -8358,209 +8354,6 @@ pub mod apple_preview_module {
             let mut dependency = ctx.framework.dependency("waterui-preview");
             dependency.optional = true;
             Ok(dependency)
-        }
-    }
-}
-
-/// Inspector app templates.
-pub mod inspector {
-    use super::{
-        BTreeSet, Path, TemplateContext, TemplateNamespace, dependency_path, embedded, io,
-        scaffold_dir, write_support_cargo_toml,
-    };
-
-    /// Hash of embedded inspector template files and the programmatically
-    /// generated scaffold inputs (see `generated_profiles_fingerprint`).
-    /// `project_packages` is the set the inspector support manifest writes —
-    /// its own crate is the only project package in its graph.
-    #[must_use]
-    pub fn template_fingerprint(project_packages: &BTreeSet<String>) -> String {
-        use sha2::Digest as _;
-
-        let mut hasher = sha2::Sha256::new();
-        let mut dirs_to_process = vec![&embedded::INSPECTOR];
-        while let Some(current_dir) = dirs_to_process.pop() {
-            for file in current_dir.files() {
-                hasher.update(file.path().to_string_lossy().as_bytes());
-                hasher.update(file.contents());
-            }
-            for subdir in current_dir.dirs() {
-                dirs_to_process.push(subdir);
-            }
-        }
-        hasher.update(super::generated_profiles_fingerprint(project_packages).as_bytes());
-        hex::encode(hasher.finalize())
-    }
-
-    /// Write inspector app templates to the given directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if file operations fail.
-    pub async fn scaffold(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        generate_cargo_toml(base_dir, ctx).await?;
-        scaffold_dir(
-            TemplateNamespace::Inspector,
-            &embedded::INSPECTOR,
-            base_dir,
-            ctx,
-        )
-        .await
-    }
-
-    /// Path of the Inspector application crate inside a `WaterUI` checkout.
-    ///
-    /// The Inspector's user interface is a real crate rather than template
-    /// text, so it is compiled, linted, and tested with the rest of the
-    /// workspace. The scaffolded app is a shim that depends on it.
-    const INSPECTOR_APP_CRATE: &str = "components/devtools/inspector/app";
-
-    async fn generate_cargo_toml(base_dir: &Path, ctx: &TemplateContext) -> io::Result<()> {
-        use std::collections::BTreeMap;
-
-        let waterui_path = ctx.waterui_path.as_ref().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Inspector support app requires a local waterui_path",
-            )
-        })?;
-
-        let inspector_app_path = waterui_path.join(INSPECTOR_APP_CRATE);
-        if !inspector_app_path.exists() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotFound,
-                format!(
-                    "Inspector support app requires {} (missing {INSPECTOR_APP_CRATE})",
-                    waterui_path.display()
-                ),
-            ));
-        }
-
-        let mut dependencies = BTreeMap::new();
-        dependencies.insert("waterui".to_string(), dependency_path(waterui_path));
-        dependencies.insert(
-            "waterui-inspector-app".to_string(),
-            dependency_path(&inspector_app_path),
-        );
-
-        // The companion scaffold generated alongside this app declares
-        // `dev = ["<app>/dev"]`, so an app without a `dev` feature cannot be
-        // resolved at all: cargo fails the whole metadata query before anything
-        // is built. Every generated project carries this feature; the support
-        // app is no different.
-        let features = BTreeMap::from([(
-            "dev".to_string(),
-            vec!["waterui/dynamic_linking".to_string()],
-        )]);
-
-        write_support_cargo_toml(
-            base_dir,
-            ctx.crate_name.as_str(),
-            features,
-            dependencies,
-            ctx.waterui_path.as_deref(),
-            &ctx.framework,
-            ctx.project_packages.as_ref(),
-        )
-        .await
-    }
-
-    #[cfg(test)]
-    mod tests {
-        /// The scaffolder resolves the Inspector crate by path inside a
-        /// `waterui_path` checkout, so a move that nobody updates here breaks
-        /// `water inspector` silently — which is exactly what happened when the
-        /// crate moved under `devtools/`. The checkout is the enclosing
-        /// workspace root, so the probe is a path check — but it still
-        /// asserts the framework tree layout, so it stays nightly-only.
-        #[test]
-        #[ignore = "reads the enclosing workspace checkout"]
-        fn the_inspector_app_crate_path_exists() {
-            let checkout = crate::pinned_framework::checkout();
-            let crate_path = checkout.join(super::INSPECTOR_APP_CRATE);
-            assert!(
-                crate_path.join("Cargo.toml").is_file(),
-                "inspector app crate is not at {}",
-                crate_path.display()
-            );
-        }
-
-        /// The support crate is a plain Rust library: the generated backend
-        /// crate is what each platform links, so the support crate declares
-        /// no backend dependency of its own and exports no entry point —
-        /// under Hydrolysis on Android such an export would collide with the
-        /// launcher's `JNI_OnLoad`.
-        #[test]
-        fn the_support_crate_declares_no_backend_dependency() {
-            smol::block_on(async {
-                let temporary = tempfile::tempdir().expect("tempdir");
-                let checkout = temporary.path().join("waterui");
-                std::fs::create_dir_all(checkout.join(super::INSPECTOR_APP_CRATE))
-                    .expect("inspector app crate dir");
-                let app = temporary.path().join("app");
-                let ctx = crate::templates::TemplateContext::for_support_app(
-                    &crate::toolchain::Host::current(),
-                    crate::templates::SupportAppIdentity {
-                        display_name: "WaterUI Inspector".to_string(),
-                        crate_name: crate::project_types::CrateName::try_from("waterui_inspector")
-                            .expect("crate name"),
-                        bundle_identifier: crate::project_types::BundleIdentifier::try_from(
-                            "dev.waterui.inspector",
-                        )
-                        .expect("bundle identifier"),
-                    },
-                    Some(checkout),
-                    &crate::framework::test_fixtures::stable_framework(),
-                    false,
-                    None,
-                    &crate::templates::LocalBackendSources::default(),
-                )
-                .with_project_packages(std::collections::BTreeSet::from([
-                    "waterui_inspector".to_string()
-                ]));
-
-                super::scaffold(&app, &ctx)
-                    .await
-                    .expect("the inspector support crate scaffolds");
-
-                let cargo_toml =
-                    std::fs::read_to_string(app.join("Cargo.toml")).expect("Cargo.toml");
-                let manifest = cargo_toml
-                    .parse::<toml::Table>()
-                    .expect("Cargo.toml parses");
-                assert!(
-                    manifest["dependencies"]
-                        .get("waterui-inspector-app")
-                        .is_some(),
-                    "{cargo_toml}"
-                );
-                assert!(!cargo_toml.contains("waterui-apple"), "{cargo_toml}");
-                assert!(manifest.get("target").is_none(), "{cargo_toml}");
-
-                let lib = std::fs::read_to_string(app.join("src/lib.rs")).expect("lib.rs");
-                assert!(lib.contains("waterui_inspector_app::app(env)"), "{lib}");
-                assert!(!lib.contains("export_app!"), "{lib}");
-            });
-        }
-
-        /// The companion scaffold generated beside this app declares
-        /// `dev = ["<app>/dev"]`. An app without that feature cannot be
-        /// resolved at all — cargo fails the metadata query and `water
-        /// inspector` dies before building anything, which is exactly what it
-        /// did until this was noticed.
-        #[test]
-        fn the_generated_app_declares_the_feature_its_companion_scaffold_requires() {
-            let generated = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("src/project_model/templates.rs");
-            let source = std::fs::read_to_string(generated).expect("the module is readable");
-            let inspector = source
-                .split("pub mod inspector {")
-                .nth(1)
-                .expect("the inspector template module exists");
-            assert!(
-                inspector.contains("\"dev\".to_string()"),
-                "the inspector support app is generated without a `dev` feature"
-            );
         }
     }
 }

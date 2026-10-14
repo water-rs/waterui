@@ -4,15 +4,62 @@ use std::{env, path::PathBuf, process::Command};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=WATERUI_INSPECTOR_PROTOCOL_COMMIT");
-    println!("cargo:rerun-if-env-changed=WATERUI_CLI_COMMIT");
+    println!("cargo:rerun-if-env-changed=WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE");
 
-    let commit = env::var("WATERUI_INSPECTOR_PROTOCOL_COMMIT")
-        .ok()
-        .or_else(|| env::var("WATERUI_CLI_COMMIT").ok())
-        .or_else(resolve_git_commit)
-        .unwrap_or_else(|| "unknown".to_string());
+    let crate_dir = PathBuf::from(
+        env::var_os("CARGO_MANIFEST_DIR").expect("Cargo did not provide CARGO_MANIFEST_DIR"),
+    );
+    let published_metadata = crate_dir.join(".cargo_vcs_info.json");
+    let published = match published_metadata.metadata() {
+        Ok(metadata) => {
+            assert!(
+                metadata.is_file(),
+                "Cargo package provenance must be a file"
+            );
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => panic!("Failed to inspect Cargo package provenance: {error}"),
+    };
+    if published {
+        println!("cargo:rerun-if-changed={}", published_metadata.display());
+    }
+    let release = match env::var("WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE") {
+        Ok(mode) if mode == "release" => true,
+        Ok(mode) if mode == "checkout" => false,
+        Ok(mode) => panic!(
+            "WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE must be release or checkout, received {mode}"
+        ),
+        Err(env::VarError::NotPresent) => published,
+        Err(error) => panic!("Invalid WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE: {error}"),
+    };
 
-    println!("cargo:rustc-env=WATERUI_INSPECTOR_PROTOCOL_COMMIT={commit}");
+    let explicit_commit = match env::var("WATERUI_INSPECTOR_PROTOCOL_COMMIT") {
+        Ok(commit) => Some(commit),
+        Err(env::VarError::NotPresent) => None,
+        Err(error) => panic!("Invalid WATERUI_INSPECTOR_PROTOCOL_COMMIT: {error}"),
+    };
+    if release {
+        assert!(
+            explicit_commit.is_none(),
+            "A release protocol build must not override its checkout commit"
+        );
+        return;
+    }
+
+    let commit = explicit_commit.or_else(resolve_git_commit).expect(
+        "An unreleased Inspector protocol requires a Git checkout; \
+         release artifacts must explicitly select the release build mode",
+    );
+    assert!(
+        commit.len() == 40 && commit.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "Inspector protocol checkout identity must be a full Git commit"
+    );
+
+    println!(
+        "cargo:rustc-env=WATERUI_INSPECTOR_PROTOCOL_COMMIT={}",
+        commit.to_ascii_lowercase()
+    );
 }
 
 fn resolve_git_commit() -> Option<String> {
@@ -26,7 +73,6 @@ fn resolve_git_commit() -> Option<String> {
             "--git-path",
             "HEAD",
             "--git-common-dir",
-            "--short=12",
             "HEAD",
         ])
         .output()

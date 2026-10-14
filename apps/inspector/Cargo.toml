@@ -1,0 +1,70 @@
+[package]
+name = "waterui-inspector-app"
+version = "0.5.2"
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme = "../../README.md"
+repository.workspace = true
+publish = false
+description = "The WaterUI Inspector, written in WaterUI"
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+waterui = { workspace = true, features = ["gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui-chart.workspace = true
+waterui-inspector-protocol.workspace = true
+waterui-icons-lucide.workspace = true
+waterui-controls.workspace = true
+smol = "2.0.2"
+futures-lite = "2.6"
+async-channel.workspace = true
+tracing.workspace = true
+
+# `desktop` gates the `waterui-inspector` binary: enabling it pulls the
+# desktop runner, theme, and the CLI/serialization crates it needs, so
+# mobile/wasm workspace checks never build the desktop binary.
+[features]
+desktop = [
+    "dep:clap",
+    "dep:hydrolysis",
+    "dep:hydrolysis-m3",
+    "dep:serde_json",
+    "dep:tracing-subscriber",
+]
+
+[dependencies.hydrolysis]
+workspace = true
+features = ["winit"]
+optional = true
+
+[dependencies.hydrolysis-m3]
+workspace = true
+optional = true
+
+[dependencies.clap]
+version = "4"
+features = ["derive"]
+optional = true
+
+[dependencies.serde_json]
+workspace = true
+optional = true
+
+[dependencies.tracing-subscriber]
+workspace = true
+optional = true
+
+[[bin]]
+name = "waterui-inspector"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[dev-dependencies]
+waterui-testing.workspace = true
+hydrolysis-m3.workspace = true
+
+[lints]
+workspace = true

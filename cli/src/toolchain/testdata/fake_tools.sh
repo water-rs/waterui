@@ -298,6 +298,15 @@ cargo)
                 [ -e "$_dest" ] || /bin/cp "$0" "$_dest"
             fi
             ;;
+        *)
+            # Any other subcommand (build, rustc, check) records its argv
+            # and the inspector identity mode — the build fails for want of
+            # an artifact, and the log is the assertion.
+            if [ -n "${WATERUI_FAKE_CARGO_LOG-}" ]; then
+                printf 'argv: %s\n' "$*" >> "$WATERUI_FAKE_CARGO_LOG"
+                printf 'mode: %s\n' "${WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE-}" >> "$WATERUI_FAKE_CARGO_LOG"
+            fi
+            ;;
     esac
     exit 0
     ;;
@@ -457,6 +466,10 @@ adb)
             # stages the port its fake host listener holds.
             respond_or_empty ADB_FORWARD_PORT
             ;;
+        *"forward --remove "*)
+            (respond_or_empty ADB_FORWARD_REMOVE)
+            exit "${WATERUI_FAKE_ADB_FORWARD_REMOVE_STATUS:-0}"
+            ;;
         *logcat*)
             respond_or_empty ADB_LOGCAT
             ;;
@@ -554,6 +567,7 @@ git)
     done
     case "$*" in
         *"rev-parse --is-shallow-repository"*) respond GIT_SHALLOW ;;
+        *"rev-parse HEAD") respond GIT_HEAD ;;
         *"rev-parse --verify refs/remotes/origin/dev"*) respond GIT_HEAD ;;
         *"rev-parse --verify"*) respond GIT_REVISION ;;
         *"--unshallow"*) : > .fake-git-unshallowed ;;

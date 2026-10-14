@@ -39,7 +39,7 @@ pub fn initialize_for_preview() -> Option<InspectorRuntime> {
 /// environment asked for one, for [`crate::entry`] to install.
 fn initialize_inner(stderr: bool) -> Option<InspectorRuntime> {
     ignore_sigpipe();
-    let inspector = waterui::inspector::maybe_init_from_env("apple");
+    let inspector = waterui::inspector::maybe_init_from_env("apple", waterui::FRAMEWORK_VERSION);
 
     std::panic::set_hook(Box::new(|info| {
         tracing_panic::panic_hook(info);

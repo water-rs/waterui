@@ -15,7 +15,8 @@ use std::thread;
 
 use waterui_inspector_protocol::transport::{read_frame_blocking, write_frame_blocking};
 use waterui_inspector_protocol::{
-    Channel, ChannelSet, InspectorClientMessage, InspectorServerMessage, TargetInfo, protocol_info,
+    Channel, ChannelSet, InspectorBuildIdentity, InspectorClientMessage, InspectorServerMessage,
+    TargetInfo,
 };
 
 use super::hub::{ClientId, Dispatch, EventHub};
@@ -32,6 +33,7 @@ pub(super) fn accept_loop(
     listener: &TcpListener,
     hub: &Arc<EventHub>,
     token: &str,
+    identity: &InspectorBuildIdentity,
     target: &TargetInfo,
     available: ChannelSet,
 ) {
@@ -49,8 +51,8 @@ pub(super) fn accept_loop(
         };
 
         let peer = socket.peer_addr().ok();
-        match handshake(socket, token, target, available) {
-            Ok((socket, channels)) => {
+        match handshake(socket, token, identity, target, available) {
+            Ok(Some((socket, channels))) => {
                 tracing::debug!(
                     target: "waterui::inspector",
                     peer = ?peer,
@@ -58,6 +60,15 @@ pub(super) fn accept_loop(
                     "Inspector connected"
                 );
                 spawn_client(hub, socket, channels);
+            }
+            // An `Identify` was answered and the peer closed cleanly —
+            // answered, not rejected.
+            Ok(None) => {
+                tracing::debug!(
+                    target: "waterui::inspector",
+                    peer = ?peer,
+                    "Answered an inspector identity query"
+                );
             }
             Err(error) => {
                 tracing::warn!(
@@ -75,25 +86,46 @@ pub(super) fn accept_loop(
 fn handshake(
     mut socket: TcpStream,
     expected_token: &str,
+    identity: &InspectorBuildIdentity,
     target: &TargetInfo,
     available: ChannelSet,
-) -> io::Result<(TcpStream, ChannelSet)> {
+) -> io::Result<Option<(TcpStream, ChannelSet)>> {
     socket.set_nodelay(true)?;
     // A peer that connects and says nothing must not hold a thread forever.
     socket.set_read_timeout(Some(super::HANDSHAKE_TIMEOUT))?;
 
-    let hello: InspectorClientMessage = read_frame_blocking(&mut socket)?;
-    let InspectorClientMessage::Hello {
-        token,
-        protocol,
-        channels,
-    } = hello
-    else {
-        return Err(reject(
-            &mut socket,
-            io::ErrorKind::InvalidInput,
-            "expected a Hello message",
-        ));
+    let first: InspectorClientMessage = read_frame_blocking(&mut socket)?;
+    let (token, peer, channels) = match first {
+        InspectorClientMessage::Identify { token } => {
+            // Answer the endpoint-first query and close — no client
+            // registration, no subscription, the socket is done.
+            if token != expected_token {
+                return Err(reject(
+                    &mut socket,
+                    io::ErrorKind::PermissionDenied,
+                    "invalid inspector token",
+                ));
+            }
+            write_frame_blocking(
+                &mut socket,
+                &InspectorServerMessage::Identity {
+                    identity: identity.clone(),
+                },
+            )?;
+            return Ok(None);
+        }
+        InspectorClientMessage::Hello {
+            token,
+            identity,
+            channels,
+        } => (token, identity, channels),
+        _ => {
+            return Err(reject(
+                &mut socket,
+                io::ErrorKind::InvalidInput,
+                "expected a Hello or Identify message",
+            ));
+        }
     };
 
     if token != expected_token {
@@ -104,18 +136,15 @@ fn handshake(
         ));
     }
 
-    if !protocol.is_compatible() {
-        // Two builds of the protocol disagree about the wire format. Refusing
-        // here produces one clear error instead of arbitrary decode failures
-        // later.
+    if peer != *identity {
+        // Two builds disagree about more than the wire format — a foreign
+        // framework version is a mismatch even when the protocol version
+        // coincides. Refusing here produces one clear error instead of
+        // arbitrary decode failures later.
         return Err(reject(
             &mut socket,
             io::ErrorKind::InvalidData,
-            &format!(
-                "inspector protocol mismatch: inspector is {}, target is {}",
-                protocol.build_commit,
-                protocol_info().build_commit
-            ),
+            &format!("inspector build mismatch: inspector is {peer}, target is {identity}"),
         ));
     }
 
@@ -123,13 +152,13 @@ fn handshake(
     write_frame_blocking(
         &mut socket,
         &InspectorServerMessage::Welcome {
-            protocol: protocol_info(),
+            identity: identity.clone(),
             target: target.clone(),
             available,
         },
     )?;
 
-    Ok((socket, channels & available))
+    Ok(Some((socket, channels & available)))
 }
 
 /// Tells the peer why it was rejected, then reports the same reason locally.
@@ -193,6 +222,16 @@ fn read_control_messages(hub: &EventHub, client: ClientId, mut socket: TcpStream
                     target: "waterui::inspector",
                     "Inspector sent a second Hello; ignoring"
                 );
+            }
+            Ok(InspectorClientMessage::Identify { .. }) => {
+                // Identity queries live at handshake time only — an
+                // established client that asks again is speaking nonsense
+                // (its token is deliberately not logged).
+                tracing::warn!(
+                    target: "waterui::inspector",
+                    "Inspector sent Identify on an established connection; closing"
+                );
+                return;
             }
             Err(error) => {
                 tracing::debug!(
@@ -311,4 +350,151 @@ fn update_subscription(hub: &EventHub, clients: &[Client], available: ChannelSet
         .fold(ChannelSet::empty(), |set, client| set | client.channels);
     hub.set_subscribed(union & available);
     hub.set_client_count(clients.len());
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use waterui_inspector_protocol::build_identity;
+
+    /// A real connected pair of stream sockets: the end the server side of the
+    /// fixture hands to `handshake`, and the client's end.
+    ///
+    /// `connect_timeout` queues the connection without an accept thread; the
+    /// listener's backlog answers `accept` once the client is waiting. Both
+    /// streams carry I/O timeouts so nothing inside `handshake` or the client
+    /// can hang the test.
+    fn socket_pair() -> (TcpStream, TcpStream) {
+        const IO_TIMEOUT: Duration = Duration::from_secs(5);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("fixture listener");
+        let addr = listener.local_addr().expect("listener address");
+        let client = TcpStream::connect_timeout(&addr, IO_TIMEOUT).expect("client connect");
+        let server_end = listener.accept().expect("accepted").0;
+        for stream in [&client, &server_end] {
+            stream
+                .set_read_timeout(Some(IO_TIMEOUT))
+                .expect("read timeout");
+            stream
+                .set_write_timeout(Some(IO_TIMEOUT))
+                .expect("write timeout");
+        }
+        (server_end, client)
+    }
+
+    fn fixture_target() -> TargetInfo {
+        TargetInfo {
+            pid: 0,
+            name: String::from("fixture"),
+            backend: String::from("test"),
+        }
+    }
+
+    /// Drives `handshake` on its own thread — it owns the socket and blocks —
+    /// then writes one Hello as a client would and returns the reply.
+    fn run_handshake(
+        identity: InspectorBuildIdentity,
+        hello: &InspectorClientMessage,
+    ) -> (
+        io::Result<Option<(TcpStream, ChannelSet)>>,
+        InspectorServerMessage,
+    ) {
+        let (server_end, mut client) = socket_pair();
+        let server = thread::spawn(move || {
+            handshake(
+                server_end,
+                "token",
+                &identity,
+                &fixture_target(),
+                ChannelSet::default_subscription(),
+            )
+        });
+        write_frame_blocking(&mut client, hello).expect("hello frame");
+        let reply: InspectorServerMessage = read_frame_blocking(&mut client).expect("server reply");
+        (server.join().expect("handshake thread"), reply)
+    }
+
+    #[test]
+    fn a_foreign_framework_version_is_rejected() {
+        let server_identity = build_identity("0.0.1");
+        // Same protocol build as the caller, but a foreign framework version —
+        // the handshake must reject even though the wire format matches.
+        let hello = InspectorClientMessage::Hello {
+            token: String::from("token"),
+            identity: InspectorBuildIdentity {
+                framework_version: String::from("0.0.2"),
+                protocol: build_identity("0.0.1").protocol,
+            },
+            channels: ChannelSet::default_subscription(),
+        };
+        let (result, reply) = run_handshake(server_identity, &hello);
+        assert!(result.is_err(), "a foreign build must not handshake");
+        match reply {
+            InspectorServerMessage::Error { message } => {
+                assert!(message.contains("build mismatch"), "{message}");
+            }
+            other => panic!("expected an Error reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_matching_identity_receives_the_welcome_identity() {
+        let server_identity = build_identity("0.0.1");
+        let hello = InspectorClientMessage::Hello {
+            token: String::from("token"),
+            identity: build_identity("0.0.1"),
+            channels: ChannelSet::default_subscription(),
+        };
+        let (result, reply) = run_handshake(server_identity.clone(), &hello);
+        assert!(result.expect("a matching identity handshakes").is_some());
+        match reply {
+            InspectorServerMessage::Welcome { identity, .. } => {
+                assert_eq!(identity, server_identity);
+            }
+            other => panic!("expected a Welcome reply, got {other:?}"),
+        }
+    }
+
+    /// An `Identify` with the session's token is answered with the server's
+    /// own build identity and no session — the socket is done, the client
+    /// was never registered.
+    #[test]
+    fn a_valid_identify_is_answered_without_a_session() {
+        let server_identity = build_identity("0.0.1");
+        let identify = InspectorClientMessage::Identify {
+            token: String::from("token"),
+        };
+        let (result, reply) = run_handshake(server_identity.clone(), &identify);
+        assert!(result.expect("a valid Identify answers").is_none(),);
+        match reply {
+            InspectorServerMessage::Identity { identity } => {
+                assert_eq!(identity, server_identity);
+            }
+            other => panic!("expected an Identity reply, got {other:?}"),
+        }
+    }
+
+    /// An `Identify` with a wrong token is refused the same way a wrong
+    /// `Hello` token is — an Error, never the identity.
+    #[test]
+    fn a_wrong_token_identify_is_refused() {
+        let server_identity = build_identity("0.0.1");
+        let identify = InspectorClientMessage::Identify {
+            token: String::from("not-the-token"),
+        };
+        let (result, reply) = run_handshake(server_identity, &identify);
+        let error = result.expect_err("a wrong token is refused");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        match reply {
+            InspectorServerMessage::Error { message } => {
+                assert_eq!(message, "invalid inspector token");
+                assert!(
+                    !message.contains("not-the-token"),
+                    "the refusal must not echo the credential: {message}"
+                );
+            }
+            other => panic!("expected an Error reply, got {other:?}"),
+        }
+    }
 }

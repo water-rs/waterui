@@ -4,9 +4,10 @@
 //! to a running app over a loopback socket and shows its frames, view tree,
 //! main-thread occupancy, logs, and reactive graph.
 //!
-//! This crate is a real library rather than a scaffolding template, so it is
-//! compiled, linted, and tested along with the rest of the workspace. A devtool
-//! that the compiler cannot see is a devtool that rots.
+//! This crate is the internal UI library of the standalone `waterui-inspector`
+//! application — application code, not a reusable framework component. It stays
+//! a real library rather than a scaffolding template so it is compiled, linted,
+//! and tested along with the rest of the workspace.
 
 use waterui::app::App;
 use waterui::prelude::*;
