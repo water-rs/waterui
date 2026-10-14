@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use waterui::inspector::protocol::transport::{read_frame_blocking, write_frame_blocking};
 use waterui::inspector::protocol::{
-    ChannelSet, InspectorClientMessage, InspectorServerMessage, NodeId, protocol_info,
+    ChannelSet, InspectorClientMessage, InspectorServerMessage, NodeId, build_identity,
 };
 use waterui::inspector::{InspectorServerConfig, init_with_config};
 
@@ -24,17 +24,25 @@ fn config() -> InspectorServerConfig {
         task_window: Duration::from_millis(100),
         stall_ratio: 0.9,
         app_name: String::from("test"),
+        framework_version: waterui::FRAMEWORK_VERSION.to_string(),
     }
 }
 
 /// Connects and completes the handshake, returning the stream to read from.
 fn attach(addr: std::net::SocketAddr) -> TcpStream {
-    let mut socket = TcpStream::connect(addr).expect("the endpoint accepts connections");
+    let mut socket =
+        TcpStream::connect_timeout(&addr, Duration::from_secs(5)).expect("the endpoint accepts");
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("a read timeout can be set");
+    socket
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .expect("a write timeout can be set");
     write_frame_blocking(
         &mut socket,
         &InspectorClientMessage::Hello {
             token: String::from("test-token"),
-            protocol: protocol_info(),
+            identity: build_identity(waterui::FRAMEWORK_VERSION),
             channels: ChannelSet::empty(),
         },
     )
@@ -42,10 +50,10 @@ fn attach(addr: std::net::SocketAddr) -> TcpStream {
 
     let welcome: InspectorServerMessage =
         read_frame_blocking(&mut socket).expect("the endpoint answers the handshake");
-    assert!(
-        matches!(welcome, InspectorServerMessage::Welcome { .. }),
-        "expected a welcome, got {welcome:?}"
-    );
+    let InspectorServerMessage::Welcome { identity, .. } = welcome else {
+        panic!("expected a welcome, got {welcome:?}");
+    };
+    assert_eq!(identity, build_identity(waterui::FRAMEWORK_VERSION));
     socket
 }
 
