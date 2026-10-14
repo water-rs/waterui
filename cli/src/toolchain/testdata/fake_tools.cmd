@@ -314,6 +314,13 @@ if "%1"=="metadata" (call :respond CARGO_METADATA & exit /b !errorlevel!)
 if "%1"=="tree" goto :cargo_tree
 if "%1"=="install" goto :cargo_install
 if "%1"=="binstall" goto :cargo_install
+rem Any other subcommand (rustc, build, check) records its argv and the
+rem inspector identity mode the caller stamped - the build fails for want
+rem of an artifact, and the log is the assertion.
+if defined WATERUI_FAKE_CARGO_LOG (
+    >>"%WATERUI_FAKE_CARGO_LOG%" echo argv: %*
+    >>"%WATERUI_FAKE_CARGO_LOG%" echo mode: !WATERUI_INSPECTOR_PROTOCOL_BUILD_MODE!
+)
 exit /b 0
 
 rem The graph is resolved per build target: `cargo tree` answers
