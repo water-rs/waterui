@@ -33,8 +33,7 @@ fn main() -> std::process::ExitCode {
     let args = Args::parse();
     if args.identity {
         // Headless metadata: report before any environment or window exists.
-        let identity =
-            waterui_inspector_protocol::build_identity(waterui::FRAMEWORK_VERSION);
+        let identity = waterui_inspector_protocol::build_identity(waterui::FRAMEWORK_VERSION);
         if let Err(error) = write_identity(&mut std::io::stdout().lock(), &identity) {
             tracing::error!(%error, "failed to write the inspector identity");
             return std::process::ExitCode::FAILURE;
