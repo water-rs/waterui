@@ -1220,7 +1220,6 @@ fn fuse_enclosed_filters(
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<FilteredView>(|filtered, ctx| {
         let mtm = ctx.mtm();
-        let runtime = crate::gpu_runtime::runtime(ctx.env());
         let (content, chained) = fuse_enclosed_filters(filtered, ctx);
         // `NativeFilteredView` on AppKit: a complete native `CIFilter`
         // plan mounts the content visibly on `CALayer.filters` — no
@@ -1230,6 +1229,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         if let Some(plan) = crate::components::native_filter::plan(&chained) {
             return crate::components::native_filter::mount(mtm, ctx, content, chained, &plan);
         }
+        let runtime = crate::gpu_runtime::runtime(ctx.env());
         let (sources, guard_list): (Vec<AnyEffect>, Vec<ParamGuards>) = chained.into_iter().unzip();
         // The chain presents outermost-last: effects render content-adjacent
         // first, so reverse the collection order.
