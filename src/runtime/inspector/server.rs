@@ -112,9 +112,8 @@ fn handshake(
             &mut socket,
             io::ErrorKind::InvalidData,
             &format!(
-                "inspector protocol mismatch: inspector is {}, target is {}",
-                protocol.build_commit,
-                protocol_info().build_commit
+                "inspector protocol mismatch: inspector is {protocol}, target is {}",
+                protocol_info()
             ),
         ));
     }

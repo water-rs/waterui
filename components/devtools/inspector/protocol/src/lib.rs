@@ -15,6 +15,8 @@
 //! that silently means "events I happened to receive" is worse than no counter,
 //! because it is wrong exactly when it matters.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 mod channel;
@@ -30,30 +32,61 @@ pub use event::{
     TreeUpdate,
 };
 
-/// Build commit of this protocol, used to reject mismatched peers.
-pub const INSPECTOR_PROTOCOL_COMMIT: &str = env!("WATERUI_INSPECTOR_PROTOCOL_COMMIT");
+/// Version of the protocol crate this build carries.
+pub const INSPECTOR_PROTOCOL_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Git commit of the checkout this build came from.
+///
+/// `None` in a release build: a published protocol identifies itself by its
+/// version alone, and the build script refuses to stamp a checkout without a
+/// full commit or a release with an override.
+pub const INSPECTOR_PROTOCOL_COMMIT: Option<&str> =
+    option_env!("WATERUI_INSPECTOR_PROTOCOL_COMMIT");
 
 /// Returns protocol metadata for handshakes.
 #[must_use]
 pub fn protocol_info() -> InspectorProtocolInfo {
     InspectorProtocolInfo {
-        build_commit: INSPECTOR_PROTOCOL_COMMIT.to_string(),
+        version: INSPECTOR_PROTOCOL_VERSION.to_string(),
+        build_commit: INSPECTOR_PROTOCOL_COMMIT.map(str::to_string),
     }
 }
 
 /// Protocol metadata exchanged during the handshake.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InspectorProtocolInfo {
-    /// Build commit of the peer's protocol crate.
-    pub build_commit: String,
+    /// Protocol crate version of the peer.
+    pub version: String,
+    /// Checkout commit of the peer's protocol crate; `None` in a release build.
+    pub build_commit: Option<String>,
 }
 
 impl InspectorProtocolInfo {
-    /// Whether this peer speaks the same protocol build as the local crate.
+    /// Whether this peer speaks exactly the same protocol build as the local
+    /// crate — version and checkout commit, with no wildcards.
     #[must_use]
     pub fn is_compatible(&self) -> bool {
-        self.build_commit == INSPECTOR_PROTOCOL_COMMIT
+        *self == protocol_info()
     }
+}
+
+impl fmt::Display for InspectorProtocolInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.version)?;
+        if let Some(commit) = &self.build_commit {
+            write!(f, " ({commit})")?;
+        }
+        Ok(())
+    }
+}
+
+/// Identity an Inspector application reports about itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectorClientIdentity {
+    /// Version of the compiled `waterui` facade the app links.
+    pub framework_version: String,
+    /// Protocol identity of this build.
+    pub protocol: InspectorProtocolInfo,
 }
 
 /// Description of the application being inspected.
@@ -201,9 +234,36 @@ mod tests {
     #[test]
     fn a_foreign_protocol_build_is_incompatible() {
         let foreign = InspectorProtocolInfo {
-            build_commit: String::from("not-this-build"),
+            version: super::INSPECTOR_PROTOCOL_VERSION.to_string(),
+            build_commit: Some(String::from("0000000000000000000000000000000000000000")),
         };
         assert!(!foreign.is_compatible());
         assert!(super::protocol_info().is_compatible());
+    }
+
+    #[test]
+    fn a_peer_at_a_different_version_is_incompatible() {
+        let local = super::protocol_info();
+        let older = InspectorProtocolInfo {
+            version: "0.0.0".to_string(),
+            build_commit: local.build_commit.clone(),
+        };
+        assert!(!older.is_compatible());
+    }
+
+    #[test]
+    fn a_release_peer_and_a_checkout_peer_never_agree() {
+        let local = super::protocol_info();
+        // The opposite build flavour at the same version still differs: a
+        // release has no commit, a checkout does, and neither is a wildcard.
+        let flipped = InspectorProtocolInfo {
+            version: local.version.clone(),
+            build_commit: if local.build_commit.is_some() {
+                None
+            } else {
+                Some(String::from("0000000000000000000000000000000000000000"))
+            },
+        };
+        assert!(!flipped.is_compatible());
     }
 }

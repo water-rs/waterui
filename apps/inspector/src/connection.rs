@@ -111,10 +111,16 @@ async fn session(
         .map_err(|error| format!("handshake failed: {error}"))?
     {
         InspectorServerMessage::Welcome {
+            protocol,
             target: info,
             available,
-            ..
         } => {
+            if !protocol.is_compatible() {
+                return Err(format!(
+                    "protocol mismatch: inspector is {}, target is {protocol}",
+                    protocol_info()
+                ));
+            }
             model.available.set(available);
             model.target.set(Some(info));
             model.connection.set(Connection::Live);
@@ -190,5 +196,148 @@ fn apply(model: &Model, message: InspectorServerMessage) -> Option<String> {
             None
         }
         InspectorServerMessage::Error { message } => Some(message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use smol::net::TcpListener;
+    use waterui_inspector_protocol::{InspectorProtocolInfo, TargetInfo, protocol_info};
+
+    /// How long a handshake fixture may run before it is counted hung.
+    const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+
+    /// Runs one session against a fixture server with the whole cycle — the
+    /// client session and the server's own completion — inside the same bound.
+    /// A timeout drops the session future and cancels its owned server task.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the inspector's model is Rc-based UI state driven by the main-thread executor; this future is never sent"
+    )]
+    async fn bounded_session(
+        model: &Model,
+        target: &Target,
+        receiver: &SubscriptionReceiver,
+        server: smol::Task<()>,
+    ) -> Result<(), String> {
+        futures_lite::future::or(
+            async move {
+                let result = session(model, target, receiver).await;
+                server.await;
+                result
+            },
+            async {
+                smol::Timer::after(TEST_TIMEOUT).await;
+                Err(String::from("fixture timed out"))
+            },
+        )
+        .await
+    }
+
+    /// Answers one connection with a real Welcome frame over TCP. The server
+    /// task ends once its frame is delivered — the client sees the frame then
+    /// the EOF, so the test owns the server's lifetime rather than racing it.
+    async fn fake_target(welcome: InspectorServerMessage) -> (SocketAddr, smol::Task<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("fixture listener");
+        let addr = listener.local_addr().expect("listener address");
+        let server = smol::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accepted");
+            let mut reader = BufReader::new(stream.clone());
+            let _hello: InspectorClientMessage =
+                read_frame(&mut reader).await.expect("client hello");
+            let mut writer = stream;
+            write_frame(&mut writer, &welcome)
+                .await
+                .expect("welcome frame");
+        });
+        (addr, server)
+    }
+
+    fn foreign_protocol() -> InspectorProtocolInfo {
+        let local = protocol_info();
+        InspectorProtocolInfo {
+            version: local.version.clone(),
+            build_commit: if local.build_commit.is_some() {
+                None
+            } else {
+                Some(String::from("0000000000000000000000000000000000000000"))
+            },
+        }
+    }
+
+    fn fixture_target(addr: SocketAddr) -> Target {
+        Target {
+            addr,
+            token: String::from("token"),
+        }
+    }
+
+    #[test]
+    fn a_welcome_with_a_foreign_protocol_is_never_live() {
+        smol::block_on(async {
+            let (addr, server) = fake_target(InspectorServerMessage::Welcome {
+                protocol: foreign_protocol(),
+                target: TargetInfo {
+                    pid: 0,
+                    name: "fixture".into(),
+                    backend: "test".into(),
+                },
+                available: ChannelSet::default_subscription(),
+            })
+            .await;
+            let model = Model::new();
+            let (_subscriptions, receiver) = subscription_channel();
+            let result = bounded_session(&model, &fixture_target(addr), &receiver, server)
+                .await
+                .expect_err("a foreign protocol is rejected");
+            assert!(
+                result.contains("protocol mismatch"),
+                "expected a protocol rejection, got {result}"
+            );
+            assert!(
+                model.connection.snapshot() != Connection::Live,
+                "a rejected welcome must not mark the connection live"
+            );
+            assert!(
+                model.target.snapshot().is_none(),
+                "a rejected welcome must not publish the target"
+            );
+            assert!(
+                model.available.snapshot().is_empty(),
+                "a rejected welcome must not publish channels"
+            );
+        });
+    }
+
+    #[test]
+    fn a_compatible_welcome_marks_the_connection_live() {
+        smol::block_on(async {
+            let (addr, server) = fake_target(InspectorServerMessage::Welcome {
+                protocol: protocol_info(),
+                target: TargetInfo {
+                    pid: 0,
+                    name: "fixture".into(),
+                    backend: "test".into(),
+                },
+                available: ChannelSet::default_subscription(),
+            })
+            .await;
+            let model = Model::new();
+            let (_subscriptions, receiver) = subscription_channel();
+            let result = bounded_session(&model, &fixture_target(addr), &receiver, server).await;
+            // The fixture drops its end after the Welcome, so the session ends
+            // on the closed stream — a timeout means the harness hung.
+            assert!(
+                result
+                    .as_ref()
+                    .expect_err("the session ends when the fixture's stream closes")
+                    .contains("stream closed"),
+                "expected the stream close, got {result:?}"
+            );
+            assert_eq!(model.connection.snapshot(), Connection::Live);
+        });
     }
 }

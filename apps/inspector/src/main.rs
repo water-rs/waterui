@@ -5,13 +5,121 @@
 
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
-#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
-compile_error!("waterui-inspector desktop binary supports macOS, Linux and Windows only");
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    target_os = "linux",
+    windows
+)))]
+compile_error!("waterui-inspector desktop binary supports ARM64 macOS, Linux and Windows only");
 
-fn main() {
+use clap::Parser;
+use waterui_inspector_protocol::InspectorClientIdentity;
+
+/// Command line for the Inspector.
+#[derive(clap::Parser)]
+#[command(version)]
+struct Args {
+    /// Print this build's framework and protocol identity as JSON, then exit.
+    #[arg(long)]
+    identity: bool,
+}
+
+fn main() -> std::process::ExitCode {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .try_init()
+        .expect("the inspector logger installs once at startup");
+
+    let args = Args::parse();
+    if args.identity {
+        // Headless metadata: report before any environment or window exists.
+        let identity = InspectorClientIdentity {
+            framework_version: waterui::FRAMEWORK_VERSION.to_string(),
+            protocol: waterui_inspector_protocol::protocol_info(),
+        };
+        if let Err(error) = write_identity(&mut std::io::stdout().lock(), &identity) {
+            tracing::error!(%error, "failed to write the inspector identity");
+            return std::process::ExitCode::FAILURE;
+        }
+        return std::process::ExitCode::SUCCESS;
+    }
+
     let env = waterui::configure_environment!(waterui::env::Environment::new());
     hydrolysis::run(
         waterui_inspector_app::app(env),
         hydrolysis_m3::Material3::defaults(),
     );
+    std::process::ExitCode::SUCCESS
+}
+
+/// Serializes the identity and a trailing newline, propagating every failure —
+/// a stdout write is output, not a best-effort log.
+fn write_identity(
+    writer: &mut impl std::io::Write,
+    identity: &InspectorClientIdentity,
+) -> std::io::Result<()> {
+    serde_json::to_writer(&mut *writer, identity).map_err(std::io::Error::other)?;
+    writer.write_all(b"\n")?;
+    writer.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    /// Accepts every byte of the payload but refuses the trailing newline.
+    struct FailOnNewline;
+
+    impl Write for FailOnNewline {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if bytes == b"\n" {
+                return Err(std::io::Error::other("newline refused"));
+            }
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FailOnFlush;
+
+    impl Write for FailOnFlush {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("flush refused"))
+        }
+    }
+
+    fn identity() -> InspectorClientIdentity {
+        InspectorClientIdentity {
+            framework_version: String::from("0.0.0"),
+            protocol: waterui_inspector_protocol::protocol_info(),
+        }
+    }
+
+    #[test]
+    fn a_newline_write_failure_is_reported() {
+        let mut writer = FailOnNewline;
+        assert!(write_identity(&mut writer, &identity()).is_err());
+    }
+
+    #[test]
+    fn a_flush_failure_is_reported() {
+        let mut writer = FailOnFlush;
+        assert!(write_identity(&mut writer, &identity()).is_err());
+    }
+
+    #[test]
+    fn the_identity_writes_valid_json_and_a_newline() {
+        let mut bytes = Vec::new();
+        write_identity(&mut bytes, &identity()).expect("identity serialized");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&bytes[..bytes.len() - 1]).expect("valid JSON");
+        assert_eq!(parsed["framework_version"], "0.0.0");
+        assert_eq!(bytes[bytes.len() - 1], b'\n');
+    }
 }
