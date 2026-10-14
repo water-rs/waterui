@@ -52,7 +52,12 @@ owns, so another thread's frees land in the root thread's dumps.
   ir_gate.py compare --out O BASE HEAD      # the +1% / no-more-calls rule
   ir_gate.py same    --out O TAG TAG [TAG]  # identical Ir across re-profiles
 
-For Lavapipe it sets VK_ICD_FILENAMES, XDG_RUNTIME_DIR and RUST_LOG, and it
+Build release binaries with CARGO_PROFILE_RELEASE_DEBUG=1 and
+CARGO_PROFILE_RELEASE_STRIP=false so the roots remain identifiable.
+
+For Lavapipe it finds the installed driver manifest by its library, or
+accepts an explicit --icd manifest. It sets VK_DRIVER_FILES,
+XDG_RUNTIME_DIR and RUST_LOG, and it
 builds and enables VK_LAYER_CHERENKOV_no_raster (ir_no_raster.c), a global
 instance layer that no-ops the GPU-work vkCmd* entry points under Callgrind:
 lavapipe rasterization dominates the profile wall time but every vkCmd* call
@@ -247,14 +252,26 @@ def install_layer(layer_dir):
     return library
 
 
-def layer_env(layer_dir):
+def lavapipe_icd(requested=None, directory=pathlib.Path('/usr/share/vulkan/icd.d')):
+    """Select one registered Lavapipe driver without assuming an architecture suffix."""
+    candidates = [pathlib.Path(requested)] if requested is not None else sorted(directory.glob('*.json'))
+    matches = [path for path in candidates
+               if pathlib.Path(json.loads(path.read_text())['ICD']['library_path']).name.startswith('libvulkan_lvp.so')]
+    if len(matches) != 1:
+        raise RuntimeError(f'Expected one Lavapipe ICD, found {len(matches)} in {candidates}. '
+                           'Install Mesa lavapipe or specify its manifest with --icd.')
+    return matches[0].resolve(strict=True)
+
+
+def layer_env(layer_dir, icd):
     """The environment that runs Lavapipe with the layer in `layer_dir` enabled."""
-    return dict(VK_ICD_FILENAMES='/usr/share/vulkan/icd.d/lvp_icd.x86_64.json', VK_LAYER_PATH=str(layer_dir),
+    return dict(VK_DRIVER_FILES=str(icd), VK_LAYER_PATH=str(layer_dir),
                 VK_INSTANCE_LAYERS=LAYER_NAME, NODEVICE_SELECT='1')
 
 
-def profile(binary, tag, scene, repo, out, pause_at, warmup):
+def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None):
     binary = pathlib.Path(binary).resolve(); out = pathlib.Path(out).resolve(); out.mkdir(parents=True, exist_ok=True)
+    icd = lavapipe_icd(icd)
     prefix = out / f'{tag}-{scene}'
     assert not [p for p in out.glob(prefix.name + '.*') if not p.name.endswith('.progress.log')], f'existing run: {prefix}'
     symbols = subprocess.run(['nm', '--defined-only', str(binary)], capture_output=True, text=True, check=True).stdout.splitlines()
@@ -269,14 +286,20 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
             hits = [s for s in (line.split()[-1] for line in symbols)
                     if suffix in s.split('NC', 1)[0] and crate in s]
             hits = list(dict.fromkeys(hits))
-        assert len(hits) == 1, (tag, phase, hits)
+        if len(hits) != 1:
+            raise RuntimeError(f'{tag}: expected one {phase} symbol, found {hits}. '
+                               'Build with CARGO_PROFILE_RELEASE_DEBUG=1 and CARGO_PROFILE_RELEASE_STRIP=false.')
         roots[phase] = hits[0]
-    layer_dir = out / 'vk_layer'
+    # Each profile owns its loader files; parallel scenes must not rewrite
+    # a manifest while another process is loading it.
+    layer_dir = out / (prefix.name + '.vk_layer')
     layer_dir.mkdir(exist_ok=True)
     install_layer(layer_dir)
+    runtime_dir = out / (prefix.name + '.runtime')
+    runtime_dir.mkdir(mode=0o700, exist_ok=True)
     env = os.environ.copy()
-    env.update(layer_env(layer_dir), XDG_RUNTIME_DIR='/tmp/runtime-ubuntu', RUST_LOG='error')
-    os.makedirs(env['XDG_RUNTIME_DIR'], exist_ok=True)
+    env.pop('VK_ICD_FILENAMES', None)
+    env.update(layer_env(layer_dir, icd), XDG_RUNTIME_DIR=str(runtime_dir), RUST_LOG='error')
     command = ['valgrind', '--tool=callgrind', '--demangle=no', '--instr-atstart=no', '--separate-threads=no',
                *function_options(roots.values()),
                f'--callgrind-out-file={prefix}', str(binary), 'measure', '--engine', 'cherenkov',
@@ -343,6 +366,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
             for fd in fds:
                 os.close(fd)
     result = {'tag': tag, 'scene': scene, 'binary': str(binary), 'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+              'icd': str(icd), 'icd_sha256': hashlib.sha256(icd.read_bytes()).hexdigest(),
               'pause_at': pause_at, 'command': command}
     for phase, symbol in roots.items():
         samples = call_samples(out, prefix.name, symbol, after[phase])
@@ -366,18 +390,26 @@ def load(out, tag, scene):
     raise FileNotFoundError(f'no result for {tag}/{scene} under {out}')
 
 
+def verify_reused_profile(result, binary, icd):
+    """A resumed profile must belong to the requested executable and driver."""
+    assert result['sha256'] == hashlib.sha256(pathlib.Path(binary).read_bytes()).hexdigest()
+    assert result['icd_sha256'] == hashlib.sha256(icd.read_bytes()).hexdigest()
+
+
 def batch(args):
     out = pathlib.Path(args.out); out.mkdir(parents=True, exist_ok=True)
+    icd = lavapipe_icd(args.icd)
 
     def task(scene):
         path = out / f'{args.tag}-{scene}.result.json'
         if path.is_file():
             d = json.loads(path.read_text())
-            assert d['sha256'] == hashlib.sha256(pathlib.Path(d['binary']).read_bytes()).hexdigest()
+            verify_reused_profile(d, args.binary, icd)
             return f'{args.tag} {scene} reused completed profile'
         with (out / f'{args.tag}-{scene}.progress.log').open('w') as log:
             subprocess.run([sys.executable, __file__, 'profile', '--binary', args.binary, '--tag', args.tag, '--scene', scene,
-                            '--repo', args.repo, '--out', args.out, '--pause-at', str(args.pause_at), '--warmup', str(args.warmup)],
+                            '--repo', args.repo, '--out', args.out, '--pause-at', str(args.pause_at), '--warmup', str(args.warmup),
+                            '--icd', str(icd)],
                            stdout=log, stderr=subprocess.STDOUT, check=True)
         return f'{args.tag} {scene} done'
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
@@ -439,6 +471,7 @@ def main():
         p.add_argument('--binary', required=True); p.add_argument('--tag', required=True)
         p.add_argument('--repo', required=True, help='checkout holding scenes/perf')
         p.add_argument('--out', required=True); p.add_argument('--pause-at', type=int, default=8); p.add_argument('--warmup', type=int, default=30)
+        p.add_argument('--icd', type=pathlib.Path, help='explicit Lavapipe ICD manifest; otherwise require one installed driver')
         if name == 'profile':
             p.add_argument('--scene', required=True, choices=SCENES)
         else:
@@ -447,7 +480,7 @@ def main():
     p = sub.add_parser('same'); p.add_argument('--out', required=True); p.add_argument('tags', nargs='+')
     args = parser.parse_args()
     if args.cmd == 'profile':
-        profile(args.binary, args.tag, args.scene, args.repo, args.out, args.pause_at, args.warmup)
+        profile(args.binary, args.tag, args.scene, args.repo, args.out, args.pause_at, args.warmup, args.icd)
     elif args.cmd == 'batch':
         batch(args)
     elif args.cmd == 'compare':

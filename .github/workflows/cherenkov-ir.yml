@@ -85,15 +85,27 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -m)" = x86_64
-          test -r /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, sys
+          sys.path.insert(0, "graphics/cherenkov/bench/scripts")
+          import ir_gate
+          icd = ir_gate.lavapipe_icd()
+          shutil.copyfile(icd, "ir-results/lavapipe-icd.json")
+          pathlib.Path("ir-results/icd-source.json").write_text(json.dumps({
+              "path": str(icd), "sha256": hashlib.sha256(icd.read_bytes()).hexdigest(),
+          }, indent=2) + "\n")
+          with open(os.environ["GITHUB_ENV"], "a") as stream:
+              stream.write(f"CHERENKOV_IR_ICD={icd}\n")
+          PY
           rustc -Vv > ir-results/rustc.txt
           cargo -V > ir-results/cargo.txt
           valgrind --version > ir-results/valgrind.txt
           lscpu > ir-results/cpu.txt
-          cp /usr/share/vulkan/icd.d/lvp_icd.x86_64.json ir-results/
           cp graphics/cherenkov/bench/scripts/ir_gate.py ir-results/
           cp graphics/cherenkov/bench/scripts/ir_no_raster.c ir-results/
           sha256sum ir-results/ir_gate.py ir-results/ir_no_raster.c > ir-results/harness.sha256
+      - name: Check the gate and loader dispatch
+        run: python3 -m unittest discover -s graphics/cherenkov/bench/scripts -p 'test_ir*.py'
       - uses: ./.github/actions/generate-scene-assets
         with:
           mode: full
@@ -134,7 +146,7 @@ jobs:
             /usr/bin/python3 "$PWD/graphics/cherenkov/bench/scripts/ir_gate.py" batch \
             --binary "$PWD/ir-results/bench-base" --tag base \
             --repo "$PWD/graphics/cherenkov" --out "$PWD/ir-results/base" \
-            --pause-at 8 --warmup 30 --jobs 2 \
+            --pause-at 8 --warmup 30 --jobs 2 --icd "$CHERENKOV_IR_ICD" \
             2>&1 | tee ir-results/base-driver.log
       - name: Profile the candidate
         timeout-minutes: 12
@@ -147,7 +159,7 @@ jobs:
             /usr/bin/python3 "$PWD/graphics/cherenkov/bench/scripts/ir_gate.py" batch \
             --binary "$PWD/ir-results/bench-head" --tag head \
             --repo "$PWD/graphics/cherenkov" --out "$PWD/ir-results/head" \
-            --pause-at 8 --warmup 30 --jobs 2 \
+            --pause-at 8 --warmup 30 --jobs 2 --icd "$CHERENKOV_IR_ICD" \
             2>&1 | tee ir-results/head-driver.log
       - name: Apply the existing instruction and call-count gate
         run: |
