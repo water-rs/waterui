@@ -139,9 +139,15 @@ impl WebViewProxy {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    /// Injects a script that will run on every page load.
+    /// Injects a script that will run on every later page load.
     ///
     /// `key` names the script; injecting again under the same key replaces it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `key` names a script the view was opened with
+    /// ([`WebViewOpen::inject`](crate::WebViewOpen::inject)): those are fixed
+    /// for its life, on every backend alike.
     pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         self.handle.inject_script(key, script, time);
     }

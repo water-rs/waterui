@@ -46,9 +46,9 @@ pub use assets::{
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use bundled::{DEFAULT_CSP, DirectoryServer, dev_url};
-#[cfg(not(target_arch = "wasm32"))]
-pub use config::UserScript;
 pub use config::WebViewConfig;
+#[cfg(not(target_arch = "wasm32"))]
+pub use config::{DocumentScripts, UserScript};
 pub use controller::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use cookie::Cookie;
@@ -725,9 +725,13 @@ impl WebView {
     ///
     /// `key` names the script. Injecting again under the same key replaces it,
     /// so a script whose content depends on current state can be kept current
-    /// without stacking a new copy on every update. The scripts the view was
-    /// opened with ([`WebViewOpen::inject`]) are fixed for its life; `key` must
-    /// not name one of them.
+    /// without stacking a new copy on every update.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `key` names a script the view was opened with
+    /// ([`WebViewOpen::inject`]): those are fixed for its life, on every
+    /// backend alike.
     pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         self.handle.inject_script(key, script, time);
     }

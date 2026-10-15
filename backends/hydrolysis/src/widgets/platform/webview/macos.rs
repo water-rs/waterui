@@ -48,8 +48,9 @@ use objc2_web_kit::{
 use waterui_core::{Computed, Environment, Str};
 use waterui_webview::{
     ASSET_ORIGIN, ASSET_SCHEME, AssetResponse, AssetServer, BackendEvent, Cookie,
-    CustomWebViewController, OriginPolicy, ScriptInjectionTime, Url, WatcherGuard, WatcherSet,
-    WebViewConfig, WebViewController, WebViewError, WebViewEvent, WebViewHandle,
+    CustomWebViewController, DocumentScripts, OriginPolicy, ScriptInjectionTime, Url, UserScript,
+    WatcherGuard, WatcherSet, WebViewConfig, WebViewController, WebViewError, WebViewEvent,
+    WebViewHandle,
     assets::{asset_target, dispatch},
     bridge,
 };
@@ -155,23 +156,13 @@ const TRANSPORT_ERROR_CODES: [NSInteger; 6] = [
     NSURLErrorNotConnectedToInternet,
 ];
 
-#[derive(Clone)]
-struct InjectedScript {
-    /// The key the script was injected under. Re-injecting under a key already
-    /// in use replaces that script instead of stacking another copy in front of
-    /// it.
-    key: String,
-    source: String,
-    time: ScriptInjectionTime,
-}
-
 struct SharedState {
     watchers: WatcherSet<BackendEvent>,
     redirects_enabled: RefCell<Computed<bool>>,
     handlers: RefCell<HashMap<String, JavaScriptHandler>>,
-    /// Keyed, in injection order. A `Vec` rather than a map because the order
-    /// scripts run in is part of what was asked for.
-    scripts: RefCell<Vec<InjectedScript>>,
+    /// The creation-time scripts, then those injected later, in the order the
+    /// page runs them — which is part of what was asked for.
+    scripts: RefCell<DocumentScripts>,
     last_navigation_url: RefCell<Option<String>>,
     /// Which documents may reach the bridge, fixed at creation; checked on
     /// every message and every navigation.
@@ -186,23 +177,13 @@ struct SharedState {
 }
 
 impl SharedState {
-    /// The state of a view created with `bridge_origins` and the
-    /// creation-time `scripts`.
-    fn new(bridge_origins: OriginPolicy, scripts: Vec<waterui_webview::UserScript>) -> Self {
+    /// The state of a view created with `bridge_origins` and `scripts`.
+    fn new(bridge_origins: OriginPolicy, scripts: DocumentScripts) -> Self {
         Self {
             watchers: WatcherSet::new(),
             redirects_enabled: RefCell::new(Computed::new(true)),
             handlers: RefCell::new(HashMap::new()),
-            scripts: RefCell::new(
-                scripts
-                    .into_iter()
-                    .map(|script| InjectedScript {
-                        key: script.key.to_string(),
-                        source: script.source.to_string(),
-                        time: script.time,
-                    })
-                    .collect(),
-            ),
+            scripts: RefCell::new(scripts),
             last_navigation_url: RefCell::new(None),
             bridge_origins,
             bridge_admitted: Cell::new(false),
@@ -893,7 +874,7 @@ impl MacSystemWebViewHandle {
             .expect("Hydrolysis WKWebView must be created on the macOS main thread");
         let shared = Rc::new(SharedState::new(
             config.bridge_origins.clone(),
-            config.user_scripts(),
+            DocumentScripts::new(&config),
         ));
         let delegate = WebViewDelegate::new(mtm, Rc::clone(&shared));
         // SAFETY: main-thread message send to an object this wrapper retains; see
@@ -1055,20 +1036,11 @@ impl WebViewHandle for MacSystemWebViewHandle {
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        {
-            let mut scripts = self.inner.shared.scripts.borrow_mut();
-            let entry = InjectedScript {
-                key: key.to_owned(),
-                source: script.to_owned(),
-                time,
-            };
-            // Replacing in place keeps the script's position, so the order the
-            // page runs them in does not change when one is re-rendered.
-            match scripts.iter_mut().find(|script| script.key == key) {
-                Some(existing) => *existing = entry,
-                None => scripts.push(entry),
-            }
-        }
+        self.inner.shared.scripts.borrow_mut().inject(UserScript {
+            key: Str::from(key.to_owned()),
+            source: Str::from(script.to_owned()),
+            time,
+        });
         self.rebuild_user_scripts();
     }
 

@@ -35,9 +35,9 @@ use waterui_backend_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_webview::{
     ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, BackendEvent, Cookie, CustomWebViewController,
-    DOCUMENT_START_SCRIPT, OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url,
-    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets,
-    bridge,
+    DOCUMENT_START_SCRIPT, DocumentScripts, OriginPolicy, ScriptInjectionTime,
+    ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet, WebViewConfig, WebViewError,
+    WebViewEvent, WebViewHandle, assets, bridge,
 };
 
 use crate::contract::NativeLeaf;
@@ -46,14 +46,6 @@ use crate::dispatch::Dispatcher;
 /// The page-visible global the bridge script calls — `bridge::SEND_FUNCTION`,
 /// which is also the name the script-message transport registers under.
 const SEND_FUNCTION: &str = bridge::SEND_FUNCTION;
-
-/// A user script as the leaf tracks it: the registry key the platform
-/// cannot remove by, its source, and its injection time.
-struct UserScript {
-    key: String,
-    source: String,
-    time: web_kit::InjectionTime,
-}
 
 /// What the handle and the kit's delegate closures share.
 ///
@@ -87,11 +79,11 @@ struct Shared {
     /// rebuilt for every main-frame navigation and on every server
     /// redirect, and installed only when its destination is admitted.
     bridge_admitted: Cell<bool>,
-    /// Keyed user scripts, in injection order — the creation-time ones
-    /// first, then those injected later. Replacement rebuilds the whole
-    /// list, and the order is kept so a replaced script runs where it always
-    /// did. Transport and bridge are not keyed: every rebuild puts them first.
-    scripts: RefCell<Vec<UserScript>>,
+    /// Keyed user scripts — the creation-time ones, then those injected
+    /// later. Replacement rebuilds the whole list, and the order is kept so a
+    /// replaced script runs where it always did. Transport and bridge are not
+    /// keyed: every rebuild puts them first.
+    scripts: RefCell<DocumentScripts>,
 }
 
 impl Shared {
@@ -207,27 +199,15 @@ impl Shared {
             true,
         );
         for entry in self.scripts.borrow().iter() {
-            self.view().add_user_script(&entry.source, entry.time, true);
+            self.view()
+                .add_user_script(&entry.source, injection_time(entry.time), true);
         }
     }
 
     /// `injectScript` — keyed replacement that preserves each key's original
     /// position, since `WKUserContentController` has no per-script removal.
-    fn inject_script(&self, key: &str, source: &str, time: web_kit::InjectionTime) {
-        {
-            let mut scripts = self.scripts.borrow_mut();
-            match scripts.iter_mut().find(|entry| entry.key == key) {
-                Some(entry) => {
-                    entry.source = source.to_string();
-                    entry.time = time;
-                }
-                None => scripts.push(UserScript {
-                    key: key.to_string(),
-                    source: source.to_string(),
-                    time,
-                }),
-            }
-        }
+    fn inject_script(&self, script: UserScript) {
+        self.scripts.borrow_mut().inject(script);
         self.rebuild_user_scripts();
     }
 
@@ -327,16 +307,8 @@ impl WkWebViewHandle {
         mtm: MainThreadMarker,
         scheme: Option<web_kit::SchemeHandler>,
         bridge_origins: OriginPolicy,
-        scripts: Vec<waterui_webview::UserScript>,
+        scripts: DocumentScripts,
     ) -> Self {
-        let scripts = scripts
-            .into_iter()
-            .map(|script| UserScript {
-                key: script.key.to_string(),
-                source: script.source.to_string(),
-                time: injection_time(script.time),
-            })
-            .collect();
         let shared = Rc::new(Shared {
             view: OnceCell::new(),
             watchers: WatcherSet::new(),
@@ -579,7 +551,11 @@ impl WebViewHandle for WkWebViewHandle {
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        self.shared.inject_script(key, script, injection_time(time));
+        self.shared.inject_script(UserScript {
+            key: Str::from(key.to_string()),
+            source: Str::from(script.to_string()),
+            time,
+        });
     }
 
     fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>) {
@@ -728,7 +704,7 @@ impl CustomWebViewController for AppleWebViewController {
         let mtm = MainThreadMarker::new().expect("a WebView opens on the main thread");
         // Interception can only be registered while the configuration is
         // being assembled, so the asset server arrives at creation.
-        let scripts = config.user_scripts();
+        let scripts = DocumentScripts::new(&config);
         let scheme = config.asset_server.map(|server| asset_scheme(&server));
         WkWebViewHandle::new(mtm, scheme, config.bridge_origins, scripts)
     }

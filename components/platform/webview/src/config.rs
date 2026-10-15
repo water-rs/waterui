@@ -90,6 +90,62 @@ impl WebViewConfig {
             .chain(self.scripts.iter().cloned())
             .collect()
     }
+
+    /// The keys of [`user_scripts`](Self::user_scripts), in the same order,
+    /// without rendering the seed.
+    pub(crate) fn script_keys(&self) -> impl Iterator<Item = Str> + '_ {
+        core::iter::once(Str::from_static(crate::state::SEED_SCRIPT_KEY))
+            .chain(self.scripts.iter().map(|script| script.key.clone()))
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+/// The keyed scripts an admitted document runs, as a backend keeps them: the
+/// creation-time ones, fixed, then those injected after creation.
+///
+/// A backend whose engine injects scripts as one list — `WKUserContentController`
+/// removes its scripts only as a set, Android's `ScriptHandler` set is pushed
+/// whole — rebuilds that list from [`iter`](Self::iter) after every
+/// [`inject`](Self::inject). The creation-time half cannot be written to:
+/// [`AnyWebViewHandle::inject_script`](crate::AnyWebViewHandle::inject_script)
+/// refuses their keys, so an injection only ever adds or replaces a
+/// post-creation script.
+#[derive(Debug, Clone)]
+pub struct DocumentScripts {
+    creation: Box<[UserScript]>,
+    injected: Vec<UserScript>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl DocumentScripts {
+    /// The scripts of a view opened with `config`, before any injection.
+    #[must_use]
+    pub fn new(config: &WebViewConfig) -> Self {
+        Self {
+            creation: config.user_scripts().into_boxed_slice(),
+            injected: Vec::new(),
+        }
+    }
+
+    /// Adds a post-creation script, or replaces the one already injected
+    /// under its key in the position that one took, so the order the page
+    /// runs them in does not change when one is re-rendered.
+    pub fn inject(&mut self, script: UserScript) {
+        match self
+            .injected
+            .iter_mut()
+            .find(|existing| existing.key == script.key)
+        {
+            Some(existing) => *existing = script,
+            None => self.injected.push(script),
+        }
+    }
+
+    /// Every script, in the order a document runs them: the creation-time
+    /// ones, then the injected ones in first-injection order.
+    pub fn iter(&self) -> impl Iterator<Item = &UserScript> {
+        self.creation.iter().chain(&self.injected)
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]

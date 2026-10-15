@@ -31,8 +31,9 @@ use nami::watcher::BoxWatcherGuard;
 use waterui_core::{Computed, Str};
 use waterui_webview::{
     ASSET_HTTPS_ORIGIN, AssetServer, BackendEvent, Cookie, CustomWebViewController,
-    DOCUMENT_START_SCRIPT, ScriptInjectionTime, ScriptMessageHandler, Url, WatcherGuard,
-    WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets, bridge,
+    DOCUMENT_START_SCRIPT, DocumentScripts, ScriptInjectionTime, ScriptMessageHandler, Url,
+    UserScript, WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle,
+    assets, bridge,
 };
 
 use crate::runner::android::jni::{JniError, get_string, guard, guard_val};
@@ -121,11 +122,11 @@ pub(super) struct SharedState {
     watchers: WatcherSet<BackendEvent>,
     /// Named script-message handlers; `nativeOnBridgeMessage` dispatches.
     handlers: RefCell<HashMap<String, Rc<ScriptMessageHandler>>>,
-    /// User scripts in first-injection order — the creation-time ones, then
-    /// those injected later. The push list is rebuilt on every
+    /// User scripts — the creation-time ones, then those injected later in
+    /// first-injection order. The push list is rebuilt on every
     /// `inject_script`, as `rebuildDocumentStartScripts` does in the Kotlin
     /// runtime.
-    scripts: RefCell<Vec<(String, String, ScriptInjectionTime)>>,
+    scripts: RefCell<DocumentScripts>,
     /// In-flight calls indexed by call id — the one place every settlement
     /// path consults, so navigation and teardown can settle all of them at
     /// once.
@@ -289,17 +290,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         self.next_instance.set(instance);
 
         let origin_rules = androidx_origin_rules(&config.bridge_origins);
-        let scripts = config
-            .user_scripts()
-            .into_iter()
-            .map(|script| {
-                (
-                    script.key.to_string(),
-                    script.source.to_string(),
-                    script.time,
-                )
-            })
-            .collect();
+        let scripts = DocumentScripts::new(&config);
 
         // `config.asset_server` crosses as a leaked `Box` Kotlin hands
         // back to `nativeAssetServerAcquire`/`nativeFreeAssetServer`. The
@@ -598,20 +589,19 @@ impl HandleInner {
     /// which rebuilds its `ScriptHandler` set under the current origin rules.
     /// `rebuildDocumentStartScripts` on this side of JNI.
     fn push_document_start_scripts(&self) {
-        let sources = {
-            let scripts = self.shared.scripts.borrow();
-            let mut sources = Vec::with_capacity(scripts.len() + 2);
-            sources.push(TRANSPORT_SCRIPT.to_string());
-            sources.push(DOCUMENT_START_SCRIPT.to_string());
-            sources.extend(scripts.iter().map(|(_key, source, time)| {
-                if *time == ScriptInjectionTime::DocumentEnd {
-                    compose_document_end(source)
-                } else {
-                    source.clone()
-                }
-            }));
-            sources
-        };
+        let sources: Vec<String> = [
+            TRANSPORT_SCRIPT.to_string(),
+            DOCUMENT_START_SCRIPT.to_string(),
+        ]
+        .into_iter()
+        .chain(self.shared.scripts.borrow().iter().map(|script| {
+            if script.time == ScriptInjectionTime::DocumentEnd {
+                compose_document_end(&script.source)
+            } else {
+                script.source.to_string()
+            }
+        }))
+        .collect();
         self.call_str_array(WebViewMethodId::SetDocumentStartScripts, &sources);
     }
 
@@ -764,11 +754,11 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        {
-            let mut scripts = self.inner.shared.scripts.borrow_mut();
-            scripts.retain(|held| held.0 != key);
-            scripts.push((key.to_string(), script.to_string(), time));
-        }
+        self.inner.shared.scripts.borrow_mut().inject(UserScript {
+            key: Str::from(key.to_string()),
+            source: Str::from(script.to_string()),
+            time,
+        });
         self.inner.push_document_start_scripts();
     }
 
