@@ -422,6 +422,10 @@ const COVERAGE: Fixed = Fixed {
             workgroup_size: (64, 1, 1),
         },
         wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("radix_scan_blocks"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("radix_prefix"),
             workgroup_size: (64, 1, 1),
         },

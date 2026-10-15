@@ -83,6 +83,7 @@ pub struct GpuCoverage {
 struct Pipes {
     initialize: wgpu::ComputePipeline,
     radix_count: wgpu::ComputePipeline,
+    radix_scan_blocks: wgpu::ComputePipeline,
     radix_prefix: wgpu::ComputePipeline,
     radix_scatter: wgpu::ComputePipeline,
     flatten: wgpu::ComputePipeline,
@@ -566,6 +567,8 @@ impl GpuCoverage {
                 pass.set_bind_group(0, &bind, &[radix_pass * 256]);
                 pass.set_pipeline(&pipes.radix_count);
                 dispatch(&mut pass, self.fragment_total);
+                pass.set_pipeline(&pipes.radix_scan_blocks);
+                dispatch(&mut pass, self.fragment_total.div_ceil(16384) * 16);
                 pass.set_pipeline(&pipes.radix_prefix);
                 pass.dispatch_workgroups(1, 1, 1);
                 pass.set_pipeline(&pipes.radix_scatter);
@@ -621,6 +624,7 @@ impl GpuCoverage {
         self.pipes = Some(Pipes {
             initialize: make("initialize"),
             radix_count: make("radix_count"),
+            radix_scan_blocks: make("radix_scan_blocks"),
             radix_prefix: make("radix_prefix"),
             radix_scatter: make("radix_scatter"),
             flatten: make("flatten"),

@@ -462,20 +462,38 @@ fn radix_count(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_inv
     }
 }
 @compute @workgroup_size(64)
-fn radix_prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
-    // One invocation owns the tiny histogram scan. This avoids concurrent
-    // readers observing counts that another bucket already replaced.
-    if invocation(gid) != 0u { return; }
+fn radix_scan_blocks(@builtin(global_invocation_id) gid: vec3<u32>) {
     let groups = (params.fragment_cap + 63u) / 64u;
+    let blocks = (groups + 255u) / 256u;
+    let i = invocation(gid);
+    if i >= blocks * 16u { return; }
+    let digit = i % 16u;
+    let block = i / 16u;
     var sum = 0u;
-    for (var digit = 0u; digit < 16u; digit += 1u) {
-        for (var group = 0u; group < groups; group += 1u) {
-            let index = params.histogram + group * 16u + digit;
-            let count = atomicLoad(&coverage[index]);
-            atomicStore(&coverage[index], sum);
-            sum += count;
-        }
+    for (var group = block * 256u; group < min((block + 1u) * 256u, groups); group += 1u) {
+        let index = params.histogram + group * 16u + digit;
+        let count = atomicLoad(&coverage[index]);
+        atomicStore(&coverage[index], sum);
+        sum += count;
     }
+    atomicStore(&coverage[params.groups + params.fragment_cap + i], sum);
+}
+@compute @workgroup_size(64)
+fn radix_prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let digit = invocation(gid);
+    if digit >= 16u { return; }
+    let blocks = (params.fragment_cap + 16383u) / 16384u;
+    let base = params.groups + params.fragment_cap;
+    var sum = 0u;
+    for (var block = 0u; block < blocks; block += 1u) {
+        let index = base + block * 16u + digit;
+        let count = atomicLoad(&coverage[index]);
+        atomicStore(&coverage[index], sum);
+        sum += count;
+    }
+    // Digits, block prefixes and bucket totals occupy disjoint ranges in
+    // the existing 16F-word group arena. F>=3 implies F+16*ceil(F/16384)+16<=16F.
+    atomicStore(&coverage[base + blocks * 16u + digit], sum);
 }
 @compute @workgroup_size(64)
 fn radix_scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
@@ -499,7 +517,14 @@ fn radix_scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_i
     for (var k = 0u; k < lane; k += 1u) {
         rank += select(0u, 1u, atomicLoad(&coverage[params.groups + group_start + k]) == digit);
     }
-    let dst = atomicLoad(&coverage[params.histogram + (i / 64u) * 16u + digit]) + rank;
+    let blocks = (params.fragment_cap + 16383u) / 16384u;
+    let base = params.groups + params.fragment_cap;
+    var bucket_start = 0u;
+    for (var previous = 0u; previous < digit; previous += 1u) {
+        bucket_start += atomicLoad(&coverage[base + blocks * 16u + previous]);
+    }
+    let block_start = atomicLoad(&coverage[base + (i / 16384u) * 16u + digit]);
+    let dst = bucket_start + block_start + atomicLoad(&coverage[params.histogram + (i / 64u) * 16u + digit]) + rank;
     atomicStore(&coverage[output + dst * 2u], key);
     atomicStore(&coverage[output + dst * 2u + 1u], node);
 }
