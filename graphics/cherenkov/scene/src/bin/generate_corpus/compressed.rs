@@ -45,7 +45,7 @@ fn constant_block(format: ImageCompression, color: [u8; 4]) -> [u8; 16] {
     block
 }
 
-pub(super) fn generate(corpus: &mut super::Corpus) {
+pub fn generate(corpus: &mut super::Corpus) {
     for (name, format) in [
         ("astc", ImageCompression::Astc4x4),
         ("bc7", ImageCompression::Bc7),
