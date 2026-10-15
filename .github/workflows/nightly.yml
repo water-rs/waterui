@@ -283,9 +283,9 @@ jobs:
   # so a headless sudo'd account cannot `water run` — the macOS leg runs
   # doctor and the scaffold/build/package cycle as the fresh user, then
   # smoke-runs the app as the runner (console) user. Linux runs the
-  # Hydrolysis app, and the informational GTK4 app, under `xvfb-run` inside
-  # the fresh account; `xvfb` is test harness, not a doctor-managed
-  # dependency. Windows launches the whole flow as the fresh
+  # Hydrolysis app under `xvfb-run` inside the fresh account; `xvfb` is test
+  # harness, not a doctor-managed dependency. The experimental GTK4 backend's
+  # fresh-user leg lives in water-rs/gtk-backend's own nightly. Windows launches the whole flow as the fresh
   # user via `Start-Process -Credential` in the runner's session. The Android
   # leg on Ubuntu stops at packaging — `water run` needs a device — and
   # packages both the debug and the release APK (#2290).
@@ -293,7 +293,6 @@ jobs:
     name: CLI fresh user / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 240
-    continue-on-error: ${{ matrix.informational == true }}
     strategy:
       fail-fast: false
       matrix:
@@ -310,13 +309,6 @@ jobs:
             os: ubuntu-latest
             platform: linux
             backend: hydrolysis
-          # GTK is an experimental backend: its leg reports, but its failures
-          # never block certification.
-          - name: Ubuntu (GTK, informational)
-            os: ubuntu-latest
-            platform: linux
-            backend: gtk4
-            informational: true
           - name: Android
             os: ubuntu-latest
             platform: android
