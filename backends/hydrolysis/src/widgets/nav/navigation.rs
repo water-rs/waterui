@@ -1845,6 +1845,24 @@ fn moving_page_transition(
     declared
 }
 
+/// What the destination `identity` asked to arrive with
+/// (`NavigationView::transition`), looked up among the stack's entries and,
+/// on a pop, the departing entries held until their teardown runs — the only
+/// place a popped destination's declaration survives.
+fn declared_navigation_transition(
+    slot: &crate::renderer::navigation_state::NavigationSlot,
+    identity: u64,
+) -> Option<AnyNavigationTransition> {
+    let declared = |entries: &crate::renderer::navigation_state::NavigationEntries| {
+        entries
+            .borrow()
+            .iter()
+            .find(|entry| entry.identity == identity)
+            .and_then(|entry| entry.transition.clone())
+    };
+    declared(&slot.entries).or_else(|| declared(&slot.pending_removed))
+}
+
 fn navigation_entry_identity(
     entries: &crate::renderer::navigation_state::NavigationEntries,
     index: usize,
@@ -2163,7 +2181,7 @@ type NavigationPresentationFrame = (
     f64,
     crate::renderer::navigation_state::NavigationPage,
     crate::renderer::navigation_state::NavigationPage,
-    Option<Rc<RefCell<crate::renderer::navigation_state::PageTransition>>>,
+    Option<Rc<RefCell<dyn crate::renderer::navigation_state::PageMotion>>>,
 );
 
 /// One frame of a navigation transition a page root's own declaration
@@ -2183,7 +2201,7 @@ fn present_page_transition(
     pages: &PageRecorder<'_>,
     page_area: Option<SafeAreaLayout>,
     [from, to]: [(u64, &Environment); 2],
-    page: &crate::renderer::navigation_state::PageTransition,
+    page: &dyn crate::renderer::navigation_state::PageMotion,
     PageTransitionFrame {
         transform,
         bounds,
@@ -2191,7 +2209,7 @@ fn present_page_transition(
         active_identity,
     }: PageTransitionFrame,
 ) {
-    let (moving, stationary) = if page.identity == to.0 {
+    let (moving, stationary) = if page.identity() == to.0 {
         (to, from)
     } else {
         (from, to)
@@ -2221,14 +2239,7 @@ fn present_page_transition(
         .upgrade()
         .expect("Hydrolysis navigation slot is bound to its stack's cell");
     let hit = moving.0 == active_identity;
-    let paint = crate::renderer::TransitionPaint::sample(
-        &page.run.state,
-        pages.size,
-        page.direction,
-        hit,
-        &page.run.runtime,
-        &owner,
-    );
+    let paint = page.paint(pages.size, hit, &owner);
     let local = crate::renderer::transition_transform(&paint.properties, bounds);
     pages.record(
         renderer,
@@ -2307,7 +2318,7 @@ fn present_navigation_pages(
             &pages,
             page_area,
             [(from.identity, &from_env), (to.identity, &to_env)],
-            &page.borrow(),
+            &*page.borrow(),
             PageTransitionFrame {
                 transform,
                 bounds,
@@ -2641,22 +2652,7 @@ pub fn render_navigation_stack_parts(
                 } else {
                     previous_identity
                 };
-                let declared = entries
-                    .borrow()
-                    .iter()
-                    .find(|entry| entry.identity == moving_identity)
-                    .and_then(|entry| entry.transition.clone());
-                let style = declared
-                    .or_else(|| {
-                        // On a pop the departing entry has already left
-                        // `entries`; it is held here until its teardown runs,
-                        // which is the only place its declaration survives.
-                        slot.pending_removed
-                            .borrow()
-                            .iter()
-                            .find(|entry| entry.identity == moving_identity)
-                            .and_then(|entry| entry.transition.clone())
-                    })
+                let style = declared_navigation_transition(slot, moving_identity)
                     .unwrap_or_else(|| transition_style.clone());
                 let transition = crate::renderer::navigation_state::NavigationTransitionState::new(
                     style,
@@ -2699,7 +2695,9 @@ pub fn render_navigation_stack_parts(
                 transition.eased_progress(now, transition_motion),
                 transition.from_page.clone(),
                 transition.to_page.clone(),
-                transition.page.clone(),
+                transition.page.clone().map(|page| {
+                    page as Rc<RefCell<dyn crate::renderer::navigation_state::PageMotion>>
+                }),
             )
         });
         slot.last_page = Some(active_page.clone());
@@ -2712,6 +2710,30 @@ pub fn render_navigation_stack_parts(
             .complete_navigation_transaction(&slot_key, &local_env);
     }
 
+    // An interactive pop drives what the departing page declares, in the
+    // same precedence a programmatic pop resolves: its root's transition,
+    // then its navigation transition, then the stack style — the gesture
+    // supplies the progress in place of the clock.
+    let departing = ctx
+        .renderer_mut()
+        .navigation
+        .slots
+        .get(&slot_key)
+        .expect("Hydrolysis navigation slot missing")
+        .interactive_pop
+        .as_ref()
+        .map(|interactive| interactive.from_page.identity);
+    let departing_page_transition = departing.and_then(|identity| {
+        let theme = ctx.theme();
+        moving_page_transition(
+            ctx.renderer_mut(),
+            state,
+            &slot_key,
+            &stack_env,
+            identity,
+            &theme,
+        )
+    });
     let interactive_frame = {
         let slot = ctx
             .renderer_mut()
@@ -2719,31 +2741,30 @@ pub fn render_navigation_stack_parts(
             .slots
             .get_mut(&slot_key)
             .expect("Hydrolysis navigation slot missing");
+        let declared =
+            departing.and_then(|identity| declared_navigation_transition(slot, identity));
         slot.interactive_pop.as_mut().map(|interactive| {
             let (progress, completed, cancelled) = interactive.sample(now, transition_motion);
+            let page = departing_page_transition.as_ref().map(|spec| {
+                interactive.page_motion(spec, &local_env, now)
+                    as Rc<RefCell<dyn crate::renderer::navigation_state::PageMotion>>
+            });
             (
-                progress,
-                completed,
-                cancelled,
-                interactive.from_page.clone(),
-                interactive.to_page.clone(),
+                (completed, cancelled),
+                (
+                    declared.unwrap_or_else(|| transition_style.clone()),
+                    NavigationTransitionDirection::Pop,
+                    progress,
+                    interactive.from_page.clone(),
+                    interactive.to_page.clone(),
+                    page,
+                ),
             )
         })
     };
 
-    let presentation = interactive_frame
-        .as_ref()
-        .map(|(progress, _, _, from_page, to_page)| {
-            (
-                transition_style.clone(),
-                NavigationTransitionDirection::Pop,
-                *progress,
-                from_page.clone(),
-                to_page.clone(),
-                None,
-            )
-        })
-        .or(transition_frame);
+    let (interactive_end, interactive_presentation) = interactive_frame.unzip();
+    let presentation = interactive_presentation.or(transition_frame);
     present_navigation_pages(
         ctx,
         state,
@@ -2755,7 +2776,7 @@ pub fn render_navigation_stack_parts(
         transition_motion,
         presentation,
     );
-    if let Some((_, completed, cancelled, _, _)) = interactive_frame {
+    if let Some((completed, cancelled)) = interactive_end {
         if completed || cancelled {
             let slot = ctx
                 .renderer_mut()
