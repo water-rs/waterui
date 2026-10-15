@@ -38,8 +38,11 @@ on:
 # its lint job is the cache writer for that ref, and a writer cancelled
 # mid-sweep or mid-save leaves no archive for the runs after it (#2338).
 # The group still drops a queued run that a newer push supersedes.
+# Metadata edits have their own run-specific group and skip all jobs, so they
+# cannot cancel source validation. Their distinct check names also prevent a
+# skipped check from replacing a pending or failed source verdict (#2655).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && format('metadata-{0}', github.run_id) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -90,10 +93,10 @@ jobs:
   # the pushed ref, and is ignored for pull requests), which needs the history
   # the checkout below fetches.
   changes:
-    name: Changes
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Changes
     # The compile-check gate does not run on dev pushes (dev.yml owns that
     # signal); every job below either needs this one or skips itself.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    if: (github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -161,15 +164,15 @@ jobs:
   # into this pull request's scope (#2338). The merge-base of the base
   # branch and the merge commit is the tip the head was merged into.
   scope:
-    name: Affected scope
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Affected scope
+    if: (github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main'
     uses: ./.github/workflows/affected.yml
     with:
       base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
 
   typos:
-    name: Typos
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Typos
+    if: (github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -187,7 +190,7 @@ jobs:
   # manifest; their tests pin that derivation to the tree, so they run whenever
   # the scripts or the manifest change.
   scripts:
-    name: Release scripts
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Release scripts
     needs: changes
     if: needs.changes.outputs.scripts == 'true'
     runs-on: ubuntu-latest
@@ -206,7 +209,7 @@ jobs:
   # They share nothing that isolates them from each other, so one job running
   # them sequentially pays that fixed cost once instead of three times.
   hygiene:
-    name: Hygiene
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Hygiene
     needs: changes
     if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
@@ -270,7 +273,7 @@ jobs:
   # `wgpu/dx12`, which forwards to it. The check blocks an invalid lockfile;
   # it does not alter Cargo's resolution.
   windows-dx12:
-    name: Windows DX12 deps
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Windows DX12 deps
     needs: changes
     if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
@@ -295,7 +298,7 @@ jobs:
   # boundary, there it sweeps the whole workspace nightly — the signal
   # moves, it does not disappear.
   msrv:
-    name: MSRV
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}MSRV
     needs: [changes, scope]
     if: needs.scope.outputs.msrv == 'true'
     runs-on: ubuntu-latest
@@ -317,7 +320,7 @@ jobs:
   # Android paths or the Hydrolysis Android host change; the nightly
   # `cli-e2e` legs run the same cycle unconditionally.
   android-package:
-    name: Android package
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Android package
     needs: changes
     if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
@@ -376,7 +379,7 @@ jobs:
           grep -q 'Packaged at' ../e2e-logs/package-release.log
 
   test:
-    name: Test
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Test
     needs: [changes, scope]
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/test.yml
@@ -400,9 +403,9 @@ jobs:
   # passes when `test` succeeded or was skipped by the path filter, and fails
   # on anything else, including a failed `changes` job.
   test-result:
-    name: Test result
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Test result
     needs: [changes, scope, test, windows-dx12]
-    if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    if: always() && ((github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -453,8 +456,8 @@ jobs:
   # into `dev`, which this check never blocks, so it cannot deadlock its own
   # repair; what it blocks is publishing a `dev` the nightly has not passed.
   nightly-healthy:
-    name: Nightly healthy
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Nightly healthy
+    if: github.event_name == 'pull_request' && github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
