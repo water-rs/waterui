@@ -554,7 +554,7 @@ fn native_image_memory_tracks_the_storage_format()
 
 #[cfg(not(target_arch = "wasm32"))]
 fn check_compressed<F: cherenkov::Format>(
-    block: Vec<u8>,
+    block: &[u8],
     color: [u8; 4],
     feature: wgpu::Features,
 ) -> Result<(), Box<dyn std::error::Error>>
@@ -596,7 +596,7 @@ where
         let surface =
             engine.surface(Offscreen::new((33, 33), OffscreenFormat::LinearF16), || {})?;
         let baseline = engine.memory().gpu.0;
-        let image = engine.image(ImageData::<F>::new(3, 2, block.clone())?)?;
+        let image = engine.image(ImageData::<F>::new(3, 2, block)?)?;
         assert_eq!(
             engine.memory().gpu.0 - baseline,
             if native { 16 } else { 24 }
@@ -613,7 +613,7 @@ where
             ImageColorSpace::LinearP3,
         ] {
             for premultiplied in [false, true] {
-                let mut source = ImageData::<F>::new(3, 2, block.clone())?.color_space(space);
+                let mut source = ImageData::<F>::new(3, 2, block)?.color_space(space);
                 source.premultiplied = premultiplied;
                 image.replace(source)?;
                 engine.render(cherenkov::FrameTime::now())?;
@@ -646,7 +646,7 @@ fn compressed_native_and_capability_decode_preserve_partial_blocks()
         astc.extend_from_slice(&(c * 257).to_le_bytes());
     }
     check_compressed::<cherenkov::Astc4x4>(
-        astc,
+        &astc,
         [201, 81, 21, 129],
         wgpu::Features::TEXTURE_COMPRESSION_ASTC,
     )?;
@@ -665,12 +665,12 @@ fn compressed_native_and_capability_decode_preserve_partial_blocks()
         put(channel, 7);
     }
     check_compressed::<cherenkov::Bc7>(
-        bc7,
+        &bc7,
         [200, 80, 20, 128],
         wgpu::Features::TEXTURE_COMPRESSION_BC,
     )?;
     check_compressed::<cherenkov::Etc2Rgba>(
-        vec![129, 0, 0, 0, 0, 0, 0, 0, 0xff, 0, 0, 0, 0, 0, 0, 0],
+        &[129, 0, 0, 0, 0, 0, 0, 0, 0xff, 0, 0, 0, 0, 0, 0, 0],
         [255, 2, 2, 129],
         wgpu::Features::TEXTURE_COMPRESSION_ETC2,
     )?;
