@@ -29,6 +29,7 @@ use waterui_shape::ShapeExt as _;
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
+use crate::platform::{InputEvent, PointerButton, PointerKind};
 use crate::runner::HeadlessSnapshot;
 
 const RED: Srgb = Srgb::new_u8(220, 40, 40);
@@ -582,5 +583,311 @@ fn a_list_row_removal_holds_its_slot_while_it_fades() {
     assert!(
         ghost != centre_pixel(&rest, leaving) && ghost != centre_pixel(&gone, leaving),
         "halfway through the removal the row's ghost is fading"
+    );
+}
+
+/// A stack style that slides the moving page one viewport width toward the
+/// trailing edge while the page beneath stays put: under an interactive pop
+/// the departing page sits exactly `progress` widths to the right.
+#[derive(Debug)]
+struct EdgeSlide;
+
+impl waterui::navigation::NavigationTransition for EdgeSlide {
+    fn frame(
+        &self,
+        progress: f32,
+        direction: waterui::navigation::NavigationTransitionDirection,
+    ) -> waterui::navigation::NavigationTransitionFrame {
+        use waterui::navigation::{
+            NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
+        };
+        let moving = |offset_x| NavigationTransitionLayer {
+            offset_x,
+            ..NavigationTransitionLayer::IDENTITY
+        };
+        match direction {
+            NavigationTransitionDirection::Push => NavigationTransitionFrame {
+                outgoing: NavigationTransitionLayer::IDENTITY,
+                incoming: moving(1.0 - progress),
+            },
+            NavigationTransitionDirection::Pop => NavigationTransitionFrame {
+                outgoing: moving(progress),
+                incoming: NavigationTransitionLayer::IDENTITY,
+            },
+        }
+    }
+}
+
+const EDGE_POP_WIDTH: u16 = 400;
+const EDGE_POP_POINTER: u64 = 7;
+/// Where the edge drag presses: inside the stack's leading-edge strip.
+const EDGE_POP_START: [f32; 2] = [10.0, 300.0];
+
+/// A stack under the `EdgeSlide` style whose root shows a blue 300x200
+/// swatch and whose pushed page shows `page`, with the root's settled frame
+/// — the page has been pushed and has settled by the time this returns, at
+/// `at`.
+fn edge_pop_stack(
+    page: impl Fn() -> AnyView + 'static,
+    at: &mut Instant,
+) -> (HeadlessRuntime, HeadlessSnapshot) {
+    use waterui::navigation::{NavigationPath, NavigationStack, NavigationView};
+
+    let path = NavigationPath::<i64>::new();
+    let builder_path = path.clone();
+    let page = std::rc::Rc::new(page);
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        AnyViewBuilder::<AnyView>::new(move || {
+            let page = std::rc::Rc::clone(&page);
+            AnyView::new(
+                NavigationStack::with_path(
+                    builder_path.clone(),
+                    NavigationView::new("Root", sized_swatch("root", BLUE, 300.0, 200.0)),
+                )
+                .transition(EdgeSlide)
+                .destination(move |_: i64| NavigationView::new("Page", page())),
+            )
+        }),
+        u32::from(EDGE_POP_WIDTH),
+        600,
+        MinimalTestTheme::default(),
+    );
+    settle(&mut runtime, at);
+    let root_rest = frame(&mut runtime, *at);
+    path.push(1);
+    *at += Duration::from_millis(16);
+    let _ = frame(&mut runtime, *at);
+    settle(&mut runtime, at);
+    (runtime, root_rest)
+}
+
+/// The pointer position `progress` of the stack's width past the press.
+fn edge_point(progress: f32) -> [f32; 2] {
+    let [x, y] = EDGE_POP_START;
+    [progress.mul_add(f32::from(EDGE_POP_WIDTH), x), y]
+}
+
+/// Feeds one pointer event and renders its frame at `at`.
+fn edge_pointer(runtime: &mut HeadlessRuntime, event: InputEvent, at: Instant) -> HeadlessSnapshot {
+    runtime.push_input_event(event);
+    frame(runtime, at)
+}
+
+fn edge_press(runtime: &mut HeadlessRuntime, at: Instant) -> HeadlessSnapshot {
+    let [x, y] = EDGE_POP_START;
+    edge_pointer(
+        runtime,
+        InputEvent::PointerDown {
+            id: EDGE_POP_POINTER,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+            button: PointerButton::Primary,
+        },
+        at,
+    )
+}
+
+/// Drags the pressed edge to `progress` of the stack's width.
+fn edge_drag_to(runtime: &mut HeadlessRuntime, progress: f32, at: Instant) -> HeadlessSnapshot {
+    let [x, y] = edge_point(progress);
+    edge_pointer(
+        runtime,
+        InputEvent::PointerMove {
+            id: EDGE_POP_POINTER,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+        },
+        at,
+    )
+}
+
+/// Releases the edge drag at `progress` of the stack's width.
+fn edge_release(runtime: &mut HeadlessRuntime, progress: f32, at: Instant) -> HeadlessSnapshot {
+    let [x, y] = edge_point(progress);
+    edge_pointer(
+        runtime,
+        InputEvent::PointerUp {
+            id: EDGE_POP_POINTER,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+            button: PointerButton::Primary,
+        },
+        at,
+    )
+}
+
+fn interactive_pop_in_flight(runtime: &HeadlessRuntime) -> bool {
+    runtime
+        .renderer()
+        .navigation
+        .slots
+        .values()
+        .any(|slot| slot.interactive_pop.is_some())
+}
+
+/// The pushed page of the edge-pop cases: a red 300x200 swatch over the
+/// root's blue one, fading in and out under its root's own declaration.
+fn faded_page() -> AnyView {
+    AnyView::new(
+        sized_swatch("page", RED, 300.0, 200.0)
+            .transition(PropertyTransition::opacity())
+            .animation(Animation::linear(CLOCK)),
+    )
+}
+
+/// The probe both swatches cover: near the leading edge of the page's
+/// swatch, left of where a 0.3-width slide would have moved the page to.
+fn edge_probe(runtime: &mut HeadlessRuntime) -> Rect {
+    let page = bounds(runtime, "page").expect("the pushed page renders");
+    Rect::new(page.x0 + 4.0, page.y0 + 4.0, page.x0 + 8.0, page.y0 + 8.0)
+}
+
+/// An edge drag released below the commit threshold pops nothing: while it
+/// drags, the departing page's root removal runs at the drag's progress —
+/// a fade over the stationary root, not the stack's slide — and after the
+/// release it reverses toward presence until the page is back as it was.
+#[test]
+fn an_edge_drag_released_early_reverses_the_page_root_removal() {
+    let mut at = Instant::now();
+    let (mut runtime, root_rest) = edge_pop_stack(faded_page, &mut at);
+    let probe = edge_probe(&mut runtime);
+    let page_rest = frame(&mut runtime, at);
+    let page = centre_pixel(&page_rest, probe);
+    let root = centre_pixel(&root_rest, probe);
+
+    at += Duration::from_millis(16);
+    let _ = edge_press(&mut runtime, at);
+    at += Duration::from_millis(16);
+    let dragged = centre_pixel(&edge_drag_to(&mut runtime, 0.3, at), probe);
+    assert!(
+        between(dragged, root, page),
+        "dragged 0.3 of the way, the page fades by the drag's progress over a root that \
+         stays put: root {root:?}, dragged {dragged:?}, page {page:?}"
+    );
+    assert!(
+        bounds(&mut runtime, "page").is_some(),
+        "a drag alone does not pop the page"
+    );
+
+    at += Duration::from_millis(16);
+    let _ = edge_release(&mut runtime, 0.3, at);
+    let returning = centre_pixel(&frame(&mut runtime, at + Duration::from_millis(50)), probe);
+    assert!(
+        between(returning, dragged, page),
+        "after an early release the removal reverses from where the drag left it: \
+         dragged {dragged:?}, returning {returning:?}, page {page:?}"
+    );
+
+    at += Duration::from_millis(50);
+    settle(&mut runtime, &mut at);
+    at += Duration::from_millis(16);
+    let back = frame(&mut runtime, at);
+    assert!(
+        !interactive_pop_in_flight(&runtime),
+        "the cancelled pop ended"
+    );
+    assert!(
+        bounds(&mut runtime, "page").is_some(),
+        "a cancelled edge drag keeps the page"
+    );
+    assert_eq!(
+        centre_pixel(&back, probe),
+        page,
+        "the page is presented as it was before the drag"
+    );
+}
+
+/// An edge drag released past the commit threshold pops the page: the
+/// departing page's root removal runs at the drag's progress, then completes
+/// from that progress after the release, and the root is presented as it was.
+#[test]
+fn an_edge_drag_released_late_completes_the_page_root_removal() {
+    let mut at = Instant::now();
+    let (mut runtime, root_rest) = edge_pop_stack(faded_page, &mut at);
+    let probe = edge_probe(&mut runtime);
+    let page_rest = frame(&mut runtime, at);
+    let page = centre_pixel(&page_rest, probe);
+    let root = centre_pixel(&root_rest, probe);
+
+    at += Duration::from_millis(16);
+    let _ = edge_press(&mut runtime, at);
+    at += Duration::from_millis(16);
+    let dragged = centre_pixel(&edge_drag_to(&mut runtime, 0.7, at), probe);
+    assert!(
+        between(dragged, root, page),
+        "dragged 0.7 of the way, the page fades by the drag's progress over a root that \
+         stays put: root {root:?}, dragged {dragged:?}, page {page:?}"
+    );
+
+    at += Duration::from_millis(16);
+    let _ = edge_release(&mut runtime, 0.7, at);
+    let leaving = centre_pixel(&frame(&mut runtime, at + Duration::from_millis(50)), probe);
+    assert!(
+        between(leaving, root, dragged),
+        "after a late release the removal completes from where the drag left it: \
+         root {root:?}, leaving {leaving:?}, dragged {dragged:?}"
+    );
+
+    at += Duration::from_millis(50);
+    settle(&mut runtime, &mut at);
+    at += Duration::from_millis(16);
+    let back = frame(&mut runtime, at);
+    assert!(
+        !interactive_pop_in_flight(&runtime),
+        "the committed pop ended"
+    );
+    assert!(
+        bounds(&mut runtime, "page").is_none() && bounds(&mut runtime, "root").is_some(),
+        "a committed edge drag pops the page"
+    );
+    assert_eq!(
+        centre_pixel(&back, probe),
+        root,
+        "after the pop the root is presented as it was"
+    );
+}
+
+/// Without a page-root declaration an edge drag still drives the stack's
+/// style by the drag's progress: the departing page slides 0.3 of the width
+/// toward the trailing edge, unfaded, and the root beneath is uncovered.
+#[test]
+fn an_edge_drag_without_a_page_root_declaration_drives_the_stack_style() {
+    let mut at = Instant::now();
+    let (mut runtime, root_rest) = edge_pop_stack(
+        || AnyView::new(sized_swatch("page", RED, 300.0, 200.0)),
+        &mut at,
+    );
+    let probe = edge_probe(&mut runtime);
+    let page_rest = frame(&mut runtime, at);
+    let page = centre_pixel(&page_rest, probe);
+    let root = centre_pixel(&root_rest, probe);
+    let travel = 0.3 * f64::from(EDGE_POP_WIDTH);
+    let slid = Rect::new(probe.x0 + travel, probe.y0, probe.x1 + travel, probe.y1);
+
+    at += Duration::from_millis(16);
+    let _ = edge_press(&mut runtime, at);
+    at += Duration::from_millis(16);
+    let dragged = edge_drag_to(&mut runtime, 0.3, at);
+    assert_eq!(
+        centre_pixel(&dragged, slid),
+        page,
+        "the departing page slides by the drag's progress, unfaded"
+    );
+    assert_eq!(
+        centre_pixel(&dragged, probe),
+        root,
+        "the slide uncovers the root beneath, which stays put"
+    );
+
+    at += Duration::from_millis(16);
+    let _ = edge_release(&mut runtime, 0.3, at);
+    settle(&mut runtime, &mut at);
+    assert!(
+        bounds(&mut runtime, "page").is_some(),
+        "the early release keeps the page"
     );
 }
