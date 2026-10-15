@@ -63,7 +63,7 @@ const MTIME_SLACK: Duration = Duration::from_secs(2);
 /// before it decides a record is another build's. Records live in a
 /// directory named by it, so a change to that shape bumps it and never
 /// meets the old layout.
-const RECORD_FORMAT: u32 = 1;
+const RECORD_FORMAT: u32 = 2;
 
 /// The environment variables whose values reach Cargo's or rustup's
 /// decisions: every `CARGO*`, `RUSTUP*` and `RUSTC*` variable, and the
@@ -100,21 +100,31 @@ pub trait Fact: Send + Sync {
 }
 
 /// The CLI build that wrote a record: its version and its executable's
-/// stamp, so a rebuilt binary of the same version never replays another
-/// build's records.
+/// file identity, so a rebuilt binary of the same version never replays
+/// another build's records — while one binary reached through any
+/// spelling of its path replays its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliIdentity {
     version: String,
-    executable: Stamp,
+    executable: FileStamp,
 }
 
 impl CliIdentity {
     fn current() -> eyre::Result<Self> {
-        let executable = Host::current_exe().wrap_err("cannot locate the running CLI")?;
+        Self::of_invocation(&Host::current_exe().wrap_err("cannot locate the running CLI")?)
+    }
+
+    /// The identity of an invocation that reached the binary through
+    /// `executable`. Canonicalizing resolves symlinks and `..`, and the
+    /// path itself is not part of the identity — every spelling of one
+    /// file is the same CLI.
+    fn of_invocation(executable: &Path) -> eyre::Result<Self> {
+        let canonical = std::fs::canonicalize(executable)
+            .wrap_err_with(|| format!("cannot resolve the running CLI {}", executable.display()))?;
         Ok(Self {
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            executable: Stamp::of(&executable)?
-                .ok_or_else(|| eyre::eyre!("the running CLI {} is gone", executable.display()))?,
+            executable: FileStamp::of(&canonical)?
+                .ok_or_else(|| eyre::eyre!("the running CLI {} is gone", canonical.display()))?,
         })
     }
 
@@ -126,20 +136,30 @@ impl CliIdentity {
         version.clone_into(&mut identity.version);
         identity
     }
+
+    /// The identity an invocation reaching the binary through
+    /// `executable` holds — a test's stand-in for the same CLI invoked
+    /// through another path spelling.
+    #[cfg(test)]
+    pub(crate) fn invoked_as(executable: &Path) -> Self {
+        Self::of_invocation(executable).expect("the invoked CLI has an identity")
+    }
 }
 
-/// A file's identity by metadata: path, length, modification time and, on
-/// Unix, inode — replaced binaries change at least one of them.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct Stamp {
-    path: PathBuf,
+/// A file's identity by metadata: length, modification time and, on
+/// Unix, device and inode — a replaced file changes at least one of
+/// them, and every spelling of a path to it shares them all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+struct FileStamp {
     len: u64,
     modified_ns: u128,
+    device: u64,
     inode: u64,
 }
 
-impl Stamp {
-    /// `path`'s stamp, following symlinks; `None` when nothing is there.
+impl FileStamp {
+    /// `path`'s identity, following symlinks; `None` when nothing is
+    /// there.
     fn of(path: &Path) -> io::Result<Option<Self>> {
         let metadata = match std::fs::metadata(path) {
             Ok(metadata) => metadata,
@@ -147,18 +167,41 @@ impl Stamp {
             Err(error) => return Err(error),
         };
         #[cfg(unix)]
-        let inode = std::os::unix::fs::MetadataExt::ino(&metadata);
+        let (device, inode) = (
+            std::os::unix::fs::MetadataExt::dev(&metadata),
+            std::os::unix::fs::MetadataExt::ino(&metadata),
+        );
         #[cfg(not(unix))]
-        let inode = 0;
+        let (device, inode) = (0, 0);
         Ok(Some(Self {
-            path: path.to_path_buf(),
             len: metadata.len(),
             modified_ns: metadata
                 .modified()?
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_nanos(),
+            device,
             inode,
+        }))
+    }
+}
+
+/// A file's identity together with the path it was observed through: for
+/// a resolved tool (`cargo`, `rustc`, `rustup`, a toolchain's binaries)
+/// the path is itself part of the observation — a different `PATH`
+/// resolution is a different input however the files relate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct Stamp {
+    path: PathBuf,
+    file: FileStamp,
+}
+
+impl Stamp {
+    /// `path`'s stamp, following symlinks; `None` when nothing is there.
+    fn of(path: &Path) -> io::Result<Option<Self>> {
+        Ok(FileStamp::of(path)?.map(|file| Self {
+            path: path.to_path_buf(),
+            file,
         }))
     }
 }
@@ -992,7 +1035,7 @@ mod tests {
     use cargo_metadata::MetadataCommand;
     use target_lexicon::Triple;
 
-    use super::{CliIdentity, Facts};
+    use super::{CliIdentity, Facts, RECORD_FORMAT};
     use crate::toolchain::{Host, testing::TestMachine};
 
     /// A machine with fake `cargo`, `rustc` and `rustup`, a rustup home
@@ -1236,6 +1279,57 @@ mod tests {
         });
     }
 
+    /// The same binary invoked through another spelling of its path —
+    /// a `.` or `..` component, or a symlink — is the same CLI, so a
+    /// fresh invocation through it replays the records instead of
+    /// resolving again.
+    #[test]
+    fn an_invocation_through_another_path_spelling_replays_the_records() {
+        smol::block_on(async {
+            let fixture = Fixture::new();
+            let host = fixture.host(&[]);
+            ask(&fixture, &fixture.facts(&host))
+                .await
+                .expect("the facts resolve");
+            let seen = fixture.spawns().len();
+
+            let exe = std::env::current_exe().expect("the test binary has a path");
+            let directory = exe.parent().expect("the binary has a directory");
+            let name = exe.file_name().expect("the binary has a name");
+            let spellings = [
+                directory.join(".").join(name),
+                directory
+                    .join("..")
+                    .join(directory.file_name().expect("the directory has a name"))
+                    .join(name),
+            ];
+            #[cfg(unix)]
+            let linked = {
+                fixture.machine.dir("linked-bin");
+                let link = fixture.path("linked-bin/water");
+                std::os::unix::fs::symlink(&exe, &link).expect("the symlink is created");
+                Some(link)
+            };
+            #[cfg(not(unix))]
+            let linked: Option<PathBuf> = None;
+
+            for spelling in spellings.into_iter().chain(linked) {
+                let facts = fixture
+                    .facts(&host)
+                    .with_cli(CliIdentity::invoked_as(&spelling));
+                ask(&fixture, &facts)
+                    .await
+                    .expect("the facts replay under the respelled invocation");
+            }
+            assert_eq!(
+                fixture.spawns().len(),
+                seen,
+                "a respelled invocation resolves nothing: {:?}",
+                fixture.spawns()
+            );
+        });
+    }
+
     /// Each input change, and which facts it must re-resolve: the inputs
     /// of a resolve re-resolve only the fact read from them; the
     /// configuration, project and toolchain inputs every fact shares
@@ -1413,7 +1507,7 @@ mod tests {
             ask(&fixture, &fixture.facts(&host))
                 .await
                 .expect("the facts resolve");
-            let records = std::fs::read_dir(fixture.path("records/v1"))
+            let records = std::fs::read_dir(fixture.path(&format!("records/v{RECORD_FORMAT}")))
                 .expect("records exist")
                 .map(|entry| entry.expect("record entry").path())
                 .collect::<Vec<_>>();
