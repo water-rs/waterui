@@ -100,7 +100,7 @@ if /i "%tool%"=="cmake" goto :simple_version
 if /i "%tool%"=="meson" goto :simple_version
 if /i "%tool%"=="sccache" goto :sccache
 if /i "%tool%"=="git" goto :git
-if /i "%tool%"=="wasm-pack" goto :simple_version
+if /i "%tool%"=="wasm-pack" goto :wasm_pack
 if /i "%tool%"=="spirv-opt" goto :simple_version
 if /i "%tool%"=="sh" goto :simple_version
 if /i "%tool%"=="bash" goto :simple_version
@@ -396,11 +396,36 @@ if "%1"=="-version" (echo sccache %WATERUI_FAKE_SCCACHE_VERSION% ^(waterui-test^
 if "%1"=="-v" (echo sccache %WATERUI_FAKE_SCCACHE_VERSION% ^(waterui-test^) & exit /b 0)
 exit /b 0
 
-:simple_version
-if "%1"=="--version" (echo %tool% 1.0.0 ^(waterui-test^) & exit /b 0)
-if "%1"=="-version" (echo %tool% 1.0.0 ^(waterui-test^) & exit /b 0)
-if "%1"=="-v" (echo %tool% 1.0.0 ^(waterui-test^) & exit /b 0)
+:wasm_pack
+if not "%~1"=="build" goto :simple_version
+
+rem `build` runs in the managed crate's directory: whether the crate's lock
+rem and its seed stamp were in place before the build was invoked goes on
+rem the log so a test can assert the CLI seeded before invoking wasm-pack.
+if defined WATERUI_FAKE_LOG (
+    set "wp_lock=absent"
+    set "wp_seed=absent"
+    if exist Cargo.lock set "wp_lock=present"
+    if exist Cargo.lock.seed set "wp_seed=present"
+    echo wasm-pack-observes Cargo.lock=!wp_lock! Cargo.lock.seed=!wp_seed!>> "%WATERUI_FAKE_LOG%"
+)
+rem Emit the bundle artifact the CLI's web shell reads:
+rem `<out-dir>\<out-name>_bg.wasm`.
+set "wp_out="
+set "wp_name=app"
+set "wp_prev="
+for %%a in (%*) do (
+    if "!wp_prev!"=="--out-dir" set "wp_out=%%~a"
+    if "!wp_prev!"=="--out-name" set "wp_name=%%~a"
+    set "wp_prev=%%~a"
+)
+if defined wp_out (
+    if not exist "!wp_out!" mkdir "!wp_out!"
+    >"!wp_out!\!wp_name!_bg.wasm" echo fake wasm
+)
 exit /b 0
+
+:simple_version
 
 :vswhere
 call :respond_or_empty VSWHERE
