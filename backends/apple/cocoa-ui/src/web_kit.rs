@@ -1292,7 +1292,7 @@ impl WebViewController {
         let done = RefCell::new(Some(done));
         let completion = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
             if let Some(done) = done.borrow_mut().take() {
-                done(script_result(result, error));
+                done(script_result(result, error, json_string));
             }
         });
         // SAFETY: `completion` is copied by WebKit and invoked on the main
@@ -1306,7 +1306,10 @@ impl WebViewController {
 
     /// Calls `function_body` in the page content world — the entry point
     /// `callAsyncJavaScript` is required for, since `evaluateJavaScript`
-    /// returns the promise object itself.
+    /// returns the promise object itself. `done` receives what the function
+    /// resolved with: a string as itself — the shared wrapper resolves with
+    /// its JSON envelope already encoded, which a second encoding would turn
+    /// into a JSON string literal — and any other value as its JSON encoding.
     pub fn call_async_javascript(
         &self,
         function_body: &str,
@@ -1315,7 +1318,7 @@ impl WebViewController {
         let done = RefCell::new(Some(done));
         let completion = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
             if let Some(done) = done.borrow_mut().take() {
-                done(script_result(result, error));
+                done(script_result(result, error, awaited_text));
             }
         });
         let arguments = NSDictionary::<NSString, AnyObject>::new();
@@ -1549,8 +1552,13 @@ pub fn evaluate_server_trust(trust: &SecTrust) -> Result<(), String> {
     ))
 }
 
-/// Turns an evaluated result into the reply string the bridge expects.
-fn script_result(result: *mut AnyObject, error: *mut NSError) -> Result<String, String> {
+/// Turns an evaluated result into the reply string the bridge expects,
+/// spelling a present value with `encode`.
+fn script_result(
+    result: *mut AnyObject,
+    error: *mut NSError,
+    encode: fn(&AnyObject) -> String,
+) -> Result<String, String> {
     if !error.is_null() {
         // SAFETY: a non-null `NSError` from WebKit is a live object.
         let error = unsafe { &*error };
@@ -1561,7 +1569,15 @@ fn script_result(result: *mut AnyObject, error: *mut NSError) -> Result<String, 
     }
     // SAFETY: a non-null `AnyObject` from WebKit is a live object.
     let result = unsafe { &*result };
-    Ok(json_string(result))
+    Ok(encode(result))
+}
+
+/// The text of a value an awaited call resolved with: a string as itself,
+/// anything else as [`json_string`] spells it.
+fn awaited_text(object: &AnyObject) -> String {
+    object
+        .downcast_ref::<NSString>()
+        .map_or_else(|| json_string(object), NSString::to_string)
 }
 
 /// JSON-encodes `object` for the `run_javascript` reply — a string quoted

@@ -7261,6 +7261,14 @@ mod webview {
     /// [`MAIN_QUEUE_DEADLINE`] gives one deferred piece of work.
     const MIRRORED_STATE_SCENARIO_DEADLINE: f64 = 180.0;
 
+    /// The bound one navigation gets to finish loading.
+    ///
+    /// A load is a full cycle through `WebKit`'s web and network processes,
+    /// and a view's first load also launches them — seconds on a cold
+    /// simulator, not the few run-loop turns [`MAIN_QUEUE_DEADLINE`] gives
+    /// one deferred piece of work.
+    const PAGE_LOAD_DEADLINE: f64 = 30.0;
+
     pub fn trials() -> Vec<Trial> {
         vec![
             Trial::test(
@@ -7294,7 +7302,7 @@ mod webview {
             .unwrap_or_else(|error| panic!("{destination} must parse: {error}"));
         handle.go_to(&url);
         assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || loaded.get() > before),
+            pump_main_until(PAGE_LOAD_DEADLINE, || loaded.get() > before),
             "the engine never finished loading {destination}"
         );
     }

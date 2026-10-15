@@ -31,9 +31,8 @@ use nami::watcher::BoxWatcherGuard;
 use waterui_core::{Computed, Str};
 use waterui_webview::{
     ASSET_HTTPS_ORIGIN, AssetServer, BackendEvent, Cookie, CustomWebViewController,
-    DOCUMENT_START_SCRIPT, OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url,
-    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets,
-    bridge,
+    DOCUMENT_START_SCRIPT, ScriptInjectionTime, ScriptMessageHandler, Url, WatcherGuard,
+    WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets, bridge,
 };
 
 use crate::runner::android::jni::{JniError, get_string, guard, guard_val};
