@@ -85,6 +85,7 @@ mod layout;
 mod nodes;
 pub(super) mod safe_area;
 mod subview;
+pub(super) mod transition;
 mod window;
 
 pub use collection::*;
