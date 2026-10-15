@@ -41,8 +41,8 @@ mod real {
     use tiny_http::{Header, Response, Server};
     use waterui_webview::{
         BackendEvent, BridgeOrigins, CustomWebViewController as _, IntoJsReply, JsReply, Json,
-        OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, WatcherGuard, WebViewConfig,
-        WebViewEvent, WebViewHandle,
+        OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard,
+        WebViewConfig, WebViewEvent, WebViewHandle,
     };
 
     /// How long one wait may take before a scenario gives up.
@@ -210,18 +210,44 @@ mod real {
         assert_eq!(unmounts.get(), 2, "closing the window retires the node");
     }
 
-    /// Starts the server, opens one web view and wires the shared contract.
+    /// Starts the server, opens one web view and wires the shared contract,
+    /// under the default policy an opened view resolves to: the origin it was
+    /// opened at, which is the local server. This is the policy under which
+    /// the bridge admits the pages below and refuses everything else.
     fn start(executor: &TestExecutor) -> RealEngine<impl WebViewHandle + use<>> {
+        start_with(executor, &|initial| {
+            OriginPolicy::new(BridgeOrigins::Initial, initial)
+        })
+    }
+
+    /// [`start`] under the admission policy `origins` resolves from the local
+    /// server's address.
+    fn start_with(
+        executor: &TestExecutor,
+        origins: &dyn Fn(&Url) -> OriginPolicy,
+    ) -> RealEngine<impl WebViewHandle + use<>> {
         let server = Server::http("127.0.0.1:0").expect("bind the local page server");
         let address = server
             .server_addr()
             .to_ip()
             .expect("the local page server listens on a TCP port");
         let base = format!("http://{address}");
+        let initial: Url = base
+            .parse()
+            .expect("the local page server address is a URL");
 
         // Exactly what the renderer gets: a genuine WKWebView behind the
-        // shared handle contract.
-        let handle = MacSystemWebViewController.open(WebViewConfig { asset_server: None });
+        // shared handle contract, created with its admission rules and
+        // scripts.
+        let handle = MacSystemWebViewController.open(WebViewConfig {
+            bridge_origins: origins(&initial),
+            scripts: vec![UserScript {
+                key: "waterui:test-state-seed".into(),
+                source: STATE_SEED_JS.into(),
+                time: ScriptInjectionTime::DocumentStart,
+            }],
+            ..WebViewConfig::default()
+        });
 
         let events = Rc::new(RefCell::new(Vec::new()));
         let guard = handle.watch({
@@ -269,20 +295,6 @@ mod real {
                 ().into_js_reply()
             })
         });
-
-        handle.inject_script(
-            "waterui:test-state-seed",
-            STATE_SEED_JS,
-            ScriptInjectionTime::DocumentStart,
-        );
-
-        // The default policy an opened view resolves to: the origin it was
-        // opened at, which is the local server. This is the policy under which
-        // the bridge admits the pages below and refuses everything else.
-        let initial: Url = base
-            .parse()
-            .expect("the local page server address is a URL");
-        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Initial, &initial));
 
         RealEngine {
             server,
@@ -599,11 +611,11 @@ mod real {
 
     /// Injecting under a key already in use replaces that script.
     ///
-    /// The mirrored-state seed depends on this: it is re-rendered and
-    /// re-injected under the same key before every navigation, and an engine
-    /// that stacks copies instead runs every stale seed ahead of the current
-    /// one. Each probe script *appends* to an array, so a stacked pair is
-    /// visible as two entries where a replaced one leaves exactly the latest.
+    /// A script whose content follows application state is kept current this
+    /// way, and an engine that stacks copies instead runs every stale one
+    /// ahead of the current one. Each probe script *appends* to an array, so a
+    /// stacked pair is visible as two entries where a replaced one leaves
+    /// exactly the latest.
     fn a_keyed_injection_replaces_its_predecessor(executor: &TestExecutor) {
         let engine = start(executor);
 
@@ -646,15 +658,14 @@ mod real {
     /// reports. The document must get the bridge, and a handler call must
     /// cross it, or the two checks disagree.
     fn a_local_file_document_receives_the_bridge(executor: &TestExecutor) {
-        let engine = start(executor);
         let path = std::env::temp_dir().join("waterui-hydrolysis-real-engine-local.html");
         fs::write(&path, LOCAL_HTML).expect("the local test document is writable");
         let url: Url = format!("file://{}", path.display())
             .parse()
             .expect("the test document's file URL parses");
-        engine
-            .handle
-            .set_bridge_origins(OriginPolicy::new(BridgeOrigins::LocalFiles, &url));
+        let engine = start_with(executor, &|_| {
+            OriginPolicy::new(BridgeOrigins::LocalFiles, &url)
+        });
         engine.navigate("the local file document to load", || {
             engine.handle.go_to(&url);
         });
@@ -678,13 +689,10 @@ mod real {
     /// first `about:blank` reuses the initial empty document, which runs no
     /// document-start script and would read as a refusal.
     fn an_any_policy_admits_an_opaque_document(executor: &TestExecutor) {
-        let engine = start(executor);
         let page: Url = "data:text/html,admitted"
             .parse()
             .expect("a data: document URL parses");
-        engine
-            .handle
-            .set_bridge_origins(OriginPolicy::new(BridgeOrigins::Any, &page));
+        let engine = start_with(executor, &|_| OriginPolicy::new(BridgeOrigins::Any, &page));
         engine.navigate("the data: document to load", || {
             engine.handle.go_to(&page);
         });

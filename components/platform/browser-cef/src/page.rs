@@ -233,6 +233,10 @@ pub struct CefPageConfiguration {
     pub proxy: Option<String>,
     pub language: Option<String>,
     pub user_agent: Option<String>,
+    /// What every renderer of a web view's browser injects, delivered as the
+    /// browser's `extra_info`; `None` for a page that is not a web view.
+    #[cfg(feature = "webview")]
+    pub renderer: Option<crate::renderer::RendererBundle>,
 }
 
 #[cfg(feature = "chromium")]
@@ -885,7 +889,7 @@ impl CefPageHandle {
                 windowless_frame_rate: 60,
                 ..Default::default()
             }),
-            None,
+            extra_info(&configuration).as_mut(),
             Some(&mut request_context),
         )
         .expect("CEF failed to create a shared-texture windowless browser");
@@ -1510,7 +1514,28 @@ impl From<ChromiumConfiguration> for CefPageConfiguration {
             proxy,
             language,
             user_agent,
+            // A Chromium page is not a web view: its renderers inject nothing.
+            #[cfg(feature = "webview")]
+            renderer: None,
         }
+    }
+}
+
+/// The `extra_info` a page's browser is created with: CEF hands it to every
+/// renderer process the browser is created in, before that process loads a
+/// document.
+fn extra_info(configuration: &CefPageConfiguration) -> Option<cef::DictionaryValue> {
+    #[cfg(feature = "webview")]
+    {
+        configuration
+            .renderer
+            .as_ref()
+            .map(crate::renderer::RendererBundle::to_extra_info)
+    }
+    #[cfg(not(feature = "webview"))]
+    {
+        let _ = configuration;
+        None
     }
 }
 

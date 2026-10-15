@@ -7248,7 +7248,7 @@ mod webview {
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, block_on_main, pump_main_until};
     use waterui_webview::{
         AnyWebViewHandle, BackendEvent, BridgeOrigins, JsReply, OriginPolicy, ScriptInjectionTime,
-        Url, WebViewEvent,
+        Url, UserScript, WatcherGuard, WebViewConfig, WebViewEvent,
     };
 
     use super::mtm;
@@ -7302,8 +7302,8 @@ mod webview {
     /// The `typeof` of every global the bridge installs, evaluated in the
     /// document currently loaded — `waterui`, the `__wateruiEval` wrapper
     /// and the `__wateruiState` store from the document-start script, plus
-    /// the `__wateruiProbe` the case itself injects, riding the same keyed
-    /// `inject_script` the mirrored-state seed does. The probe answers an
+    /// the `__wateruiProbe` the case itself injects, riding the creation-time
+    /// scripts the mirrored-state seed is one of. The probe answers an
     /// array, whose reply is its JSON encoding on every engine.
     fn bridge_globals(handle: &AnyWebViewHandle) -> String {
         block_on_main(
@@ -7316,22 +7316,25 @@ mod webview {
         .to_string()
     }
 
-    /// A document outside the admission policy must receive none of the
-    /// bridge: no `waterui` object, no `__wateruiEval`, no `__wateruiState`,
-    /// and none of the keyed injections the state seed is one of.
-    ///
-    /// The first leg loads under `BridgeOrigins::Any` so the globals are
-    /// expected present — without it, a build that simply never installed
-    /// anything would pass too. Both legs load `data:` documents, so the
-    /// policy is the only difference between them. The first is not
-    /// `about:blank`: a fresh view's first `about:blank` navigation reuses
-    /// the initial empty document, which runs no document-start script.
-    fn a_non_admitted_document_gets_no_bridge_globals() {
-        let webview = waterui_apple::native_test_support::webview::open(mtm());
+    /// A view created under `origins` with the probe script, a handler and
+    /// a counter of finished loads. The guard keeps the counter subscribed.
+    fn probed_view(origins: BridgeOrigins) -> (AnyWebViewHandle, Rc<Cell<u32>>, WatcherGuard) {
+        let initial: Url = "https://waterui.dev".parse().expect("parses");
+        let webview = waterui_apple::native_test_support::webview::controller(mtm()).open_with(
+            WebViewConfig {
+                bridge_origins: OriginPolicy::new(origins, &initial),
+                scripts: vec![UserScript {
+                    key: "waterui:test-probe".into(),
+                    source: "globalThis.__wateruiProbe = true;".into(),
+                    time: ScriptInjectionTime::DocumentStart,
+                }],
+                ..WebViewConfig::default()
+            },
+        );
         let handle = webview.handle().clone();
 
         let loaded = Rc::new(Cell::new(0_u32));
-        let _events = handle.watch({
+        let events = handle.watch({
             let loaded = Rc::clone(&loaded);
             move |event| {
                 if matches!(event, BackendEvent::Event(WebViewEvent::Loaded)) {
@@ -7346,28 +7349,35 @@ mod webview {
                 Box::pin(async { Ok(JsReply::Json(b"null".to_vec())) })
             }),
         );
-        handle.inject_script(
-            "waterui:test-probe",
-            "globalThis.__wateruiProbe = true;",
-            ScriptInjectionTime::DocumentStart,
-        );
+        (handle, loaded, events)
+    }
 
-        let initial: Url = "https://waterui.dev".parse().expect("parses");
-        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Any, &initial));
-        navigate(&handle, "data:text/html,admitted", &loaded);
+    /// A document outside the admission policy must receive none of the
+    /// bridge: no `waterui` object, no `__wateruiEval`, no `__wateruiState`,
+    /// and none of the creation-time scripts the state seed is one of.
+    ///
+    /// The first view is created under `BridgeOrigins::Any` so the globals
+    /// are expected present — without it, a build that simply never
+    /// installed anything would pass too. Both views load `data:` documents,
+    /// so the policy is the only difference between them. Neither is
+    /// `about:blank`: a fresh view's first `about:blank` navigation reuses
+    /// the initial empty document, which runs no document-start script.
+    fn a_non_admitted_document_gets_no_bridge_globals() {
+        let (admitting, loaded, _events) = probed_view(BridgeOrigins::Any);
+        navigate(&admitting, "data:text/html,admitted", &loaded);
         assert_eq!(
-            bridge_globals(&handle),
+            bridge_globals(&admitting),
             r#"["object","function","object","boolean"]"#,
             "an admitted document must receive the whole bridge"
         );
 
         // The default policy — only the origin the view was opened at —
-        // admits nothing a `data:` document could report, so the next
-        // navigation must leave the page with no bridge at all.
-        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Initial, &initial));
-        navigate(&handle, "data:text/plain,elsewhere", &loaded);
+        // admits nothing a `data:` document could report, so the document
+        // must be left with no bridge at all.
+        let (refusing, loaded, _events) = probed_view(BridgeOrigins::Initial);
+        navigate(&refusing, "data:text/plain,elsewhere", &loaded);
         assert_eq!(
-            bridge_globals(&handle),
+            bridge_globals(&refusing),
             r#"["undefined","undefined","undefined","undefined"]"#,
             "a document outside the admission policy must get no bridge globals"
         );

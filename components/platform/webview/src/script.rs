@@ -26,6 +26,23 @@ pub const DOCUMENT_START_SCRIPT: &str = concat!(
     include_str!("js/state.js"),
 );
 
+/// The evaluation wrapper alone.
+///
+/// [`WebView::eval`](crate::WebView::eval) and
+/// [`WebView::exec`](crate::WebView::exec) compile into `__wateruiEval` calls,
+/// so an engine that injects per document needs this wherever it evaluates —
+/// a document outside the bridge policy included. It defines no path from the
+/// page to the backend.
+pub const EVAL_SCRIPT: &str = include_str!("js/eval.js");
+
+/// The page-facing bridge alone: the `waterui` object, its reply sink and the
+/// mirrored-state runtime.
+///
+/// [`DOCUMENT_START_SCRIPT`] minus [`EVAL_SCRIPT`], for an engine that decides
+/// per document whether the page may reach the backend and evaluates the
+/// wrapper everywhere regardless.
+pub const BRIDGE_SCRIPT: &str = concat!(include_str!("js/bridge.js"), include_str!("js/state.js"));
+
 /// A JavaScript expression that evaluates to a value.
 ///
 /// Build one with `eval!` for a checked literal, or

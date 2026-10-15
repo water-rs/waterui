@@ -133,30 +133,6 @@ impl AssetResponse {
 /// block on the engine's UI thread.
 pub type AssetServer = Arc<dyn Fn(&AssetRequest) -> AssetResponse + Send + Sync>;
 
-/// Creation-time configuration for a web view.
-///
-/// Engines that expose an asset origin register their interception facility
-/// while the native view is constructed — `WKWebView` takes scheme handlers on
-/// its configuration before the view exists — so this is an input to
-/// [`CustomWebViewController::open`](crate::CustomWebViewController::open), not
-/// a method that could be called later.
-#[derive(Clone, Default)]
-pub struct WebViewConfig {
-    #[cfg(not(target_arch = "wasm32"))]
-    /// The server behind the engine's local asset origin, when the view was
-    /// opened with one.
-    pub asset_server: Option<AssetServer>,
-}
-
-impl std::fmt::Debug for WebViewConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = f.debug_struct("WebViewConfig");
-        #[cfg(not(target_arch = "wasm32"))]
-        debug.field("asset_server", &self.asset_server.as_ref().map(|_| ".."));
-        debug.finish()
-    }
-}
-
 /// The single entry point every engine routes an intercepted request through.
 ///
 /// Method enforcement and traversal rejection happen here so no engine can

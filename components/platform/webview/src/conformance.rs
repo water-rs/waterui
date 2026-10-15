@@ -127,13 +127,14 @@ pub async fn asset_origin_serves_bundled_content_with(
     controller: &WebViewController,
     server: AssetServer,
 ) {
+    let origin = controller
+        .asset_origin()
+        .expect("an engine that serves bundled assets reports the origin it serves them under");
     let webview = controller.open_with(WebViewConfig {
         asset_server: Some(server),
+        ..WebViewConfig::default()
     });
     let handle = webview.handle().clone();
-    let origin = handle
-        .asset_origin()
-        .expect("a web view opened with an asset server reports the origin it serves");
     assert!(
         origin.as_str() == ASSET_ORIGIN || origin.as_str() == ASSET_HTTPS_ORIGIN,
         "the asset origin is `{ASSET_ORIGIN}` or `{ASSET_HTTPS_ORIGIN}`, not `{origin}`"
@@ -396,10 +397,11 @@ fn describe_error(error: &WebViewError) -> String {
 /// subject view walks through the admitted origin and then the refused one;
 /// a witness view stays on the admitted origin, exposing the same binding.
 ///
-/// - The subject's first document is seeded, and gets a change.
+/// - The subject's first document receives the current value with its first
+///   pull — no value is injected — and gets a change.
 /// - It still gets one after a same-document navigation, a fragment change
 ///   and a `pushState`, which the engine may report as a navigation.
-/// - The next document is seeded with the current value and gets a change.
+/// - The next document receives the current value and gets a change.
 /// - Going back restores the first document from the back/forward cache
 ///   (its `pageshow` is `persisted`); it catches up on the change it missed
 ///   while frozen, and gets the next one.
@@ -413,11 +415,11 @@ fn describe_error(error: &WebViewError) -> String {
 ///   witness proves a change was delivered while the refused document was
 ///   showing, and the subject is then read back after a round trip ordered
 ///   behind anything the change or the held reply could have sent it.
-///   Engines that inject nothing into a refused document pass the seeding
+///   Engines that inject nothing into a refused document pass the declaration
 ///   check without running the seed's origin guard; the guard itself is
 ///   covered by the bridge script's own tests.
-/// - Navigating on to an admitted document, the subject is seeded with the
-///   current value and gets the next change.
+/// - Navigating on to an admitted document, the subject receives the current
+///   value and gets the next change.
 ///
 /// `controller` is the engine's [`WebViewController`]. The views are built
 /// through the same path [`WebView::open`](crate::WebView::open) takes at
@@ -456,7 +458,7 @@ pub async fn mirrored_state_reaches_only_admitted_documents(controller: &WebView
         .next(0, |report| shown(report, &witness_url, false, 0))
         .await;
 
-    // Seeded, then changed.
+    // The first pull's value, then a change.
     let one = admitted.url("/one");
     let mark = reports.mark();
     subject.go_to(one.clone());
@@ -474,7 +476,7 @@ pub async fn mirrored_state_reaches_only_admitted_documents(controller: &WebView
     let pushed = admitted.url("/one?pushed");
     set_observed(&reports, &count, 2, &[&pushed]).await;
 
-    // A cross-document navigation is seeded with the current value.
+    // A cross-document navigation pulls the current value.
     let two = admitted.url("/two");
     let mark = reports.mark();
     subject.go_to(two.clone());
@@ -529,8 +531,7 @@ pub async fn mirrored_state_reaches_only_admitted_documents(controller: &WebView
     let _ = raw_eval(subject.handle(), "0").await;
     assert_untouched_by_the_host(&raw_eval(subject.handle(), "globalThis.__hostile").await);
 
-    // Onward to an admitted document: seeded with the current value, and kept
-    // up to date.
+    // Onward to an admitted document: the current value, and kept up to date.
     let three = admitted.url("/three");
     let mark = reports.mark();
     subject.go_to(three.clone());
@@ -541,14 +542,14 @@ pub async fn mirrored_state_reaches_only_admitted_documents(controller: &WebView
 }
 
 /// Asserts that the refused document's recorder saw the host do nothing: no
-/// seed, no evaluation into its bridge globals, and no answer to any request
+/// declaration, no evaluation into its bridge globals, and no answer to any request
 /// it made, while it did reach a transport and every promise-returning one
 /// refused each request.
 fn assert_untouched_by_the_host(record: &Value) {
     assert_eq!(
         record["injected"]["stateKeys"],
         serde_json::json!([]),
-        "a refused document must not be seeded: {record}"
+        "a refused document must not be declared any state: {record}"
     );
     assert_eq!(
         record["calls"],

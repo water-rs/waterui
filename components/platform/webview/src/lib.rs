@@ -35,16 +35,20 @@
 pub mod assets;
 #[cfg(not(target_arch = "wasm32"))]
 mod bundled;
+mod config;
 mod controller;
 #[cfg(not(target_arch = "wasm32"))]
 mod cookies;
 
 pub use assets::{
     ASSET_HOST, ASSET_HTTPS_HOST, ASSET_HTTPS_ORIGIN, ASSET_ORIGIN, ASSET_SCHEME, AssetMethod,
-    AssetRequest, AssetResponse, AssetServer, WebViewConfig,
+    AssetRequest, AssetResponse, AssetServer,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use bundled::{DEFAULT_CSP, DirectoryServer, dev_url};
+#[cfg(not(target_arch = "wasm32"))]
+pub use config::UserScript;
+pub use config::WebViewConfig;
 pub use controller::*;
 #[cfg(not(target_arch = "wasm32"))]
 pub use cookie::Cookie;
@@ -70,7 +74,9 @@ pub mod bridge;
 #[cfg(not(target_arch = "wasm32"))]
 mod script;
 #[cfg(not(target_arch = "wasm32"))]
-pub use script::{DOCUMENT_START_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram};
+pub use script::{
+    BRIDGE_SCRIPT, DOCUMENT_START_SCRIPT, EVAL_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram,
+};
 #[cfg(not(target_arch = "wasm32"))]
 mod origins;
 #[cfg(not(target_arch = "wasm32"))]
@@ -179,6 +185,7 @@ pub fn typescript_declarations<A: JsApi>() -> String {
          \n\
          interface WaterUiApi {{\n\
          {}\n\
+         \x20 readonly ready: Promise<void>;\n\
          \x20 watch(key: string, callback: (value: unknown) => void): () => void;\n\
          }}\n\
          \n\
@@ -207,7 +214,7 @@ pub use message::{Bytes, HandlerName, IntoJsReply, JsReply, Json};
 #[cfg(not(target_arch = "wasm32"))]
 mod state;
 #[cfg(not(target_arch = "wasm32"))]
-pub use state::{FieldEntry, JsField, StateWriteError};
+pub use state::{FieldEntry, JsField, StateDeclarations, StateWriteError};
 
 use suiteki::Str;
 #[cfg(not(target_arch = "wasm32"))]
@@ -707,11 +714,13 @@ impl WebView {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    /// Injects a script that will run on every page load.
+    /// Injects a script that will run on every later page load.
     ///
     /// `key` names the script. Injecting again under the same key replaces it,
     /// so a script whose content depends on current state can be kept current
-    /// without stacking a new copy on every update.
+    /// without stacking a new copy on every update. The scripts the view was
+    /// opened with ([`WebViewOpen::inject`]) are fixed for its life; `key` must
+    /// not name one of them.
     pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         self.handle.inject_script(key, script, time);
     }
@@ -825,7 +834,7 @@ pub struct WebViewOpen {
     #[cfg(not(target_arch = "wasm32"))]
     user_agent: Option<Computed<Str>>,
     #[cfg(not(target_arch = "wasm32"))]
-    scripts: Vec<(Str, Str, ScriptInjectionTime)>,
+    scripts: Vec<UserScript>,
     #[cfg(not(target_arch = "wasm32"))]
     handlers: Vec<(Str, BoxedMessageHandler)>,
     event_watchers: Vec<Box<dyn Fn(WebViewEvent)>>,
@@ -870,16 +879,30 @@ impl WebViewOpen {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    /// Injects a script that runs on every page load.
+    /// Injects a script that runs on every page load the bridge policy admits.
     ///
     /// `key` names the script; injecting again under the same key replaces it.
+    /// The scripts reach the engine with the view's creation-time
+    /// configuration, so the first document already runs them.
     pub fn inject(
         mut self,
         key: impl Into<Str>,
         script: impl Into<Str>,
         time: ScriptInjectionTime,
     ) -> Self {
-        self.scripts.push((key.into(), script.into(), time));
+        let script = UserScript {
+            key: key.into(),
+            source: script.into(),
+            time,
+        };
+        match self
+            .scripts
+            .iter_mut()
+            .find(|existing| existing.key == script.key)
+        {
+            Some(existing) => *existing = script,
+            None => self.scripts.push(script),
+        }
         self
     }
 
@@ -927,6 +950,13 @@ impl WebViewOpen {
     /// never crosses the boundary — and subscribes with `waterui.watch(name, cb)`.
     /// A [`Binding`] is writable from JavaScript and the write flows back into it;
     /// anything else is read-only, and assigning to it throws.
+    ///
+    /// No value is part of what the engine injects: a document asks for the
+    /// values once it starts, and `waterui.ready` resolves when they arrive.
+    /// Reading or assigning a key before then throws rather than producing a
+    /// made-up value, so a page reads state after `await waterui.ready`;
+    /// `waterui.watch` may be called earlier, and its callback hears the first
+    /// values.
     ///
     /// Granularity follows the signal: exposing a `Binding<BigStruct>` and
     /// changing one field re-sends the whole struct. Expose finer bindings when
@@ -1026,22 +1056,20 @@ impl WebViewOpen {
             #[cfg(not(target_arch = "wasm32"))]
             bridge_origins,
         } = self;
-        let (webview, initial, url) = match target {
-            WebViewTarget::Url(url) => {
-                let webview = controller.open();
-                (webview, url.snapshot(), Some(url))
-            }
-            #[cfg(not(target_arch = "wasm32"))]
+        // Everything a document may receive before its first line of script
+        // is resolved here, before the engine creates anything: the URL the
+        // view opens at, the admission rules resolved against it, the
+        // application's scripts and the state declarations.
+        #[cfg(not(target_arch = "wasm32"))]
+        let (initial, url, asset_server) = match target {
+            WebViewTarget::Url(url) => (url.snapshot(), Some(url), None),
             WebViewTarget::Assets { server, entry } => {
-                let webview = controller.open_with(WebViewConfig {
-                    asset_server: Some(server),
-                });
                 // The origin is the engine's answer, not a constant the shared
                 // layer guesses: it differs across engines by design.
-                let origin = webview.handle().asset_origin().expect(
+                let origin = controller.asset_origin().expect(
                     "WebView::open_assets requires an engine that exposes an \
                      interceptable local asset origin; this WebViewController \
-                     produced none",
+                     has none",
                 );
                 let entry: Url = format!(
                     "{}/{}",
@@ -1052,26 +1080,33 @@ impl WebViewOpen {
                 .unwrap_or_else(|_| {
                     panic!("the asset entry `{entry}` did not form a URL under {origin}")
                 });
-                (webview, entry, None)
+                (entry, None, Some(server))
             }
         };
-        // The policy is resolved against the URL the view opens at, and it goes
-        // in before the first handler exists, so no handler is ever reachable
-        // unguarded. It used to be installed last, after every handler was
-        // already registered; nothing had navigated yet, so it was only ever
-        // safe by accident. For an asset-origin view `initial` is the resolved
-        // entry URL, so `BridgeOrigins::Initial` narrows to the asset origin.
+        #[cfg(target_arch = "wasm32")]
+        let (initial, url) = match target {
+            WebViewTarget::Url(url) => (url.snapshot(), Some(url)),
+        };
         #[cfg(not(target_arch = "wasm32"))]
-        let policy = OriginPolicy::new(bridge_origins, &initial);
+        let mirror = (!state.is_empty()).then(|| state::prepare(state));
         #[cfg(not(target_arch = "wasm32"))]
-        webview.handle().set_bridge_origins(policy.clone());
+        let config = WebViewConfig {
+            asset_server,
+            // For an asset-origin view `initial` is the resolved entry URL, so
+            // `BridgeOrigins::Initial` narrows to the asset origin.
+            bridge_origins: OriginPolicy::new(bridge_origins, &initial),
+            scripts,
+            state: mirror
+                .as_ref()
+                .map(state::Mirror::declarations)
+                .unwrap_or_default(),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let config = WebViewConfig::default();
+        let webview = controller.open_with(config);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(enabled) = redirects_enabled {
             webview.set_redirects_enabled(enabled);
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        for (key, script, time) in scripts {
-            webview.inject_script(key.as_str(), script.as_str(), time);
         }
         #[cfg(not(target_arch = "wasm32"))]
         for (name, build) in handlers {
@@ -1094,8 +1129,8 @@ impl WebViewOpen {
                 .forget();
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if !state.is_empty() {
-            state::install(&webview, state, &policy);
+        if let Some(mirror) = mirror {
+            state::attach(&webview, mirror);
         }
         let webview = if let Some(url) = url {
             webview.bind_navigation(url)

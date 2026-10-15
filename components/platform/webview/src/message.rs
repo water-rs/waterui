@@ -63,16 +63,21 @@ impl<T: DeserializeOwned + 'static> Extractor for Json<T> {
                 core::any::type_name::<T>()
             ))
         };
+        // `waterui.invoke(name)` with no argument arrives as zero bytes; to a
+        // JSON extractor that is `null`, the value "no argument" has on the
+        // wire.
+        let payload: &[u8] = if request.payload.is_empty() {
+            b"null"
+        } else {
+            &request.payload
+        };
         // The tag is a fixed key, so a payload without it has nothing to undo
         // and is deserialized straight from its bytes.
-        if !crate::big_integers::contains_tag(&request.payload) {
-            return serde_json::from_slice(&request.payload)
-                .map(Self)
-                .map_err(describe);
+        if !crate::big_integers::contains_tag(payload) {
+            return serde_json::from_slice(payload).map(Self).map_err(describe);
         }
 
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&request.payload).map_err(describe)?;
+        let mut value: serde_json::Value = serde_json::from_slice(payload).map_err(describe)?;
         crate::big_integers::untag(&mut value);
         serde_json::from_value(value).map(Self).map_err(describe)
     }
@@ -256,6 +261,14 @@ mod tests {
 
         let HandlerName(name) = Extractor::extract(&env).expect("extracts");
         assert_eq!(name.as_str(), "greet");
+    }
+
+    #[test]
+    fn a_call_without_an_argument_extracts_as_null() {
+        let env = env_with("hold", b"");
+        let Json(value): Json<serde_json::Value> = Extractor::extract(&env).expect("extracts");
+        assert_eq!(value, serde_json::Value::Null);
+        let Json(()): Json<()> = Extractor::extract(&env).expect("extracts");
     }
 
     #[test]
