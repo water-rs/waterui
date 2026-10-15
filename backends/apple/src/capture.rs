@@ -1,14 +1,12 @@
-//! The offscreen subtree capture `preview` and `view_renderer` share on
-//! macOS when `gpu_surface` is off: a window that is created but never
+//! The offscreen subtree capture `preview` and `view_renderer` share when
+//! `gpu_surface` is off. On macOS a window that is created but never
 //! ordered in hosts the view, and `AppKit`'s `cacheDisplayInRect:`
-//! rasterizes the whole subtree into one premultiplied RGBA8 bitmap.
-//! `Metal` layer contents never reach that bitmap, so with `gpu_surface`
-//! the readback is `capture_image`'s `ViewCapture` instead.
+//! rasterizes the whole subtree into one premultiplied RGBA8 bitmap. On
+//! `UIKit` the view sits inside an offscreen `UIWindow` and its layer
+//! renders into the bitmap. `Metal` layer contents never reach that
+//! bitmap, so with `gpu_surface` the readback is `capture_image`'s
+//! `ViewCapture` instead.
 
-#[cfg(all(
-    target_os = "macos",
-    any(feature = "view_renderer", feature = "preview")
-))]
 use waterui_core::view_renderer::RenderResult;
 
 /// Why the platform capture produced no bitmap.
@@ -31,7 +29,6 @@ pub enum CaptureError {
     #[error("the cached display bitmap has no CGImage")]
     NoImage,
     /// A zero-sized view has no pixels — an error, not a 1x1 fallback.
-    #[cfg(target_os = "macos")]
     #[error("the capture view is zero-sized ({width}x{height} pt)")]
     ZeroSize {
         /// The view's logical width.
@@ -40,7 +37,7 @@ pub enum CaptureError {
         height: f64,
     },
     /// No connected window scene can host the offscreen capture window.
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_os = "ios", feature = "view_renderer"))]
     #[error("no UIWindowScene is connected to host the capture window")]
     NoWindowScene,
 }
@@ -82,10 +79,7 @@ pub async fn capture_view(
 /// # Errors
 ///
 /// Returns [`CaptureError`] when `AppKit` cannot produce the bitmap.
-#[cfg(all(
-    target_os = "macos",
-    any(feature = "preview", feature = "view_renderer")
-))]
+#[cfg(target_os = "macos")]
 #[expect(
     clippy::future_not_send,
     reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
@@ -145,6 +139,69 @@ pub async fn capture_presented(
     cocoa_ui::view::cache_display(host, &rep);
     let image = rep.CGImage().ok_or(CaptureError::NoImage)?;
     cocoa_ui::bitmap::draw_image(&context, &image, bounds);
+    Ok(RenderResult {
+        rgba_data: pixels,
+        width: pixel_width as u32,
+        height: pixel_height as u32,
+    })
+}
+
+/// The `UIKit` tail of every capture: `host` is already inside its
+/// offscreen `UIWindow` and laid out under its proposal; its layer renders
+/// the whole subtree into premultiplied RGBA8 at the view's display scale.
+/// This path exists only without `gpu_surface`: with it, `Metal` layer
+/// contents never reach the bitmap and `capture_image`'s `ViewCapture` is
+/// the readback.
+///
+/// # Errors
+///
+/// Returns [`CaptureError`] when the view is zero-sized or `Core Graphics`
+/// refuses the bitmap context.
+#[cfg(target_os = "ios")]
+#[expect(
+    clippy::future_not_send,
+    reason = "the capture runs on the main thread; the UIKit view it borrows is not Sync"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "`ceil` yields an integral value bounded by the view size, which fits usize/u32"
+)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the zero-size guard above keeps bounds and scale positive"
+)]
+#[expect(
+    clippy::unused_async,
+    reason = "the signature stays `async` so `async` callers need no platform gating"
+)]
+pub async fn capture_presented(
+    host: &cocoa_ui::PlatformView,
+) -> Result<RenderResult, CaptureError> {
+    let bounds = cocoa_ui::view::bounds(host);
+    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+        return Err(CaptureError::ZeroSize {
+            width: bounds.size.width,
+            height: bounds.size.height,
+        });
+    }
+    let scale = cocoa_ui::view::backing_scale_factor(host);
+    let pixel_width = (bounds.size.width * scale).ceil() as usize;
+    let pixel_height = (bounds.size.height * scale).ceil() as usize;
+    let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
+    let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height).ok_or(
+        CaptureError::BitmapContext {
+            width: pixel_width,
+            height: pixel_height,
+        },
+    )?;
+    cocoa_ui::bitmap::scale_to_pixels(&context, scale);
+    cocoa_ui::bitmap::begin_layer_flip(&context, bounds.size.height);
+    let layer = cocoa_ui::view::layer(host).expect("a UIKit view is always layer-backed");
+    cocoa_ui::bitmap::with_uikit_context(&context, || {
+        cocoa_ui::bitmap::render_layer(&layer, &context);
+    });
+    cocoa_ui::bitmap::end_layer_flip(&context);
+    drop(context);
     Ok(RenderResult {
         rgba_data: pixels,
         width: pixel_width as u32,

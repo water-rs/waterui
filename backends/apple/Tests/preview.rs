@@ -1,5 +1,6 @@
-//! The `AppKit` preview entry's own suite — `preview::run` end to end, one
-//! run per child process.
+//! The preview entry's own suite — `preview::run` end to end, one run per
+//! child process, for the `AppKit` realization on macOS and the `UIKit`
+//! realization on Mac Catalyst.
 //!
 //! `run` initializes the process exactly once — startup installs the panic
 //! hook, the tracing subscriber and the executors, and a second call fails
@@ -11,10 +12,17 @@
 //! application before and after, and checks the child's exit status, its
 //! stderr and the PNG it wrote.
 
-// The suite only exists on `AppKit` — the preview entry does too. A
-// target must still own a `main` on every other OS, so the whole suite
-// sits behind the gate and the entry point stays unconditional.
-#[cfg(target_os = "macos")]
+// On Mac Catalyst the executable is exec'd without a bundle: its embedded
+// `Info.plist` puts `UIKit` under the iPad idiom, the contract a generated
+// preview binary keeps the same way.
+#[cfg(catalyst)]
+waterui_apple::preview_info_plist!();
+
+// The suite only exists where the preview entry does — `AppKit` and Mac
+// Catalyst. A target must still own a `main` on every other OS, so the
+// whole suite sits behind the gate and the entry point stays
+// unconditional.
+#[cfg(any(target_os = "macos", catalyst))]
 mod suite {
 
     use std::ffi::c_void;
@@ -22,7 +30,9 @@ mod suite {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
+    #[cfg(target_os = "macos")]
     use cocoa_ui::MainThreadMarker;
+    #[cfg(target_os = "macos")]
     use cocoa_ui::objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWorkspace};
     use cocoa_ui::objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFNumberType};
     use cocoa_ui::objc2_core_graphics::{
@@ -63,13 +73,14 @@ mod suite {
             std::process::exit(child(&slug));
         }
         let mut args = Arguments::from_args();
-        // `AppKit` objects may only be built on the real main thread; `run`
+        // Native objects may only be built on the real main thread; `run`
         // executes sequentially in the calling thread at one thread.
         args.test_threads = Some(1);
         libtest_mimic::run(&args, trials()).exit();
     }
 
     /// The real main thread — this binary runs every case there.
+    #[cfg(target_os = "macos")]
     fn mtm() -> MainThreadMarker {
         MainThreadMarker::new().expect("the suite runs on the process's main thread")
     }
@@ -276,19 +287,52 @@ mod suite {
         );
         if result.is_ok() {
             tracing::info!("preview capture written to {}", output.display());
-            let mtm = mtm();
-            let application = NSApplication::sharedApplication(mtm);
-            assert_eq!(
-                application.activationPolicy(),
-                NSApplicationActivationPolicy::Prohibited,
-                "the capture process must hold the Prohibited activation policy"
-            );
-            assert!(
-                !application.isActive(),
-                "the capture process must never take focus"
-            );
+            assert_background_application();
         }
         result
+    }
+
+    /// The capture process holds the `Prohibited` activation policy and
+    /// never took focus.
+    #[cfg(target_os = "macos")]
+    fn assert_background_application() {
+        let application = NSApplication::sharedApplication(mtm());
+        assert_eq!(
+            application.activationPolicy(),
+            NSApplicationActivationPolicy::Prohibited,
+            "the capture process must hold the Prohibited activation policy"
+        );
+        assert!(
+            !application.isActive(),
+            "the capture process must never take focus"
+        );
+    }
+
+    /// The capture process holds the `Prohibited` activation policy and
+    /// never took focus — read from the process's `NSApplication` by name,
+    /// since the iOS SDK declares no `AppKit` binding.
+    #[cfg(catalyst)]
+    fn assert_background_application() {
+        use cocoa_ui::objc2::msg_send;
+        use cocoa_ui::objc2::rc::Retained;
+        use cocoa_ui::objc2::runtime::{AnyClass, AnyObject};
+        /// `NSApplicationActivationPolicyProhibited`.
+        const PROHIBITED: isize = 2;
+        let class = AnyClass::get(c"NSApplication").expect("Catalyst loads AppKit");
+        // SAFETY: `+sharedApplication`, `-activationPolicy` and `-isActive`
+        // are `NSApplication`'s, called on the main thread with the
+        // signatures `AppKit` declares.
+        let (policy, active) = unsafe {
+            let application: Retained<AnyObject> = msg_send![class, sharedApplication];
+            let policy: isize = msg_send![&*application, activationPolicy];
+            let active: bool = msg_send![&*application, isActive];
+            (policy, active)
+        };
+        assert_eq!(
+            policy, PROHIBITED,
+            "the capture process must hold the Prohibited activation policy"
+        );
+        assert!(!active, "the capture process must never take focus");
     }
 
     /// A run that must fail: `mode` is written to a real run-configuration
@@ -389,10 +433,34 @@ mod suite {
 
     /// `pid` of the workspace's frontmost application — `NSWorkspace`'s
     /// answer for "who holds focus".
+    #[cfg(target_os = "macos")]
     fn frontmost_application() -> Option<i64> {
         NSWorkspace::sharedWorkspace()
             .frontmostApplication()
             .map(|app| i64::from(app.processIdentifier()))
+    }
+
+    /// See the macOS function — `NSWorkspace` read by name, since the iOS
+    /// SDK declares no `AppKit` binding.
+    #[cfg(catalyst)]
+    fn frontmost_application() -> Option<i64> {
+        use cocoa_ui::objc2::msg_send;
+        use cocoa_ui::objc2::rc::Retained;
+        use cocoa_ui::objc2::runtime::{AnyClass, AnyObject};
+        let class = AnyClass::get(c"NSWorkspace").expect("Catalyst loads AppKit");
+        // SAFETY: `+sharedWorkspace`, `-frontmostApplication` and
+        // `-processIdentifier` are `NSWorkspace`'s and
+        // `NSRunningApplication`'s, called with the signatures `AppKit`
+        // declares.
+        unsafe {
+            let workspace: Retained<AnyObject> = msg_send![class, sharedWorkspace];
+            let frontmost: Option<Retained<AnyObject>> =
+                msg_send![&*workspace, frontmostApplication];
+            frontmost.map(|app| {
+                let pid: libc::pid_t = msg_send![&*app, processIdentifier];
+                i64::from(pid)
+            })
+        }
     }
 
     /// `kCGWindowNumber` of every onscreen window `pid` owns — empty when
@@ -450,7 +518,7 @@ mod suite {
         read.then_some(number)
     }
 
-    /// The issue's plain-`AppKit` set: text and a wrapped paragraph, buttons
+    /// The issue's plain native set: text and a wrapped paragraph, buttons
     /// both styles, toggle, slider, stepper, a text field with text, picker,
     /// progress, an image asset, filled shapes and a gradient, a material
     /// background and a scroll view.
@@ -546,10 +614,10 @@ mod suite {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", catalyst))]
 fn main() {
     suite::run();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", catalyst)))]
 fn main() {}
