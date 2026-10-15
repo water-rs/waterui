@@ -1354,7 +1354,8 @@ fn create_device(
             required |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         }
     }
-    if config.pipeline_cache.is_some() && supported.contains(wgpu::Features::PIPELINE_CACHE) {
+    // Share compilation within this engine even without a persistent cache.
+    if supported.contains(wgpu::Features::PIPELINE_CACHE) {
         required |= wgpu::Features::PIPELINE_CACHE;
     }
     let limits = wgpu::Limits::default().or_worse_values_from(&adapter.limits());
@@ -1932,14 +1933,17 @@ fn create_pipeline_layout(
     })
 }
 
-/// The configured pipeline cache, opened once for the whole pipeline
-/// set — it was previously re-read and re-opened per pipeline (#170).
+/// One cache shared by the eager pipeline set. A configured path retains
+/// the existing persistent cache; otherwise native init drops the temporary
+/// compilation cache before returning the engine.
 fn open_pipeline_cache(device: &wgpu::Device, config: &GpuConfig) -> Option<wgpu::PipelineCache> {
-    let path = config.pipeline_cache.as_ref()?;
     if !device.features().contains(wgpu::Features::PIPELINE_CACHE) {
         return None;
     }
-    let data = std::fs::read(path).ok();
+    let data = config
+        .pipeline_cache
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok());
     // SAFETY: `data` is either a blob previously produced by wgpu or
     // absent; `fallback: true` keeps us off the unsafe fallback path.
     Some(unsafe {
@@ -2364,6 +2368,10 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 )?);
             }
         }
+        // The pipelines own their compiled programs. Drop only the temporary
+        // compilation cache here; configured disk caches keep their existing
+        // renderer lifetime and persistence behavior.
+        let pipeline_cache = config.pipeline_cache.as_ref().and(pipeline_cache);
         fire_probe(
             &config,
             CreationPhase::CorePipelines,
