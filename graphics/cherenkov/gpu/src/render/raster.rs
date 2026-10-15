@@ -44,16 +44,20 @@ impl Raster {
             (-1.0, x1, y1, x0, y0)
         };
         let dxdy = (x1 - x0) / (y1 - y0);
-        let mut x = x0;
-        if y0 < 0.0 {
-            x -= y0 * dxdy;
-        }
+        let mut x = if y0 < 0.0 {
+            dxdy.mul_add(-y0, x0)
+        } else {
+            x0
+        };
         let y_start = y0.max(0.0) as usize;
         let y_end = self.h.min((y1.ceil() as usize).min(self.h));
         for y in y_start..y_end {
             let row = y * (self.w + 1);
-            let dy = ((y + 1) as f32).min(y1) - (y as f32).max(y0);
-            let xnext = x + dxdy * dy;
+            let bottom = ((y + 1) as f32).min(y1);
+            let dy = bottom - (y as f32).max(y0);
+            // Evaluate from the segment origin: repeatedly adding to an
+            // absolute x accumulates rounding error over tall edges.
+            let xnext = dxdy.mul_add(bottom - y0, x0);
             let d = dy * dir;
             let (xa, xb) = if x < xnext { (x, xnext) } else { (xnext, x) };
             let xa_floor = xa.floor();
@@ -149,6 +153,54 @@ impl Raster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tall_edges_agree_with_independent_pixel_area() {
+        let cases = [
+            (
+                [(900.0_f32, 0.0_f32), (512.0, 900.0), (900.0, 900.0)],
+                (598, 699),
+            ),
+            (
+                [
+                    (689.4518, 1.803_737_2),
+                    (532.2187, 337.7357),
+                    (668.394_17, 2.898_188_6),
+                ],
+                (534, 332),
+            ),
+        ];
+        for (vertices, (px, py)) in cases {
+            for reverse in [false, true] {
+                let mut raster = Raster::new(901, 901);
+                // Translate only the independent f64 oracle to the target pixel.
+                // The rasterizer must traverse the full height of each edge.
+                let mut reference = cherenkov_oracle::coverage::Coverage::new(1, 1);
+                for i in 0..vertices.len() {
+                    let (mut a, mut b) = (vertices[i], vertices[(i + 1) % vertices.len()]);
+                    if reverse {
+                        std::mem::swap(&mut a, &mut b);
+                    }
+                    raster.draw_line(a.0, a.1, b.0, b.1);
+                    reference.add_line(
+                        f64::from(a.0) - f64::from(px),
+                        f64::from(a.1) - f64::from(py),
+                        f64::from(b.0) - f64::from(px),
+                        f64::from(b.1) - f64::from(py),
+                    );
+                }
+                let expected = reference.finish(cherenkov_scene::FillRule::NonZero)[0];
+                let index = usize::try_from(py * 901 + px).expect("pixel index");
+                for rule in [cherenkov::FillRule::NonZero, cherenkov::FillRule::EvenOdd] {
+                    let actual = f64::from(raster.coverage_rule(rule)[index]);
+                    assert!(
+                        (actual - expected).abs() < 0.0002,
+                        "{rule:?} reverse={reverse} ({px},{py}): {actual} versus {expected}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_half_pixel_square_has_exact_half_coverage() {
