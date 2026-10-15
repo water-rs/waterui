@@ -390,6 +390,13 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
         point = vec2<f32>(linear.x * local.x + linear.z * local.y,
                           linear.y * local.x + linear.w * local.y) + offset;
     }
+    // long-gradient-stub
+    // Specialize dispatch without changing the kind used to evaluate the
+    // gradient. The scoped bindings vanish from the short/union modules.
+    let gradient_kind = kind;
+    {
+    let kind = select(kind, PAINT_LINEAR, VARIANT == VARIANT_LONG_GRADIENT);
+    // long-gradient-stub
     switch kind {
         case PAINT_SOLID: {
             return vec4<f32>(color.rgb * color.a, color.a);
@@ -405,6 +412,9 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
             return paint_image(i, point);
         }
         default: {
+            // long-gradient-stub
+            let kind = gradient_kind;
+            // long-gradient-stub
             let meta_w = meta_.w;
             let extend = (meta_w >> 20u) & 0xfu;
             var t: f32;
@@ -442,6 +452,9 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
             return eval_stops(instances[i].meta_.z, count, interp, extend_t(t, extend));
         }
     }
+    // long-gradient-stub
+    }
+    // long-gradient-stub
 }
 
 // Per-member backdrop effects: a member composite bilinearly samples the
@@ -929,6 +942,13 @@ fn fs_full(in: VsOut) -> vec4<f32> {
     // the backdrop and the blended result.
     let inside_cov = clamp(cov, 0.0, 1.0);
     cov = inside_cov * in.params.y;
+    // long-gradient-stub
+    // LongGradient is selected only for linear, radial and sweep paints;
+    // texture composites and backdrop effects cannot reach this module.
+    if VARIANT == VARIANT_LONG_GRADIENT {
+        return move_space(paint(i, in.meta_, in.color, in.local, in.device) * cov, SPACE_LINEAR, globals.space);
+    }
+    // long-gradient-stub
     // A PAINT_TEXTURE instance samples a target texture: a plain member
     // sample (mode 0, no FLAG_BLEND_SRC) converts the texel into the
     // pass's space and blends over by fixed function; a composite blends
