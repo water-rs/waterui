@@ -4,7 +4,8 @@
 //! `installMenuBar`/`menuBarDidChange` ported: the standard App, Edit (the
 //! responder-chain items keyboard shortcuts route through) and Window menus,
 //! with the declared `menu_bar` content appended — macOS rebuilds the whole
-//! bar on every change, iOS rebuilds through `application:buildMenuWith:`.
+//! bar on every change, iOS rebuilds through the main menu system's build
+//! handler.
 //!
 //! The standard Window menu carries Close unless a declared menu places
 //! `MenuItem::CloseWindow` itself — [`CloseWindowPlacement`] decides which,
@@ -556,8 +557,8 @@ mod imp {
     }
 }
 
-/// iOS: the declared content fills the builder `application:buildMenuWith:`
-/// hands the delegate; a watch on the resolved items requests each rebuild.
+/// iOS: the declared content fills the builder the main menu system hands
+/// its build handler; a watch on the resolved items requests each rebuild.
 #[cfg(target_os = "ios")]
 mod imp {
     use alloc::boxed::Box;
@@ -590,10 +591,12 @@ mod imp {
     pub fn build_handler(declared: Declared) -> impl Fn(&MenuBuilder<'_>) + 'static {
         move |builder| {
             let Some((resolved, env)) = declared.borrow().clone() else {
+                tracing::debug!("main menu built before the application declared its menus");
                 return;
             };
             let mtm = MainThreadMarker::new().expect("build_menus runs on the main thread");
-            for (index, item) in resolved.snapshot().iter().enumerate() {
+            let items = resolved.snapshot();
+            for (index, item) in items.iter().enumerate() {
                 let ResolvedMenuItem::Menu(menu) = item else {
                     panic!("App::menu_bar only accepts top-level Menu values");
                 };
@@ -613,6 +616,10 @@ mod imp {
                     builder.insert_at_root_end(&ui_menu);
                 }
             }
+            tracing::debug!(
+                menus = items.len(),
+                "main menu built with the declared menus"
+            );
         }
     }
 
