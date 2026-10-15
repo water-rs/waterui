@@ -1734,9 +1734,8 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
 
     use waterui_core::{Signal, Str};
     use waterui_webview::{
-        BackendEvent, Cookie, CustomWebViewController, OriginPolicy, ScriptInjectionTime,
-        ScriptMessageHandler, WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController,
-        WebViewHandle,
+        BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler,
+        WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
     };
 
     /// The smallest controller that can still create a `WebView`: the handle
@@ -1750,6 +1749,12 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
             TestWebViewHandle {
                 watchers: WatcherSet::new(),
             }
+        }
+
+        // No interception facility: the double has no engine to route an asset
+        // origin through, and the assertion it serves never opens assets.
+        fn asset_origin(&self) -> Option<waterui_webview::Url> {
+            None
         }
     }
 
@@ -1773,12 +1778,6 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
         fn inject_script(&self, _key: &str, _script: &str, _time: ScriptInjectionTime) {}
         fn add_handler(&self, _name: &str, _handler: Box<ScriptMessageHandler>) {}
         fn remove_handler(&self, _name: &str) {}
-        fn set_bridge_origins(&self, _policy: OriginPolicy) {}
-        // No interception facility: the double has no engine to route an asset
-        // origin through, and the assertion it serves never opens assets.
-        fn asset_origin(&self) -> Option<waterui_webview::Url> {
-            None
-        }
         fn set_cookie(&self, _cookie: Cookie<'static>) {}
         fn set_redirects_enabled(&self, _enabled: impl Signal<Output = bool>) {}
         fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {

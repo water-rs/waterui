@@ -48,9 +48,9 @@ struct PageApi {
 #[cfg(not(target_arch = "wasm32"))]
 #[js_api]
 impl PageApi {
-    /// Mirrored state, writable: `waterui.state.address = "https://..."` in the
-    /// page moves the toolbar, because this is one binding with two views onto
-    /// it.
+    /// Mirrored state, writable: once `waterui.ready` has resolved,
+    /// `waterui.state.address = "https://..."` in the page moves the toolbar,
+    /// because this is one binding with two views onto it.
     fn address(&self) -> Binding<Str> {
         self.address.clone()
     }

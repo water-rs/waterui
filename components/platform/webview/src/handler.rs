@@ -100,17 +100,19 @@ webview_handle! {
         fn can_go_forward(&self) -> bool;
 
         #[cfg(not(target_arch = "wasm32"))]
-        /// Injects a script that will run on every page load.
+        /// Injects a script, after creation, that runs on every later page
+        /// load the bridge policy admits.
         ///
-        /// The script is re-injected on every navigation, so a page the view
-        /// moves to gets it too.
+        /// The scripts a view starts with arrive in
+        /// [`WebViewConfig::user_scripts`](crate::WebViewConfig::user_scripts)
+        /// and are fixed for its life; this is the channel for scripts added
+        /// later. `key` identifies the script: injecting again under a key
+        /// already used here **replaces** that script rather than adding a
+        /// second copy. It must not name a creation-time script.
         ///
-        /// `key` identifies the script: injecting again under a key already in
-        /// use **replaces** that script rather than adding a second copy. The
-        /// mirrored-state seed depends on that: it is re-rendered before every
-        /// navigation so the next document starts from current values, and
-        /// without replacement a view that navigated ten times would run ten
-        /// seed scripts, each starting another pull loop.
+        /// A backend injects these where it injects the creation-time scripts —
+        /// into the main frame's default world of documents the admission
+        /// rules admit, after the bridge — so a script can rely on `waterui`.
         fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime);
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -130,28 +132,8 @@ webview_handle! {
         fn remove_handler(&self, name: &str);
 
         #[cfg(not(target_arch = "wasm32"))]
-        /// Chooses which documents may reach the bridge.
-        ///
-        /// A backend enforces this as natively as it can — restricting where the
-        /// bridge script is injected, and checking the origin of the frame a call
-        /// arrives from — and refuses calls that do not match.
-        fn set_bridge_origins(&self, policy: crate::OriginPolicy);
-
-        #[cfg(not(target_arch = "wasm32"))]
         /// Sets a cookie for the web view.
         fn set_cookie(&self, cookie: Cookie<'static>);
-
-        #[cfg(not(target_arch = "wasm32"))]
-        /// The origin this view serves bundled assets under, when it was
-        /// opened with an [`AssetServer`](crate::AssetServer).
-        ///
-        /// The value is the engine's own answer, not a guess: `waterui://localhost`
-        /// on the `WebKit` family and CEF, `https://waterui.localhost` where only
-        /// `https` can be a secure context. `None` when the view was created
-        /// without an asset server — or when the engine has no interception
-        /// facility at all, which [`WebView::open_assets`](crate::WebView::open_assets)
-        /// treats as a configuration error.
-        fn asset_origin(&self) -> Option<Url>;
     }
 
     // The four below change shape at the boundary: the public form takes or
@@ -374,8 +356,8 @@ webview_handle! {
 
         /// A weak reference to this handle.
         ///
-        /// The mirrored-state bridge needs one: the watcher that re-seeds each
-        /// navigation is stored in this handle's own watcher set, so capturing
+        /// The mirrored-state bridge needs one: the watcher that settles the
+        /// parked pulls on each navigation is stored in this handle's own watcher set, so capturing
         /// the handle strongly closes a cycle and the native web view is never
         /// destroyed.
         #[must_use]

@@ -78,7 +78,8 @@ use waterui_core::{Environment, View as _, view::Hook};
 use waterui_url::Url;
 use waterui_webview::{
     BackendEvent, BridgeOrigins, IntoJsReply, JsReply, Json, OriginPolicy, ScriptInjectionTime,
-    ScriptMessageHandler, WatcherGuard, WebView, WebViewController, WebViewEvent,
+    ScriptMessageHandler, UserScript, WatcherGuard, WebView, WebViewConfig, WebViewController,
+    WebViewEvent,
 };
 
 /// How long one wait may take before the check gives up.
@@ -265,7 +266,18 @@ struct Page<'a> {
 
 impl<'a> Page<'a> {
     fn open(engine: &'a Engine) -> Self {
-        let webview = engine.controller.open();
+        // Exactly what `WebViewOpen::create` hands the engine: the admission
+        // rules and the scripts arrive with the view, before it can load
+        // anything.
+        let webview = engine.controller.open_with(WebViewConfig {
+            bridge_origins: OriginPolicy::new(BridgeOrigins::Initial, &engine.url("/")),
+            scripts: vec![UserScript {
+                key: "waterui:test-state-seed".into(),
+                source: STATE_SEED_JS.into(),
+                time: ScriptInjectionTime::DocumentStart,
+            }],
+            ..WebViewConfig::default()
+        });
         let handle = webview.handle();
 
         let events = Rc::new(RefCell::new(Vec::new()));
@@ -315,15 +327,6 @@ impl<'a> Page<'a> {
             })
         });
 
-        // Exactly what `WebViewOpen::create` installs, in the same order: the
-        // policy first, so no handler is ever reachable unguarded.
-        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Initial, &engine.url("/")));
-        handle.inject_script(
-            "waterui:test-state-seed",
-            STATE_SEED_JS,
-            ScriptInjectionTime::DocumentStart,
-        );
-
         let page = Self {
             engine,
             webview,
@@ -336,20 +339,21 @@ impl<'a> Page<'a> {
         page
     }
 
-    /// Waits until the document-start scripts are registered with the engine.
+    /// Waits until the host side of the bridge is installed.
     ///
-    /// The bridge and the seed script are installed with `DevTools` commands
-    /// nobody awaits, while navigation is an ordinary CEF call, so nothing
-    /// orders the two. `DevTools` commands on one session are answered in the
-    /// order they were issued, so an answer to a later one is the real signal
-    /// that the earlier ones have been applied.
+    /// The transport binding, the domains whose events authenticate a call
+    /// and the main frame's id are set up with `DevTools` commands nobody
+    /// awaits, while navigation is an ordinary CEF call, so nothing orders the
+    /// two. `DevTools` commands on one session are answered in the order they
+    /// were issued, so an answer to a later one is the real signal that the
+    /// earlier ones have been applied.
     fn await_bridge_installation(&self) {
         let evaluated = self
             .block_on(self.webview.run_javascript("'installed'"))
             .expect("the engine evaluates a string literal");
         assert_eq!(
             evaluated.as_str(),
-            "installed",
+            "\"installed\"",
             "the engine answered a trivial evaluation with something else"
         );
     }
@@ -437,9 +441,12 @@ impl<'a> Page<'a> {
 
     /// What the engine says the current document's URL is.
     fn location(&self) -> String {
-        self.block_on(self.webview.run_javascript("location.href"))
-            .expect("location.href evaluates")
-            .to_string()
+        let href = self
+            .block_on(self.webview.run_javascript("location.href"))
+            .expect("location.href evaluates");
+        // The raw path answers JSON, so the URL arrives as a quoted string.
+        serde_json::from_str(&href)
+            .unwrap_or_else(|error| panic!("location.href answered {href}, not a string: {error}"))
     }
 }
 

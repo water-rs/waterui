@@ -216,7 +216,7 @@ pub mod media_block_07 {
         async fn greet(&self, name: String) -> Json<Greeting> {
             Json(Greeting::for_name(name))
         }
-        // fn returning a signal  ->  mirrored state: `waterui.state.address`, `waterui.watch("address", cb)`
+        // fn returning a signal  ->  mirrored state: after `await waterui.ready`, `waterui.state.address`, `waterui.watch("address", cb)`
         fn address(&self) -> Binding<Str> {
             self.address.clone()
         } // Binding: JS writes flow back
