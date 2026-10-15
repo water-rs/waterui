@@ -97,25 +97,16 @@ impl RenderNode {
             Ok(container) => {
                 let layout = container.as_parts().0 as &dyn Any;
                 let background_slot = layout.is::<BackgroundLayout>().then_some(0);
-                let claim_slot = modifier_content_slot(layout);
                 let container = *AnyView::new(container.body(env))
                     .downcast::<Native<FixedContainer>>()
                     .expect("FixedContainer::body produces Native<FixedContainer>");
-                return Self::build_fixed_container(
-                    container,
-                    env,
-                    renderer,
-                    background_slot,
-                    claim_slot,
-                );
+                return Self::build_fixed_container(container, env, renderer, background_slot);
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Native<FixedContainer>>() {
             Ok(container) => {
-                let claim_slot =
-                    modifier_content_slot(container.as_inner().as_parts().0 as &dyn Any);
-                return Self::build_fixed_container(*container, env, renderer, None, claim_slot);
+                return Self::build_fixed_container(*container, env, renderer, None);
             }
             Err(view) => view,
         };
@@ -1321,7 +1312,6 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut SemanticCore,
         background_slot: Option<usize>,
-        claim_slot: Option<usize>,
     ) -> Self {
         let (layout, children) = container.into_inner().into_inner();
         let core = renderer.new_core();
@@ -1346,18 +1336,6 @@ impl RenderNode {
                 }
             })
             .collect();
-        // A conditional among the children of a container whose children are
-        // its own members lays its removal ghosts out as members too
-        // (layout-spec.md §4.5). A modifier container's child is the content
-        // it modifies, not a member: a conditional there paints its ghosts
-        // over its own slot, outside layout.
-        if claim_slot.is_none() {
-            for child in &children {
-                if let Some(host) = super::transition::member_host(child) {
-                    host.join_container();
-                }
-            }
-        }
         Self::Container(Box::new(ContainerNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
@@ -1365,7 +1343,6 @@ impl RenderNode {
             core,
             layout,
             children,
-            claim_slot,
             #[cfg(feature = "accessibility")]
             accessibility_child_env,
             placed: Vec::new(),
@@ -1411,25 +1388,5 @@ fn is_background_fill_leaf(node: &RenderNode) -> bool {
             ) && is_background_fill_leaf(&node.child)
         }
         _ => false,
-    }
-}
-
-/// The child of a modifier container that is the content it modifies — the
-/// slot a structural transition claim continues through: padding, frame and
-/// aspect ratio and an absolute position wrap one child, a background's
-/// content is its second child and an overlay's base its first. Every other
-/// layout's children are its own members, so a claim ends there.
-fn modifier_content_slot(layout: &dyn Any) -> Option<usize> {
-    if layout.is::<waterui_layout::padding::PaddingLayout>()
-        || layout.is::<waterui_layout::frame::FrameLayout>()
-        || layout.is::<waterui_layout::absolute::PositionedLayout>()
-        || layout.is::<waterui_layout::aspect_ratio::AspectRatioLayout>()
-        || layout.is::<waterui_layout::overlay::OverlayLayout>()
-    {
-        Some(0)
-    } else if layout.is::<BackgroundLayout>() {
-        Some(1)
-    } else {
-        None
     }
 }

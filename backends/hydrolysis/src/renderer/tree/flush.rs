@@ -198,17 +198,12 @@ impl RenderNode {
                 #[cfg(not(feature = "accessibility"))]
                 let child_env = env;
                 renderer.pop_render_owner();
-                let members = super::transition::Members::of(&container.children);
-                for member in &members.order {
-                    let index = match *member {
-                        super::transition::Member::Child(index) => index,
-                        super::transition::Member::Ghost { child, ghost, .. } => {
-                            super::transition::ghost_host(&container.children[child])
-                                .flush_ghost(renderer, ctx, ghost);
-                            continue;
-                        }
-                    };
-                    let (child, rect) = (&container.children[index], &container.placed[index]);
+                for (index, (child, rect)) in container
+                    .children
+                    .iter()
+                    .zip(container.placed.iter())
+                    .enumerate()
+                {
                     let delta =
                         kurbo::Affine::translate((f64::from(rect.x()), f64::from(rect.y())));
                     let child_ctx = ctx.child(
