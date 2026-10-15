@@ -634,7 +634,8 @@ pub(crate) async fn build_prepared(
     let launcher_manifest = backend_path.join("Cargo.toml");
     assets::seed_managed_crate_lock(project, &launcher_manifest).await?;
     let required_permissions =
-        assets::scan_required_permissions(host, &launcher_manifest, rust_build.features()).await?;
+        assets::scan_required_permissions(project, &launcher_manifest, rust_build.features())
+            .await?;
     assets::warn_missing_permissions(project, &required_permissions, |key| {
         key.android_permission_name().is_some()
     });

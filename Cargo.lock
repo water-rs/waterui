@@ -12672,6 +12672,7 @@ dependencies = [
  "fs_extra",
  "futures-lite",
  "futures-util",
+ "glob",
  "heck",
  "hex",
  "icns",

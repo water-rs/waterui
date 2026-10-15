@@ -53,10 +53,15 @@ const fn is_apple_triple(triple: &Triple) -> bool {
 /// The rustup toolchain a project's builds run under: the one its own
 /// directory selects, whatever directory the generated crate compiles in.
 ///
+/// The generated crates a build compiles live in the build cache, outside
+/// the project tree, so rustup would resolve them to its default toolchain
+/// rather than the project's `rust-toolchain.toml`; every cargo and rustc
+/// invocation made on the project's behalf names this toolchain instead.
+///
 /// # Errors
 /// Returns an error when rustup resolves no toolchain for the project.
 pub async fn project_toolchain(project: &Project) -> eyre::Result<String> {
-    Ok(crate::toolchain::rust::project_rustup_toolchain(project.host(), project.root()).await?)
+    project.facts().active_toolchain(project.root()).await
 }
 
 /// Resolve the Rust standard-library directory for a target triple under
@@ -65,23 +70,11 @@ pub async fn project_toolchain(project: &Project) -> eyre::Result<String> {
 /// # Errors
 /// Returns an error if rustc cannot resolve an existing target library directory.
 pub async fn rust_target_libdir(
-    host: &crate::toolchain::Host,
+    project: &Project,
     triple: &Triple,
     toolchain: &str,
 ) -> eyre::Result<PathBuf> {
-    let target = triple.to_string();
-    let host = host.with_env("RUSTUP_TOOLCHAIN", toolchain);
-    let output = host
-        .run(
-            "rustc",
-            ["--print", "target-libdir", "--target", target.as_str()],
-        )
-        .await?;
-    let libdir = output.trim();
-    if libdir.is_empty() {
-        bail!("`rustc --print target-libdir --target {target}` returned an empty path");
-    }
-    let path = PathBuf::from(libdir);
+    let path = project.facts().target_libdir(triple, toolchain).await?;
     if !path.is_dir() {
         bail!(
             "Rust target libdir does not exist for dynamic linking: {}",
@@ -466,7 +459,7 @@ impl RustDynamicLibraries {
         // dependency is the runtime dylib's own).
         let needed_std = needed.iter().find(|name| is_rust_standard_library(name));
         let toolchain = project_toolchain(project).await?;
-        let target_libdir = rust_target_libdir(project.host(), triple, &toolchain).await?;
+        let target_libdir = rust_target_libdir(project, triple, &toolchain).await?;
         let standard_library = if let Some(name) = needed_std {
             StagedDynamicLibrary::needed(
                 name,
@@ -2458,10 +2451,18 @@ Automatic meson installation failed: {install_err}\n\n{}",
 
         let mut command = cargo_metadata::MetadataCommand::new();
         command.no_deps().current_dir(&self.path);
-        let metadata = self.host.cargo_metadata(&command).await.map_err(|e| {
+        let metadata = match &self.project {
+            Some(project) => project.facts().cargo_metadata(&command).await,
+            None => self
+                .host
+                .cargo_metadata(&command)
+                .await
+                .map_err(eyre::Report::from),
+        }
+        .map_err(|error| {
             RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                e,
+                error.to_string(),
             ))
         })?;
         Ok(metadata.target_directory.as_std_path().to_path_buf())
