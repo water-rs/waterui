@@ -366,6 +366,12 @@ pub struct WidgetInteractionState {
     pub focus_progress: f32,
     /// Animated state-layer opacity sampled by the renderer.
     pub state_layer_opacity: f32,
+    /// Animated physical-press progress in the 0.0..=1.0 range: moves
+    /// towards 1 while the widget is physically pressed and towards 0 on
+    /// release, with `InteractionMotion::press_shape` in both directions.
+    /// Themes drive state-dependent shape morphs from it; unlike a ripple
+    /// wave it plays backwards on release.
+    pub press_progress: f32,
     /// The press ripple waves currently visible on the widget: one per press,
     /// so rapid re-presses overlap while older waves fade out.
     pub press_waves: PressWaves,
@@ -377,6 +383,7 @@ impl WidgetInteractionState {
         state: InteractionState::empty(),
         focus_progress: 0.0,
         state_layer_opacity: 0.0,
+        press_progress: 0.0,
         press_waves: PressWaves::EMPTY,
     };
 }
@@ -406,6 +413,9 @@ pub struct InteractionMotion {
     pub press_fade_out: Animation,
     /// Animation used when the pressed ripple grows from origin to final size.
     pub press_grow: Animation,
+    /// Animation used for `WidgetInteractionState::press_progress` in both
+    /// directions.
+    pub press_shape: Animation,
     /// Minimum amount of time a press must remain visible.
     pub minimum_press_duration: Duration,
     /// Touch delay before showing a press ripple.

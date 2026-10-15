@@ -86,6 +86,9 @@ impl WaveLayer {
 #[derive(Debug)]
 pub struct InteractionLayerHandles {
     hover_alpha: AnimatedScalarHandle,
+    /// Physical-press morph progress — tracked like the waves, so pointer
+    /// events between rebuilds steer it without waiting for the next bind.
+    press_progress: AnimatedScalarHandle,
     waves: [WaveLayer; MAX_PRESS_WAVES],
     /// Next press sequence number handed to a spawned wave.
     next_wave_seq: Cell<u64>,
@@ -99,11 +102,13 @@ pub struct InteractionLayerHandles {
 impl InteractionLayerHandles {
     pub(crate) const fn new(
         hover_alpha: AnimatedScalarHandle,
+        press_progress: AnimatedScalarHandle,
         waves: [WaveLayer; MAX_PRESS_WAVES],
         motion: InteractionMotion,
     ) -> Self {
         Self {
             hover_alpha,
+            press_progress,
             waves,
             next_wave_seq: Cell::new(1),
             hovering: Cell::new(false),
@@ -211,6 +216,10 @@ impl InteractionLayerHandles {
             Some(self.motion.press_fade_in.clone()),
             now,
         );
+        // The shape morph tracks the physical press directly — unlike the
+        // ripple's fade it is not gated by the minimum press duration.
+        self.press_progress
+            .apply_target(1.0, Some(self.motion.press_shape.clone()), now);
     }
 
     /// The slot a new press claims: the first invisible wave, or the oldest
@@ -239,6 +248,10 @@ impl InteractionLayerHandles {
             }
         }
         if changed {
+            // The morph plays `press_shape` backwards from the release
+            // instant, not from the next bind.
+            self.press_progress
+                .apply_target(0.0, Some(self.motion.press_shape.clone()), now);
             self.flush_release(now);
         }
         changed
