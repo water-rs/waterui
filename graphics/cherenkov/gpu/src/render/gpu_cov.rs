@@ -480,7 +480,8 @@ impl GpuCoverage {
             + buffers.args.size()
             + buffers.work.size();
 
-        for radix_pass in 0..8u32 {
+        let radix_pass_count = radix_passes(self.cov_total);
+        for radix_pass in 0..radix_pass_count {
             let mut block = params;
             block[18] = radix_pass;
             queue.write_buffer(
@@ -563,7 +564,7 @@ impl GpuCoverage {
             dispatch(&mut pass, params[0]);
             pass.set_pipeline(&pipes.fragment_bins);
             dispatch(&mut pass, self.bin_total);
-            for radix_pass in 0..8 {
+            for radix_pass in 0..radix_pass_count {
                 pass.set_bind_group(0, &bind, &[radix_pass * 256]);
                 pass.set_pipeline(&pipes.radix_count);
                 dispatch(&mut pass, self.fragment_total);
@@ -639,6 +640,16 @@ impl GpuCoverage {
     }
 }
 
+/// Four-bit radix passes that order every key below `key_end` and keep the
+/// all-ones empty-slot sentinel after them: the sentinel's low `4 * passes`
+/// bits are all ones, which exceeds every key once `key_end <= 2^(4 * passes)`.
+/// Passes ping-pong between the sort buffers and the sorted keys must end
+/// in `sort_a`, so the count is even.
+const fn radix_passes(key_end: u32) -> u32 {
+    let digits = key_end.bit_width().div_ceil(4);
+    digits.div_ceil(2) * 2
+}
+
 fn storage_buf(
     device: &wgpu::Device,
     label: &'static str,
@@ -663,6 +674,15 @@ fn storage_buf(
 mod tests {
     use super::*;
     use kurbo::{PathEl, Point};
+
+    #[test]
+    fn radix_passes_order_keys_below_the_sentinel() {
+        assert_eq!(radix_passes(255), 2);
+        assert_eq!(radix_passes(256), 4);
+        assert_eq!(radix_passes(1 << 16), 6);
+        assert_eq!(radix_passes(1 << 24), 8);
+        assert_eq!(radix_passes(u32::MAX), 8);
+    }
 
     #[test]
     fn sparse_capacity_tracks_perimeter_and_rejects_over_budget() {
