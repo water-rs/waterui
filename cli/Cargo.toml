@@ -110,6 +110,7 @@ shlex = "2"
 # Asset/font downloading dependencies
 hex = "0.4"                   # Hex encoding for hashes
 sha2 = "0.11"                 # SHA256 hashing
+glob = "0.3"                  # Workspace member globs a recorded fact observes
 sysinfo = { version = "0.39", default-features = false, features = ["system"] } # Preview support-process discovery
 # ZIP archive extraction. Every archive the CLI reads or writes — Android SDK
 # packages, browser runtimes, asset catalogs — is stored or deflated, so the

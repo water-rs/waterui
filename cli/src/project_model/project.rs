@@ -12,6 +12,7 @@ use futures_util::{FutureExt as _, TryFutureExt as _};
 use target_lexicon::Triple;
 use tracing::info;
 
+use super::facts::{Fact, Facts};
 use crate::build::{BuildProgress, RustLinkage};
 use crate::framework::{
     FrameworkChannel, ResolvedFramework, validate_local_cli, validate_resolved_cli,
@@ -111,13 +112,6 @@ enum CargoResolution {
     Update,
 }
 
-/// The per-triple cache one kind of `cargo tree` evaluation fills: a
-/// shared in-flight future per build triple, so concurrent consumers of the
-/// same target share one resolve and different targets never share an
-/// answer.
-type TargetGraph<T> =
-    Arc<async_lock::Mutex<BTreeMap<String, Shared<BoxFuture<'static, Result<Arc<T>, String>>>>>>;
-
 /// The triples the managed Apple companion compiles for — the serving set
 /// of its shared `[profile]` package-override table.
 fn apple_companion_targets() -> Vec<Triple> {
@@ -125,12 +119,12 @@ fn apple_companion_targets() -> Vec<Triple> {
 }
 
 fn spawn_cargo_layout_resolution(
-    host: &Host,
+    facts: &Facts,
     current_dir: &Path,
     framework: Option<ResolvedFramework>,
     local: bool,
 ) -> Shared<BoxFuture<'static, Result<CargoLayout, String>>> {
-    let host = host.clone();
+    let facts = facts.clone();
     let current_dir = current_dir.to_path_buf();
     let mode = if local {
         CargoResolution::Local
@@ -140,364 +134,17 @@ fn spawn_cargo_layout_resolution(
         CargoResolution::Update
     };
     smol::spawn(async move {
-        resolve_cargo_layout(&host, &current_dir, framework, mode)
-            .await
-            .map_err(|error| error.to_string())
+        async {
+            let metadata = facts
+                .cargo_metadata(&cargo_layout_command(&current_dir, &mode))
+                .await?;
+            cargo_layout_from(facts.host(), &current_dir, framework, metadata).await
+        }
+        .await
+        .map_err(|error: eyre::Report| error.to_string())
     })
     .boxed()
     .shared()
-}
-
-/// The inputs every persisted `cargo tree` answer keys on — anything
-/// that changes cfg or feature resolution for the same `--target` set:
-/// the toolchain pair, every manifest Cargo reads (the project's own,
-/// its workspace root's, the `.cargo/config.toml` chain), and the
-/// rustflags the host declares. Nothing here is resolved at [`Project`]
-/// open: a key is hashed fresh each time an entry is read or written, so
-/// a long-lived process never stores output resolved against new inputs
-/// under the key the old ones hashed to.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct GraphKey {
-    /// `cargo --version` output, trimmed.
-    cargo_version: String,
-    /// `rustc -vV` output — the cfg values `cfg(...)` tables match are
-    /// rustc's, so an answer holds only while the compiler does.
-    rustc_version: String,
-    /// sha256 of the project's `Cargo.toml`.
-    manifest_sha256: String,
-    /// sha256 of the workspace `Cargo.lock`; `None` when none exists.
-    lockfile_sha256: Option<String>,
-    /// sha256 of the workspace root's `Cargo.toml` — the
-    /// `[workspace.dependencies]` feature selections and `resolver` a
-    /// member inherits resolve into the graph from there, touching
-    /// neither the member's own manifest nor the lock.
-    workspace_manifest_sha256: String,
-    /// sha256 of every `.cargo/config.toml` (or legacy `config`) Cargo's
-    /// discovery applies to the project root, keyed by the file's path —
-    /// the recorded set is re-enumerated on read, so a config file
-    /// appearing or disappearing in the chain is a miss, not a stale
-    /// replay.
-    cargo_config_sha256: BTreeMap<String, String>,
-    /// The rustflags variables the host's environment declares —
-    /// `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` and each target's
-    /// `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` — keyed by the variable's name.
-    rustflags_env: BTreeMap<String, String>,
-    /// The rustflags the configuration resolves to per build target —
-    /// `--cfg` flags in them enter `cfg(...)` matching.
-    rustflags: BTreeMap<String, Vec<String>>,
-}
-
-/// `program`'s stdout run through `host` with the project root as its
-/// working directory — the directory a `rust-toolchain.toml` beside the
-/// project selects the toolchain from.
-async fn toolchain_output(
-    host: &Host,
-    project_root: &Path,
-    program: &str,
-    args: &[&str],
-) -> eyre::Result<String> {
-    let mut process = host.command(program);
-    // The answer is the captured stdout, so it is never echoed.
-    let output = command(&mut process, false)
-        .args(args)
-        .current_dir(project_root)
-        .output()
-        .await
-        .map_err(|error| eyre::eyre!("could not run `{program}`: {error}"))?;
-    if !output.status.success() {
-        eyre::bail!("`{program}` exited with {}", output.status);
-    }
-    String::from_utf8(output.stdout)
-        .map_err(|error| eyre::eyre!("`{program}` printed non-UTF-8 output: {error}"))
-}
-
-/// `triple`'s `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` variable — Cargo's
-/// uppercased, `-`→`_` encoding of the triple.
-fn target_rustflags_env(triple: &Triple) -> String {
-    format!(
-        "CARGO_TARGET_{}_RUSTFLAGS",
-        triple.to_string().to_uppercase().replace('-', "_")
-    )
-}
-
-/// The toolchain versions plus the files every `cargo tree` evaluation
-/// reads, hashed as they stand at call time — the project manifest and
-/// lockfile, the workspace root's manifest, the `.cargo/config.toml`
-/// chain and the rustflags it resolves to for each target.
-async fn resolve_graph_key(
-    host: &Host,
-    project_root: &Path,
-    layout: &CargoLayout,
-    targets: &[Triple],
-) -> eyre::Result<GraphKey> {
-    let (cargo_version, rustc_version, rustc_path) = futures_util::future::try_join3(
-        toolchain_output(host, project_root, "cargo", &["--version"]),
-        toolchain_output(host, project_root, "rustc", &["-vV"]),
-        host.which("rustc").map_err(Into::into),
-    )
-    .await?;
-
-    let host = host.clone();
-    let project_root = project_root.to_path_buf();
-    let workspace_root = layout.workspace_root.clone();
-    let targets = targets.to_vec();
-    let cargo_version = cargo_version.trim().to_string();
-    smol::unblock(move || {
-        // Canonicalize before the ancestor walk so the `.cargo` chain
-        // enumeration covers every directory Cargo's own canonicalized
-        // discovery does.
-        let project_root = dunce::canonicalize(project_root)?;
-        let manifest_sha256 = sha256_hex(&std::fs::read(project_root.join("Cargo.toml"))?);
-        let lockfile_sha256 = match std::fs::read(workspace_root.join("Cargo.lock")) {
-            Ok(bytes) => Some(sha256_hex(&bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error.into()),
-        };
-        let workspace_manifest_sha256 =
-            sha256_hex(&std::fs::read(workspace_root.join("Cargo.toml"))?);
-
-        // Cargo's `$CARGO_HOME` resolution: absolute, anchored at the
-        // working directory when relative, `~/.cargo` when unset — the
-        // same walk `cargo_config2` performs.
-        let cargo_home = host
-            .env_string("CARGO_HOME")
-            .filter(|home| !home.is_empty())
-            .map(PathBuf::from)
-            .map(|home| {
-                if home.is_absolute() {
-                    home
-                } else {
-                    project_root.join(home)
-                }
-            })
-            .or_else(|| host.home_dir().map(|home| home.join(".cargo")));
-        let cargo_config_sha256 =
-            cargo_config2::Walk::with_cargo_home(&project_root, cargo_home.clone())
-                .map(|file| {
-                    std::fs::read(&file)
-                        .map(|bytes| (file.display().to_string(), sha256_hex(&bytes)))
-                })
-                .collect::<Result<BTreeMap<String, String>, std::io::Error>>()?;
-        // `cargo-config2` invokes rustc itself when a `cfg(...)` table in
-        // the chain must resolve — the probe still goes through the host's
-        // own `rustc`, resolved on the host's `PATH`.
-        let options = cargo_config2::ResolveOptions::default()
-            .env(
-                host.envs()
-                    .map(|(key, value)| (key.to_os_string(), value.to_os_string())),
-            )
-            .cargo_home(cargo_home)
-            .rustc(cargo_config2::PathAndArgs::new(rustc_path));
-        let config = cargo_config2::Config::load_with_options(&project_root, options)
-            .wrap_err_with(|| {
-                format!(
-                    "could not resolve the Cargo configuration applying to {}",
-                    project_root.display()
-                )
-            })?;
-
-        let mut rustflags_env = BTreeMap::new();
-        for name in ["RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"] {
-            if let Some(value) = host.env_string(name) {
-                rustflags_env.insert(name.to_string(), value);
-            }
-        }
-        let mut rustflags = BTreeMap::new();
-        for target in &targets {
-            let name = target_rustflags_env(target);
-            if let Some(value) = host.env_string(&name) {
-                rustflags_env.insert(name, value);
-            }
-            rustflags.insert(
-                target.to_string(),
-                config
-                    .rustflags(target.to_string())
-                    .wrap_err_with(|| format!("could not resolve the rustflags for {target}"))?
-                    .map(|flags| flags.flags)
-                    .unwrap_or_default(),
-            );
-        }
-
-        Ok(GraphKey {
-            cargo_version,
-            rustc_version,
-            manifest_sha256,
-            lockfile_sha256,
-            workspace_manifest_sha256,
-            cargo_config_sha256,
-            rustflags_env,
-            rustflags,
-        })
-    })
-    .await
-}
-
-/// The workspace root manifest a path package's directory inherits
-/// `[workspace.*]` settings from, per Cargo's own rule: an explicit
-/// `[package] workspace = "<path>"` pointer when the package's manifest
-/// carries one, else the nearest ancestor `Cargo.toml` carrying a
-/// `[workspace]` table.
-fn workspace_manifest_of(package_dir: &Path) -> Option<PathBuf> {
-    for ancestor in package_dir.ancestors() {
-        let manifest_path = ancestor.join("Cargo.toml");
-        let Ok(manifest) =
-            std::fs::read_to_string(&manifest_path).map(|text| text.parse::<toml::Table>())
-        else {
-            continue;
-        };
-        let Ok(manifest) = manifest else { continue };
-        if ancestor == package_dir
-            && let Some(pointer) = manifest
-                .get("package")
-                .and_then(|package| package.get("workspace"))
-                .and_then(toml::Value::as_str)
-            && let Ok(root) = dunce::canonicalize(ancestor.join(pointer))
-        {
-            return Some(root.join("Cargo.toml"));
-        }
-        if manifest.contains_key("workspace") {
-            return Some(manifest_path);
-        }
-    }
-    None
-}
-
-/// Re-hash every manifest a [`CachedTree`] entry recorded — each path
-/// package's own `Cargo.toml` and the workspace root manifest each
-/// inherits from, re-derived the way the write derived them so a
-/// `[workspace]` table appearing above a package after the resolve reads
-/// as a different set.
-fn path_inputs_match(
-    path_manifest_sha256: &BTreeMap<String, String>,
-    workspace_manifest_sha256: &BTreeMap<String, String>,
-) -> bool {
-    let mut workspace = BTreeMap::new();
-    for (manifest, recorded) in path_manifest_sha256 {
-        let Ok(bytes) = std::fs::read(manifest) else {
-            return false;
-        };
-        if sha256_hex(&bytes) != *recorded {
-            return false;
-        }
-        let Some(package_dir) = Path::new(manifest).parent() else {
-            return false;
-        };
-        if let Some(root_manifest) = workspace_manifest_of(package_dir) {
-            let Ok(bytes) = std::fs::read(&root_manifest) else {
-                return false;
-            };
-            workspace.insert(root_manifest.display().to_string(), sha256_hex(&bytes));
-        }
-    }
-    workspace == *workspace_manifest_sha256
-}
-
-/// A persisted `cargo tree` evaluation: the raw `{p}` output plus every
-/// input it resolved from — replayed only while all of them still hash
-/// the same.
-#[derive(Debug, Serialize, Deserialize)]
-struct CachedTree {
-    /// The `--target` set the evaluation filtered by, joined the way its
-    /// cache key joins it — a guard against a renamed or colliding file.
-    targets: String,
-    /// Every input the evaluation resolved against, hashed at write time.
-    key: GraphKey,
-    /// sha256 of every path package's `Cargo.toml` the tree carried,
-    /// keyed by manifest path — the recorded list is re-hashed on read,
-    /// so a path package that changed after the resolve replays nothing.
-    path_manifest_sha256: BTreeMap<String, String>,
-    /// sha256 of the workspace root manifest each recorded path package
-    /// inherits from, keyed by manifest path — `[workspace.dependencies]`
-    /// feature selections and `resolver` reach the graph from there
-    /// without touching the member manifests or the lock.
-    workspace_manifest_sha256: BTreeMap<String, String>,
-    /// The evaluation's raw stdout.
-    output: String,
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest as _;
-    hex::encode(sha2::Sha256::digest(bytes))
-}
-
-fn cached_tree_path(cache_dir: &Path, edges: &str, key: &str) -> PathBuf {
-    cache_dir.join(format!(
-        "{edges}-{}.json",
-        &sha256_hex(key.as_bytes())[..16]
-    ))
-}
-
-/// The recorded output of a `(edges, key)` evaluation whose inputs still
-/// hash the same — `None` on any miss: no entry, a stale input, a path
-/// manifest that no longer reads, or an entry that does not parse.
-async fn read_cached_tree(
-    cache_dir: &Path,
-    edges: &str,
-    key: &str,
-    graph_key: &GraphKey,
-) -> Option<String> {
-    let path = cached_tree_path(cache_dir, edges, key);
-    let contents = smol::fs::read(&path).await.ok()?;
-    let entry: CachedTree = serde_json::from_slice(&contents).ok()?;
-    if entry.targets != key || entry.key != *graph_key {
-        return None;
-    }
-    let path_manifest_sha256 = entry.path_manifest_sha256.clone();
-    let workspace_manifest_sha256 = entry.workspace_manifest_sha256.clone();
-    let output = entry.output;
-    smol::unblock(move || path_inputs_match(&path_manifest_sha256, &workspace_manifest_sha256))
-        .await
-        .then_some(output)
-}
-
-/// Persist a fresh `(edges, key)` evaluation — every input was hashed as
-/// it stood when the write began, and the recorded path-package manifests
-/// and their workspace roots ride inside the entry so a later read
-/// re-hashes exactly the list the resolve picked up. The entry is staged
-/// to a temporary file and renamed over the destination — a reader
-/// mid-write never sees a torn entry, the same discipline
-/// `metadata.toml`'s writes follow.
-async fn write_cached_tree(
-    cache_dir: &Path,
-    edges: &str,
-    key: &str,
-    graph_key: GraphKey,
-    output: &str,
-) -> eyre::Result<()> {
-    let cache_dir = cache_dir.to_path_buf();
-    let path = cached_tree_path(&cache_dir, edges, key);
-    let key = key.to_string();
-    let output = output.to_string();
-    smol::unblock(move || {
-        use std::io::Write as _;
-        let mut path_manifest_sha256 = BTreeMap::new();
-        let mut workspace_manifest_sha256 = BTreeMap::new();
-        for directory in output.lines().filter_map(tree_package_directory) {
-            let manifest = directory.join("Cargo.toml");
-            let bytes = std::fs::read(&manifest)?;
-            path_manifest_sha256.insert(manifest.display().to_string(), sha256_hex(&bytes));
-            if let Some(root_manifest) = workspace_manifest_of(&directory)
-                && let std::collections::btree_map::Entry::Vacant(slot) =
-                    workspace_manifest_sha256.entry(root_manifest.display().to_string())
-            {
-                let bytes = std::fs::read(&root_manifest)?;
-                slot.insert(sha256_hex(&bytes));
-            }
-        }
-        let entry = CachedTree {
-            targets: key,
-            key: graph_key,
-            path_manifest_sha256,
-            workspace_manifest_sha256,
-            output,
-        };
-        std::fs::create_dir_all(&cache_dir)?;
-        let mut file = tempfile::NamedTempFile::new_in(&cache_dir)?;
-        file.write_all(&serde_json::to_vec(&entry)?)?;
-        file.persist(&path)?;
-        eyre::Result::Ok(())
-    })
-    .await
 }
 
 /// The generated-manifest section a graph answer is written to, named in
@@ -527,18 +174,11 @@ pub struct Project {
     manifest: Manifest,
     crate_name: CrateName,
     cargo_layout: Shared<BoxFuture<'static, Result<CargoLayout, String>>>,
-    /// The normal-edge `cargo tree` resolutions already run for this
-    /// project, keyed by the build triple each `--target` filtered for.
-    linked_packages: TargetGraph<LinkedPackages>,
-    /// The `--edges features` `cargo tree` resolutions, keyed by triple the
-    /// same way — a feature answer resolved for one target is never served
-    /// to a build for another.
-    enabled_features: TargetGraph<BTreeSet<String>>,
-    /// The per-package enabled-feature sets of generated manifests —
-    /// `cargo metadata --filter-platform <triple>` — keyed by manifest and
-    /// triple, so Gradle's four ABI checks share one resolve each and an
-    /// answer resolved for one target is never served to another.
-    generated_features: TargetGraph<BTreeMap<String, BTreeSet<String>>>,
+    /// The Cargo and toolchain facts this project's commands ask —
+    /// `cargo metadata`, `cargo tree`, the selected toolchain — answered
+    /// once per invocation and replayed across invocations while their
+    /// inputs are unchanged.
+    facts: Facts,
     /// The bound [`Self::CARGO_RESOLVE_PERMITS`] states, shared by every
     /// resolution this project's cached answers drive.
     cargo_resolve_permits: Arc<async_lock::Semaphore>,
@@ -925,11 +565,16 @@ impl Project {
         managed_backends_root.join("apple-companion")
     }
 
-    /// The persisted `cargo tree` answers' directory. It lives inside the
+    /// The directory a project's fact records live in. It is inside the
     /// managed build cache, so the version wipe, garbage collection and
-    /// `water clean` that remove the cache remove it with it.
-    fn graph_cache_dir(&self) -> PathBuf {
-        self.managed_backends_root.join("dependency_graph")
+    /// `water clean` that remove the cache remove the records with it.
+    fn facts_dir(managed_backends_root: &Path) -> PathBuf {
+        managed_backends_root.join("facts")
+    }
+
+    /// The Cargo and toolchain facts of this project.
+    pub(crate) const fn facts(&self) -> &Facts {
+        &self.facts
     }
 
     /// Get the full path to the managed Apple in-process preview package.
@@ -1031,112 +676,58 @@ impl Project {
     /// on the machine's I/O at once.
     const CARGO_RESOLVE_PERMITS: usize = 8;
 
-    /// The parsed `cargo tree --edges <edges>` evaluation for `targets`,
-    /// cached under the canonical join of the target list — one triple
-    /// keys on itself, a serving set on the whole set — so an evaluation
-    /// resolved for one build target is never served to another, and a
-    /// single-target call and the same single-element set share one
-    /// entry. Behind each key's `Shared` future sits the project build
-    /// cache: an entry whose recorded inputs still hash the same replays
-    /// its stored output without resolving anything.
-    async fn cached_tree_answer<T: Send + Sync + 'static>(
+    /// The parsed `cargo tree --edges <edges>` evaluation for `targets` —
+    /// one triple, or a serving set evaluated as one invocation. The
+    /// evaluation is a [`Fact`]: answered once per invocation and replayed
+    /// from its record while every input it resolved from observes the
+    /// same, so a target's answer is never served to another target set.
+    async fn cached_tree_answer<T>(
         &self,
-        cache: &TargetGraph<T>,
         edges: &'static str,
         targets: &[Triple],
         parse: fn(&str) -> eyre::Result<T>,
-    ) -> eyre::Result<Arc<T>> {
-        // The cache key names the exact set the evaluation filtered by;
-        // triples contain no commas, so the join is unambiguous.
-        let mut names: Vec<String> = targets.iter().map(ToString::to_string).collect();
-        names.sort_unstable();
-        names.dedup();
-        let key = names.join(",");
-        let host = self.host.clone();
-        let project_root = self.root.clone();
-        let cache_dir = self.graph_cache_dir();
-        let cargo_layout = self.cargo_layout.clone();
-        let permits = Arc::clone(&self.cargo_resolve_permits);
-        let targets = targets.to_vec();
-        let shared = cache
-            .lock()
+    ) -> eyre::Result<T> {
+        let mut targets = targets.to_vec();
+        targets.sort_unstable_by_key(ToString::to_string);
+        targets.dedup();
+        let layout = self
+            .cargo_layout
+            .clone()
             .await
-            .entry(key.clone())
-            .or_insert_with(move || {
-                async move {
-                    let layout = cargo_layout.await?;
-                    let output = if let Some(output) = {
-                        let fresh = resolve_graph_key(&host, &project_root, &layout, &targets)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        read_cached_tree(&cache_dir, edges, &key, &fresh).await
-                    } {
-                        output
-                    } else {
-                        let output = {
-                            let _permit = permits.acquire_arc().await;
-                            cargo_tree(
-                                &host,
-                                &project_root,
-                                &layout.root_package_id,
-                                edges,
-                                &targets,
-                                false,
-                            )
-                            .await
-                            .map_err(|error| error.to_string())?
-                        };
-                        // Hash the inputs as they stand at write time —
-                        // not the read's copy — so a manifest or toolchain
-                        // that changed mid-resolve never has the fresh
-                        // output recorded under its old key.
-                        let written = resolve_graph_key(&host, &project_root, &layout, &targets)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        write_cached_tree(&cache_dir, edges, &key, written, &output)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        output
-                    };
-                    parse(&output)
-                        .map(Arc::new)
-                        .map_err(|error| error.to_string())
-                }
-                .boxed()
-                .shared()
-            })
-            .clone();
-        shared.await.map_err(|error| eyre::eyre!(error))
+            .map_err(|error| eyre::eyre!(error))?;
+        let fact = CargoTree {
+            project_root: self.root.clone(),
+            package: layout.root_package_id,
+            lockfile: layout.workspace_root.join("Cargo.lock"),
+            edges,
+            targets,
+            permits: Arc::clone(&self.cargo_resolve_permits),
+        };
+        parse(&self.facts.answer(&fact).await?)
     }
 
     /// The resolved `{p}` entries of the application's normal-edge
     /// dependency graph for `target` — every printed occurrence, keyed by
     /// package name.
-    async fn linked_packages(&self, target: &Triple) -> eyre::Result<Arc<LinkedPackages>> {
-        self.cached_tree_answer(
-            &self.linked_packages,
-            "normal",
-            std::slice::from_ref(target),
-            |tree| Ok(linked_packages_from_tree(tree)),
-        )
+    async fn linked_packages(&self, target: &Triple) -> eyre::Result<LinkedPackages> {
+        self.cached_tree_answer("normal", std::slice::from_ref(target), |tree| {
+            Ok(linked_packages_from_tree(tree))
+        })
         .await
     }
 
     /// The feature names the application's `cargo tree --edges features
     /// --target <triple>` evaluation reports.
-    async fn enabled_features(&self, target: &Triple) -> eyre::Result<Arc<BTreeSet<String>>> {
-        self.cached_tree_answer(
-            &self.enabled_features,
-            "features",
-            std::slice::from_ref(target),
-            |tree| Ok(enabled_features_from_tree(tree)),
-        )
+    async fn enabled_features(&self, target: &Triple) -> eyre::Result<BTreeSet<String>> {
+        self.cached_tree_answer("features", std::slice::from_ref(target), |tree| {
+            Ok(enabled_features_from_tree(tree))
+        })
         .await
     }
 
     /// Every package's enabled features in `build_manifest`'s resolved
     /// graph for `target` — `cargo metadata --filter-platform <triple>`,
-    /// cached per manifest and triple so a build's ABI-by-ABI feature
+    /// a [`Fact`] per manifest and triple, so a build's ABI-by-ABI feature
     /// checks share one resolve each and an answer resolved for one
     /// target is never served to another. Packages whose names repeat in
     /// the graph merge their resolved feature sets, the question asked of
@@ -1149,51 +740,28 @@ impl Project {
         &self,
         build_manifest: &Path,
         target: &Triple,
-    ) -> eyre::Result<Arc<BTreeMap<String, BTreeSet<String>>>> {
-        // `\u{1f}` separates the manifest from the triple — neither side
-        // can contain it, so the key is unambiguous.
-        let key = format!("{}\u{1f}{target}", build_manifest.display());
-        let host = self.host.clone();
-        let build_manifest = build_manifest.to_path_buf();
-        let target = target.clone();
-        let permits = Arc::clone(&self.cargo_resolve_permits);
-        let shared = self
-            .generated_features
-            .lock()
-            .await
-            .entry(key)
-            .or_insert_with(move || {
-                async move {
-                    let metadata = {
-                        let _permit = permits.acquire_arc().await;
-                        let mut command = cargo_metadata::MetadataCommand::new();
-                        command.manifest_path(&build_manifest).other_options(vec![
-                            "--filter-platform".to_string(),
-                            target.to_string(),
-                        ]);
-                        host.cargo_metadata(&command).await
-                    }
-                    .map_err(|error| error.to_string())?;
-                    let mut features: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-                    if let Some(resolve) = &metadata.resolve {
-                        for node in &resolve.nodes {
-                            let Some(package) = metadata.packages.iter().find(|p| p.id == node.id)
-                            else {
-                                continue;
-                            };
-                            features
-                                .entry(package.name.to_string())
-                                .or_default()
-                                .extend(node.features.iter().map(ToString::to_string));
-                        }
-                    }
-                    Ok(Arc::new(features))
-                }
-                .boxed()
-                .shared()
-            })
-            .clone();
-        shared.await.map_err(|error| eyre::eyre!(error))
+    ) -> eyre::Result<BTreeMap<String, BTreeSet<String>>> {
+        let metadata = {
+            let _permit = self.cargo_resolve_permits.acquire_arc().await;
+            let mut command = cargo_metadata::MetadataCommand::new();
+            command
+                .manifest_path(build_manifest)
+                .other_options(vec!["--filter-platform".to_string(), target.to_string()]);
+            self.facts.cargo_metadata(&command).await?
+        };
+        let mut features: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        if let Some(resolve) = &metadata.resolve {
+            for node in &resolve.nodes {
+                let Some(package) = metadata.packages.iter().find(|p| p.id == node.id) else {
+                    continue;
+                };
+                features
+                    .entry(package.name.to_string())
+                    .or_default()
+                    .extend(node.features.iter().map(ToString::to_string));
+            }
+        }
+        Ok(features)
     }
 
     /// The one answer `query` gives for every build target `targets`
@@ -1323,7 +891,7 @@ impl Project {
             return Ok(BTreeSet::new());
         }
         let packages = self
-            .cached_tree_answer(&self.linked_packages, "normal", targets, |tree| {
+            .cached_tree_answer("normal", targets, |tree| {
                 Ok(linked_packages_from_tree(tree))
             })
             .await?;
@@ -2407,6 +1975,8 @@ impl Project {
         let managed_backends_root = crate::water_dir::project_build_cache_dir(host, &path)
             .await
             .map_err(FailToCreateProject::BuildCache)?;
+        let facts = Facts::new(host, &path, &Self::facts_dir(&managed_backends_root))
+            .map_err(FailToCreateProject::BuildCache)?;
 
         let cargo_layout = if let Some(framework) = &manifest.framework {
             let layout = resolve_cargo_layout(
@@ -2421,7 +1991,7 @@ impl Project {
                 .boxed()
                 .shared()
         } else {
-            spawn_cargo_layout_resolution(host, &path, None, true)
+            spawn_cargo_layout_resolution(&facts, &path, None, true)
         };
         Ok(Self {
             host: host.clone(),
@@ -2429,9 +1999,7 @@ impl Project {
             manifest,
             crate_name,
             cargo_layout,
-            linked_packages: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
-            enabled_features: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
-            generated_features: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
+            facts,
             cargo_resolve_permits: Arc::new(async_lock::Semaphore::new(
                 Self::CARGO_RESOLVE_PERMITS,
             )),
@@ -2729,17 +2297,6 @@ impl Project {
                 CrateName::try_from(value).map_err(FailToOpenProject::InvalidCrateName)
             })?;
 
-        let cargo_layout = spawn_cargo_layout_resolution(
-            host,
-            &path,
-            manifest.framework.clone(),
-            manifest.waterui_path.is_some(),
-        );
-        cargo_layout
-            .clone()
-            .await
-            .map_err(|error| FailToOpenProject::Framework(eyre::eyre!(error)))?;
-
         let build_cache_start = std::time::Instant::now();
         let managed_backends_root = crate::water_dir::ensure_project_build_cache(host, &path)
             .await
@@ -2750,6 +2307,19 @@ impl Project {
             elapsed_ms = build_cache_start.elapsed().as_millis(),
             "Project::open ensured project build cache"
         );
+        let facts = Facts::new(host, &path, &Self::facts_dir(&managed_backends_root))
+            .map_err(FailToOpenProject::BuildCache)?;
+
+        let cargo_layout = spawn_cargo_layout_resolution(
+            &facts,
+            &path,
+            manifest.framework.clone(),
+            manifest.waterui_path.is_some(),
+        );
+        cargo_layout
+            .clone()
+            .await
+            .map_err(|error| FailToOpenProject::Framework(eyre::eyre!(error)))?;
 
         let mut project = Self {
             host: host.clone(),
@@ -2757,9 +2327,7 @@ impl Project {
             manifest,
             crate_name,
             cargo_layout,
-            linked_packages: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
-            enabled_features: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
-            generated_features: Arc::new(async_lock::Mutex::new(BTreeMap::new())),
+            facts,
             cargo_resolve_permits: Arc::new(async_lock::Semaphore::new(
                 Self::CARGO_RESOLVE_PERMITS,
             )),
@@ -2874,12 +2442,11 @@ async fn write_channel_file(path: &Path, contents: Option<&[u8]>) -> std::io::Re
     }
 }
 
-async fn resolve_cargo_layout(
-    host: &Host,
+/// The `cargo metadata` invocation a [`CargoLayout`] is read from.
+fn cargo_layout_command(
     current_dir: &Path,
-    framework: Option<ResolvedFramework>,
-    mode: CargoResolution,
-) -> eyre::Result<CargoLayout> {
+    mode: &CargoResolution,
+) -> cargo_metadata::MetadataCommand {
     let mut command = cargo_metadata::MetadataCommand::new();
     command.current_dir(current_dir);
     match mode {
@@ -2891,7 +2458,32 @@ async fn resolve_cargo_layout(
         }
         CargoResolution::Update => {}
     }
-    let metadata = host.cargo_metadata(&command).await?;
+    command
+}
+
+/// Resolve the layout with a fresh `cargo metadata` run — the path for
+/// the commands whose purpose is to change the resolve (`create`,
+/// channel selection), which must never replay a recorded one.
+async fn resolve_cargo_layout(
+    host: &Host,
+    current_dir: &Path,
+    framework: Option<ResolvedFramework>,
+    mode: CargoResolution,
+) -> eyre::Result<CargoLayout> {
+    let metadata = host
+        .cargo_metadata(&cargo_layout_command(current_dir, &mode))
+        .await?;
+    cargo_layout_from(host, current_dir, framework, metadata).await
+}
+
+/// The layout `metadata` reports for the project at `current_dir`, once
+/// the resolve is checked against the CLI and the framework's lock.
+async fn cargo_layout_from(
+    host: &Host,
+    current_dir: &Path,
+    framework: Option<ResolvedFramework>,
+    metadata: cargo_metadata::Metadata,
+) -> eyre::Result<CargoLayout> {
     validate_resolved_cli(host, &metadata)?;
     if let Some(framework) = framework
         && framework.channel() != Some(FrameworkChannel::Stable)
@@ -2987,6 +2579,69 @@ async fn cargo_tree(
 
     String::from_utf8(output.stdout)
         .map_err(|error| eyre::eyre!("Cargo runtime dependency graph is not UTF-8: {error}"))
+}
+
+/// The application's `cargo tree --edges <edges>` evaluation for a target
+/// set, as a [`Fact`].
+struct CargoTree {
+    project_root: PathBuf,
+    /// The application package's resolved id, the `--package` spec.
+    package: String,
+    /// The workspace lockfile the evaluation resolves against.
+    lockfile: PathBuf,
+    edges: &'static str,
+    /// The `--target` set, sorted and deduplicated.
+    targets: Vec<Triple>,
+    permits: Arc<async_lock::Semaphore>,
+}
+
+impl Fact for CargoTree {
+    const KIND: &'static str = "cargo-tree";
+    /// The project root, package spec, edge kinds and target set.
+    type Question = (PathBuf, String, String, Vec<String>);
+    /// The `{p}` lines Cargo printed.
+    type Value = String;
+
+    fn question(&self) -> Self::Question {
+        (
+            self.project_root.clone(),
+            self.package.clone(),
+            self.edges.to_owned(),
+            self.targets.iter().map(ToString::to_string).collect(),
+        )
+    }
+
+    fn cwd(&self) -> &Path {
+        &self.project_root
+    }
+
+    async fn resolve(&self, host: &Host) -> eyre::Result<String> {
+        let _permit = self.permits.acquire_arc().await;
+        cargo_tree(
+            host,
+            &self.project_root,
+            &self.package,
+            self.edges,
+            &self.targets,
+            false,
+        )
+        .await
+    }
+
+    /// The application manifest, the lockfile, and the manifest of every
+    /// path package the tree printed.
+    fn seeds(&self, tree: &String) -> eyre::Result<BTreeSet<PathBuf>> {
+        let mut seeds = BTreeSet::from([
+            dunce::canonicalize(self.project_root.join("Cargo.toml"))?,
+            self.lockfile.clone(),
+        ]);
+        seeds.extend(
+            tree.lines()
+                .filter_map(tree_package_directory)
+                .map(|directory| directory.join("Cargo.toml")),
+        );
+        Ok(seeds)
+    }
 }
 
 /// The framework's local source roots — directories whose packages are the
@@ -4873,6 +4528,23 @@ mod target_graph_tests {
         (ws, app, dep)
     }
 
+    /// Set every file under `dir` to one fixed time in the past.
+    fn settle(dir: &Path) {
+        let time = filetime::FileTime::from_unix_time(1_700_000_000, 0);
+        let mut pending = vec![dir.to_path_buf()];
+        while let Some(path) = pending.pop() {
+            if path.is_dir() {
+                pending.extend(
+                    std::fs::read_dir(&path)
+                        .expect("fixture dir lists")
+                        .map(|entry| entry.expect("fixture entry").path()),
+                );
+            } else {
+                filetime::set_file_mtime(&path, time).expect("fixture mtime");
+            }
+        }
+    }
+
     /// Open the fixture project on `host` and ask its linux graph for the
     /// linked browser engine — the one-call resolve the persisted-layer
     /// test counts `cargo tree` invocations through.
@@ -5162,6 +4834,10 @@ mod target_graph_tests {
                     .count()
             };
 
+            // Inputs written moments before a resolve are never recorded —
+            // Cargo may have read them mid-write — so every fixture write
+            // is settled into the past before the resolve that records it.
+            settle(&ws);
             resolve_graph_answer(&host, &app_root, &linux).await;
             let mut expected = 1;
             // The second open answers from the recorded entry alone.
@@ -5180,6 +4856,7 @@ mod target_graph_tests {
             ] {
                 let text = std::fs::read_to_string(&edited).expect("the input reads");
                 std::fs::write(&edited, format!("{text}\n# edited\n")).expect("the input writes");
+                settle(&ws);
                 expected += 1;
                 resolve_graph_answer(&host, &app_root, &linux).await;
                 assert_eq!(
@@ -5198,6 +4875,7 @@ mod target_graph_tests {
                 "[build]\nrustflags = [\"--cfg\", \"fixture_flag\"]\n",
             )
             .expect("cargo config");
+            settle(&ws);
             expected += 1;
             resolve_graph_answer(&host, &app_root, &linux).await;
             assert_eq!(tree_calls(&log), expected, "cargo config rustflags");

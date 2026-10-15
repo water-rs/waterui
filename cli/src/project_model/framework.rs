@@ -1195,7 +1195,7 @@ impl ResolvedFramework {
             let mut command = cargo_metadata::MetadataCommand::new();
             command.current_dir(directory).no_deps();
             project
-                .host()
+                .facts()
                 .cargo_metadata(&command)
                 .await?
                 .workspace_root
@@ -1264,7 +1264,7 @@ impl ResolvedFramework {
         let result = match seeded {
             Ok(()) => {
                 self.validate_seeded_build(
-                    project.host(),
+                    project.facts(),
                     directory,
                     features,
                     allow_new,
@@ -1303,18 +1303,19 @@ impl ResolvedFramework {
     /// failure rolls the seeded lock and its stamp back together.
     async fn validate_seeded_build(
         &self,
-        host: &crate::toolchain::Host,
+        facts: &crate::project_model::facts::Facts,
         root: &Path,
         features: &[String],
         allow_new: bool,
         seeded: &SeededLock<'_>,
     ) -> Result<()> {
+        let host = facts.host();
         // A previous lock resolved without the canonical pins can carry a
         // generation the seeded locks contradict — an `accesskit_winit`
         // wanting an `accesskit` newer than the pin the channel certifies
         // (#203). That is the project's state, not something to resolve
         // past: name it and say how the seed is regenerated.
-        let metadata = managed_crate_metadata(host, root, features)
+        let metadata = managed_crate_metadata(facts, root, features)
             .await
             .map_err(|error| {
                 eyre!(
@@ -1722,15 +1723,15 @@ impl ResolvedFramework {
 /// Resolve a managed crate's dependency metadata for the feature selection
 /// the build was invoked with.
 async fn managed_crate_metadata(
-    host: &crate::toolchain::Host,
+    facts: &crate::project_model::facts::Facts,
     root: &std::path::Path,
     features: &[String],
-) -> std::result::Result<cargo_metadata::Metadata, cargo_metadata::Error> {
+) -> Result<cargo_metadata::Metadata> {
     let mut command = cargo_metadata::MetadataCommand::new();
     command
         .current_dir(root)
         .features(cargo_metadata::CargoOpt::SomeFeatures(features.to_vec()));
-    host.cargo_metadata(&command).await
+    facts.cargo_metadata(&command).await
 }
 
 /// Every version the framework's own lock records for a package name —

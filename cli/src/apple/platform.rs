@@ -761,7 +761,7 @@ pub(crate) async fn apple_backend_source_root(project: &Project) -> eyre::Result
     let mut command = cargo_metadata::MetadataCommand::new();
     command.manifest_path(project.apple_crate_path().join("Cargo.toml"));
     let metadata = project
-        .host()
+        .facts()
         .cargo_metadata(&command)
         .await
         .wrap_err("cargo metadata failed to resolve the Apple backend source")?;
