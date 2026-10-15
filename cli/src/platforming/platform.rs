@@ -729,9 +729,10 @@ pub struct PackageOptions {
     device_signing: DeviceSigning,
 
     /// Hardware UDID of the physical Apple device the package targets, when
-    /// packaging for one (`water run`); `None` for a device-agnostic
-    /// `water package`, which skips the profile's `ProvisionedDevices`
-    /// check and provisions with a generic iOS destination.
+    /// packaging for one (`water run`, `water package --device`); `None`
+    /// for a device-agnostic `water package`, which skips the profile's
+    /// `ProvisionedDevices` check and provisions with a generic iOS
+    /// destination.
     device_udid: Option<String>,
 
     /// Whether the package embeds the shared `WaterUI` Rust runtime.
