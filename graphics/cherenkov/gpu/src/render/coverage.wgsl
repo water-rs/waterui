@@ -548,25 +548,28 @@ fn prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
         winding[r] = atomicLoad(&coverage[2u + paths[pi].row_base + sy + r]);
     }
     while current < limit {
-        let end = lower_bound(sort_key(current) + 1u);
+        let key = sort_key(current);
         let group = params.groups + current * 16u;
-        // Integration moves this link to the first consumed edge-head word.
-        atomicStore(&coverage[group], end);
         for (var r = 0u; r < 4u; r += 1u) {
             // Radix scratch occupied this arena in earlier dispatches.
             // This strip exclusively owns the unique boundary group.
             atomicStore(&coverage[group + 4u + r], 0u);
             atomicStore(&coverage[group + 8u + r], winding[r]);
         }
-        for (var entry = current; entry < end; entry += 1u) {
-            let node = sort_node(entry);
+        // Linking the cell's fragments finds the next group's index too.
+        var end = current;
+        while end < params.fragment_cap && sort_key(end) == key {
+            let node = sort_node(end);
             let base = params.fragment_base + (node - 1u) * 8u;
             let row = atomicLoad(&coverage[base + 6u]);
             let previous = atomicLoad(&coverage[group + 4u + row]);
             atomicStore(&coverage[group + 4u + row], node);
             atomicStore(&coverage[base + 4u], previous);
             winding[row] += atomicLoad(&coverage[base + 7u]);
+            end += 1u;
         }
+        // Integration moves this link to the first consumed edge-head word.
+        atomicStore(&coverage[group], end);
         for (var r = 0u; r < 4u; r += 1u) {
             atomicStore(&coverage[group + 12u + r], winding[r]);
         }
