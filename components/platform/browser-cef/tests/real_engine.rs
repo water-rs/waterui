@@ -637,6 +637,16 @@ fn the_installed_realization_draws_a_live_page(engine: &Engine) {
     );
 }
 
+/// `run_javascript` answers the JSON encoding of the evaluated value, made by
+/// the page — the shared conformance case on a loaded document.
+fn raw_evaluation_answers_json(engine: &Engine) {
+    let page = engine.page();
+    page.open_page("/first");
+    page.block_on(waterui_webview::conformance::raw_evaluation_answers_json(
+        async |script| page.webview.run_javascript(script).await,
+    ));
+}
+
 /// The engine's asset origin serves the bundled site the shared conformance
 /// case drives — module script, stylesheet and WASM — as a secure context.
 fn the_asset_origin_serves_bundled_content(engine: &Engine) {
@@ -772,7 +782,7 @@ async fn cdp_eval(cdp: &waterui_chromium::CdpSession, source: &str) -> Value {
 /// Every check, in the order they run.
 type Check = (&'static str, fn(&Engine));
 
-const CHECKS: [Check; 9] = [
+const CHECKS: [Check; 10] = [
     (
         "navigation_reaches_each_url_and_history_moves_both_ways",
         navigation_reaches_each_url_and_history_moves_both_ways,
@@ -789,6 +799,7 @@ const CHECKS: [Check; 9] = [
         "integers_beyond_two_to_the_fifty_third_cross_intact_both_ways",
         integers_beyond_two_to_the_fifty_third_cross_intact_both_ways,
     ),
+    ("raw_evaluation_answers_json", raw_evaluation_answers_json),
     (
         "the_installed_realization_draws_a_live_page",
         the_installed_realization_draws_a_live_page,

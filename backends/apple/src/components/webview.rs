@@ -617,10 +617,12 @@ impl WebViewHandle for WkWebViewHandle {
     )]
     async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
         let (sender, receiver) = async_channel::bounded(1);
-        self.controller()
-            .evaluate_javascript(script, move |result| {
+        self.controller().evaluate_javascript(
+            &waterui_webview::raw_evaluation(script),
+            move |result| {
                 let _ = sender.try_send(result.map(Str::from).map_err(Str::from));
-            });
+            },
+        );
         receiver.recv().await.unwrap_or_else(|error| {
             Err(Str::from(format!(
                 "WebView JavaScript channel closed: {error}"

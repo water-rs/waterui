@@ -144,7 +144,6 @@ objc2-foundation = { workspace = true, optional = true, features = [
     "NSError",
     "NSGeometry",
     "NSHTTPCookie",
-    "NSJSONSerialization",
     "NSKeyValueObserving",
     "NSNotification",
     "NSObject",

@@ -562,11 +562,17 @@ impl WpePage {
         .await
     }
 
-    /// Evaluates JavaScript and returns its serialized result.
+    /// Evaluates `script` without awaiting it and returns the string it
+    /// evaluates to.
+    ///
+    /// The script encodes its own answer: `WebViewHandle::run_javascript`
+    /// hands this `waterui_webview::raw_evaluation`, whose value is the JSON
+    /// text of the caller's expression.
     ///
     /// # Errors
     ///
-    /// Returns the serialized JavaScript exception when evaluation fails.
+    /// Returns the JavaScript exception when evaluation fails, and a failure
+    /// when the script evaluates to anything but a string.
     #[expect(
         clippy::future_not_send,
         reason = "WPE WebKit pages are confined to the UI thread"
@@ -588,13 +594,13 @@ impl WpePage {
         .map_err(Str::from)
     }
 
-    /// Runs `body` as the body of an async function and resolves with the value
-    /// its promise settles on.
+    /// Runs `body` as the body of an async function and resolves with the
+    /// string its promise settles on.
     ///
     /// # Errors
     ///
-    /// Returns the serialized JavaScript exception when the promise rejects or
-    /// the body throws.
+    /// Returns the JavaScript exception when the promise rejects or the body
+    /// throws, and a failure when the promise settles on anything but a string.
     #[expect(
         clippy::future_not_send,
         reason = "WPE WebKit pages are confined to the UI thread"

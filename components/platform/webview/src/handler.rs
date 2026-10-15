@@ -200,31 +200,49 @@ webview_handle! {
         fn get_cookies(&self) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>>;
 
         #[cfg(not(target_arch = "wasm32"))]
-        /// Runs JavaScript code in the context of the currently loaded page.
+        /// Evaluates the JavaScript expression `script` in the main frame of
+        /// the currently loaded page and answers the **JSON encoding of its
+        /// value**.
         ///
         /// This executes the script **after** the page has loaded. For scripts
         /// that need to run before the DOM is constructed (e.g., setting up
         /// bridges), use [`inject_script`](Self::inject_script) with
         /// [`ScriptInjectionTime::DocumentStart`].
         ///
-        /// Returns the result of the script execution, or an error message.
+        /// This is the raw path, and its contract is the same on every engine
+        /// because the page does the encoding, not the backend:
         ///
-        /// This is the raw path, and its reply is the **JSON encoding of the
-        /// evaluated value**, on every engine: a string arrives quoted, a
-        /// number or boolean as its literal, an object or array as JSON, and
-        /// `undefined` — which JSON has no spelling for — as `null`. Unquoted,
-        /// a reply is ambiguous: a page at `first` and a page that returned
-        /// the string `"first"` would be the same bytes, and the caller would
-        /// have to guess which it got. An engine that describes a value it
-        /// cannot serialize, such as a function, answers `null` for it too.
+        /// - `script` is one **expression** — `document.title`, `[a, b]`,
+        ///   `(() => { …; return x; })()` — not a statement list. A statement
+        ///   such as `let x = 1`, or a trailing `;`, does not parse and
+        ///   answers `Err`.
+        /// - The value is encoded by the page's own `JSON.stringify`: a string
+        ///   arrives quoted, a number or boolean as its literal, an object or
+        ///   array as JSON, and `NaN` or an infinity as `null`. Unquoted, a
+        ///   reply would be ambiguous: a page at `first` and a page that
+        ///   returned the string `"first"` would be the same bytes.
+        /// - `undefined`, a function and a symbol have no JSON spelling and
+        ///   answer `null`; the typed path is where `undefined` stays distinct.
+        /// - A promise is **not** awaited; it encodes as `{}`.
+        ///   [`WebView::eval`](crate::WebView::eval) and
+        ///   [`WebView::exec`](crate::WebView::exec) go through
+        ///   [`call_async_javascript`](Self::call_async_javascript), which
+        ///   awaits.
+        /// - An exception the expression throws, a parse failure, and a value
+        ///   `JSON.stringify` throws on — a cycle, a `BigInt` — answer `Err`
+        ///   with the engine's message. The message is the engine's own
+        ///   wording, and Android's `evaluateJavascript` reports none at all.
+        /// - It evaluates in any document, including one outside the bridge
+        ///   policy: the encoding is inlined into the evaluation and depends
+        ///   on nothing `WaterUI` installed into the page.
+        ///
+        /// A backend evaluates [`raw_evaluation(script)`](crate::raw_evaluation)
+        /// with its engine's non-awaiting evaluation API and returns the string
+        /// that program evaluates to **unchanged**. It never re-encodes the
+        /// engine's native value: a result that is not a string is an `Err`.
         /// `conformance::raw_evaluation_answers_json` (behind the `conformance`
         /// feature) is the check every engine's real-engine suite runs against
         /// this.
-        ///
-        /// Everything typed — [`WebView::eval`](crate::WebView::eval) and
-        /// [`WebView::exec`](crate::WebView::exec) — goes through
-        /// [`call_async_javascript`](Self::call_async_javascript) instead,
-        /// because it needs the promise awaited.
         fn run_javascript(&self, script: &str) -> impl Future<Output = Result<Str, Str>>;
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -248,6 +266,11 @@ webview_handle! {
         /// method rather than something the caller assembles. A backend whose
         /// engine has no awaiting API resolves the promise in JavaScript and
         /// reports the result through its own bridge.
+        ///
+        /// The body resolves with a string — the shared wrapper's JSON envelope
+        /// — and a backend returns it unchanged, exactly as
+        /// [`run_javascript`](Self::run_javascript) does: a promise that
+        /// resolves with anything else answers `Err`, never a re-encoding.
         fn call_async_javascript(&self, body: &str) -> impl Future<Output = Result<Str, Str>>;
     }
 
@@ -372,10 +395,12 @@ webview_handle! {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        /// Runs the given JavaScript code in the context of the web view.
+        /// Evaluates the JavaScript expression `script` and answers the JSON
+        /// encoding of its value.
         ///
-        /// The returned future is intentionally thread-local because native web
-        /// views and their handles are main-thread-affine.
+        /// See [`WebViewHandle::run_javascript`] for the contract every engine
+        /// meets. The returned future is intentionally thread-local because
+        /// native web views and their handles are main-thread-affine.
         #[expect(
             clippy::future_not_send,
             reason = "native web views and their handles are main-thread-affine"

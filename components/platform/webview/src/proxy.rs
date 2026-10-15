@@ -98,9 +98,11 @@ impl WebViewProxy {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    /// Runs the given JavaScript code in the context of the web view.
+    /// Evaluates the JavaScript expression `script` in the web view and answers
+    /// the JSON encoding of its value.
     ///
-    /// The returned future is intentionally thread-local because native
+    /// See [`WebViewHandle::run_javascript`](crate::WebViewHandle::run_javascript)
+    /// for the contract every engine meets. The returned future is intentionally thread-local because native
     /// web views are main-thread-affine.
     #[must_use = "the script only runs once the returned future is awaited"]
     pub fn run_javascript<'a>(

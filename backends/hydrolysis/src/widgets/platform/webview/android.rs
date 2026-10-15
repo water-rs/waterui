@@ -853,7 +853,7 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
             |call_id, _token| {
                 self.inner.call_str(
                     WebViewMethodId::Evaluate,
-                    script,
+                    &waterui_webview::raw_evaluation(script),
                     &[JValue::Long(
                         jlong::try_from(call_id).expect("a call id fits a jlong"),
                     )],
