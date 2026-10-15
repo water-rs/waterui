@@ -14,6 +14,11 @@
 #              discover-examples.sh returns for the waterui checkout
 set -euo pipefail
 
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  echo "::error::warm-e2e-workspace.sh needs bash >= 4.2 (found ${BASH_VERSION}); /bin/bash 3.2 lets SIGCHLD interrupt writes with EINTR (#2683)" >&2
+  exit 1
+fi
+
 # The whole body lives in a function: bash parses a function definition in
 # full before executing any of it, so by the time `main "$@"` below runs the
 # entire file has already been read. This matters because sync_repo below can
@@ -60,9 +65,9 @@ main() {
   local -a examples=("$@")
   if (( ${#examples[@]} == 0 )); then
     # A command substitution, not process substitution: it keeps discovery's
-    # exit status, and no child is left to exit (SIGCHLD interrupts a builtin's
-    # write with EINTR under /bin/bash 3.2) while this script prints. bash 3.2
-    # has no mapfile; read line-wise instead.
+    # exit status, and the shell waits the child out instead of printing
+    # while it runs. The line-wise read predates the bash >= 4.2 floor (3.2
+    # has no mapfile); it stays.
     local discovered example
     if ! discovered="$("${repo_root}/.github/scripts/discover-examples.sh" "${waterui_dir}")"; then
       printf '%s\n' "${discovered}"

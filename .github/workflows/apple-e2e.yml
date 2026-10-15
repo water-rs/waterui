@@ -122,6 +122,10 @@ jobs:
         id: setup
         run: ./.github/scripts/setup-e2e.sh
 
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
+
       # The packaging legs fan out over a matrix of example groups; the
       # partition is computed here, once, from the same discovered set the
       # packaging script sees, so every leg certifies the same set and a
@@ -229,6 +233,10 @@ jobs:
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
 
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
+
       - name: Package this group's iOS examples
         env:
           PLATFORM: ios
@@ -327,6 +335,10 @@ jobs:
       - run: |
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
 
       - name: Package this group's macOS examples
         env:
@@ -443,6 +455,10 @@ jobs:
             --cellularBars 4 \
             --wifiBars 3
 
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
+
       - name: Run iOS e2e shard
         env:
           PLATFORM: ios
@@ -536,6 +552,10 @@ jobs:
           for archive in packaged-artifacts/packaged-macos-*.tar; do
             tar -xf "${archive}" -C "${{ github.workspace }}"
           done
+
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
 
       - name: Run macOS e2e shard
         env:

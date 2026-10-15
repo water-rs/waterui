@@ -28,7 +28,17 @@
 # The shard measures the release package, never a debug `water run`: the
 # packaged artifact is what users ship, so size, startup, memory, and pixel
 # parity all describe the production binary.
+#
+# Requires bash >= 4.2, asserted below (#2683): the shard keeps background
+# children alive by design — the marker/reference log streams and `water
+# package` — and a builtin write that races a child's exit fails with EINTR
+# under /bin/bash 3.2, whose SIGCHLD handler lacks SA_RESTART.
 set -euo pipefail
+
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  echo "::error::run-e2e-shard.sh needs bash >= 4.2 (found ${BASH_VERSION}); /bin/bash 3.2 lets SIGCHLD interrupt writes with EINTR (#2683)" >&2
+  exit 1
+fi
 
 platform="${PLATFORM:-${1:-}}"
 shard_index="${SHARD_INDEX:-${2:-}}"
@@ -85,9 +95,7 @@ fi
 
 # A command substitution, not process substitution: it keeps discovery's exit
 # status (a captured `::error` line would otherwise become an example name),
-# and the shell waits the child out instead of leaving it to exit — and
-# deliver SIGCHLD, which /bin/bash 3.2 lets interrupt a builtin's write with
-# EINTR — while this script is printing.
+# and the shell waits the child out instead of printing while it runs.
 if ! discovered="$("${workspace}/.github/scripts/discover-examples.sh" "${waterui_dir}")"; then
   printf '%s\n' "${discovered}"
   exit 1
@@ -100,8 +108,8 @@ while IFS= read -r example; do
 done <<< "${discovered}"
 declare -a shard_examples=()
 
-# The `${arr[@]+...}` form: under the system bash 3.2 an empty array expands to
-# an unbound-variable error, and shards legitimately assign no examples.
+# The `${arr[@]+...}` form: under bash < 4.4 an empty array expands to an
+# unbound-variable error, and shards legitimately assign no examples.
 if [[ -n "${EXAMPLES:-}" ]]; then
   # An explicit list selects exactly those examples; a name that discovery did
   # not find is a typo, not an empty shard, so it fails the run fast.
