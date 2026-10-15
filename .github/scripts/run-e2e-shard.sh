@@ -83,10 +83,21 @@ if [[ "${record}" == "1" ]]; then
   mkdir -p "${record_dir}/${platform}"
 fi
 
+# A command substitution, not process substitution: it keeps discovery's exit
+# status (a captured `::error` line would otherwise become an example name),
+# and the shell waits the child out instead of leaving it to exit — and
+# deliver SIGCHLD, which /bin/bash 3.2 lets interrupt a builtin's write with
+# EINTR — while this script is printing.
+if ! discovered="$("${workspace}/.github/scripts/discover-examples.sh" "${waterui_dir}")"; then
+  printf '%s\n' "${discovered}"
+  exit 1
+fi
+
 all_examples=()
 while IFS= read -r example; do
+  [[ -n "${example}" ]] || continue
   all_examples+=("${example}")
-done < <("${workspace}/.github/scripts/discover-examples.sh" "${waterui_dir}")
+done <<< "${discovered}"
 declare -a shard_examples=()
 
 # The `${arr[@]+...}` form: under the system bash 3.2 an empty array expands to
@@ -421,9 +432,12 @@ terminate_pid() {
 # from Twins.swift so a new twin joins the sweep automatically.
 twin_names=()
 if [[ -f "${reference_dir}/Sources/Twins.swift" ]]; then
+  # A command substitution for the same reason as discovery above.
+  twins="$(sed -n 's/.*case "\([^"]*\)":.*/\1/p' "${reference_dir}/Sources/Twins.swift" | sort -u)"
   while IFS= read -r twin; do
+    [[ -n "${twin}" ]] || continue
     twin_names+=("${twin}")
-  done < <(sed -n 's/.*case "\([^"]*\)":.*/\1/p' "${reference_dir}/Sources/Twins.swift" | sort -u)
+  done <<< "${twins}"
 fi
 
 has_twin() {
