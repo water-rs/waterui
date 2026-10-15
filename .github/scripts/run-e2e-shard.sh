@@ -633,6 +633,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   app_path=""
   runner_pid=""
   stuck=0
+  fetch_failed=0
   if [[ -n "${prebuilt_dir}" ]]; then
     # The build job packaged this example already; its package log stands in
     # as the run log so the artifacts look as they did when the shard built
@@ -647,41 +648,48 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       -name '*.app' -type d -print -quit 2>/dev/null || true)"
   else
     : > "${run_log}"
-    water package --platform "${package_platform}" --backend apple --release \
-      --path "${example_path}" > "${run_log}" 2>&1 &
-    runner_pid=$!
+    # Builds never touch the network: a declared remote font must already be
+    # in the font cache, so it is fetched before packaging (#2638). A fetch
+    # failure fails the example the same way a package failure does below.
+    if ! water fetch --path "${example_path}" >> "${run_log}" 2>&1; then
+      fetch_failed=1
+    else
+      water package --platform "${package_platform}" --backend apple --release \
+        --path "${example_path}" >> "${run_log}" 2>&1 &
+      runner_pid=$!
 
-    # The wait covers `water package`'s cold release build, not just a launch:
-    # without a shared sccache a first-in-shard example compiles for tens of
-    # minutes, and release codegen runs longer than debug. The bound is
-    # therefore on *silence*, not duration — a build that is writing to the log
-    # or running compiler processes is making progress and must not be killed
-    # (#140). A dead runner still short-circuits, and a hard ceiling caps hung
-    # cases.
-    built=0
-    log_size=-1
-    silent_since=${SECONDS}
-    deadline=$((SECONDS + 2700))
-    while (( SECONDS < deadline )); do
-      if ! kill -0 "${runner_pid}" 2>/dev/null; then
-        if wait "${runner_pid}"; then built=1; fi
-        break
-      fi
-      new_size=$(stat -f%z "${run_log}" 2>/dev/null || echo -1)
-      if (( new_size != log_size )); then
-        log_size=${new_size}
-        silent_since=${SECONDS}
-      elif pgrep -f 'xcodebuild|swiftc|swift-frontend|cargo|rustc|clang' >/dev/null 2>&1; then
-        silent_since=${SECONDS}
-      elif (( SECONDS - silent_since > 300 )); then
-        stuck=1
-        break
-      fi
-      sleep 2
-    done
+      # The wait covers `water package`'s cold release build, not just a launch:
+      # without a shared sccache a first-in-shard example compiles for tens of
+      # minutes, and release codegen runs longer than debug. The bound is
+      # therefore on *silence*, not duration — a build that is writing to the log
+      # or running compiler processes is making progress and must not be killed
+      # (#140). A dead runner still short-circuits, and a hard ceiling caps hung
+      # cases.
+      built=0
+      log_size=-1
+      silent_since=${SECONDS}
+      deadline=$((SECONDS + 2700))
+      while (( SECONDS < deadline )); do
+        if ! kill -0 "${runner_pid}" 2>/dev/null; then
+          if wait "${runner_pid}"; then built=1; fi
+          break
+        fi
+        new_size=$(stat -f%z "${run_log}" 2>/dev/null || echo -1)
+        if (( new_size != log_size )); then
+          log_size=${new_size}
+          silent_since=${SECONDS}
+        elif pgrep -f 'xcodebuild|swiftc|swift-frontend|cargo|rustc|clang' >/dev/null 2>&1; then
+          silent_since=${SECONDS}
+        elif (( SECONDS - silent_since > 300 )); then
+          stuck=1
+          break
+        fi
+        sleep 2
+      done
 
-    if (( built == 1 )); then
-      app_path="$(find_packaged_app "${run_log}")"
+      if (( built == 1 )); then
+        app_path="$(find_packaged_app "${run_log}")"
+      fi
     fi
   fi
 
@@ -714,7 +722,11 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       fi
       kill "${runner_pid}" 2>/dev/null || true
     else
-      if grep -qi "unsupported for" "${run_log}"; then
+      if (( fetch_failed )); then
+        echo "::error::water fetch failed for ${example} (${platform})."
+        failures+=("${example}: fetch")
+        report+=("| \`${example}\` | fetch failed | — | — | — | ${mem_cell} |")
+      elif grep -qi "unsupported for" "${run_log}"; then
         # The CLI refused a platform-impossible configuration (e.g. a CEF
         # WebView on iOS) — by-design, not a defect (#154). Skipped, not failed.
         echo "::notice::${example} is unsupported on ${platform}; skipping."
