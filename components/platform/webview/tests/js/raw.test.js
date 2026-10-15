@@ -15,6 +15,17 @@ const WRAPPER = readFileSync(new URL("../../src/js/raw.js", import.meta.url), "u
 const evaluate = (expression) =>
   vm.runInNewContext(`(${WRAPPER})((\n${expression}\n))`);
 
+/// The `name` of the error `run` throws. The error comes from the evaluation's
+/// own realm, whose `SyntaxError` is not this module's, so it is matched by name.
+const thrownName = (run) => {
+  try {
+    run();
+  } catch (error) {
+    return error.name;
+  }
+  throw new Error("the evaluation did not throw");
+};
+
 describe("raw evaluation", () => {
   test("answers the JSON encoding of the value as a string", () => {
     expect(evaluate("'waterui'")).toBe('"waterui"');
@@ -53,7 +64,7 @@ describe("raw evaluation", () => {
   });
 
   test("refuses a statement, which is not an expression", () => {
-    expect(() => evaluate("let x = 1")).toThrow(SyntaxError);
-    expect(() => evaluate("document.title;")).toThrow(SyntaxError);
+    expect(thrownName(() => evaluate("let x = 1"))).toBe("SyntaxError");
+    expect(thrownName(() => evaluate("document.title;"))).toBe("SyntaxError");
   });
 });
