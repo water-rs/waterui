@@ -59,11 +59,19 @@ main() {
 
   local -a examples=("$@")
   if (( ${#examples[@]} == 0 )); then
-    # bash 3.2 (macOS /bin/bash) has no mapfile; read line-wise instead.
-    local example
+    # A command substitution, not process substitution: it keeps discovery's
+    # exit status, and no child is left to exit (SIGCHLD interrupts a builtin's
+    # write with EINTR under /bin/bash 3.2) while this script prints. bash 3.2
+    # has no mapfile; read line-wise instead.
+    local discovered example
+    if ! discovered="$("${repo_root}/.github/scripts/discover-examples.sh" "${waterui_dir}")"; then
+      printf '%s\n' "${discovered}"
+      exit 1
+    fi
     while IFS= read -r example; do
+      [[ -n "${example}" ]] || continue
       examples+=("${example}")
-    done < <("${repo_root}/.github/scripts/discover-examples.sh" "${waterui_dir}")
+    done <<< "${discovered}"
   fi
 
   # Reuse package-examples.sh for the `water package` invocation rather than
