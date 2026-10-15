@@ -142,7 +142,8 @@ fn extend_t(t: f32, mode: u32) -> f32 {
     }
 }
 
-// Initial crossover candidate; retained threshold is chosen by device A/B.
+// Binary narrowing stops once the interval has fewer than eight edges;
+// all gradients share the linear scan from there.
 const GRADIENT_LINEAR_STOPS: u32 = 8u;
 
 // Premultiplied working-space colour of the gradient at parameter `t`.
@@ -156,23 +157,24 @@ fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
     } else if t >= stops[first + count - 1u].offset {
         c = stops[first + count - 1u].color;
     } else {
+        // Invariant: stops[i].offset <= t < stops[end].offset; equality moves
+        // i right and preserves the last repeated interior stop.
         var i = first;
-        if count > GRADIENT_LINEAR_STOPS {
+        // A two-stop gradient already has its interval; for wider ones the
+        // strict upper stop terminates the linear tail without a bounds branch.
+        if count > 2u {
             var end = first + count - 1u;
             loop {
-                if end - i <= 1u {
+                if end - i < GRADIENT_LINEAR_STOPS {
                     break;
                 }
                 let mid = i + (end - i) / 2u;
-                if t < stops[mid].offset {
-                    end = mid;
-                } else {
-                    i = mid;
-                }
+                let before = t < stops[mid].offset;
+                i = select(mid, i, before);
+                end = select(end, mid, before);
             }
-        } else {
             loop {
-                if i + 1u >= first + count - 1u || t < stops[i + 1u].offset {
+                if t < stops[i + 1u].offset {
                     break;
                 }
                 i += 1u;
