@@ -33,14 +33,8 @@ impl<'a> Upload<'a> {
                 },
                 wgpu::Features::TEXTURE_COMPRESSION_ASTC,
             ),
-            ImageFormat::Bc7 => (
-                T::Bc7RgbaUnorm,
-                wgpu::Features::TEXTURE_COMPRESSION_BC,
-            ),
-            ImageFormat::Etc2Rgba => (
-                T::Etc2Rgba8Unorm,
-                wgpu::Features::TEXTURE_COMPRESSION_ETC2,
-            ),
+            ImageFormat::Bc7 => (T::Bc7RgbaUnorm, wgpu::Features::TEXTURE_COMPRESSION_BC),
+            ImageFormat::Etc2Rgba => (T::Etc2Rgba8Unorm, wgpu::Features::TEXTURE_COMPRESSION_ETC2),
         };
         let (format, bytes) = if features.contains(required) {
             (native, Cow::Borrowed(image.data.as_ref()))
