@@ -93,7 +93,7 @@ trait WebViewControllerImpl: 'static {
 
 impl<T: CustomWebViewController> WebViewControllerImpl for T {
     fn open(&self, config: WebViewConfig) -> AnyWebViewHandle {
-        AnyWebViewHandle::new(CustomWebViewController::open(self, config))
+        AnyWebViewHandle::open(config, |config| CustomWebViewController::open(self, config))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
