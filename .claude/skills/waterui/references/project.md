@@ -246,6 +246,7 @@ water run --native-logs                # include native platform logs too — no
 
 water build <target>                   # compile the Rust library for a platform
 water package                          # package the production (release) build; --debug for an unoptimized one
+water package --platform ios --device <udid>  # provision the package for a specific device
 water devices                          # list simulators and devices
 water doctor                           # check the toolchain
 water clean
