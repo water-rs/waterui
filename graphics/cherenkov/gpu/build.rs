@@ -148,6 +148,7 @@ fn main() {
         mip,
         resolve,
         reduce,
+        shadow,
         native,
         tile,
     ] = [
@@ -161,6 +162,7 @@ fn main() {
         "mip",
         "resolve",
         "reduce",
+        "shadow",
         "external_native",
         "composite/tile",
     ]
@@ -193,6 +195,7 @@ fn main() {
         mip: &mip,
         resolve: &resolve,
         reduce: &reduce,
+        shadow: &shadow,
         tile: &tile,
     });
 
@@ -216,13 +219,14 @@ struct Modules<'a> {
     mip: &'a str,
     resolve: &'a str,
     reduce: &'a str,
+    shadow: &'a str,
     /// The Vulkan tile stage interfaces around the fragment bodies.
     tile: &'a str,
 }
 
 /// The fixed module set `render` creates: four VARIANT specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
-/// `projective`, `mip`, `resolve` and `reduce`. The engine, external
+/// `projective`, `mip`, `resolve`, `reduce` and `shadow`. The engine, external
 /// and projective modules share the `shared.wgsl` prelude; the engine
 /// and projective tails share the `blend.wgsl` compositing helpers.
 /// Variant 3 (Union) additionally prepends `UNION_MAX_MEMBERS` and links
@@ -289,6 +293,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         ("mip", m.mip, bindings::MIP_GROUPS),
         ("resolve", m.resolve, bindings::RESOLVE_GROUPS),
         ("reduce", m.reduce, bindings::REDUCE_GROUPS),
+        ("shadow", m.shadow, bindings::SHADOW_GROUPS),
     ] {
         specs.push(Spec {
             name: name.into(),
