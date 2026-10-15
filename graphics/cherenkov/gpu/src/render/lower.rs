@@ -472,11 +472,7 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
     if (flags & FLAG_UNION) != 0 {
         return ShaderVariant::Union;
     }
-    if matches!(
-        inst.meta[1] & 0xffff,
-        PAINT_LINEAR | PAINT_RADIAL | PAINT_SWEEP
-    ) && inst.meta[3] & 0xffff > GRADIENT_LINEAR_STOPS
-    {
+    if is_gradient(inst) && inst.meta[3] & 0xffff > GRADIENT_LINEAR_STOPS {
         return ShaderVariant::LongGradient;
     }
     if (flags & (FLAG_HAS_CLIP | FLAG_HAS_MASK | FLAG_HAS_INNER)) != 0
@@ -489,6 +485,31 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
         return ShaderVariant::Shadow;
     }
     ShaderVariant::Simple
+}
+
+/// Whether `inst` paints a linear, radial or sweep gradient.
+const fn is_gradient(inst: &Instance) -> bool {
+    matches!(
+        inst.meta[1] & 0xffff,
+        PAINT_LINEAR | PAINT_RADIAL | PAINT_SWEEP
+    )
+}
+
+/// The variant `inst` draws with when the open range draws with `open`:
+/// a gradient the uber-shader would draw joins an open long-gradient
+/// range instead. That module evaluates every linear, radial and sweep
+/// paint the uber-shader does, and its upper-bound search selects the
+/// same stop interval as the linear scan, so interleaved short and long
+/// gradients share one draw instead of switching pipelines per instance.
+const fn variant_after(open: ShaderVariant, inst: &Instance) -> ShaderVariant {
+    let variant = variant_of(inst);
+    if matches!(open, ShaderVariant::LongGradient)
+        && matches!(variant, ShaderVariant::Full)
+        && is_gradient(inst)
+    {
+        return ShaderVariant::LongGradient;
+    }
+    variant
 }
 
 /// The part of a shadow its following opaque fill hides, in shadow-local
@@ -2251,14 +2272,14 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Starts a new draw range when the shader variant changes.
-    fn set_variant(&mut self, variant: ShaderVariant) {
-        if self
-            .frame
-            .open
-            .as_ref()
-            .is_some_and(|o| o.variant != variant)
-        {
+    /// Starts a new draw range when `inst` needs a different shader
+    /// variant from the open range's.
+    fn set_variant(&mut self, inst: &Instance) {
+        let Some(open) = &self.frame.open else {
+            return;
+        };
+        let variant = variant_after(open.variant, inst);
+        if open.variant != variant {
             self.end_segment();
             if let Some(open) = &mut self.frame.open {
                 open.variant = variant;
@@ -2270,7 +2291,7 @@ impl<'a> Lowering<'a> {
     /// specialised fragment variant. Under a pending clip mask the
     /// instance's `uv.zw` is patched after the mask is stored.
     fn push_instance(&mut self, inst: &Instance) {
-        self.set_variant(variant_of(inst));
+        self.set_variant(inst);
         if inst.meta[0] == KIND_FILL
             && let Some(open) = &self.frame.open
             && open.maybe_coverage
@@ -4078,7 +4099,7 @@ impl<'a> Lowering<'a> {
             // kinds (fill/span/cell) all use the same shader specialization.
             let mut template = first.restore(&storage.templates[emission.template], offset);
             Self::apply_clip(&mut template, clip);
-            self.set_variant(variant_of(&template));
+            self.set_variant(&template);
             let first = self.frame.instances.len();
             check_instance_bound(first + retained.len());
             self.frame
@@ -4811,7 +4832,7 @@ impl<'a> Lowering<'a> {
         if quads.len() == 0 {
             return;
         }
-        self.set_variant(variant_of(template));
+        self.set_variant(template);
         let first = self.frame.instances.len();
         check_instance_bound(first + quads.len());
         self.frame.instances.resize(first + quads.len(), *template);
@@ -5610,6 +5631,34 @@ mod tests {
             let translated = Affine::new([a, b, c, d, 123.0, -456.0]);
             assert_eq!(lowering.margin(translated).to_bits(), expected);
         }
+    }
+
+    #[test]
+    fn short_gradients_join_an_open_long_gradient_range() {
+        let gradient = |stops: u32| {
+            let mut instance = Instance::new(KIND_FILL);
+            instance.meta[1] = PAINT_LINEAR;
+            instance.meta[3] = stops;
+            instance
+        };
+        let image = {
+            let mut instance = Instance::new(KIND_FILL);
+            instance.meta[1] = PAINT_IMAGE;
+            instance
+        };
+        let mut open = ShaderVariant::Simple;
+        let mut ranges = 0;
+        for instance in [2, 128, 8, 9, 2].map(gradient) {
+            let variant = variant_after(open, &instance);
+            ranges += usize::from(variant != open);
+            open = variant;
+        }
+        assert_eq!((open, ranges), (ShaderVariant::LongGradient, 2));
+        assert_eq!(variant_after(open, &image), ShaderVariant::Full);
+        assert_eq!(
+            variant_after(ShaderVariant::Full, &gradient(2)),
+            ShaderVariant::Full
+        );
     }
 
     #[test]
