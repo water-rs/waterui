@@ -2067,7 +2067,6 @@ const FRAMEWORK_PACKAGES: &[&str] = &[
     "waterui-testing",
     "waterui-locale",
     "waterui-browser-cef",
-    "waterui-preview",
     "waterui-preview-protocol",
     "waterui-mcp",
 ];
@@ -3568,7 +3567,7 @@ fn rebase_patches_onto_source(
 /// The checkout's patch table only lists the members its own crates depend on
 /// through `path`; a member resolved through `[workspace.dependencies]` —
 /// `waterui-internal`, `waterui-media`, `waterui-mcp`,
-/// `waterui-preview`, `waterui-preview-protocol`, `waterui-testing`, … — can
+/// `waterui-preview-protocol`, `waterui-testing`, … — can
 /// still be requested by bare version from a generated or transitive manifest,
 /// and without an entry that request resolves a published release built from a
 /// different revision (water-rs/cli#197). The lock's source-less packages are

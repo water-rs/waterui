@@ -57,8 +57,9 @@ the platform default `gtk4` has no preview renderer. See
 
 `--expr` compiles the expression into generated preview code with `waterui::prelude::*`
 in scope, so it is a real compile, not a string interpreter. The preview pipeline links
-the app as a dylib, which is why generated projects carry the
-`dev = ["waterui/dynamic_linking"]` feature (see `references/project.md`).
+the generated preview binary against the shared WaterUI runtime, which is
+why generated projects carry the `dev = ["waterui/dynamic_linking"]` feature
+(see `references/project.md`).
 
 Keeping the preview function self-contained — owning its own bindings — is what lets the
 same function be embedded in a gallery, previewed, and used by tests. A screen with a

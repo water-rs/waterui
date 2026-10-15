@@ -1028,7 +1028,6 @@ mod tests {
             None,
             &stable_framework(),
             false,
-            None,
             &crate::templates::LocalBackendSources::default(),
         )
         .with_project_packages(std::collections::BTreeSet::from(["demo".to_string()]))

@@ -621,7 +621,7 @@ pub(crate) async fn android_path_env(
 /// scripts probe, the `CMake` toolchain file for native dependencies, and the
 /// `pkg-config` cross overrides.
 ///
-/// The support app and the preview module it loads must compile their shared
+/// A generated crate and the shared runtime it links must compile their shared
 /// dependency graph identically, so both take their environment from this one
 /// list rather than each spelling it out.
 pub(crate) fn android_cargo_envs(

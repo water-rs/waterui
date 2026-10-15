@@ -86,7 +86,6 @@ semver = "1.0"
 # ships libc++_shared.so when a library actually links it.
 object = { version = "0.40", features = ["wasm"] }
 which = "8.0.6"
-notify = { version = "8", default-features = false, features = ["macos_kqueue"], optional = true }
 
 # Terminal UI dependencies
 clap = { version = "4", features = ["derive"] }
@@ -167,13 +166,10 @@ axoupdater = "0.10.2"
 tokio = { version = "1.48", default-features = false, features = ["rt", "net", "time"] }
 
 [features]
-default = ["svg-icons", "preview"]
+default = ["svg-icons"]
 # SVG app-icon sources rasterized through usvg/resvg. Without it only raster
 # icon sources are accepted and the bundled default icon is a PNG.
 svg-icons = ["dep:resvg"]
-# Preview-instance registry file watching. Without it the preview launcher
-# polls the registry directory on a 100 ms interval instead.
-preview = ["dep:notify"]
 
 [target.'cfg(target_vendor = "apple")'.dependencies]
 zenwave = { version = "0.6.1", default-features = false, features = ["hyper-backend", "native-tls"] }
