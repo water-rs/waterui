@@ -41,6 +41,8 @@ on:
 # Metadata edits have their own run-specific group and skip all jobs, so they
 # cannot cancel source validation. Their distinct check names also prevent a
 # skipped check from replacing a pending or failed source verdict (#2655).
+# GitHub leaves skipped ordinary job names as literal expressions; those
+# literals are also distinct from every required source check name.
 concurrency:
   group: ci-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && format('metadata-{0}', github.run_id) || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -189,16 +191,27 @@ jobs:
   # The release scripts derive the certified `framework.json` from the root
   # manifest; their tests pin that derivation to the tree, so they run whenever
   # the scripts or the manifest change.
+  # Required ordinary jobs must be scheduled on source events: GitHub does
+  # not evaluate the name of a skipped ordinary job. Apply scope to their
+  # steps so out-of-scope source changes still report the required context;
+  # metadata events skip the entire job without reporting that context.
   scripts:
     name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Release scripts
     needs: changes
-    if: needs.changes.outputs.scripts == 'true'
+    if: always() && ((github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Require successful scope discovery
+        env:
+          CHANGES: ${{ needs.changes.result }}
+        run: test "$CHANGES" = success
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.scripts == 'true'
       - uses: astral-sh/setup-uv@v6
+        if: needs.changes.outputs.scripts == 'true'
       - name: Manifest derivation tests
+        if: needs.changes.outputs.scripts == 'true'
         run: >
           uv run --with pytest --with 'tree-sitter==0.26.0'
           --with 'tree-sitter-rust==0.24.2' pytest .github/scripts
@@ -211,27 +224,36 @@ jobs:
   hygiene:
     name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Hygiene
     needs: changes
-    if: needs.changes.outputs.deps == 'true'
+    if: always() && ((github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Require successful scope discovery
+        env:
+          CHANGES: ${{ needs.changes.result }}
+        run: test "$CHANGES" = success
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.deps == 'true'
       # Restore-only: this job and Features share `ci-ubuntu`, and two jobs
       # saving the same key race for the reservation, so one of them always
       # loses and uploads nothing. Features owns the write because it builds
       # the larger graph.
       - uses: ./.github/actions/setup-rust
+        if: needs.changes.outputs.deps == 'true'
         with:
           cache: "false"
       # Reads the shared `cargo-sources` archive owned by this OS's single
       # writer job; read-only lanes never save, so they cannot evict caches.
       - name: Restore Cargo sources
+        if: needs.changes.outputs.deps == 'true'
         uses: ./.github/actions/cargo-sources
       # Only the license check below needs a native dependency (nasm, for a
       # build script) and it never runs a GUI/audio/video stack, so this job
       # does not need the full setup-linux-deps package list.
       - uses: ./.github/actions/refresh-apt-index
+        if: needs.changes.outputs.deps == 'true'
       - run: sudo apt-get -o Acquire::Retries=10 install -y nasm
+        if: needs.changes.outputs.deps == 'true'
       # The audit and deny checks run against the COMMITTED Cargo.lock — the
       # dependency set the workspace actually builds. A `cargo generate-lockfile`
       # step used to precede them; it silently re-resolved everything to the
@@ -244,22 +266,28 @@ jobs:
       # cargo-audit from a fresh resolution on every run, which put a broken,
       # newly published dependency of the *tool* on our critical path (#316).
       - uses: ./.github/actions/install-tool
+        if: needs.changes.outputs.deps == 'true'
         with:
           tool: cargo-audit@0.22.2
           path: ~/.cargo/bin/cargo-audit*
       - name: Security audit
+        if: needs.changes.outputs.deps == 'true'
         run: cargo audit
       - uses: ./.github/actions/install-tool
+        if: needs.changes.outputs.deps == 'true'
         with:
           tool: cargo-deny@0.20.2
           path: ~/.cargo/bin/cargo-deny*
       - name: License and ban check
+        if: needs.changes.outputs.deps == 'true'
         run: cargo deny check licenses bans
       - uses: ./.github/actions/install-tool
+        if: needs.changes.outputs.deps == 'true'
         with:
           tool: cargo-machete@0.9.2
           path: ~/.cargo/bin/cargo-machete*
       - name: Unused dependencies
+        if: needs.changes.outputs.deps == 'true'
         run: |
           cargo machete --with-metadata
 
@@ -300,7 +328,7 @@ jobs:
   msrv:
     name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}MSRV
     needs: [changes, scope]
-    if: needs.scope.outputs.msrv == 'true'
+    if: always() && ((github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # An ordinary job, not a workflow_call: `MSRV` is a required status
@@ -308,8 +336,15 @@ jobs:
     # required context never fires. The shared steps live in the
     # `.github/actions/msrv` composite.
     steps:
+      - name: Require successful scope discovery
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          SCOPE: ${{ needs.scope.result }}
+        run: test "$CHANGES" = success && test "$SCOPE" = success
       - uses: actions/checkout@v4
+        if: needs.scope.outputs.msrv == 'true'
       - uses: ./.github/actions/msrv
+        if: needs.scope.outputs.msrv == 'true'
 
   # Packaging is the only signal that drives the CLI's Android path end to
   # end on a clean machine (#2290): `water create` scaffolds against this
