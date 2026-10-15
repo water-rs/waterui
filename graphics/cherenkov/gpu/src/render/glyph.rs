@@ -686,14 +686,22 @@ impl Atlas {
     /// claimed spans — and no full-size CPU shadow of the atlas is
     /// kept to assemble them (#169 A3). Each shelf's `base` marks where
     /// the commit started writing.
+    ///
+    /// The batch moves in: its texel arenas are copied into GPU staging
+    /// and dropped with the call, and the emptied container comes back
+    /// for the next commit to refill — only its list capacities are
+    /// retained (#2671).
     pub fn upload_committed(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        cells: &CellWrites,
-    ) {
+        mut cells: CellWrites,
+    ) -> CellWrites {
         if cells.is_empty() {
-            return;
+            // A commit can stage an arena without placing a cell from it
+            // (a failed lowering, an empty batch); it still ends here.
+            cells.clear();
+            return cells;
         }
         self.ensure_storage(device);
         let n = self.layout.shelves.len();
@@ -785,6 +793,8 @@ impl Atlas {
                 Some((x0, shelf.y, w, h)),
             );
         }
+        cells.clear();
+        cells
     }
 
     /// The placement decision a pending batch's dry run supports
@@ -1252,7 +1262,7 @@ impl Atlas {
         let hit = self.get(&key).is_some();
         self.begin_commit(&[]);
         let out = self.place_glyph(key, left, top, w, h, texels.to_vec(), &mut uploads);
-        self.upload_committed(device, queue, &uploads);
+        let _ = self.upload_committed(device, queue, uploads);
         if !hit && w == 0 {
             crate::diag::atlas_cell(device, (0, 0, 0, 0));
         }
@@ -1421,7 +1431,7 @@ impl Atlas {
         let mut uploads = CellWrites::default();
         self.begin_commit(&[]);
         let out = self.place_mask(key, mask, w, h, texels.to_vec(), &mut uploads);
-        self.upload_committed(device, queue, &uploads);
+        let _ = self.upload_committed(device, queue, uploads);
         out
     }
 
@@ -2011,11 +2021,11 @@ pub struct CellWrite {
 /// owned raster per glyph or mask write.
 ///
 /// An arena's bytes are consumed by [`Atlas::upload_committed`], which
-/// copies them into the upload ring's GPU staging — so the arenas live
-/// inside this container until the commit's upload has run, then every
-/// buffer is dropped: nothing is retained across commits, and CPU
-/// buffers never alias the ring's in-flight staging copies, whose
-/// lifetime is the ring's (see `upload.rs`).
+/// copies them into the upload ring's GPU staging — the batch moves
+/// into the upload and comes back emptied, so no arena survives it:
+/// only the container's list capacities are retained across commits,
+/// and CPU buffers never alias the ring's in-flight staging copies,
+/// whose lifetime is the ring's (see `upload.rs`).
 #[derive(Default)]
 pub struct CellWrites {
     /// Texel arenas the staged `texels` ranges index.
@@ -2026,7 +2036,8 @@ pub struct CellWrites {
 
 impl CellWrites {
     /// Moves `arena` in and returns its index for [`CellWrite::arena`].
-    /// The buffer is dropped by the next `clear`.
+    /// The buffer is dropped when the commit's upload consumes the
+    /// batch.
     pub fn push_arena(&mut self, arena: Vec<u8>) -> u32 {
         let idx = u32::try_from(self.arenas.len()).expect("commit arenas fit u32");
         self.arenas.push(arena);
@@ -3173,5 +3184,51 @@ mod tests {
             writes.clear();
             assert_eq!(writes.heap_bytes(), 0);
         }
+    }
+
+    /// The upload consumes its batch: the arenas it copied into GPU
+    /// staging are dropped with the call, so the container the renderer
+    /// keeps across the idle span that follows — the emptied shell the
+    /// next commit refills — retains no source-arena bytes (#2671).
+    #[test]
+    fn upload_releases_the_source_arenas() {
+        let Some((device, queue)) = device_and_queue() else {
+            return;
+        };
+        let mut atlas = Atlas::new(&device, u64::MAX);
+        let key = GlyphKey {
+            font: 7,
+            glyph: 3,
+            size_bits: (16.0f32 * 64.0).to_bits(),
+            subpixel: 0,
+            matrix: [
+                1.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                1.0f32.to_bits(),
+            ],
+            coords_hash: 0,
+        };
+        let mut writes = CellWrites::default();
+        atlas.begin_commit(&[]);
+        assert!(
+            atlas
+                .place_glyph(key, 0, 0, 4, 4, vec![0xAB; 16], &mut writes)
+                .is_some()
+        );
+        assert!(writes.heap_bytes() > 0);
+        let writes = atlas.upload_committed(&device, &queue, writes);
+        assert_eq!(
+            writes.heap_bytes(),
+            0,
+            "no source-arena capacity outlives the upload"
+        );
+        assert!(writes.is_empty(), "the returned shell stages nothing");
+
+        // An arena staged without a placed cell ends with the upload too.
+        let mut writes = writes;
+        writes.push_arena(vec![0xCD; 64]);
+        let writes = atlas.upload_committed(&device, &queue, writes);
+        assert_eq!(writes.heap_bytes(), 0, "a cell-less arena is not retained");
     }
 }

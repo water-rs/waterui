@@ -998,7 +998,8 @@ pub struct GpuRenderer {
     /// The globals buffer size `bind0` was built against.
     bound_globals_size: u64,
     atlas: Atlas,
-    /// Per-commit cell writes, rebuilt in place each frame.
+    /// Per-commit cell writes: the emptied container the last upload
+    /// returned, refilled in place each frame (#2671).
     commit_writes: glyph::CellWrites,
     /// Per-surface pending origins, rebuilt in place each apply.
     pending_origins: Vec<PendingOrigin>,
@@ -6686,8 +6687,10 @@ impl GpuRenderer {
         if plan_dbg != "fits" {
             self.atlas.enable_evicting();
         }
+        // The upload consumes its batch and returns the emptied
+        // container, so `commit_writes` always comes back empty and the
+        // next commit refills the same lists (#2671).
         let mut writes = std::mem::take(&mut self.commit_writes);
-        writes.clear();
         let mut failed = None;
         for (i, (surf, result)) in pending.iter_mut().zip(results.iter_mut()).enumerate() {
             match result {
@@ -6739,9 +6742,9 @@ impl GpuRenderer {
                 },
             );
         }
-        self.atlas
-            .upload_committed(&self.device, &self.queue, &writes);
-        self.commit_writes = writes;
+        self.commit_writes = self
+            .atlas
+            .upload_committed(&self.device, &self.queue, writes);
         Commit::Done
     }
 
