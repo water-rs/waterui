@@ -153,6 +153,15 @@ pub async fn capture_presented(
 /// contents never reach the bitmap and `capture_image`'s `ViewCapture` is
 /// the readback.
 ///
+/// `renderInContext` replays the layer model through `Core Graphics`, not the
+/// `Core Animation` compositor, so backdrop filters are not evaluated: a
+/// `UIVisualEffectView` material draws its tint without blurring what lies
+/// behind it. No public capture primitive closes that without a window —
+/// `CARenderer` evaluates the filters but presents Catalyst's layer contents
+/// in the opposite vertical orientation to their geometry, and GPU surfaces
+/// are composited outside the layer tree — so this is a documented
+/// limitation of windowless capture (water-rs/waterui#2660).
+///
 /// # Errors
 ///
 /// Returns [`CaptureError`] when the view is zero-sized or `Core Graphics`

@@ -48,6 +48,9 @@ water preview --expr 'vstack((text("Hi").title(), button("Go").action(|| {})))'
 `--platform ios` renders the UIKit realization on the Mac itself through Mac Catalyst,
 under the iPad idiom, so it shows the iOS look without booting a simulator. It builds for
 the `aarch64-apple-ios-macabi` Rust target, which `water doctor --fix` installs.
+The capture draws without a window, so it does not evaluate backdrop filters: a material
+background shows its tint but not the blur of what lies behind it. Check materials on a
+device or simulator with `water run --platform ios`.
 
 CLI and MCP previews honor `[platforms.<platform>] backend = "..."` in `Water.toml`.
 An explicit backend that contradicts the declaration fails before building.
