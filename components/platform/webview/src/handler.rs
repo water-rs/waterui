@@ -12,7 +12,7 @@ use waterui_core::reactive::signal::IntoComputed;
 #[cfg(not(target_arch = "wasm32"))]
 use waterui_core::{Computed, Signal};
 
-use crate::{BackendEvent, WatcherGuard};
+use crate::{BackendEvent, WatcherGuard, WebViewConfig};
 use waterui_url::Url;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -62,7 +62,16 @@ pub enum ScriptInjectionTime {
 /// A type-erased handle to control and interact with a web view component.
 #[derive(Clone)]
 pub struct AnyWebViewHandle {
-    inner: Rc<dyn WebViewHandleImpl>,
+    inner: Rc<Opened<dyn WebViewHandleImpl>>,
+}
+
+/// A backend's handle, with what the facade keeps of how it was opened.
+struct Opened<H: ?Sized> {
+    #[cfg(not(target_arch = "wasm32"))]
+    /// The keys of [`WebViewConfig::user_scripts`] — the scripts fixed for
+    /// the view's life, which `inject_script` may not name.
+    creation_keys: Box<[Str]>,
+    handle: H,
 }
 
 webview_handle! {
@@ -72,7 +81,7 @@ webview_handle! {
     /// The `WebView` struct wraps this with nami reactive state.
     pub trait WebViewHandle;
     trait WebViewHandleImpl;
-    impl AnyWebViewHandle.inner;
+    impl AnyWebViewHandle.inner.handle;
 
     uniform {
         #[cfg(not(target_arch = "wasm32"))]
@@ -100,22 +109,6 @@ webview_handle! {
         fn can_go_forward(&self) -> bool;
 
         #[cfg(not(target_arch = "wasm32"))]
-        /// Injects a script, after creation, that runs on every later page
-        /// load the bridge policy admits.
-        ///
-        /// The scripts a view starts with arrive in
-        /// [`WebViewConfig::user_scripts`](crate::WebViewConfig::user_scripts)
-        /// and are fixed for its life; this is the channel for scripts added
-        /// later. `key` identifies the script: injecting again under a key
-        /// already used here **replaces** that script rather than adding a
-        /// second copy. It must not name a creation-time script.
-        ///
-        /// A backend injects these where it injects the creation-time scripts —
-        /// into the main frame's default world of documents the admission
-        /// rules admit, after the bridge — so a script can rely on `waterui`.
-        fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime);
-
-        #[cfg(not(target_arch = "wasm32"))]
         /// Adds a handler that can be called from JavaScript.
         ///
         /// The page calls it as `waterui.invoke(name, payload)`, the same way on
@@ -136,10 +129,34 @@ webview_handle! {
         fn set_cookie(&self, cookie: Cookie<'static>);
     }
 
-    // The four below change shape at the boundary: the public form takes or
-    // returns an `impl Trait` that a `dyn` cannot hold. Each layer says its own
-    // signature so the conversion between them stays where it can be read.
+    // `inject_script` is written out per layer because the wrapper refuses a
+    // creation-time key before the backend is called. The other four change
+    // shape at the boundary: the public form takes or returns an `impl Trait`
+    // that a `dyn` cannot hold. Each layer says its own signature so the
+    // conversion between them stays where it can be read.
     public extra {
+        #[cfg(not(target_arch = "wasm32"))]
+        /// Injects a script, after creation, that runs on every later page
+        /// load the bridge policy admits.
+        ///
+        /// The scripts a view starts with arrive in
+        /// [`WebViewConfig::user_scripts`](crate::WebViewConfig::user_scripts)
+        /// and are fixed for its life; this is the channel for scripts added
+        /// later. `key` identifies the script: injecting again under a key
+        /// already used here **replaces** that script rather than adding a
+        /// second copy, in the position it first took.
+        /// [`DocumentScripts`](crate::DocumentScripts) keeps exactly that list.
+        ///
+        /// `key` never names a creation-time script: [`AnyWebViewHandle`]
+        /// rejects such a call before it reaches the backend, so every backend
+        /// fails the same way and none has to decide what replacing a script
+        /// fixed at creation would mean.
+        ///
+        /// A backend injects these where it injects the creation-time scripts —
+        /// into the main frame's default world of documents the admission
+        /// rules admit, after the bridge — so a script can rely on `waterui`.
+        fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime);
+
         #[cfg(not(target_arch = "wasm32"))]
         /// Enables or disables following redirects.
         fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>);
@@ -236,6 +253,8 @@ webview_handle! {
 
     shim extra {
         #[cfg(not(target_arch = "wasm32"))]
+        fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime);
+        #[cfg(not(target_arch = "wasm32"))]
         fn set_redirects_enabled(&self, enabled: Computed<bool>);
         fn watch(&self, f: Box<dyn Fn(BackendEvent) + 'static>) -> WatcherGuard;
         #[cfg(not(target_arch = "wasm32"))]
@@ -257,6 +276,11 @@ webview_handle! {
     bridge extra {
         // A `Computed` is a `Signal` and a `Box<dyn Fn>` is an `Fn`, so these
         // two need nothing but the call; only the futures have to be boxed.
+        #[cfg(not(target_arch = "wasm32"))]
+        fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
+            WebViewHandle::inject_script(self, key, script, time);
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         fn set_redirects_enabled(&self, enabled: Computed<bool>) {
             WebViewHandle::set_redirects_enabled(self, enabled);
@@ -293,18 +317,43 @@ webview_handle! {
 
     wrapper extra {
         #[cfg(not(target_arch = "wasm32"))]
+        /// Injects a script, after creation, that runs on every later page
+        /// load the bridge policy admits.
+        ///
+        /// `key` identifies the script: injecting again under a key already
+        /// used here replaces that script rather than adding a second copy.
+        /// See [`WebViewHandle::inject_script`].
+        ///
+        /// # Panics
+        ///
+        /// Panics when `key` names a script the view was opened with —
+        /// [`WebViewOpen::inject`](crate::WebViewOpen::inject), or any other
+        /// script in [`WebViewConfig::user_scripts`](crate::WebViewConfig::user_scripts).
+        /// Those are fixed for the view's life, so the call is rejected here,
+        /// before any backend sees it.
+        pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
+            assert!(
+                !self.inner.creation_keys.iter().any(|created| created == key),
+                "inject_script: the script `{key}` is one this web view was opened with \
+                 (`WebViewOpen::inject`), and those are fixed for its life; inject \
+                 under a key of its own instead"
+            );
+            self.inner.handle.inject_script(key, script, time);
+        }
+
+        #[cfg(not(target_arch = "wasm32"))]
         /// Enables or disables following redirects.
         ///
         /// Takes anything that becomes a `Computed`, so a plain `bool` reads as
         /// naturally here as a binding does.
         pub fn set_redirects_enabled(&self, enabled: impl IntoComputed<bool>) {
-            self.inner.set_redirects_enabled(enabled.into_computed());
+            self.inner.handle.set_redirects_enabled(enabled.into_computed());
         }
 
         /// Watches for web view events. Dropping the guard unregisters the
         /// watcher.
         pub fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
-            self.inner.watch(Box::new(f))
+            self.inner.handle.watch(Box::new(f))
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -319,7 +368,7 @@ webview_handle! {
         pub fn get_cookies(
             &self,
         ) -> impl Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> + '_ {
-            self.inner.get_cookies()
+            self.inner.handle.get_cookies()
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -335,7 +384,7 @@ webview_handle! {
             &'a self,
             script: &'a str,
         ) -> impl Future<Output = Result<Str, Str>> + 'a {
-            self.inner.run_javascript(script)
+            self.inner.handle.run_javascript(script)
         }
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -351,7 +400,7 @@ webview_handle! {
             &'a self,
             body: &'a str,
         ) -> impl Future<Output = Result<Str, Str>> + 'a {
-            self.inner.call_async_javascript(body)
+            self.inner.handle.call_async_javascript(body)
         }
 
         /// A weak reference to this handle.
@@ -367,13 +416,23 @@ webview_handle! {
             }
         }
 
-        /// Creates a new `AnyWebViewHandle` from a type implementing
-        /// `WebViewHandle`.
-        #[must_use]
-        pub fn new(handle: impl WebViewHandle) -> Self {
-            Self {
-                inner: Rc::new(handle),
-            }
+        /// Opens a web view through `open` and erases its handle, recording
+        /// the keys of the scripts `config` creates it with.
+        ///
+        /// The only way to obtain a handle, so every handle knows which keys
+        /// [`inject_script`](Self::inject_script) must refuse.
+        pub(crate) fn open<H: WebViewHandle>(
+            config: WebViewConfig,
+            open: impl FnOnce(WebViewConfig) -> H,
+        ) -> Self {
+            #[cfg(not(target_arch = "wasm32"))]
+            let creation_keys = config.script_keys().collect();
+            let inner: Rc<Opened<dyn WebViewHandleImpl>> = Rc::new(Opened {
+                #[cfg(not(target_arch = "wasm32"))]
+                creation_keys,
+                handle: open(config),
+            });
+            Self { inner }
         }
     }
 }
@@ -385,7 +444,7 @@ webview_handle! {
 /// alive for as long as the backend holds the handler, which is forever.
 #[derive(Clone)]
 pub struct WeakWebViewHandle {
-    inner: std::rc::Weak<dyn WebViewHandleImpl>,
+    inner: std::rc::Weak<Opened<dyn WebViewHandleImpl>>,
 }
 
 impl_debug!(WeakWebViewHandle);
@@ -404,7 +463,7 @@ impl AnyWebViewHandle {
     /// Downcasts the handle to a concrete type with runtime checks.
     #[must_use]
     pub fn downcast_ref<T: WebViewHandle>(&self) -> Option<&T> {
-        (self.inner.as_ref() as &dyn Any).downcast_ref::<T>()
+        (&self.inner.handle as &dyn Any).downcast_ref::<T>()
     }
 
     /// Downcasts the handle to a concrete type without runtime checks.
@@ -419,6 +478,6 @@ impl AnyWebViewHandle {
     pub unsafe fn downcast_ref_unchecked<T: WebViewHandle>(&self) -> &T {
         // SAFETY: the caller contract requires the erased handler to be a `T`; the
         // borrow is tied to `&self`.
-        unsafe { &*std::ptr::from_ref::<dyn Any>(self.inner.as_ref()).cast::<T>() }
+        unsafe { &*std::ptr::from_ref::<dyn Any>(&self.inner.handle).cast::<T>() }
     }
 }

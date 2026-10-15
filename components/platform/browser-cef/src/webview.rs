@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use cef::{ImplBrowser, ImplBrowserHost, ImplFrame};
@@ -24,13 +24,11 @@ type MessageHandler = waterui_webview::ScriptMessageHandler;
 pub struct CefWebViewHandle {
     page: CefPageHandle,
     handlers: Rc<RefCell<HashMap<String, Rc<MessageHandler>>>>,
-    /// The keys of the scripts the view was created with. Those live in every
-    /// renderer's copy of the browser's `extra_info`, which nothing can
-    /// change, so a later script must not claim to replace one.
-    creation_keys: Rc<HashSet<String>>,
     /// Scripts injected after creation, by key, so injecting again under a
     /// key replaces the script rather than stacking another copy in front of
-    /// it.
+    /// it. The creation-time scripts live in every renderer's copy of the
+    /// browser's `extra_info` instead; their keys never arrive here, because
+    /// `AnyWebViewHandle::inject_script` refuses them.
     scripts: Rc<RefCell<HashMap<String, String>>>,
     /// Unregisters the CDP event watcher when the last clone goes away.
     ///
@@ -77,13 +75,6 @@ impl CefWebViewHandle {
     fn new(page: CefPageHandle, config: &WebViewConfig) -> Self {
         let handlers = Rc::new(RefCell::new(HashMap::<String, Rc<MessageHandler>>::new()));
         let origins = config.bridge_origins.clone();
-        let creation_keys = Rc::new(
-            config
-                .user_scripts()
-                .into_iter()
-                .map(|script| script.key.to_string())
-                .collect::<HashSet<_>>(),
-        );
         let contexts = Rc::new(RefCell::new(HashMap::<i64, TrackedContext>::new()));
         let main_frame = Rc::new(RefCell::new(None::<String>));
         let scripts = Rc::new(RefCell::new(HashMap::<String, String>::new()));
@@ -120,7 +111,6 @@ impl CefWebViewHandle {
             _close: Rc::new(CloseBrowserOnDrop { page: page.clone() }),
             page,
             handlers,
-            creation_keys,
             scripts,
             _events: Rc::new(events),
         }
@@ -159,10 +149,6 @@ impl WebViewHandle for CefWebViewHandle {
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        assert!(
-            !self.creation_keys.contains(key),
-            "the script `{key}` was part of this web view's creation and cannot be replaced"
-        );
         // `Page.addScriptToEvaluateOnNewDocument` runs in every document of
         // every frame. The renderer defines `waterui` in exactly the documents
         // it admitted — the main frame's default world of a document the rules
