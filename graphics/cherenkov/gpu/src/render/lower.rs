@@ -24,8 +24,8 @@ use crate::render::instance::{
     ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
     FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
     KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
-    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID, PAINT_TEXTURE, Shape, Stop,
-    affine, blend_code,
+    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE, PAINT_RADIAL, PAINT_SOLID,
+    PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -94,6 +94,10 @@ pub enum ShaderVariant {
     /// `Full` plus the backdrop union field: the module carries the
     /// member-record fold and its ownership weights.
     Union,
+    /// `Full` with the gradient stop scan compiled to its upper-bound
+    /// binary form: clips, masks and strokes keep every other Full
+    /// behaviour; only the stop lookup differs.
+    LongGradient,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -453,15 +457,27 @@ fn interior_tier(inst: &Instance) -> u32 {
     u32::from(area >= ELLIPSE_TIER16_MIN_AREA) + u32::from(area >= ELLIPSE_TIER32_MIN_AREA)
 }
 
+/// Maximum stop count handled by the original linear-search module.
+const GRADIENT_LINEAR_STOPS: u32 = 8;
+
 /// The specialised fragment pipeline `inst` requires: the union variant
 /// for a backdrop member drawing against the group's shared field, the
-/// uber-shader when it reads rare fields (clip, mask, inner, strokes,
-/// non-solid paint), the shadow kernel otherwise for shadows, and the
-/// trivial coverage path for solid fills, spans, and glyphs.
+/// long-gradient module for a gradient past `GRADIENT_LINEAR_STOPS`,
+/// the uber-shader when it reads rare fields (clip, mask, inner,
+/// strokes, other non-solid paint), the shadow kernel otherwise for
+/// shadows, and the trivial coverage path for solid fills, spans, and
+/// glyphs.
 const fn variant_of(inst: &Instance) -> ShaderVariant {
     let flags = inst.meta[3] >> 24;
     if (flags & FLAG_UNION) != 0 {
         return ShaderVariant::Union;
+    }
+    if matches!(
+        inst.meta[1] & 0xffff,
+        PAINT_LINEAR | PAINT_RADIAL | PAINT_SWEEP
+    ) && inst.meta[3] & 0xffff > GRADIENT_LINEAR_STOPS
+    {
+        return ShaderVariant::LongGradient;
     }
     if (flags & (FLAG_HAS_CLIP | FLAG_HAS_MASK | FLAG_HAS_INNER)) != 0
         || inst.meta[1] != PAINT_SOLID

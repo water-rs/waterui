@@ -19,6 +19,7 @@ const VARIANT_SIMPLE: u32 = 0u;
 const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
 const VARIANT_UNION: u32 = 3u;
+const VARIANT_LONG_GRADIENT: u32 = 4u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
@@ -142,10 +143,6 @@ fn extend_t(t: f32, mode: u32) -> f32 {
     }
 }
 
-// Binary narrowing stops once the interval has fewer than eight edges;
-// all gradients share the linear scan from there.
-const GRADIENT_LINEAR_STOPS: u32 = 8u;
-
 // Premultiplied working-space colour of the gradient at parameter `t`.
 fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
     var c: vec4<f32>;
@@ -157,27 +154,32 @@ fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
     } else if t >= stops[first + count - 1u].offset {
         c = stops[first + count - 1u].color;
     } else {
-        // Invariant: stops[i].offset <= t < stops[end].offset; equality moves
-        // i right and preserves the last repeated interior stop.
         var i = first;
-        var end = first + count - 1u;
-        loop {
-            if end - i < GRADIENT_LINEAR_STOPS {
-                break;
+        // long-gradient-stub
+        if VARIANT == VARIANT_LONG_GRADIENT {
+            var end = first + count - 1u;
+            loop {
+                if end - i <= 1u {
+                    break;
+                }
+                let mid = i + (end - i) / 2u;
+                if t < stops[mid].offset {
+                    end = mid;
+                } else {
+                    i = mid;
+                }
             }
-            let mid = i + (end - i) / 2u;
-            let before = t < stops[mid].offset;
-            i = select(mid, i, before);
-            end = select(end, mid, before);
-        }
-        // The strict upper sentinel terminates the linear tail without a
-        // bounds branch.
+        } else {
+        // long-gradient-stub
         loop {
-            if t < stops[i + 1u].offset {
+            if i + 1u >= first + count - 1u || t < stops[i + 1u].offset {
                 break;
             }
             i += 1u;
         }
+        // long-gradient-stub
+        }
+        // long-gradient-stub
         let s0 = stops[i];
         let s1 = stops[i + 1u];
         let span = s1.offset - s0.offset;

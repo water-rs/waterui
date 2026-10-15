@@ -63,6 +63,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ash::vk;
 use rustc_hash::FxHashMap;
 
+use crate::render::shaders::spirv;
+
 use crate::render::bindings::{
     ENGINE_GROUP0, ENGINE_GROUP1, TILE_INPUT_BINDINGS, TILE_INPUT_GROUP, vulkan_slot,
 };
@@ -230,7 +232,7 @@ pub struct PipeKey {
     /// The slot the draw samples; equal to `target` for a self-sourced
     /// draw, which takes the second module.
     pub source: u8,
-    /// `0` simple, `1` shadow, `2` full, `3` clear.
+    /// `0` simple, `1` shadow, `2` full, `3` clear, `4` long gradient.
     pub variant: u8,
     /// Replace rather than source-over.
     pub replace: bool,
@@ -259,10 +261,10 @@ pub struct Mirror {
     rendering: Rendering,
     local_read: ash::khr::dynamic_rendering_local_read::Device,
     memory_properties: vk::PhysicalDeviceMemoryProperties,
-    /// `engine_tile.spv`, for a draw sourcing another slot.
-    module: vk::ShaderModule,
-    /// `engine_tile_self.spv`, for a draw sourcing its own slot.
-    module_self: vk::ShaderModule,
+    /// The tile modules, `[long][self]`: `engine_tile{,_long}.spv` for a
+    /// draw sourcing another slot, `engine_tile{,_long}_self.spv` for a
+    /// draw sourcing its own slot.
+    modules: [[vk::ShaderModule; 2]; 2],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -364,8 +366,7 @@ impl Mirror {
             rendering,
             local_read,
             memory_properties,
-            module: built.module,
-            module_self: built.module_self,
+            modules: built.modules,
             set_layouts: built.set_layouts,
             layout: built.layout,
             cache: built.cache,
@@ -984,15 +985,12 @@ impl Mirror {
     /// source-over (or replaces) and writes all channels, and every
     /// other slot writes none.
     fn create_pipeline(&self, key: PipeKey) -> Result<vk::Pipeline, MirrorError> {
-        let module = if key.source == key.target {
-            self.module_self
-        } else {
-            self.module
-        };
+        let module =
+            self.modules[usize::from(key.variant == 4)][usize::from(key.source == key.target)];
         let fragment_entry = match key.variant {
             0 => c"tile_simple",
             1 => c"tile_shadow",
-            2 => c"tile_full",
+            2 | 4 => c"tile_full",
             3 => c"tile_clear",
             _ => unreachable!("closed tile shader set"),
         };
@@ -1186,8 +1184,9 @@ impl Mirror {
             for layout in self.set_layouts {
                 self.device.destroy_descriptor_set_layout(layout, None);
             }
-            self.device.destroy_shader_module(self.module_self, None);
-            self.device.destroy_shader_module(self.module, None);
+            for module in self.modules.iter().flatten() {
+                self.device.destroy_shader_module(*module, None);
+            }
         }
     }
 }
@@ -1264,8 +1263,8 @@ fn raw_view(view: vk::ImageView) -> u64 {
 /// failure part way through can destroy exactly what was made.
 #[derive(Default)]
 struct Built {
-    module: vk::ShaderModule,
-    module_self: vk::ShaderModule,
+    /// `[long][self]` — see [`Mirror::modules`].
+    modules: [[vk::ShaderModule; 2]; 2],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -1284,8 +1283,15 @@ impl Built {
             }
             .map_err(|e| MirrorError::Vulkan("vkCreateShaderModule", e))
         };
-        self.module = create_module(crate::render::shaders::spirv::TILE)?;
-        self.module_self = create_module(crate::render::shaders::spirv::TILE_SELF)?;
+        let blobs = [
+            spirv::TILE,
+            spirv::TILE_SELF,
+            spirv::TILE_LONG,
+            spirv::TILE_LONG_SELF,
+        ];
+        for (slot, bytes) in self.modules.iter_mut().flatten().zip(blobs) {
+            *slot = create_module(bytes)?;
+        }
 
         let fragment = vk::ShaderStageFlags::FRAGMENT;
         let both = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
@@ -1395,8 +1401,9 @@ impl Built {
             for layout in self.set_layouts {
                 device.destroy_descriptor_set_layout(layout, None);
             }
-            device.destroy_shader_module(self.module_self, None);
-            device.destroy_shader_module(self.module, None);
+            for module in self.modules.iter().flatten() {
+                device.destroy_shader_module(*module, None);
+            }
         }
     }
 }
