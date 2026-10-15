@@ -1909,8 +1909,9 @@ Automatic meson installation failed: {install_err}\n\n{}",
             ));
         }
 
+        let mut reported = compiler_artifacts(&output.stdout)?;
         let mut artifact =
-            reported_artifact(&output.stdout, &self.path, cargo_target, artifact_extension)?;
+            reported_artifact(&reported, &self.path, cargo_target, artifact_extension)?;
 
         // A dependency's final `dylib`/`cdylib` artifact uplifts to an
         // unhashed name (`deps/libwaterui_dylib.so`), so one filename serves
@@ -1920,7 +1921,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         // runtime; rebuild_stale_shared_dylibs repairs that from the
         // dep-info written alongside.
         self.rebuild_stale_shared_dylibs(
-            &mut output,
+            &mut reported,
             &mut artifact,
             release,
             cargo_target,
@@ -1955,11 +1956,9 @@ Automatic meson installation failed: {install_err}\n\n{}",
             }
         };
 
-        let shared_runtime = reported_shared_runtime(&output.stdout)?;
+        let shared_runtime = reported_shared_runtime(&reported)?;
         let app_library = match self.project.as_ref() {
-            Some(project) => {
-                app_library_artifact(&output.stdout, &project.root().join("Cargo.toml"))?
-            }
+            Some(project) => app_library_artifact(&reported, &project.root().join("Cargo.toml"))?,
             None => None,
         };
         Ok(BuiltTarget {
@@ -1986,10 +1985,11 @@ Automatic meson installation failed: {install_err}\n\n{}",
     /// this source's artifact. The rebuild compiles the cleaned package
     /// anew, so a unit it still reports `fresh` in the same state is a
     /// cache this CLI cannot repair by rebuilding, reported instead of
-    /// retried. `artifact` is reselected from the rebuild's output.
+    /// retried. `artifact` is reselected from the rebuild's output, and
+    /// `reported` replaced by the rebuild's `compiler-artifact` messages.
     async fn rebuild_stale_shared_dylibs(
         &self,
-        output: &mut std::process::Output,
+        reported: &mut Vec<cargo_metadata::Artifact>,
         artifact: &mut PathBuf,
         release: bool,
         cargo_target: CargoTarget<'_>,
@@ -1997,7 +1997,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         user_rustflags: &[String],
     ) -> Result<(), RustBuildError> {
         let needed = needed_libraries_of(artifact).await?;
-        let stale = stale_shared_dylib_packages(&output.stdout, &needed).await?;
+        let stale = stale_shared_dylib_packages(reported, &needed).await?;
         if stale.is_empty() {
             return Ok(());
         }
@@ -2011,11 +2011,11 @@ Automatic meson installation failed: {install_err}\n\n{}",
             );
             clean_cargo_package(&self.host, &self.path, &unit.package, &target_dir).await?;
         }
-        *output = self
+        let output = self
             .cargo_build_output(release, cargo_target, user_rustflags)
             .await?;
         if !output.status.success() {
-            let combined = combined_build_output(output);
+            let combined = combined_build_output(&output);
             return Err(RustBuildError::FailToBuildRustLibrary(
                 std::io::Error::other(format!(
                     "Cargo build failed:\n{}",
@@ -2023,10 +2023,10 @@ Automatic meson installation failed: {install_err}\n\n{}",
                 )),
             ));
         }
-        *artifact =
-            reported_artifact(&output.stdout, &self.path, cargo_target, artifact_extension)?;
+        *reported = compiler_artifacts(&output.stdout)?;
+        *artifact = reported_artifact(reported, &self.path, cargo_target, artifact_extension)?;
         let needed = needed_libraries_of(artifact).await?;
-        let unrecovered = stale_shared_dylib_packages(&output.stdout, &needed).await?;
+        let unrecovered = stale_shared_dylib_packages(reported, &needed).await?;
         if !unrecovered.is_empty() {
             return Err(unrecoverable_shared_dylib_error(&unrecovered, &target_dir));
         }
@@ -2643,20 +2643,21 @@ fn crate_type_artifact_extension(crate_type: &str, triple: &Triple) -> Option<&'
 /// Returns an error when no `compiler-artifact` message for the selected
 /// target reports a matching file, or the reported file does not exist.
 pub(crate) fn reported_artifact(
-    stdout: &[u8],
+    reported: &[cargo_metadata::Artifact],
     crate_dir: &Path,
     cargo_target: CargoTarget<'_>,
     artifact_extension: Option<&'static str>,
 ) -> Result<PathBuf, RustBuildError> {
     let manifest_path = canonical_manifest_path(crate_dir)?;
-    let mut artifacts = Vec::new();
-    for artifact in compiler_artifacts(stdout)? {
-        if cargo_target.matches(&artifact.target)
-            && same_manifest_path(artifact.manifest_path.as_std_path(), &manifest_path)
-        {
-            artifacts.push(artifact);
-        }
-    }
+    let manifest = BuiltManifest::open(&manifest_path)?;
+    let artifacts: Vec<_> = reported
+        .iter()
+        .filter(|artifact| {
+            cargo_target.matches(&artifact.target)
+                && manifest.is(artifact.manifest_path.as_std_path())
+        })
+        .cloned()
+        .collect();
     reported_artifact_file(&artifacts, cargo_target, artifact_extension, &manifest_path)
 }
 
@@ -2866,9 +2867,11 @@ pub(crate) fn compiler_artifacts(
     Ok(artifacts)
 }
 
-fn reported_shared_runtime(stdout: &[u8]) -> Result<Option<PathBuf>, RustBuildError> {
+fn reported_shared_runtime(
+    artifacts: &[cargo_metadata::Artifact],
+) -> Result<Option<PathBuf>, RustBuildError> {
     let mut reported = Vec::new();
-    for artifact in compiler_artifacts(stdout)? {
+    for artifact in artifacts {
         if artifact_package_name(&artifact.package_id) != "waterui-dylib"
             || !artifact
                 .target
@@ -2916,11 +2919,12 @@ fn reported_shared_runtime(stdout: &[u8]) -> Result<Option<PathBuf>, RustBuildEr
 /// Returns an error when cargo's message stream cannot be parsed or reports
 /// two indistinguishable library artifacts for the crate.
 pub(crate) fn app_library_artifact(
-    stdout: &[u8],
+    artifacts: &[cargo_metadata::Artifact],
     manifest_path: &Path,
 ) -> Result<Option<PathBuf>, RustBuildError> {
+    let manifest = BuiltManifest::open(manifest_path)?;
     let mut candidates: BTreeMap<u8, BTreeSet<PathBuf>> = BTreeMap::new();
-    for artifact in compiler_artifacts(stdout)? {
+    for artifact in artifacts {
         if !artifact.target.kind.iter().any(|kind| {
             matches!(
                 kind,
@@ -2930,7 +2934,7 @@ pub(crate) fn app_library_artifact(
                     | cargo_metadata::TargetKind::CDyLib
                     | cargo_metadata::TargetKind::StaticLib
             )
-        }) || !same_manifest_path(artifact.manifest_path.as_std_path(), manifest_path)
+        }) || !manifest.is(artifact.manifest_path.as_std_path())
         {
             continue;
         }
@@ -2978,14 +2982,67 @@ fn app_library_extension_rank(path: &Path) -> Option<u8> {
     }
 }
 
-/// Whether a `manifest_path` cargo reported is `expected`, the manifest of
-/// the crate this build ran. Cargo reports the path in the spelling its own
-/// working directory carried — a verbatim `\\?\` or an 8.3 short-name root on
-/// Windows — so a lexical miss canonicalizes the reported path (it exists;
-/// cargo just built from it) before deciding.
-pub(crate) fn same_manifest_path(reported: &Path, expected: &Path) -> bool {
-    reported == expected
-        || dunce::canonicalize(reported).is_ok_and(|canonical| canonical == expected)
+/// The manifest of the crate a build ran, by path and by file identity.
+struct BuiltManifest<'a> {
+    path: &'a Path,
+    file: FileIdentity,
+}
+
+/// What makes a file the same file under any spelling of its path: its
+/// device and inode — one `stat` — on Unix, its volume and file index on
+/// Windows.
+#[cfg(unix)]
+#[derive(PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl FileIdentity {
+    fn of(path: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+        let metadata = std::fs::metadata(path)?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+#[cfg(not(unix))]
+#[derive(PartialEq, Eq)]
+struct FileIdentity(same_file::Handle);
+
+#[cfg(not(unix))]
+impl FileIdentity {
+    fn of(path: &Path) -> io::Result<Self> {
+        same_file::Handle::from_path(path).map(Self)
+    }
+}
+
+impl<'a> BuiltManifest<'a> {
+    fn open(path: &'a Path) -> Result<Self, RustBuildError> {
+        let file = FileIdentity::of(path).map_err(|error| {
+            RustBuildError::FailToBuildRustLibrary(io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot inspect the built manifest {}: {error}",
+                    path.display()
+                ),
+            ))
+        })?;
+        Ok(Self { path, file })
+    }
+
+    /// Whether a `manifest_path` cargo reported is this manifest. Cargo
+    /// reports the path in the spelling its own working directory carried —
+    /// a symlinked root, a verbatim `\\?\` or an 8.3 short-name root on
+    /// Windows — so a lexical miss compares the files themselves (the
+    /// reported one exists; cargo just built from it).
+    fn is(&self, reported: &Path) -> bool {
+        reported == self.path || FileIdentity::of(reported).is_ok_and(|file| file == self.file)
+    }
 }
 
 /// Picks the single file the selected target emitted out of its collected
@@ -3158,11 +3215,11 @@ fn unrecoverable_shared_dylib_error(
 /// same records [`RustDynamicLibraries::resolve`] stages under — empty when
 /// the artifact is not a linked image; see [`dep_info_path`].
 async fn stale_shared_dylib_packages(
-    stdout: &[u8],
+    artifacts: &[cargo_metadata::Artifact],
     needed: &[String],
 ) -> Result<Vec<StaleSharedDylib>, RustBuildError> {
     let mut stale: Vec<StaleSharedDylib> = Vec::new();
-    for artifact in compiler_artifacts(stdout)? {
+    for artifact in artifacts {
         if !artifact.fresh {
             continue;
         }
@@ -3688,7 +3745,8 @@ mod tests {
         );
 
         assert_eq!(
-            reported_shared_runtime(stdout.as_bytes()).expect("runtime report"),
+            reported_shared_runtime(&crate::build::compiler_artifacts(stdout.as_bytes()).unwrap())
+                .expect("runtime report"),
             Some(runtime)
         );
     }
@@ -3702,7 +3760,8 @@ mod tests {
             "app",
         );
         assert_eq!(
-            reported_shared_runtime(stdout.as_bytes()).expect("runtime report"),
+            reported_shared_runtime(&crate::build::compiler_artifacts(stdout.as_bytes()).unwrap())
+                .expect("runtime report"),
             None
         );
 
@@ -3744,7 +3803,8 @@ mod tests {
         );
 
         let error =
-            reported_shared_runtime(stdout.as_bytes()).expect_err("ambiguous runtime report");
+            reported_shared_runtime(&crate::build::compiler_artifacts(stdout.as_bytes()).unwrap())
+                .expect_err("ambiguous runtime report");
         let message = error.to_string();
         assert!(message.contains(&first_manifest.display().to_string()));
         assert!(message.contains(&second_manifest.display().to_string()));
@@ -4366,7 +4426,7 @@ mod tests {
             artifact_json(&manifest, &reported, "demo_hydrolysis_deadbeef"),
         );
         let resolved = super::reported_artifact(
-            stdout.as_bytes(),
+            &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
             &crate_dir,
             CargoTarget::Lib,
             Some("rlib"),
@@ -4377,7 +4437,7 @@ mod tests {
         let foreign_only = artifact_json(&other_manifest, &other_file, "other");
         assert!(
             super::reported_artifact(
-                foreign_only.as_bytes(),
+                &crate::build::compiler_artifacts(foreign_only.as_bytes()).unwrap(),
                 &crate_dir,
                 CargoTarget::Lib,
                 Some("rlib"),
@@ -4435,9 +4495,13 @@ mod tests {
         })
         .to_string();
 
-        let resolved =
-            super::reported_artifact(stdout.as_bytes(), &crate_dir, CargoTarget::Lib, Some("a"))
-                .expect("the declared static archive resolves");
+        let resolved = super::reported_artifact(
+            &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+            &crate_dir,
+            CargoTarget::Lib,
+            Some("a"),
+        )
+        .expect("the declared static archive resolves");
         assert_eq!(resolved, archive);
     }
 
@@ -4515,9 +4579,12 @@ mod tests {
             // A `fresh` unit whose dep-info names another source's checkout.
             write_dep_info(&foreign_source);
             let needed = vec!["libwaterui_dylib.so".to_string()];
-            let stale = super::stale_shared_dylib_packages(artifact(true).as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(artifact(true).as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert_eq!(
                 stale,
                 [super::StaleSharedDylib {
@@ -4531,16 +4598,22 @@ mod tests {
 
             // The same file written by this unit's own source is trusted.
             write_dep_info(&own_source);
-            let stale = super::stale_shared_dylib_packages(artifact(true).as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(artifact(true).as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(stale.is_empty(), "our own artifact is never stale");
 
             // A unit cargo just emitted needs no dep-info check at all.
             write_dep_info(&foreign_source);
-            let stale = super::stale_shared_dylib_packages(artifact(false).as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(artifact(false).as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(stale.is_empty(), "a non-fresh unit wrote the file itself");
         });
     }
@@ -4610,9 +4683,12 @@ mod tests {
             .to_string();
 
             let needed = vec!["libwaterui_dylib-0123456789abcdef.so".to_string()];
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(
                 stale.is_empty(),
                 "a fresh dylib whose hashed dep-info names its own sources is trusted: {stale:?}"
@@ -4680,9 +4756,12 @@ mod tests {
             .to_string();
 
             let needed = vec!["libwaterui_dylib-0123456789abcdef.so".to_string()];
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(
                 stale.is_empty(),
                 "the needed name spells the hashed dep-info a hardlinked uplift leaves: {stale:?}"
@@ -4749,9 +4828,12 @@ mod tests {
             .to_string();
 
             let needed = vec!["libwaterui_dylib-0123456789abcdef.so".to_string()];
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(
                 stale.is_empty(),
                 "the needed name spells the hashed dep-info a copied uplift leaves: {stale:?}"
@@ -4824,9 +4906,12 @@ mod tests {
             // The retargeted consumer records the unhashed install name; the
             // hashed dep-info a `deps/` sibling pairs with is the only `.d`.
             let needed = vec!["@rpath/libwaterui_dylib.dylib".to_string()];
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(
                 stale.is_empty(),
                 "the hashed `deps/<crate>-<meta>.d` the sibling dylib pairs with resolves: {stale:?}"
@@ -5040,9 +5125,12 @@ mod tests {
             // No linked artifact records the unit here — a static archive
             // carries no dynamic section — so the unhashed unit-directory
             // spelling is the record found.
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &[])
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &[],
+            )
+            .await
+            .expect("scan");
             assert_eq!(stale.len(), 1, "{stale:?}");
             assert_eq!(stale[0].package, "waterui-dylib");
             assert!(
@@ -5107,9 +5195,12 @@ mod tests {
             })
             .to_string();
 
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &[])
-                .await
-                .expect("a fresh dylib without dep-info is recovered, not reported");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &[],
+            )
+            .await
+            .expect("a fresh dylib without dep-info is recovered, not reported");
             assert_eq!(
                 stale,
                 [super::StaleSharedDylib {

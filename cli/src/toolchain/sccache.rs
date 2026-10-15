@@ -70,9 +70,11 @@ pub async fn configure_compilation_cache(
 
 /// Connect to the per-user server, starting it when it is not listening.
 ///
-/// `--show-stats` is sccache's connect-or-start path, and it runs under the
-/// same address environment the build is about to use — a server reached on
-/// any other address is not the one Cargo would find.
+/// A server already listening on the per-user socket is the readiness
+/// every compile needs, so the build goes straight on. Otherwise
+/// `--show-stats` is sccache's connect-or-start path, and it runs under
+/// the same address environment the build is about to use — a server
+/// reached on any other address is not the one Cargo would find.
 ///
 /// # Errors
 /// Returns an error when the client cannot be spawned, or when it reports
@@ -85,7 +87,10 @@ async fn start_server(
     use eyre::WrapErr as _;
 
     #[cfg(unix)]
-    let _server_start = begin_serialized_server_start(host, env).await?;
+    let _server_start = match begin_serialized_server_start(host, env).await? {
+        ServerStart::Listening => return Ok(()),
+        ServerStart::Start(lock) => lock,
+    };
 
     let mut client = host.command(sccache_path);
     client
@@ -108,8 +113,19 @@ async fn start_server(
     Ok(())
 }
 
-/// Take the per-user start lock and clear a socket whose server is gone,
-/// before the client's connect-or-start runs.
+/// What [`begin_serialized_server_start`] found on the per-user socket.
+#[cfg(unix)]
+enum ServerStart {
+    /// A server answers on the socket; no client needs to start one.
+    Listening,
+    /// No server answers: the client's connect-or-start runs while the
+    /// lock is held (`None` when no socket was configured).
+    Start(Option<std::fs::File>),
+}
+
+/// Find the server listening on the per-user socket, or take the per-user
+/// start lock and clear a socket whose server is gone, before the client's
+/// connect-or-start runs.
 ///
 /// `SCCACHE_SERVER_UDS` points every build of one user at one socket path,
 /// and an sccache client that finds no listener spawns a server itself.
@@ -126,20 +142,28 @@ async fn start_server(
 async fn begin_serialized_server_start(
     host: &Host,
     env: &[(&'static str, OsString)],
-) -> eyre::Result<Option<std::fs::File>> {
+) -> eyre::Result<ServerStart> {
     let Some(socket) = env
         .iter()
         .find(|(key, _)| *key == "SCCACHE_SERVER_UDS")
         .map(|(_, value)| Path::new(value))
     else {
-        return Ok(None);
+        return Ok(ServerStart::Start(None));
     };
+    if smol::net::unix::UnixStream::connect(socket).await.is_ok() {
+        return Ok(ServerStart::Listening);
+    }
     let lock = crate::project_model::water_dir::sccache_server_lock(host).await?;
-    remove_dead_server_socket(socket).await?;
-    Ok(Some(lock))
+    // Another `water` process may have started the server while this one
+    // waited for the lock.
+    if remove_dead_server_socket(socket).await? {
+        return Ok(ServerStart::Listening);
+    }
+    Ok(ServerStart::Start(Some(lock)))
 }
 
-/// Unlink `socket` once a connect proves no server answers on it.
+/// Unlink `socket` once a connect proves no server answers on it; `true`
+/// when a server answers.
 ///
 /// An sccache server never unlinks its socket on exit — an idle shutdown,
 /// a crash, or a suspended VM leaves a socket nothing listens on — and
@@ -150,15 +174,15 @@ async fn begin_serialized_server_start(
 /// remove; a listener answering, or an error that is not refusal, leaves
 /// it for the client to report.
 #[cfg(unix)]
-async fn remove_dead_server_socket(socket: &Path) -> eyre::Result<()> {
+async fn remove_dead_server_socket(socket: &Path) -> eyre::Result<bool> {
     use eyre::WrapErr as _;
 
     match smol::net::unix::UnixStream::connect(socket).await {
-        Ok(_server) => Ok(()),
-        Err(error) if error.kind() != std::io::ErrorKind::ConnectionRefused => Ok(()),
+        Ok(_server) => Ok(true),
+        Err(error) if error.kind() != std::io::ErrorKind::ConnectionRefused => Ok(false),
         Err(_) => match smol::fs::remove_file(socket).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(()) => Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
             Err(error) => Err(error).wrap_err_with(|| {
                 format!(
                     "Failed to remove the stale sccache socket {}",

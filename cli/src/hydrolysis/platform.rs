@@ -147,14 +147,17 @@ pub async fn build_hydrolysis_with_envs_and_features(
     assets::seed_managed_crate_lock(project, &cargo_toml).await?;
 
     // The generated `build.rs` embeds `app-icon.ico` into the executable when
-    // targeting Windows, so it has to exist before the backend compiles.
-    // Assets and fonts stage after the build instead: the mount metadata they
-    // need is read from the library artifact this build produces.
-    crate::templates::write_file_if_changed(
-        &backend_path.join("app-icon.ico"),
-        &assets::project_windows_ico(project)?,
-    )
-    .await?;
+    // targeting Windows, so there it has to exist before the backend
+    // compiles; no other target reads it. Assets and fonts stage after the
+    // build instead: the mount metadata they need is read from the library
+    // artifact this build produces.
+    if platform.triple().operating_system == OperatingSystem::Windows {
+        crate::templates::write_file_if_changed(
+            &backend_path.join("app-icon.ico"),
+            &assets::project_windows_ico(project)?,
+        )
+        .await?;
+    }
 
     let llvm_envs = WindowsArm64LlvmToolchain
         .cargo_envs(project.host())

@@ -1,16 +1,31 @@
-//! Facts the CLI derives from Cargo and the Rust toolchain — `cargo
-//! metadata`, `cargo tree`, the rustup toolchain a directory selects and a
-//! target's standard-library directory.
+//! Facts the CLI derives from Cargo, the Rust toolchain and the files of a
+//! project — `cargo metadata`, `cargo tree`, the rustup toolchain a
+//! directory selects, a target's standard-library directory, and the small
+//! answers the build derives from them.
 //!
-//! Each fact is a pure function of its inputs: the manifests and lockfile
-//! of the resolve it came from, the Cargo configuration that applies, the
-//! project's `Water.toml`/`Water.lock`, the toolchain and the CLI itself.
+//! Each fact is a pure function of its inputs, and a fact reports those
+//! inputs while it resolves, through its [`Scope`]: the directories a
+//! Cargo, rustup or rustc process ran in (which brings in the Cargo
+//! configuration chain, rustup's selection and the toolchain identity), the
+//! manifests and lockfiles a resolve read (which brings in their workspace
+//! roots, those roots' `[patch]` targets and member globs), the files it
+//! read itself, and the facts it asked in turn. The project's
+//! `Water.toml`/`Water.lock` and the CLI build are inputs of every fact.
+//!
 //! [`Facts`] answers a question at most once per invocation and reuses an
 //! answer across invocations only through an on-disk record that carries
-//! the observed state of every one of those inputs: a later ask observes
-//! them again — reading and hashing files, never spawning a process — and
-//! replays the record only when the observation is identical. Any
-//! difference resolves the fact again.
+//! the closed set of paths the resolve depended on — every file the
+//! expansion of its manifests consulted, present or absent — and the state
+//! each of them was observed in. A later ask observes exactly those paths
+//! again, hashing files and listing globs, never parsing a manifest or
+//! spawning a process, and replays the record only when every observation
+//! is identical. Any difference resolves the fact again.
+//!
+//! Within one invocation every file is read and hashed once: a later
+//! observation of the same path re-reads it only when its metadata stamp
+//! (length, modification time, device and inode) changed, so the files
+//! the CLI itself writes between two asks are observed again and the
+//! files nothing touched cost a `stat`.
 //!
 //! The toolchain identity is observed without asking rustup or rustc: the
 //! `cargo`/`rustc`/`rustup` executables the host's `PATH` resolves, every
@@ -38,11 +53,11 @@
 
 use std::{
     any::Any,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     ffi::OsStr,
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, SystemTime},
 };
 
@@ -63,14 +78,14 @@ const MTIME_SLACK: Duration = Duration::from_secs(2);
 /// before it decides a record is another build's. Records live in a
 /// directory named by it, so a change to that shape bumps it and never
 /// meets the old layout.
-const RECORD_FORMAT: u32 = 2;
+const RECORD_FORMAT: u32 = 3;
 
 /// The environment variables whose values reach Cargo's or rustup's
 /// decisions: every `CARGO*`, `RUSTUP*` and `RUSTC*` variable, and the
 /// rustflags families.
 const ENV_PREFIXES: [&str; 5] = ["CARGO", "RUSTUP", "RUSTC", "RUSTFLAGS", "RUSTDOCFLAGS"];
 
-/// One question the CLI asks Cargo or the toolchain.
+/// One question the CLI asks Cargo, the toolchain or the project's files.
 pub trait Fact: Send + Sync {
     /// The record family, part of the record's file name.
     const KIND: &'static str;
@@ -83,20 +98,10 @@ pub trait Fact: Send + Sync {
     /// This question in its persisted form.
     fn question(&self) -> Self::Question;
 
-    /// The directory the resolving process runs in: rustup selects the
-    /// toolchain from it and Cargo discovers its configuration from it.
-    fn cwd(&self) -> &Path;
-
-    /// Ask Cargo or the toolchain.
-    fn resolve(&self, host: &Host) -> impl Future<Output = eyre::Result<Self::Value>> + Send;
-
-    /// The manifests and lockfiles `value` was resolved from — empty for a
-    /// fact that reads none. Their workspace roots, those roots' `[patch]`
-    /// targets and member globs are observed alongside them.
-    ///
-    /// # Errors
-    /// Returns an error when `value` cannot be interpreted.
-    fn seeds(&self, value: &Self::Value) -> eyre::Result<BTreeSet<PathBuf>>;
+    /// Answer the question, reporting to `scope` every input the answer is
+    /// a function of. An input the resolve reads without reporting it is a
+    /// bug: its change would replay a stale answer.
+    fn resolve(&self, scope: &Scope<'_>) -> impl Future<Output = eyre::Result<Self::Value>> + Send;
 }
 
 /// The CLI build that wrote a record: its version and its executable's
@@ -213,32 +218,75 @@ enum Observed {
     Absent,
     /// A file with this SHA-256.
     Sha256(String),
-    /// A workspace member glob and the directories it matched.
+    /// A glob and the paths it matched.
     Matches(BTreeSet<PathBuf>),
+}
+
+/// The paths an answer depends on, closed under what was consulted to
+/// find them: replaying an answer observes exactly these, and the
+/// observation of every one of them equal means a resolve would consult
+/// the same paths again and read the same contents.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Watch {
+    /// The directories a Cargo, rustup or rustc process ran in: each
+    /// brings in the Cargo configuration chain discovered from it, the
+    /// rustup toolchain files above it, and the toolchain identity.
+    toolchain: BTreeSet<PathBuf>,
+    /// Files observed by content, absent ones included.
+    files: BTreeSet<PathBuf>,
+    /// Globs observed by what they match.
+    globs: BTreeSet<PathBuf>,
+}
+
+impl Watch {
+    fn merge(&mut self, other: &Self) {
+        self.toolchain.extend(other.toolchain.iter().cloned());
+        self.files.extend(other.files.iter().cloned());
+        self.globs.extend(other.globs.iter().cloned());
+    }
+}
+
+/// What a resolve reported reading, before its manifests are expanded.
+#[derive(Default)]
+struct Reads {
+    watch: Watch,
+    /// Manifests and lockfiles a Cargo resolve read; expanded into their
+    /// workspace roots, patch targets and member globs once the resolve
+    /// finishes.
+    manifests: BTreeSet<PathBuf>,
+}
+
+/// The toolchain observation shared by every fact a Cargo, rustup or
+/// rustc process answered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct ToolchainInputs {
+    /// The [`ENV_PREFIXES`] variables of the resolving host.
+    env: BTreeMap<String, String>,
+    /// `cargo`, `rustc` and `rustup` as the host's `PATH` resolves them.
+    programs: BTreeMap<String, Option<Stamp>>,
+    /// The identity of every installed rustup toolchain.
+    toolchains: BTreeMap<String, ToolchainStamp>,
 }
 
 /// The full observation a record is valid for.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Inputs {
     cli: CliIdentity,
-    /// The [`ENV_PREFIXES`] variables of the resolving host.
-    env: BTreeMap<String, String>,
-    /// `cargo`, `rustc` and `rustup` as the host's `PATH` resolves them.
-    programs: BTreeMap<String, Option<Stamp>>,
-    /// The identity of every installed rustup toolchain and of every
-    /// custom toolchain `path` a toolchain file names.
-    toolchains: BTreeMap<String, ToolchainStamp>,
-    /// Every file observed by content: the project's `Water.toml` and
-    /// `Water.lock`, the Cargo configuration chains, rustup's settings and
-    /// toolchain files, the seeds and their closure.
+    /// Present when the watch names a toolchain directory.
+    toolchain: Option<ToolchainInputs>,
+    /// The custom toolchain `path`s the toolchain files name.
+    custom_toolchains: BTreeMap<PathBuf, ToolchainStamp>,
+    /// Every path observed: the project's `Water.toml` and `Water.lock`,
+    /// the Cargo configuration chains, rustup's settings and toolchain
+    /// files, and the watch's files and globs.
     files: BTreeMap<PathBuf, Observed>,
 }
 
 /// An [`Inputs`] observation plus the newest modification time among the
-/// files it hashed.
+/// files it hashed, in nanoseconds since the epoch.
 struct Observation {
     inputs: Inputs,
-    newest: Option<SystemTime>,
+    newest_ns: Option<u128>,
 }
 
 /// A persisted answer: a [`RecordHeader`] line, then this body. Only the
@@ -248,7 +296,7 @@ struct Observation {
 struct Record<Q, V> {
     kind: String,
     question: Q,
-    seeds: BTreeSet<PathBuf>,
+    watch: Watch,
     inputs: Inputs,
     value: V,
 }
@@ -261,16 +309,283 @@ struct RecordHeader {
 
 /// The in-memory form of a record, kept per question for the invocation.
 struct Answer<V> {
-    seeds: BTreeSet<PathBuf>,
+    watch: Arc<Watch>,
     inputs: Inputs,
     value: Arc<V>,
 }
 
 type Slot = Arc<async_lock::Mutex<Option<Arc<dyn Any + Send + Sync>>>>;
 
+/// A file observed in this invocation, under the metadata stamp it had
+/// when it was read.
+struct Seen {
+    stamp: Option<FileStamp>,
+    observed: Observed,
+}
+
+/// What one invocation observed: every file's content digest under the
+/// stamp it was read at, the TOML documents among them parsed once per
+/// content, and the toolchain identity.
+#[derive(Default)]
+struct Observer {
+    files: HashMap<PathBuf, Seen>,
+    tables: HashMap<String, Option<Arc<toml::Table>>>,
+    toolchain: Option<ToolchainInputs>,
+    /// The Cargo configuration files discovered from each directory, walked
+    /// once per invocation.
+    config_chains: HashMap<PathBuf, Arc<[PathBuf]>>,
+    /// What each pattern matched, listed once per invocation.
+    globs: HashMap<PathBuf, BTreeSet<PathBuf>>,
+}
+
+/// The files a blocking derivation reads, each one an input of what it
+/// derives.
+pub trait InputFiles {
+    /// `path`'s bytes; `None` when nothing is there.
+    ///
+    /// # Errors
+    /// Returns an error when the file exists but cannot be read.
+    fn read(&mut self, path: &Path) -> io::Result<Option<Vec<u8>>>;
+
+    /// The paths `pattern` matches.
+    fn glob(&mut self, pattern: &Path) -> BTreeSet<PathBuf>;
+}
+
+/// The filesystem itself, for a derivation whose answer no fact records.
+pub struct Disk;
+
+impl InputFiles for Disk {
+    fn read(&mut self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+        Observer::read_bytes(path)
+    }
+
+    fn glob(&mut self, pattern: &Path) -> BTreeSet<PathBuf> {
+        glob_matches(pattern)
+    }
+}
+
+/// The invocation's observer, noting every read and glob of a
+/// derivation as an input of the answer it derives.
+struct Recorder {
+    observer: Arc<Mutex<Observer>>,
+    watch: Watch,
+}
+
+impl InputFiles for Recorder {
+    fn read(&mut self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+        self.watch.files.insert(path.to_path_buf());
+        lock(&self.observer).read(path)
+    }
+
+    fn glob(&mut self, pattern: &Path) -> BTreeSet<PathBuf> {
+        self.watch.globs.insert(pattern.to_path_buf());
+        lock(&self.observer).glob(pattern)
+    }
+}
+
+impl Observer {
+    /// `path`'s content observation: replayed while its stamp is the one
+    /// it was read under, read and hashed otherwise. The stamp is taken
+    /// before the read, so a write racing the read leaves a stamp that no
+    /// longer matches and the next observation reads again.
+    fn hash(&mut self, path: &Path) -> io::Result<(Observed, Option<u128>)> {
+        let stamp = FileStamp::of(path)?;
+        let modified = stamp.map(|stamp| stamp.modified_ns);
+        if let Some(seen) = self.files.get(path)
+            && seen.stamp == stamp
+        {
+            return Ok((seen.observed.clone(), modified));
+        }
+        let bytes = match stamp {
+            Some(_) => Self::read_bytes(path)?,
+            None => None,
+        };
+        Ok((self.remember(path, stamp, bytes.as_deref()), modified))
+    }
+
+    /// `path`'s bytes, recorded as its observation; `None` when nothing is
+    /// there.
+    fn read(&mut self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+        let stamp = FileStamp::of(path)?;
+        let bytes = match stamp {
+            Some(_) => Self::read_bytes(path)?,
+            None => None,
+        };
+        self.remember(path, stamp, bytes.as_deref());
+        Ok(bytes)
+    }
+
+    /// `path` parsed as TOML, once per content; `None` when it is absent
+    /// or does not parse.
+    fn table(&mut self, path: &Path) -> io::Result<Option<Arc<toml::Table>>> {
+        let stamp = FileStamp::of(path)?;
+        if let Some(Seen {
+            stamp: seen,
+            observed: Observed::Sha256(digest),
+        }) = self.files.get(path)
+            && *seen == stamp
+            && let Some(table) = self.tables.get(digest)
+        {
+            return Ok(table.clone());
+        }
+        let bytes = match stamp {
+            Some(_) => Self::read_bytes(path)?,
+            None => None,
+        };
+        let observed = self.remember(path, stamp, bytes.as_deref());
+        let Observed::Sha256(digest) = observed else {
+            return Ok(None);
+        };
+        let table = bytes
+            .as_deref()
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .and_then(|text| text.parse::<toml::Table>().ok())
+            .map(Arc::new);
+        self.tables.insert(digest, table.clone());
+        Ok(table)
+    }
+
+    /// The configuration files Cargo discovers from `root`, as `walk`
+    /// finds them the first time this invocation asks.
+    fn config_chain(
+        &mut self,
+        root: &Path,
+        walk: impl FnOnce(&Path) -> Vec<PathBuf>,
+    ) -> Arc<[PathBuf]> {
+        Arc::clone(
+            self.config_chains
+                .entry(root.to_path_buf())
+                .or_insert_with(|| walk(root).into()),
+        )
+    }
+
+    /// What `pattern` matches, listed the first time this invocation asks.
+    fn glob(&mut self, pattern: &Path) -> BTreeSet<PathBuf> {
+        self.globs
+            .entry(pattern.to_path_buf())
+            .or_insert_with(|| glob_matches(pattern))
+            .clone()
+    }
+
+    fn read_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
+        match std::fs::read(path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn remember(
+        &mut self,
+        path: &Path,
+        stamp: Option<FileStamp>,
+        bytes: Option<&[u8]>,
+    ) -> Observed {
+        let observed = bytes.map_or(Observed::Absent, |bytes| {
+            Observed::Sha256(sha256_hex(bytes))
+        });
+        self.files.insert(
+            path.to_path_buf(),
+            Seen {
+                stamp,
+                observed: observed.clone(),
+            },
+        );
+        observed
+    }
+}
+
+/// The inputs one resolve reports. A fact's [`Fact::resolve`] receives it
+/// and reports, through it, everything its answer is a function of.
+pub struct Scope<'a> {
+    facts: &'a Facts,
+    reads: Mutex<Reads>,
+}
+
+impl Scope<'_> {
+    /// The host the fact resolves on.
+    pub(crate) const fn host(&self) -> &Host {
+        &self.facts.host
+    }
+
+    /// The answer came from a Cargo, rustup or rustc process run in
+    /// `directory`.
+    pub(crate) fn toolchain(&self, directory: &Path) {
+        self.with_reads(|reads| reads.watch.toolchain.insert(directory.to_path_buf()));
+    }
+
+    /// A Cargo resolve read these manifests and lockfiles.
+    pub(crate) fn manifests(&self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.with_reads(|reads| reads.manifests.extend(paths));
+    }
+
+    /// The answer read `path` — or found nothing there.
+    pub(crate) fn file(&self, path: &Path) {
+        self.with_reads(|reads| reads.watch.files.insert(path.to_path_buf()));
+    }
+
+    /// Read `path`'s bytes as an input of the answer; `None` when nothing
+    /// is there.
+    ///
+    /// # Errors
+    /// Returns an error when the file exists but cannot be read.
+    pub(crate) async fn read(&self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+        self.file(path);
+        let observer = Arc::clone(&self.facts.observer);
+        let path = path.to_path_buf();
+        smol::unblock(move || lock(&observer).read(&path)).await
+    }
+
+    /// Run the blocking `derive` on the blocking pool, every file it reads
+    /// and every pattern it lists through [`InputFiles`] an input of the
+    /// answer.
+    pub(crate) async fn derive<T: Send + 'static>(
+        &self,
+        derive: impl FnOnce(&mut dyn InputFiles) -> T + Send + 'static,
+    ) -> T {
+        let mut recorder = Recorder {
+            observer: Arc::clone(&self.facts.observer),
+            watch: Watch::default(),
+        };
+        let (value, watch) = smol::unblock(move || {
+            let value = derive(&mut recorder);
+            (value, recorder.watch)
+        })
+        .await;
+        self.with_reads(|reads| reads.watch.merge(&watch));
+        value
+    }
+
+    /// `fact`'s answer, its inputs joining this answer's.
+    ///
+    /// # Errors
+    /// Returns an error when `fact` cannot be answered.
+    pub(crate) async fn answer<F: Fact>(&self, fact: &F) -> eyre::Result<Arc<F::Value>> {
+        let (value, watch) = Box::pin(self.facts.answer_watched(fact)).await?;
+        self.with_reads(|reads| reads.watch.merge(&watch));
+        Ok(value)
+    }
+
+    /// `cargo metadata` as `command` configures it, as an input of the
+    /// answer.
+    ///
+    /// # Errors
+    /// Returns an error when Cargo fails or its inputs cannot be observed.
+    pub(crate) async fn cargo_metadata(&self, command: &MetadataCommand) -> eyre::Result<Metadata> {
+        let fact = CargoMetadata::new(command, self.facts.host.cwd());
+        let json = self.answer(&fact).await?;
+        Ok(MetadataCommand::parse(json.as_str())?)
+    }
+
+    fn with_reads<T>(&self, f: impl FnOnce(&mut Reads) -> T) -> T {
+        f(&mut self.reads.lock().unwrap_or_else(PoisonError::into_inner))
+    }
+}
+
 /// The fact cache of one project.
 ///
-/// Cloning shares the invocation's answers; nothing is process-global.
+/// Cloning shares the invocation's answers and observations; nothing is
+/// process-global.
 #[derive(Clone)]
 pub struct Facts {
     host: Host,
@@ -278,6 +593,7 @@ pub struct Facts {
     records: PathBuf,
     cli: CliIdentity,
     slots: Arc<async_lock::Mutex<BTreeMap<String, Slot>>>,
+    observer: Arc<Mutex<Observer>>,
 }
 
 impl std::fmt::Debug for Facts {
@@ -287,6 +603,10 @@ impl std::fmt::Debug for Facts {
             .field("records", &self.records)
             .finish_non_exhaustive()
     }
+}
+
+fn lock(observer: &Mutex<Observer>) -> std::sync::MutexGuard<'_, Observer> {
+    observer.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Facts {
@@ -302,6 +622,7 @@ impl Facts {
             records: records.join(format!("v{RECORD_FORMAT}")),
             cli: CliIdentity::current()?,
             slots: Arc::default(),
+            observer: Arc::default(),
         })
     }
 
@@ -310,6 +631,7 @@ impl Facts {
     pub(crate) fn with_cli(mut self, cli: CliIdentity) -> Self {
         self.cli = cli;
         self.slots = Arc::default();
+        self.observer = Arc::default();
         self
     }
 
@@ -324,11 +646,15 @@ impl Facts {
     /// # Errors
     /// Returns an error when the fact cannot be resolved, its inputs cannot
     /// be observed, or a record of this CLI cannot be read.
+    pub(crate) async fn answer<F: Fact>(&self, fact: &F) -> eyre::Result<Arc<F::Value>> {
+        Ok(self.answer_watched(fact).await?.0)
+    }
+
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the question's slot stays locked across the resolve, so concurrent askers of one question share a single resolve"
     )]
-    pub(crate) async fn answer<F: Fact>(&self, fact: &F) -> eyre::Result<Arc<F::Value>> {
+    async fn answer_watched<F: Fact>(&self, fact: &F) -> eyre::Result<(Arc<F::Value>, Arc<Watch>)> {
         let question = fact.question();
         let key = record_key(F::KIND, &question)?;
         let slot = Arc::clone(
@@ -348,9 +674,9 @@ impl Facts {
                     .map_err(|_| eyre::eyre!("fact {key} is memoized with another value type"))
             })
             .transpose()?
-            && self.observe(fact.cwd(), &answer.seeds).await?.inputs == answer.inputs
+            && self.observe(&answer.watch).await?.inputs == answer.inputs
         {
-            return Ok(Arc::clone(&answer.value));
+            return Ok((Arc::clone(&answer.value), Arc::clone(&answer.watch)));
         }
 
         let path = self.records.join(format!("{key}.json"));
@@ -361,29 +687,41 @@ impl Facts {
                     path.display()
                 );
             }
-            if self.observe(fact.cwd(), &record.seeds).await?.inputs == record.inputs {
+            if self.observe(&record.watch).await?.inputs == record.inputs {
                 tracing::debug!(fact = F::KIND, record = %path.display(), "fact replayed");
                 let value = Arc::new(record.value);
+                let watch = Arc::new(record.watch);
                 *slot = Some(Arc::new(Answer {
-                    seeds: record.seeds,
+                    watch: Arc::clone(&watch),
                     inputs: record.inputs,
                     value: Arc::clone(&value),
                 }));
-                return Ok(value);
+                return Ok((value, watch));
             }
         }
 
-        let started = SystemTime::now();
-        let before = self.observe(fact.cwd(), &BTreeSet::new()).await?;
-        let value = fact.resolve(&self.host).await?;
-        let seeds = fact.seeds(&value)?;
-        let after = self.observe(fact.cwd(), &seeds).await?;
-        let settled = after
-            .newest
-            .is_none_or(|newest| newest + MTIME_SLACK < started)
-            && before.inputs.programs == after.inputs.programs
-            && before.inputs.toolchains == after.inputs.toolchains
-            && before.inputs.env == after.inputs.env;
+        let started_ns = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let toolchain_before = self.observe_toolchain().await?;
+        let scope = Scope {
+            facts: self,
+            reads: Mutex::default(),
+        };
+        let value = fact.resolve(&scope).await?;
+        let reads = scope
+            .reads
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
+        let watch = Arc::new(self.expand(reads).await?);
+        let toolchain_settled =
+            watch.toolchain.is_empty() || self.observe_toolchain().await? == toolchain_before;
+        let after = self.observe(&watch).await?;
+        let settled = toolchain_settled
+            && after
+                .newest_ns
+                .is_none_or(|newest| newest + MTIME_SLACK.as_nanos() < started_ns);
         if settled {
             write_record(
                 &path,
@@ -391,7 +729,7 @@ impl Facts {
                 &Record {
                     kind: F::KIND.to_owned(),
                     question,
-                    seeds: seeds.clone(),
+                    watch: watch.as_ref().clone(),
                     inputs: after.inputs.clone(),
                     value: &value,
                 },
@@ -406,11 +744,11 @@ impl Facts {
         }
         let value = Arc::new(value);
         *slot = Some(Arc::new(Answer {
-            seeds,
+            watch: Arc::clone(&watch),
             inputs: after.inputs,
             value: Arc::clone(&value),
         }));
-        Ok(value)
+        Ok((value, watch))
     }
 
     /// `cargo metadata` as `command` configures it.
@@ -459,38 +797,94 @@ impl Facts {
         Ok(self.answer(&fact).await?.as_ref().clone())
     }
 
-    /// Observe every input a fact resolved in `cwd` from `seeds` depends
-    /// on.
-    async fn observe(&self, cwd: &Path, seeds: &BTreeSet<PathBuf>) -> eyre::Result<Observation> {
-        let mut programs = BTreeMap::new();
-        for program in ["cargo", "rustc", "rustup"] {
-            let resolved = self.host.which(program).await.ok();
-            programs.insert(program.to_owned(), resolved);
+    /// Close a resolve's reads: every manifest it reported joins the watch
+    /// with the workspace root it inherits from — every ancestor manifest
+    /// consulted to find that root included — and the root's `[patch]`
+    /// targets and member globs, which reach a resolve without appearing
+    /// in it.
+    async fn expand(&self, reads: Reads) -> eyre::Result<Watch> {
+        let observer = Arc::clone(&self.observer);
+        smol::unblock(move || {
+            let mut observer = lock(&observer);
+            let Reads {
+                mut watch,
+                manifests,
+            } = reads;
+            let mut roots = BTreeSet::new();
+            for manifest in manifests {
+                if manifest.file_name() == Some(OsStr::new("Cargo.toml"))
+                    && let Some(package_dir) = manifest.parent()
+                    && let Some(root) =
+                        workspace_manifest_of(&mut observer, package_dir, &mut watch.files)?
+                {
+                    roots.insert(root);
+                }
+                watch.files.insert(manifest);
+            }
+            for root in roots {
+                watch.files.insert(root.clone());
+                let (Some(table), Some(base)) = (observer.table(&root)?, root.parent()) else {
+                    continue;
+                };
+                for path in patch_paths(&table, base) {
+                    watch.files.insert(path.join("Cargo.toml"));
+                }
+                watch.globs.extend(member_globs(&table, base));
+            }
+            drop(observer);
+            io::Result::Ok(watch)
+        })
+        .await
+        .wrap_err("cannot observe the inputs of a resolved fact")
+    }
+
+    /// The toolchain identity as the host shows it now, remembered as this
+    /// invocation's observation.
+    async fn observe_toolchain(&self) -> eyre::Result<ToolchainInputs> {
+        let probe = self.toolchain_probe();
+        let toolchain = smol::unblock(move || probe.observe())
+            .await
+            .wrap_err("cannot observe the Rust toolchain")?;
+        lock(&self.observer).toolchain = Some(toolchain.clone());
+        Ok(toolchain)
+    }
+
+    fn toolchain_probe(&self) -> ToolchainProbe {
+        ToolchainProbe {
+            host: self.host.clone(),
+            rustup_home: self.rustup_home(),
         }
+    }
+
+    fn rustup_home(&self) -> Option<PathBuf> {
+        self.host.env("RUSTUP_HOME").map_or_else(
+            || self.host.home_dir().map(|home| home.join(".rustup")),
+            |home| Some(PathBuf::from(home)),
+        )
+    }
+
+    /// Observe every input `watch` names, plus the project's own.
+    async fn observe(&self, watch: &Watch) -> eyre::Result<Observation> {
+        let toolchain = if watch.toolchain.is_empty() {
+            None
+        } else {
+            let remembered = lock(&self.observer).toolchain.clone();
+            match remembered {
+                Some(toolchain) => Some(toolchain),
+                None => Some(self.observe_toolchain().await?),
+            }
+        };
         let probe = Probe {
             cli: self.cli.clone(),
-            env: self
-                .host
-                .envs()
-                .filter_map(|(key, value)| {
-                    let key = key.to_str()?;
-                    ENV_PREFIXES
-                        .iter()
-                        .any(|prefix| key.starts_with(prefix))
-                        .then(|| (key.to_owned(), value.to_string_lossy().into_owned()))
-                })
-                .collect(),
-            programs,
-            rustup_home: self.host.env("RUSTUP_HOME").map_or_else(
-                || self.host.home_dir().map(|home| home.join(".rustup")),
-                |home| Some(PathBuf::from(home)),
-            ),
-            cargo_home: cargo_home(&self.host, cwd),
-            cwd: cwd.to_path_buf(),
+            toolchain,
+            rustup_home: self.rustup_home(),
+            cargo_home: self.host.env_string("CARGO_HOME"),
+            home: self.host.home_dir().map(Path::to_path_buf),
             project_root: self.project_root.clone(),
-            seeds: seeds.clone(),
+            watch: watch.clone(),
         };
-        smol::unblock(move || probe.observe())
+        let observer = Arc::clone(&self.observer);
+        smol::unblock(move || probe.observe(&mut lock(&observer)))
             .await
             .wrap_err("cannot observe the inputs of a recorded fact")
     }
@@ -498,8 +892,8 @@ impl Facts {
 
 /// Cargo's `$CARGO_HOME`: absolute, anchored at `cwd` when relative,
 /// `~/.cargo` when unset — the same resolution `cargo_config2` performs.
-fn cargo_home(host: &Host, cwd: &Path) -> Option<PathBuf> {
-    host.env_string("CARGO_HOME")
+fn cargo_home(cargo_home: Option<&str>, home: Option<&Path>, cwd: &Path) -> Option<PathBuf> {
+    cargo_home
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
         .map(|home| {
@@ -509,7 +903,7 @@ fn cargo_home(host: &Host, cwd: &Path) -> Option<PathBuf> {
                 cwd.join(home)
             }
         })
-        .or_else(|| host.home_dir().map(|home| home.join(".cargo")))
+        .or_else(|| home.map(|home| home.join(".cargo")))
 }
 
 /// The record file stem of a question: its kind plus a digest of its
@@ -591,51 +985,39 @@ async fn write_record<Q: Serialize + Sync, V: Serialize + Sync>(
     .wrap_err("cannot record a resolved fact")
 }
 
-/// Everything [`Facts::observe`] gathered on the executor, moved to the
-/// blocking pool for the filesystem walk.
-struct Probe {
-    cli: CliIdentity,
-    env: BTreeMap<String, String>,
-    programs: BTreeMap<String, Option<PathBuf>>,
+/// What [`Facts::observe_toolchain`] gathers, moved to the blocking pool.
+struct ToolchainProbe {
+    host: Host,
     rustup_home: Option<PathBuf>,
-    cargo_home: Option<PathBuf>,
-    cwd: PathBuf,
-    project_root: PathBuf,
-    seeds: BTreeSet<PathBuf>,
 }
 
-impl Probe {
-    fn observe(self) -> io::Result<Observation> {
-        let mut files = Files::default();
+impl ToolchainProbe {
+    fn observe(self) -> io::Result<ToolchainInputs> {
+        let env = self
+            .host
+            .envs()
+            .filter_map(|(key, value)| {
+                let key = key.to_str()?;
+                ENV_PREFIXES
+                    .iter()
+                    .any(|prefix| key.starts_with(prefix))
+                    .then(|| (key.to_owned(), value.to_string_lossy().into_owned()))
+            })
+            .collect();
+        let mut programs = BTreeMap::new();
+        for program in ["cargo", "rustc", "rustup"] {
+            let stamp = self
+                .host
+                .which_blocking(program)
+                .ok()
+                .as_deref()
+                .map(Stamp::of)
+                .transpose()?
+                .flatten();
+            programs.insert(program.to_owned(), stamp);
+        }
         let mut toolchains = BTreeMap::new();
-
-        for name in ["Water.toml", "Water.lock"] {
-            files.hash(&self.project_root.join(name))?;
-        }
-
-        // The configuration chains Cargo discovers from the resolving
-        // directory and from the project root — a managed crate's build
-        // carries the project's chain through `--config` — and every
-        // `[patch]` path they declare.
-        for root in [&self.cwd, &self.project_root] {
-            let root = dunce::canonicalize(root).unwrap_or_else(|_| root.clone());
-            for config in cargo_config2::Walk::with_cargo_home(&root, self.cargo_home.clone()) {
-                files.hash(&config)?;
-                if let Some(table) = read_table(&config)
-                    && let Some(base) = config.parent().and_then(Path::parent)
-                {
-                    for path in patch_paths(&table, base) {
-                        files.hash(&path.join("Cargo.toml"))?;
-                    }
-                }
-            }
-        }
-
-        // rustup's selection: its settings (default toolchain, directory
-        // overrides), the toolchain files from the resolving directory up,
-        // and the executables of every toolchain it could select.
         if let Some(rustup_home) = &self.rustup_home {
-            files.hash(&rustup_home.join("settings.toml"))?;
             match std::fs::read_dir(rustup_home.join("toolchains")) {
                 Ok(entries) => {
                     for entry in entries {
@@ -650,114 +1032,177 @@ impl Probe {
                 Err(error) => return Err(error),
             }
         }
-        for directory in self.cwd.ancestors() {
-            for name in ["rust-toolchain", "rust-toolchain.toml"] {
-                let file = directory.join(name);
-                if file.is_file() {
+        Ok(ToolchainInputs {
+            env,
+            programs,
+            toolchains,
+        })
+    }
+}
+
+/// Everything [`Facts::observe`] gathered on the executor, moved to the
+/// blocking pool for the filesystem walk.
+struct Probe {
+    cli: CliIdentity,
+    toolchain: Option<ToolchainInputs>,
+    rustup_home: Option<PathBuf>,
+    cargo_home: Option<String>,
+    home: Option<PathBuf>,
+    project_root: PathBuf,
+    watch: Watch,
+}
+
+impl Probe {
+    fn observe(self, observer: &mut Observer) -> io::Result<Observation> {
+        let mut files = Files {
+            observer,
+            observed: BTreeMap::new(),
+            newest_ns: None,
+        };
+        let mut custom_toolchains = BTreeMap::new();
+
+        for name in ["Water.toml", "Water.lock"] {
+            files.hash(&self.project_root.join(name))?;
+        }
+
+        for cwd in &self.watch.toolchain {
+            // The configuration chains Cargo discovers from the resolving
+            // directory and from the project root — a managed crate's
+            // build carries the project's chain through `--config` — and
+            // every `[patch]` path they declare.
+            for root in [cwd, &self.project_root] {
+                let chain = files.observer.config_chain(root, |root| {
+                    let root = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+                    let cargo_home =
+                        cargo_home(self.cargo_home.as_deref(), self.home.as_deref(), &root);
+                    config_candidates(&root, cargo_home.as_deref())
+                });
+                for config in chain.iter() {
+                    files.hash(config)?;
+                    if let Some(table) = files.observer.table(config)?
+                        && let Some(base) = config.parent().and_then(Path::parent)
+                    {
+                        for path in patch_paths(&table, base) {
+                            files.hash(&path.join("Cargo.toml"))?;
+                        }
+                    }
+                }
+            }
+
+            // rustup's selection: its settings (default toolchain,
+            // directory overrides) and the toolchain files from the
+            // resolving directory up, with the custom toolchain a file
+            // names by `path`.
+            if let Some(rustup_home) = &self.rustup_home {
+                files.hash(&rustup_home.join("settings.toml"))?;
+            }
+            for directory in cwd.ancestors() {
+                for name in ["rust-toolchain", "rust-toolchain.toml"] {
+                    let file = directory.join(name);
                     files.hash(&file)?;
-                    if let Some(custom) = read_table(&file)
-                        .as_ref()
+                    if let Some(custom) = files
+                        .observer
+                        .table(&file)?
+                        .as_deref()
                         .and_then(|table| table.get("toolchain"))
                         .and_then(|toolchain| toolchain.get("path"))
                         .and_then(toml::Value::as_str)
                     {
                         let custom = directory.join(custom);
-                        toolchains.insert(
-                            format!("path:{}", custom.display()),
-                            toolchain_stamps(&custom)?,
-                        );
+                        let stamp = toolchain_stamps(&custom)?;
+                        custom_toolchains.insert(custom, stamp);
                     }
                 }
             }
         }
 
-        // The seeds, the workspace root each manifest among them inherits
-        // from, and what those roots reach without appearing in a resolve:
-        // their `[patch]`/`[replace]` targets and their member globs.
-        let mut roots = BTreeSet::new();
-        for seed in &self.seeds {
-            files.hash(seed)?;
-            if seed.file_name() == Some(OsStr::new("Cargo.toml"))
-                && let Some(root) = seed.parent().and_then(workspace_manifest_of)
-            {
-                roots.insert(root);
-            }
+        for file in &self.watch.files {
+            files.hash(file)?;
         }
-        for root in roots {
-            files.hash(&root)?;
-            let (Some(table), Some(base)) = (read_table(&root), root.parent()) else {
-                continue;
-            };
-            for path in patch_paths(&table, base) {
-                files.hash(&path.join("Cargo.toml"))?;
-            }
-            files.member_globs(&table, base);
-        }
-
-        let mut programs = BTreeMap::new();
-        for (name, path) in self.programs {
-            let stamp = path.as_deref().map(Stamp::of).transpose()?.flatten();
-            programs.insert(name, stamp);
+        for pattern in &self.watch.globs {
+            let matches = files.observer.glob(pattern);
+            files
+                .observed
+                .insert(pattern.clone(), Observed::Matches(matches));
         }
 
         Ok(Observation {
             inputs: Inputs {
                 cli: self.cli,
-                env: self.env,
-                programs,
-                toolchains,
+                toolchain: self.toolchain,
+                custom_toolchains,
                 files: files.observed,
             },
-            newest: files.newest,
+            newest_ns: files.newest_ns,
         })
     }
 }
 
 /// The content observations of one [`Probe`].
-#[derive(Default)]
-struct Files {
+struct Files<'a> {
+    observer: &'a mut Observer,
     observed: BTreeMap<PathBuf, Observed>,
-    newest: Option<SystemTime>,
+    newest_ns: Option<u128>,
 }
 
-impl Files {
+impl Files<'_> {
     fn hash(&mut self, path: &Path) -> io::Result<()> {
         if self.observed.contains_key(path) {
             return Ok(());
         }
-        let observed = match std::fs::read(path) {
-            Ok(bytes) => {
-                let modified = std::fs::metadata(path)?.modified()?;
-                self.newest = Some(self.newest.map_or(modified, |newest| newest.max(modified)));
-                Observed::Sha256(sha256_hex(&bytes))
-            }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Observed::Absent,
-            Err(error) => return Err(error),
-        };
+        let (observed, modified) = self.observer.hash(path)?;
+        if let Some(modified) = modified
+            && observed != Observed::Absent
+        {
+            self.newest_ns = Some(
+                self.newest_ns
+                    .map_or(modified, |newest| newest.max(modified)),
+            );
+        }
         self.observed.insert(path.to_path_buf(), observed);
         Ok(())
     }
+}
 
-    /// Record what each glob in `[workspace] members` matches under `base`:
-    /// a directory appearing under a glob joins the workspace without any
-    /// manifest or lockfile changing.
-    fn member_globs(&mut self, table: &toml::Table, base: &Path) {
-        let patterns = table
-            .get("workspace")
-            .and_then(|workspace| workspace.get("members"))
-            .and_then(toml::Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(toml::Value::as_str)
-            .filter(|pattern| pattern.contains(['*', '?', '[']));
-        for pattern in patterns {
-            let full = base.join(pattern);
-            let matches = glob::glob(&full.to_string_lossy())
-                .map(|paths| paths.filter_map(Result::ok).collect())
-                .unwrap_or_default();
-            self.observed.insert(full, Observed::Matches(matches));
-        }
+/// What `pattern` matches now; a pattern that does not parse matches
+/// nothing.
+fn glob_matches(pattern: &Path) -> BTreeSet<PathBuf> {
+    glob::glob(&pattern.to_string_lossy())
+        .map(|paths| paths.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+/// Every path Cargo looks for configuration at from `root`: `config` and
+/// `config.toml` under each ancestor's `.cargo` and under `$CARGO_HOME`.
+/// A candidate that does not exist is an input too — creating it changes
+/// what Cargo reads.
+fn config_candidates(root: &Path, cargo_home: Option<&Path>) -> Vec<PathBuf> {
+    let mut directories: Vec<PathBuf> = root.ancestors().map(|dir| dir.join(".cargo")).collect();
+    if let Some(cargo_home) = cargo_home
+        && !directories.iter().any(|dir| dir == cargo_home)
+    {
+        directories.push(cargo_home.to_path_buf());
     }
+    directories
+        .iter()
+        .flat_map(|dir| [dir.join("config"), dir.join("config.toml")])
+        .collect()
+}
+
+/// The globs in `[workspace] members` under `base`: a directory appearing
+/// under one joins the workspace without any manifest or lockfile
+/// changing.
+fn member_globs(table: &toml::Table, base: &Path) -> Vec<PathBuf> {
+    table
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(toml::Value::as_str)
+        .filter(|pattern| pattern.contains(['*', '?', '[']))
+        .map(|pattern| base.join(pattern))
+        .collect()
 }
 
 /// A toolchain directory's identity.
@@ -797,12 +1242,6 @@ fn toolchain_stamps(toolchain: &Path) -> io::Result<ToolchainStamp> {
     })
 }
 
-fn read_table(path: &Path) -> Option<toml::Table> {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|text| text.parse().ok())
-}
-
 /// The directories a manifest's or configuration's `[patch.<source>]` and
 /// `[replace]` entries name by `path`, resolved against `base`.
 fn patch_paths(table: &toml::Table, base: &Path) -> Vec<PathBuf> {
@@ -829,11 +1268,18 @@ fn patch_paths(table: &toml::Table, base: &Path) -> Vec<PathBuf> {
 /// `[workspace.*]` settings from, per Cargo's own rule: an explicit
 /// `[package] workspace = "<path>"` pointer when the package's manifest
 /// carries one, else the nearest ancestor `Cargo.toml` carrying a
-/// `[workspace]` table.
-fn workspace_manifest_of(package_dir: &Path) -> Option<PathBuf> {
+/// `[workspace]` table. Every manifest path consulted — absent ones
+/// included — joins `consulted`: one appearing or changing can move the
+/// root.
+fn workspace_manifest_of(
+    observer: &mut Observer,
+    package_dir: &Path,
+    consulted: &mut BTreeSet<PathBuf>,
+) -> io::Result<Option<PathBuf>> {
     for ancestor in package_dir.ancestors() {
         let manifest_path = ancestor.join("Cargo.toml");
-        let Some(manifest) = read_table(&manifest_path) else {
+        consulted.insert(manifest_path.clone());
+        let Some(manifest) = observer.table(&manifest_path)? else {
             continue;
         };
         if ancestor == package_dir
@@ -843,13 +1289,13 @@ fn workspace_manifest_of(package_dir: &Path) -> Option<PathBuf> {
                 .and_then(toml::Value::as_str)
             && let Ok(root) = dunce::canonicalize(ancestor.join(pointer))
         {
-            return Some(root.join("Cargo.toml"));
+            return Ok(Some(root.join("Cargo.toml")));
         }
         if manifest.contains_key("workspace") {
-            return Some(manifest_path);
+            return Ok(Some(manifest_path));
         }
     }
-    None
+    Ok(None)
 }
 
 /// `cargo metadata` with the arguments, working directory and environment
@@ -859,7 +1305,7 @@ struct CargoMetadata<'a> {
     question: CargoMetadataQuestion,
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct CargoMetadataQuestion {
     args: Vec<String>,
     cwd: PathBuf,
@@ -901,29 +1347,19 @@ impl Fact for CargoMetadata<'_> {
     type Value = String;
 
     fn question(&self) -> Self::Question {
-        CargoMetadataQuestion {
-            args: self.question.args.clone(),
-            cwd: self.question.cwd.clone(),
-            env: self.question.env.clone(),
-        }
+        self.question.clone()
     }
 
-    fn cwd(&self) -> &Path {
-        &self.question.cwd
-    }
-
-    async fn resolve(&self, host: &Host) -> eyre::Result<String> {
-        Ok(host.cargo_metadata_json(self.command).await?)
-    }
-
-    /// Every path package's manifest, the manifest behind every `path`
-    /// dependency any of them declares — optional and other-target ones
-    /// included, which a resolve reads without listing — and the
+    /// Cargo reads every path package's manifest, the manifest behind every
+    /// `path` dependency any of them declares — optional and other-target
+    /// ones included, which a resolve reads without listing — and the
     /// workspace's manifest and lockfile.
-    fn seeds(&self, value: &String) -> eyre::Result<BTreeSet<PathBuf>> {
-        let metadata = MetadataCommand::parse(value)?;
+    async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<String> {
+        scope.toolchain(&self.question.cwd);
+        let json = scope.host().cargo_metadata_json(self.command).await?;
+        let metadata = MetadataCommand::parse(&json)?;
         let workspace_root = metadata.workspace_root.as_std_path();
-        let mut seeds = BTreeSet::from([
+        scope.manifests([
             workspace_root.join("Cargo.toml"),
             workspace_root.join("Cargo.lock"),
         ]);
@@ -932,16 +1368,17 @@ impl Fact for CargoMetadata<'_> {
             .iter()
             .filter(|package| package.source.is_none())
         {
-            seeds.insert(package.manifest_path.clone().into_std_path_buf());
-            seeds.extend(
-                package
-                    .dependencies
-                    .iter()
-                    .filter_map(|dependency| dependency.path.as_ref())
-                    .map(|path| path.as_std_path().join("Cargo.toml")),
+            scope.manifests(
+                std::iter::once(package.manifest_path.clone().into_std_path_buf()).chain(
+                    package
+                        .dependencies
+                        .iter()
+                        .filter_map(|dependency| dependency.path.as_ref())
+                        .map(|path| path.as_std_path().join("Cargo.toml")),
+                ),
             );
         }
-        Ok(seeds)
+        Ok(json)
     }
 }
 
@@ -959,19 +1396,12 @@ impl Fact for ActiveToolchain {
         self.cwd.clone()
     }
 
-    fn cwd(&self) -> &Path {
-        &self.cwd
-    }
-
-    async fn resolve(&self, host: &Host) -> eyre::Result<String> {
-        Ok(
-            crate::toolchain::rust::selected_rustup_toolchain(&host.clone().with_cwd(&self.cwd))
-                .await?,
+    async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<String> {
+        scope.toolchain(&self.cwd);
+        Ok(crate::toolchain::rust::selected_rustup_toolchain(
+            &scope.host().clone().with_cwd(&self.cwd),
         )
-    }
-
-    fn seeds(&self, _: &String) -> eyre::Result<BTreeSet<PathBuf>> {
-        Ok(BTreeSet::new())
+        .await?)
     }
 }
 
@@ -996,12 +1426,10 @@ impl Fact for TargetLibdir {
         )
     }
 
-    fn cwd(&self) -> &Path {
-        &self.cwd
-    }
-
-    async fn resolve(&self, host: &Host) -> eyre::Result<PathBuf> {
-        let output = host
+    async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<PathBuf> {
+        scope.toolchain(&self.cwd);
+        let output = scope
+            .host()
             .with_env("RUSTUP_TOOLCHAIN", &self.toolchain)
             .with_cwd(&self.cwd)
             .run(
@@ -1018,10 +1446,6 @@ impl Fact for TargetLibdir {
         }
         Ok(PathBuf::from(libdir))
     }
-
-    fn seeds(&self, _: &PathBuf) -> eyre::Result<BTreeSet<PathBuf>> {
-        Ok(BTreeSet::new())
-    }
 }
 
 #[cfg(test)]
@@ -1035,7 +1459,7 @@ mod tests {
     use cargo_metadata::MetadataCommand;
     use target_lexicon::Triple;
 
-    use super::{CliIdentity, Facts, RECORD_FORMAT};
+    use super::{CliIdentity, Fact, Facts, RECORD_FORMAT, Scope};
     use crate::toolchain::{Host, testing::TestMachine};
 
     /// A machine with fake `cargo`, `rustc` and `rustup`, a rustup home
@@ -1218,8 +1642,46 @@ mod tests {
         }
     }
 
-    /// Ask the three kinds of fact a build asks: the project's metadata,
-    /// the toolchain its directory selects and a target's libdir.
+    /// A fact derived from files alone: the manifests under the fixture
+    /// workspace's member glob, each resolve logged as [`DERIVED`].
+    struct MemberManifests {
+        root: PathBuf,
+        log: PathBuf,
+    }
+
+    impl Fact for MemberManifests {
+        const KIND: &'static str = "test-member-manifests";
+        type Question = PathBuf;
+        type Value = Vec<String>;
+
+        fn question(&self) -> PathBuf {
+            self.root.clone()
+        }
+
+        async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<Vec<String>> {
+            let (root, log) = (self.root.clone(), self.log.clone());
+            scope
+                .derive(move |files| {
+                    use std::io::Write as _;
+                    writeln!(
+                        std::fs::OpenOptions::new().append(true).open(&log)?,
+                        "{DERIVED}"
+                    )?;
+                    let mut manifests = Vec::new();
+                    for path in files.glob(&root.join("ws/crates/*/Cargo.toml")) {
+                        if let Some(bytes) = files.read(&path)? {
+                            manifests.push(String::from_utf8_lossy(&bytes).into_owned());
+                        }
+                    }
+                    Ok(manifests)
+                })
+                .await
+        }
+    }
+
+    /// Ask the kinds of fact a build asks: the project's metadata, the
+    /// toolchain its directory selects, a target's libdir and an answer
+    /// derived from files.
     async fn ask(fixture: &Fixture, facts: &Facts) -> eyre::Result<()> {
         let mut command = MetadataCommand::new();
         command.current_dir(fixture.app());
@@ -1231,6 +1693,12 @@ mod tests {
             facts.target_libdir(&triple, &toolchain).await?,
             PathBuf::from("/fake/rustlib/lib")
         );
+        facts
+            .answer(&MemberManifests {
+                root: fixture.root.clone(),
+                log: fixture.log.clone(),
+            })
+            .await?;
         Ok(())
     }
 
@@ -1239,16 +1707,27 @@ mod tests {
     type Change = (&'static str, Box<dyn Fn(&Fixture)>, &'static [&'static str]);
 
     const METADATA: &str = "cargo metadata";
+    const DERIVED: &str = "derived member manifests";
+    /// The facts a toolchain process answers.
     const ALL: [&str; 3] = [
         "cargo metadata",
         "rustup show active-toolchain",
         "rustc --print target-libdir",
     ];
+    /// Every fact [`ask`] asks.
+    const EVERY: [&str; 4] = [
+        "cargo metadata",
+        "rustup show active-toolchain",
+        "rustc --print target-libdir",
+        DERIVED,
+    ];
 
-    /// The tools a run of [`ask`] spawned, by prefix, since `seen` lines.
+    /// The facts a run of [`ask`] resolved, by log prefix, since `seen`
+    /// lines.
     fn spawned_since(fixture: &Fixture, seen: usize) -> Vec<&'static str> {
         let spawns = fixture.spawns();
-        ALL.into_iter()
+        EVERY
+            .into_iter()
             .filter(|tool| spawns[seen..].iter().any(|line| line.starts_with(tool)))
             .collect()
     }
@@ -1261,7 +1740,7 @@ mod tests {
 
             let facts = fixture.facts(&host);
             ask(&fixture, &facts).await.expect("the facts resolve");
-            assert_eq!(spawned_since(&fixture, 0), ALL, "the first ask resolves");
+            assert_eq!(spawned_since(&fixture, 0), EVERY, "the first ask resolves");
             let resolved = fixture.spawns().len();
 
             // The same invocation asks again: answered from memory.
@@ -1332,8 +1811,8 @@ mod tests {
 
     /// Each input change, and which facts it must re-resolve: the inputs
     /// of a resolve re-resolve only the fact read from them; the
-    /// configuration, project and toolchain inputs every fact shares
-    /// re-resolve all three.
+    /// configuration and toolchain inputs every toolchain fact shares
+    /// re-resolve those three, and the project's own inputs every fact.
     fn input_changes() -> Vec<Change> {
         vec![
             (
@@ -1369,7 +1848,7 @@ mod tests {
                         "[package]\nname = \"b\"\nversion = \"0.1.0\"\n",
                     );
                 }),
-                &[METADATA],
+                &[METADATA, DERIVED],
             ),
             (
                 "a project cargo config",
@@ -1384,12 +1863,12 @@ mod tests {
             (
                 "Water.toml",
                 Box::new(|f| f.append("ws/app/Water.toml")),
-                &ALL,
+                &EVERY,
             ),
             (
                 "a new Water.lock",
                 Box::new(|f| f.write("ws/app/Water.lock", "version = 1\n")),
-                &ALL,
+                &EVERY,
             ),
             (
                 "a rust-toolchain.toml above the project",
@@ -1474,7 +1953,7 @@ mod tests {
             ask(&fixture, &other_cli)
                 .await
                 .expect("the facts resolve for another CLI");
-            assert_eq!(spawned_since(&fixture, seen), ALL, "the CLI changed");
+            assert_eq!(spawned_since(&fixture, seen), EVERY, "the CLI changed");
         });
     }
 
@@ -1511,7 +1990,7 @@ mod tests {
                 .expect("records exist")
                 .map(|entry| entry.expect("record entry").path())
                 .collect::<Vec<_>>();
-            assert_eq!(records.len(), 3, "one record per fact");
+            assert_eq!(records.len(), EVERY.len(), "one record per fact");
             for record in &records {
                 let bytes = std::fs::read(record).expect("record reads");
                 let header_end = bytes.iter().position(|byte| *byte == b'\n').unwrap();

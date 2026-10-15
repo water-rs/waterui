@@ -126,10 +126,10 @@ impl AppleBackend {
             .collect();
         // The generated project names the launch assets the catalog will
         // hold, so the two are decided from the same resolution.
-        let launch = crate::assets::project_launch_assets(project)?;
+        let launch = crate::assets::project_launch_plan(project)?;
         let launch_entry = templates::LaunchTemplateEntry {
-            has_background: launch.plan().background(ColorScheme::Light).is_some(),
-            has_image: launch.has_artwork(),
+            has_background: launch.background(ColorScheme::Light).is_some(),
+            has_image: launch.image().is_some(),
         };
         Ok(TemplateContext::for_project_manifest(
             project.host(),

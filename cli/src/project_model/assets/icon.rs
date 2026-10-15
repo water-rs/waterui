@@ -182,17 +182,30 @@ impl IconSource {
 
 /// Parses an SVG icon source, resolving relative references against the
 /// file's directory and loading system fonts for `font-family` lookup.
+///
+/// The system fonts load on the first font a `<text>` element selects —
+/// the only use usvg has for them — so an icon without text never pays
+/// for enumerating every installed font.
 #[cfg(feature = "svg-icons")]
 fn load_svg(path: &Path) -> eyre::Result<IconSource> {
     let data = std::fs::read(path)
         .wrap_err_with(|| format!("Failed to read SVG app icon '{}'", path.display()))?;
-    let mut options = usvg::Options {
+    let select_font = usvg::FontResolver::default_font_selector();
+    let options = usvg::Options {
         resources_dir: std::fs::canonicalize(path)
             .ok()
             .and_then(|absolute| absolute.parent().map(Path::to_path_buf)),
+        font_resolver: usvg::FontResolver {
+            select_font: Box::new(move |font, fontdb| {
+                if fontdb.is_empty() {
+                    std::sync::Arc::make_mut(fontdb).load_system_fonts();
+                }
+                select_font(font, fontdb)
+            }),
+            select_fallback: usvg::FontResolver::default_fallback_selector(),
+        },
         ..usvg::Options::default()
     };
-    options.fontdb_mut().load_system_fonts();
     let tree = usvg::Tree::from_data(&data, &options).map_err(|error| {
         eyre::eyre!("Failed to parse SVG app icon '{}': {error}", path.display())
     })?;
