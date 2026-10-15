@@ -285,8 +285,9 @@ jobs:
   # smoke-runs the app as the runner (console) user. Linux runs the
   # Hydrolysis app under `xvfb-run` inside the fresh account; `xvfb` is test
   # harness, not a doctor-managed dependency. The experimental GTK4 backend's
-  # fresh-user leg lives in water-rs/gtk-backend's own nightly. Windows launches the whole flow as the fresh
-  # user via `Start-Process -Credential` in the runner's session. The Android
+  # fresh-user leg lives in water-rs/gtk-backend's own nightly. Windows
+  # launches the whole flow as the fresh user via `Start-Process -Credential`
+  # in the runner's session. The Android
   # leg on Ubuntu stops at packaging — `water run` needs a device — and
   # packages both the debug and the release APK (#2290).
   cli-e2e:
