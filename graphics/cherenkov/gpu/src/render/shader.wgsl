@@ -160,25 +160,23 @@ fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
         // Invariant: stops[i].offset <= t < stops[end].offset; equality moves
         // i right and preserves the last repeated interior stop.
         var i = first;
-        // A two-stop gradient already has its interval; for wider ones the
-        // strict upper stop terminates the linear tail without a bounds branch.
-        if count > 2u {
-            var end = first + count - 1u;
-            loop {
-                if end - i < GRADIENT_LINEAR_STOPS {
-                    break;
-                }
-                let mid = i + (end - i) / 2u;
-                let before = t < stops[mid].offset;
-                i = select(mid, i, before);
-                end = select(end, mid, before);
+        var end = first + count - 1u;
+        loop {
+            if end - i < GRADIENT_LINEAR_STOPS {
+                break;
             }
-            loop {
-                if t < stops[i + 1u].offset {
-                    break;
-                }
-                i += 1u;
+            let mid = i + (end - i) / 2u;
+            let before = t < stops[mid].offset;
+            i = select(mid, i, before);
+            end = select(end, mid, before);
+        }
+        // The strict upper sentinel terminates the linear tail without a
+        // bounds branch.
+        loop {
+            if t < stops[i + 1u].offset {
+                break;
             }
+            i += 1u;
         }
         let s0 = stops[i];
         let s1 = stops[i + 1u];
