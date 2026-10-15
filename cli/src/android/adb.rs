@@ -832,7 +832,9 @@ fn parse_installed_version_code(output: &str, package: &str) -> eyre::Result<Opt
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    #[cfg(unix)]
     use std::path::Path;
+    #[cfg(unix)]
     use std::time::Duration;
 
     use super::{Adb, AdbError, parse_forward_line, parse_installed_version_code};
