@@ -346,6 +346,7 @@ mod token_probe {
                 press_fade_in: Animation::linear(Duration::from_millis(105)),
                 press_fade_out: Animation::linear(Duration::from_millis(375)),
                 press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+                press_shape: Animation::linear(Duration::from_millis(15)),
                 minimum_press_duration: Duration::from_millis(225),
                 touch_delay: Duration::from_millis(150),
             }

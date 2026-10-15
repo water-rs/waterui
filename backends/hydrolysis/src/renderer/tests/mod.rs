@@ -2327,6 +2327,79 @@ fn interaction_engine_resolves_focus_state() {
     approx::assert_relative_eq!(state.focus_progress, 1.0);
 }
 
+/// `press_progress` is the physical-press morph value: it animates towards
+/// 1 while the press is held and — unlike a ripple wave's grow progress,
+/// which holds its grown shape through the fade-out — plays back towards 0
+/// on release (water-rs/waterui#1588).
+#[test]
+fn press_progress_animates_while_pressed_and_back_on_release() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
+    let owner = Rc::new(());
+    let key = InteractionKey::for_rc(&owner, 0);
+
+    renderer.begin_rebuild_frame();
+    let (resting, slot, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    approx::assert_relative_eq!(resting.press_progress, 0.0);
+
+    // The press lands between flushes; the next bind resolves it as PRESSED
+    // and the morph (15ms linear in MinimalTestTheme) is in flight.
+    let pressed_at = renderer.frame_instant();
+    renderer
+        .hit_test
+        .interaction
+        .begin_press(&slot, Point::new(20.0, 20.0), pressed_at);
+
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    assert!(state.state.contains(InteractionState::PRESSED));
+
+    renderer.set_frame_instant(pressed_at + Duration::from_millis(8));
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    assert!(
+        state.press_progress > 0.0 && state.press_progress < 1.0,
+        "the press morph must be in flight while the press is held: {}",
+        state.press_progress
+    );
+
+    // Once the animation has settled the held press reports 1.
+    let held_at = pressed_at + Duration::from_millis(60);
+    renderer.set_frame_instant(held_at);
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    approx::assert_relative_eq!(state.press_progress, 1.0);
+
+    // Release: the morph plays `press_shape` backwards from the release
+    // instant — it must not snap back to 0 in one frame.
+    renderer.hit_test.interaction.clear_all_presses(held_at);
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    assert!(!state.state.contains(InteractionState::PRESSED));
+
+    renderer.set_frame_instant(held_at + Duration::from_millis(8));
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    assert!(
+        state.press_progress > 0.0 && state.press_progress < 1.0,
+        "the morph must animate back on release instead of snapping: {}",
+        state.press_progress
+    );
+
+    renderer.set_frame_instant(held_at + Duration::from_millis(60));
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key, bounds, &env);
+    renderer.finish_rebuild_frame();
+    approx::assert_relative_eq!(state.press_progress, 0.0);
+}
+
 #[test]
 fn interactive_pointer_target_activates_on_release_inside() {
     let mut renderer = test_renderer();
@@ -2729,6 +2802,7 @@ impl WidgetTheme for MinimalTestTheme {
             press_fade_in: Animation::linear(Duration::from_millis(105)),
             press_fade_out: Animation::linear(Duration::from_millis(375)),
             press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+            press_shape: Animation::linear(Duration::from_millis(15)),
             minimum_press_duration: Duration::from_millis(225),
             touch_delay: Duration::from_millis(150),
         }
