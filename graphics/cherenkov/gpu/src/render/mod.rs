@@ -962,12 +962,13 @@ pub struct GpuRenderer {
     /// The Vulkan tile executor's mirror of the engine's pipeline
     /// layout, descriptor sets and attachments (#2191).
     ///
-    /// `None` where the device was not opened with per-pixel attachment
-    /// access, which is also what makes [`GpuRenderer::tile_limits`]
-    /// decline to plan; the two answers come from this one field, so
-    /// no frame can be planned for an executor that is not there.
+    /// The reason the device declined where it cannot run an epoch —
+    /// it lacks per-pixel attachment access or lazily allocated memory
+    /// — which is also what makes [`GpuRenderer::tile_limits`] decline
+    /// to plan; the two answers come from this one field, so no frame
+    /// can be planned for an executor that is not there.
     #[cfg(all(unix, not(target_vendor = "apple")))]
-    tile_mirror: Option<composite::vulkan::Mirror>,
+    tile_mirror: Result<composite::vulkan::Mirror, composite::vulkan::Declined>,
     /// The configured pipeline cache, opened once for the whole set.
     pipeline_cache: Option<wgpu::PipelineCache>,
     /// Registered backdrop effect shaders, by raw id — see
@@ -2483,14 +2484,17 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         // The tile executor's mirror, built once for a device that can
         // run an epoch. Its shader modules and layouts are the whole
         // cost here — every pipeline is created on first use — and a
-        // device that cannot run an epoch builds none of it (#2191).
+        // device that cannot run an epoch builds none of it (#2191,
+        // #2689). Once the device is eligible, a mirror that fails to
+        // build is an engine failure.
         #[cfg(all(unix, not(target_vendor = "apple")))]
-        let tile_mirror = match composite::vulkan::device_access(&device) {
-            composite::vulkan::Access::PerPixel => Some(
-                composite::vulkan::Mirror::new(&device, &adapter)
-                    .map_err(|e| EngineError::Backend(format!("tile composition: {e}")))?,
-            ),
-            composite::vulkan::Access::None | composite::vulkan::Access::PerDraw => None,
+        let tile_mirror = match composite::vulkan::device_eligibility(&device, &adapter) {
+            Ok(eligible) => Ok(composite::vulkan::Mirror::new(&device, &adapter, eligible)
+                .map_err(|e| EngineError::Backend(format!("tile composition: {e}")))?),
+            Err(declined) => {
+                tracing::info!(?declined, "vulkan tile composition unavailable");
+                Err(declined)
+            }
         };
         let renderer = GpuRenderer {
             instance,
@@ -7080,9 +7084,9 @@ impl GpuRenderer {
     /// - Apple's shaders come from the prebuilt metallib (#57), so a
     ///   build that delivers WGSL has no executor to plan for.
     /// - Vulkan's need the device to have been opened with per-pixel
-    ///   attachment access; [`GpuRenderer::tile_mirror`] holds the
-    ///   mirror exactly when it was, and the `Err` says the device is
-    ///   what declined.
+    ///   attachment access and to have lazily allocated memory for the
+    ///   slots; [`GpuRenderer::tile_mirror`] holds the mirror exactly
+    ///   when both hold, and otherwise the capability that is missing.
     ///
     /// The error is the reason the frame's images are attributed to, so
     /// a census distinguishes "this build has no executor" from "this
@@ -7090,8 +7094,9 @@ impl GpuRenderer {
     fn tile_limits(&self) -> Result<composite::plan::Limits, composition::Materialization> {
         // Which executor this target has, and whether it is installed.
         // The mirror is absent only because the Vulkan device declined,
-        // so that is the reason; a non-metallib Apple build and a
-        // target with no executor at all share `NoExecutor`.
+        // so the capability it lacks is the reason; a non-metallib
+        // Apple build and a target with no executor at all share
+        // `NoExecutor`.
         #[cfg(target_vendor = "apple")]
         let (slots, available) = (
             composite::metal::SLOTS,
@@ -7105,7 +7110,14 @@ impl GpuRenderer {
             self.tile_mirror
                 .as_ref()
                 .map(|_| ())
-                .ok_or(composition::Materialization::DeviceAccess),
+                .map_err(|declined| match declined {
+                    composite::vulkan::Declined::Access(_) => {
+                        composition::Materialization::DeviceAccess
+                    }
+                    composite::vulkan::Declined::TransientMemory => {
+                        composition::Materialization::TransientMemory
+                    }
+                }),
         );
         #[cfg(not(unix))]
         let (slots, available) = (0, Err(composition::Materialization::NoExecutor));
@@ -8093,6 +8105,7 @@ impl GpuRenderer {
         let tile_frame = match self
             .tile_mirror
             .as_mut()
+            .ok()
             .filter(|_| surf.composition.epochs().next().is_some())
         {
             Some(mirror) => {
@@ -9310,6 +9323,7 @@ impl GpuRenderer {
             let (peak_reserved_bytes, peak_committed_bytes) = self
                 .tile_mirror
                 .as_ref()
+                .ok()
                 .filter(|_| tile_frame)
                 .map_or((0, None), |mirror| {
                     (mirror.memoryless_bytes(), Some(mirror.committed_bytes()))
@@ -9340,6 +9354,7 @@ impl GpuRenderer {
         let tile_idle = self
             .tile_mirror
             .as_mut()
+            .ok()
             .filter(|_| tile_frame)
             .and_then(|mirror| {
                 mirror.finish_frame();
