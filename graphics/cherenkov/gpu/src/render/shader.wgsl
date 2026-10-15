@@ -142,6 +142,9 @@ fn extend_t(t: f32, mode: u32) -> f32 {
     }
 }
 
+// Initial crossover candidate; retained threshold is chosen by device A/B.
+const GRADIENT_LINEAR_STOPS: u32 = 8u;
+
 // Premultiplied working-space colour of the gradient at parameter `t`.
 fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
     var c: vec4<f32>;
@@ -154,11 +157,26 @@ fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
         c = stops[first + count - 1u].color;
     } else {
         var i = first;
-        loop {
-            if i + 1u >= first + count - 1u || t < stops[i + 1u].offset {
-                break;
+        if count > GRADIENT_LINEAR_STOPS {
+            var end = first + count - 1u;
+            loop {
+                if end - i <= 1u {
+                    break;
+                }
+                let mid = i + (end - i) / 2u;
+                if t < stops[mid].offset {
+                    end = mid;
+                } else {
+                    i = mid;
+                }
             }
-            i += 1u;
+        } else {
+            loop {
+                if i + 1u >= first + count - 1u || t < stops[i + 1u].offset {
+                    break;
+                }
+                i += 1u;
+            }
         }
         let s0 = stops[i];
         let s1 = stops[i + 1u];
