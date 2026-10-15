@@ -7,6 +7,8 @@
 
 #[path = "generate_corpus/authored.rs"]
 mod authored;
+#[path = "generate_corpus/compressed.rs"]
+mod compressed;
 #[path = "generate_corpus/text_layout.rs"]
 mod text_layout;
 
@@ -2547,6 +2549,7 @@ fn run() -> Result<(), SceneError> {
     let out = corpus::corpus_dir(&root);
     let mut ctx = TextContext::new(&corpus::fonts_dir(&root))?;
     let mut corpus = Corpus::new();
+    compressed::generate(&mut corpus);
 
     let white = srgb(0.95, 0.95, 0.95);
     let dark = srgb(0.1, 0.1, 0.12);

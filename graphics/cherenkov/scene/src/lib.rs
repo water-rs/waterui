@@ -31,8 +31,8 @@ pub use builder::{LayerBuilder, SceneBuilder};
 pub use color::{Color, ColorSpace};
 pub use draw::{
     BlendMode, BlendSpace, Draw, Extend, FillRule, Glyph, GlyphRun, GradientStop, ImageColorSpace,
-    ImageEncoding, ImagePaint, LinearGradient, MeshColorInterpolation, MeshGradient,
-    MeshGradientError, NormalizedCoord, Paint, RadialGradient, Sampling, StrokeStyle,
+    ImageCompression, ImageEncoding, ImagePaint, LinearGradient, MeshColorInterpolation,
+    MeshGradient, MeshGradientError, NormalizedCoord, Paint, RadialGradient, Sampling, StrokeStyle,
     SweepGradient,
 };
 pub use error::SceneError;

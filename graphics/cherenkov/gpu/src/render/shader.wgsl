@@ -254,9 +254,35 @@ fn sweep_t(i: u32, p: vec2<f32>) -> f32 {
     return (theta - start) / span;
 }
 
+// Conversion happens separately at each tap, BEFORE interpolation. In
+// particular neither straight alpha nor encoded premultiplied alpha may be
+// hardware-filtered and subsequently converted to the working representation.
+fn image_working_texel(encoded: vec4<f32>, flags: u32) -> vec4<f32> {
+    if (flags & 4096u) == 0u { return encoded; }
+    let a = encoded.a;
+    var rgb = encoded.rgb;
+    if (flags & 8192u) != 0u && a > 0.0 {
+        rgb /= a;
+        if (flags & 65536u) == 0u { rgb = min(rgb, vec3<f32>(1.0)); }
+    }
+    if (flags & 16384u) != 0u {
+        rgb = select(pow(max((rgb + 0.055) / 1.055, vec3<f32>(0.0)), vec3<f32>(2.4)), rgb / 12.92, rgb <= vec3<f32>(0.04045));
+    }
+    if (flags & 32768u) != 0u {
+        rgb = mat3x3<f32>(
+            vec3<f32>(0.822461969, 0.033194199, 0.017082631),
+            vec3<f32>(0.177538031, 0.966805801, 0.072397441),
+            vec3<f32>(0.0, 0.0, 0.910519929)
+        ) * rgb;
+    }
+    let linear = vec4<f32>(rgb * a, a);
+    // Match the previous upload's working-f16 rounding before interpolation.
+    return quantizeToF16(linear);
+}
+
 // Samples `tex` like the oracle's sample_image: texel centres at n + 0.5,
 // coordinate already in image-pixel space after the per-axis extend.
-fn sample_image_tex(tex: texture_2d<f32>, u: f32, v: f32, w: f32, h: f32, bilinear: bool) -> vec4<f32> {
+fn sample_image_tex(tex: texture_2d<f32>, u: f32, v: f32, w: f32, h: f32, bilinear: bool, flags: u32) -> vec4<f32> {
     let dims = vec2<f32>(w, h);
     if bilinear {
         // Clamp the sample coordinate into texel-centre space before the
@@ -265,19 +291,19 @@ fn sample_image_tex(tex: texture_2d<f32>, u: f32, v: f32, w: f32, h: f32, biline
         let lo = vec2<i32>(floor(f));
         let hi = min(lo + 1, vec2<i32>(dims) - 1);
         let t = f - floor(f);
-        let c00 = textureLoad(tex, vec2<i32>(lo.x, lo.y), 0);
-        let c10 = textureLoad(tex, vec2<i32>(hi.x, lo.y), 0);
-        let c01 = textureLoad(tex, vec2<i32>(lo.x, hi.y), 0);
-        let c11 = textureLoad(tex, vec2<i32>(hi.x, hi.y), 0);
+        let c00 = image_working_texel(textureLoad(tex, vec2<i32>(lo.x, lo.y), 0), flags);
+        let c10 = image_working_texel(textureLoad(tex, vec2<i32>(hi.x, lo.y), 0), flags);
+        let c01 = image_working_texel(textureLoad(tex, vec2<i32>(lo.x, hi.y), 0), flags);
+        let c11 = image_working_texel(textureLoad(tex, vec2<i32>(hi.x, hi.y), 0), flags);
         return mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y);
     }
     let xy = clamp(round(vec2<f32>(u, v) - 0.5), vec2<f32>(0.0), dims - 1.0);
-    return textureLoad(tex, vec2<i32>(xy), 0);
+    return image_working_texel(textureLoad(tex, vec2<i32>(xy), 0), flags);
 }
 
 // Image paint: `grad`/`grad2` carry the local→image affine [a b c d e f]
 // and the image size [w, h]; meta_.w packs extend_x | extend_y<<4 |
-// sampling<<8. The extends run in image-pixel space, like the oracle's
+// sampling<<8 and source conversion flags in bits 12–16. The extends run in image-pixel space, like the oracle's
 // eval_image_paint.
 fn paint_image(i: u32, local: vec2<f32>) -> vec4<f32> {
     let g = instances[i].grad;
@@ -296,7 +322,7 @@ fn paint_image(i: u32, local: vec2<f32>) -> vec4<f32> {
     }
     let u = extend_t(tu, ex) * g2.z;
     let v = extend_t(tv, ey) * g2.w;
-    return sample_image_tex(image_tex, u, v, g2.z, g2.w, ((meta_w >> 8u) & 1u) != 0u);
+    return sample_image_tex(image_tex, u, v, g2.z, g2.w, ((meta_w >> 8u) & 1u) != 0u, meta_w);
 }
 
 // Bilinear inverse in f32, solving for v. The f64 oracle solves for u.

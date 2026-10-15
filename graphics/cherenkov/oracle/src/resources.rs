@@ -63,6 +63,7 @@ impl Resources {
         encoding: cherenkov_scene::ImageEncoding,
     ) -> Result<&Image, SceneError> {
         use cherenkov_scene::{ImageColorSpace, ImageEncoding};
+        encoding.validate()?;
         let key = (hash, encoding);
         if !self.images.contains_key(&key) {
             let bytes = self.blob(hash)?;
@@ -72,21 +73,29 @@ impl Resources {
                 ImageEncoding::Png { color_space } => {
                     let (width, height, rgba) = crate::image::decode_png_rgba8(&bytes)
                         .map_err(|e| invalid(e.to_string()))?;
-                    let mut pixels = Vec::with_capacity(width as usize * height as usize);
-                    for px in rgba.as_chunks::<4>().0 {
-                        let a = f64::from(px[3]) / 255.0;
-                        let srgb = [
-                            srgb_decode(f64::from(px[0]) / 255.0),
-                            srgb_decode(f64::from(px[1]) / 255.0),
-                            srgb_decode(f64::from(px[2]) / 255.0),
-                        ];
-                        let lin_p3 = match color_space {
-                            ImageColorSpace::Srgb => linear_srgb_to_linear_p3(srgb),
-                            ImageColorSpace::DisplayP3 => srgb,
-                            _ => return Err(SceneError::InvalidImageEncoding(encoding)),
-                        };
-                        pixels.push([a * lin_p3[0], a * lin_p3[1], a * lin_p3[2], a]);
-                    }
+                    let pixels = rgba
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|pixel| rgba8_working(*pixel, color_space, false))
+                        .collect();
+                    (width, height, pixels)
+                }
+                ImageEncoding::BlockCompressed {
+                    format,
+                    width,
+                    height,
+                    color_space,
+                    premultiplied,
+                } => {
+                    let packed = decode_blocks(&bytes, format, width, height)?;
+                    let pixels = packed
+                        .into_iter()
+                        .map(|pixel| {
+                            let [b, g, r, a] = pixel.to_le_bytes();
+                            rgba8_working([r, g, b, a], color_space, premultiplied)
+                        })
+                        .collect();
                     (width, height, pixels)
                 }
                 ImageEncoding::Rgba16F {
@@ -177,4 +186,66 @@ impl Resources {
         }
         Ok(self.fonts.get(&hash).unwrap())
     }
+}
+
+/// Convert each decoded source texel independently; interpolation belongs
+/// to the oracle sampler and must run after this alpha/transfer conversion.
+fn rgba8_working(
+    pixel: [u8; 4],
+    color_space: cherenkov_scene::ImageColorSpace,
+    premultiplied: bool,
+) -> [f64; 4] {
+    use cherenkov_scene::ImageColorSpace;
+    let [r, g, b, a] = pixel;
+    let alpha = f64::from(a) / 255.0;
+    let mut rgb = [r, g, b].map(|c| f64::from(c) / 255.0);
+    if premultiplied && alpha > 0.0 {
+        rgb = rgb.map(|c| (c / alpha).min(1.0));
+    }
+    if matches!(
+        color_space,
+        ImageColorSpace::Srgb | ImageColorSpace::DisplayP3
+    ) {
+        rgb = rgb.map(srgb_decode);
+    }
+    if matches!(
+        color_space,
+        ImageColorSpace::Srgb | ImageColorSpace::LinearSrgb
+    ) {
+        rgb = linear_srgb_to_linear_p3(rgb);
+    }
+    [rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha, alpha]
+}
+
+fn decode_blocks(
+    bytes: &[u8],
+    format: cherenkov_scene::ImageCompression,
+    width: u32,
+    height: u32,
+) -> Result<Vec<u32>, SceneError> {
+    let invalid =
+        |e: String| SceneError::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, e));
+    let expected = format
+        .byte_len(width, height)
+        .expect("validated compressed dimensions");
+    if bytes.len() != expected {
+        return Err(invalid(format!(
+            "{format:?} blob is {} bytes, expected {expected}",
+            bytes.len()
+        )));
+    }
+    let mut packed = vec![0_u32; width as usize * height as usize];
+    match format {
+        cherenkov_scene::ImageCompression::Astc4x4 => {
+            texture2ddecoder::decode_astc(bytes, width as usize, height as usize, 4, 4, &mut packed)
+        }
+        cherenkov_scene::ImageCompression::Bc7 => {
+            texture2ddecoder::decode_bc7(bytes, width as usize, height as usize, &mut packed)
+        }
+        cherenkov_scene::ImageCompression::Etc2Rgba => {
+            texture2ddecoder::decode_etc2_rgba8(bytes, width as usize, height as usize, &mut packed)
+        }
+    }
+    .map_err(|e| invalid(e.to_string()))?;
+    Ok(packed)
 }

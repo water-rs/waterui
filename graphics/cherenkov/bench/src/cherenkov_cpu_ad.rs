@@ -763,6 +763,13 @@ fn register_image(
             };
             (width, height, rgba, space)
         }
+        ImageEncoding::BlockCompressed { format, .. } => {
+            return Err(BenchError::Unsupported {
+                engine: Cherenkov::NAME,
+                feature: Feature::ImageCompressed(format),
+                api: Some("compressed image uploads"),
+            });
+        }
         ImageEncoding::Rgba16F {
             width,
             height,

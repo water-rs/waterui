@@ -37,9 +37,12 @@ fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
     let source =
         format!("const VARIANT: u32 = {variant}u;\n{cap}{SHARED}\n{shader}\n{union}{BLEND}");
     let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
     (module, info)
 }
 
@@ -98,14 +101,20 @@ fn effect_module(name: &str, user: &str) -> (Module, naga::valid::ModuleInfo) {
     let union_text = cherenkov_gpu::backdrop_effect_text(user, true);
     let union_module =
         wgsl::parse_str(&union_text).unwrap_or_else(|e| panic!("{name} (union): {e}"));
-    Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&union_module)
-        .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
+    Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&union_module)
+    .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
     let text = cherenkov_gpu::backdrop_effect_text(user, false);
     let module = wgsl::parse_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     (module, info)
 }
 
@@ -137,7 +146,7 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
 split_test! {
 fn silhouette_shadow_emits() {
     let module = wgsl::parse_str(include_str!("../src/render/shadow.wgsl")).expect("silhouette WGSL");
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32)
         .validate(&module).expect("valid silhouette module");
     effect_emits("silhouette shadow", &module, &info);
 }
@@ -205,7 +214,7 @@ fn standalone_modules_emit() {
         ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32)
             .validate(&module)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         effect_emits(name, &module, &info);

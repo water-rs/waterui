@@ -472,6 +472,9 @@ impl Backend for Gpu {
 
 impl Uploads<Rgba8> for Gpu {}
 impl Uploads<Rgba16F> for Gpu {}
+impl Uploads<cherenkov::Astc4x4> for Gpu {}
+impl Uploads<cherenkov::Bc7> for Gpu {}
+impl Uploads<cherenkov::Etc2Rgba> for Gpu {}
 
 // HDR output (#97): `LinearDisplayP3` texture output and window
 // presentation tone-map to the display's `Display::headroom` in the
