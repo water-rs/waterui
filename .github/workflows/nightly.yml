@@ -593,6 +593,16 @@ jobs:
               | tee ../e2e-logs/preview-apple.log) \
               || fail "water preview failed"
             [ -s e2e-logs/preview-apple.png ] || fail "water preview wrote no PNG"
+
+            phase "water preview e2eapp (apple, ios)"
+            # `--platform ios` builds the same generated preview package for
+            # Mac Catalyst and execs it here — the UIKit realization, with no
+            # simulator. Its target is the one `water doctor --fix` installs.
+            (cd e2eapp && water preview main --platform ios \
+              --output ../e2e-logs/preview-apple-ios.png 2>&1 \
+              | tee ../e2e-logs/preview-apple-ios.log) \
+              || fail "water preview --platform ios failed"
+            [ -s e2e-logs/preview-apple-ios.png ] || fail "water preview --platform ios wrote no PNG"
           fi
           SCRIPT
 

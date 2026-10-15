@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use eyre::{Result, bail};
+use target_lexicon::Triple;
 
 use crate::{
     android::{
@@ -13,12 +14,14 @@ use crate::{
     },
     apple::toolchain::{AppleSdk, Xcode},
     gtk4::toolchain::Gtk4Toolchain,
+    platform::TargetPlatform,
     toolchain::{
         Host, Installation, Toolchain, ToolchainError,
         cmake::Cmake,
         doctor::{CheckStatus, doctor, ids},
         dxc::Dxc,
         msvc::MsvcBuildTools,
+        rust::SelectedToolchainTargets,
         web::web_toolchain,
         windows_arm64_llvm::WindowsArm64LlvmToolchain,
     },
@@ -138,6 +141,33 @@ pub async fn check_apple(host: &Host, sdk: AppleSdk) -> Result<()> {
     }
     if let Err(e) = sdk.check(host).await {
         bail!("{}", toolchain_check_message(&sdk.to_string(), &e));
+    }
+    Ok(())
+}
+
+/// Verify the toolchain the in-process Apple preview binary for `platform`
+/// needs on this Mac.
+///
+/// The binary is built and exec'd here whatever its target, so Xcode and
+/// the macOS SDK are required — Mac Catalyst links the iOS frameworks the
+/// macOS SDK ships under `System/iOSSupport`. A target other than the
+/// host's (`aarch64-apple-ios-macabi`) also needs its rustup target, which
+/// the doctor's Apple Rust targets item installs.
+///
+/// # Errors
+/// Returns an error describing any missing toolchain component and the `water doctor --fix` remedy.
+pub async fn check_apple_preview(host: &Host, platform: TargetPlatform) -> Result<()> {
+    check_apple(host, AppleSdk::Macos).await?;
+    let triple = platform.triple();
+    if triple == Triple::host() {
+        return Ok(());
+    }
+    let component = format!("Rust target {triple}");
+    if let Err(e) = SelectedToolchainTargets::new(vec![triple.to_string()])
+        .check(host)
+        .await
+    {
+        bail!("{}", toolchain_check_message(&component, &e));
     }
     Ok(())
 }
@@ -325,4 +355,47 @@ pub async fn check_web(host: &Host) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_apple_preview;
+    use crate::platform::TargetPlatform;
+    use crate::toolchain::testing::TestMachine;
+
+    /// A Mac with Xcode, the macOS SDK and rustup — the Rust targets each
+    /// test installs are its own.
+    fn apple_machine(installed_targets: &[&str]) -> TestMachine {
+        let machine = TestMachine::new();
+        machine.install("xcodebuild");
+        machine.install("xcode-select");
+        machine.install("xcrun");
+        machine.respond("XCRUN_SDK_PATH", "/fake/SDKs/MacOSX.sdk\n");
+        machine.install("rustup");
+        machine.respond(
+            "RUSTUP_ACTIVE_TOOLCHAIN",
+            "stable-aarch64-apple-darwin (default)",
+        );
+        machine.respond("RUSTUP_INSTALLED_TARGETS", &installed_targets.join("\n"));
+        machine
+    }
+
+    /// `water preview --platform ios` builds for Mac Catalyst: a missing
+    /// `aarch64-apple-ios-macabi` target fails before the build and names
+    /// the `water doctor --fix` remedy.
+    #[test]
+    fn catalyst_preview_requires_the_macabi_target() {
+        let machine = apple_machine(&["aarch64-apple-darwin", "aarch64-apple-ios"]);
+        let host = machine.host(Vec::<(String, String)>::new());
+        let error = smol::block_on(check_apple_preview(&host, TargetPlatform::MacCatalyst))
+            .expect_err("a missing macabi target must fail the check");
+        let message = error.to_string();
+        assert!(message.contains("aarch64-apple-ios-macabi"), "{message}");
+        assert!(message.contains("water doctor --fix"), "{message}");
+
+        let machine = apple_machine(&["aarch64-apple-darwin", "aarch64-apple-ios-macabi"]);
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(check_apple_preview(&host, TargetPlatform::MacCatalyst))
+            .expect("an installed macabi target satisfies the check");
+    }
 }

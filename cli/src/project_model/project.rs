@@ -2258,13 +2258,15 @@ impl Project {
     }
 
     /// Scaffold the managed Apple in-process preview package `water preview
-    /// --platform macos` builds and execs.
+    /// --platform macos` and `--platform ios` build and exec.
     ///
     /// The package sits next to the Apple companion in the managed build
     /// cache and shares its dependency tables through
     /// `templates::apple_preview`, so its binary resolves the same
-    /// `waterui` and `libwaterui_dylib` `water run` produces. Its lock is
-    /// seeded like the other managed crates.
+    /// `waterui` and `libwaterui_dylib` `water run` produces. One manifest
+    /// serves both preview targets, so its `[profile]` overrides answer for
+    /// both and switching platforms rewrites nothing. Its lock is seeded
+    /// like the other managed crates.
     ///
     /// # Errors
     ///
@@ -2275,7 +2277,10 @@ impl Project {
         let (ctx, framework) = self
             .apple_managed_crate_context(
                 self.apple_preview_crate_path(),
-                &[TargetPlatform::MacOS.triple()],
+                &[
+                    TargetPlatform::MacOS.triple(),
+                    TargetPlatform::MacCatalyst.triple(),
+                ],
             )
             .await?;
 

@@ -26,7 +26,8 @@ pub const DEFAULT_FRAME: &str = "375x667";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CliPreviewPlatform {
-    /// iOS Simulator.
+    /// iOS — with the Apple backend, the `UIKit` realization rendered on
+    /// this Mac through Mac Catalyst.
     Ios,
     /// macOS.
     Macos,
@@ -40,7 +41,7 @@ pub enum CliPreviewPlatform {
 
 impl CliPreviewPlatform {
     /// The desktop OS this platform renders on, if it is one. iOS and
-    /// Android previews are device targets and return `None`.
+    /// Android previews carry their own triples and return `None`.
     const fn desktop_os(self) -> Option<&'static str> {
         match self {
             Self::Macos => Some("macos"),
@@ -55,7 +56,8 @@ impl CliPreviewPlatform {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum CliPreviewBackend {
-    /// Apple preview support app.
+    /// Apple native backend — `AppKit` on macOS, `UIKit` through Mac
+    /// Catalyst on iOS.
     Apple,
     /// Hydrolysis direct renderer — the desktop binary for desktop
     /// platforms, the preview host instrumentation for Android.
@@ -68,18 +70,21 @@ pub enum CliPreviewBackend {
 /// A Hydrolysis render compiles a managed backend for a desktop
 /// [`TargetPlatform`] — or for `TargetPlatform::Android`, where the launcher
 /// cdylib registers `preview_runtime::run` on `JNI_OnLoad` inside the
-/// preview host's instrumentation; a support-app render talks the preview
-/// protocol to a [`PreviewPlatform`]. Carrying the target on the variant
-/// keeps call sites from re-deriving it from the CLI platform label.
+/// preview host's instrumentation; an Apple render builds the in-process
+/// preview binary for the [`TargetPlatform`] it carries; a support-app
+/// render talks the preview protocol to a [`PreviewPlatform`]. Carrying the
+/// target on the variant keeps call sites from re-deriving it from the CLI
+/// platform label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResolvedPreviewBackend {
     /// Hydrolysis render for the given target — a desktop binary, or the
     /// Android preview host's instrumentation for `TargetPlatform::Android`.
     Hydrolysis(TargetPlatform),
-    /// The in-process Apple preview binary `water preview --platform macos`
-    /// builds and execs — the native Apple render needs no protocol
-    /// platform, it runs on the host.
-    Apple,
+    /// The in-process Apple preview binary, built for the given target and
+    /// exec'd on this Mac: `TargetPlatform::MacOS` renders the `AppKit`
+    /// realization, `TargetPlatform::MacCatalyst` the `UIKit` one under the
+    /// iPad idiom — `water preview --platform ios`, with no simulator.
+    Apple(TargetPlatform),
     /// Preview support-app render for the given protocol platform.
     SupportApp(PreviewPlatform),
 }
@@ -227,7 +232,8 @@ fn is_rust_ident(segment: &str) -> bool {
 /// given.
 ///
 /// The result carries the target the resolved path needs: the desktop
-/// [`TargetPlatform`] Hydrolysis builds for, or the [`PreviewPlatform`] a
+/// [`TargetPlatform`] Hydrolysis builds for, the Apple target the
+/// in-process Apple preview binary builds for, or the [`PreviewPlatform`] a
 /// support app serves.
 ///
 /// # Errors
@@ -256,9 +262,11 @@ pub fn resolve_preview_backend(
 
     Ok(match (platform, backend) {
         (CliPreviewPlatform::Ios, TargetBackend::Apple) => {
-            ResolvedPreviewBackend::SupportApp(PreviewPlatform::IosSimulator)
+            ResolvedPreviewBackend::Apple(TargetPlatform::MacCatalyst)
         }
-        (CliPreviewPlatform::Macos, TargetBackend::Apple) => ResolvedPreviewBackend::Apple,
+        (CliPreviewPlatform::Macos, TargetBackend::Apple) => {
+            ResolvedPreviewBackend::Apple(TargetPlatform::MacOS)
+        }
         (CliPreviewPlatform::Macos, TargetBackend::Hydrolysis) => {
             ResolvedPreviewBackend::Hydrolysis(TargetPlatform::MacOS)
         }
@@ -326,7 +334,7 @@ pub fn resolve_hydrolysis_test_platform(
              --platform android renders through the preview host instrumentation"
         )),
         ResolvedPreviewBackend::Hydrolysis(target) => Ok(target),
-        ResolvedPreviewBackend::Apple | ResolvedPreviewBackend::SupportApp(_) => {
+        ResolvedPreviewBackend::Apple(_) | ResolvedPreviewBackend::SupportApp(_) => {
             unreachable!("a forced Hydrolysis backend resolves to Hydrolysis")
         }
     }
@@ -369,10 +377,8 @@ pub async fn check_toolchain_for_backend(
     backend: ResolvedPreviewBackend,
 ) -> Result<Option<crate::android::KotlinToolchain>> {
     match backend {
-        ResolvedPreviewBackend::Apple => {
-            // The generated preview binary is a host Apple executable —
-            // the same toolchain `water run` needs.
-            toolchain_checks::check_apple(host, AppleSdk::Macos).await?;
+        ResolvedPreviewBackend::Apple(platform) => {
+            toolchain_checks::check_apple_preview(host, platform).await?;
         }
         ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android) => {
             return toolchain_checks::check_android_run(host).await.map(Some);
@@ -532,14 +538,43 @@ mod tests {
     }
 
     #[test]
-    fn support_app_platforms_resolve_to_their_protocol_platform() {
-        assert_eq!(
-            resolve_preview_backend(&project_manifest(), CliPreviewPlatform::Ios, None).unwrap(),
-            ResolvedPreviewBackend::SupportApp(PreviewPlatform::IosSimulator)
-        );
+    fn apple_platforms_resolve_to_the_in_process_preview_binary() {
         assert_eq!(
             resolve_preview_backend(&project_manifest(), CliPreviewPlatform::Macos, None).unwrap(),
-            ResolvedPreviewBackend::Apple
+            ResolvedPreviewBackend::Apple(TargetPlatform::MacOS)
+        );
+        // `--platform ios` renders the UIKit realization on this Mac through
+        // Mac Catalyst — the default backend, an explicit `apple`, and an
+        // `[platforms.ios]` declaration all resolve there.
+        let catalyst = ResolvedPreviewBackend::Apple(TargetPlatform::MacCatalyst);
+        assert_eq!(
+            resolve_preview_backend(&project_manifest(), CliPreviewPlatform::Ios, None).unwrap(),
+            catalyst
+        );
+        assert_eq!(
+            resolve_preview_backend(
+                &project_manifest(),
+                CliPreviewPlatform::Ios,
+                Some(CliPreviewBackend::Apple)
+            )
+            .unwrap(),
+            catalyst
+        );
+        let declared = Manifest::parse(
+            "[package]\nname = 'Demo'\nbundle_identifier = 'dev.example.demo'\n[platforms.ios]\nbackend = 'apple'",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_preview_backend(&declared, CliPreviewPlatform::Ios, None).unwrap(),
+            catalyst
+        );
+        assert!(
+            resolve_preview_backend(
+                &project_manifest(),
+                CliPreviewPlatform::Ios,
+                Some(CliPreviewBackend::Hydrolysis)
+            )
+            .is_err()
         );
     }
 
@@ -721,7 +756,7 @@ mod tests {
         );
         assert!(
             resolve_hydrolysis_preview_theme(
-                ResolvedPreviewBackend::SupportApp(PreviewPlatform::Macos),
+                ResolvedPreviewBackend::Apple(TargetPlatform::MacCatalyst),
                 Some(CliHydrolysisPreviewTheme::Material3)
             )
             .is_err()

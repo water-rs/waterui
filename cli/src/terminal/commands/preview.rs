@@ -320,12 +320,13 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         bail!("`--scenario` and `--output-dir` are supported only with `--backend hydrolysis`.");
     }
 
-    if request.backend == ResolvedPreviewBackend::Apple {
+    if let ResolvedPreviewBackend::Apple(platform) = request.backend {
         let spinner = shell.spinner("Building and rendering with the Apple backend...");
         render_preview_with_apple(
             ApplePreviewRequest {
                 host: &waterui_cli::toolchain::Host::current(),
                 project_path: &project_path,
+                platform,
                 source: request.target.source(),
                 width: request.width,
                 height: request.height,
@@ -793,7 +794,7 @@ mod tests {
     #[test]
     fn rejects_theme_for_non_hydrolysis_preview() {
         let result = request::resolve_hydrolysis_preview_theme(
-            ResolvedPreviewBackend::SupportApp(waterui_cli::preview::PreviewPlatform::Macos),
+            ResolvedPreviewBackend::Apple(waterui_cli::platform::TargetPlatform::MacCatalyst),
             Some(CliHydrolysisPreviewTheme::Material3),
         );
         assert!(result.is_err());

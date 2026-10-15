@@ -41,7 +41,7 @@ pub struct PreviewArgs {
 
     /// Treat `target` as a `WaterUI` expression returning `impl View`
     /// (default `false`). Expression targets require the `hydrolysis`
-    /// backend or, on macOS, the default `apple` backend.
+    /// backend or, on macOS and iOS, the default `apple` backend.
     #[serde(default)]
     pub expr: bool,
 
@@ -218,11 +218,12 @@ impl PreviewTool {
                 ))
                 .await?;
             }
-            ResolvedPreviewBackend::Apple => {
+            ResolvedPreviewBackend::Apple(platform) => {
                 render_preview_with_apple(
                     ApplePreviewRequest {
                         host: &self.host,
                         project_path: &self.project_path,
+                        platform,
                         source: request.target.source(),
                         width: request.width,
                         height: request.height,
@@ -378,6 +379,23 @@ mod tests {
         assert_eq!(sanitize_target_name("text(\"hello\")"), "text_hello_");
         assert_eq!(sanitize_target_name("a.b-c_d"), "a.b-c_d");
         assert_eq!(sanitize_target_name("**"), "_");
+    }
+
+    /// The MCP tool follows `water preview`'s resolution: `platform: "ios"`
+    /// renders through the in-process Mac Catalyst preview binary.
+    #[test]
+    fn ios_resolves_to_the_catalyst_preview_binary() {
+        let args: PreviewArgs =
+            serde_json::from_value(serde_json::json!({"target": "home", "platform": "ios"}))
+                .expect("args parse");
+        let request = args
+            .resolve(&project_manifest(), "demo_app")
+            .expect("resolve");
+        assert_eq!(
+            request.backend,
+            ResolvedPreviewBackend::Apple(crate::platform::TargetPlatform::MacCatalyst)
+        );
+        assert_eq!(request.hydrolysis_theme, None);
     }
 
     #[test]

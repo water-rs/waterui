@@ -40,9 +40,14 @@ pub fn demo() -> impl View {
 ```bash
 water preview demo --output preview.png
 water preview demo --backend hydrolysis --theme material3 --frame 390x844
+water preview demo --platform ios
 water preview demo --platform android --device <serial-or-avd>
 water preview --expr 'vstack((text("Hi").title(), button("Go").action(|| {})))'
 ```
+
+`--platform ios` renders the UIKit realization on the Mac itself through Mac Catalyst,
+under the iPad idiom, so it shows the iOS look without booting a simulator. It builds for
+the `aarch64-apple-ios-macabi` Rust target, which `water doctor --fix` installs.
 
 CLI and MCP previews honor `[platforms.<platform>] backend = "..."` in `Water.toml`.
 An explicit backend that contradicts the declaration fails before building.
