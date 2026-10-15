@@ -335,7 +335,7 @@ pub enum RustLinkage {
 /// `-C incremental` is part of a unit's profile, the profile feeds Cargo's `-C metadata`,
 /// and `-C metadata` is mangled into every symbol name. Two builds in the same flow that
 /// disagree about incremental therefore produce runtimes whose symbols cannot resolve
-/// against each other: a preview support app built one way and a preview module built the
+/// against each other: a generated binary built one way and the shared runtime dylib built the
 /// other share a `libwaterui_dylib.dylib` filename and roughly 33,000 mismatched symbols,
 /// and the module fails to `dlopen` on a missing generic instantiation.
 ///

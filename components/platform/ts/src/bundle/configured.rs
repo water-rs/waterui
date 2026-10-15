@@ -3,11 +3,11 @@
 //!
 //! An application's bundle loader owns the bundle it ships with; a host that
 //! mounts a view outside an application — the `waterui-testing` session a
-//! `#[waterui::test]` runs in, the support app `water preview` renders in —
-//! has no loader, so the CLI hands it the bundle it just built through
+//! `#[waterui::test]` runs in — has no loader, so the CLI hands it the
+//! bundle it just built through
 //! [`BUNDLE_VARIABLE`], and the host installs the runtime that
 //! [`configured_runtime`] loads from it. Both hosts call the one function
-//! here rather than reading the variable themselves, so the path rule and the
+//! here rather than reading the variable itself, so the path rule and the
 //! failure messages are written once, beside the [`RuntimeHandle`] the
 //! runtime is installed as and the error a mount without one raises.
 //!
@@ -18,7 +18,7 @@
 //! in the process environment — cargo and nextest set it for every test
 //! binary they run, to the manifest directory of the package under test — and
 //! is an error when that variable is unset, so a host that is not a cargo
-//! test process, such as the preview support app, is given an absolute path.
+//! test process is given an absolute path.
 //!
 //! When the variable is unset there is no runtime, and nothing fails until a
 //! view reaches a [`Mount`](crate::Mount): a test that mounts no TypeScript
@@ -39,7 +39,7 @@ use crate::runtime::TsRuntime;
 /// loads.
 ///
 /// `water test` sets it to the bundle it built for the crate before running
-/// `cargo nextest`; `water preview` sets it for the preview support app.
+/// `cargo nextest`.
 pub const BUNDLE_VARIABLE: &str = "WATERUI_TS_BUNDLE";
 
 /// The variable a relative bundle path is resolved against.

@@ -12,7 +12,9 @@ use std::sync::Once;
 use waterui::ts::BUNDLE_VARIABLE;
 use waterui::tsx;
 use waterui_core::{AnyView, Environment, View};
-use waterui_preview::with_configured_runtime;
+#[path = "support/host_view.rs"]
+mod host_view;
+use host_view::with_configured_runtime;
 use waterui_testing::UiBuilder;
 
 /// Removes the variable once per process.
@@ -86,9 +88,9 @@ fn ts_a_test_session_without_the_variable_fails_at_the_mount(ui: UiBuilder) {
 }
 
 #[waterui::test(viewport = (320, 240))]
-fn ts_a_preview_render_without_the_variable_installs_nothing(ui: UiBuilder) {
+fn ts_a_host_scoped_view_without_the_variable_installs_nothing(ui: UiBuilder) {
     unset();
-    // With nothing to load, the preview is not an error: it hands the view
+    // With nothing to load, the host's view is not an error: it hands the view
     // through untouched, and the mount inside it fails exactly as a test
     // session's does.
     let view = with_configured_runtime(

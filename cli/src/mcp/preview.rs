@@ -7,7 +7,7 @@
 //! Cargo's lock).
 
 use std::borrow::Cow;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use aither_core::llm::tool::{Tool, ToolResult};
 use eyre::{Context as _, Result, bail};
@@ -17,11 +17,11 @@ use tracing::info;
 
 use crate::preview::request::{
     self, CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, DEFAULT_FRAME,
-    PreviewRequest, PreviewTarget, ResolvedPreviewBackend,
+    PreviewRequest, ResolvedPreviewBackend,
 };
 use crate::preview::{
-    ApplePreviewRequest, HydrolysisPreviewRequest, PreviewPlatform, launch_preview_session,
-    render_preview_with_apple, render_preview_with_hydrolysis,
+    ApplePreviewRequest, HydrolysisPreviewRequest, render_preview_with_apple,
+    render_preview_with_hydrolysis,
 };
 use crate::project::{Manifest, read_project_crate_name};
 
@@ -236,84 +236,10 @@ impl PreviewTool {
                 )
                 .await?;
             }
-            ResolvedPreviewBackend::SupportApp(preview_platform) => {
-                let PreviewTarget::Function {
-                    function_path,
-                    symbol,
-                } = &request.target
-                else {
-                    bail!(
-                        "Expression preview is currently supported only with the `hydrolysis` backend."
-                    );
-                };
-                Box::pin(self.render_support_app(
-                    &request,
-                    preview_platform,
-                    function_path,
-                    symbol,
-                    &output_path,
-                ))
-                .await?;
-            }
         }
 
         let bytes = smol::fs::read(&output_path).await?;
         Ok((output_path, bytes))
-    }
-
-    /// The support-app render path shared with `water preview`: launch or
-    /// reuse the preview app, build the project dylib, render the symbol, and
-    /// write the PNG. The app is detached on success so the next call reuses
-    /// it, and shut down on failure so a broken app is never reused.
-    async fn render_support_app(
-        &self,
-        request: &PreviewRequest,
-        preview_platform: PreviewPlatform,
-        function_path: &str,
-        symbol: &str,
-        output_path: &Path,
-    ) -> Result<()> {
-        let mut session = Box::pin(launch_preview_session(
-            &self.host,
-            &self.project_path,
-            preview_platform,
-            self.sccache_path.clone(),
-            None,
-        ))
-        .await?;
-
-        let result = async {
-            let dylib = session.build_dylib(&self.project_path).await?;
-            let png_data = request::render_with_symbol(
-                &mut session,
-                function_path,
-                symbol,
-                dylib.id,
-                &dylib.path,
-                request.width,
-                request.height,
-            )
-            .await?;
-            if png_data.is_empty() {
-                bail!("Preview returned empty PNG data");
-            }
-            smol::fs::write(output_path, &png_data).await?;
-            Ok(())
-        }
-        .await;
-
-        match result {
-            Ok(()) => {
-                session.detach();
-                Ok(())
-            }
-            Err(err) => match session.shutdown().await {
-                Ok(()) => Err(err),
-                Err(shutdown_error) => Err(err.wrap_err(format!(
-                    "preview support app shutdown also failed: {shutdown_error}"
-                ))),
-            },
-        }
     }
 }
 
@@ -332,6 +258,8 @@ impl Tool for PreviewTool {
 
 #[cfg(test)]
 mod tests {
+    use crate::preview::request::PreviewTarget;
+
     fn project_manifest() -> Manifest {
         Manifest::parse("[package]\nname = 'Demo'\nbundle_identifier = 'dev.example.demo'\n[platforms.linux]\nbackend = 'hydrolysis'").unwrap()
     }

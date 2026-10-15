@@ -11,10 +11,9 @@ use eyre::{Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::apple::toolchain::AppleSdk;
 use crate::platform::{TargetBackend, TargetPlatform};
-use crate::preview::protocol::{AppError, DylibId, function_path_to_symbol};
-use crate::preview::{HydrolysisPreviewTheme, PreviewPlatform, PreviewSession, PreviewSource};
+use crate::preview::protocol::function_path_to_symbol;
+use crate::preview::{HydrolysisPreviewTheme, PreviewSource};
 use crate::project::{Manifest, resolve_backend};
 use crate::toolchain_checks;
 
@@ -65,14 +64,13 @@ pub enum CliPreviewBackend {
 }
 
 /// The preview execution path `resolve_preview_backend` resolved, carrying
-/// the target each path builds for or serves.
+/// the target each path builds for.
 ///
 /// A Hydrolysis render compiles a managed backend for a desktop
 /// [`TargetPlatform`] — or for `TargetPlatform::Android`, where the launcher
 /// cdylib registers `preview_runtime::run` on `JNI_OnLoad` inside the
 /// preview host's instrumentation; an Apple render builds the in-process
-/// preview binary for the [`TargetPlatform`] it carries; a support-app
-/// render talks the preview protocol to a [`PreviewPlatform`]. Carrying the
+/// preview binary for the [`TargetPlatform`] it carries. Carrying the
 /// target on the variant keeps call sites from re-deriving it from the CLI
 /// platform label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,8 +83,6 @@ pub enum ResolvedPreviewBackend {
     /// realization, `TargetPlatform::MacCatalyst` the `UIKit` one under the
     /// iPad idiom — `water preview --platform ios`, with no simulator.
     Apple(TargetPlatform),
-    /// Preview support-app render for the given protocol platform.
-    SupportApp(PreviewPlatform),
 }
 
 /// Theme package for Hydrolysis preview.
@@ -144,7 +140,7 @@ impl PreviewTarget {
 }
 
 /// A fully resolved preview render, ready to hand to the Hydrolysis or
-/// support-app execution path.
+/// Apple execution path.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreviewRequest {
     /// Resolved target platform.
@@ -232,9 +228,8 @@ fn is_rust_ident(segment: &str) -> bool {
 /// given.
 ///
 /// The result carries the target the resolved path needs: the desktop
-/// [`TargetPlatform`] Hydrolysis builds for, the Apple target the
-/// in-process Apple preview binary builds for, or the [`PreviewPlatform`] a
-/// support app serves.
+/// [`TargetPlatform`] Hydrolysis builds for, or the Apple target the
+/// in-process Apple preview binary builds for.
 ///
 /// # Errors
 /// Returns an error for a conflicting project declaration or a backend
@@ -334,7 +329,7 @@ pub fn resolve_hydrolysis_test_platform(
              --platform android renders through the preview host instrumentation"
         )),
         ResolvedPreviewBackend::Hydrolysis(target) => Ok(target),
-        ResolvedPreviewBackend::Apple(_) | ResolvedPreviewBackend::SupportApp(_) => {
+        ResolvedPreviewBackend::Apple(_) => {
             unreachable!("a forced Hydrolysis backend resolves to Hydrolysis")
         }
     }
@@ -383,69 +378,11 @@ pub async fn check_toolchain_for_backend(
         ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android) => {
             return toolchain_checks::check_android_run(host).await.map(Some);
         }
-        ResolvedPreviewBackend::SupportApp(platform) => match platform {
-            PreviewPlatform::Ios => {
-                toolchain_checks::check_apple(host, AppleSdk::Ios).await?;
-            }
-            PreviewPlatform::IosSimulator => {
-                toolchain_checks::check_apple(host, AppleSdk::IosSimulator).await?;
-            }
-            PreviewPlatform::Macos => {
-                toolchain_checks::check_apple(host, AppleSdk::Macos).await?;
-            }
-        },
         ResolvedPreviewBackend::Hydrolysis(_) => {
             toolchain_checks::check_hydrolysis(host).await?;
         }
     }
     Ok(None)
-}
-
-/// Render `symbol` through the support-app session, translating a missing
-/// export into an actionable `#[preview]` hint.
-///
-/// # Errors
-/// Returns an error if the preview app rejects the render or the transport
-/// fails.
-pub async fn render_with_symbol(
-    session: &mut PreviewSession,
-    function_path: &str,
-    symbol: &str,
-    dylib_id: DylibId,
-    dylib_path: &std::path::Path,
-    width: f32,
-    height: f32,
-) -> Result<Vec<u8>> {
-    let prefer_local_path = session.platform == PreviewPlatform::Macos;
-    match session
-        .client
-        .render_with_dylib_file(
-            dylib_id,
-            dylib_path,
-            symbol,
-            width,
-            height,
-            prefer_local_path,
-        )
-        .await
-    {
-        Ok(data) => Ok(data),
-        Err(AppError::SymbolNotFound(_)) => {
-            bail!("{}", missing_preview_symbol_message(function_path, symbol));
-        }
-        Err(err) => {
-            bail!("Preview app error: {err}");
-        }
-    }
-}
-
-fn missing_preview_symbol_message(function_path: &str, symbol: &str) -> String {
-    format!(
-        "Preview component not found: `{function_path}`\nExpected export symbol: `{symbol}`\n\
-The preview function is likely missing `#[preview]` (or the name is wrong).\n\
-Example:\n  #[preview]\n  fn {}() -> impl View {{ ... }}",
-        function_path.rsplit("::").next().unwrap_or(function_path)
-    )
 }
 
 #[cfg(test)]
@@ -761,15 +698,5 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn formats_missing_preview_symbol_message() {
-        let symbol = "waterui_preview_app_card_preview";
-        let message = missing_preview_symbol_message("dashboard::admin::card_preview", symbol);
-        assert!(message.contains("dashboard::admin::card_preview"));
-        assert!(message.contains("waterui_preview_app_card_preview"));
-        assert!(message.contains("#[preview]"));
-        assert!(message.contains("fn card_preview()"));
     }
 }

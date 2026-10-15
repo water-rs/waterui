@@ -291,7 +291,6 @@ async fn scaffold_inspector_app(
         waterui_path,
         framework,
         false,
-        None,
         project.local_sources(),
     )
     .with_project_packages(project_packages);

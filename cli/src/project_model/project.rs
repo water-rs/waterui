@@ -817,28 +817,10 @@ impl Project {
             .unwrap_or_else(|| generated_crate_name(&self.crate_name, "apple", &self.root))
     }
 
-    /// Get configured preview wrapper crate name for preview dylib builds.
-    #[must_use]
-    pub fn preview_apple_crate_name(&self) -> CrateName {
-        generated_crate_name(&self.crate_name, "apple-preview-module", &self.root)
-    }
-
     /// Get the generated Apple in-process preview binary's crate name.
     #[must_use]
     pub fn apple_preview_crate_name(&self) -> CrateName {
         generated_crate_name(&self.crate_name, "apple-preview", &self.root)
-    }
-
-    /// Get the crate root path used to build preview dylibs.
-    #[must_use]
-    pub fn preview_dylib_crate_path(&self, workspace_root: &Path) -> PathBuf {
-        self.preview_apple_crate_path(workspace_root)
-    }
-
-    /// Get the crate name used to build preview dylibs.
-    #[must_use]
-    pub fn preview_dylib_crate_name(&self) -> CrateName {
-        self.preview_apple_crate_name()
     }
 
     /// Get configured or default GTK backend crate name.
@@ -958,24 +940,6 @@ impl Project {
     #[must_use]
     pub fn apple_preview_crate_path(&self) -> PathBuf {
         self.managed_backends_root.join("apple-preview")
-    }
-
-    /// Directory name this project's preview module occupies inside a workspace.
-    #[must_use]
-    pub fn preview_module_member_path(&self) -> PathBuf {
-        Path::new(crate::templates::PREVIEW_MODULES_DIR)
-            .join(self.preview_apple_crate_name().to_string())
-    }
-
-    /// Get the full path to the managed preview-only companion crate.
-    ///
-    /// The crate lives inside the support runtime's workspace rather than this
-    /// project's build cache, because a preview module and the runtime it is
-    /// loaded into must come out of one Cargo resolution to agree on the
-    /// `-C metadata` hash mangled into every symbol.
-    #[must_use]
-    pub fn preview_apple_crate_path(&self, workspace_root: &Path) -> PathBuf {
-        workspace_root.join(self.preview_module_member_path())
     }
 
     /// The canonical local backend sources the `waterui_path` checkout
@@ -1672,7 +1636,6 @@ impl Project {
     pub fn generated_crate_names(&self) -> Vec<String> {
         let mut names: Vec<String> = [
             self.apple_crate_name(),
-            self.preview_apple_crate_name(),
             self.apple_preview_crate_name(),
             self.gtk_backend_crate_name(),
             self.hydrolysis_backend_crate_name(),
@@ -2295,49 +2258,6 @@ impl Project {
 
         self.seed_managed_crate_lock(&self.apple_preview_crate_path(), framework)
             .await
-    }
-
-    /// Scaffold this project's preview module inside `workspace_root`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the generated crate cannot be written.
-    pub async fn scaffold_apple_preview_module(
-        &self,
-        workspace_root: &Path,
-    ) -> Result<PathBuf, crate::backend::FailToInitBackend> {
-        let manifest = self.manifest();
-        let app_name = manifest
-            .package
-            .name
-            .chars()
-            .filter(|c| c.is_alphanumeric())
-            .collect::<String>();
-        let framework = self
-            .resolved_framework()
-            .await
-            .map_err(crate::backend::FailToInitBackend::Config)?;
-        let ctx = TemplateContext::for_project_manifest(
-            self.host(),
-            manifest,
-            self.crate_name().clone(),
-            app_name,
-            framework,
-            self.local_sources(),
-        )
-        .with_backend_project_path(self.preview_apple_crate_path(workspace_root))
-        .with_project_root_path(self.root.clone());
-
-        let crate_path = self.preview_apple_crate_path(workspace_root);
-        templates::apple_preview_module::scaffold(
-            self.host(),
-            &crate_path,
-            &ctx,
-            &self.preview_apple_crate_name(),
-        )
-        .await
-        .map_err(crate::backend::FailToInitBackend::Io)?;
-        Ok(crate_path)
     }
 
     /// Create a new `WaterUI` project at the specified path.
