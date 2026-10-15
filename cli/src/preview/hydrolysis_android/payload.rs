@@ -28,9 +28,10 @@ use smol::fs;
 
 use crate::android::KotlinToolchain;
 use crate::android::platform::{AndroidAbi, ndk_llvm_tool};
-use crate::build::{BuildOptions, BuildProfile};
+use crate::build::BuildOptions;
 use crate::hydrolysis::android::{self as hydrolysis_android, HydrolysisAndroidBuild};
 use crate::hydrolysis::backend::HydrolysisBackend;
+use crate::platform::TargetBackend;
 use crate::preview::hydrolysis::HydrolysisPreviewRequest;
 use crate::project::Project;
 use crate::project_model::assets;
@@ -218,7 +219,7 @@ impl DevicePayload {
             .join("android-preview");
         let dir = root.join(PAYLOAD_DIR);
         prune_to_layout(&root, &dir).await?;
-        let mut options = BuildOptions::development(BuildProfile::Debug);
+        let mut options = BuildOptions::default_development(TargetBackend::Hydrolysis);
         if let Some(sccache_path) = request.sccache_path.clone() {
             options = options.with_sccache(sccache_path);
         }

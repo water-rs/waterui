@@ -16,9 +16,9 @@ use askama::Template;
 use eyre::{Context as _, Result, bail};
 
 use crate::apple::dynamic_runtime;
-use crate::apple::platform::apple_build_features;
+use crate::apple::platform::apple_rust_build;
 use crate::artifact_symbols::ArtifactSymbols;
-use crate::build::{BuildProgress, RustBuild, RustDynamicLibraries, RustLinkage};
+use crate::build::{BuildOptions, BuildProgress, RustDynamicLibraries};
 use crate::platform::{TargetBackend, TargetPlatform};
 use crate::preview::run::{self, absolute_output_path, expect_nonempty_output, write_run_config};
 use crate::preview::{PreviewSource, PreviewTargetTemplate};
@@ -193,32 +193,29 @@ pub async fn build_preview_with_apple(
     write_apple_preview_target(&project, &request.source).await?;
 
     let triple = request.platform.triple();
-    let browser_runtime = project
-        .browser_runtime_plan(request.platform, TargetBackend::Apple, &triple)
-        .await?;
-    let features = apple_build_features(
-        &project,
-        browser_runtime,
-        RustLinkage::SharedRuntime,
-        &triple,
-    )
-    .await?;
-    let target_dir = project.water_target_dir(RustLinkage::SharedRuntime).await?;
-    let mut rust_build =
-        RustBuild::for_project(&project, project.apple_preview_crate_path(), triple.clone())
-            .with_features(features)
-            .with_preferred_dynamic_linking()
-            .with_target_dir(target_dir);
+    // The preview binary compiles under the configuration `water run`
+    // builds the companion with — the default development options for the
+    // Apple backend, through the one function both builds derive their cargo
+    // invocation from — so the shared runtime it links is the unit `water
+    // run` already compiled, not a variant that relinks on every switch.
+    let mut options = BuildOptions::default_development(TargetBackend::Apple);
     if let Some(sccache) = request.sccache_path {
-        rust_build = rust_build.with_sccache(sccache);
+        options = options.with_sccache(sccache);
     }
     if let Some(progress) = request.progress {
-        rust_build = rust_build.with_progress(progress);
+        options = options.with_progress(progress);
     }
-    let built = rust_build
-        .build_binary(project.apple_preview_crate_name().as_str(), false)
-        .await
-        .wrap_err("Failed to build the Apple preview binary")?;
+    let built = apple_rust_build(
+        &project,
+        project.apple_preview_crate_path(),
+        request.platform,
+        triple.clone(),
+        &options,
+    )
+    .await?
+    .build_binary(project.apple_preview_crate_name().as_str(), false)
+    .await
+    .wrap_err("Failed to build the Apple preview binary")?;
 
     // The binary links `libwaterui_dylib` and `libstd` dynamically: stage
     // both beside it — the profile directory is on its rpath — then give

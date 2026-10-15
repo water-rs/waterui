@@ -4,12 +4,12 @@ use askama::Template;
 use eyre::{Context as _, Result};
 
 use crate::artifact_symbols::ArtifactSymbols;
-use crate::build::{BuildOptions, BuildProfile, BuildProgress, BuiltTarget};
+use crate::build::{BuildOptions, BuildProgress, BuiltTarget};
 use crate::hydrolysis::backend::HydrolysisBackend;
 use crate::hydrolysis::platform::{
     build_hydrolysis_with_envs_and_features, stage_hydrolysis_shared_runtime,
 };
-use crate::platform::TargetPlatform;
+use crate::platform::{TargetBackend, TargetPlatform};
 use crate::preview::run::{self, absolute_output_path, expect_nonempty_output, write_run_config};
 use crate::preview::{PreviewSource, PreviewTargetTemplate};
 use crate::project::Project;
@@ -181,7 +181,7 @@ async fn build_preview_session(
         crate::hydrolysis::backend::open_ready(request.host, request.project_path).await?;
     write_preview_bindings(&project, request.source, request.theme, automation_body).await?;
 
-    let mut build_options = BuildOptions::development(BuildProfile::Debug);
+    let mut build_options = BuildOptions::default_development(TargetBackend::Hydrolysis);
     if let Some(sccache_path) = request.sccache_path.clone() {
         build_options = build_options.with_sccache(sccache_path);
     }
