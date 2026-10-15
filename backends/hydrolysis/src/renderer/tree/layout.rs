@@ -27,9 +27,7 @@ impl RenderNode {
             Self::Offset(node) => node.child.priority(),
             Self::Retain(node) => node.child.priority(),
             Self::Env(node) => node.child.priority(),
-            Self::Dynamic(node) => node
-                .own_ghost_slot()
-                .map_or_else(|| node.child.borrow().priority(), |slot| slot.priority()),
+            Self::Dynamic(node) => node.child.borrow().priority(),
             Self::Filtered(node) => node.child.priority(),
             Self::Fill(node) => node.child.priority(),
             Self::Widget(node) => node.behavior.priority(),
@@ -54,11 +52,9 @@ impl RenderNode {
             Self::Offset(node) => node.child.is_empty(),
             Self::Retain(node) => node.child.is_empty(),
             Self::Env(node) => node.child.is_empty(),
-            // A ghost the host holds itself keeps the host a member until
-            // the ghost's slot is released (§4.5).
-            Self::Dynamic(node) => {
-                node.child.borrow().is_empty() && node.own_ghost_slot().is_none()
-            }
+            // A ghost outside a container takes no part in layout (§4.5):
+            // the host answers for its live content alone.
+            Self::Dynamic(node) => node.child.borrow().is_empty(),
             Self::Wrapper(node) => node.child.is_empty(),
             Self::Fill(node) => node.child.is_empty(),
             // A filter over a child that draws nothing draws nothing itself.
@@ -92,9 +88,7 @@ impl RenderNode {
             Self::Offset(node) => node.child.stretch(),
             Self::Retain(node) => node.child.stretch(),
             Self::Env(node) => node.child.stretch(),
-            Self::Dynamic(node) => node
-                .own_ghost_slot()
-                .map_or_else(|| node.child.borrow().stretch(), |slot| slot.stretch_axis()),
+            Self::Dynamic(node) => node.child.borrow().stretch(),
             // Scene content that is naturally a size is content-sized and claims
             // no leftover space; content that has no size of its own fills.
             Self::SceneView(node) => scene_stretch_axis(node.content.borrow().intrinsic_size()),
@@ -221,9 +215,6 @@ impl RenderNode {
             Self::Retain(node) => node.child.measure(state, env, theme, proposal),
             Self::Env(node) => node.child.measure(state, &node.env, theme, proposal),
             Self::Dynamic(node) => {
-                if let Some(slot) = node.own_ghost_slot() {
-                    return slot.measure(proposal);
-                }
                 let dimensions = node.child.borrow().measure(state, env, theme, proposal);
                 // The connected node's real per-proposal answers feed the
                 // dispatch measure of the same `Dynamic` (`measure_dynamic`).

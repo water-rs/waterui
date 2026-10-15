@@ -331,3 +331,256 @@ fn a_blur_removal_draws_the_ghost_blurred_mid_flight() {
         "after the removal the slot is released: leaving {leaving:?}, sibling {released:?}"
     );
 }
+
+/// A `width`x`height` swatch whose accessibility node carries `label`.
+fn sized_swatch(label: &'static str, color: Srgb, width: f32, height: f32) -> impl View {
+    RoundedRectangle::new(0.0)
+        .fill(color)
+        .a11y_label(label)
+        .size(width, height)
+}
+
+/// Whether every channel of `mid` lies between `from` and `to`, with a
+/// rounding allowance, and `mid` is neither end: a cross-fade, not a cut or
+/// a slide.
+fn between(mid: [u8; 4], from: [u8; 4], to: [u8; 4]) -> bool {
+    let inside = mid
+        .iter()
+        .zip(from.iter().zip(to.iter()))
+        .all(|(m, (f, t))| {
+            let (low, high) = if f <= t { (f, t) } else { (t, f) };
+            m.saturating_add(2) >= *low && *m <= high.saturating_add(2)
+        });
+    inside && mid != from && mid != to
+}
+
+/// A conditional that is not a member of a container — here the content of
+/// a padding modifier — has no container slot to hold. Its outgoing ghost
+/// paints at the frame it left at, overlapping the slot, and the slot is
+/// sized by the live content alone: the sibling moves on the event frame.
+#[test]
+fn a_ghost_outside_a_container_overlaps_the_slot_the_live_content_sizes() {
+    let first = Binding::container(true);
+    let first_for_view = first.clone();
+    let mut runtime = runtime(move || {
+        AnyView::new(vstack((
+            when(first_for_view.clone(), || {
+                transitioned("leaving", RED, PropertyTransition::opacity())
+            })
+            .otherwise(|| sized_swatch("taller", GREEN, 60.0, 80.0))
+            .padding_with(EdgeInsets::all(8.0)),
+            swatch("sibling", BLUE),
+        )))
+    });
+    let start = Instant::now();
+    let rest = frame(&mut runtime, start);
+    let leaving = bounds(&mut runtime, "leaving").expect("the first branch renders at rest");
+    let sibling = bounds(&mut runtime, "sibling").expect("the sibling renders at rest");
+    // Inside the leaving swatch, beyond the narrower incoming branch.
+    let uncovered = Rect::new(
+        leaving.x1 - 20.0,
+        leaving.y0 + 10.0,
+        leaving.x1 - 10.0,
+        leaving.y0 + 20.0,
+    );
+
+    first.set(false);
+    let _ = frame(&mut runtime, start + Duration::from_millis(16));
+    assert!(
+        bounds(&mut runtime, "leaving").is_none(),
+        "the ghost is absent from accessibility from the event frame"
+    );
+    let taller = bounds(&mut runtime, "taller").expect("the live branch renders");
+    let moved = bounds(&mut runtime, "sibling").expect("the sibling renders");
+    assert!(
+        near(taller.y0, leaving.y0) && near(moved.y0 - sibling.y0, 40.0),
+        "the slot is sized by the live content alone on the event frame: leaving \
+         {leaving:?}, taller {taller:?}, sibling {sibling:?} -> {moved:?}"
+    );
+    let mid = frame(&mut runtime, start + Duration::from_millis(516));
+    let gone = frame(&mut runtime, start + Duration::from_millis(1_100));
+    let (from, to) = (
+        centre_pixel(&rest, uncovered),
+        centre_pixel(&gone, uncovered),
+    );
+    let ghost = centre_pixel(&mid, uncovered);
+    assert!(
+        between(ghost, from, to),
+        "halfway through the removal the ghost fades at the frame it left at: rest \
+         {from:?}, mid {ghost:?}, after {to:?}"
+    );
+}
+
+/// Drives `runtime` forward from `at` on a synthetic clock until it settles.
+fn settle(runtime: &mut HeadlessRuntime, at: &mut Instant) {
+    for _ in 0..400 {
+        *at += Duration::from_millis(16);
+        let _ = runtime.pump_at(true, *at);
+        if runtime.is_settled() && !runtime.has_pending_semantic_update() {
+            return;
+        }
+    }
+    panic!("the runtime must settle within 400 frames");
+}
+
+/// Whether a navigation transition driven by a page root's own declaration
+/// is still running at `now`.
+fn page_transition_active(runtime: &HeadlessRuntime, now: Instant) -> bool {
+    runtime.renderer().navigation.slots.values().any(|slot| {
+        slot.transition
+            .as_ref()
+            .is_some_and(|transition| transition.page.is_some() && transition.is_active(now))
+    })
+}
+
+/// A navigation page root's declared transition is its insertion on push
+/// and its removal on pop, in place of the stack's slide: the stationary
+/// root does not move, and the moving page cross-fades over it on its own
+/// one-second clock. The arriving page is in the accessibility tree on the
+/// push frame; the departing one leaves it on the pop frame.
+#[test]
+fn a_navigation_page_root_transition_replaces_the_stack_transition() {
+    use waterui::navigation::{NavigationPath, NavigationStack, NavigationView};
+
+    let path = NavigationPath::<i64>::new();
+    let builder_path = path.clone();
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        AnyViewBuilder::<AnyView>::new(move || {
+            AnyView::new(
+                NavigationStack::with_path(
+                    builder_path.clone(),
+                    NavigationView::new("Root", sized_swatch("root", BLUE, 300.0, 200.0)),
+                )
+                .destination(|_: i64| {
+                    NavigationView::new(
+                        "Page",
+                        transitioned("page", RED, PropertyTransition::opacity()),
+                    )
+                }),
+            )
+        }),
+        400,
+        600,
+        MinimalTestTheme::default(),
+    );
+    let mut at = Instant::now();
+    settle(&mut runtime, &mut at);
+    let root_rest = frame(&mut runtime, at);
+    let root = bounds(&mut runtime, "root").expect("the root page renders");
+    // Inside the root swatch, near its leading edge.
+    let probe = Rect::new(root.x0 + 4.0, root.y0 + 4.0, root.x0 + 8.0, root.y0 + 8.0);
+
+    path.push(1);
+    let pushed_at = at + Duration::from_millis(16);
+    let _ = frame(&mut runtime, pushed_at);
+    assert!(
+        bounds(&mut runtime, "page").is_some(),
+        "the arriving page is in the accessibility tree on the push frame"
+    );
+    let mid_push = frame(&mut runtime, pushed_at + Duration::from_millis(500));
+    assert!(
+        page_transition_active(&runtime, pushed_at + Duration::from_millis(900)),
+        "the push runs the page's own one-second clock, not the stack's"
+    );
+    let mut settled_at = pushed_at + Duration::from_millis(1_100);
+    let page_rest = frame(&mut runtime, settled_at);
+    settle(&mut runtime, &mut settled_at);
+    let (from, to) = (
+        centre_pixel(&root_rest, probe),
+        centre_pixel(&page_rest, probe),
+    );
+    assert!(from != to, "the pushed page covers the probe once settled");
+    let pixel = centre_pixel(&mid_push, probe);
+    assert!(
+        between(pixel, from, to),
+        "mid-push the page fades in over a root that stays put: root {from:?}, mid \
+         {pixel:?}, page {to:?}"
+    );
+
+    let _ = path.pop();
+    let popped_at = settled_at + Duration::from_millis(16);
+    let _ = frame(&mut runtime, popped_at);
+    let mid_pop = frame(&mut runtime, popped_at + Duration::from_millis(500));
+    assert!(
+        bounds(&mut runtime, "page").is_none() && bounds(&mut runtime, "root").is_some(),
+        "mid-pop the departing page is out of the accessibility tree and the root is in it"
+    );
+    assert!(
+        page_transition_active(&runtime, popped_at + Duration::from_millis(900)),
+        "the pop runs the page's own removal clock"
+    );
+    let pixel = centre_pixel(&mid_pop, probe);
+    assert!(
+        between(pixel, from, to),
+        "mid-pop the page fades out over the stationary root: root {from:?}, mid \
+         {pixel:?}, page {to:?}"
+    );
+    let mut done = popped_at + Duration::from_millis(1_100);
+    let _ = frame(&mut runtime, done);
+    settle(&mut runtime, &mut done);
+    let back = frame(&mut runtime, done + Duration::from_millis(16));
+    assert_eq!(
+        centre_pixel(&back, probe),
+        from,
+        "after the pop the root is presented as it was"
+    );
+}
+
+/// A `List` row owns the transition declared on its content: a removed row
+/// leaves the accessibility tree at once, its ghost fades in the slot it
+/// held while the next row stays put, and the slot is released when the
+/// clock completes.
+#[test]
+fn a_list_row_removal_holds_its_slot_while_it_fades() {
+    use nami::collection::List as Membership;
+    use waterui::component::list::{List, ListItem};
+    use waterui_core::id::SelfId;
+
+    let rows: Membership<SelfId<u64>> =
+        Membership::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
+    let rows_for_view = rows.clone();
+    let mut runtime = runtime(move || {
+        AnyView::new(List::for_each(rows_for_view.clone(), |row| {
+            let (label, color) = match row.into_inner() {
+                1 => ("row 1", RED),
+                2 => ("row 2", GREEN),
+                _ => ("row 3", BLUE),
+            };
+            ListItem::new(transitioned(label, color, PropertyTransition::opacity()))
+        }))
+    });
+    let mut at = Instant::now();
+    settle(&mut runtime, &mut at);
+    let rest = frame(&mut runtime, at);
+    let leaving = bounds(&mut runtime, "row 1").expect("the first row renders at rest");
+    let next = bounds(&mut runtime, "row 2").expect("the second row renders at rest");
+
+    let _ = rows.remove(0);
+    let removed_at = at + Duration::from_millis(16);
+    let _ = frame(&mut runtime, removed_at);
+    assert!(
+        bounds(&mut runtime, "row 1").is_none(),
+        "the removed row leaves the accessibility tree on the event frame"
+    );
+    let mid = frame(&mut runtime, removed_at + Duration::from_millis(500));
+    let held = bounds(&mut runtime, "row 2").expect("the next row renders mid-removal");
+    assert!(
+        near(held.y0, next.y0),
+        "the ghost holds its row slot, so the next row stays put: rest {next:?}, mid {held:?}"
+    );
+    let gone = frame(&mut runtime, removed_at + Duration::from_millis(1_100));
+    let mut after = removed_at + Duration::from_millis(1_116);
+    settle(&mut runtime, &mut after);
+    let released = bounds(&mut runtime, "row 2").expect("the next row renders after");
+    assert!(
+        near(released.y0, leaving.y0),
+        "once the removal completes the next row moves up into the released slot: \
+         leaving {leaving:?}, next {released:?}"
+    );
+    let ghost = centre_pixel(&mid, leaving);
+    assert!(
+        ghost != centre_pixel(&rest, leaving) && ghost != centre_pixel(&gone, leaving),
+        "halfway through the removal the row's ghost is fading"
+    );
+}

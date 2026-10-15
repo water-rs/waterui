@@ -1346,11 +1346,16 @@ impl RenderNode {
                 }
             })
             .collect();
-        // A conditional among the children lays its removal ghosts out as
-        // members of this container (layout-spec.md §4.5).
-        for child in &children {
-            if let Some(host) = super::transition::member_host(child) {
-                host.join_container();
+        // A conditional among the children of a container whose children are
+        // its own members lays its removal ghosts out as members too
+        // (layout-spec.md §4.5). A modifier container's child is the content
+        // it modifies, not a member: a conditional there paints its ghosts
+        // over its own slot, outside layout.
+        if claim_slot.is_none() {
+            for child in &children {
+                if let Some(host) = super::transition::member_host(child) {
+                    host.join_container();
+                }
             }
         }
         Self::Container(Box::new(ContainerNode {
@@ -1411,12 +1416,13 @@ fn is_background_fill_leaf(node: &RenderNode) -> bool {
 
 /// The child of a modifier container that is the content it modifies — the
 /// slot a structural transition claim continues through: padding, frame and
-/// aspect ratio wrap one child, a background's content is its second child
-/// and an overlay's base its first. Every other layout's children are its own
-/// members, so a claim ends there.
+/// aspect ratio and an absolute position wrap one child, a background's
+/// content is its second child and an overlay's base its first. Every other
+/// layout's children are its own members, so a claim ends there.
 fn modifier_content_slot(layout: &dyn Any) -> Option<usize> {
     if layout.is::<waterui_layout::padding::PaddingLayout>()
         || layout.is::<waterui_layout::frame::FrameLayout>()
+        || layout.is::<waterui_layout::absolute::PositionedLayout>()
         || layout.is::<waterui_layout::aspect_ratio::AspectRatioLayout>()
         || layout.is::<waterui_layout::overlay::OverlayLayout>()
     {

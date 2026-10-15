@@ -677,23 +677,24 @@ impl CollectionNode {
     }
 }
 
-/// The structural transitions of a [`LazyStackNode`]'s rows (layout-spec.md
-/// §4.5). A lazy stack realizes only its visible rows, so it owns transitions
-/// for exactly those: a row's declaration is claimed when the row is built,
+/// The structural transitions of a virtualized row container's rows — a
+/// [`LazyStackNode`] or a list (layout-spec.md §4.5). Such a container
+/// realizes only its visible rows, so it owns transitions for exactly those: a row's declaration is claimed when the row is built,
 /// an id the last membership change inserted starts its insertion when it is
 /// first built in that frame, and a removed row that was on screen becomes a
 /// ghost holding its main-axis slot in the stack's flow until its removal
 /// completes. A removed row that was never realized has no pixels to animate
 /// and leaves at once.
-pub(super) struct LazyTransitions {
-    /// Set by the membership watcher; consumed by `patch_visible`.
-    pub(super) membership: Rc<Cell<bool>>,
-    /// The row set the stack showed before the last membership change.
-    previous: RefCell<AnyViewsSnapshot<AnyView>>,
-    /// The row set the last membership change replaced, kept until the next
-    /// patch: a row built in that frame whose id it lacks was inserted. Its
-    /// id set is derived only when such a row declares a transition.
-    replaced_set: RefCell<Option<ReplacedSet>>,
+pub struct LazyTransitions<T: View = AnyView> {
+    /// Set by the membership watcher; consumed when the container applies
+    /// the change.
+    pub(crate) membership: Rc<Cell<bool>>,
+    /// The row set the container showed before the last membership change.
+    previous: RefCell<AnyViewsSnapshot<T>>,
+    /// The row set the last membership change replaced, for the frame that
+    /// applied it: a row built in that frame whose id it lacks was inserted.
+    /// Its id set is derived only when such a row declares a transition.
+    replaced_set: RefCell<Option<ReplacedSet<T>>>,
     /// The transition state of every realized row, by id.
     rows: RefCell<std::collections::HashMap<CollectionItemId, LazyRow>>,
     /// Removed rows still animating out, ordered by the row position they
@@ -702,59 +703,75 @@ pub(super) struct LazyTransitions {
     /// Reduce Motion resolved once at build from the item environment.
     reduce_motion: bool,
     /// Logical-edge resolution for sampled transition properties.
-    direction: waterui_core::layout::LayoutDirection,
+    pub(crate) direction: waterui_core::layout::LayoutDirection,
 }
 
-/// The row set a membership change replaced and, once a transitioned row
-/// asked, the ids it held.
-struct ReplacedSet {
-    snapshot: AnyViewsSnapshot<AnyView>,
+/// The row set a membership change replaced, the frame that applied it and,
+/// once a transitioned row asked, the ids it held.
+struct ReplacedSet<T: View> {
+    snapshot: AnyViewsSnapshot<T>,
+    at: Instant,
     ids: Option<std::collections::HashSet<CollectionItemId>>,
 }
 
-/// The transition state of one realized lazy-stack row.
-struct LazyRow {
+/// Where a realized row was last placed: the slot it holds in the
+/// container's flow, and its content's frame inside that slot. The content
+/// is what the row's transition animates; the slot is what its removal
+/// ghost keeps.
+#[derive(Clone, Copy)]
+pub struct RowPlacement {
+    /// The row's slot, container-local.
+    pub slot: kurbo::Rect,
+    /// The content's frame, relative to the slot's origin.
+    pub content: kurbo::Rect,
+    /// The proposal the content was placed at.
+    pub proposal: ProposalSize,
+}
+
+/// The transition state of one realized row.
+pub struct LazyRow {
     /// The declaration claimed from the built row.
     spec: Option<TransitionSpec>,
     /// The row's insertion while it animates in.
-    insertion: Option<TransitionRun>,
-    /// The frame (stack-local) and proposal the row was last placed at — the
-    /// fixed slot its removal ghost keeps.
-    placed: Option<(kurbo::Rect, ProposalSize)>,
+    pub insertion: Option<TransitionRun>,
+    /// Where the row was last placed — the fixed slot its removal ghost
+    /// keeps.
+    placed: Option<RowPlacement>,
 }
 
 /// A removed row still animating out: its retained sub-view, frozen at the
-/// size it was last placed at, sitting before row `position` of the current
-/// row set.
-struct LazyGhost {
+/// geometry it was last placed at, sitting before row `position` of the
+/// current row set.
+pub struct LazyGhost {
     /// The live id the ghost displays after; `None` places it first.
     anchor: Option<CollectionItemId>,
     /// The row position (current row set) the ghost sits before.
     position: usize,
-    ghost: Ghost<RetainedSubview>,
-    proposal: ProposalSize,
-    runtime: TransitionRuntime,
+    pub ghost: Ghost<RetainedSubview>,
+    /// The frozen slot and content frame.
+    pub placement: RowPlacement,
+    pub runtime: TransitionRuntime,
 }
 
 impl LazyGhost {
     /// The frozen size of the ghost's slot.
-    fn size(&self) -> Size {
-        self.ghost.slot.measure(self.proposal).size
+    pub const fn size(&self) -> Size {
+        kurbo_size(self.placement.slot)
     }
 }
 
-/// One position of a lazy stack's display order: a row of the row set, or a
-/// removal ghost.
+/// One position of a virtualized container's display order: a row of the
+/// row set, or a removal ghost.
 #[derive(Clone, Copy)]
-enum LazySlot {
+pub enum LazySlot {
     Row(usize),
     Ghost(usize),
 }
 
-impl LazyTransitions {
-    pub(super) fn new(
+impl<T: View> LazyTransitions<T> {
+    pub(crate) fn new(
         env: &Environment,
-        snapshot: AnyViewsSnapshot<AnyView>,
+        snapshot: AnyViewsSnapshot<T>,
         membership: Rc<Cell<bool>>,
     ) -> Self {
         Self {
@@ -771,12 +788,12 @@ impl LazyTransitions {
     }
 
     /// Positions in display order: the rows plus the ghosts.
-    fn display_len(&self, rows: usize) -> usize {
+    pub(crate) fn display_len(&self, rows: usize) -> usize {
         rows + self.ghosts.borrow().len()
     }
 
     /// The display position of row `row`.
-    fn row_display(&self, row: usize) -> usize {
+    pub(crate) fn row_display(&self, row: usize) -> usize {
         row + self
             .ghosts
             .borrow()
@@ -787,7 +804,7 @@ impl LazyTransitions {
 
     /// What sits at display position `display`. Ghost `g` (ordered by
     /// position) sits at `position + g`.
-    fn slot_at(&self, display: usize) -> LazySlot {
+    pub(crate) fn slot_at(&self, display: usize) -> LazySlot {
         let mut before = 0;
         for (index, ghost) in self.ghosts.borrow().iter().enumerate() {
             let at = ghost.position + index;
@@ -803,22 +820,52 @@ impl LazyTransitions {
     }
 
     /// Resets `index` over the display order and seeds every ghost's frozen
-    /// main-axis extent.
-    fn reset_extents(
+    /// main-axis extent, read from its slot by `main`.
+    pub(crate) fn reset_extents(
         &self,
         index: &mut VirtualExtentIndex,
-        axis: &LazyStackAxisConfig,
         rows: usize,
         estimate: f64,
         spacing: f64,
+        main: impl Fn(Size) -> f64,
     ) {
         index.reset(self.display_len(rows), estimate, spacing);
         for (position, ghost) in self.ghosts.borrow().iter().enumerate() {
-            index.set_measured(
-                ghost.position + position,
-                lazy_main_extent(axis, ghost.size()),
-            );
+            index.set_measured(ghost.position + position, main(ghost.size()));
         }
+    }
+
+    /// The row display position `display` shows — or, for a removal ghost,
+    /// the row the ghost sits before.
+    pub(crate) fn row_at(&self, display: usize) -> usize {
+        match self.slot_at(display) {
+            LazySlot::Row(row) => row,
+            LazySlot::Ghost(ghost) => self.ghosts.borrow()[ghost].position,
+        }
+    }
+
+    /// The removal ghost at `index`, in display order.
+    pub(crate) fn ghost(&self, index: usize) -> std::cell::RefMut<'_, LazyGhost> {
+        std::cell::RefMut::map(self.ghosts.borrow_mut(), |ghosts| &mut ghosts[index])
+    }
+
+    /// The tracked transition state of realized row `id`.
+    pub(crate) fn row(&self, id: CollectionItemId) -> std::cell::RefMut<'_, LazyRow> {
+        std::cell::RefMut::map(self.rows.borrow_mut(), |rows| {
+            rows.get_mut(&id)
+                .expect("hydrolysis virtualized row: a placed row is tracked")
+        })
+    }
+
+    /// Records where realized row `id` was placed this frame.
+    pub(crate) fn place(&self, id: CollectionItemId, placement: RowPlacement) {
+        self.row(id).placed = Some(placement);
+    }
+
+    /// Drops the transition state of every row `keep` rejects — the rows a
+    /// frame evicted.
+    pub(crate) fn retain_rows(&self, keep: impl Fn(&CollectionItemId) -> bool) {
+        self.rows.borrow_mut().retain(|id, _| keep(id));
     }
 
     /// The summed main-axis extents of the ghosts and their largest
@@ -842,7 +889,12 @@ impl LazyTransitions {
     /// starts its insertion. A row first realized at flush starts after the
     /// frame's patch walk advanced the clocks, so a started insertion
     /// requests the refresh that drives its next frame.
-    fn track(&self, id: CollectionItemId, subview: &RetainedSubview, renderer: &SemanticCore) {
+    pub(crate) fn track(
+        &self,
+        id: CollectionItemId,
+        subview: &RetainedSubview,
+        renderer: &SemanticCore,
+    ) {
         if self.rows.borrow().contains_key(&id) {
             return;
         }
@@ -852,7 +904,7 @@ impl LazyTransitions {
         let spec = claim_transition(node);
         let insertion = spec
             .as_ref()
-            .filter(|_| self.was_inserted(id))
+            .filter(|_| self.was_inserted(id, renderer.frame_instant))
             .map(|spec| TransitionRun::insertion(spec, self.reduce_motion, renderer.frame_instant));
         if insertion.is_some() {
             renderer.context_mark_layout();
@@ -867,10 +919,11 @@ impl LazyTransitions {
         );
     }
 
-    /// Whether the membership change applied this frame inserted `id`.
-    fn was_inserted(&self, id: CollectionItemId) -> bool {
+    /// Whether the membership change applied in the frame at `now` inserted
+    /// `id`.
+    fn was_inserted(&self, id: CollectionItemId, now: Instant) -> bool {
         let mut replaced = self.replaced_set.borrow_mut();
-        let Some(replaced) = replaced.as_mut() else {
+        let Some(replaced) = replaced.as_mut().filter(|replaced| replaced.at == now) else {
             return false;
         };
         let snapshot = &replaced.snapshot;
@@ -889,22 +942,23 @@ impl LazyTransitions {
     /// ghost under its declaration, holding the slot it was last placed at,
     /// and every ghost re-anchors in the new row set. Returns whether a ghost
     /// was added.
-    fn apply_membership(
+    pub(crate) fn apply_membership(
         &self,
-        previous: AnyViewsSnapshot<AnyView>,
-        current: &AnyViewsSnapshot<AnyView>,
+        current: &AnyViewsSnapshot<T>,
         cache: &mut VisibleSubviewCache<CollectionItemId>,
         now: Instant,
     ) -> bool {
+        let previous = self.previous.replace(current.clone());
         let transitioned = self.rows.borrow().values().any(|row| row.spec.is_some());
         if !transitioned && self.ghosts.borrow().is_empty() {
             *self.replaced_set.borrow_mut() = Some(ReplacedSet {
                 snapshot: previous,
+                at: now,
                 ids: None,
             });
             return false;
         }
-        let index_of = |snapshot: &AnyViewsSnapshot<AnyView>| {
+        let index_of = |snapshot: &AnyViewsSnapshot<T>| {
             snapshot
                 .range()
                 .filter_map(|index| snapshot.get_id(index).map(|id| (id, index)))
@@ -945,22 +999,20 @@ impl LazyTransitions {
                 .remove(&id)
                 .expect("hydrolysis LazyStack: a removed row is tracked");
             let subview = cache.take(&id);
-            let (Some(spec), Some((frame, proposal)), Some(subview)) =
-                (row.spec, row.placed, subview)
+            let (Some(spec), Some(placement), Some(subview)) = (row.spec, row.placed, subview)
             else {
                 continue;
             };
-            let size = kurbo_size(frame);
             ghosts.push(LazyGhost {
                 anchor: anchor_before(old.get(&id).and_then(|index| index.checked_sub(1))),
                 position: 0,
                 ghost: start_ghost(
                     subview,
-                    GhostSlot::new(ViewDimensions::new(size), 0),
+                    GhostSlot::new(ViewDimensions::new(kurbo_size(placement.content)), 0),
                     &spec,
                     self.reduce_motion,
                 ),
-                proposal,
+                placement,
                 runtime: TransitionRuntime::new(now),
             });
             added = true;
@@ -971,6 +1023,7 @@ impl LazyTransitions {
         ghosts.sort_by_key(|ghost| ghost.position);
         *self.replaced_set.borrow_mut() = Some(ReplacedSet {
             snapshot: previous,
+            at: now,
             ids: Some(old.into_keys().collect()),
         });
         added
@@ -978,7 +1031,7 @@ impl LazyTransitions {
 
     /// Advances every insertion and ghost on its own clock; a finished ghost
     /// releases its slot. Returns `(dropped, animating)`.
-    fn advance(&self, now: Instant) -> (bool, bool) {
+    pub(crate) fn advance(&self, now: Instant) -> (bool, bool) {
         let mut animating = false;
         for row in self.rows.borrow_mut().values_mut() {
             if let Some(insertion) = &mut row.insertion {
@@ -1040,23 +1093,18 @@ impl LazyStackNode {
     /// Every row and ghost clock then advances.
     pub(super) fn patch_visible(&self, renderer: &mut SemanticCore) -> bool {
         let transitions = &self.transitions;
-        transitions.replaced_set.borrow_mut().take();
         let replaced = core::mem::take(&mut *self.replaced_ids.borrow_mut());
         if !replaced.is_empty() {
             // A same-id content change drops exactly those rows' retained
             // sub-views; they re-materialize from the collection's current
             // data when the visible window next fills them.
             self.item_cache.borrow_mut().invalidate_ids(&replaced);
-            transitions
-                .rows
-                .borrow_mut()
-                .retain(|id, _| !replaced.contains(id));
+            transitions.retain_rows(|id| !replaced.contains(id));
             renderer.state.counters.structural_patches += 1;
         }
         let snapshot = self.snapshot.borrow().clone();
         let ghosted = transitions.membership.replace(false)
             && transitions.apply_membership(
-                transitions.previous.replace(snapshot.clone()),
                 &snapshot,
                 &mut self.item_cache.borrow_mut(),
                 renderer.frame_instant,
@@ -1075,10 +1123,10 @@ impl LazyStackNode {
                 {
                     transitions.reset_extents(
                         &mut extent_index,
-                        &self.axis,
                         count,
                         estimate,
                         spacing,
+                        |size| lazy_main_extent(&self.axis, size),
                     );
                 }
             }
@@ -1262,10 +1310,10 @@ impl LazyStackNode {
         {
             self.transitions.reset_extents(
                 &mut self.extent_index.borrow_mut(),
-                &self.axis,
                 count,
                 estimate,
                 spacing,
+                |size| lazy_main_extent(&self.axis, size),
             );
         }
     }
@@ -1477,10 +1525,7 @@ impl LazyStackNode {
     fn end_frame(&self) {
         let mut cache = self.item_cache.borrow_mut();
         cache.end_frame();
-        self.transitions
-            .rows
-            .borrow_mut()
-            .retain(|id, _| cache.get(id).is_some());
+        self.transitions.retain_rows(|id| cache.get(id).is_some());
     }
 
     /// Patches, measures and places row `index` at `cursor`, under its
@@ -1524,14 +1569,18 @@ impl LazyStackNode {
         // through `SafeAreaLayout::hosted_frame`.
         let item_area =
             stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds, child_rect)));
-        let mut rows = self.transitions.rows.borrow_mut();
-        let row = rows
-            .get_mut(&id)
-            .expect("hydrolysis LazyStack: a placed row is tracked");
-        row.placed = Some((child_rect, proposal));
+        let slot = kurbo_size(child_rect);
+        self.transitions.place(
+            id,
+            RowPlacement {
+                slot: child_rect,
+                content: kurbo::Rect::from_origin_size(kurbo::Point::ZERO, child_rect.size()),
+                proposal,
+            },
+        );
+        let row = self.transitions.row(id);
         let mut cache = self.item_cache.borrow_mut();
         let subview = cache.entry(id, materialize);
-        let slot = kurbo_size(child_rect);
         if let Some(insertion) = &row.insertion {
             let delta = kurbo::Affine::translate((child_rect.x0, child_rect.y0));
             let child_ctx = ctx.child(
@@ -1574,14 +1623,15 @@ impl LazyStackNode {
         cursor: f64,
         stack_area: Option<&safe_area::SafeAreaLayout>,
     ) -> f64 {
-        let mut ghosts = self.transitions.ghosts.borrow_mut();
+        let mut ghost = self.transitions.ghost(index);
+        let size = ghost.size();
         let LazyGhost {
             ghost,
-            proposal,
+            placement,
             runtime,
             ..
-        } = &mut ghosts[index];
-        let size = ghost.slot.measure(*proposal).size;
+        } = &mut *ghost;
+        let proposal = &placement.proposal;
         let rect = place_lazy_stack_item(&self.axis, StretchAxis::None, size, ctx.bounds, cursor);
         let area = stack_area.map(|area| area.with_frame(area.hosted_frame(ctx.bounds, rect)));
         let delta = kurbo::Affine::translate((rect.x0, rect.y0));

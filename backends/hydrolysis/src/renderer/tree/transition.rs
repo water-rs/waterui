@@ -59,7 +59,8 @@ impl TransitionDeclaration {
             "Hydrolysis: `.transition(...)` reached a view with no structural transition owner. \
              A transition declares how a view is inserted and removed, so it must sit on the \
              root of the content a structural site swaps — a `when`/`watch` branch or the \
-             conditional itself, a `ForEach`/`List` row, or an anchored-overlay body — reachable \
+             conditional itself, a `ForEach`/`List` row, a navigation page root, or an \
+             anchored-overlay body — reachable \
              through modifiers only, not beneath a stack, scroll or widget (layout-spec.md §4.5)"
         );
     }
@@ -96,6 +97,27 @@ pub fn claim_transition(node: &RenderNode) -> Option<TransitionSpec> {
             && let WrapperEffect::Transition(declaration) = &wrapper.effect
         {
             return Some(declaration.take_ownership());
+        }
+        node = claim_child(node)?;
+    }
+}
+
+/// Claims the transition declared on a navigation page's root: the page is
+/// a navigation view whose content root chain the owning stack claims
+/// through ([`WidgetBehavior::claim_page_transition`]). Only the stack calls
+/// this — a navigation view anywhere else is not a structural instance, so a
+/// declaration on its content stays unowned.
+pub fn claim_page_transition(page: &RenderNode) -> Option<TransitionSpec> {
+    let mut node = page;
+    loop {
+        match node {
+            RenderNode::Wrapper(wrapper) => {
+                if let WrapperEffect::Transition(declaration) = &wrapper.effect {
+                    return Some(declaration.take_ownership());
+                }
+            }
+            RenderNode::Widget(widget) => return widget.behavior.claim_page_transition(),
+            _ => {}
         }
         node = claim_child(node)?;
     }
@@ -341,19 +363,7 @@ pub fn flush_transitioned(
 ) {
     let properties = paint.properties;
     let bounds = child_ctx.bounds;
-    let centre = (bounds.width() / 2.0, bounds.height() / 2.0);
-    // Scale and rotation resolve about the slot's centre, then translation —
-    // matching `TransitionProperties`' documented compose order.
-    let local = kurbo::Affine::translate((
-        f64::from(properties.translation[0]),
-        f64::from(properties.translation[1]),
-    )) * kurbo::Affine::translate(centre)
-        * kurbo::Affine::rotate(f64::from(properties.rotation))
-        * kurbo::Affine::scale_non_uniform(
-            f64::from(properties.scale[0]),
-            f64::from(properties.scale[1]),
-        )
-        * kurbo::Affine::translate((-centre.0, -centre.1));
+    let local = transition_transform(&properties, bounds);
     let layer = delta * local;
     let scope = crate::renderer::ScopeDelta {
         transform: layer,
@@ -377,6 +387,44 @@ pub fn flush_transitioned(
         scope,
         paint.hit,
     );
+    record_blurred(renderer, child_ctx, paint, flush);
+    renderer.close_scope();
+}
+
+/// The sampled translation, scale and rotation of a slot with `bounds`:
+/// scale and rotation resolve about the slot's centre, then translation —
+/// `TransitionProperties`' documented compose order.
+pub fn transition_transform(
+    properties: &TransitionProperties,
+    bounds: kurbo::Rect,
+) -> kurbo::Affine {
+    let centre = (
+        bounds.x0 + bounds.width() / 2.0,
+        bounds.y0 + bounds.height() / 2.0,
+    );
+    kurbo::Affine::translate((
+        f64::from(properties.translation[0]),
+        f64::from(properties.translation[1]),
+    )) * kurbo::Affine::translate(centre)
+        * kurbo::Affine::rotate(f64::from(properties.rotation))
+        * kurbo::Affine::scale_non_uniform(
+            f64::from(properties.scale[0]),
+            f64::from(properties.scale[1]),
+        )
+        * kurbo::Affine::translate((-centre.0, -centre.1))
+}
+
+/// Records one instance at `ctx` — through a Gaussian blur filter layer
+/// while the sampled radius is nonzero, directly otherwise. The caller has
+/// already opened the scope carrying the instance's other properties.
+pub fn record_blurred(
+    renderer: &mut HydrolysisRenderer,
+    ctx: RenderContext,
+    paint: &TransitionPaint<'_>,
+    flush: impl FnOnce(&mut HydrolysisRenderer, RenderContext),
+) {
+    let properties = paint.properties;
+    let bounds = ctx.bounds;
     assert!(
         properties.blur.is_finite() && properties.blur >= 0.0,
         "Hydrolysis: a transition sampled the blur radius {}, which is not a finite \
@@ -417,9 +465,8 @@ pub fn flush_transitioned(
             flush(renderer, local);
         });
     } else {
-        flush(renderer, child_ctx);
+        flush(renderer, ctx);
     }
-    renderer.close_scope();
 }
 
 /// One layout member of a container: a child, or a removal ghost the child's

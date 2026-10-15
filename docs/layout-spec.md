@@ -275,6 +275,15 @@ These rules apply at every structural site: dynamic replacement, collection
 membership, navigation, and overlays. Scalar property updates do not create
 transition instances or affect membership.
 
+Where the replaced view is not a member of a container — a scroll, page, or
+overlay root, the content of a painting modifier, a lazy-stack row root — there
+is no container slot to hold. The ghost paints at its last placed frame,
+overlapping the slot, and the slot is sized by the live content alone; the
+ghost takes no part in layout and, as above, no part in input or
+accessibility. A navigation page root's declared transition is that page's
+insertion transition on push and its removal transition on pop, in place of
+the stack's own transition for that page.
+
 ## 5. Other containers
 
 - **ZStack**: every child is measured with the stack's proposal; the stack's

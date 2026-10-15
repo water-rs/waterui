@@ -817,6 +817,13 @@ pub trait WidgetBehavior {
     /// runtime never runs this pass, so no paint reaches it.
     fn prepare(&self, _renderer: &mut HydrolysisRenderer, _env: &Environment) {}
 
+    /// Claims the transition declared on the root of this leaf's page
+    /// content, for the navigation stack that owns the leaf as a page
+    /// (layout-spec.md §4.5). `None` for every leaf that is not a page.
+    fn claim_page_transition(&self) -> Option<waterui_core::transition::TransitionSpec> {
+        None
+    }
+
     /// Emits this leaf's accessibility node(s) for the semantic walk — the
     /// same tree `render` produces under a `RenderContext`, with no bounds and
     /// no draw or hit-target work. The default emits nothing: leaves with no
@@ -1357,8 +1364,13 @@ pub struct DynamicTransitions {
     ghosts: RefCell<Vec<DynamicGhost>>,
     /// Whether the enclosing container (a stack, a collection entry list)
     /// lays the ghosts out as its own members. Set once at build by that
-    /// container; a host it never reached keeps its ghosts in its own slot.
+    /// container; a host it never reached paints its ghosts over its own
+    /// slot, outside layout.
     container_member: Cell<bool>,
+    /// The frame the live instance was last flushed at, in the coordinates
+    /// of the host's flush context — where a ghost the host paints itself
+    /// stays.
+    last_frame: Cell<Rect>,
     /// Reduce Motion resolved once at build from the host environment.
     reduce_motion: bool,
     /// Logical-edge resolution for sampled transition properties.
@@ -1385,6 +1397,7 @@ impl DynamicTransitions {
             placed: RefCell::new((ViewDimensions::default(), 0)),
             ghosts: RefCell::new(Vec::new()),
             container_member: Cell::new(false),
+            last_frame: Cell::new(Rect::from_size(Size::zero())),
             reduce_motion: env
                 .get::<waterui_core::transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0),
@@ -1492,7 +1505,9 @@ impl DynamicHostNode {
                 transitions.reduce_motion,
             ),
             runtime: super::transition::TransitionRuntime::new(now),
-            frame: Cell::new(Rect::from_size(Size::zero())),
+            // A container member's layout re-places it every pass; a ghost
+            // the host paints itself keeps the frame it left at.
+            frame: Cell::new(transitions.last_frame.get()),
         });
         transitions.insertion.borrow_mut().take();
     }
@@ -1557,32 +1572,6 @@ impl DynamicHostNode {
             .collect()
     }
 
-    /// The single ghost slot this host holds itself, outside a container
-    /// that lays ghosts out: the host's one slot holds the ghost while the
-    /// live content renders nothing. Two instances sharing that slot have no
-    /// defined layout, so that case fails instead of overlapping them.
-    pub(super) fn own_ghost_slot(&self) -> Option<GhostSlot> {
-        let transitions = &self.transitions;
-        if transitions.container_member.get() {
-            return None;
-        }
-        let ghosts = transitions.ghosts.borrow();
-        if ghosts.is_empty() {
-            return None;
-        }
-        assert!(
-            ghosts.len() == 1 && self.child.borrow().is_empty(),
-            "Hydrolysis: a conditional that is not a direct member of a stack or collection — \
-             the root of a scroll, page, overlay or row, or one behind a painting modifier — \
-             has one slot, and it cannot hold a removal ghost beside {} other instance(s): \
-             layout-spec.md §4.5 gives each instance its own slot in the original container. \
-             Make the conditional a member of a stack, or let the exit finish before \
-             inserting again (water-rs/waterui#1593)",
-            ghosts.len() - usize::from(self.child.borrow().is_empty())
-        );
-        Some(ghosts[0].ghost.slot.clone())
-    }
-
     /// Records the frame the enclosing layout placed ghost `index` at.
     pub(super) fn place_ghost(&self, index: usize, frame: Rect) {
         self.transitions.ghosts.borrow()[index].frame.set(frame);
@@ -1608,7 +1597,10 @@ impl DynamicHostNode {
     }
 
     /// Flushes the live instance, under its insertion transition while one
-    /// runs, then — when this host holds its ghost itself — that ghost.
+    /// runs. Outside a container that lays ghosts out, this host's ghosts
+    /// paint first, beneath it, each at the frame it left at: they overlap
+    /// the slot the live content alone sizes and take no part in layout
+    /// (layout-spec.md §4.5).
     pub(super) fn flush_content(
         &self,
         renderer: &mut HydrolysisRenderer,
@@ -1617,6 +1609,20 @@ impl DynamicHostNode {
     ) {
         let child = self.child.borrow();
         let (slot_ctx, delta) = super::transition::slot_context(ctx);
+        if !self.transitions.container_member.get() {
+            for index in 0..self.transitions.ghosts.borrow().len() {
+                self.flush_ghost(renderer, ctx, index);
+            }
+        }
+        if !child.is_empty() {
+            self.transitions.last_frame.set(Rect::new(
+                Point::new(
+                    crate::num_cast::f64_as_f32(ctx.bounds.x0),
+                    crate::num_cast::f64_as_f32(ctx.bounds.y0),
+                ),
+                slot_size(slot_ctx),
+            ));
+        }
         {
             let insertion = self.transitions.insertion.borrow();
             if let Some(insertion) = insertion.as_ref() {
@@ -1640,18 +1646,6 @@ impl DynamicHostNode {
             } else {
                 child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
             }
-        }
-        if !self.transitions.container_member.get() && !self.transitions.ghosts.borrow().is_empty()
-        {
-            let frame = Rect::new(
-                Point::new(
-                    crate::num_cast::f64_as_f32(ctx.bounds.x0),
-                    crate::num_cast::f64_as_f32(ctx.bounds.y0),
-                ),
-                slot_size(slot_ctx),
-            );
-            self.place_ghost(0, frame);
-            self.flush_ghost(renderer, ctx, 0);
         }
     }
 
