@@ -1565,6 +1565,18 @@ async fn run_macos_app_with_grace(
     Ok(running)
 }
 
+/// Run a macOS .app bundle on non-macOS platforms (not supported).
+#[cfg(not(target_os = "macos"))]
+fn run_macos_app(
+    _host: &Host,
+    _artifact: Artifact,
+    _options: RunOptions,
+) -> impl std::future::Future<Output = Result<Running, FailToRun>> {
+    std::future::ready(Err(FailToRun::InvalidArtifact)) // .app bundles only work on macOS
+}
+
+/// Run a binary executable directly.
+///
 /// Captures stdout/stderr and extracts panic messages from stderr.
 fn run_binary(
     host: &Host,
