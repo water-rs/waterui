@@ -188,68 +188,23 @@ mod capture {
 
     use crate::capture::CaptureError;
 
-    /// `UIKit`: offscreen `UIWindow`, `layer.render` into the context — the
-    /// `UIKit` half of `captureViewToRGBA`.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "the clamped pixel counts fit usize and u32"
-    )]
-    #[expect(
-        clippy::cast_sign_loss,
-        reason = "the `.max(1.0)` clamp keeps the measured size positive"
-    )]
+    /// `UIKit`: an offscreen `UIWindow` in a connected scene hosts the view,
+    /// and `crate::capture` renders its layer — the `UIKit` half of
+    /// `captureViewToRGBA`.
     #[expect(
         clippy::future_not_send,
         reason = "the capture runs on the main thread; the Retained UIKit objects it holds across the wait are not Send"
-    )]
-    #[cfg_attr(
-        not(feature = "gpu_surface"),
-        expect(
-            clippy::unused_async,
-            reason = "the surface wait is the only await; without gpu_surface the UIKit capture is synchronous"
-        )
     )]
     pub async fn capture(
         view: &cocoa_ui::PlatformView,
         actual: cocoa_ui::Size,
         mtm: cocoa_ui::MainThreadMarker,
     ) -> Result<RenderResult, CaptureError> {
-        let scale = cocoa_ui::view::backing_scale_factor(view);
-        let pixel_width = usize::try_from((actual.width * scale).ceil().max(1.0) as u64)
-            .unwrap_or(usize::MAX)
-            .min((usize::MAX - 3) / 4);
-        let pixel_height = usize::try_from((actual.height * scale).ceil().max(1.0) as u64)
-            .unwrap_or(usize::MAX)
-            .min((usize::MAX - 3) / 4);
-
-        // The surfaces present through `IOSurface` contents, which
-        // `layer.render` draws like any other layer content.
-        #[cfg(feature = "gpu_surface")]
-        crate::components::gpu_surface::wait_for_first_frames(view).await;
-
-        let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
-        let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height)
-            .ok_or(CaptureError::BitmapContext {
-                width: pixel_width,
-                height: pixel_height,
-            })?;
-        cocoa_ui::bitmap::scale_to_pixels(&context, scale);
-
         let scene = cocoa_ui::bitmap::any_window_scene().ok_or(CaptureError::NoWindowScene)?;
         let window = cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, actual);
         cocoa_ui::bitmap::show_capture_window(&window, view, actual);
-
-        cocoa_ui::bitmap::begin_layer_flip(&context, actual.height);
-        let layer = cocoa_ui::view::layer(view).expect("a UIKit view is always layer-backed");
-        cocoa_ui::bitmap::with_uikit_context(&context, || {
-            cocoa_ui::bitmap::render_layer(&layer, &context);
-        });
-        cocoa_ui::bitmap::end_layer_flip(&context);
+        let result = crate::capture::capture_presented(view).await;
         cocoa_ui::bitmap::close_capture_window(&window);
-        Ok(RenderResult {
-            rgba_data: pixels,
-            width: pixel_width as u32,
-            height: pixel_height as u32,
-        })
+        result
     }
 }

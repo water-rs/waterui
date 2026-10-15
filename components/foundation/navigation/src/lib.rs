@@ -1092,6 +1092,18 @@ impl<T, F> NavigationStack<T, F> {
     }
 
     /// Sets the transition style for push/pop operations.
+    ///
+    /// This is the default for every page of the stack. A page that declares
+    /// its own arrival replaces it for that page's push and pop, in this
+    /// order of precedence:
+    ///
+    /// 1. A `.transition(...)` on the page's content root: its insertion
+    ///    runs when the page is pushed and its removal when it is popped,
+    ///    while the page beneath stays in place.
+    /// 2. [`NavigationView::transition`] on the destination.
+    /// 3. This stack transition.
+    ///
+    /// A destination may declare 1 or 2, not both.
     pub fn transition(mut self, transition: impl NavigationTransition) -> Self {
         self.transition = AnyNavigationTransition::new(transition);
         self
@@ -1393,6 +1405,11 @@ impl NavigationView {
     }
 
     /// Sets how this destination arrives, overriding its stack's transition.
+    ///
+    /// A `.transition(...)` on the content root is the other way a destination
+    /// declares its arrival — its insertion on push, its removal on pop. A
+    /// destination declares one or the other, not both; see
+    /// [`NavigationStack::transition`] for the precedence.
     ///
     /// A stack-wide transition cannot name a matched pair, because the pair
     /// differs per destination — a gallery's tile and the page it opens share an

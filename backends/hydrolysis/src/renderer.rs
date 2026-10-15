@@ -62,6 +62,9 @@ pub use recording::{Glyph, GlyphRun, Recording, working_color};
 pub use tree::safe_area::{
     ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
 };
+pub use tree::transition::{
+    TransitionPaint, flush_transitioned, record_blurred, transition_transform,
+};
 pub use tree::*;
 pub use views::*;
 pub use waterui_backend_core::frame_signals::FrameSignals;

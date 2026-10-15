@@ -9,9 +9,12 @@ use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 
 const INTERACTION_FOCUS_KEY: usize = 0;
 const INTERACTION_STATE_LAYER_KEY: usize = 1;
+/// Scalar key of the physical-press morph progress
+/// (`WidgetInteractionState::press_progress`).
+const INTERACTION_PRESS_PROGRESS_KEY: usize = 2;
 /// First animation key of the per-wave pairs; each press wave claims two
 /// consecutive keys (opacity, grow progress).
-const INTERACTION_WAVE_KEYS_BASE: usize = 2;
+const INTERACTION_WAVE_KEYS_BASE: usize = 3;
 const INTERACTION_KEYS_PER_WAVE: usize = 2;
 /// Renderer-local animation keys claimed by one semantic interaction identity.
 const INTERACTION_KEYS_PER_IDENTITY: usize =
@@ -348,6 +351,23 @@ impl InteractionEngine {
             state_layer_animation(hover_target, motion),
             now,
         );
+        // Physical-press morph progress targets the physical press state —
+        // the same source the `PRESSED` flag resolves below: the previous
+        // handles' `pressing()`, which the new handles inherit through
+        // `copy_interaction_state_from`. Between rebuilds the handles apply
+        // the same target at the pointer event itself (see
+        // `InteractionLayerHandles::begin_press`/`release`), so the morph
+        // starts at the event, not one frame later.
+        let pressed = !input.disabled && previous.as_ref().is_some_and(|prev| prev.pressing());
+        let press_progress = animation_controller.bind_scalar_target(
+            AnimationKey::renderer_local_scalar_with_discriminator(
+                key.owner.address(),
+                key.animation_discriminator(INTERACTION_PRESS_PROGRESS_KEY),
+            ),
+            if pressed { 1.0 } else { 0.0 },
+            motion.press_shape.clone(),
+            now,
+        );
         let waves = core::array::from_fn(|index| {
             let wave_key_base = INTERACTION_WAVE_KEYS_BASE + INTERACTION_KEYS_PER_WAVE * index;
             let wave_visual = previous.as_ref().is_some_and(|prev| {
@@ -393,6 +413,7 @@ impl InteractionEngine {
 
         let handles = Rc::new(InteractionLayerHandles::new(
             hover_alpha.clone(),
+            press_progress.clone(),
             waves,
             motion.clone(),
         ));
@@ -425,6 +446,11 @@ impl InteractionEngine {
             state: flags,
             focus_progress: focus_alpha.sample(now),
             state_layer_opacity: hover_alpha.sample(now),
+            press_progress: if input.disabled {
+                0.0
+            } else {
+                press_progress.sample(now)
+            },
             press_waves: handles.sample_waves(now),
         };
         (state, press_slot, handles)
@@ -507,6 +533,7 @@ mod tests {
             press_fade_in: Animation::linear(Duration::from_millis(15)),
             press_fade_out: Animation::linear(Duration::from_millis(120)),
             press_grow: Animation::linear(Duration::from_millis(225)),
+            press_shape: Animation::linear(Duration::from_millis(15)),
             minimum_press_duration: Duration::from_millis(75),
             touch_delay: Duration::from_millis(0),
         }
@@ -523,9 +550,10 @@ mod tests {
             )
         };
         let hover_alpha = bind(0);
+        let press_progress = bind(9);
         let waves =
             core::array::from_fn(|index| WaveLayer::new(bind(1 + index * 2), bind(2 + index * 2)));
-        InteractionLayerHandles::new(hover_alpha, waves, motion())
+        InteractionLayerHandles::new(hover_alpha, press_progress, waves, motion())
     }
 
     #[test]

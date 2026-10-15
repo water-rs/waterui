@@ -1369,9 +1369,8 @@ fn pixel_at(snapshot: &crate::runner::HeadlessSnapshot, x: usize, y: usize) -> [
         .expect("a pixel is 4 bytes")
 }
 
-/// A `.transition(...)` that reaches a non-structural site fails fast instead
-/// of drawing through — the erased carrier and the structural owner are
-/// water-rs/waterui#1593's work.
+/// A `.transition(...)` no structural site swaps — here the window root —
+/// fails fast instead of drawing through: it has no clock to run on.
 #[test]
 #[should_panic(expected = "structural transition owner")]
 fn transition_outside_a_structural_site_panics() {
@@ -1402,10 +1401,11 @@ impl waterui_core::transition::Transition for CaptureOnlyTransition {
     }
 }
 
-/// The removal event on a capture-requiring spec panics in reconcile — the
-/// unsupported pixel path is #1593's, never a silent fallback.
+/// The removal event on a capture-requiring spec panics where the ghost
+/// starts — the capture overlay is water-rs/waterui#1388, never a silent
+/// fallback.
 #[test]
-#[should_panic(expected = "pixel-capture transitions are unsupported")]
+#[should_panic(expected = "pixel-capture transitions")]
 fn pixel_transition_on_a_collection_item_panics() {
     let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
@@ -1500,11 +1500,12 @@ fn reduced_pixel_transition_runs_as_opacity() {
     );
 }
 
-/// A blur property sample reaches `flush_transitioned` with a nonzero radius —
-/// unsupported on this paint path, it panics rather than drawing unblurred.
+/// A blur transition on a row is realized as a property: halfway through the
+/// removal the ghost still holds its slot and draws blurred — different from
+/// both the rest frame and the settled frame — and the removal then settles
+/// exactly like any other.
 #[test]
-#[should_panic(expected = "blur transitions are unsupported")]
-fn blur_transition_on_a_collection_item_panics() {
+fn blur_transition_on_a_collection_item_blurs_the_ghost() {
     let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
@@ -1520,33 +1521,76 @@ fn blur_transition_on_a_collection_item_panics() {
         MinimalTestTheme::default(),
     );
     let start = Instant::now();
-    let _ = runtime.pump_at(true, start);
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let sibling = bottom_row_color(&before);
+    let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
     let _ = list.remove(0);
-    // The ghost's clock is born at the removal frame (delta zero); the
-    // +516ms frame advances it mid-flight, and the flushed blur sample is
-    // nonzero — the unsupported path panics before paint.
+    // The ghost's clock is born at the removal frame; +516ms samples a
+    // nonzero radius mid-flight.
     let _ = runtime.pump_at(false, start + Duration::from_millis(16));
-    let _ = runtime.pump_at(true, start + Duration::from_millis(516));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-exit frame must produce a snapshot");
+    assert!(
+        mid.rgba8 != before.rgba8,
+        "halfway through the blur removal the ghost is not drawn at rest"
+    );
+    let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-exit");
+    assert!(
+        mid_edge.abs_diff(resting_edge) <= 1,
+        "the blurred ghost still holds its slot (rest {resting_edge}, mid {mid_edge})"
+    );
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    let settled_edge = top_edge(&settled, sibling).expect("the bottom row renders after the exit");
+    assert!(
+        settled_edge + 20 < resting_edge,
+        "after the blur removal completes the sibling moves up (rest {resting_edge}, \
+         settled {settled_edge})"
+    );
 }
 
-/// A `.transition(...)` hidden inside a type-erased collection item still
-/// reaches the build arm and fails fast — the erased carrier is
-/// water-rs/waterui#1593's work, not a draw-through.
+/// A `.transition(...)` inside a type-erased row is owned by the row: the
+/// declaration is claimed from the built row rather than from the declared
+/// view's static type, so the removal animates and settles like a typed row.
 #[test]
-#[should_panic(expected = "structural transition owner")]
-fn transition_inside_an_erased_collection_row_panics() {
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0)]);
-    let builder = AnyViewBuilder::<AnyView>::new(move || {
+fn transition_inside_an_erased_collection_row_is_owned_by_the_row() {
+    fn erased_rows(list: &List<SelfId<u64>>) -> AnyView {
         AnyView::new(VStack::for_each(list.clone(), |item: SelfId<u64>| {
             #[allow(clippy::cast_possible_truncation)]
             let shade = 40 + (*item as u8) * 70;
             AnyView::new(
                 ().size(120.0, 40.0)
                     .background(Color::srgb(shade, 90, 160))
-                    .transition(PropertyTransition::opacity()),
+                    .transition(PropertyTransition::opacity())
+                    .animation(Animation::linear(Duration::from_millis(1_000))),
             )
         }))
-    });
+    }
+    let truth_list: List<SelfId<u64>> = List::from(vec![SelfId::new(1)]);
+    let mut truth_runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        AnyViewBuilder::<AnyView>::new(move || erased_rows(&truth_list)),
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let expected = truth_runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("ground-truth frame must produce a snapshot");
+
+    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || erased_rows(&list))
+    };
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
@@ -1554,5 +1598,97 @@ fn transition_inside_an_erased_collection_row_panics() {
         640,
         MinimalTestTheme::default(),
     );
-    let _ = runtime.pump_at(true, Instant::now());
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let _ = list.remove(0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-exit frame must produce a snapshot");
+    assert!(
+        mid.rgba8 != before.rgba8 && mid.rgba8 != expected.rgba8,
+        "halfway through the removal the erased row's ghost is fading"
+    );
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    assert!(
+        settled.rgba8 == expected.rgba8,
+        "after the removal the stack renders pixel-identical to a fresh build"
+    );
+}
+
+/// A non-virtualized collection (an `AbsoluteLayout` overlay) owns its rows'
+/// transitions the same way: a removed row's ghost fades over the row under
+/// it, then the collection settles to a fresh build of the final membership.
+#[test]
+fn absolute_collection_row_removal_fades_then_settles() {
+    fn overlay_rows(list: &List<SelfId<u64>>) -> AnyView {
+        AnyView::new(zstack((
+            ().size(360.0, 600.0),
+            LazyContainer::new(
+                AbsoluteLayout,
+                ForEach::new(list.clone(), |item: SelfId<u64>| {
+                    let id = u8::try_from(*item % 4).unwrap_or(0);
+                    Color::srgb(40 + id * 50, 90, 160)
+                        .size(80.0, 40.0)
+                        .transition(PropertyTransition::opacity())
+                        .animation(Animation::linear(Duration::from_millis(1_000)))
+                }),
+            ),
+        )))
+    }
+    let truth_list: List<SelfId<u64>> = List::from(vec![SelfId::new(0)]);
+    let mut truth_runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        AnyViewBuilder::<AnyView>::new(move || overlay_rows(&truth_list)),
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let expected = truth_runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("ground-truth frame must produce a snapshot");
+
+    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || overlay_rows(&list))
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let _ = list.remove(1);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-exit frame must produce a snapshot");
+    assert!(
+        mid.rgba8 != before.rgba8 && mid.rgba8 != expected.rgba8,
+        "halfway through the removal the top row's ghost is fading over the row under it"
+    );
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    assert!(
+        settled.rgba8 == expected.rgba8,
+        "after the removal the overlay renders pixel-identical to a fresh build"
+    );
 }
