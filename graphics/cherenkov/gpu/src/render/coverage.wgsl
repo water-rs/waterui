@@ -550,6 +550,8 @@ fn prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
     while current < limit {
         let end = lower_bound(sort_key(current) + 1u);
         let group = params.groups + current * 16u;
+        // Integration moves this link to the first consumed edge-head word.
+        atomicStore(&coverage[group], end);
         for (var r = 0u; r < 4u; r += 1u) {
             // Radix scratch occupied this arena in earlier dispatches.
             // This strip exclusively owns the unique boundary group.
@@ -586,6 +588,7 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
         if paths[mid].grid_base <= key { lo = mid; } else { hi = mid; }
     }
     let group = params.groups + i * 16u;
+    let next = atomicLoad(&coverage[group]);
     for (var row = 0u; row < 4u; row += 1u) {
         let head = atomicLoad(&coverage[group + 4u + row]);
         let seed = bitcast<i32>(atomicLoad(&coverage[group + 8u + row]));
@@ -593,21 +596,18 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
         if head != 0u { value = boundary_area(head, seed, paths[lo].rule); }
         atomicStore(&coverage[group + row], bitcast<u32>(value));
     }
+    // No later stage reads edge-list heads; retain the sparse traversal link.
+    atomicStore(&coverage[group + 4u], next);
 }
 
-fn column_coverage(pi: u32, strip: u32, col: u32, row: u32) -> f32 {
-    let key0 = paths[pi].grid_base + strip * paths[pi].grid_w;
-    let key = key0 + col;
-    let index = lower_bound(key);
-    if index < params.fragment_cap && sort_key(index) == key {
-        return bitcast<f32>(atomicLoad(&coverage[params.groups + index * 16u + row]));
-    }
-    var winding = atomicLoad(&coverage[2u + paths[pi].row_base + strip * 4u + row]);
-    if index > 0u && sort_key(index - 1u) >= key0 {
-        let previous = lower_bound(sort_key(index - 1u));
-        winding = atomicLoad(&coverage[params.groups + previous * 16u + 12u + row]);
-    }
-    return inside(bitcast<i32>(winding), paths[pi].rule);
+fn group_words(index: u32, offset: u32) -> vec4<u32> {
+    let base = params.groups + index * 16u + offset;
+    return vec4<u32>(atomicLoad(&coverage[base]), atomicLoad(&coverage[base + 1u]),
+        atomicLoad(&coverage[base + 2u]), atomicLoad(&coverage[base + 3u]));
+}
+fn winding_values(winding: vec4<u32>, rule: u32) -> vec4<f32> {
+    return vec4<f32>(inside(bitcast<i32>(winding.x), rule), inside(bitcast<i32>(winding.y), rule),
+        inside(bitcast<i32>(winding.z), rule), inside(bitcast<i32>(winding.w), rule));
 }
 
 // Tokens describe maximal stretches with one column classification. A
@@ -620,11 +620,11 @@ fn append_token(base: u32, count: u32, x0: u32, x1: u32, class_: u32) {
     atomicStore(&coverage[token_word(base, count, 1u)], x1);
     atomicStore(&coverage[token_word(base, count, 2u)], class_);
 }
-fn coverage_class(pi: u32, strip: u32, col: u32, sh: u32) -> u32 {
+fn coverage_class(values: vec4<f32>, sh: u32) -> u32 {
     var empty = true;
     var full = true;
     for (var r = 0u; r < sh; r += 1u) {
-        let v = column_coverage(pi, strip, col, r);
+        let v = values[r];
         empty = empty && v == 0.0;
         full = full && v == 1.0;
     }
@@ -655,19 +655,24 @@ fn classify(@builtin(global_invocation_id) gid: vec3<u32>) {
     var count = 0u;
     var x = 0u;
     var index = start;
+    var winding = vec4<u32>(0u);
+    for (var r = 0u; r < sh; r += 1u) {
+        winding[r] = atomicLoad(&coverage[2u + paths[pi].row_base + sy + r]);
+    }
     while index < limit {
         let col = sort_key(index) - key0;
         if x < col {
-            append_token(base, count, x, col, coverage_class(pi, strip, x, sh));
+            append_token(base, count, x, col, coverage_class(winding_values(winding, paths[pi].rule), sh));
             count += 1u;
         }
-        append_token(base, count, col, col + 1u, coverage_class(pi, strip, col, sh));
+        append_token(base, count, col, col + 1u, coverage_class(bitcast<vec4<f32>>(group_words(index, 0u)), sh));
         count += 1u;
         x = col + 1u;
-        index = lower_bound(sort_key(index) + 1u);
+        winding = group_words(index, 12u);
+        index = atomicLoad(&coverage[params.groups + index * 16u + 4u]);
     }
     if x < width {
-        append_token(base, count, x, width, coverage_class(pi, strip, x, sh));
+        append_token(base, count, x, width, coverage_class(winding_values(winding, paths[pi].rule), sh));
         count += 1u;
     }
     // Demote short full runs, including runs spanning several tokens.
@@ -761,7 +766,12 @@ fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y
     let stored_width = cw - (interior_end - interior_start);
     let words = (stored_width * ch + 3u) / 4u;
     let tex_off = atomicAdd(&paths[path_i].atom[6], words);
-    // R8 quantize of the folded coverage, packed four texels per u32.
+    // Each row walks sparse boundary groups once, including jumps over the
+    // implicit full interval. No global binary search is needed per texel.
+    var previous_row = 0xffffffffu;
+    var index = 0u;
+    var winding = 0u;
+    var key0 = 0u;
     for (var word = 0u; word < words; word += 1u) {
         var packed = 0u;
         for (var lane = 0u; lane < 4u; lane += 1u) {
@@ -770,7 +780,28 @@ fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y
                 let row = pixel / stored_width;
                 let packed_col = pixel % stored_width;
                 let col = packed_col + select(0u, interior_end - interior_start, packed_col >= interior_start);
-                let v = column_coverage(pi, (y0 + row) / 4u, x0 + col, (y0 + row) % 4u);
+                let strip = (y0 + row) / 4u;
+                let strip_row = (y0 + row) % 4u;
+                if row != previous_row {
+                    key0 = paths[pi].grid_base + strip * paths[pi].grid_w;
+                    index = lower_bound(key0 + x0 + col);
+                    winding = atomicLoad(&coverage[2u + paths[pi].row_base + y0 + row]);
+                    if index > 0u && sort_key(index - 1u) >= key0 {
+                        let previous = lower_bound(sort_key(index - 1u));
+                        winding = atomicLoad(&coverage[params.groups + previous * 16u + 12u + strip_row]);
+                    }
+                    previous_row = row;
+                }
+                let key = key0 + x0 + col;
+                while index < params.fragment_cap && sort_key(index) < key {
+                    let group = params.groups + index * 16u;
+                    winding = atomicLoad(&coverage[group + 12u + strip_row]);
+                    index = atomicLoad(&coverage[group + 4u]);
+                }
+                var v = inside(bitcast<i32>(winding), paths[pi].rule);
+                if index < params.fragment_cap && sort_key(index) == key {
+                    v = bitcast<f32>(atomicLoad(&coverage[params.groups + index * 16u + strip_row]));
+                }
                 let q = u32(clamp(v, 0.0, 1.0) * 255.0 + 0.5);
                 packed |= q << (lane * 8u);
             }
