@@ -19,42 +19,26 @@ impl<'a> Upload<'a> {
             image.color_space,
             ImageColorSpace::Srgb | ImageColorSpace::DisplayP3
         );
-        // Hardware transfer decoding is valid only before premultiplication.
-        // Encoded-premultiplied sources must first be unpremultiplied in WGSL.
-        let srgb = nonlinear && !image.premultiplied && image.format != ImageFormat::Rgba16F;
-        let rgba8 = if srgb {
-            T::Rgba8UnormSrgb
-        } else {
-            T::Rgba8Unorm
-        };
+        // sRGB texture decoding can quantize dark values more coarsely than
+        // the working f16 representation. Preserve the encoded bytes and
+        // decode each tap in the shader, for both alpha interpretations.
+        let rgba8 = T::Rgba8Unorm;
         let (native, required) = match image.format {
             ImageFormat::Rgba8 => (rgba8, wgpu::Features::empty()),
             ImageFormat::Rgba16F => (T::Rgba16Float, wgpu::Features::empty()),
             ImageFormat::Astc4x4 => (
                 T::Astc {
                     block: wgpu::AstcBlock::B4x4,
-                    channel: if srgb {
-                        wgpu::AstcChannel::UnormSrgb
-                    } else {
-                        wgpu::AstcChannel::Unorm
-                    },
+                    channel: wgpu::AstcChannel::Unorm,
                 },
                 wgpu::Features::TEXTURE_COMPRESSION_ASTC,
             ),
             ImageFormat::Bc7 => (
-                if srgb {
-                    T::Bc7RgbaUnormSrgb
-                } else {
-                    T::Bc7RgbaUnorm
-                },
+                T::Bc7RgbaUnorm,
                 wgpu::Features::TEXTURE_COMPRESSION_BC,
             ),
             ImageFormat::Etc2Rgba => (
-                if srgb {
-                    T::Etc2Rgba8UnormSrgb
-                } else {
-                    T::Etc2Rgba8Unorm
-                },
+                T::Etc2Rgba8Unorm,
                 wgpu::Features::TEXTURE_COMPRESSION_ETC2,
             ),
         };
@@ -69,7 +53,7 @@ impl<'a> Upload<'a> {
         // Zero is reserved for internal, already-linear-P3 textures.
         let flags = (1 << 12)
             | (u32::from(image.premultiplied) << 13)
-            | (u32::from(nonlinear && !srgb) << 14)
+            | (u32::from(nonlinear) << 14)
             | (u32::from(matches!(
                 image.color_space,
                 ImageColorSpace::Srgb | ImageColorSpace::LinearSrgb
@@ -168,10 +152,7 @@ mod tests {
                         color_space,
                         ImageColorSpace::Srgb | ImageColorSpace::DisplayP3
                     );
-                    assert_eq!(
-                        upload.format.is_srgb(),
-                        nonlinear && !premultiplied && format == ImageFormat::Rgba8
-                    );
+                    assert!(!upload.format.is_srgb());
                     assert_eq!(
                         (upload.flags & 16384) != 0,
                         nonlinear && !upload.format.is_srgb()
@@ -222,13 +203,13 @@ mod tests {
             let source = image(format, block);
             let native = Upload::new(&source, COMPRESSION_FEATURES).unwrap();
             assert!(matches!(native.bytes, Cow::Borrowed(_)));
-            assert!(native.format.is_srgb());
+            assert!(!native.format.is_srgb());
             assert_eq!(storage_bytes(native.format, 3, 2), 16);
             assert_eq!(storage_bytes(native.format, 5, 7), 64);
             let decoded = Upload::new(&source, wgpu::Features::empty()).unwrap();
             assert!(matches!(decoded.bytes, Cow::Owned(_)));
             assert_eq!(decoded.flags, native.flags);
-            assert_eq!(decoded.format, wgpu::TextureFormat::Rgba8UnormSrgb);
+            assert_eq!(decoded.format, wgpu::TextureFormat::Rgba8Unorm);
             assert_eq!(decoded.bytes.len(), 24);
             for pixel in decoded.bytes.as_chunks::<4>().0 {
                 assert_eq!(*pixel, expected);
