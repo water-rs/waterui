@@ -831,9 +831,10 @@ async fn ios_simulator_check(host: &Host) -> DoctorItem {
     }
 }
 
-/// The iOS device and simulator rustup targets an Apple-backend project
-/// needs on its selected toolchain. (The macOS target is the host triple the
-/// `rust` item already requires.)
+/// The iOS device, simulator and Mac Catalyst rustup targets an
+/// Apple-backend project needs on its selected toolchain — Mac Catalyst is
+/// the target `water preview --platform ios` builds for. (The macOS target
+/// is the host triple the `rust` item already requires.)
 async fn apple_rust_targets_check(host: &Host, project: &ProjectContext) -> DoctorItem {
     const NAME: &str = "Apple Rust targets";
     if !project.in_scope(TargetBackend::Apple) {
@@ -847,10 +848,11 @@ async fn apple_rust_targets_check(host: &Host, project: &ProjectContext) -> Doct
         host,
         ids::APPLE_RUST_TARGETS,
         NAME,
-        "Required iOS targets are missing on the selected Rust toolchain",
+        "Required iOS and Mac Catalyst targets are missing on the selected Rust toolchain",
         crate::toolchain::rust::SelectedToolchainTargets::new(vec![
             TargetPlatform::IOS.triple().to_string(),
             TargetPlatform::IOSSimulator.triple().to_string(),
+            TargetPlatform::MacCatalyst.triple().to_string(),
         ]),
     )
     .await

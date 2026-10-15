@@ -8,10 +8,22 @@
 //! # The host never sends state unasked
 //!
 //! State reaches a page only as the reply to a request that page made. The
-//! seed a document runs at its start carries the values and a cursor, and the
-//! document then keeps one `__wateruiPullState { since }` request open. The
-//! reply is held until a flush has changed something after `since`, carries
-//! only those keys, and names the cursor to pull from next.
+//! seed a document runs at its start declares the keys and nothing else; the
+//! document's first `__wateruiPullState { since: null }` is answered at once
+//! with every value, and the document then keeps one request open. The reply
+//! is held until a flush has changed something after `since`, carries only
+//! those keys, and names the cursor to pull from next.
+//!
+//! # No value is ever injected
+//!
+//! The seed is part of the configuration a web view is created with
+//! ([`WebViewConfig::state`](crate::WebViewConfig::state)), and an engine may
+//! hand injected text to a renderer process the admission policy refuses —
+//! CEF's renderer holds the whole creation-time bundle and decides per
+//! document. So the seed carries key names and writability, never a value,
+//! and it never changes after creation. A document therefore holds no value
+//! until its first reply: `waterui.ready` resolves when it lands, and reading
+//! a key before then throws instead of producing a made-up one.
 //!
 //! Pushing instead, by evaluating each change into whatever document the web
 //! view shows, cannot be made safe: no engine ties such an evaluation to a
@@ -53,10 +65,13 @@ pub const SET_STATE_HANDLER: &str = "__wateruiSetState";
 pub const PULL_STATE_HANDLER: &str = "__wateruiPullState";
 
 /// The function the seed is an application of. Its first statement is the
-/// origin guard, so the declarations it carries never run in a document the
-/// admission policy refuses, even on an engine that injects document-start
-/// scripts into every document.
+/// origin guard, so a document the admission policy refuses never starts a
+/// pull, even on an engine that injects document-start scripts into every
+/// document.
 const SEED_SCRIPT: &str = include_str!("js/seed.js");
+
+/// The key the mirrored-state seed is injected under.
+pub const SEED_SCRIPT_KEY: &str = "waterui:state-seed";
 
 /// A value that can be mirrored into the page.
 ///
@@ -151,7 +166,7 @@ impl Field {
 /// What a reply carries for one key.
 ///
 /// Carries writability as well as the value, so a reply can define a key the
-/// receiving document never saw seeded rather than only updating one it did.
+/// receiving document never saw declared rather than only updating one it did.
 #[derive(Serialize)]
 struct FieldUpdate {
     v: serde_json::Value,
@@ -168,9 +183,9 @@ struct PullReply<'a> {
 }
 
 /// What the page sends to pull: the cursor of the state it holds, or `null`
-/// for a document that holds nothing it can trust — one restored from the
-/// back/forward cache, which ran no seed and whose state is as old as the
-/// moment it was frozen.
+/// for a document that holds nothing it can trust — a fresh one, which holds
+/// no value at all, or one restored from the back/forward cache, whose state
+/// is as old as the moment it was frozen.
 ///
 /// `since` is required: a pull that omits it is malformed, not a request for
 /// every key. Deserializing through `Option::deserialize` is what keeps serde
@@ -250,8 +265,8 @@ impl StateRegistry {
 
         let reader = read.clone();
         let entry = Field {
-            // One closure serves both ways out — the seed script and every
-            // reply read through it — so tagging here covers both.
+            // Every value leaves through a reply that reads through this
+            // closure, so tagging here covers all of them.
             read: Box::new(move || {
                 let mut value =
                     serde_json::to_value(reader.snapshot()).expect("exposed state must serialize");
@@ -271,34 +286,17 @@ impl StateRegistry {
         self.fields.borrow_mut().insert(name, Rc::new(entry));
     }
 
-    /// Renders the script that seeds a freshly loaded document: the current
-    /// value of every key, and the cursor those values are current at.
-    ///
-    /// The values and the cursor are read together, so a change that lands
-    /// after this is rendered — but before the document it seeds starts — is
-    /// still delivered: the document's first pull names this cursor.
-    pub(crate) fn seed_script(&self, policy: &OriginPolicy) -> String {
-        #[derive(Serialize)]
-        struct Seed<'a> {
-            /// The admission rules, as the tokens `OriginRule::as_token`
-            /// gives them, for the guard that opens the script.
-            rules: Vec<&'a str>,
-            cursor: u64,
-            fields: Vec<(&'a str, FieldUpdate)>,
-        }
-
-        let rules = policy.rules();
-        let fields = self.fields.borrow();
-        let seed = Seed {
-            rules: rules.iter().map(crate::OriginRule::as_token).collect(),
-            cursor: self.cursor.get(),
-            fields: fields
+    /// The keys a document declares at its start, with their writability and
+    /// without their values.
+    pub(crate) fn declarations(&self) -> StateDeclarations {
+        StateDeclarations {
+            fields: self
+                .fields
+                .borrow()
                 .iter()
-                .map(|(name, field)| (name.as_str(), field.update()))
+                .map(|(name, field)| (name.clone(), field.write.is_some()))
                 .collect(),
-        };
-        let seed = serde_json::to_string(&seed).expect("a state seed must serialize");
-        format!("{SEED_SCRIPT}({seed});")
+        }
     }
 
     /// Answers a pull from the page.
@@ -441,16 +439,60 @@ pub fn pending_field<F: JsField + 'static>(name: Str, field: F) -> PendingField 
     })
 }
 
-/// Attaches the reactive state bridge to a live web view.
+/// The keys a web view mirrors, as its creation-time configuration carries
+/// them: each name and whether the page may assign to it, and no value.
 ///
-/// Registers every field, seeds the documents `policy` admits, and installs the
-/// reserved handlers the page writes and pulls through.
+/// A backend never reads these one by one; it injects
+/// [`WebViewConfig::user_scripts`](crate::WebViewConfig::user_scripts), which
+/// renders them into the seed under the view's admission rules.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StateDeclarations {
+    fields: Vec<(Str, bool)>,
+}
+
+impl StateDeclarations {
+    /// Whether the view mirrors no state at all.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+
+    /// The declared keys, each with whether the page may assign to it.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, bool)> {
+        self.fields
+            .iter()
+            .map(|(name, writable)| (name.as_str(), *writable))
+    }
+
+    /// Renders the seed a document runs at its start: the origin guard, a
+    /// declaration per key, and the start of the pull loop — the loop a
+    /// document with no keys does not need, so it is ready at once.
+    pub(crate) fn seed_script(&self, policy: &OriginPolicy) -> String {
+        #[derive(Serialize)]
+        struct Seed<'a> {
+            /// The admission rules, as the tokens `OriginRule::as_token`
+            /// gives them, for the guard that opens the script.
+            rules: Vec<&'a str>,
+            fields: &'a [(Str, bool)],
+        }
+
+        let rules = policy.rules();
+        let seed = Seed {
+            rules: rules.iter().map(crate::OriginRule::as_token).collect(),
+            fields: &self.fields,
+        };
+        let seed = serde_json::to_string(&seed).expect("a state seed must serialize");
+        format!("{SEED_SCRIPT}({seed});")
+    }
+}
+
+/// Registers the fields a web view mirrors, before the web view exists.
 ///
 /// Changes are coalesced onto the local executor's next tick: sixty writes in
 /// one tick advance the cursor once and cost each waiting pull one reply, not
 /// sixty. That is a batching decision, not a coarsening of the reactivity — a
 /// reply still carries only the keys that changed.
-pub fn install(webview: &crate::WebView, fields: Vec<PendingField>, policy: &OriginPolicy) {
+pub fn prepare(fields: Vec<PendingField>) -> Mirror {
     let registry = Rc::new(StateRegistry::default());
     let scheduled = Rc::new(Cell::new(false));
 
@@ -478,31 +520,40 @@ pub fn install(webview: &crate::WebView, fields: Vec<PendingField>, policy: &Ori
     for field in fields {
         field(&registry, Rc::clone(&flush));
     }
+    Mirror { registry, flush }
+}
 
-    // The page must see correct values on its first line, so the declarations go
-    // in as a document-start script rather than arriving with the first reply.
-    //
-    // The seed is a snapshot, so it is re-rendered and replaced under the same
-    // key before every navigation. A seed that is stale by the time its
-    // document starts is still correct, because it carries the cursor its
-    // values are current at and the document's first pull asks from there.
-    inject_seed(webview.handle(), &registry, policy);
+/// The state a web view mirrors, registered and waiting for its web view.
+pub struct Mirror {
+    registry: Rc<StateRegistry>,
+    /// Schedules a flush on the local executor's next tick.
+    flush: Rc<dyn Fn()>,
+}
+
+impl Mirror {
+    /// The keys the view's configuration declares.
+    pub(crate) fn declarations(&self) -> StateDeclarations {
+        self.registry.declarations()
+    }
+}
+
+/// Attaches the registry to the web view it was declared for: installs the
+/// reserved handlers the page writes and pulls through.
+///
+/// The declarations reached the engine with the view's configuration, so
+/// nothing is injected here.
+pub fn attach(webview: &crate::WebView, mirror: Mirror) {
+    let Mirror { registry, flush } = mirror;
     webview
         .handle()
         .watch({
             let registry = Rc::clone(&registry);
-            let handle = webview.handle().downgrade();
-            let policy = policy.clone();
             move |event| {
-                if !matches!(
+                if matches!(
                     event,
                     crate::BackendEvent::Event(crate::WebViewEvent::WillNavigate { .. })
                 ) {
-                    return;
-                }
-                registry.settle_parked();
-                if let Some(handle) = handle.upgrade() {
-                    inject_seed(&handle, &registry, &policy);
+                    registry.settle_parked();
                 }
             }
         })
@@ -551,26 +602,6 @@ pub fn install(webview: &crate::WebView, fields: Vec<PendingField>, policy: &Ori
                 }
             }
         }),
-    );
-}
-
-/// The key the mirrored-state seed is injected under.
-///
-/// Fixed so that re-injecting replaces the previous seed instead of stacking
-/// another, staler copy in front of it.
-const SEED_SCRIPT_KEY: &str = "waterui:state-seed";
-
-/// Renders the current values and installs them as the document-start seed,
-/// replacing whatever seed was there before.
-fn inject_seed(
-    handle: &crate::AnyWebViewHandle,
-    registry: &Rc<StateRegistry>,
-    policy: &OriginPolicy,
-) {
-    handle.inject_script(
-        SEED_SCRIPT_KEY,
-        &registry.seed_script(policy),
-        crate::ScriptInjectionTime::DocumentStart,
     );
 }
 
@@ -662,15 +693,17 @@ mod tests {
     }
 
     #[test]
-    fn the_seed_opens_with_the_origin_guard_and_carries_the_cursor() {
+    fn the_seed_opens_with_the_origin_guard_and_carries_no_value() {
         let registry = registry();
         registry.insert("count", Binding::container(7_u32), || {});
+        let derived: Computed<u32> = Binding::container(1_u32).map(|value| value * 2).computed();
+        registry.insert("doubled", derived, || {});
         let initial: Url = "https://app.waterui.dev/start".parse().expect("parses");
         let policy = OriginPolicy::new(BridgeOrigins::Initial, &initial);
 
-        let seed = registry.seed_script(&policy);
+        let seed = registry.declarations().seed_script(&policy);
         let guard = seed.find("if (").expect("the guard");
-        let declaration = seed.find("__wateruiState.define").expect("a declaration");
+        let declaration = seed.find("__wateruiState.declare").expect("a declaration");
         assert!(guard < declaration, "the guard runs before any declaration");
         let data = seed
             .strip_prefix(super::SEED_SCRIPT)
@@ -681,10 +714,25 @@ mod tests {
             json(data.as_bytes()),
             serde_json::json!({
                 "rules": ["https://app.waterui.dev"],
-                "cursor": 0,
-                "fields": [["count", {"v": 7, "e": 0, "w": true}]],
-            })
+                "fields": [["count", true], ["doubled", false]],
+            }),
+            "names and writability only: the values arrive with the first pull"
         );
+    }
+
+    #[test]
+    fn the_seed_does_not_change_when_a_value_does() {
+        let registry = registry();
+        let count = Binding::container(7_u32);
+        registry.insert("count", count.clone(), || {});
+        let policy = OriginPolicy::new(
+            BridgeOrigins::Any,
+            &"https://app.waterui.dev".parse::<Url>().expect("parses"),
+        );
+        let before = registry.declarations().seed_script(&policy);
+        count.set(8);
+        registry.flush();
+        assert_eq!(registry.declarations().seed_script(&policy), before);
     }
 
     #[test]

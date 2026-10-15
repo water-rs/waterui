@@ -26,6 +26,42 @@ pub const DOCUMENT_START_SCRIPT: &str = concat!(
     include_str!("js/state.js"),
 );
 
+/// The evaluation wrapper alone.
+///
+/// [`WebView::eval`](crate::WebView::eval) and
+/// [`WebView::exec`](crate::WebView::exec) compile into `__wateruiEval` calls,
+/// so an engine that injects per document needs this wherever it evaluates —
+/// a document outside the bridge policy included. It defines no path from the
+/// page to the backend.
+pub const EVAL_SCRIPT: &str = include_str!("js/eval.js");
+
+/// The page-facing bridge alone: the `waterui` object, its reply sink and the
+/// mirrored-state runtime.
+///
+/// [`DOCUMENT_START_SCRIPT`] minus [`EVAL_SCRIPT`], for an engine that decides
+/// per document whether the page may reach the backend and evaluates the
+/// wrapper everywhere regardless.
+pub const BRIDGE_SCRIPT: &str = concat!(include_str!("js/bridge.js"), include_str!("js/state.js"));
+
+/// The raw evaluation wrapper: a function expression that answers the JSON
+/// encoding of its argument as a string.
+const RAW_EVALUATION: &str = include_str!("js/raw.js");
+
+/// The program a backend evaluates for
+/// [`run_javascript(expression)`](crate::WebViewHandle::run_javascript).
+///
+/// The expression becomes the argument of the wrapper in `js/raw.js`, so the
+/// program's value is always a string — the expression's JSON encoding, made
+/// by the page — which the backend returns unchanged. The wrapper is inlined
+/// rather than installed, so the program depends on nothing `WaterUI` put into
+/// the document and evaluates the same way in a document outside the bridge
+/// policy. [`WebViewHandle::run_javascript`](crate::WebViewHandle::run_javascript)
+/// states the contract this spells.
+#[must_use]
+pub fn raw_evaluation(expression: &str) -> String {
+    format!("({RAW_EVALUATION})((\n{expression}\n))")
+}
+
 /// A JavaScript expression that evaluates to a value.
 ///
 /// Build one with `eval!` for a checked literal, or

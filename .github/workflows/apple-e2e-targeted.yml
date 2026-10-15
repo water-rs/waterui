@@ -77,6 +77,10 @@ jobs:
         id: setup
         run: ./.github/scripts/setup-e2e.sh
 
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
+
       # A name discovery does not know is a typo; fail the run here, once,
       # instead of one matrix job per platform.
       - name: Resolve the requested examples
@@ -208,6 +212,10 @@ jobs:
             --cellularBars 4 \
             --wifiBars 3
 
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
+
       - name: Run iOS e2e examples
         env:
           PLATFORM: ios
@@ -303,6 +311,10 @@ jobs:
       - run: |
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
 
       - name: Run macOS e2e examples
         env:

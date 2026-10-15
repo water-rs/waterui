@@ -31,9 +31,9 @@ use nami::watcher::BoxWatcherGuard;
 use waterui_core::{Computed, Str};
 use waterui_webview::{
     ASSET_HTTPS_ORIGIN, AssetServer, BackendEvent, Cookie, CustomWebViewController,
-    DOCUMENT_START_SCRIPT, OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url,
-    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets,
-    bridge,
+    DOCUMENT_START_SCRIPT, DocumentScripts, ScriptInjectionTime, ScriptMessageHandler, Url,
+    UserScript, WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle,
+    assets, bridge,
 };
 
 use crate::runner::android::jni::{JniError, get_string, guard, guard_val};
@@ -122,23 +122,22 @@ pub(super) struct SharedState {
     watchers: WatcherSet<BackendEvent>,
     /// Named script-message handlers; `nativeOnBridgeMessage` dispatches.
     handlers: RefCell<HashMap<String, Rc<ScriptMessageHandler>>>,
-    /// User-injected scripts in first-injection order — the push list is
-    /// rebuilt on every `inject_script`, as `rebuildDocumentStartScripts`
-    /// does in the Kotlin runtime.
-    scripts: RefCell<Vec<(String, String, ScriptInjectionTime)>>,
+    /// User scripts — the creation-time ones, then those injected later in
+    /// first-injection order. The push list is rebuilt on every
+    /// `inject_script`, as `rebuildDocumentStartScripts` does in the Kotlin
+    /// runtime.
+    scripts: RefCell<DocumentScripts>,
     /// In-flight calls indexed by call id — the one place every settlement
     /// path consults, so navigation and teardown can settle all of them at
     /// once.
     pending: RefCell<PendingCalls>,
-    /// The bridge origin policy as the androidx rule strings — the bridge
-    /// listener admits a message by asking `nativeOriginMayUseBridge` here.
-    origin_rules: RefCell<Vec<String>>,
+    /// The bridge origin policy as the androidx rule strings, fixed at
+    /// creation — the bridge listener admits a message by asking
+    /// `nativeOriginMayUseBridge` here.
+    origin_rules: Vec<String>,
     /// The navigation event state machine every navigation callback feeds;
     /// it also knows the main-frame URL the cookie path stores against.
     navigation: RefCell<NavigationTracker>,
-    /// Set at `create`: the asset origin the view answers, when it was opened
-    /// with a server.
-    asset_origin: Option<Url>,
 }
 
 impl SharedState {
@@ -290,6 +289,9 @@ impl CustomWebViewController for AndroidSystemWebViewController {
         let instance = self.next_instance.get() + 1;
         self.next_instance.set(instance);
 
+        let origin_rules = androidx_origin_rules(&config.bridge_origins);
+        let scripts = DocumentScripts::new(&config);
+
         // `config.asset_server` crosses as a leaked `Box` Kotlin hands
         // back to `nativeAssetServerAcquire`/`nativeFreeAssetServer`. The
         // `AssetServer` inside is already an `Arc` — the box is a handle,
@@ -311,15 +313,10 @@ impl CustomWebViewController for AndroidSystemWebViewController {
             methods: self.methods.clone(),
             watchers: WatcherSet::new(),
             handlers: RefCell::new(HashMap::new()),
-            scripts: RefCell::new(Vec::new()),
+            scripts: RefCell::new(scripts),
             pending: RefCell::new(PendingCalls::default()),
-            origin_rules: RefCell::new(Vec::new()),
+            origin_rules,
             navigation: RefCell::new(NavigationTracker::default()),
-            asset_origin: (asset_server != 0).then(|| {
-                ASSET_HTTPS_ORIGIN
-                    .parse()
-                    .expect("the asset origin is a constant")
-            }),
         });
         let native_handle = Box::into_raw(Box::new(Rc::downgrade(&shared))) as jlong;
 
@@ -342,7 +339,7 @@ impl CustomWebViewController for AndroidSystemWebViewController {
             });
         *shared.wrapper.borrow_mut() = Some(wrapper.clone());
 
-        AndroidSystemWebViewHandle {
+        let handle = AndroidSystemWebViewHandle {
             inner: Rc::new(HandleInner {
                 wrapper,
                 methods: self.methods.clone(),
@@ -352,7 +349,23 @@ impl CustomWebViewController for AndroidSystemWebViewController {
                 next_call: Cell::new(1),
                 redirects_guard: RefCell::new(None),
             }),
-        }
+        };
+        // The admission rules and the creation-time scripts reach Kotlin
+        // before anything can navigate the view.
+        handle.inner.call_str_array(
+            WebViewMethodId::SetBridgeOrigins,
+            &handle.inner.shared.origin_rules,
+        );
+        handle.inner.push_document_start_scripts();
+        handle
+    }
+
+    fn asset_origin(&self) -> Option<Url> {
+        Some(
+            ASSET_HTTPS_ORIGIN
+                .parse()
+                .expect("the asset origin is a constant"),
+        )
     }
 }
 
@@ -576,20 +589,19 @@ impl HandleInner {
     /// which rebuilds its `ScriptHandler` set under the current origin rules.
     /// `rebuildDocumentStartScripts` on this side of JNI.
     fn push_document_start_scripts(&self) {
-        let sources = {
-            let scripts = self.shared.scripts.borrow();
-            let mut sources = Vec::with_capacity(scripts.len() + 2);
-            sources.push(TRANSPORT_SCRIPT.to_string());
-            sources.push(DOCUMENT_START_SCRIPT.to_string());
-            sources.extend(scripts.iter().map(|(_key, source, time)| {
-                if *time == ScriptInjectionTime::DocumentEnd {
-                    compose_document_end(source)
-                } else {
-                    source.clone()
-                }
-            }));
-            sources
-        };
+        let sources: Vec<String> = [
+            TRANSPORT_SCRIPT.to_string(),
+            DOCUMENT_START_SCRIPT.to_string(),
+        ]
+        .into_iter()
+        .chain(self.shared.scripts.borrow().iter().map(|script| {
+            if script.time == ScriptInjectionTime::DocumentEnd {
+                compose_document_end(&script.source)
+            } else {
+                script.source.to_string()
+            }
+        }))
+        .collect();
         self.call_str_array(WebViewMethodId::SetDocumentStartScripts, &sources);
     }
 
@@ -742,23 +754,12 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        {
-            let mut scripts = self.inner.shared.scripts.borrow_mut();
-            scripts.retain(|held| held.0 != key);
-            scripts.push((key.to_string(), script.to_string(), time));
-        }
+        self.inner.shared.scripts.borrow_mut().inject(UserScript {
+            key: Str::from(key.to_string()),
+            source: Str::from(script.to_string()),
+            time,
+        });
         self.inner.push_document_start_scripts();
-    }
-
-    fn set_bridge_origins(&self, policy: OriginPolicy) {
-        let rules = androidx_origin_rules(&policy);
-        self.inner
-            .shared
-            .origin_rules
-            .borrow_mut()
-            .clone_from(&rules);
-        self.inner
-            .call_str_array(WebViewMethodId::SetBridgeOrigins, &rules);
     }
 
     fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>) {
@@ -852,7 +853,7 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
             |call_id, _token| {
                 self.inner.call_str(
                     WebViewMethodId::Evaluate,
-                    script,
+                    &waterui_webview::raw_evaluation(script),
                     &[JValue::Long(
                         jlong::try_from(call_id).expect("a call id fits a jlong"),
                     )],
@@ -899,10 +900,6 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
 
     fn remove_handler(&self, name: &str) {
         self.inner.shared.handlers.borrow_mut().remove(name);
-    }
-
-    fn asset_origin(&self) -> Option<Url> {
-        self.inner.shared.asset_origin.clone()
     }
 
     fn watch(&self, watcher: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
@@ -1188,7 +1185,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_webview_HydrolysisWebView_nat
         };
         let origin = get_string(env, &origin)?;
         Ok(jboolean::from(origin_may_use_bridge(
-            &shared.origin_rules.borrow(),
+            &shared.origin_rules,
             &origin,
         )))
     })

@@ -22,6 +22,17 @@ inputs:
       forwarded cache-primary-key output.
     required: false
     default: ""
+  limit-bytes:
+    description: >-
+      The repository's cache storage limit in bytes
+      (vars.ACTIONS_CACHE_LIMIT_BYTES); a save first proves the archive
+      fits under it next to every live entry.
+    required: false
+    default: ""
+  github-token:
+    description: Token that can list the repository's Actions caches; required to save.
+    required: false
+    default: ""
 
 outputs:
   cache-hit:
@@ -45,6 +56,16 @@ runs:
         key: cargo-sources-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
         restore-keys: |
           cargo-sources-${{ runner.os }}-
+    - name: Cargo sources headroom
+      if: inputs.operation == 'save'
+      uses: ./.github/actions/cache-headroom
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+        key: ${{ inputs.primary-key }}
+        limit-bytes: ${{ inputs.limit-bytes }}
+        github-token: ${{ inputs.github-token }}
     - name: Save Cargo sources
       id: save
       if: inputs.operation == 'save'

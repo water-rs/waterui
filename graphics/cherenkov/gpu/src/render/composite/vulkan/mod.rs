@@ -38,6 +38,17 @@
 //! floor that has it — Mali-G715, Adreno 830/840 — also has
 //! rasterization-order attachment access. A device that had only tile
 //! image would get [`Access::None`] and compose portably.
+//!
+//! Access alone does not make a device eligible. An epoch's slots exist
+//! to keep intermediates out of device memory (#2192), so they are
+//! backed by lazily allocated memory, which a tile GPU leaves
+//! uncommitted while the slot stays on chip. A device with per-pixel
+//! access and no lazily allocated memory type — a software rasterizer
+//! such as llvmpipe — has no tile memory for an epoch to stay in:
+//! backing its slots with ordinary device memory would add an
+//! allocation per slot on top of the targets the portable path already
+//! holds, for no traffic saved. [`eligibility`] decides from both, once,
+//! when the engine is created, and such a device composes portably.
 
 pub mod exec;
 pub mod mirror;
@@ -129,6 +140,94 @@ pub fn device_access(device: &wgpu::Device) -> Access {
         return Access::None;
     };
     access(hal.enabled_device_extensions())
+}
+
+/// Why a device cannot run a tile epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Declined {
+    /// The device was opened with less than per-pixel attachment
+    /// access.
+    Access(Access),
+    /// The device has per-pixel access but no lazily allocated memory
+    /// type, so an epoch's slots would have no tile memory to stay in.
+    TransientMemory,
+}
+
+/// A device that can run a tile epoch: it was opened with per-pixel
+/// attachment access, and its memory has a lazily allocated type for
+/// the epoch's slots.
+///
+/// Only [`eligibility`] makes one, and [`Mirror::new`] takes it, so no
+/// executor is built for a device that cannot run it.
+#[derive(Clone, Copy, Debug)]
+pub struct Eligible {
+    /// Bit `i` is set when memory type `i` is lazily allocated — the
+    /// same encoding as an image's `memoryTypeBits`.
+    lazy_types: u32,
+}
+
+impl Eligible {
+    /// The first lazily allocated memory type among `bits`, an image's
+    /// `memoryTypeBits`.
+    #[must_use]
+    pub const fn lazy_memory_type(self, bits: u32) -> Option<u32> {
+        match self.lazy_types & bits {
+            0 => None,
+            admitted => Some(admitted.trailing_zeros()),
+        }
+    }
+}
+
+/// Whether a device opened with `access`, whose physical device reports
+/// `memory`, can run a tile epoch.
+///
+/// # Errors
+/// [`Declined`] names the capability the device lacks, access first.
+pub fn eligibility(
+    access: Access,
+    memory: &vk::PhysicalDeviceMemoryProperties,
+) -> Result<Eligible, Declined> {
+    if access != Access::PerPixel {
+        return Err(Declined::Access(access));
+    }
+    let count = usize::try_from(memory.memory_type_count).expect("memory type count fits usize");
+    let lazy_types = memory.memory_types[..count]
+        .iter()
+        .enumerate()
+        .filter(|(_, ty)| {
+            ty.property_flags
+                .contains(vk::MemoryPropertyFlags::LAZILY_ALLOCATED)
+        })
+        .fold(0, |mask, (index, _)| mask | (1 << index));
+    if lazy_types == 0 {
+        return Err(Declined::TransientMemory);
+    }
+    Ok(Eligible { lazy_types })
+}
+
+/// [`eligibility`] for the engine's own `device`, opened on `adapter`;
+/// a device that is not Vulkan declines with [`Access::None`].
+///
+/// # Errors
+/// [`Declined`] names the capability the device lacks.
+pub fn device_eligibility(
+    device: &wgpu::Device,
+    adapter: &wgpu::Adapter,
+) -> Result<Eligible, Declined> {
+    let access = device_access(device);
+    // SAFETY: `as_hal` borrows the adapter for this scope and reports
+    // `None` off-Vulkan.
+    let Some(hal) = (unsafe { adapter.as_hal::<wgpu::hal::vulkan::Api>() }) else {
+        return Err(Declined::Access(Access::None));
+    };
+    // SAFETY: the physical device belongs to the live instance `hal`
+    // shares; the query writes only its own return value.
+    let memory = unsafe {
+        hal.shared_instance()
+            .raw_instance()
+            .get_physical_device_memory_properties(hal.raw_physical_device())
+    };
+    eligibility(access, &memory)
 }
 
 /// The feature bits that go with [`device_extensions`], as one `p_next`
@@ -261,7 +360,65 @@ impl Request {
 
 #[cfg(test)]
 mod tests {
-    use super::{Access, BASE_NAMES, ORDERED_NAMES, access};
+    use ash::vk;
+
+    use super::{Access, BASE_NAMES, Declined, ORDERED_NAMES, access, eligibility};
+
+    /// Memory properties listing one type per entry of `types`.
+    fn memory(types: &[vk::MemoryPropertyFlags]) -> vk::PhysicalDeviceMemoryProperties {
+        let mut memory = vk::PhysicalDeviceMemoryProperties {
+            memory_type_count: u32::try_from(types.len()).expect("test lists few types"),
+            ..Default::default()
+        };
+        for (slot, &property_flags) in memory.memory_types.iter_mut().zip(types) {
+            *slot = vk::MemoryType {
+                property_flags,
+                heap_index: 0,
+            };
+        }
+        memory
+    }
+
+    const LAZY: vk::MemoryPropertyFlags = vk::MemoryPropertyFlags::from_raw(
+        vk::MemoryPropertyFlags::DEVICE_LOCAL.as_raw()
+            | vk::MemoryPropertyFlags::LAZILY_ALLOCATED.as_raw(),
+    );
+
+    #[test]
+    fn per_pixel_access_with_lazy_memory_is_eligible() {
+        let eligible = eligibility(
+            Access::PerPixel,
+            &memory(&[vk::MemoryPropertyFlags::DEVICE_LOCAL, LAZY]),
+        )
+        .expect("a tile GPU runs epochs");
+        assert_eq!(eligible.lazy_memory_type(0b11), Some(1));
+        assert_eq!(eligible.lazy_memory_type(0b01), None);
+    }
+
+    /// llvmpipe: per-pixel access, and every memory type committed
+    /// up front (#2689).
+    #[test]
+    fn per_pixel_access_without_lazy_memory_declines() {
+        let host = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        assert_eq!(
+            eligibility(
+                Access::PerPixel,
+                &memory(&[vk::MemoryPropertyFlags::DEVICE_LOCAL | host]),
+            )
+            .err(),
+            Some(Declined::TransientMemory)
+        );
+    }
+
+    #[test]
+    fn weaker_access_declines_before_memory_is_read() {
+        for weaker in [Access::None, Access::PerDraw] {
+            assert_eq!(
+                eligibility(weaker, &memory(&[LAZY])).err(),
+                Some(Declined::Access(weaker))
+            );
+        }
+    }
 
     #[test]
     fn local_read_alone_orders_only_between_draws() {

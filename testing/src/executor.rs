@@ -1,7 +1,9 @@
 //! A `LocalExecutor` for tests that have no event loop.
 
 use core::future::Future;
-use std::sync::mpsc::{self, Receiver, Sender};
+use core::time::Duration;
+use std::cell::Cell;
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -23,6 +25,10 @@ struct ParkedWork {
 }
 
 thread_local! {
+    /// Whether [`install_test_executor`] installed the parked queue as this
+    /// thread's local executor. When a runtime installed its own first, the
+    /// runtime's executor is the one whose wake edge a wait must observe.
+    static INSTALLED: Cell<bool> = const { Cell::new(false) };
     /// Parks runnables so dropping them — which cancels the task — is deferred to
     /// thread teardown rather than happening inside `schedule`.
     static PARKED_WORK: ParkedWork = {
@@ -76,17 +82,46 @@ impl LocalExecutor for TestLocalExecutor {
 
 /// Installs [`TestLocalExecutor`] as the local executor for this thread.
 ///
-/// The executor is wrapped in [`waterui::task::MonitoredLocalExecutor`] so hosts that drive
-/// the runtime — test pumps, preview and MCP sessions — can observe work that
-/// is parked on an external wake through
-/// [`waterui::task::outstanding_local_tasks`].
+/// The executor is wrapped in [`waterui::task::MonitoredLocalExecutor`] so the
+/// framework's refresh-rate probes see the headless rate. A session waits on
+/// work parked on an external wake through the parked queue itself: a waker
+/// sends the runnable, which ends the wait.
 ///
 /// Idempotent, so every test can call it without coordinating with the others.
 pub fn install_test_executor() {
-    let _ = executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
+    if executor_core::try_init_local_executor(waterui::task::monitored_local_executor(
         TestLocalExecutor,
         waterui::task::RefreshRate::HEADLESS,
-    ));
+    ))
+    .is_ok()
+    {
+        INSTALLED.with(|installed| installed.set(true));
+    }
+}
+
+/// Blocks until a waker parks a runnable on this thread's queue, or `timeout`
+/// elapses, and runs what arrived; returns whether a runnable ran.
+///
+/// `None` when this thread's local executor is not [`TestLocalExecutor`]:
+/// the runtime installed its own, and its wake edge is the one to wait on.
+/// Called between frames of a pump loop, where running a runnable cannot
+/// re-enter the code under test.
+pub fn wait_parked_local_work(timeout: Duration) -> Option<bool> {
+    if !INSTALLED.with(Cell::get) {
+        return None;
+    }
+    Some(
+        PARKED_WORK.with(|parked| match parked.receiver.recv_timeout(timeout) {
+            Ok(runnable) => {
+                runnable.run();
+                parked.pending.fetch_sub(1, Ordering::SeqCst);
+                true
+            }
+            // The sender lives in this thread-local, so the queue cannot
+            // disconnect while it is read.
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => false,
+        }),
+    )
 }
 
 /// Runs the work `spawn_local` parked, returning how many runnables ran.

@@ -23,12 +23,13 @@ use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 use waterui_assets_planner::{
-    BundleManifest, FontDeclaration, FontPlatform, FontSource, GraphScope,
+    BundleManifest, FontDeclaration, FontPlatform, FontSource, GraphScope, LaunchPlan,
     dependency_font_declarations, font_platform_scope,
 };
 use zenwave::{Client as _, Method};
 
 use crate::project::Project;
+use crate::project_model::facts::{Fact, Scope};
 use crate::project_model::project_types::PermissionKey;
 
 mod android_manifest;
@@ -437,12 +438,35 @@ pub async fn crate_metadata(
     build_manifest: &Path,
     features: &[String],
 ) -> eyre::Result<cargo_metadata::Metadata> {
+    host.cargo_metadata(&crate_metadata_command(build_manifest, features))
+        .await
+        .map_err(Into::into)
+}
+
+/// [`crate_metadata`] as the project's recorded fact: answered once per
+/// invocation and replayed while its inputs are unchanged.
+async fn project_crate_metadata(
+    project: &Project,
+    build_manifest: &Path,
+    features: &[String],
+) -> eyre::Result<cargo_metadata::Metadata> {
+    project
+        .facts()
+        .cargo_metadata(&crate_metadata_command(build_manifest, features))
+        .await
+}
+
+/// The `cargo metadata` invocation [`crate_metadata`] runs.
+fn crate_metadata_command(
+    build_manifest: &Path,
+    features: &[String],
+) -> cargo_metadata::MetadataCommand {
     let mut command = cargo_metadata::MetadataCommand::new();
     command.manifest_path(build_manifest);
     if !features.is_empty() {
         command.features(cargo_metadata::CargoOpt::SomeFeatures(features.to_vec()));
     }
-    host.cargo_metadata(&command).await.map_err(Into::into)
+    command
 }
 
 /// The features cargo resolved on each package of `metadata`'s graph — what
@@ -516,7 +540,11 @@ async fn scan_crate_font_declarations(
 
     let managed = seed_managed_crate_lock(project, build_manifest).await?;
 
-    let metadata = crate_metadata(project.host(), build_manifest, &[])
+    let fonts = project
+        .facts()
+        .answer(&DependencyFonts {
+            manifest: build_manifest.to_path_buf(),
+        })
         .await
         .wrap_err_with(|| {
         let mut message = format!(
@@ -536,16 +564,109 @@ async fn scan_crate_font_declarations(
         }
         message
     })?;
-
-    let fonts = dependency_font_declarations(&metadata, GraphScope::Build).wrap_err_with(|| {
-        format!(
-            "Invalid font declaration in the dependency graph of {}",
-            build_manifest.display()
-        )
-    })?;
+    let fonts = fonts
+        .iter()
+        .cloned()
+        .map(FontDeclaration::from)
+        .collect::<Vec<_>>();
 
     info!("Found {} font declarations from dependencies", fonts.len());
     Ok(fonts)
+}
+
+/// The font declarations of a manifest's dependency graph, as a
+/// [`Fact`]: the small answer a build replays instead of the whole
+/// `cargo metadata` document it was read from.
+struct DependencyFonts {
+    manifest: PathBuf,
+}
+
+impl Fact for DependencyFonts {
+    const KIND: &'static str = "dependency-fonts";
+    type Question = PathBuf;
+    type Value = Vec<RecordedFont>;
+
+    fn question(&self) -> PathBuf {
+        self.manifest.clone()
+    }
+
+    async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<Vec<RecordedFont>> {
+        let metadata = scope
+            .cargo_metadata(&crate_metadata_command(&self.manifest, &[]))
+            .await?;
+        let fonts =
+            dependency_font_declarations(&metadata, GraphScope::Build).wrap_err_with(|| {
+                format!(
+                    "Invalid font declaration in the dependency graph of {}",
+                    self.manifest.display()
+                )
+            })?;
+        Ok(fonts.into_iter().map(RecordedFont::from).collect())
+    }
+}
+
+/// A [`FontDeclaration`] in its recorded form.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecordedFont {
+    name: String,
+    source: RecordedFontSource,
+    crate_name: String,
+    platforms: Option<Vec<FontPlatform>>,
+}
+
+/// A [`FontSource`] in its recorded form.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum RecordedFontSource {
+    Local {
+        crate_root: PathBuf,
+        relative_path: PathBuf,
+    },
+    Remote {
+        url: String,
+    },
+    BuiltIn,
+}
+
+impl From<FontDeclaration> for RecordedFont {
+    fn from(font: FontDeclaration) -> Self {
+        Self {
+            name: font.name,
+            source: match font.source {
+                FontSource::Local {
+                    crate_root,
+                    relative_path,
+                } => RecordedFontSource::Local {
+                    crate_root,
+                    relative_path,
+                },
+                FontSource::Remote { url } => RecordedFontSource::Remote { url },
+                FontSource::BuiltIn => RecordedFontSource::BuiltIn,
+            },
+            crate_name: font.crate_name,
+            platforms: font.platforms,
+        }
+    }
+}
+
+impl From<RecordedFont> for FontDeclaration {
+    fn from(font: RecordedFont) -> Self {
+        Self {
+            name: font.name,
+            source: match font.source {
+                RecordedFontSource::Local {
+                    crate_root,
+                    relative_path,
+                } => FontSource::Local {
+                    crate_root,
+                    relative_path,
+                },
+                RecordedFontSource::Remote { url } => FontSource::Remote { url },
+                RecordedFontSource::BuiltIn => FontSource::BuiltIn,
+            },
+            crate_name: font.crate_name,
+            platforms: font.platforms,
+        }
+    }
 }
 
 /// Everything the dependency graph's `[package.metadata.waterui.android]`
@@ -608,7 +729,7 @@ pub async fn scan_android_declarations(
     features: &[String],
 ) -> eyre::Result<AndroidDeclarations> {
     seed_managed_crate_lock(project, build_manifest).await?;
-    let metadata = crate_metadata(project.host(), build_manifest, features)
+    let metadata = project_crate_metadata(project, build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -732,7 +853,7 @@ pub async fn scan_apple_declarations(
     features: &[String],
 ) -> eyre::Result<AppleDeclarations> {
     seed_managed_crate_lock(project, build_manifest).await?;
-    let metadata = crate_metadata(project.host(), build_manifest, features)
+    let metadata = project_crate_metadata(project, build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -2120,6 +2241,11 @@ pub fn project_launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
     unified::launch_assets(project)
 }
 
+/// Resolve the project's launch screen without loading its artwork.
+pub fn project_launch_plan(project: &Project) -> eyre::Result<LaunchPlan> {
+    unified::launch_plan(project)
+}
+
 /// Stage project assets for web packaging.
 pub async fn stage_project_assets_for_web(project: &Project, site_root: &Path) -> eyre::Result<()> {
     web::stage_for_web(project, site_root).await
@@ -3048,11 +3174,11 @@ mod tests {
 ///
 /// Returns an error when `cargo metadata` cannot be read.
 pub async fn scan_required_permissions(
-    host: &crate::toolchain::Host,
+    project: &Project,
     build_manifest: &Path,
     features: &[String],
 ) -> eyre::Result<Vec<RequiredPermission>> {
-    let metadata = crate_metadata(host, build_manifest, features)
+    let metadata = project_crate_metadata(project, build_manifest, features)
         .await
         .wrap_err_with(|| {
             format!(
@@ -3060,8 +3186,15 @@ pub async fn scan_required_permissions(
                 build_manifest.display()
             )
         })?;
+    required_permissions(&metadata)
+}
 
-    let enabled_features = resolved_features(&metadata);
+/// The permissions `metadata`'s resolved graph requires — what
+/// [`scan_required_permissions`] reports for the graph it resolved.
+fn required_permissions(
+    metadata: &cargo_metadata::Metadata,
+) -> eyre::Result<Vec<RequiredPermission>> {
+    let enabled_features = resolved_features(metadata);
 
     let mut required = Vec::new();
     for package in &metadata.packages {
@@ -3270,11 +3403,14 @@ mod permission_audit_tests {
             "[dependencies]\ntheme = { path = \"../theme\" }\n",
         );
 
-        let required = smol::block_on(scan_required_permissions(
-            &crate::toolchain::Host::current(),
-            &launcher_manifest,
-            &[],
-        ))
+        let required = required_permissions(
+            &smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                &launcher_manifest,
+                &[],
+            ))
+            .expect("the graph resolves"),
+        )
         .expect("scan the launcher's graph");
         assert!(
             required
@@ -3285,11 +3421,14 @@ mod permission_audit_tests {
             "the launcher graph must report the permission `theme` declares"
         );
 
-        let app = smol::block_on(scan_required_permissions(
-            &crate::toolchain::Host::current(),
-            &app_manifest,
-            &[],
-        ))
+        let app = required_permissions(
+            &smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                &app_manifest,
+                &[],
+            ))
+            .expect("the graph resolves"),
+        )
         .expect("scan the app's graph");
         assert!(
             app.is_empty(),
@@ -3315,11 +3454,14 @@ mod permission_audit_tests {
         );
 
         let enabled_features = vec![String::from("map")];
-        let enabled = smol::block_on(scan_required_permissions(
-            &crate::toolchain::Host::current(),
-            &launcher_manifest,
-            &enabled_features,
-        ))
+        let enabled = required_permissions(
+            &smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                &launcher_manifest,
+                &enabled_features,
+            ))
+            .expect("the graph resolves"),
+        )
         .expect("scan with the launcher's selected feature");
         assert!(
             enabled
@@ -3329,11 +3471,14 @@ mod permission_audit_tests {
             "the selected launcher feature must include its gated requirement"
         );
 
-        let disabled = smol::block_on(scan_required_permissions(
-            &crate::toolchain::Host::current(),
-            &launcher_manifest,
-            &[],
-        ))
+        let disabled = required_permissions(
+            &smol::block_on(crate_metadata(
+                &crate::toolchain::Host::current(),
+                &launcher_manifest,
+                &[],
+            ))
+            .expect("the graph resolves"),
+        )
         .expect("scan without the launcher's optional feature");
         assert!(
             disabled.is_empty(),

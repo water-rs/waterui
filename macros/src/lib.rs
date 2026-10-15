@@ -827,7 +827,7 @@ fn derive_project_unit_struct(input: &DeriveInput, waterui: &TokenStream2) -> To
 ///
 /// For example, `card` in `my-crate` becomes `waterui_preview_my_crate_card`.
 ///
-/// This symbol can be loaded by the preview support app to render the view.
+/// This symbol is what a generated preview binary resolves to render the view.
 ///
 /// # Symbol Naming
 ///

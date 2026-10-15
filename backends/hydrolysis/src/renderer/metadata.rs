@@ -740,7 +740,7 @@ impl HydrolysisRenderer {
                 placed_edge: value.placed_edge.clone(),
                 env: env.clone(),
                 builder: value.builder.clone(),
-                content: Rc::clone(&value.content),
+                presentations: Rc::clone(&value.presentations),
                 marker: Rc::clone(&value.marker),
             });
         render_content(renderer);

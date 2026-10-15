@@ -9,7 +9,7 @@ use eyre::{Result, bail};
 use serde::Deserialize;
 
 use crate::shell::Shell;
-use crate::{error, header, note, success};
+use crate::{header, note, success};
 use waterui_cli::build::BuildProgress;
 use waterui_cli::mcp::preview::PreviewArgs;
 use waterui_cli::preview::request::{
@@ -19,8 +19,8 @@ use waterui_cli::preview::request::{
 use waterui_cli::preview::{
     ApplePreviewRequest, HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton,
     HydrolysisPreviewRequest, HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent,
-    HydrolysisPreviewTheme, discover_hydrolysis_preview_exports, launch_preview_session,
-    render_preview_with_apple, render_preview_with_hydrolysis, test_preview_with_hydrolysis,
+    HydrolysisPreviewTheme, discover_hydrolysis_preview_exports, render_preview_with_apple,
+    render_preview_with_hydrolysis, test_preview_with_hydrolysis,
 };
 use waterui_cli::project::{Manifest, read_project_crate_name};
 
@@ -66,6 +66,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
                 platform: target_platform,
                 width,
                 height,
+                content_deadline: request::DEFAULT_CONTENT_DEADLINE,
                 sccache_path: sccache_path.clone(),
                 progress: Some(shell.build_progress()),
             },
@@ -121,6 +122,16 @@ pub struct Args {
     #[arg(short, long, default_value = "preview.png")]
     output: PathBuf,
 
+    /// Seconds the capture waits for content its views still owe — a
+    /// decoding image, a `Suspense` future — before the preview fails naming
+    /// them.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = request::DEFAULT_CONTENT_DEADLINE.as_secs_f64()
+    )]
+    content_timeout: f64,
+
     /// Hydrolysis scenario TOML for interaction/timeline capture.
     #[arg(long)]
     scenario: Option<PathBuf>,
@@ -161,6 +172,7 @@ impl Args {
             theme: self.theme,
             platform: self.platform,
             device: self.device.clone(),
+            content_timeout: Some(self.content_timeout),
         }
     }
 }
@@ -215,7 +227,7 @@ struct PreviewTestArgs {
 /// Returns an error if preview fails.
 #[expect(
     clippy::too_many_lines,
-    reason = "keeps preview command dispatch and support-app cleanup in one linear lifecycle"
+    reason = "keeps preview command dispatch in one linear lifecycle"
 )]
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     match args.command {
@@ -292,6 +304,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 platform,
                 width: request.width,
                 height: request.height,
+                content_deadline: request.content_deadline,
                 sccache_path,
                 progress: Some(shell.build_progress()),
             },
@@ -320,15 +333,17 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         bail!("`--scenario` and `--output-dir` are supported only with `--backend hydrolysis`.");
     }
 
-    if request.backend == ResolvedPreviewBackend::Apple {
+    if let ResolvedPreviewBackend::Apple(platform) = request.backend {
         let spinner = shell.spinner("Building and rendering with the Apple backend...");
         render_preview_with_apple(
             ApplePreviewRequest {
                 host: &waterui_cli::toolchain::Host::current(),
                 project_path: &project_path,
+                platform,
                 source: request.target.source(),
                 width: request.width,
                 height: request.height,
+                content_deadline: request.content_deadline,
                 sccache_path,
                 progress: Some(shell.build_progress()),
             },
@@ -342,83 +357,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         return Ok(());
     }
 
-    let PreviewTarget::Function {
-        function_path,
-        symbol,
-    } = &request.target
-    else {
-        bail!("Expression preview is currently supported only with `--backend hydrolysis`.");
-    };
-
-    let ResolvedPreviewBackend::SupportApp(preview_platform) = request.backend else {
-        unreachable!("the Hydrolysis arm returned early");
-    };
-
-    // Launch preview session (connects to existing app or launches new one)
-    let spinner = shell.spinner("Connecting to preview app...");
-    let mut session = Box::pin(launch_preview_session(
-        &waterui_cli::toolchain::Host::current(),
-        &project_path,
-        preview_platform,
-        sccache_path.clone(),
-        Some(shell.build_progress()),
-    ))
-    .await?;
-    if let Some(s) = spinner {
-        s.finish_and_clear();
-    }
-
-    let result = async {
-        // Build dylib
-        let spinner = shell.spinner("Building project...");
-        let dylib = session.build_dylib(&project_path).await?;
-        if let Some(s) = spinner {
-            s.finish_and_clear();
-        }
-
-        let spinner = shell.spinner("Rendering view...");
-        let png_data = request::render_with_symbol(
-            &mut session,
-            function_path,
-            symbol,
-            dylib.id,
-            &dylib.path,
-            request.width,
-            request.height,
-        )
-        .await?;
-        if let Some(s) = spinner {
-            s.finish_and_clear();
-        }
-
-        // Save output
-        if png_data.is_empty() {
-            error!(shell, "Preview returned empty PNG data");
-            bail!("Preview returned empty PNG data");
-        }
-
-        smol::fs::write(&args.output, &png_data).await?;
-        success!(shell, "Preview saved to {}", args.output.display());
-        Ok(())
-    }
-    .await;
-
-    match result {
-        Ok(()) => {
-            // Keep preview app running for reuse by future preview commands.
-            session.detach();
-            Ok(())
-        }
-        Err(err) => {
-            // On failure, terminate the preview app to avoid reusing a broken process.
-            match session.shutdown().await {
-                Ok(()) => Err(err),
-                Err(shutdown_error) => Err(err.wrap_err(format!(
-                    "preview support app shutdown also failed: {shutdown_error}"
-                ))),
-            }
-        }
-    }
+    Ok(())
 }
 
 #[derive(Debug, Deserialize)]
@@ -793,7 +732,7 @@ mod tests {
     #[test]
     fn rejects_theme_for_non_hydrolysis_preview() {
         let result = request::resolve_hydrolysis_preview_theme(
-            ResolvedPreviewBackend::SupportApp(waterui_cli::preview::PreviewPlatform::Macos),
+            ResolvedPreviewBackend::Apple(waterui_cli::platform::TargetPlatform::MacCatalyst),
             Some(CliHydrolysisPreviewTheme::Material3),
         );
         assert!(result.is_err());

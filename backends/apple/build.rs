@@ -33,5 +33,10 @@ fn main() {
         platform_timing: { any(watcher_animation, macos_layer_transform) },
         // The frame-driven scroll flights evaluating the curve per tick.
         frame_progress: { any(feature = "scroll", feature = "list") },
+        // Mac Catalyst: the UIKit realization compiled for macOS.
+        catalyst: { all(target_os = "ios", target_abi = "macabi") },
+        // The in-process preview entry: the AppKit realization on macOS,
+        // the UIKit realization through Mac Catalyst.
+        preview_entry: { all(feature = "preview", any(target_os = "macos", catalyst)) },
     }
 }

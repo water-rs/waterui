@@ -17,6 +17,11 @@
 # fromJson(needs.prepare.outputs.package_groups).
 set -euo pipefail
 
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  echo "::error::group-examples.sh needs bash >= 4.2 (found ${BASH_VERSION}); /bin/bash 3.2 lets SIGCHLD interrupt writes with EINTR (#2683)" >&2
+  exit 1
+fi
+
 workspace="${GITHUB_WORKSPACE:-$(pwd)}"
 waterui_dir="${WATERUI_DIR:-${workspace}}"
 weights_file="${WEIGHTS_FILE:-${workspace}/.github/example-package-weights.json}"

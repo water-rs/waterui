@@ -353,6 +353,23 @@ pub fn launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
     launch_assets_from(project, &manifest)
 }
 
+/// Resolves the project's launch screen — `[launch]` over `[theme]`, and
+/// the root `Launch.*` artwork path — without decoding any artwork, for
+/// callers that only name what the launch screen holds.
+///
+/// # Errors
+///
+/// Fails when the assets cannot be planned.
+pub fn launch_plan(project: &Project) -> eyre::Result<LaunchPlan> {
+    let manifest = build_main_manifest(project)?;
+    let water = project.manifest();
+    Ok(LaunchPlan::resolve(
+        water.launch.as_ref(),
+        water.theme.as_ref(),
+        &manifest,
+    ))
+}
+
 fn launch_assets_from(project: &Project, manifest: &BundleManifest) -> eyre::Result<LaunchAssets> {
     let water = project.manifest();
     let plan = LaunchPlan::resolve(water.launch.as_ref(), water.theme.as_ref(), manifest);

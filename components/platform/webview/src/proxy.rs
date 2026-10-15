@@ -98,9 +98,11 @@ impl WebViewProxy {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    /// Runs the given JavaScript code in the context of the web view.
+    /// Evaluates the JavaScript expression `script` in the web view and answers
+    /// the JSON encoding of its value.
     ///
-    /// The returned future is intentionally thread-local because native
+    /// See [`WebViewHandle::run_javascript`](crate::WebViewHandle::run_javascript)
+    /// for the contract every engine meets. The returned future is intentionally thread-local because native
     /// web views are main-thread-affine.
     #[must_use = "the script only runs once the returned future is awaited"]
     pub fn run_javascript<'a>(
@@ -137,9 +139,15 @@ impl WebViewProxy {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    /// Injects a script that will run on every page load.
+    /// Injects a script that will run on every later page load.
     ///
     /// `key` names the script; injecting again under the same key replaces it.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `key` names a script the view was opened with
+    /// ([`WebViewOpen::inject`](crate::WebViewOpen::inject)): those are fixed
+    /// for its life, on every backend alike.
     pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         self.handle.inject_script(key, script, time);
     }

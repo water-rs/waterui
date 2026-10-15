@@ -40,9 +40,17 @@ pub fn demo() -> impl View {
 ```bash
 water preview demo --output preview.png
 water preview demo --backend hydrolysis --theme material3 --frame 390x844
+water preview demo --platform ios
 water preview demo --platform android --device <serial-or-avd>
 water preview --expr 'vstack((text("Hi").title(), button("Go").action(|| {})))'
 ```
+
+`--platform ios` renders the UIKit realization on the Mac itself through Mac Catalyst,
+under the iPad idiom, so it shows the iOS look without booting a simulator. It builds for
+the `aarch64-apple-ios-macabi` Rust target, which `water doctor --fix` installs.
+The capture draws without a window, so it does not evaluate backdrop filters: a material
+background shows its tint but not the blur of what lies behind it. Check materials on a
+device or simulator with `water run --platform ios`.
 
 CLI and MCP previews honor `[platforms.<platform>] backend = "..."` in `Water.toml`.
 An explicit backend that contradicts the declaration fails before building.
@@ -52,8 +60,9 @@ the platform default `gtk4` has no preview renderer. See
 
 `--expr` compiles the expression into generated preview code with `waterui::prelude::*`
 in scope, so it is a real compile, not a string interpreter. The preview pipeline links
-the app as a dylib, which is why generated projects carry the
-`dev = ["waterui/dynamic_linking"]` feature (see `references/project.md`).
+the generated preview binary against the shared WaterUI runtime, which is
+why generated projects carry the `dev = ["waterui/dynamic_linking"]` feature
+(see `references/project.md`).
 
 Keeping the preview function self-contained — owning its own bindings — is what lets the
 same function be embedded in a gallery, previewed, and used by tests. A screen with a

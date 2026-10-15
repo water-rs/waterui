@@ -40,7 +40,7 @@
 //! for the next launch. `OTA.md` beside this crate spells the contract out.
 //!
 //! A host that mounts a view outside an application — a `waterui-testing`
-//! session, the `water preview` support app — has no bundle loader of its
+//! session, say — has no bundle loader of its
 //! own: it installs the runtime [`configured_runtime`] loads from the bundle
 //! the `water` CLI names in [`BUNDLE_VARIABLE`].
 //!

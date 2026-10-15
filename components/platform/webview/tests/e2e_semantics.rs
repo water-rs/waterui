@@ -15,6 +15,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::future::{Future, ready};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -27,9 +28,9 @@ use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::{AnyView, Metadata, Retain, Signal, binding};
 use waterui_testing::{Role, UiBuilder};
 use waterui_webview::{
-    BackendEvent, Cookie, CustomWebViewController, OriginPolicy, ScriptInjectionTime,
-    ScriptMessageHandler, Url, WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController,
-    WebViewHandle,
+    BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler, Url,
+    UserScript, WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
+    WebViewProxy,
 };
 
 const DOCS_URL: &str = "https://waterui.dev/docs";
@@ -42,14 +43,15 @@ const WEBVIEW_HEIGHT: f32 = 260.0;
 ///
 /// It fills the seat an engine's controller fills in a real deployment —
 /// carried in the environment, opening a web view when the component is
-/// created — while recording the two facts a test can observe without a page:
-/// how many web views were opened, and where each was navigated. A second
-/// `open` is the signature of the component being torn down and rebuilt
-/// instead of navigated.
+/// created — while recording the facts a test can observe without a page:
+/// how many web views were opened, where each was navigated, and which script
+/// keys reached the backend. A second `open` is the signature of the component
+/// being torn down and rebuilt instead of navigated.
 #[derive(Clone)]
 struct TestController {
     opens: Rc<Cell<usize>>,
     navigations: Rc<RefCell<Vec<Url>>>,
+    injections: Rc<RefCell<Vec<String>>>,
 }
 
 impl TestController {
@@ -57,6 +59,7 @@ impl TestController {
         Self {
             opens: Rc::new(Cell::new(0)),
             navigations: Rc::new(RefCell::new(Vec::new())),
+            injections: Rc::new(RefCell::new(Vec::new())),
         }
     }
 }
@@ -66,8 +69,14 @@ impl CustomWebViewController for TestController {
         self.opens.set(self.opens.get() + 1);
         TestHandle {
             navigations: Rc::clone(&self.navigations),
+            injections: Rc::clone(&self.injections),
             watchers: WatcherSet::new(),
         }
+    }
+
+    /// No engine means no interception facility an asset origin could stand on.
+    fn asset_origin(&self) -> Option<Url> {
+        None
     }
 }
 
@@ -75,13 +84,15 @@ impl CustomWebViewController for TestController {
 ///
 /// Configuration is accepted and discarded — there is no page to inject a
 /// script into and no bridge for a handler to be reachable from — the history
-/// stays permanently empty, and `go_to` is the one method with observable
-/// behavior because navigation is what the binding test asserts on. The
+/// stays permanently empty, and `go_to` and `inject_script` are the methods
+/// with observable behavior: navigation is what the binding test asserts on,
+/// and the keys an injection carries are what the script-key test does. The
 /// watcher set is kept so guards register and unregister normally; nothing
 /// ever emits into it.
 #[derive(Debug, Clone)]
 struct TestHandle {
     navigations: Rc<RefCell<Vec<Url>>>,
+    injections: Rc<RefCell<Vec<String>>>,
     watchers: WatcherSet<BackendEvent>,
 }
 
@@ -108,20 +119,15 @@ impl WebViewHandle for TestHandle {
         false
     }
 
-    fn inject_script(&self, _key: &str, _script: &str, _time: ScriptInjectionTime) {}
+    fn inject_script(&self, key: &str, _script: &str, _time: ScriptInjectionTime) {
+        self.injections.borrow_mut().push(key.to_owned());
+    }
 
     fn add_handler(&self, _name: &str, _handler: Box<ScriptMessageHandler>) {}
 
     fn remove_handler(&self, _name: &str) {}
 
-    fn set_bridge_origins(&self, _policy: OriginPolicy) {}
-
     fn set_cookie(&self, _cookie: Cookie<'static>) {}
-
-    /// No engine means no interception facility an asset origin could stand on.
-    fn asset_origin(&self) -> Option<Url> {
-        None
-    }
 
     fn set_redirects_enabled(&self, _enabled: impl Signal<Output = bool>) {}
 
@@ -276,5 +282,62 @@ fn an_installed_realization_draws_the_webview_and_keeps_its_node(ui: UiBuilder) 
         webview.node().role(),
         Role::GROUP,
         "page content is opaque, so the surface itself reads as a container"
+    );
+}
+
+/// The scripts a web view is opened with are fixed for its life, so
+/// `inject_script` under one of their keys fails in the facade — through the
+/// view and through its proxy, for the application's own scripts and the
+/// mirrored-state seed alike — and the backend never sees the call. A key of
+/// its own still reaches the backend.
+#[test]
+fn inject_script_rejects_a_creation_time_key_before_the_backend() {
+    let controller = TestController::new();
+    let webview = WebViewController::new(controller.clone()).open_with(WebViewConfig {
+        scripts: vec![UserScript {
+            key: Str::from_static("theme"),
+            source: Str::from_static("document.body.dataset.theme = 'dark';"),
+            time: ScriptInjectionTime::DocumentEnd,
+        }],
+        ..WebViewConfig::default()
+    });
+    let proxy = WebViewProxy::new(webview.handle().clone());
+
+    let rejection = |inject: &dyn Fn()| {
+        let payload = catch_unwind(AssertUnwindSafe(inject))
+            .expect_err("a creation-time key must be rejected");
+        *payload
+            .downcast::<String>()
+            .expect("the rejection carries a formatted message")
+    };
+    let from_view = rejection(&|| {
+        webview.inject_script("theme", "void 0;", ScriptInjectionTime::DocumentStart);
+    });
+    assert!(
+        from_view.contains("`theme`") && from_view.contains("opened with"),
+        "the message names the key and why it is fixed: {from_view}"
+    );
+    let from_proxy = rejection(&|| {
+        proxy.inject_script(
+            "waterui:state-seed",
+            "void 0;",
+            ScriptInjectionTime::DocumentStart,
+        );
+    });
+    assert!(
+        from_proxy.contains("`waterui:state-seed`"),
+        "the mirrored-state seed is a creation-time script too: {from_proxy}"
+    );
+    assert!(
+        controller.injections.borrow().is_empty(),
+        "a rejected injection never reaches the backend"
+    );
+
+    webview.inject_script("later", "void 0;", ScriptInjectionTime::DocumentStart);
+    proxy.inject_script("later", "void 1;", ScriptInjectionTime::DocumentStart);
+    assert_eq!(
+        controller.injections.borrow().as_slice(),
+        ["later", "later"],
+        "a post-creation key reaches the backend every time it is injected"
     );
 }

@@ -78,7 +78,8 @@ use waterui_core::{Environment, View as _, view::Hook};
 use waterui_url::Url;
 use waterui_webview::{
     BackendEvent, BridgeOrigins, IntoJsReply, JsReply, Json, OriginPolicy, ScriptInjectionTime,
-    ScriptMessageHandler, WatcherGuard, WebView, WebViewController, WebViewEvent,
+    ScriptMessageHandler, UserScript, WatcherGuard, WebView, WebViewConfig, WebViewController,
+    WebViewEvent,
 };
 
 /// How long one wait may take before the check gives up.
@@ -265,7 +266,18 @@ struct Page<'a> {
 
 impl<'a> Page<'a> {
     fn open(engine: &'a Engine) -> Self {
-        let webview = engine.controller.open();
+        // Exactly what `WebViewOpen::create` hands the engine: the admission
+        // rules and the scripts arrive with the view, before it can load
+        // anything.
+        let webview = engine.controller.open_with(WebViewConfig {
+            bridge_origins: OriginPolicy::new(BridgeOrigins::Initial, &engine.url("/")),
+            scripts: vec![UserScript {
+                key: "waterui:test-state-seed".into(),
+                source: STATE_SEED_JS.into(),
+                time: ScriptInjectionTime::DocumentStart,
+            }],
+            ..WebViewConfig::default()
+        });
         let handle = webview.handle();
 
         let events = Rc::new(RefCell::new(Vec::new()));
@@ -315,15 +327,6 @@ impl<'a> Page<'a> {
             })
         });
 
-        // Exactly what `WebViewOpen::create` installs, in the same order: the
-        // policy first, so no handler is ever reachable unguarded.
-        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Initial, &engine.url("/")));
-        handle.inject_script(
-            "waterui:test-state-seed",
-            STATE_SEED_JS,
-            ScriptInjectionTime::DocumentStart,
-        );
-
         let page = Self {
             engine,
             webview,
@@ -336,20 +339,21 @@ impl<'a> Page<'a> {
         page
     }
 
-    /// Waits until the document-start scripts are registered with the engine.
+    /// Waits until the host side of the bridge is installed.
     ///
-    /// The bridge and the seed script are installed with `DevTools` commands
-    /// nobody awaits, while navigation is an ordinary CEF call, so nothing
-    /// orders the two. `DevTools` commands on one session are answered in the
-    /// order they were issued, so an answer to a later one is the real signal
-    /// that the earlier ones have been applied.
+    /// The transport binding, the domains whose events authenticate a call
+    /// and the main frame's id are set up with `DevTools` commands nobody
+    /// awaits, while navigation is an ordinary CEF call, so nothing orders the
+    /// two. `DevTools` commands on one session are answered in the order they
+    /// were issued, so an answer to a later one is the real signal that the
+    /// earlier ones have been applied.
     fn await_bridge_installation(&self) {
         let evaluated = self
             .block_on(self.webview.run_javascript("'installed'"))
             .expect("the engine evaluates a string literal");
         assert_eq!(
             evaluated.as_str(),
-            "installed",
+            "\"installed\"",
             "the engine answered a trivial evaluation with something else"
         );
     }
@@ -437,9 +441,12 @@ impl<'a> Page<'a> {
 
     /// What the engine says the current document's URL is.
     fn location(&self) -> String {
-        self.block_on(self.webview.run_javascript("location.href"))
-            .expect("location.href evaluates")
-            .to_string()
+        let href = self
+            .block_on(self.webview.run_javascript("location.href"))
+            .expect("location.href evaluates");
+        // The raw path answers JSON, so the URL arrives as a quoted string.
+        serde_json::from_str(&href)
+            .unwrap_or_else(|error| panic!("location.href answered {href}, not a string: {error}"))
     }
 }
 
@@ -630,6 +637,16 @@ fn the_installed_realization_draws_a_live_page(engine: &Engine) {
     );
 }
 
+/// `run_javascript` answers the JSON encoding of the evaluated value, made by
+/// the page — the shared conformance case on a loaded document.
+fn raw_evaluation_answers_json(engine: &Engine) {
+    let page = engine.page();
+    page.open_page("/first");
+    page.block_on(waterui_webview::conformance::raw_evaluation_answers_json(
+        async |script| page.webview.run_javascript(script).await,
+    ));
+}
+
 /// The engine's asset origin serves the bundled site the shared conformance
 /// case drives — module script, stylesheet and WASM — as a secure context.
 fn the_asset_origin_serves_bundled_content(engine: &Engine) {
@@ -765,7 +782,7 @@ async fn cdp_eval(cdp: &waterui_chromium::CdpSession, source: &str) -> Value {
 /// Every check, in the order they run.
 type Check = (&'static str, fn(&Engine));
 
-const CHECKS: [Check; 9] = [
+const CHECKS: [Check; 10] = [
     (
         "navigation_reaches_each_url_and_history_moves_both_ways",
         navigation_reaches_each_url_and_history_moves_both_ways,
@@ -782,6 +799,7 @@ const CHECKS: [Check; 9] = [
         "integers_beyond_two_to_the_fifty_third_cross_intact_both_ways",
         integers_beyond_two_to_the_fifty_third_cross_intact_both_ways,
     ),
+    ("raw_evaluation_answers_json", raw_evaluation_answers_json),
     (
         "the_installed_realization_draws_a_live_page",
         the_installed_realization_draws_a_live_page,
