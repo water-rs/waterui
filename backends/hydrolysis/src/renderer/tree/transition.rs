@@ -4,13 +4,15 @@
 //! [`WrapperEffect::Transition`] node carrying a [`TransitionDeclaration`].
 //! The structural site that swaps the content — a `Dynamic` host, a
 //! collection entry, a lazy-stack row, an anchored-overlay presentation —
-//! claims it from the *built* instance by walking the instance's root chain
-//! ([`claim_transition`]), so ownership never depends on the declared view's
-//! static type: a type-erased row and a declaration beneath other modifiers
-//! resolve the same way. A declaration placed directly over a conditional is
+//! claims it from the root of the *built* instance ([`claim_transition`]).
+//! Type erasure is gone by then, so a type-erased row is owned exactly like
+//! a concrete one; no other node is looked through. A declaration must be
+//! the outermost modifier of the content a site swaps: one beneath a layout
+//! or paint modifier is never claimed, so no site inspects modifier or
+//! parent types. A declaration placed directly over a conditional is
 //! adopted by that `Dynamic` host ([`adopt_by_dynamic`]) and applies to each
 //! content instance it swaps in and out. A declaration nobody owns fails at
-//! the first pass that reaches it.
+//! the first pass that reaches it, naming the fix.
 //!
 //! Every site drives its instances through the same pieces: a
 //! [`TransitionClock`] per instance, a [`TransitionRuntime`] holding that
@@ -57,111 +59,64 @@ impl TransitionDeclaration {
         assert!(
             self.owned.get(),
             "Hydrolysis: `.transition(...)` reached a view with no structural transition owner. \
-             A transition declares how a view is inserted and removed, so it must sit on the \
-             root of the content a structural site swaps — a `when`/`watch` branch or the \
-             conditional itself, a `ForEach`/`List` row, a navigation page root, or an \
-             anchored-overlay body — reachable \
-             through modifiers only, not beneath a stack, scroll or widget (layout-spec.md §4.5)"
+             A transition declares how a view is inserted and removed, so it must be the \
+             outermost modifier of the content a structural site swaps — of a `when`/`watch` \
+             branch or the conditional itself, a `ForEach`/`List` row, a navigation page's \
+             content, or an anchored-overlay body. A declaration beneath another modifier \
+             (`.padding`, `.frame`, `.background`, `.alignment_guide`, …), a stack, a scroll \
+             or a widget is never claimed: move `.transition(...)` outward so it is the \
+             outermost modifier of that content (layout-spec.md §4.5)"
         );
     }
 }
 
-/// The child a node's transition claim continues into, when the node is
-/// transparent to the claim: single-content wrappers and modifier containers
-/// (padding, frame, aspect ratio, background, overlay) keep the root chain of
-/// the instance; any other node ends it.
-fn claim_child(node: &RenderNode) -> Option<&RenderNode> {
+/// The declaration a node carries when the node itself is a
+/// `.transition(...)`.
+fn declaration(node: &RenderNode) -> Option<&TransitionDeclaration> {
     match node {
-        RenderNode::Wrapper(node) => Some(&node.child),
-        RenderNode::Env(node) => Some(&node.child),
-        RenderNode::Opacity(node) => Some(&node.child),
-        RenderNode::Scale(node) => Some(&node.child),
-        RenderNode::Rotation(node) => Some(&node.child),
-        RenderNode::Offset(node) => Some(&node.child),
-        RenderNode::Retain(node) => Some(&node.child),
-        RenderNode::Filtered(node) => Some(&node.child),
-        RenderNode::Fill(node) => Some(&node.child),
-        RenderNode::Container(node) => node.claim_slot.map(|slot| &node.children[slot]),
+        RenderNode::Wrapper(wrapper) => match &wrapper.effect {
+            WrapperEffect::Transition(declaration) => Some(declaration),
+            _ => None,
+        },
         _ => None,
     }
 }
 
-/// Claims the transition declared on a structural instance's root chain:
-/// the first [`TransitionDeclaration`] reachable through transparent nodes.
-/// A nested structural site (`Dynamic`, collection, stack) ends the chain —
-/// a declaration beneath it belongs to that site.
+/// Claims the transition declared at a structural instance's root. Only the
+/// root is looked at: a declaration beneath any other node stays unowned and
+/// fails with [`TransitionDeclaration::assert_owned`]'s message.
 pub fn claim_transition(node: &RenderNode) -> Option<TransitionSpec> {
-    let mut node = node;
-    loop {
-        if let RenderNode::Wrapper(wrapper) = node
-            && let WrapperEffect::Transition(declaration) = &wrapper.effect
-        {
-            return Some(declaration.take_ownership());
-        }
-        node = claim_child(node)?;
-    }
+    declaration(node).map(TransitionDeclaration::take_ownership)
 }
 
-/// Claims the transition declared on a navigation page's root: the page is
-/// a navigation view whose content root chain the owning stack claims
-/// through ([`WidgetBehavior::claim_page_transition`]). Only the stack calls
+/// Claims the transition declared on a navigation page's root: either on the
+/// page itself, or — the page being a navigation view — on the root of its
+/// content ([`WidgetBehavior::claim_page_transition`]). Only the stack calls
 /// this — a navigation view anywhere else is not a structural instance, so a
 /// declaration on its content stays unowned.
 pub fn claim_page_transition(page: &RenderNode) -> Option<TransitionSpec> {
-    let mut node = page;
-    loop {
-        match node {
-            RenderNode::Wrapper(wrapper) => {
-                if let WrapperEffect::Transition(declaration) = &wrapper.effect {
-                    return Some(declaration.take_ownership());
-                }
-            }
-            RenderNode::Widget(widget) => return widget.behavior.claim_page_transition(),
-            _ => {}
-        }
-        node = claim_child(node)?;
+    match page {
+        RenderNode::Widget(widget) => widget.behavior.claim_page_transition(),
+        _ => claim_transition(page),
     }
 }
 
 /// Hands a declaration built directly over a conditional to that `Dynamic`
 /// host: its content instances transition with it whenever the host swaps
-/// them. Walks the same transparent chain [`claim_transition`] does.
+/// them. Only a conditional that is the declaration's direct child adopts
+/// it; anything else leaves the declaration unowned. A watched conditional
+/// is built as the host under the `Retain` node holding its watcher guard —
+/// both are the conditional itself, not a modifier over it.
 pub fn adopt_by_dynamic(child: &RenderNode, declaration: &TransitionDeclaration) {
-    let mut node = child;
-    loop {
-        if let RenderNode::Dynamic(host) = node {
-            host.adopt(declaration.take_ownership());
-            return;
-        }
-        let Some(next) = claim_child(node) else {
-            return;
-        };
-        node = next;
-    }
-}
-
-/// The `Dynamic` host a container child presents its removal ghosts through:
-/// the host reached from the child through nodes that neither paint nor
-/// change geometry, so a ghost painted by the container directly loses
-/// nothing the live member keeps. Behind any other node the host keeps its
-/// ghosts inside its own slot.
-pub fn member_host(node: &RenderNode) -> Option<&DynamicHostNode> {
-    match node {
-        RenderNode::Dynamic(host) => Some(host),
-        RenderNode::Env(node) => member_host(&node.child),
-        RenderNode::Retain(node) => member_host(&node.child),
-        RenderNode::Wrapper(node)
-            if matches!(
-                node.effect,
-                WrapperEffect::Transition(_)
-                    | WrapperEffect::LayoutPriority(_)
-                    | WrapperEffect::LifeCycle(_)
-            ) =>
-        {
-            member_host(&node.child)
-        }
-        _ => None,
-    }
+    let host = match child {
+        RenderNode::Dynamic(host) => host,
+        RenderNode::Retain(retain) => match &retain.child {
+            RenderNode::Dynamic(host) => host,
+            _ => return,
+        },
+        _ => return,
+    };
+    host.adopt(declaration.take_ownership());
 }
 
 /// Fails fast on a transition whose resolved form still needs pixel capture:
@@ -400,9 +355,16 @@ impl<'a> TransitionPaint<'a> {
 /// a Gaussian blur filter layer around the instance. `hit: false` (a ghost)
 /// keeps the scope painted while nothing inside takes input.
 ///
-/// `child_ctx` is the slot's context and `delta` its placement in the
-/// enclosing record; `flush` records the instance's node at the context it
-/// receives, with an identity placement delta.
+/// `child_ctx` is the slot's context and `delta` its placement relative to
+/// the recording node's own placement; `flush` records the instance's node
+/// at the context it receives, with an identity placement delta.
+///
+/// The scope's layer sits where the slot's content records: runs record in
+/// the program's space, so the layer is `child_ctx`'s paint transform
+/// relative to the enclosing scope's origin, never `delta`. The two differ
+/// for a site that records into its enclosing layer's program — a `Dynamic`
+/// host placed at an offset inside a stack paints its instances at that
+/// offset.
 pub fn flush_transitioned(
     renderer: &mut HydrolysisRenderer,
     child_ctx: RenderContext,
@@ -413,9 +375,10 @@ pub fn flush_transitioned(
     let properties = paint.properties;
     let bounds = child_ctx.bounds;
     let local = transition_transform(&properties, bounds);
-    let layer = delta * local;
+    let paint_space = child_ctx.local * local;
+    let layer = renderer.program().origin().inverse() * paint_space;
     let scope = crate::renderer::ScopeDelta {
-        transform: layer,
+        transform: delta * local,
         hit_alpha: properties.opacity,
     };
     let key = crate::renderer::mount::ScopeKey {
@@ -432,7 +395,7 @@ pub fn flush_transitioned(
             bounds.width(),
             bounds.height(),
         ))),
-        child_ctx.local * local,
+        paint_space,
         scope,
         paint.hit,
     );
@@ -516,69 +479,6 @@ pub fn record_blurred(
     } else {
         flush(renderer, ctx);
     }
-}
-
-/// One layout member of a container: a child, or a removal ghost the child's
-/// `Dynamic` host presents beside it.
-#[derive(Clone, Copy)]
-pub enum Member {
-    /// The child at this index.
-    Child(usize),
-    /// Ghost `ghost` of the host under child `child`, whose slot is
-    /// `Members::slots[slot]`.
-    Ghost {
-        child: usize,
-        ghost: usize,
-        slot: usize,
-    },
-}
-
-/// A container's layout members in order: every child, each preceded by the
-/// ghosts of the instances its `Dynamic` host swapped out — an outgoing
-/// instance keeps its slot where it was, and the instance replacing it gets
-/// a new slot after it (layout-spec.md §4.5).
-pub struct Members {
-    pub order: Vec<Member>,
-    pub slots: Vec<GhostSlot>,
-}
-
-impl Members {
-    pub fn of(children: &[RenderNode]) -> Self {
-        let mut order = Vec::with_capacity(children.len());
-        let mut slots = Vec::new();
-        for (child, node) in children.iter().enumerate() {
-            if let Some(host) = member_host(node) {
-                for (ghost, slot) in host.member_ghost_slots().into_iter().enumerate() {
-                    order.push(Member::Ghost {
-                        child,
-                        ghost,
-                        slot: slots.len(),
-                    });
-                    slots.push(slot);
-                }
-            }
-            order.push(Member::Child(child));
-        }
-        Self { order, slots }
-    }
-
-    /// The members as the layout sees them, `subs` being the children's
-    /// sub-views by child index.
-    pub fn refs<'a, S: SubView>(&'a self, subs: &'a [S]) -> Vec<&'a dyn SubView> {
-        self.order
-            .iter()
-            .map(|member| match *member {
-                Member::Child(index) => &subs[index] as &dyn SubView,
-                Member::Ghost { slot, .. } => &self.slots[slot] as &dyn SubView,
-            })
-            .collect()
-    }
-}
-
-/// The `Dynamic` host under a container child that presents ghost members —
-/// the host [`Members::of`] found for a [`Member::Ghost`].
-pub fn ghost_host(node: &RenderNode) -> &DynamicHostNode {
-    member_host(node).expect("hydrolysis transition: a ghost member's child lost its Dynamic host")
 }
 
 #[cfg(test)]

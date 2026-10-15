@@ -6,7 +6,7 @@ use super::layout::{SignatureHasher, hash_size};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use waterui_core::transition::{Ghost, GhostSlot, TransitionSpec};
+use waterui_core::transition::TransitionSpec;
 use waterui_layout::safe_area::IgnoreSafeArea;
 
 /// A retained sub-view a native widget owns and re-renders every flush — the
@@ -1141,11 +1141,6 @@ pub struct ContainerNode {
     pub(crate) core: NodeCore,
     pub(crate) layout: Box<dyn Layout>,
     pub(crate) children: Vec<RenderNode>,
-    /// The child a structural transition claim continues into when this
-    /// container is a modifier (padding, frame, aspect ratio, background,
-    /// overlay) of the content it wraps; `None` for a container whose
-    /// children are its own members (stacks, grids), which ends the claim.
-    pub(crate) claim_slot: Option<usize>,
     #[cfg(feature = "accessibility")]
     pub(crate) accessibility_child_env: Option<Environment>,
     /// Child frames cached by [`RenderNode::layout`]; reused by
@@ -1344,8 +1339,8 @@ pub struct DynamicHostNode {
 }
 
 /// A `Dynamic` host's transition state: which declaration applies to the
-/// current instance, its insertion clock, the frozen geometry its removal
-/// would keep, and the ghosts of instances already swapped out.
+/// current instance, its insertion clock, the frame its removal would paint
+/// at, and the ghosts of instances already swapped out.
 pub struct DynamicTransitions {
     /// A `.transition(...)` declared over the conditional itself, adopted
     /// when that declaration's node is built: it applies to every content
@@ -1356,21 +1351,15 @@ pub struct DynamicTransitions {
     claimed: RefCell<Option<TransitionSpec>>,
     /// The current instance's insertion while it animates in.
     insertion: RefCell<Option<super::transition::TransitionRun>>,
-    /// The current instance's placed dimensions and layout priority — the
-    /// fixed slot its removal ghost keeps.
-    placed: RefCell<(ViewDimensions, i32)>,
-    /// Removed instances still animating out, oldest first. A ghost is out of
-    /// semantics, accessibility, focus and hit testing; it only paints.
+    /// Removed instances still animating out, oldest first. The host owns
+    /// them as its own children whatever layout encloses it: a ghost takes
+    /// no part in layout and is out of semantics, accessibility, focus and
+    /// hit testing; it only paints, over the slot the live content sizes.
     ghosts: RefCell<Vec<DynamicGhost>>,
-    /// Whether the enclosing container (a stack, a collection entry list)
-    /// lays the ghosts out as its own members. Set once at build by that
-    /// container; a host it never reached paints its ghosts over its own
-    /// slot, outside layout.
-    container_member: Cell<bool>,
-    /// The frame the live instance was last flushed at, in the coordinates
-    /// of the host's flush context — where a ghost the host paints itself
-    /// stays.
-    last_frame: Cell<Rect>,
+    /// The context the live instance was last flushed at — its frame in the
+    /// drawing space of the nearest enclosing layer, where its ghost paints
+    /// once it leaves.
+    last_context: Cell<RenderContext>,
     /// Reduce Motion resolved once at build from the host environment.
     reduce_motion: bool,
     /// Logical-edge resolution for sampled transition properties.
@@ -1380,12 +1369,13 @@ pub struct DynamicTransitions {
 /// One removed content instance of a `Dynamic` host, painted until its own
 /// removal clock completes.
 pub struct DynamicGhost {
-    ghost: Ghost<RenderNode>,
-    runtime: super::transition::TransitionRuntime,
-    /// The ghost's frame in the coordinates of whoever paints it — the
-    /// enclosing container for a container member, the host itself
-    /// otherwise — written by that layout pass.
-    frame: Cell<Rect>,
+    /// The outgoing instance, detached from semantics.
+    node: RenderNode,
+    /// Its removal clock and paint runtime.
+    removal: super::transition::TransitionRun,
+    /// The context the instance was last flushed at: its frame in the
+    /// drawing space of the host's nearest enclosing layer.
+    context: RenderContext,
 }
 
 impl DynamicTransitions {
@@ -1394,10 +1384,11 @@ impl DynamicTransitions {
             declared: RefCell::new(None),
             claimed: RefCell::new(None),
             insertion: RefCell::new(None),
-            placed: RefCell::new((ViewDimensions::default(), 0)),
             ghosts: RefCell::new(Vec::new()),
-            container_member: Cell::new(false),
-            last_frame: Cell::new(Rect::from_size(Size::zero())),
+            last_context: Cell::new(RenderContext {
+                local: kurbo::Affine::IDENTITY,
+                bounds: kurbo::Rect::ZERO,
+            }),
             reduce_motion: env
                 .get::<waterui_core::transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0),
@@ -1421,13 +1412,8 @@ impl DynamicHostNode {
         *self.transitions.declared.borrow_mut() = Some(spec);
     }
 
-    /// Marks this host's ghosts as members of the enclosing container.
-    pub(super) fn join_container(&self) {
-        self.transitions.container_member.set(true);
-    }
-
     /// Records the current instance's declaration, claimed from its built
-    /// root chain.
+    /// root.
     pub(super) fn claim_initial(&self) {
         *self.transitions.claimed.borrow_mut() =
             super::transition::claim_transition(&self.child.borrow());
@@ -1486,8 +1472,8 @@ impl DynamicHostNode {
     }
 
     /// Detaches the outgoing instance: under a removal declaration it becomes
-    /// a ghost holding the slot it was last placed at; otherwise it drops,
-    /// releasing its slot at once.
+    /// a ghost painting at the frame it was last flushed at; otherwise it
+    /// drops at once. Either way the slot is the live content's alone.
     fn retire(&self, outgoing: RenderNode, now: Instant) {
         let transitions = &self.transitions;
         let Some(spec) = transitions.effective() else {
@@ -1496,18 +1482,14 @@ impl DynamicHostNode {
         if outgoing.is_empty() {
             return;
         }
-        let (dimensions, priority) = transitions.placed.borrow().clone();
         transitions.ghosts.borrow_mut().push(DynamicGhost {
-            ghost: super::transition::start_ghost(
-                outgoing,
-                GhostSlot::new(dimensions, priority),
+            node: outgoing,
+            removal: super::transition::TransitionRun::removal(
                 &spec,
                 transitions.reduce_motion,
+                now,
             ),
-            runtime: super::transition::TransitionRuntime::new(now),
-            // A container member's layout re-places it every pass; a ghost
-            // the host paints itself keeps the frame it left at.
-            frame: Cell::new(transitions.last_frame.get()),
+            context: transitions.last_context.get(),
         });
         transitions.insertion.borrow_mut().take();
     }
@@ -1549,7 +1531,7 @@ impl DynamicHostNode {
         }
         let mut ghosts = transitions.ghosts.borrow_mut();
         let before = ghosts.len();
-        ghosts.retain_mut(|ghost| ghost.runtime.advance(&mut ghost.ghost.transition, now));
+        ghosts.retain_mut(|ghost| ghost.removal.advance(now));
         let dropped = ghosts.len() != before;
         animating |= !ghosts.is_empty();
         if animating {
@@ -1558,49 +1540,11 @@ impl DynamicHostNode {
         dropped || animating
     }
 
-    /// The slots of this host's ghosts, oldest first, when the enclosing
-    /// container lays them out as its own members — empty otherwise.
-    pub(super) fn member_ghost_slots(&self) -> Vec<GhostSlot> {
-        if !self.transitions.container_member.get() {
-            return Vec::new();
-        }
-        self.transitions
-            .ghosts
-            .borrow()
-            .iter()
-            .map(|ghost| ghost.ghost.slot.clone())
-            .collect()
-    }
-
-    /// Records the frame the enclosing layout placed ghost `index` at.
-    pub(super) fn place_ghost(&self, index: usize, frame: Rect) {
-        self.transitions.ghosts.borrow()[index].frame.set(frame);
-    }
-
-    /// Records the current instance's placed dimensions — the slot its
-    /// removal ghost keeps — when a declaration could retire it.
-    pub(super) fn record_placement(
-        &self,
-        state: &mut HydroState,
-        env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
-        proposal: ProposalSize,
-        size: Size,
-    ) {
-        if self.transitions.effective().is_none() {
-            return;
-        }
-        let child = self.child.borrow();
-        let mut dimensions = child.measure(state, env, theme, proposal);
-        dimensions.size = size;
-        *self.transitions.placed.borrow_mut() = (dimensions, child.priority());
-    }
-
     /// Flushes the live instance, under its insertion transition while one
-    /// runs. Outside a container that lays ghosts out, this host's ghosts
-    /// paint first, beneath it, each at the frame it left at: they overlap
-    /// the slot the live content alone sizes and take no part in layout
-    /// (layout-spec.md §4.5).
+    /// runs. This host's ghosts paint first, beneath it, each at the frame it
+    /// left at: they overlap the slot the live content alone sizes and take
+    /// no part in layout (layout-spec.md §4.5), so the enclosing layout sees
+    /// this host as its one child whatever that layout is.
     pub(super) fn flush_content(
         &self,
         renderer: &mut HydrolysisRenderer,
@@ -1609,19 +1553,11 @@ impl DynamicHostNode {
     ) {
         let child = self.child.borrow();
         let (slot_ctx, delta) = super::transition::slot_context(ctx);
-        if !self.transitions.container_member.get() {
-            for index in 0..self.transitions.ghosts.borrow().len() {
-                self.flush_ghost(renderer, ctx, index);
-            }
+        for ghost in self.transitions.ghosts.borrow().iter() {
+            self.flush_ghost(renderer, ctx, ghost);
         }
         if !child.is_empty() {
-            self.transitions.last_frame.set(Rect::new(
-                Point::new(
-                    crate::num_cast::f64_as_f32(ctx.bounds.x0),
-                    crate::num_cast::f64_as_f32(ctx.bounds.y0),
-                ),
-                slot_size(slot_ctx),
-            ));
+            self.transitions.last_context.set(ctx);
         }
         {
             let insertion = self.transitions.insertion.borrow();
@@ -1649,46 +1585,40 @@ impl DynamicHostNode {
         }
     }
 
-    /// Paints ghost `index` at the frame its layout recorded, in `ctx` — the
-    /// context of whoever placed it. Paint only: no input, no accessibility.
-    pub(super) fn flush_ghost(
+    /// Paints `ghost` at the frame it left at. Both that frame and the host's
+    /// flush context `ctx` live in the drawing space of the host's nearest
+    /// enclosing layer, so the ghost stays where it was placed in that space
+    /// even when the host's own slot moves, and follows the layer's movement
+    /// (scrolling, ancestors). Paint only: no input, no accessibility.
+    fn flush_ghost(
         &self,
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
-        index: usize,
+        ghost: &DynamicGhost,
     ) {
-        let ghosts = self.transitions.ghosts.borrow();
-        let ghost = &ghosts[index];
-        let frame = ghost.frame.get();
-        let delta = kurbo::Affine::translate((f64::from(frame.x()), f64::from(frame.y())));
-        let ghost_ctx = ctx.child(
-            delta,
-            kurbo::Rect::new(
-                0.0,
-                0.0,
-                f64::from(frame.width()),
-                f64::from(frame.height()),
-            ),
-        );
+        // The left frame relative to the host's current placement.
+        let relative = ctx.local.inverse() * ghost.context.local;
+        let (slot_ctx, slot_delta) =
+            super::transition::slot_context(ctx.child(relative, ghost.context.bounds));
+        let delta = relative * slot_delta;
         let paint = super::transition::TransitionPaint::sample(
-            &ghost.ghost.transition,
-            *frame.size(),
+            &ghost.removal.state,
+            slot_size(slot_ctx),
             self.transitions.direction,
             false,
-            &ghost.runtime,
+            &ghost.removal.runtime,
             &self.core.cell,
         );
         let env = &self.env;
         renderer.with_suppressed_accessibility(|renderer| {
             super::transition::flush_transitioned(
                 renderer,
-                ghost_ctx,
+                slot_ctx,
                 delta,
                 &paint,
                 |renderer, ctx| {
                     ghost
-                        .ghost
-                        .realization
+                        .node
                         .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
                 },
             );
