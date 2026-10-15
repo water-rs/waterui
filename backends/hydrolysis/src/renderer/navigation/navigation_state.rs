@@ -56,9 +56,64 @@ pub struct NavigationPageRecord {
     page: NavigationRecordedPage,
 }
 
+/// One page of a navigation stack: its retained content and the
+/// transition its root declares. The stack owns its page roots
+/// (layout-spec.md §4.5): the declaration is claimed when the page is first
+/// built, before anything can walk it.
+pub struct StackPage {
+    content: RetainedSubview,
+    transition: Option<waterui_core::transition::TransitionSpec>,
+}
+
+impl StackPage {
+    pub(crate) const fn new(view: AnyView) -> Self {
+        Self {
+            content: RetainedSubview::new(view),
+            transition: None,
+        }
+    }
+
+    /// Builds the page once, claiming its root declaration.
+    pub(crate) fn ensure_built(&mut self, renderer: &mut SemanticCore, env: &Environment) {
+        if self.content.node().is_some() {
+            return;
+        }
+        self.content.ensure_built(renderer, env);
+        self.transition = crate::renderer::tree::transition::claim_page_transition(
+            self.content
+                .node()
+                .expect("Hydrolysis navigation page was just built"),
+        );
+    }
+
+    /// The transition the page's root declares — its insertion on a push and
+    /// its removal on a pop. Read after [`Self::ensure_built`].
+    pub(crate) const fn transition(&self) -> Option<&waterui_core::transition::TransitionSpec> {
+        self.transition.as_ref()
+    }
+
+    pub(crate) fn record_built_page(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        env: &Environment,
+        size: waterui_core::layout::Size,
+        safe_area: Option<crate::renderer::tree::safe_area::SafeAreaLayout>,
+    ) {
+        self.ensure_built(renderer, env);
+        self.content
+            .record_built_page(renderer, env, size, safe_area);
+    }
+
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn emit_accessibility(&mut self, renderer: &mut SemanticCore, env: &Environment) {
+        self.ensure_built(renderer, env);
+        self.content.emit_accessibility(renderer, env);
+    }
+}
+
 pub struct HydroNavigationEntry {
     pub(crate) identity: u64,
-    pub(crate) content: RetainedSubview,
+    pub(crate) content: StackPage,
     pub(crate) state: NavigationDestinationState,
     /// What this destination asked to arrive with, if it asked for anything.
     ///
@@ -78,7 +133,7 @@ impl HydroNavigationEntry {
         } = view;
         Self {
             identity,
-            content: RetainedSubview::new(AnyView::new(NavigationView {
+            content: StackPage::new(AnyView::new(NavigationView {
                 bar,
                 content,
                 state: NavigationDestinationState::default(),
@@ -163,6 +218,60 @@ pub struct NavigationTransitionState {
     pub(crate) to_page: NavigationPage,
     pub(crate) started_at: Instant,
     pub(crate) duration: Duration,
+    /// The moving page's own transition, when its root declares one: it
+    /// replaces `style` for this push or pop, and the transaction lasts as
+    /// long as its clock.
+    pub(crate) page: Option<Rc<RefCell<PageTransition>>>,
+}
+
+/// A page-root declaration running for one push (its insertion) or pop (its
+/// removal): the moving page animates under it above the stationary page,
+/// which stays put.
+pub struct PageTransition {
+    /// The page that moves — arriving on a push, leaving on a pop.
+    pub(crate) identity: u64,
+    pub(crate) run: crate::renderer::tree::transition::TransitionRun,
+    /// Whether the run still needs frames.
+    running: bool,
+    /// Logical-edge resolution for the sampled properties.
+    pub(crate) direction: waterui_core::layout::LayoutDirection,
+}
+
+impl PageTransition {
+    pub(crate) fn start(
+        identity: u64,
+        spec: &waterui_core::transition::TransitionSpec,
+        navigation: NavigationTransitionDirection,
+        env: &Environment,
+        now: Instant,
+    ) -> Self {
+        let reduce_motion = env
+            .get::<waterui_core::transition::ReduceMotion>()
+            .is_some_and(|flag| flag.0);
+        let run = match navigation {
+            NavigationTransitionDirection::Push => {
+                crate::renderer::tree::transition::TransitionRun::insertion(
+                    spec,
+                    reduce_motion,
+                    now,
+                )
+            }
+            NavigationTransitionDirection::Pop => {
+                crate::renderer::tree::transition::TransitionRun::removal(spec, reduce_motion, now)
+            }
+        };
+        Self {
+            identity,
+            run,
+            running: true,
+            direction: waterui_layout::layout_direction(env).snapshot(),
+        }
+    }
+
+    /// Advances the run's clock to `now`.
+    pub(crate) fn advance(&mut self, now: Instant) {
+        self.running = self.run.advance(now);
+    }
 }
 
 pub struct HydroNavigationController {
@@ -419,7 +528,14 @@ impl NavigationTransitionState {
             to_page,
             started_at,
             duration,
+            page: None,
         }
+    }
+
+    /// Runs the moving page's own declaration in place of the stack style.
+    pub(crate) fn with_page(mut self, page: PageTransition) -> Self {
+        self.page = Some(Rc::new(RefCell::new(page)));
+        self
     }
 
     pub(crate) fn progress(&self, now: Instant) -> f64 {
@@ -432,7 +548,9 @@ impl NavigationTransitionState {
     }
 
     pub(crate) fn is_active(&self, now: Instant) -> bool {
-        self.progress(now) < 1.0
+        self.page
+            .as_ref()
+            .map_or_else(|| self.progress(now) < 1.0, |page| page.borrow().running)
     }
 }
 

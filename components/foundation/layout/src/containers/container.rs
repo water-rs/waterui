@@ -200,13 +200,6 @@ pub struct LazyContainer {
     layout: Box<dyn Layout>,
     contents: AnyViews<AnyView>,
     direction: Computed<LayoutDirection>,
-    /// Set when the item views statically declare `.transition(...)`:
-    /// membership changes then need the retained-collection path, because a
-    /// virtualized stack cannot hold a removal ghost's layout slot
-    /// (layout-spec.md §4.5). Type-erased items (`AnyView`) cannot declare
-    /// statically, so they never force retention — a `.transition()` inside
-    /// them is unsupported pending water-rs/waterui#1593.
-    transitions: bool,
 }
 
 impl LazyContainer {
@@ -215,24 +208,13 @@ impl LazyContainer {
         layout: impl Layout + 'static,
         contents: impl Views<View = V> + 'static,
     ) -> Self {
-        let transitions = core::any::TypeId::of::<V>()
-            == core::any::TypeId::of::<
-                waterui_core::Metadata<waterui_core::transition::TransitionSpec>,
-            >();
         Self {
             layout: Box::new(layout),
             contents: AnyViews::new(contents.map(|v| AnyView::new(v))),
             direction: Computed::constant(LayoutDirection::default()),
-            transitions,
         }
     }
 
-    /// Whether the container's items statically declared `.transition(...)`
-    /// and so must lay out through the retained collection, not virtualization.
-    #[must_use]
-    pub const fn declares_transitions(&self) -> bool {
-        self.transitions
-    }
     /// Returns the boxed layout object together with the collected child views.
     #[must_use]
     pub fn into_inner(self) -> (Box<dyn Layout>, AnyViews<AnyView>) {

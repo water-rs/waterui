@@ -52,6 +52,8 @@ impl RenderNode {
             Self::Offset(node) => node.child.is_empty(),
             Self::Retain(node) => node.child.is_empty(),
             Self::Env(node) => node.child.is_empty(),
+            // A ghost outside a container takes no part in layout (§4.5):
+            // the host answers for its live content alone.
             Self::Dynamic(node) => node.child.borrow().is_empty(),
             Self::Wrapper(node) => node.child.is_empty(),
             Self::Fill(node) => node.child.is_empty(),
@@ -201,7 +203,8 @@ impl RenderNode {
                     .iter()
                     .map(|child| NodeSubView::new(child, &cell, env, theme))
                     .collect();
-                let refs: Vec<&dyn SubView> = subs.iter().map(|sub| sub as &dyn SubView).collect();
+                let members = super::transition::Members::of(&container.children);
+                let refs = members.refs(&subs);
                 ViewDimensions::new(container.layout.size_that_fits(proposal, &refs))
             }
             // Transform/opacity wrappers are layout-transparent.
@@ -447,6 +450,7 @@ impl RenderNode {
         let theme = renderer.theme();
         match self {
             Self::Container(container) => {
+                let members = super::transition::Members::of(&container.children);
                 let placements = {
                     let cell = RefCell::new(&mut renderer.state);
                     let subs: Vec<NodeSubView> = container
@@ -454,8 +458,7 @@ impl RenderNode {
                         .iter()
                         .map(|child| NodeSubView::new(child, &cell, env, &theme))
                         .collect();
-                    let refs: Vec<&dyn SubView> =
-                        subs.iter().map(|sub| sub as &dyn SubView).collect();
+                    let refs = members.refs(&subs);
                     // Only the accessibility scope reads `resolved` — skip the
                     // measure in builds without it.
                     #[cfg(feature = "accessibility")]
@@ -469,6 +472,26 @@ impl RenderNode {
                         .layout
                         .place(Rect::from_size(size), proposal, &refs)
                 };
+                // Ghost members keep their frozen slot: only their frame is
+                // recorded, on the host that paints them.
+                let mut child_placements = vec![None; container.children.len()];
+                for (member, placement) in members.order.iter().zip(placements) {
+                    match *member {
+                        super::transition::Member::Child(index) => {
+                            child_placements[index] = Some(placement);
+                        }
+                        super::transition::Member::Ghost { child, ghost, .. } => {
+                            super::transition::ghost_host(&container.children[child])
+                                .place_ghost(ghost, placement.frame);
+                        }
+                    }
+                }
+                let placements: Vec<SubviewPlacement> = child_placements
+                    .into_iter()
+                    .map(|placement| {
+                        placement.expect("hydrolysis container: the layout placed every child")
+                    })
+                    .collect();
                 for (child, placement) in container.children.iter_mut().zip(&placements) {
                     let child_area = safe_area.as_ref().map(|area| area.child(placement.frame));
                     child.layout(
@@ -535,6 +558,7 @@ impl RenderNode {
                 // The context stays on the host: the flush's mid-pass layout
                 // for a child that applied its pending then reuses it.
                 store_safe_area(&mut node.safe_area, safe_area.clone());
+                node.record_placement(&mut renderer.state, env, &theme, proposal, size);
                 node.child
                     .borrow_mut()
                     .layout(renderer, env, safe_area, proposal, size);

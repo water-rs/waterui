@@ -55,6 +55,7 @@ fn render_node_container_lays_out_and_flushes_text() {
             spacing: Computed::constant(8.0),
         }),
         children: vec![text_node("Hello"), text_node("World")],
+        claim_slot: None,
         #[cfg(feature = "accessibility")]
         accessibility_child_env: None,
         placed: Vec::new(),
@@ -120,6 +121,7 @@ fn geometry_static_flush_reuses_cached_placement() {
             spacing: Computed::constant(8.0),
         }),
         children: vec![text_node("Cached")],
+        claim_slot: None,
         #[cfg(feature = "accessibility")]
         accessibility_child_env: None,
         placed: Vec::new(),

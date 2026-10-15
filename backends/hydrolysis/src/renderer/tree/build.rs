@@ -95,28 +95,33 @@ impl RenderNode {
         // `Native<FixedContainer>` the next arm rebuilds.
         let view = match view.downcast::<FixedContainer>() {
             Ok(container) => {
-                let background_slot = (container.as_parts().0 as &dyn Any)
-                    .is::<BackgroundLayout>()
-                    .then_some(0);
+                let layout = container.as_parts().0 as &dyn Any;
+                let background_slot = layout.is::<BackgroundLayout>().then_some(0);
+                let claim_slot = modifier_content_slot(layout);
                 let container = *AnyView::new(container.body(env))
                     .downcast::<Native<FixedContainer>>()
                     .expect("FixedContainer::body produces Native<FixedContainer>");
-                return Self::build_fixed_container(container, env, renderer, background_slot);
+                return Self::build_fixed_container(
+                    container,
+                    env,
+                    renderer,
+                    background_slot,
+                    claim_slot,
+                );
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Native<FixedContainer>>() {
             Ok(container) => {
-                return Self::build_fixed_container(*container, env, renderer, None);
+                let claim_slot =
+                    modifier_content_slot(container.as_inner().as_parts().0 as &dyn Any);
+                return Self::build_fixed_container(*container, env, renderer, None, claim_slot);
             }
             Err(view) => view,
         };
         let view = match view.downcast::<Native<LazyContainer>>() {
             Ok(container) => {
                 let direction = container.as_inner().direction();
-                // Whether the items statically declared `.transition(...)`,
-                // read before `into_inner` consumes the container.
-                let wants_transition = container.as_inner().declares_transitions();
                 let (layout, children) = (*container).into_inner().into_inner();
                 // The collection's own layout inputs (stack spacing, absolute
                 // pins, …) are signals too: subscribe them through
@@ -135,12 +140,9 @@ impl RenderNode {
                     }))
                 };
                 // A viewport-virtualizable stack layout becomes a virtualized
-                // LazyStack — unless the items declared `.transition(...)`,
-                // which must retain every member so a removal can hold its
-                // ghost slot (layout-spec.md §4.5).
-                if let Some(axis) =
-                    lazy_stack_axis_config(layout.as_ref(), direction).filter(|_| !wants_transition)
-                {
+                // LazyStack; its rows own their transitions themselves, so a
+                // row's declaration never decides the realization.
+                if let Some(axis) = lazy_stack_axis_config(layout.as_ref(), direction) {
                     return Self::build_lazy_stack(
                         axis,
                         &children,
@@ -150,10 +152,10 @@ impl RenderNode {
                         &layout_mark,
                     );
                 }
-                // A non-virtualizable layout (AbsoluteLayout/ZStack overlay) or a
-                // transition collection: a retained reactive collection that
-                // reconciles membership by id (recursing into each item, so inner
-                // SceneView/Dynamic reach their dedicated nodes).
+                // A non-virtualizable layout (AbsoluteLayout/ZStack overlay): a
+                // retained reactive collection that reconciles membership by id
+                // (recursing into each item, so inner SceneView/Dynamic reach
+                // their dedicated nodes).
                 return Self::build_collection(
                     layout,
                     &children,
@@ -241,15 +243,26 @@ impl RenderNode {
             }
             Err(view) => view,
         };
-        // A `.transition(...)` reached outside a structural site (retained
-        // collections peel the spec before this arm ever sees it — see
-        // `split_transition`): with no structural owner there is no clock
-        // and no honest rendering path — fail fast rather than draw through.
-        let Err(view) = view.downcast::<Metadata<waterui_core::transition::TransitionSpec>>()
-        else {
-            panic!(
-                "Hydrolysis: transition metadata requires a structural transition owner; this site is not implemented (water-rs/waterui#1593)"
-            );
+        // A `.transition(...)` declaration: a transparent node the structural
+        // site that swaps this content claims from the built instance. One
+        // placed directly over a conditional is that `Dynamic` host's own.
+        let view = match view.downcast::<Metadata<waterui_core::transition::TransitionSpec>>() {
+            Ok(meta) => {
+                let Metadata { content, value } = *meta;
+                let node = Self::build_wrapper(
+                    WrapperEffect::Transition(super::transition::TransitionDeclaration::new(value)),
+                    content,
+                    env,
+                    renderer,
+                );
+                if let Self::Wrapper(wrapper) = &node
+                    && let WrapperEffect::Transition(declaration) = &wrapper.effect
+                {
+                    super::transition::adopt_by_dynamic(&wrapper.child, declaration);
+                }
+                return node;
+            }
+            Err(view) => view,
         };
         // Accessibility metadata are environment-scoping wrappers (the dispatch
         // handlers just `env.insert(value)` then render the content), so the tree
@@ -431,7 +444,7 @@ impl RenderNode {
                 return Self::build_wrapper(
                     WrapperEffect::AnchoredOverlay(AnchoredOverlayEffect {
                         builder: overlay_builder,
-                        content: Rc::new(RefCell::new(None)),
+                        presentations: Rc::default(),
                         is_presented,
                         placed_edge,
                         placement,
@@ -1028,10 +1041,9 @@ impl RenderNode {
                     .unwrap_or_else(|| panic!("hydrolysis collection: item {index} missing"));
                 let entry_core = renderer.new_core();
                 entry_core.cell.set_parent(&core.cell);
-                let (spec, content) = split_transition(view);
-                let node = Self::build_view(normalize_layout_view(content, env), env, renderer);
+                let node = Self::build_view(normalize_layout_view(view, env), env, renderer);
                 node.core().cell.set_parent(&entry_core.cell);
-                CollectionEntry::new(id, node, entry_core, spec)
+                CollectionEntry::new(id, node, entry_core)
             })
             .collect();
         Self::Collection(Box::new(CollectionNode {
@@ -1054,7 +1066,6 @@ impl RenderNode {
                 .get::<waterui_core::transition::ReduceMotion>()
                 .is_some_and(|flag| flag.0),
             direction: waterui_layout::layout_direction(env).snapshot(),
-            ghost_seq: Cell::new(0),
             dirty,
             replaced_ids,
             _guard: guard,
@@ -1089,6 +1100,8 @@ impl RenderNode {
         // the same coherent membership rather than the live source.
         let snapshot = Rc::new(RefCell::new(views.snapshot()));
         let snapshot_for_watch = Rc::clone(&snapshot);
+        let membership = Rc::new(Cell::new(false));
+        let membership_for_watch = Rc::clone(&membership);
 
         let rebuild_active = renderer.rebuild_active_flag();
         let guard = views.watch(.., {
@@ -1100,6 +1113,7 @@ impl RenderNode {
                 // patch invalidates exactly those rows. Registration itself
                 // fires the initial snapshot — gated like the collection's.
                 dirty_for_watch.set(true);
+                membership_for_watch.set(true);
                 let event_snapshot = ctx.into_value();
                 collect_replaced_ids(
                     &event_snapshot,
@@ -1131,6 +1145,7 @@ impl RenderNode {
         #[cfg(feature = "accessibility")]
         let env = item_env.as_ref().unwrap_or(env);
         *layout_mark.borrow_mut() = Rc::downgrade(&core.cell);
+        let transitions = LazyTransitions::new(env, snapshot.borrow().clone(), membership);
         Self::LazyStack(Box::new(LazyStackNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
@@ -1154,6 +1169,7 @@ impl RenderNode {
             _guard: guard,
             _direction_guard: direction_guard,
             _layout_guards: layout_guards,
+            transitions,
         }))
     }
 
@@ -1277,7 +1293,7 @@ impl RenderNode {
             .state
             .measurement
             .register_dynamic_node(identity, &child);
-        Self::Dynamic(Box::new(DynamicHostNode {
+        let host = DynamicHostNode {
             core,
             safe_area: None,
             source,
@@ -1285,7 +1301,10 @@ impl RenderNode {
             env: env.clone(),
             child,
             layout_dirty: Cell::new(false),
-        }))
+            transitions: DynamicTransitions::new(env),
+        };
+        host.claim_initial();
+        Self::Dynamic(Box::new(host))
     }
 }
 impl RenderNode {
@@ -1302,6 +1321,7 @@ impl RenderNode {
         env: &Environment,
         renderer: &mut SemanticCore,
         background_slot: Option<usize>,
+        claim_slot: Option<usize>,
     ) -> Self {
         let (layout, children) = container.into_inner().into_inner();
         let core = renderer.new_core();
@@ -1326,6 +1346,18 @@ impl RenderNode {
                 }
             })
             .collect();
+        // A conditional among the children of a container whose children are
+        // its own members lays its removal ghosts out as members too
+        // (layout-spec.md §4.5). A modifier container's child is the content
+        // it modifies, not a member: a conditional there paints its ghosts
+        // over its own slot, outside layout.
+        if claim_slot.is_none() {
+            for child in &children {
+                if let Some(host) = super::transition::member_host(child) {
+                    host.join_container();
+                }
+            }
+        }
         Self::Container(Box::new(ContainerNode {
             memo_gate: Cell::default(),
             memo_slots: RefCell::default(),
@@ -1333,6 +1365,7 @@ impl RenderNode {
             core,
             layout,
             children,
+            claim_slot,
             #[cfg(feature = "accessibility")]
             accessibility_child_env,
             placed: Vec::new(),
@@ -1378,5 +1411,25 @@ fn is_background_fill_leaf(node: &RenderNode) -> bool {
             ) && is_background_fill_leaf(&node.child)
         }
         _ => false,
+    }
+}
+
+/// The child of a modifier container that is the content it modifies — the
+/// slot a structural transition claim continues through: padding, frame and
+/// aspect ratio and an absolute position wrap one child, a background's
+/// content is its second child and an overlay's base its first. Every other
+/// layout's children are its own members, so a claim ends there.
+fn modifier_content_slot(layout: &dyn Any) -> Option<usize> {
+    if layout.is::<waterui_layout::padding::PaddingLayout>()
+        || layout.is::<waterui_layout::frame::FrameLayout>()
+        || layout.is::<waterui_layout::absolute::PositionedLayout>()
+        || layout.is::<waterui_layout::aspect_ratio::AspectRatioLayout>()
+        || layout.is::<waterui_layout::overlay::OverlayLayout>()
+    {
+        Some(0)
+    } else if layout.is::<BackgroundLayout>() {
+        Some(1)
+    } else {
+        None
     }
 }

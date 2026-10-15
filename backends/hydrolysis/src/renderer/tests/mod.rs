@@ -80,6 +80,8 @@ mod scroll_hit_clip;
 mod semantic_runtime;
 mod shadow;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod structural_transitions;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod tab_item_layout;
 mod teardown_order;
 mod text_ink;
