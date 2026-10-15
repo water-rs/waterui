@@ -29,8 +29,8 @@ pub enum TargetPlatform {
     /// Mac Catalyst — the iOS runtime bridged onto macOS
     /// (`aarch64-apple-ios-macabi`). It compiles against the macOS SDK's
     /// `System/iOSSupport` frameworks, not the macOS or iOS SDKs directly.
-    /// Internal to the target model for now; no `water` platform flag
-    /// selects it (#2103).
+    /// `water preview --platform ios` builds its in-process Apple preview
+    /// binary for this target; no other `water` command selects it.
     MacCatalyst,
     /// tvOS (physical device)
     TvOS,
@@ -939,8 +939,8 @@ mod host_support_tests {
             TargetPlatform::MacCatalyst.deployment_target_setting(),
             Some("IPHONEOS_DEPLOYMENT_TARGET")
         );
-        // Packaging answers stay unanswered — Xcode destinations and device
-        // families are #2103's job, so Catalyst fails fast on both.
+        // Catalyst is never packaged — only the preview binary builds for
+        // it — so the Xcode answers stay unanswered and fail fast.
         assert_eq!(TargetPlatform::MacCatalyst.xcode_destination_name(), None);
         assert_eq!(TargetPlatform::MacCatalyst.targeted_device_family(), None);
     }

@@ -1,10 +1,14 @@
-//! In-process Apple preview for `water preview --platform macos`.
+//! In-process Apple preview for `water preview --platform macos` and
+//! `--platform ios`.
 //!
 //! Builds the managed Apple preview package — the generated binary that
 //! calls `waterui_apple::preview::run` — with one cargo invocation in the
 //! shared runtime's target directory, then execs it with the run
 //! configuration. The render happens inside the generated process: no
-//! TCP, no support app.
+//! TCP, no support app. The package is the same for both platforms; only
+//! the target differs: `aarch64-apple-darwin` renders the `AppKit`
+//! realization, `aarch64-apple-ios-macabi` the `UIKit` one through Mac
+//! Catalyst, exec'd on this Mac with no simulator.
 
 use std::path::{Path, PathBuf};
 
@@ -31,6 +35,9 @@ pub struct ApplePreviewRequest<'a> {
     pub host: &'a crate::toolchain::Host,
     /// Path to the project to preview.
     pub project_path: &'a Path,
+    /// The Apple target the preview binary builds for:
+    /// `TargetPlatform::MacOS` or `TargetPlatform::MacCatalyst`.
+    pub platform: TargetPlatform,
     /// Source used to produce the preview view.
     pub source: PreviewSource<'a>,
     /// Preview width in logical pixels.
@@ -66,19 +73,19 @@ async fn write_apple_preview_target(project: &Project, source: &PreviewSource<'_
 /// Stage the project's assets and fonts where the preview binary's
 /// `ResourceContext` looks for them, the way the Hydrolysis preview
 /// locates them.
-async fn stage_apple_preview_resources(project: &Project, symbols: &ArtifactSymbols) -> Result<()> {
+async fn stage_apple_preview_resources(
+    project: &Project,
+    platform: TargetPlatform,
+    symbols: &ArtifactSymbols,
+) -> Result<()> {
     let resources_dir = project.apple_preview_crate_path().join("resources");
     let manifest =
         assets::stage_project_assets_for_apple(project, &resources_dir, symbols, false).await?;
 
     let mut resolved_fonts = {
         let font_manifest = project.apple_crate_path().join("Cargo.toml");
-        let font_declarations = assets::scan_fonts(
-            project,
-            &font_manifest,
-            &[waterui_assets_planner::FontPlatform::Macos],
-        )
-        .await?;
+        let font_declarations =
+            assets::scan_fonts(project, &font_manifest, &[platform.font_platform()?]).await?;
         assets::resolve_fonts(project.host(), font_declarations).await?
     };
     resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
@@ -88,47 +95,63 @@ async fn stage_apple_preview_resources(project: &Project, symbols: &ArtifactSymb
     assets::copy_fonts(&resolved_fonts, &resources_dir.join("fonts")).await
 }
 
-/// Execute the preview binary in place with the run configuration it
-/// reads from `WATERUI_PREVIEW_RUN_CONFIG`.
-async fn run_preview_binary(
-    project: &Project,
-    binary: &Path,
-    width: f32,
-    height: f32,
-    output_path: &Path,
-) -> Result<()> {
-    let crate_dir = project.apple_preview_crate_path();
-    let run_config = PreviewRunConfig {
-        width,
-        height,
-        mode: PreviewRunMode::Image {
-            output: output_path.to_path_buf(),
-        },
-    };
-    let run_config_path = write_run_config(&crate_dir, &run_config).await?;
-    run::run_preview_binary(
-        project.host(),
-        &crate_dir,
-        binary,
-        &run_config_path,
-        "Apple preview",
-    )
-    .await?;
-    Ok(())
+/// The Apple preview binary [`build_preview_with_apple`] built, with its
+/// shared runtime and resources staged beside it — ready to exec.
+#[derive(Debug)]
+pub struct ApplePreviewBinary {
+    project: Project,
+    executable: PathBuf,
 }
 
-/// Render a preview with the Apple backend in-process.
+impl ApplePreviewBinary {
+    /// The built executable.
+    #[must_use]
+    pub fn executable(&self) -> &Path {
+        &self.executable
+    }
+
+    /// Execute the binary in the preview package's directory with the run
+    /// configuration it reads from `WATERUI_PREVIEW_RUN_CONFIG`, and check
+    /// it wrote the PNG to `output_path`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the run configuration cannot be written, the
+    /// binary fails, or the image was not produced.
+    pub async fn render(&self, width: f32, height: f32, output_path: &Path) -> Result<()> {
+        let output_path = absolute_output_path(self.project.host(), output_path);
+        let crate_dir = self.project.apple_preview_crate_path();
+        let run_config = PreviewRunConfig {
+            width,
+            height,
+            mode: PreviewRunMode::Image {
+                output: output_path.clone(),
+            },
+        };
+        let run_config_path = write_run_config(&crate_dir, &run_config).await?;
+        run::run_preview_binary(
+            self.project.host(),
+            &crate_dir,
+            &self.executable,
+            &run_config_path,
+            "Apple preview",
+        )
+        .await?;
+        expect_nonempty_output(&output_path, "the Apple preview binary's PNG").await
+    }
+}
+
+/// Build the Apple preview binary for `request.platform` and stage what it
+/// loads at run time, without running it.
 ///
 /// # Errors
 ///
 /// Returns an error when the project cannot be opened, the preview package
-/// cannot be scaffolded or built, the binary fails, or the image was not
-/// produced.
-pub async fn render_preview_with_apple(
+/// cannot be scaffolded or built, or its runtime and resources cannot be
+/// staged.
+pub async fn build_preview_with_apple(
     request: ApplePreviewRequest<'_>,
-    output_path: &Path,
-) -> Result<()> {
-    let output_path = absolute_output_path(request.host, output_path);
+) -> Result<ApplePreviewBinary> {
     let project = Project::open_for_preview_build(request.host, request.project_path).await?;
     // The Apple companion is scaffolded too: its manifest owns the shared
     // runtime's feature forwards and the font declarations the resources
@@ -139,9 +162,9 @@ pub async fn render_preview_with_apple(
     project.scaffold_apple_preview_companion().await?;
     write_apple_preview_target(&project, &request.source).await?;
 
-    let triple = TargetPlatform::MacOS.triple();
+    let triple = request.platform.triple();
     let browser_runtime = project
-        .browser_runtime_plan(TargetPlatform::MacOS, TargetBackend::Apple, &triple)
+        .browser_runtime_plan(request.platform, TargetBackend::Apple, &triple)
         .await?;
     let features = apple_build_features(
         &project,
@@ -176,19 +199,32 @@ pub async fn render_preview_with_apple(
     let profile_dir = built.profile_dir.clone();
     libraries.stage(&profile_dir).await?;
     let staged_runtime = libraries.stage_apple_canonical(&profile_dir).await?;
-    let executable = built.executable()?;
-    dynamic_runtime::retarget_module(request.host, executable, &staged_runtime).await?;
+    let executable = built.executable()?.to_path_buf();
+    dynamic_runtime::retarget_module(request.host, &executable, &staged_runtime).await?;
     dynamic_runtime::prepare_host_runtime(request.host, &staged_runtime).await?;
 
     let symbols = built.app_symbols().await?;
-    stage_apple_preview_resources(&project, &symbols).await?;
-    run_preview_binary(
-        &project,
+    stage_apple_preview_resources(&project, request.platform, &symbols).await?;
+    Ok(ApplePreviewBinary {
+        project,
         executable,
-        request.width,
-        request.height,
-        &output_path,
-    )
-    .await?;
-    expect_nonempty_output(&output_path, "the Apple preview binary's PNG").await
+    })
+}
+
+/// Render a preview with the Apple backend in-process: build the binary,
+/// then run it.
+///
+/// # Errors
+///
+/// Returns an error when the binary cannot be built or staged, the binary
+/// fails, or the image was not produced.
+pub async fn render_preview_with_apple(
+    request: ApplePreviewRequest<'_>,
+    output_path: &Path,
+) -> Result<()> {
+    let (width, height) = (request.width, request.height);
+    build_preview_with_apple(request)
+        .await?
+        .render(width, height, output_path)
+        .await
 }

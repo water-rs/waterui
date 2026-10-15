@@ -22,7 +22,9 @@ pub(crate) mod run;
 use askama::Template;
 
 pub use app_client::{PreviewAppClient, PreviewProbe};
-pub use apple::{ApplePreviewRequest, render_preview_with_apple};
+pub use apple::{
+    ApplePreviewBinary, ApplePreviewRequest, build_preview_with_apple, render_preview_with_apple,
+};
 pub use hydrolysis::{
     HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewRequest,
     HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewTheme,
