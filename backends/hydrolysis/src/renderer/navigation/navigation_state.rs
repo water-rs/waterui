@@ -274,6 +274,79 @@ impl PageTransition {
     }
 }
 
+/// The moving page of a navigation transition its root's declaration drives:
+/// on its clock for a push or programmatic pop ([`PageTransition`]), or by
+/// gesture progress for an interactive pop ([`InteractivePageTransition`]).
+pub trait PageMotion {
+    /// The page that moves.
+    fn identity(&self) -> u64;
+
+    /// Samples the moving page for a page of `size`.
+    fn paint<'a>(
+        &'a self,
+        size: waterui_core::layout::Size,
+        hit: bool,
+        owner: &'a Rc<crate::renderer::mount::NodeCell>,
+    ) -> crate::renderer::TransitionPaint<'a>;
+}
+
+impl PageMotion for PageTransition {
+    fn identity(&self) -> u64 {
+        self.identity
+    }
+
+    fn paint<'a>(
+        &'a self,
+        size: waterui_core::layout::Size,
+        hit: bool,
+        owner: &'a Rc<crate::renderer::mount::NodeCell>,
+    ) -> crate::renderer::TransitionPaint<'a> {
+        crate::renderer::TransitionPaint::sample(
+            &self.run.state,
+            size,
+            self.direction,
+            hit,
+            &self.run.runtime,
+            owner,
+        )
+    }
+}
+
+/// The departing page's root declaration under an interactive pop: its
+/// removal, sampled at the pop's progress — forward while the gesture drags
+/// or commits, back toward presence when it is cancelled.
+pub struct InteractivePageTransition {
+    identity: u64,
+    removal: crate::renderer::tree::transition::ScrubbedRemoval,
+    /// The pop's progress as of its last sample: the removal's absence.
+    progress: f32,
+    /// Logical-edge resolution for the sampled properties.
+    direction: waterui_core::layout::LayoutDirection,
+}
+
+impl PageMotion for InteractivePageTransition {
+    fn identity(&self) -> u64 {
+        self.identity
+    }
+
+    fn paint<'a>(
+        &'a self,
+        size: waterui_core::layout::Size,
+        hit: bool,
+        owner: &'a Rc<crate::renderer::mount::NodeCell>,
+    ) -> crate::renderer::TransitionPaint<'a> {
+        self.removal.paint(
+            self.progress,
+            waterui_core::transition::TransitionGeometry {
+                size,
+                direction: self.direction,
+            },
+            hit,
+            owner,
+        )
+    }
+}
+
 pub struct HydroNavigationController {
     pub entries: NavigationEntries,
     pub(crate) events: NavigationEvents,
@@ -356,6 +429,9 @@ pub struct NavigationInteractivePop {
     pub(crate) phase: NavigationInteractivePopPhase,
     pub(crate) from_page: NavigationPage,
     pub(crate) to_page: NavigationPage,
+    /// The departing page's root declaration, started on the first frame
+    /// that presents the pop.
+    page: Option<Rc<RefCell<InteractivePageTransition>>>,
 }
 
 impl NavigationState {
@@ -423,7 +499,37 @@ impl NavigationInteractivePop {
             phase: NavigationInteractivePopPhase::Dragging,
             from_page,
             to_page,
+            page: None,
         }
+    }
+
+    /// The departing page's root declaration `spec` at the progress of the
+    /// last [`Self::sample`]. The page owns the pop's motion in place of the
+    /// stack style (layout-spec.md §4.5), as it does on a programmatic pop.
+    pub(crate) fn page_motion(
+        &mut self,
+        spec: &waterui_core::transition::TransitionSpec,
+        env: &Environment,
+        now: Instant,
+    ) -> Rc<RefCell<InteractivePageTransition>> {
+        let identity = self.from_page.identity;
+        let page = self.page.get_or_insert_with(|| {
+            let reduce_motion = env
+                .get::<waterui_core::transition::ReduceMotion>()
+                .is_some_and(|flag| flag.0);
+            Rc::new(RefCell::new(InteractivePageTransition {
+                identity,
+                removal: crate::renderer::tree::transition::ScrubbedRemoval::new(
+                    spec,
+                    reduce_motion,
+                    now,
+                ),
+                progress: 0.0,
+                direction: waterui_layout::layout_direction(env).snapshot(),
+            }))
+        });
+        page.borrow_mut().progress = crate::num_cast::f64_as_f32(self.progress);
+        Rc::clone(page)
     }
 
     pub(crate) fn update(&mut self, x: f64) -> bool {

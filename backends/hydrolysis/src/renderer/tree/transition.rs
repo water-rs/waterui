@@ -23,8 +23,8 @@ use super::*;
 use std::rc::Rc;
 
 use waterui_core::transition::{
-    Ghost, GhostSlot, TransitionGeometry, TransitionPhase, TransitionProperties, TransitionSpec,
-    TransitionState,
+    AnyTransition, Ghost, GhostSlot, Transition, TransitionGeometry, TransitionPhase,
+    TransitionProperties, TransitionSpec, TransitionState,
 };
 use waterui_graphics::{AnyEffect, ParamGuards};
 
@@ -169,15 +169,21 @@ pub fn member_host(node: &RenderNode) -> Option<&DynamicHostNode> {
 /// implemented in Hydrolysis yet. The Reduce Motion form is resolved first, so
 /// a capture effect whose declared reduction is a property effect still runs.
 pub fn checked_transition(state: TransitionState) -> TransitionState {
+    assert_property_transition(state.captures_content());
+    state
+}
+
+/// The capture rejection [`checked_transition`] applies, for a transition
+/// resolved without a clock.
+fn assert_property_transition(captures_content: bool) {
     assert!(
-        !state.captures_content(),
+        !captures_content,
         "Hydrolysis: pixel-capture transitions (a `Transition` whose `captures_content` \
          is true, such as disintegrate or dissolve) are not realized yet — their \
          window-level capture overlay is water-rs/waterui#1388. Use a property transition \
          (opacity, scale, move, blur, rotation) or declare a property `reduced()` form \
          and enable Reduce Motion"
     );
-    state
 }
 
 /// Starts a removal ghost after its semantic detachment, rejecting a
@@ -312,6 +318,49 @@ impl TransitionRun {
     /// Advances the clock; `false` once the transition settled.
     pub fn advance(&mut self, now: Instant) -> bool {
         self.runtime.advance(&mut self.state, now)
+    }
+}
+
+/// A removal whose absence an interactive gesture drives instead of a clock:
+/// sampled at whatever progress the gesture reports, moving back toward
+/// presence when the gesture is cancelled. Reduce Motion and the capture
+/// rejection resolve exactly as [`TransitionSpec::start`] and
+/// [`checked_transition`] resolve them for a clock-driven removal.
+pub struct ScrubbedRemoval {
+    transition: AnyTransition,
+    runtime: TransitionRuntime,
+}
+
+impl ScrubbedRemoval {
+    pub fn new(spec: &TransitionSpec, reduce_motion: bool, now: Instant) -> Self {
+        let transition = if reduce_motion {
+            AnyTransition::new(Transition::reduced(&spec.transition))
+        } else {
+            spec.transition.clone()
+        };
+        assert_property_transition(transition.captures_content(TransitionPhase::Removal));
+        Self {
+            transition,
+            runtime: TransitionRuntime::new(now),
+        }
+    }
+
+    /// Samples the removal at absence `progress` for a slot of `size`.
+    pub fn paint<'a>(
+        &'a self,
+        progress: f32,
+        geometry: TransitionGeometry,
+        hit: bool,
+        owner: &'a Rc<NodeCell>,
+    ) -> TransitionPaint<'a> {
+        TransitionPaint {
+            properties: self
+                .transition
+                .properties(TransitionPhase::Removal, progress, geometry),
+            hit,
+            runtime: &self.runtime,
+            owner,
+        }
     }
 }
 
