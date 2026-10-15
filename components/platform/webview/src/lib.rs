@@ -76,6 +76,7 @@ mod script;
 #[cfg(not(target_arch = "wasm32"))]
 pub use script::{
     BRIDGE_SCRIPT, DOCUMENT_START_SCRIPT, EVAL_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram,
+    raw_evaluation,
 };
 #[cfg(not(target_arch = "wasm32"))]
 mod origins;
@@ -609,11 +610,17 @@ impl WebView {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    /// Runs the given JavaScript code in the web view and returns the result.
+    /// Evaluates the JavaScript expression `script` in the web view and answers
+    /// the JSON encoding of its value.
+    ///
+    /// See [`WebViewHandle::run_javascript`] for the contract every engine
+    /// meets. [`eval`](Self::eval) is the typed form, and the one that awaits a
+    /// promise.
     ///
     /// # Errors
     ///
-    /// Returns an error string from the native backend when script execution fails.
+    /// Returns the engine's message when the expression throws, does not parse,
+    /// or has a value `JSON.stringify` rejects.
     ///
     /// The returned future is intentionally thread-local because `WebView` state is
     /// bound to the native UI thread.

@@ -7354,15 +7354,17 @@ mod webview {
     /// the `__wateruiProbe` the case itself injects, riding the creation-time
     /// scripts the mirrored-state seed is one of. The probe answers an
     /// array, whose reply is its JSON encoding on every engine.
-    fn bridge_globals(handle: &AnyWebViewHandle) -> String {
-        block_on_main(
+    fn bridge_globals(handle: &AnyWebViewHandle) -> Vec<String> {
+        let globals = block_on_main(
             ENGINE_DEADLINE,
             handle.run_javascript(
                 "[typeof waterui, typeof __wateruiEval, typeof __wateruiState, typeof __wateruiProbe]",
             ),
         )
-        .unwrap_or_else(|error| panic!("the globals probe must evaluate: {error}"))
-        .to_string()
+        .unwrap_or_else(|error| panic!("the globals probe must evaluate: {error}"));
+        serde_json::from_str(&globals).unwrap_or_else(|error| {
+            panic!("the globals probe answered {globals}, not a string array: {error}")
+        })
     }
 
     /// A view created under `origins` with the probe script and a handler,
@@ -7407,7 +7409,7 @@ mod webview {
         navigate(&admitting, "data:text/html,admitted", &loads);
         assert_eq!(
             bridge_globals(&admitting),
-            r#"["object","function","object","boolean"]"#,
+            ["object", "function", "object", "boolean"],
             "an admitted document must receive the whole bridge"
         );
 
@@ -7418,7 +7420,7 @@ mod webview {
         navigate(&refusing, "data:text/plain,elsewhere", &loads);
         assert_eq!(
             bridge_globals(&refusing),
-            r#"["undefined","undefined","undefined","undefined"]"#,
+            ["undefined", "undefined", "undefined", "undefined"],
             "a document outside the admission policy must get no bridge globals"
         );
     }

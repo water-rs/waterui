@@ -43,6 +43,25 @@ pub const EVAL_SCRIPT: &str = include_str!("js/eval.js");
 /// wrapper everywhere regardless.
 pub const BRIDGE_SCRIPT: &str = concat!(include_str!("js/bridge.js"), include_str!("js/state.js"));
 
+/// The raw evaluation wrapper: a function expression that answers the JSON
+/// encoding of its argument as a string.
+const RAW_EVALUATION: &str = include_str!("js/raw.js");
+
+/// The program a backend evaluates for
+/// [`run_javascript(expression)`](crate::WebViewHandle::run_javascript).
+///
+/// The expression becomes the argument of the wrapper in `js/raw.js`, so the
+/// program's value is always a string — the expression's JSON encoding, made
+/// by the page — which the backend returns unchanged. The wrapper is inlined
+/// rather than installed, so the program depends on nothing `WaterUI` put into
+/// the document and evaluates the same way in a document outside the bridge
+/// policy. [`WebViewHandle::run_javascript`](crate::WebViewHandle::run_javascript)
+/// states the contract this spells.
+#[must_use]
+pub fn raw_evaluation(expression: &str) -> String {
+    format!("({RAW_EVALUATION})((\n{expression}\n))")
+}
+
 /// A JavaScript expression that evaluates to a value.
 ///
 /// Build one with `eval!` for a checked literal, or

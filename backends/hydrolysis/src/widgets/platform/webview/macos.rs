@@ -29,15 +29,15 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_foundation::{
-    NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger,
-    NSJSONSerialization, NSJSONWritingOptions, NSObject, NSRect, NSString, NSURL,
-    NSURLErrorAppTransportSecurityRequiresSecureConnection, NSURLErrorCancelled,
-    NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost, NSURLErrorClientCertificateRejected,
-    NSURLErrorClientCertificateRequired, NSURLErrorDNSLookupFailed, NSURLErrorDomain,
-    NSURLErrorNetworkConnectionLost, NSURLErrorNotConnectedToInternet,
-    NSURLErrorSecureConnectionFailed, NSURLErrorServerCertificateHasBadDate,
-    NSURLErrorServerCertificateHasUnknownRoot, NSURLErrorServerCertificateNotYetValid,
-    NSURLErrorServerCertificateUntrusted, NSURLErrorTimedOut, NSURLRequest,
+    NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger, NSObject,
+    NSRect, NSString, NSURL, NSURLErrorAppTransportSecurityRequiresSecureConnection,
+    NSURLErrorCancelled, NSURLErrorCannotConnectToHost, NSURLErrorCannotFindHost,
+    NSURLErrorClientCertificateRejected, NSURLErrorClientCertificateRequired,
+    NSURLErrorDNSLookupFailed, NSURLErrorDomain, NSURLErrorNetworkConnectionLost,
+    NSURLErrorNotConnectedToInternet, NSURLErrorSecureConnectionFailed,
+    NSURLErrorServerCertificateHasBadDate, NSURLErrorServerCertificateHasUnknownRoot,
+    NSURLErrorServerCertificateNotYetValid, NSURLErrorServerCertificateUntrusted,
+    NSURLErrorTimedOut, NSURLRequest,
 };
 use objc2_web_kit::{
     WKContentWorld, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
@@ -662,34 +662,30 @@ fn install_user_scripts(controller: &WKUserContentController, shared: &SharedSta
     }
 }
 
-/// Turns the value `WebKit` hands a completion block into the text every backend
-/// returns for it: a string as itself, anything else as JSON.
+/// The string an evaluation produced.
 ///
-/// `-description` used to stand in for this, so an object came back in
-/// Objective-C property-list syntax (`{a = 1;}`) where every other backend
-/// returns JSON (`{"a":1}`).
-fn marshal_javascript_result(value: *mut AnyObject) -> Result<Str, Str> {
+/// Both evaluation paths run scripts that encode their answer in the page —
+/// the raw path through `waterui_webview::raw_evaluation`, the awaited one
+/// through the shared wrapper's envelope — so `WebKit` hands back a string,
+/// returned as it is. Anything else, `nil` for `undefined` included, means the
+/// script broke that contract and is reported rather than re-encoded here.
+fn javascript_string(value: *mut AnyObject) -> Result<Str, Str> {
     // SAFETY: WebKit passes a nullable result to the completion block; `as_ref`
     // is the null check.
     let Some(value) = (unsafe { value.as_ref() }) else {
-        // `undefined`: no value at all, which is not the JSON `null`.
-        return Ok(Str::from_static(""));
+        return Err(Str::from_static(
+            "the script evaluated to `undefined`, not the string it must answer",
+        ));
     };
-    if let Some(string) = value.downcast_ref::<NSString>() {
-        return Ok(Str::from(string.to_string()));
-    }
-    // SAFETY: `value` is the live result object WebKit handed the completion
-    // block, and the serializer only reads it.
-    let data = unsafe {
-        NSJSONSerialization::dataWithJSONObject_options_error(
-            value,
-            NSJSONWritingOptions::FragmentsAllowed,
-        )
-    }
-    .map_err(|error| Str::from(error.localizedDescription().to_string()))?;
-    String::from_utf8(data.to_vec())
-        .map(Str::from)
-        .map_err(|error| Str::from(error.to_string()))
+    value.downcast_ref::<NSString>().map_or_else(
+        || {
+            Err(Str::from(format!(
+                "the script evaluated to a `{}`, not the string it must answer",
+                value.class().name().to_string_lossy()
+            )))
+        },
+        |string| Ok(Str::from(string.to_string())),
+    )
 }
 
 impl WebViewDelegate {
@@ -1218,7 +1214,7 @@ impl WebViewHandle for MacSystemWebViewHandle {
         // the module safety note.
         unsafe {
             self.inner.web_view.evaluateJavaScript_completionHandler(
-                &NSString::from_str(script),
+                &NSString::from_str(&waterui_webview::raw_evaluation(script)),
                 Some(&completion),
             );
         }
@@ -1274,7 +1270,7 @@ impl MacSystemWebViewHandle {
             // SAFETY: WebKit passes a nullable `NSError` to the completion block;
             // `as_ref` is the null check.
             let result = unsafe { error.as_ref() }.map_or_else(
-                || marshal_javascript_result(value),
+                || javascript_string(value),
                 |error| Err(Str::from(error.localizedDescription().to_string())),
             );
             let sender = sender

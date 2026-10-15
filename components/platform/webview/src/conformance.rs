@@ -29,7 +29,7 @@ use crate::{
 };
 
 /// The raw reply of [`WebViewHandle::run_javascript`](crate::WebViewHandle::run_javascript)
-/// is the JSON encoding of the evaluated value.
+/// is the JSON encoding of the evaluated value, made by the page.
 ///
 /// `evaluate` is the engine's raw path — `|script| handle.run_javascript(script)`
 /// on a handle, or the same call on a `WebView`, whichever the suite holds —
@@ -39,26 +39,50 @@ use crate::{
 /// # Panics
 ///
 /// When a string arrives unquoted, an object does not parse as JSON with its
-/// fields intact, a number is not its literal, or `undefined` is anything but
-/// `null`.
+/// fields intact, a number is not its literal, a value JSON has no spelling for
+/// is anything but `null`, a comma expression or a trailing comment changes the
+/// value, a promise is awaited, or a throwing expression, a statement or a cyclic
+/// value answers `Ok`.
 #[expect(
     clippy::future_not_send,
     reason = "web views are confined to the UI thread, and so is the suite that drives them"
 )]
 pub async fn raw_evaluation_answers_json(evaluate: impl AsyncFn(&str) -> Result<Str, Str>) {
-    let string = evaluate("'waterui'")
-        .await
-        .expect("a string literal evaluates");
-    assert_eq!(
-        string.as_str(),
+    let answers = async |script: &str, expected: &str, why: &str| {
+        let reply = evaluate(script)
+            .await
+            .unwrap_or_else(|error| panic!("`{script}` failed to evaluate: {error}"));
+        assert_eq!(reply.as_str(), expected, "`{script}`: {why}");
+    };
+    answers(
+        "'waterui'",
         "\"waterui\"",
-        "a string result arrives as JSON, quoted"
-    );
-
-    let number = evaluate("40 + 2")
-        .await
-        .expect("an arithmetic expression evaluates");
-    assert_eq!(number.as_str(), "42", "a number arrives as its literal");
+        "a string arrives as JSON, quoted",
+    )
+    .await;
+    answers("40 + 2", "42", "a number arrives as its literal").await;
+    answers("1 < 2", "true", "a boolean arrives as its literal").await;
+    answers(
+        "undefined",
+        "null",
+        "JSON has no undefined; the typed path is where it stays distinct",
+    )
+    .await;
+    answers("() => 1", "null", "a function has no JSON spelling").await;
+    answers("0 / 0", "null", "NaN has no JSON spelling").await;
+    answers("1, 2", "2", "a comma expression is one value").await;
+    answers(
+        "'noted' // a trailing comment",
+        "\"noted\"",
+        "a trailing comment does not swallow the evaluation",
+    )
+    .await;
+    answers(
+        "Promise.resolve(1)",
+        "{}",
+        "the raw path does not await a promise",
+    )
+    .await;
 
     let object = evaluate("({name: 'waterui', ok: true, items: [1, 2]})")
         .await
@@ -71,12 +95,20 @@ pub async fn raw_evaluation_answers_json(evaluate: impl AsyncFn(&str) -> Result<
         "an object arrives as JSON with its fields intact"
     );
 
-    let nothing = evaluate("undefined").await.expect("undefined evaluates");
-    assert_eq!(
-        nothing.as_str(),
-        "null",
-        "JSON has no undefined; the typed path is where it stays distinct"
-    );
+    for (script, why) in [
+        (
+            "(() => { throw new Error('raw'); })()",
+            "an exception the expression throws",
+        ),
+        ("let x = 1", "a statement, which is not an expression"),
+        (
+            "(() => { const cycle = {}; cycle.self = cycle; return cycle; })()",
+            "a value JSON.stringify throws on",
+        ),
+    ] {
+        let reply = evaluate(script).await;
+        assert!(reply.is_err(), "{why} answers Err, not {reply:?}");
+    }
 }
 
 /// The engine's asset origin serves the bundled site as a secure context.

@@ -327,14 +327,8 @@ impl WebViewHandle for CefWebViewHandle {
         reason = "CEF pages and DevTools sessions are confined to the UI thread"
     )]
     async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
-        // The raw path answers JSON: a string arrives quoted, and a value
-        // `Runtime.evaluate` could not return by value — `undefined`, a
-        // function — answers `null`.
-        let value = self.evaluate(script).await?.value;
-        Ok(Str::from(value.map_or_else(
-            || Value::Null.to_string(),
-            |value| value.to_string(),
-        )))
+        self.evaluate(&waterui_webview::raw_evaluation(script))
+            .await
     }
 
     #[expect(
@@ -345,23 +339,25 @@ impl WebViewHandle for CefWebViewHandle {
         // `body` is a function body, so it cannot be evaluated as an
         // expression; wrapping it in an async IIFE gives CDP the promise it
         // awaits.
-        let expression = format!("(async () => {{ {body} }})()");
-        let result = self.evaluate(&expression).await?;
-        Ok(Str::from(match result.value {
-            Some(Value::String(value)) => value,
-            Some(value) => value.to_string(),
-            None => result.description.unwrap_or_default(),
-        }))
+        self.evaluate(&format!("(async () => {{ {body} }})()"))
+            .await
     }
 }
 
 impl CefWebViewHandle {
-    /// Evaluates `expression` in the main frame, awaiting a promise result.
+    /// Evaluates `expression` in the main frame, awaiting a promise result,
+    /// and answers the string it produced.
+    ///
+    /// Both paths evaluate scripts that encode their answer in the page — the
+    /// raw path through `waterui_webview::raw_evaluation`, the awaited one
+    /// through the shared wrapper's envelope — so the value is a string,
+    /// returned as it is. Anything else means the script broke that contract
+    /// and is reported rather than re-encoded here.
     #[expect(
         clippy::future_not_send,
         reason = "CEF pages and DevTools sessions are confined to the UI thread"
     )]
-    async fn evaluate(&self, expression: &str) -> Result<protocol::RemoteObject, Str> {
+    async fn evaluate(&self, expression: &str) -> Result<Str, Str> {
         let response = self
             .session()
             .execute(&protocol::Evaluate {
@@ -375,7 +371,20 @@ impl CefWebViewHandle {
         if let Some(exception) = response.exception_details {
             return Err(Str::from(exception.text));
         }
-        Ok(response.result)
+        match response.result.value {
+            Some(Value::String(value)) => Ok(Str::from(value)),
+            Some(value) => Err(Str::from(format!(
+                "the script evaluated to `{value}`, not the string it must answer"
+            ))),
+            None => Err(Str::from(format!(
+                "the script evaluated to {}, not the string it must answer",
+                response
+                    .result
+                    .description
+                    .as_deref()
+                    .unwrap_or("`undefined`")
+            ))),
+        }
     }
 }
 

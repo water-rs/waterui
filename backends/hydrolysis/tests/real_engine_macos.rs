@@ -434,28 +434,30 @@ mod real {
         }
 
         /// What the engine says the current document's URL is.
-        ///
-        /// This backend marshals a JavaScript string as itself rather than as
-        /// JSON, so the answer is used directly.
         fn location(&self) -> String {
-            self.block_on(self.handle.run_javascript("location.href"))
-                .expect("location.href evaluates")
-                .to_string()
+            let href = self
+                .block_on(self.handle.run_javascript("location.href"))
+                .expect("location.href evaluates");
+            // The raw path answers JSON, so the URL arrives as a quoted string.
+            serde_json::from_str(&href).unwrap_or_else(|error| {
+                panic!("location.href answered {href}, not a string: {error}")
+            })
         }
 
         /// The `typeof` of every global the document-start scripts install —
         /// `waterui`, the `__wateruiEval` wrapper and the `__wateruiState`
         /// store — evaluated in the document currently loaded. The probe goes
         /// through `evaluateJavaScript`, so the answer does not depend on the
-        /// bridge it reports on; an array marshals as its JSON encoding.
-        fn bridge_globals(&self) -> String {
-            self.block_on(
-                self.handle.run_javascript(
+        /// bridge it reports on.
+        fn bridge_globals(&self) -> Vec<String> {
+            let globals = self
+                .block_on(self.handle.run_javascript(
                     "[typeof waterui, typeof __wateruiEval, typeof __wateruiState]",
-                ),
-            )
-            .expect("the bridge globals probe evaluates")
-            .to_string()
+                ))
+                .expect("the bridge globals probe evaluates");
+            serde_json::from_str(&globals).unwrap_or_else(|error| {
+                panic!("the bridge globals probe answered {globals}, not a string array: {error}")
+            })
         }
 
         /// A `greet` through the bridge.
@@ -609,6 +611,16 @@ mod real {
         );
     }
 
+    /// `run_javascript` answers the JSON encoding of the evaluated value, made
+    /// by the page — the shared conformance case on a loaded document.
+    fn raw_evaluation_answers_json(executor: &TestExecutor) {
+        let engine = start(executor);
+        engine.open("/first");
+        engine.block_on(waterui_webview::conformance::raw_evaluation_answers_json(
+            async |script| engine.handle.run_javascript(script).await,
+        ));
+    }
+
     /// Injecting under a key already in use replaces that script.
     ///
     /// A script whose content follows application state is kept current this
@@ -636,11 +648,7 @@ mod real {
         engine.open("/second");
 
         let recorded = engine
-            .block_on(
-                engine
-                    .handle
-                    .run_javascript("JSON.stringify(globalThis.__wateruiProbe)"),
-            )
+            .block_on(engine.handle.run_javascript("globalThis.__wateruiProbe"))
             .expect("the probe array evaluates");
         let entries: Vec<String> = serde_json::from_str(&recorded)
             .unwrap_or_else(|error| panic!("the probe recorded `{recorded}`: {error}"));
@@ -673,7 +681,7 @@ mod real {
 
         assert_eq!(
             engine.bridge_globals(),
-            r#"["object","function","object"]"#,
+            ["object", "function", "object"],
             "a file: document under BridgeOrigins::LocalFiles must receive the bridge"
         );
         assert_eq!(
@@ -699,7 +707,7 @@ mod real {
 
         assert_eq!(
             engine.bridge_globals(),
-            r#"["object","function","object"]"#,
+            ["object", "function", "object"],
             "a data: document under BridgeOrigins::Any must receive the bridge"
         );
         assert_eq!(
@@ -751,6 +759,7 @@ mod real {
         the_page_can_reach_the_whole_waterui_object(&executor);
         integers_beyond_two_to_the_fifty_third_cross_intact(&executor);
         typed_evaluation_awaits_the_wrapper(&executor);
+        raw_evaluation_answers_json(&executor);
         a_keyed_injection_replaces_its_predecessor(&executor);
         a_local_file_document_receives_the_bridge(&executor);
         an_any_policy_admits_an_opaque_document(&executor);

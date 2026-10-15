@@ -21,7 +21,7 @@ use waterui::prelude::*;
 use waterui::preview;
 use waterui::reactive::binding;
 #[cfg(not(target_arch = "wasm32"))]
-use waterui::webview::{Json, ScriptInjectionTime};
+use waterui::webview::{Json, ScriptInjectionTime, serde_json};
 use waterui::webview::{Url, WebView, WebViewController, WebViewEvent, WebViewProxy};
 use waterui::widget::condition::when;
 
@@ -183,7 +183,12 @@ fn bridge_controls(allow_redirects: Binding<bool>) -> impl View {
             .action_async(
                 |proxy: WebViewProxy, State(result): State<Binding<Str>>| async move {
                     match proxy.run_javascript("document.title").await {
-                        Ok(title) => result.set(title),
+                        // The raw path answers JSON, so the title arrives as a
+                        // quoted string.
+                        Ok(title) => result.set(Str::from(
+                            serde_json::from_str::<String>(&title)
+                                .expect("document.title answers a JSON string"),
+                        )),
                         Err(err) => result.set(Str::from(format!("JS error: {err}"))),
                     }
                 },

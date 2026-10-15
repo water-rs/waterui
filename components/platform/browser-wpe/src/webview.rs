@@ -260,7 +260,9 @@ impl WebViewHandle for WpeWebViewHandle {
         reason = "WPE WebKit and WaterUI view state are confined to the UI thread"
     )]
     async fn run_javascript(&self, script: &str) -> Result<suiteki::Str, suiteki::Str> {
-        self.page.run_javascript(script).await
+        self.page
+            .run_javascript(&waterui_webview::raw_evaluation(script))
+            .await
     }
 
     #[expect(

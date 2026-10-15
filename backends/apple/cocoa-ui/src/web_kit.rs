@@ -36,11 +36,10 @@ use objc2::{
     AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, extern_class, extern_methods,
     msg_send,
 };
-use objc2_core_foundation::{CFBoolean, CFError, CFType};
+use objc2_core_foundation::CFError;
 use objc2_foundation::{
-    NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger,
-    NSJSONSerialization, NSJSONWritingOptions, NSNull, NSNumber, NSObject, NSRect, NSString, NSURL,
-    NSURLAuthenticationChallenge, NSURLCredential, NSURLRequest,
+    NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger, NSObject,
+    NSRect, NSString, NSURL, NSURLAuthenticationChallenge, NSURLCredential, NSURLRequest,
     NSURLSessionAuthChallengeDisposition,
 };
 use objc2_security::SecTrust;
@@ -1281,9 +1280,12 @@ impl WebViewController {
             .set_custom_user_agent(user_agent.map(NSString::from_str).as_deref());
     }
 
-    /// Runs `script` in the default world; `done` receives the result's
-    /// JSON encoding (a value without one falls back to its `description`)
-    /// or the error's localized description.
+    /// Runs `script` in the default world; `done` receives the string it
+    /// evaluated to, or the error's localized description.
+    ///
+    /// The script must evaluate to a string: a value of any other kind is
+    /// reported as an error rather than converted, because the caller encodes
+    /// in the page what it wants back.
     pub fn evaluate_javascript(
         &self,
         script: &str,
@@ -1292,7 +1294,7 @@ impl WebViewController {
         let done = RefCell::new(Some(done));
         let completion = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
             if let Some(done) = done.borrow_mut().take() {
-                done(script_result(result, error, json_string));
+                done(script_result(result, error));
             }
         });
         // SAFETY: `completion` is copied by WebKit and invoked on the main
@@ -1306,10 +1308,9 @@ impl WebViewController {
 
     /// Calls `function_body` in the page content world — the entry point
     /// `callAsyncJavaScript` is required for, since `evaluateJavaScript`
-    /// returns the promise object itself. `done` receives what the function
-    /// resolved with: a string as itself — the shared wrapper resolves with
-    /// its JSON envelope already encoded, which a second encoding would turn
-    /// into a JSON string literal — and any other value as its JSON encoding.
+    /// returns the promise object itself. `done` receives the string the
+    /// function resolved with; like [`Self::evaluate_javascript`], any other
+    /// value is an error.
     pub fn call_async_javascript(
         &self,
         function_body: &str,
@@ -1318,7 +1319,7 @@ impl WebViewController {
         let done = RefCell::new(Some(done));
         let completion = RcBlock::new(move |result: *mut AnyObject, error: *mut NSError| {
             if let Some(done) = done.borrow_mut().take() {
-                done(script_result(result, error, awaited_text));
+                done(script_result(result, error));
             }
         });
         let arguments = NSDictionary::<NSString, AnyObject>::new();
@@ -1552,87 +1553,33 @@ pub fn evaluate_server_trust(trust: &SecTrust) -> Result<(), String> {
     ))
 }
 
-/// Turns an evaluated result into the reply string the bridge expects,
-/// spelling a present value with `encode`.
-fn script_result(
-    result: *mut AnyObject,
-    error: *mut NSError,
-    encode: fn(&AnyObject) -> String,
-) -> Result<String, String> {
+/// The string an evaluation produced, or why there is none.
+///
+/// Both evaluation paths run scripts that encode their answer in the page, so
+/// the value is a string and is returned as it is. Anything else — `nil` for
+/// `undefined`, a bridged number or dictionary — means the script broke that
+/// contract, and is reported rather than re-encoded here.
+fn script_result(result: *mut AnyObject, error: *mut NSError) -> Result<String, String> {
     if !error.is_null() {
         // SAFETY: a non-null `NSError` from WebKit is a live object.
         let error = unsafe { &*error };
         return Err(error.localizedDescription().to_string());
     }
-    if result.is_null() {
-        return Ok(String::from("null"));
-    }
-    // SAFETY: a non-null `AnyObject` from WebKit is a live object.
-    let result = unsafe { &*result };
-    Ok(encode(result))
-}
-
-/// The text of a value an awaited call resolved with: a string as itself,
-/// anything else as [`json_string`] spells it.
-fn awaited_text(object: &AnyObject) -> String {
-    object
-        .downcast_ref::<NSString>()
-        .map_or_else(|| json_string(object), NSString::to_string)
-}
-
-/// JSON-encodes `object` for the `run_javascript` reply — a string quoted
-/// and escaped, a boolean `true`/`false`, a number as its literal, `null`
-/// for `NSNull`, a container as its JSON. A value with no JSON encoding —
-/// an `NSDate` a `Date` bridges to — falls back to `description`.
-fn json_string(object: &AnyObject) -> String {
-    if object.downcast_ref::<NSNull>().is_some() {
-        return String::from("null");
-    }
-    if let Some(number) = object.downcast_ref::<NSNumber>() {
-        // A JavaScript boolean bridges as a `CFBoolean` — an `NSNumber`
-        // told from the numbers by its CoreFoundation type, never by its
-        // value: `NSNumber` 1 is not `true`.
-        // SAFETY: an `NSNumber` is a `CFType` under toll-free bridging; the
-        // downcast only reads its type identifier.
-        let cf = unsafe { &*std::ptr::from_ref(number).cast::<CFType>() };
-        if let Some(boolean) = cf.downcast_ref::<CFBoolean>() {
-            return String::from(if boolean.value() { "true" } else { "false" });
-        }
-        // JSON has no spelling for NaN or an infinity, and the serializer
-        // raises on them instead of erroring; they answer `null`, the
-        // spelling `JSON.stringify` gives them.
-        if !number.doubleValue().is_finite() {
-            return String::from("null");
-        }
-    }
-    // `FragmentsAllowed` extends the serializer to the scalar classes
-    // `isValidJSONObject` rejects at top level — `NSString`, `NSNumber`.
-    // The serializer raises `NSInvalidArgumentException` on a type it
-    // cannot write rather than answering an error, so only those classes
-    // and containers that pass the validity check are handed to it.
-    let writable = object.downcast_ref::<NSString>().is_some()
-        || object.downcast_ref::<NSNumber>().is_some()
-        // SAFETY: `object` is a live object.
-        || unsafe { NSJSONSerialization::isValidJSONObject(object) };
-    if writable {
-        // SAFETY: `writable` is the writability contract
-        // `dataWithJSONObject` enforces by raising; `object` is a live
-        // object.
-        if let Ok(data) = unsafe {
-            NSJSONSerialization::dataWithJSONObject_options_error(
-                object,
-                NSJSONWritingOptions::FragmentsAllowed,
-            )
-        } && let Ok(text) = String::from_utf8(data.to_vec())
-        {
-            return text;
-        }
-    }
-    // SAFETY: `object` is a live object; `description` is `NSObject`.
-    let description: Option<Retained<NSString>> = unsafe { msg_send![object, description] };
-    description.map_or_else(
-        || String::from("null"),
-        |description| description.to_string(),
+    // SAFETY: a non-null `AnyObject` from WebKit is a live object; `as_ref`
+    // is the null check.
+    let Some(result) = (unsafe { result.as_ref() }) else {
+        return Err(String::from(
+            "the script evaluated to `undefined`, not the string it must answer",
+        ));
+    };
+    result.downcast_ref::<NSString>().map_or_else(
+        || {
+            Err(format!(
+                "the script evaluated to a `{}`, not the string it must answer",
+                result.class().name().to_string_lossy()
+            ))
+        },
+        |string| Ok(string.to_string()),
     )
 }
 
