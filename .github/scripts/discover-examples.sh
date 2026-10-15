@@ -3,14 +3,19 @@
 # examples/ and backends/apple/Examples/), sorted and unique, one per line;
 # fails when there are none.
 #
-# The macOS runners execute this with /bin/bash 3.2, which installs its
+# Requires bash >= 4.2, asserted below (#2683): /bin/bash 3.2 installs its
 # SIGCHLD handler without SA_RESTART (bash-4.2 fixed "an arriving SIGCHLD
-# interrupting output functions like those invoked by echo or printf"). A
-# child exiting while a builtin writes therefore fails the write with EINTR.
-# So the shell never writes while a child of its own is alive: discovery runs
-# in one command substitution, which the shell waits out to the last process
-# before it prints anything — no process substitution, no background child.
+# interrupting output functions like those invoked by echo or printf"), so
+# under 3.2 a child exiting while a builtin writes can fail the write with
+# EINTR. Discovery still runs in one command substitution — it keeps the
+# exit status (a captured `::error` line would otherwise become an example
+# name) and the shell waits the child out before printing anything.
 set -euo pipefail
+
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  echo "::error::discover-examples.sh needs bash >= 4.2 (found ${BASH_VERSION}); /bin/bash 3.2 lets SIGCHLD interrupt writes with EINTR (#2683)" >&2
+  exit 1
+fi
 
 waterui_dir="${1:-${WATERUI_DIR:-${GITHUB_WORKSPACE:-$(pwd)}}}"
 examples_roots=("${waterui_dir}/examples" "${waterui_dir}/backends/apple/Examples")
