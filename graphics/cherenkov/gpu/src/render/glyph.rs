@@ -1048,7 +1048,8 @@ impl Atlas {
                 }
                 PendingRaster::MaskTexture { .. }
                 | PendingRaster::Colr { .. }
-                | PendingRaster::Bitmap { .. } => {}
+                | PendingRaster::Bitmap { .. }
+                | PendingRaster::GpuPath { .. } => {}
             }
         }
     }
@@ -2095,7 +2096,10 @@ impl PendingRaster {
         match self {
             Self::Glyph { w, .. } | Self::Mask { w, .. } => usize::from(*w > 0),
             Self::Path { cells, .. } => cells.len(),
-            Self::MaskTexture { .. } | Self::Colr { .. } | Self::Bitmap { .. } => 0,
+            Self::MaskTexture { .. }
+            | Self::Colr { .. }
+            | Self::Bitmap { .. }
+            | Self::GpuPath { .. } => 0,
         }
     }
 }
@@ -2185,6 +2189,27 @@ pub enum PendingRaster {
         height: u32,
         /// Premultiplied linear-P3 f16 texels.
         texels: Vec<u8>,
+    },
+    /// A path routed to the GPU coverage kernels (issue #2543, decision
+    /// S3): the lowering recorded its curve elements, fill rule, device
+    /// transform and template instance — the CPU never flattened it and
+    /// nothing is rasterized or stored in the atlas. The record joins
+    /// the frame's compute input at apply time.
+    GpuPath {
+        /// `FillRule` as the kernel's `rule` field (0 non-zero,
+        /// 1 even-odd).
+        rule: u32,
+        /// Local → device transform the kernels apply.
+        raster: kurbo::Affine,
+        /// The target surface size the grid bounds clip to.
+        surface: (u32, u32),
+        /// The instance template `classify` copies per emitted span or
+        /// cell — the same bytes `replay` would stamp.
+        template: Box<crate::render::instance::Instance>,
+        /// Curve elements encoded for the compute input buffer.
+        elements: Vec<crate::render::path::GpuElement>,
+        /// Decision R2's bound over those elements.
+        bound: crate::render::path::GpuBound,
     },
 }
 

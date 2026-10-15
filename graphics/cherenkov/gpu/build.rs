@@ -149,6 +149,7 @@ fn main() {
         resolve,
         reduce,
         shadow,
+        coverage,
         native,
         tile,
     ] = [
@@ -163,6 +164,7 @@ fn main() {
         "resolve",
         "reduce",
         "shadow",
+        "coverage",
         "external_native",
         "composite/tile",
     ]
@@ -196,6 +198,7 @@ fn main() {
         resolve: &resolve,
         reduce: &reduce,
         shadow: &shadow,
+        coverage: &coverage,
         tile: &tile,
     });
 
@@ -220,6 +223,7 @@ struct Modules<'a> {
     resolve: &'a str,
     reduce: &'a str,
     shadow: &'a str,
+    coverage: &'a str,
     /// The Vulkan tile stage interfaces around the fragment bodies.
     tile: &'a str,
 }
@@ -294,6 +298,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         ("resolve", m.resolve, bindings::RESOLVE_GROUPS),
         ("reduce", m.reduce, bindings::REDUCE_GROUPS),
         ("shadow", m.shadow, bindings::SHADOW_GROUPS),
+        ("coverage", m.coverage, bindings::COVERAGE_GROUPS),
     ] {
         specs.push(Spec {
             name: name.into(),
@@ -311,7 +316,11 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
     // epoch.
     specs.push(Spec {
         name: "engine_tile".into(),
-        source: format!("{}\n{}", specs[2].source, m.tile),
+        source: format!(
+            "{}\n{}",
+            drop_marked(&specs[2].source, "cell-buffer"),
+            m.tile
+        ),
         groups: bindings::ENGINE_GROUPS,
         metal: false,
         merge_pair: None,
@@ -343,7 +352,7 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
         // a read `ExecutionPlan::epoch` never admits into a tile epoch.
         let spec = Spec {
             name: "engine_tile".into(),
-            source: specs[2].source.clone(),
+            source: drop_marked(&specs[2].source, "cell-buffer"),
             groups: bindings::ENGINE_GROUPS,
             metal: true,
             merge_pair: None,

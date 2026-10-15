@@ -12,6 +12,7 @@ pub mod external;
 pub mod filter;
 mod glyph;
 mod gpu_content;
+mod gpu_cov;
 mod instance;
 mod lower;
 mod paint;
@@ -997,6 +998,13 @@ pub struct GpuRenderer {
     bound_stop_size: u64,
     /// The globals buffer size `bind0` was built against.
     bound_globals_size: u64,
+    /// The per-frame cell-texel storage buffer the GPU coverage route
+    /// writes and the raster passes read (decision S1, issue #2543).
+    cell_texels: wgpu::Buffer,
+    /// The cell-texel buffer size `bind0` was built against.
+    bound_cell_texels_size: u64,
+    /// The frame's GPU coverage dispatch context (issue #2543).
+    gpu_cov: gpu_cov::GpuCoverage,
     atlas: Atlas,
     /// Per-commit cell writes, rebuilt in place each frame.
     commit_writes: glyph::CellWrites,
@@ -1160,6 +1168,8 @@ enum PendingOrigin {
     Cells(Vec<(u32, u32)>, Vec<u32>),
     /// A clip mask's cell origin.
     Mask([f32; 2]),
+    /// A GPU-routed path: its compute record index (issue #2543).
+    Gpu(u32),
     /// A COLR cache insert; no instance patch.
     None,
 }
@@ -1329,7 +1339,7 @@ fn create_device(
         "adapter"
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
-    let mut required = wgpu::Features::empty();
+    let mut required = supported & wgpu::Features::INDIRECT_FIRST_INSTANCE;
     // The fixed engine shaders are precompiled (#57): Vulkan loads SPIR-V
     // and Metal a metallib through the passthrough API; wgpu-hal advertises
     // the feature unconditionally on both backends.
@@ -1588,7 +1598,7 @@ async fn create_device(
         "adapter"
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
-    let mut required = wgpu::Features::empty();
+    let mut required = supported & wgpu::Features::INDIRECT_FIRST_INSTANCE;
     // Pass-boundary timestamps are all Metal is asked for: Apple GPUs
     // advertise `TIMESTAMP_QUERY_INSIDE_ENCODERS` but sample only at
     // stage boundaries, so an encoder-level `write_timestamp` goes through
@@ -1643,6 +1653,11 @@ pub fn layout_entries(entries: &[bindings::Entry]) -> Vec<wgpu::BindGroupLayoutE
                 },
                 bindings::Kind::StorageRead => wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: entry.dynamic_offset,
+                    min_binding_size: wgpu::BufferSize::new(entry.min_size),
+                },
+                bindings::Kind::Storage => wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: entry.dynamic_offset,
                     min_binding_size: wgpu::BufferSize::new(entry.min_size),
                 },
@@ -1764,12 +1779,24 @@ fn make_bind1(
 }
 
 /// Builds the group-0 bind group over the current buffers and atlas.
+/// The placeholder cell-texel buffer bound until the GPU coverage
+/// route first sizes it (issue #2543).
+fn cell_texels_placeholder(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("cell texels"),
+        size: 4,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
 fn make_bind0(
     device: &wgpu::Device,
     layout0: &wgpu::BindGroupLayout,
     globals: &wgpu::Buffer,
     instances: &wgpu::Buffer,
     stops: &wgpu::Buffer,
+    cell_texels: &wgpu::Buffer,
     atlas: &Atlas,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1793,6 +1820,10 @@ fn make_bind0(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: stops.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: cell_texels.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
                 binding: 3,
@@ -2391,7 +2422,16 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         )?;
         let atlas = Atlas::new(&device, config.budget.gpu.0);
         fire_probe(&config, CreationPhase::Atlas, Some(&adapter), Some(&device))?;
-        let bind0 = make_bind0(&device, &layout0, &globals, &instances, &stops, &atlas);
+        let cell_texels = cell_texels_placeholder(&device);
+        let bind0 = make_bind0(
+            &device,
+            &layout0,
+            &globals,
+            &instances,
+            &stops,
+            &cell_texels,
+            &atlas,
+        );
         #[cfg_attr(
             not(all(unix, not(target_vendor = "apple"))),
             expect(
@@ -2561,6 +2601,9 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             exports: FxHashMap::default(),
             bound_atlas: 0,
             bound_instance_size: 272 * 16,
+            cell_texels,
+            bound_cell_texels_size: 4,
+            gpu_cov: gpu_cov::GpuCoverage::new(),
             bound_stop_size: 32 * 16,
             bound_globals_size: 256,
             atlas,
@@ -2747,7 +2790,16 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     )?;
     let atlas = Atlas::new(&device, config.budget.gpu.0);
     fire_probe(&config, CreationPhase::Atlas, Some(&adapter), Some(&device))?;
-    let bind0 = make_bind0(&device, &layout0, &globals, &instances, &stops, &atlas);
+    let cell_texels = cell_texels_placeholder(&device);
+    let bind0 = make_bind0(
+        &device,
+        &layout0,
+        &globals,
+        &instances,
+        &stops,
+        &cell_texels,
+        &atlas,
+    );
     let (_, dummy_view) = create_target(
         &device,
         "dummy source",
@@ -2863,6 +2915,9 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         instances,
         stops,
         quad_indices,
+        cell_texels,
+        bound_cell_texels_size: 4,
+        gpu_cov: gpu_cov::GpuCoverage::new(),
         bind0,
         dummy_view,
         dummy_uint_view,
@@ -3768,6 +3823,7 @@ impl Renderer for GpuRenderer {
             &self.globals,
             &self.instances,
             &self.stops,
+            &self.cell_texels,
             atlas,
         );
         self.bound_atlas = atlas.generation();
@@ -3782,6 +3838,10 @@ impl Renderer for GpuRenderer {
 
     fn memory(&self) -> MemoryUsage {
         let gpu = self.instances.size()
+            // The GPU coverage route's buffers plus the cell texels
+            // (`self.instances` already counts the emission tail).
+            + self.gpu_cov.bytes()
+            + self.cell_texels.size()
             + self
                 .planes
                 .values()
@@ -3825,6 +3885,7 @@ impl Renderer for GpuRenderer {
             .map(|c| format_name(c.target.texture.format()))
             .next();
         let cpu = self.atlas.cpu_bytes()
+            + self.gpu_cov.cpu_bytes()
             + self.commit_writes.heap_bytes()
             + self
                 .surfaces
@@ -4476,6 +4537,7 @@ impl GpuRenderer {
                     .saturating_add(surf.frame.reduce_slots());
             }
         }
+        self.gpu_cov.set_inst_origin(inst_base);
         let wait = stats.phases.wait_seconds;
         if result.is_ok() {
             result = self.upload_frame(&dirty, stats).await;
@@ -4641,6 +4703,7 @@ impl GpuRenderer {
                     .saturating_add(surf.frame.reduce_slots());
             }
         }
+        self.gpu_cov.set_inst_origin(inst_base);
         let wait = stats.phases.wait_seconds;
         result = result.and_then(|()| self.upload_frame(&dirty, stats));
         stats.phases.lower_seconds =
@@ -5947,6 +6010,28 @@ impl GpuRenderer {
         }
     }
 
+    fn coverage_options(&self) -> (bool, path::CoverageRoute) {
+        let has_compute = self
+            .adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+            && self.device.limits().max_compute_workgroups_per_dimension > 0
+            && self
+                .device
+                .features()
+                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
+        #[cfg(test)]
+        if self.config.force_gpu_coverage {
+            assert!(
+                has_compute,
+                "forced GPU coverage requires compute and indirect first-instance support"
+            );
+            return (has_compute, path::CoverageRoute::Gpu);
+        }
+        (has_compute, path::CoverageRoute::Sweep)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn lower_all(
         &mut self,
@@ -5954,6 +6039,7 @@ impl GpuRenderer {
         frames: &[&SurfaceFrame<'_>],
         inputs: &[projective::Inputs],
     ) -> Vec<Result<Lowered, RenderError>> {
+        let coverage_options = self.coverage_options();
         let mut grew = false;
         loop {
             let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
@@ -6005,6 +6091,7 @@ impl GpuRenderer {
                                     groups,
                                     inputs,
                                     ready,
+                                    coverage_options,
                                 )
                             })
                         })
@@ -6032,6 +6119,7 @@ impl GpuRenderer {
                             groups,
                             inputs,
                             ready,
+                            coverage_options,
                         )
                     })
                     .collect()
@@ -6072,6 +6160,7 @@ impl GpuRenderer {
         frames: &[&SurfaceFrame<'_>],
         inputs: &[projective::Inputs],
     ) -> Vec<Result<Lowered, RenderError>> {
+        let coverage_options = self.coverage_options();
         let mut grew = false;
         loop {
             let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
@@ -6103,6 +6192,7 @@ impl GpuRenderer {
                         groups,
                         inputs,
                         ready,
+                        coverage_options,
                     )
                 })
                 .collect();
@@ -6421,6 +6511,7 @@ impl GpuRenderer {
         groups: &FxHashMap<u64, BackdropGroupInfo>,
         inputs: &projective::Inputs,
         ready: &FxHashSet<LayerId>,
+        coverage_options: (bool, path::CoverageRoute),
     ) -> Result<Lowered, RenderError> {
         surf.frame.reset();
         surf.plan_dirty = false;
@@ -6461,7 +6552,17 @@ impl GpuRenderer {
                 bitmaps: resources.bitmaps,
                 content: &surf.bindings,
             };
-            let mut lowering = Lowering::new(&mut surf.frame, surf.size, &mut surf.anchor_scratch);
+            // The GPU coverage route gates on the device's compute
+            // capability (issue #2543, scope item 7): the lowering
+            // carries the adapter's flag so the #2546 route hook cannot
+            // route a compute-less device.
+            let mut lowering = Lowering::new(
+                &mut surf.frame,
+                surf.size,
+                &mut surf.anchor_scratch,
+                coverage_options.0,
+            );
+            lowering.coverage_route = coverage_options.1;
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)
@@ -6637,6 +6738,10 @@ impl GpuRenderer {
         results: &mut [Result<Lowered, RenderError>],
         grew: bool,
     ) -> Commit {
+        // The frame's GPU coverage context restarts with its lowers:
+        // retry-safe — a re-committed frame records its dispatches from
+        // the same pending records (issue #2543).
+        self.gpu_cov.begin_frame();
         let rasters: Vec<&glyph::PendingRaster> = results
             .iter()
             .filter_map(|r| r.as_ref().ok())
@@ -6892,6 +6997,21 @@ impl GpuRenderer {
         for raster in pending {
             origins.push(self.apply_raster(raster, arena, writes)?);
         }
+        // DrawRange.gpu records a pending index; resolve it to the
+        // compute record `apply_raster` assigned (issue #2543).
+        for range in surf
+            .frame
+            .passes
+            .iter_mut()
+            .flat_map(|pass| pass.ranges.iter_mut())
+        {
+            if let Some(p) = range.gpu {
+                let PendingOrigin::Gpu(index) = origins[p as usize] else {
+                    unreachable!("gpu draw range must reference a GpuPath raster");
+                };
+                range.gpu = Some(index);
+            }
+        }
         let cell_origin = |p: u32, c: u32| {
             let PendingOrigin::Cells(cells, _) = &origins[p as usize] else {
                 unreachable!("cell patch must reference cell raster");
@@ -7063,6 +7183,19 @@ impl GpuRenderer {
                     self.bitmaps.insert(key, GpuBitmap { image, em });
                 }
                 Ok(PendingOrigin::None)
+            }
+            PendingRaster::GpuPath {
+                rule,
+                raster,
+                surface,
+                template,
+                elements,
+                bound,
+            } => {
+                let index = self
+                    .gpu_cov
+                    .push(rule, raster, surface, &template, &elements, bound)?;
+                Ok(PendingOrigin::Gpu(index))
             }
         }
     }
@@ -7661,6 +7794,15 @@ impl GpuRenderer {
                 }
             }
         }
+        for range in surf.frame.passes.iter().flat_map(|pass| &pass.ranges) {
+            if let Some(index) = range.gpu {
+                self.gpu_cov.set_template(
+                    index,
+                    &surf.frame.instances[range.instances.start as usize],
+                    inst_base,
+                );
+            }
+        }
         surf.inst_base = inst_base;
         surf.globals_base = globals_base;
         // Appended `KIND_POLYGON` slots store the painter index locally;
@@ -7681,6 +7823,7 @@ impl GpuRenderer {
                     &self.globals,
                     &self.instances,
                     &self.stops,
+                    &self.cell_texels,
                     atlas,
                 );
                 self.bound_atlas = atlas.generation();
@@ -7701,6 +7844,7 @@ impl GpuRenderer {
                 &self.globals,
                 &self.instances,
                 &self.stops,
+                &self.cell_texels,
                 atlas,
             );
             self.bound_atlas = atlas.generation();
@@ -7759,7 +7903,10 @@ impl GpuRenderer {
         // The timestamp query set and resolve buffer grow once for the
         // frame's whole pass count; never mid-encoder.
         if self.timestamps && passes > 0 {
-            self.ensure_query_capacity(2 * u32::try_from(passes).unwrap_or(u32::MAX));
+            let coverage_passes = u32::from(self.gpu_cov.active());
+            self.ensure_query_capacity(
+                2 * (u32::try_from(passes).expect("frame pass count fits u32") + coverage_passes),
+            );
         }
     }
 
@@ -7994,6 +8141,7 @@ impl GpuRenderer {
                 &self.globals,
                 &self.instances,
                 &self.stops,
+                &self.cell_texels,
                 atlas,
             );
             self.bound_atlas = atlas.generation();
@@ -8001,6 +8149,58 @@ impl GpuRenderer {
             self.bound_stop_size = self.stops.size();
             self.bound_globals_size = self.globals.size();
             self.invalidate_painter_replays();
+        }
+        // The GPU coverage tail of the instance buffer (issue #2543):
+        // grow the frame buffer and the cell-texel buffer before the
+        // upload copies reference them, then rebuild `bind0` when
+        // either moved. The dispatch itself lands on the encoder below.
+        let gpu_active = self.gpu_cov.active();
+        if gpu_active {
+            self.gpu_cov.validate_output_sizes(&self.device.limits())?;
+            let need = (u64::from(self.gpu_cov.inst_origin())
+                + u64::from(self.gpu_cov.inst_total()))
+                * 272;
+            if self.instances.size() < need {
+                diag::bind_groups_dropped(&self.device, 1, "coverage instance tail");
+                self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("instances"),
+                    size: need,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            let need = u64::from(self.gpu_cov.texel_words()) * 4;
+            if self.cell_texels.size() < need {
+                self.cell_texels = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("cell texels"),
+                    size: need,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            if self.instances.size() > self.bound_instance_size
+                || self.stops.size() > self.bound_stop_size
+                || self.globals.size() > self.bound_globals_size
+                || self.cell_texels.size() > self.bound_cell_texels_size
+            {
+                let atlas = &self.atlas;
+                diag::bind_groups_dropped(&self.device, 1, "coverage buffers");
+                self.bind0 = make_bind0(
+                    &self.device,
+                    &self.layout0,
+                    &self.globals,
+                    &self.instances,
+                    &self.stops,
+                    &self.cell_texels,
+                    atlas,
+                );
+                self.bound_atlas = atlas.generation();
+                self.bound_instance_size = self.instances.size();
+                self.bound_stop_size = self.stops.size();
+                self.bound_globals_size = self.globals.size();
+                self.bound_cell_texels_size = self.cell_texels.size();
+                self.invalidate_painter_replays();
+            }
         }
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
@@ -8069,6 +8269,36 @@ impl GpuRenderer {
         surf.painter_replays
             .retain(|index, _| *index < surf.frame.passes.len());
         let mask_gen = self.atlas.mask_texture_generation();
+        // Decision S2: the whole frame's coverage dispatch runs once,
+        // in this encoder ahead of the raster passes — whichever dirty
+        // surface is encoded first records it (#2543).
+        if self.gpu_cov.needs_dispatch() {
+            let first_query = self.query_base + 2 * self.frame_pass_count;
+            self.frame_pass_count += 1;
+            if self.timestamps {
+                self.pass_meta.push(PassMeta {
+                    name: "coverage".to_owned(),
+                    width: 0,
+                    height: 0,
+                    format: "compute",
+                });
+            }
+            self.gpu_cov.dispatch(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &self.instances,
+                &self.cell_texels,
+                self.shader_delivery,
+                self.query_set
+                    .as_ref()
+                    .map(|query_set| wgpu::ComputePassTimestampWrites {
+                        query_set,
+                        beginning_of_pass_write_index: Some(first_query),
+                        end_of_pass_write_index: Some(first_query + 1),
+                    }),
+            )?;
+        }
         let mut i = 0;
         // The pyramid steps' globals-slot index within this surface:
         // `write_uploads` lays them out in pass and level order after the
@@ -8229,7 +8459,8 @@ impl GpuRenderer {
                         && range.image.is_none()
                         && range.mask.is_none()
                 });
-            let replayable = !coverage_order
+            let replayable = !pass.ranges.iter().any(|range| range.gpu.is_some())
+                && !coverage_order
                 && !pass.ranges.is_empty()
                 && pass.ranges.iter().all(|range| {
                     range.pipeline == PipelineKind::SrcOver
@@ -8237,6 +8468,9 @@ impl GpuRenderer {
                         && range.source.is_none()
                         && range.image.is_none()
                         && range.mask.is_none()
+                        // Indirect draws are recorded per frame — a
+                        // replayed bundle would bind stale arguments.
+                        && range.gpu.is_none()
                 });
             if !replayable {
                 surf.painter_replays.remove(&i);
@@ -8589,10 +8823,17 @@ impl GpuRenderer {
                     });
                 render_pass.set_bind_group(1, &*bind, &[]);
                 for range in &pass.ranges {
-                    render_pass.draw(
-                        0..8,
-                        (inst_base + range.instances.start)..(inst_base + range.instances.end),
-                    );
+                    if let Some(g) = range.gpu {
+                        render_pass.draw_indirect(
+                            self.gpu_cov.args_buffer(),
+                            self.gpu_cov.args_base(g) + u64::from(gpu_cov::ARGS_OPAQUE),
+                        );
+                    } else {
+                        render_pass.draw(
+                            0..8,
+                            (inst_base + range.instances.start)..(inst_base + range.instances.end),
+                        );
+                    }
                     stats.draws += 1;
                 }
                 for (tier, range) in pass.tier_ranges.iter().enumerate() {
@@ -9116,7 +9357,19 @@ impl GpuRenderer {
                     }
                 };
                 render_pass.set_bind_group(1, bind, &[]);
-                if coverage_order {
+                if let Some(g) = range.gpu {
+                    if coverage_order {
+                        render_pass.draw_indexed_indirect(
+                            self.gpu_cov.args_buffer(),
+                            self.gpu_cov.args_base(g) + u64::from(gpu_cov::ARGS_PARTIAL),
+                        );
+                    } else {
+                        render_pass.draw_indirect(
+                            self.gpu_cov.args_buffer(),
+                            self.gpu_cov.args_base(g) + u64::from(gpu_cov::ARGS_NORMAL),
+                        );
+                    }
+                } else if coverage_order {
                     // Four vertex shader runs per quad, but the indices
                     // submit the painter path's exact ordered triangles —
                     // required for bit-identical rasterization.

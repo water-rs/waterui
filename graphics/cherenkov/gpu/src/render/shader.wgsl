@@ -653,9 +653,9 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
             if classified {
                 texel = vec2<i32>(floor(in.local));
             } else {
-                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
+                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
             }
-            cov = textureLoad(atlas, texel, 0).r;
+            cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
         }
         case KIND_SPAN: {
             cov = 1.0;
@@ -709,7 +709,7 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     var inst = instances[ii];
     var ellipse = false;
     var ellipse_half = vec2<f32>(0.0);
-    var inst_index = ii;
+    var inst_index = select(ii, bitcast<u32>(inst.params.x), (inst.meta_.w & 0x80000000u) != 0u);
     var tier = 0u;
     var promoted = false;
     if inst.meta_.x == KIND_REGION {
@@ -788,7 +788,8 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
 @vertex
 fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PartialOut {
     var out = quad_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[vi], ii);
-    out.position.z = bitcast<f32>(0x3e000000u + ii * 8u);
+    let depth_index = select(ii, bitcast<u32>(instances[ii].params.x), (instances[ii].meta_.w & 0x80000000u) != 0u);
+    out.position.z = bitcast<f32>(0x3e000000u + depth_index * 8u);
     let inst = instances[ii];
     let s = inst.shape;
     if inst.meta_.x == KIND_FILL && s.exponent == 2.0 && all(s.radii == vec4<f32>(s.half.x)) {
@@ -802,7 +803,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
     if opaque_span(instances[ii]) {
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    let local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
+    let local = select(out.local, out.device - out.cell.xy + cell_texel_origin(out.cell.zw, out.meta_.w), out.meta_.x == KIND_GLYPH);
     return PartialOut(out.position, local, ii, out.affine1.zw);
 }
 
@@ -816,6 +817,9 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     let inst = instances[in.instance];
     var data: VsOut;
     data.local = in.local;
+    data.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
+    data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
+    data.meta_.w = inst.meta_.w;
     data.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
     data.color = inst.color;
     data.params.y = inst.params.y;
@@ -879,8 +883,8 @@ fn fs_full(in: VsOut) -> vec4<f32> {
             }
         }
         case KIND_GLYPH: {
-            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
-            cov = textureLoad(atlas, texel, 0).r;
+            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
+            cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
         }
         case KIND_SPAN: {
             cov = 1.0;

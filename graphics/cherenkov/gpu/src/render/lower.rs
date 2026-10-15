@@ -124,6 +124,11 @@ pub struct DrawRange {
     pub variant: ShaderVariant,
     /// Range into the frame's instance buffer.
     pub instances: Range<u32>,
+    /// For a GPU-routed path (issue #2543): its applied compute record
+    /// index. The range carries no CPU-side instances; the coverage
+    /// kernels write its spans and cells into the instance buffer's
+    /// tail and the draw reads its indirect arguments.
+    pub gpu: Option<u32>,
 }
 
 /// One render pass.
@@ -1302,6 +1307,10 @@ pub struct Lowering<'a> {
     /// The surface size: a local walk lowers onto its image's size, the
     /// surface walk onto this.
     surface: (u32, u32),
+    /// Whether the device can run the GPU coverage route's compute
+    /// passes — the route consults it at [`Self::path`] (issue #2543).
+    has_compute: bool,
+    pub(crate) coverage_route: path::CoverageRoute,
 }
 
 impl<'a> Lowering<'a> {
@@ -1311,6 +1320,7 @@ impl<'a> Lowering<'a> {
         frame: &'a mut Frame,
         size: (u32, u32),
         anchor_scratch: &'a mut AnchorScratch,
+        has_compute: bool,
     ) -> Self {
         anchor_scratch.clear();
         Self {
@@ -1355,6 +1365,8 @@ impl<'a> Lowering<'a> {
             projected: FxHashMap::default(),
             projective_draws: 0,
             surface: size,
+            has_compute,
+            coverage_route: path::CoverageRoute::Sweep,
         }
     }
 
@@ -1933,6 +1945,7 @@ impl<'a> Lowering<'a> {
                 pipeline: open.pipeline,
                 variant: open.variant,
                 instances: open.seg_start..end,
+                gpu: None,
             });
             open.maybe_coverage &= open.pipeline == PipelineKind::SrcOver
                 && open.variant == ShaderVariant::Simple
@@ -3896,6 +3909,20 @@ impl<'a> Lowering<'a> {
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
     ) -> Result<bool, RenderError> {
+        if self.has_compute
+            && self.coverage_route == path::CoverageRoute::Gpu
+            && matches!(op, Op::Path { .. })
+        {
+            // GPU coverage is frame-scoped. Retain semantic operations,
+            // never their generated instances or empty CPU emissions.
+            cache.valid = false;
+            self.set_image(None);
+            let transform = self.transform;
+            let result = self.realize(op, None, glyphs, source);
+            self.transform = transform;
+            result?;
+            return Ok(true);
+        }
         let cover = self.shadow_cover(op, next);
         let hit = cache.valid
             && cache.data.as_mut().is_some_and(|e| {
@@ -4673,6 +4700,21 @@ impl<'a> Lowering<'a> {
         } else {
             (None, None)
         };
+        // Scope item 7: the GPU route needs the device's compute
+        // capability; without it the CPU sweep runs even under the
+        // #2546 force hook. The forced route cannot serve its emission
+        // from the CPU atlas, so it decides before the hit checks.
+        if self.has_compute && self.coverage_route == path::CoverageRoute::Gpu {
+            self.path_gpu(
+                rule,
+                shader_path,
+                make.take(),
+                paint,
+                shader_data.as_ref(),
+                surface,
+            );
+            return Ok(());
+        }
         let hit = glyphs
             .atlas
             .path(pl.key)
@@ -4782,6 +4824,97 @@ impl<'a> Lowering<'a> {
                 self.cell_patches.push(patch);
             }
         }
+    }
+
+    /// The GPU coverage route of issue #2543: the path's curve elements
+    /// go into a pending compute record untouched by the CPU — the
+    /// coverage kernels flatten, bin and classify them on device and
+    /// write the same span/cell emission the CPU route's `replay` would,
+    /// into the instance buffer's tail behind indirect arguments.
+    fn path_gpu(
+        &mut self,
+        rule: FillRule,
+        shader_path: Option<BezPath>,
+        make: Option<impl FnOnce() -> BezPath>,
+        paint: &ResolvedPaint,
+        shader_data: Option<&PaintData>,
+        surface: (u32, u32),
+    ) {
+        let local = shader_path.unwrap_or_else(|| make.expect("path factory")());
+        let (elements, bound) = path::gpu_bound(
+            local.elements(),
+            self.transform,
+            (f64::from(surface.0), f64::from(surface.1)),
+        );
+        if bound.empty {
+            return;
+        }
+        let mut template = self.gpu_template(paint, shader_data);
+        template.bounds = bound.rect;
+        self.set_variant(variant_of(&template));
+        self.end_segment();
+        let anchor = u32::try_from(self.frame.instances.len()).expect("instance index");
+        template.params[0] = f32::from_bits(anchor);
+        template.meta[3] |= 0x8000_0000;
+        self.frame.instances.push(template);
+        if let Some(mask) = self.mask_pending {
+            self.mask_patches.push((anchor, mask));
+        }
+        if let Some(open) = &mut self.frame.open {
+            open.seg_start = anchor + 1;
+        }
+        let template = Box::new(template);
+        let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
+        self.pending.push(PendingRaster::GpuPath {
+            rule: rule as u32,
+            raster: self.transform,
+            surface,
+            template,
+            elements,
+            bound,
+        });
+        self.push_gpu_range(pending);
+    }
+
+    /// The instance template a GPU-routed path shares with `replay`:
+    /// every field but the per-instance `bounds`, `uv` and `meta[0]`
+    /// kind the classify kernel stamps.
+    fn gpu_template(&mut self, paint: &ResolvedPaint, shader_data: Option<&PaintData>) -> Instance {
+        let paint = shader_data
+            .copied()
+            .unwrap_or_else(|| self.resolved_paint(paint));
+        let mut template = Self::base(KIND_SPAN, affine(self.transform), self.clip);
+        template.color = paint.color;
+        template.grad = paint.grad;
+        template.grad2 = paint.grad2;
+        template.meta[1] = paint.kind;
+        template.meta[2] = paint.first_stop;
+        template.meta[3] |= paint.packed & 0x00ff_ffff;
+        template
+    }
+
+    /// Appends a GPU-path draw range: no CPU instances — the coverage
+    /// kernels emit them — and the pending record index the apply step
+    /// resolves to a compute record.
+    fn push_gpu_range(&mut self, pending: u32) {
+        let Some(open) = &mut self.frame.open else {
+            return;
+        };
+        open.ranges.push(DrawRange {
+            source: open.source,
+            image: open.image.clone(),
+            mask: open.mask,
+            pipeline: open.pipeline,
+            variant: open.variant,
+            instances: (u32::try_from(self.frame.instances.len()).expect("instance count") - 1)
+                ..u32::try_from(self.frame.instances.len()).expect("instance count"),
+            gpu: Some(pending),
+        });
+        open.maybe_coverage &= open.pipeline == PipelineKind::SrcOver
+            && open.variant == ShaderVariant::Simple
+            && open.source.is_none()
+            && open.image.is_none()
+            && open.mask.is_none();
     }
 
     /// All quads in a path group share paint, clip and shader variant. Reserve
@@ -5575,7 +5708,7 @@ mod tests {
     fn cached_margin_preserves_exact_transform_results() {
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch, true);
         let transforms = [
             Affine::IDENTITY,
             Affine::scale_non_uniform(2.0, 3.0),
@@ -5665,7 +5798,7 @@ mod tests {
         let bitmaps = FxHashMap::default();
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch, true);
         lowering.begin_pass(Target::Part(0), None);
         let glyphs = GlyphContext {
             atlas: &atlas,
@@ -5763,7 +5896,7 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch, true);
         lowering.begin_pass(Target::Part(0), None);
         lowering
             .isolate(
@@ -5842,7 +5975,7 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch, true);
         lowering.begin_pass(Target::Part(0), None);
         lowering
             .isolate(
@@ -5932,7 +6065,7 @@ mod tests {
     fn a_collapsed_shadow_emits_no_quads() {
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch, true);
         let Some((device, _queue)) = device_and_queue() else {
             return;
         };
@@ -6232,7 +6365,7 @@ mod tests {
             };
             let mut frame = Frame::default();
             let mut anchor_scratch = AnchorScratch::default();
-            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch, true);
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
                 .run(
@@ -6338,7 +6471,7 @@ mod tests {
             };
             let mut frame = Frame::default();
             let mut anchor_scratch = AnchorScratch::default();
-            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch, true);
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
                 .run(
@@ -6391,7 +6524,7 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch, true);
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
             .run(
@@ -6645,7 +6778,7 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch, true);
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
             .run(
@@ -6741,7 +6874,7 @@ mod tests {
         let mut frame = Frame::default();
         let mut scratch = AnchorScratch::default();
         assert_eq!(scratch.heap_bytes(), 0);
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch);
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch, true);
         lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
         lowering.backdrops.insert(7, plan(anchor_a, member));
         lowering.anchor_scratch.members.push((7, None, 2));

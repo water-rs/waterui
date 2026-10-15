@@ -236,6 +236,8 @@ pub mod spirv {
     pub const REDUCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.spv"));
     /// `shadow.wgsl`, the silhouette convolution module.
     pub const SHADOW: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.spv"));
+    /// `coverage.wgsl`.
+    pub const COVERAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coverage.spv"));
     /// `external_native.spv` — the Vulkan native module: `vs_main`,
     /// `fs_external` and `fs_external_format`, with the external-format
     /// pair merged into a combined sampled image by the build's
@@ -297,6 +299,10 @@ const REDUCE_METALLIB: &[u8] = &[];
 const SHADOW_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.metallib"));
 #[cfg(not(target_vendor = "apple"))]
 const SHADOW_METALLIB: &[u8] = &[];
+#[cfg(target_vendor = "apple")]
+const COVERAGE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coverage.metallib"));
+#[cfg(not(target_vendor = "apple"))]
+const COVERAGE_METALLIB: &[u8] = &[];
 
 /// The four `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
@@ -399,6 +405,59 @@ const SHADOW: Fixed = Fixed {
     spirv: spirv::SHADOW,
     metallib: SHADOW_METALLIB,
     entries: SHADOW_ENTRIES,
+};
+
+const COVERAGE: Fixed = Fixed {
+    wgsl: include_str!("coverage.wgsl"),
+    #[cfg(cherenkov_spirv)]
+    spirv: spirv::COVERAGE,
+    metallib: COVERAGE_METALLIB,
+    entries: &[
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("initialize"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("radix_count"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("radix_prefix"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("radix_scatter"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("flatten"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("bin"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("prefix"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("fragment_bins"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("integrate"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("classify"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("emit_args"),
+            workgroup_size: (64, 1, 1),
+        },
+    ],
 };
 
 /// How the fixed engine modules reach the device — a property of the
@@ -506,6 +565,12 @@ impl ShaderDelivery {
     #[must_use]
     pub fn shadow_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
         self.module(device, "cherenkov silhouette convolution", &SHADOW)
+    }
+
+    /// The GPU coverage compute module (issue #2543).
+    #[must_use]
+    pub fn coverage_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
+        self.module(device, "gpu coverage", &COVERAGE)
     }
 
     fn module(
