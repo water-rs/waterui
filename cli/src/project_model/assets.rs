@@ -23,12 +23,13 @@ use tracing::{debug, info, warn};
 use walkdir::WalkDir;
 
 use waterui_assets_planner::{
-    BundleManifest, FontDeclaration, FontPlatform, FontSource, GraphScope,
+    BundleManifest, FontDeclaration, FontPlatform, FontSource, GraphScope, LaunchPlan,
     dependency_font_declarations, font_platform_scope,
 };
 use zenwave::{Client as _, Method};
 
 use crate::project::Project;
+use crate::project_model::facts::{Fact, Scope};
 use crate::project_model::project_types::PermissionKey;
 
 mod android_manifest;
@@ -539,7 +540,11 @@ async fn scan_crate_font_declarations(
 
     let managed = seed_managed_crate_lock(project, build_manifest).await?;
 
-    let metadata = project_crate_metadata(project, build_manifest, &[])
+    let fonts = project
+        .facts()
+        .answer(&DependencyFonts {
+            manifest: build_manifest.to_path_buf(),
+        })
         .await
         .wrap_err_with(|| {
         let mut message = format!(
@@ -559,16 +564,109 @@ async fn scan_crate_font_declarations(
         }
         message
     })?;
-
-    let fonts = dependency_font_declarations(&metadata, GraphScope::Build).wrap_err_with(|| {
-        format!(
-            "Invalid font declaration in the dependency graph of {}",
-            build_manifest.display()
-        )
-    })?;
+    let fonts = fonts
+        .iter()
+        .cloned()
+        .map(FontDeclaration::from)
+        .collect::<Vec<_>>();
 
     info!("Found {} font declarations from dependencies", fonts.len());
     Ok(fonts)
+}
+
+/// The font declarations of a manifest's dependency graph, as a
+/// [`Fact`]: the small answer a build replays instead of the whole
+/// `cargo metadata` document it was read from.
+struct DependencyFonts {
+    manifest: PathBuf,
+}
+
+impl Fact for DependencyFonts {
+    const KIND: &'static str = "dependency-fonts";
+    type Question = PathBuf;
+    type Value = Vec<RecordedFont>;
+
+    fn question(&self) -> PathBuf {
+        self.manifest.clone()
+    }
+
+    async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<Vec<RecordedFont>> {
+        let metadata = scope
+            .cargo_metadata(&crate_metadata_command(&self.manifest, &[]))
+            .await?;
+        let fonts =
+            dependency_font_declarations(&metadata, GraphScope::Build).wrap_err_with(|| {
+                format!(
+                    "Invalid font declaration in the dependency graph of {}",
+                    self.manifest.display()
+                )
+            })?;
+        Ok(fonts.into_iter().map(RecordedFont::from).collect())
+    }
+}
+
+/// A [`FontDeclaration`] in its recorded form.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecordedFont {
+    name: String,
+    source: RecordedFontSource,
+    crate_name: String,
+    platforms: Option<Vec<FontPlatform>>,
+}
+
+/// A [`FontSource`] in its recorded form.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+enum RecordedFontSource {
+    Local {
+        crate_root: PathBuf,
+        relative_path: PathBuf,
+    },
+    Remote {
+        url: String,
+    },
+    BuiltIn,
+}
+
+impl From<FontDeclaration> for RecordedFont {
+    fn from(font: FontDeclaration) -> Self {
+        Self {
+            name: font.name,
+            source: match font.source {
+                FontSource::Local {
+                    crate_root,
+                    relative_path,
+                } => RecordedFontSource::Local {
+                    crate_root,
+                    relative_path,
+                },
+                FontSource::Remote { url } => RecordedFontSource::Remote { url },
+                FontSource::BuiltIn => RecordedFontSource::BuiltIn,
+            },
+            crate_name: font.crate_name,
+            platforms: font.platforms,
+        }
+    }
+}
+
+impl From<RecordedFont> for FontDeclaration {
+    fn from(font: RecordedFont) -> Self {
+        Self {
+            name: font.name,
+            source: match font.source {
+                RecordedFontSource::Local {
+                    crate_root,
+                    relative_path,
+                } => FontSource::Local {
+                    crate_root,
+                    relative_path,
+                },
+                RecordedFontSource::Remote { url } => FontSource::Remote { url },
+                RecordedFontSource::BuiltIn => FontSource::BuiltIn,
+            },
+            crate_name: font.crate_name,
+            platforms: font.platforms,
+        }
+    }
 }
 
 /// Everything the dependency graph's `[package.metadata.waterui.android]`
@@ -2141,6 +2239,11 @@ pub use unified::LaunchAssets;
 /// Resolve the project's launch screen and load its artwork.
 pub fn project_launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
     unified::launch_assets(project)
+}
+
+/// Resolve the project's launch screen without loading its artwork.
+pub fn project_launch_plan(project: &Project) -> eyre::Result<LaunchPlan> {
+    unified::launch_plan(project)
 }
 
 /// Stage project assets for web packaging.

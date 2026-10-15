@@ -12,10 +12,11 @@ use futures_util::{FutureExt as _, TryFutureExt as _};
 use target_lexicon::Triple;
 use tracing::info;
 
-use super::facts::{Fact, Facts};
+use super::facts::{Fact, Facts, Scope};
 use crate::build::{BuildProgress, RustLinkage};
 use crate::framework::{
-    FrameworkChannel, ResolvedFramework, validate_local_cli, validate_resolved_cli,
+    CheckoutMember, FrameworkChannel, ResolvedFramework, local_checkout_members,
+    validate_resolved_cli,
 };
 use crate::toolchain::Host;
 
@@ -91,7 +92,7 @@ impl ManagedBackends {
 /// Resolved once per [`Project`] and shared by everything that needs it, so
 /// one `cargo metadata` run serves the target directory, the lockfile, and
 /// the package spec every `cargo tree` evaluation roots at.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct CargoLayout {
     target_dir: PathBuf,
     /// Root of the Cargo workspace the project belongs to — the project itself
@@ -106,6 +107,7 @@ struct CargoLayout {
     root_package_version: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum CargoResolution {
     Local,
     Locked,
@@ -134,14 +136,15 @@ fn spawn_cargo_layout_resolution(
         CargoResolution::Update
     };
     smol::spawn(async move {
-        async {
-            let metadata = facts
-                .cargo_metadata(&cargo_layout_command(&current_dir, &mode))
-                .await?;
-            cargo_layout_from(facts.host(), &current_dir, framework, metadata).await
-        }
-        .await
-        .map_err(|error: eyre::Report| error.to_string())
+        facts
+            .answer(&CargoLayoutFact {
+                current_dir,
+                mode,
+                framework,
+            })
+            .await
+            .map(|layout| layout.as_ref().clone())
+            .map_err(|error: eyre::Report| error.to_string())
     })
     .boxed()
     .shared()
@@ -622,7 +625,7 @@ impl Project {
                     root = %self.root.display(),
                     "resolving the project's framework selection"
                 );
-                ResolvedFramework::for_manifest(self.host(), self.manifest(), &self.root)
+                ResolvedFramework::for_manifest(&self.facts, self.manifest(), &self.root)
                     .await
                     .map_err(|error| format!("{error:#}"))
             })
@@ -740,28 +743,14 @@ impl Project {
         &self,
         build_manifest: &Path,
         target: &Triple,
-    ) -> eyre::Result<BTreeMap<String, BTreeSet<String>>> {
-        let metadata = {
-            let _permit = self.cargo_resolve_permits.acquire_arc().await;
-            let mut command = cargo_metadata::MetadataCommand::new();
-            command
-                .manifest_path(build_manifest)
-                .other_options(vec!["--filter-platform".to_string(), target.to_string()]);
-            self.facts.cargo_metadata(&command).await?
-        };
-        let mut features: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        if let Some(resolve) = &metadata.resolve {
-            for node in &resolve.nodes {
-                let Some(package) = metadata.packages.iter().find(|p| p.id == node.id) else {
-                    continue;
-                };
-                features
-                    .entry(package.name.to_string())
-                    .or_default()
-                    .extend(node.features.iter().map(ToString::to_string));
-            }
-        }
-        Ok(features)
+    ) -> eyre::Result<Arc<BTreeMap<String, BTreeSet<String>>>> {
+        self.facts
+            .answer(&ManifestFeatures {
+                manifest: build_manifest.to_path_buf(),
+                target: target.to_string(),
+                permits: Arc::clone(&self.cargo_resolve_permits),
+            })
+            .await
     }
 
     /// The one answer `query` gives for every build target `targets`
@@ -1916,10 +1905,18 @@ impl Project {
         // The canonical local source slots a `waterui_path` checkout
         // declares are validated once here — a malformed slot is an error,
         // never a silent remote fallback during template rendering.
-        let local_sources =
-            crate::templates::project_local_backend_sources(options.waterui_path.as_deref(), &path)
-                .await
-                .map_err(FailToCreateProject::LocalSources)?;
+        let workspace_members = match &options.waterui_path {
+            Some(checkout) => crate::framework::checkout_member_packages(&path.join(checkout))
+                .map_err(FailToCreateProject::LocalSources)?,
+            None => Vec::new(),
+        };
+        let local_sources = crate::templates::project_local_backend_sources(
+            options.waterui_path.as_deref(),
+            &path,
+            workspace_members,
+        )
+        .await
+        .map_err(FailToCreateProject::LocalSources)?;
 
         // Build template context for root files
         let ctx = TemplateContext::for_create_options(
@@ -2160,10 +2157,12 @@ impl Project {
         project_root: &Path,
         waterui_path: &Path,
         written: &cargo_toml::PatchSet,
+        members: &[CheckoutMember],
     ) -> eyre::Result<()> {
         let project_root = project_root.to_path_buf();
         let waterui_path = waterui_path.to_path_buf();
         let written = written.clone();
+        let members = members.to_vec();
         unblock(move || {
             let checkout = project_root.join(&waterui_path);
             let patch_root = templates::patch_manifest_dir(&project_root)?;
@@ -2188,7 +2187,7 @@ impl Project {
             let cargo_path = project_root.join("Cargo.toml");
             let text = std::fs::read_to_string(&cargo_path)?;
             let current = CargoManifest::from_slice(text.as_bytes())?.patch;
-            let next = templates::local_framework_patches(&project_root, &waterui_path)?;
+            let next = templates::local_framework_patches(&project_root, &waterui_path, &members)?;
             let own = crate::patch_tables::beyond(&current, &written);
             let own = crate::patch_tables::beyond(&own, &next);
             // The checkout's entries the project does not override: exactly
@@ -2256,26 +2255,49 @@ impl Project {
                 .validate_cli(host)
                 .map_err(FailToOpenProject::Framework)?;
         }
-        let local_sources = crate::templates::project_local_backend_sources(
-            manifest.waterui_path.as_deref().map(Path::new),
-            &path,
-        )
-        .await
-        .map_err(FailToOpenProject::LocalSources)?;
-        if let Some(local) = &manifest.waterui_path {
-            validate_local_cli(host, &path.join(local))
-                .await
-                .map_err(FailToOpenProject::Framework)?;
-            Self::refresh_local_patches(&path, Path::new(local), &manifest.waterui_patches)
-                .await
-                .map_err(FailToOpenProject::LocalPatches)?;
-        }
         info!(
             path = %path.display(),
             open_mode = ?open_mode,
             elapsed_ms = manifest_start.elapsed().as_millis(),
             "Project::open loaded Water.toml"
         );
+
+        let build_cache_start = std::time::Instant::now();
+        let managed_backends_root = crate::water_dir::ensure_project_build_cache(host, &path)
+            .await
+            .map_err(FailToOpenProject::BuildCache)?;
+        info!(
+            path = %path.display(),
+            open_mode = ?open_mode,
+            elapsed_ms = build_cache_start.elapsed().as_millis(),
+            "Project::open ensured project build cache"
+        );
+        let facts = Facts::new(host, &path, &Self::facts_dir(&managed_backends_root))
+            .map_err(FailToOpenProject::BuildCache)?;
+
+        let workspace_members = match &manifest.waterui_path {
+            Some(local) => local_checkout_members(&facts, &path.join(local))
+                .await
+                .map_err(FailToOpenProject::Framework)?,
+            None => Vec::new(),
+        };
+        let local_sources = crate::templates::project_local_backend_sources(
+            manifest.waterui_path.as_deref().map(Path::new),
+            &path,
+            workspace_members,
+        )
+        .await
+        .map_err(FailToOpenProject::LocalSources)?;
+        if let Some(local) = &manifest.waterui_path {
+            Self::refresh_local_patches(
+                &path,
+                Path::new(local),
+                &manifest.waterui_patches,
+                local_sources.workspace_members(),
+            )
+            .await
+            .map_err(FailToOpenProject::LocalPatches)?;
+        }
 
         let cargo_path = path.join("Cargo.toml");
 
@@ -2296,19 +2318,6 @@ impl Project {
             .and_then(|value| {
                 CrateName::try_from(value).map_err(FailToOpenProject::InvalidCrateName)
             })?;
-
-        let build_cache_start = std::time::Instant::now();
-        let managed_backends_root = crate::water_dir::ensure_project_build_cache(host, &path)
-            .await
-            .map_err(FailToOpenProject::BuildCache)?;
-        info!(
-            path = %path.display(),
-            open_mode = ?open_mode,
-            elapsed_ms = build_cache_start.elapsed().as_millis(),
-            "Project::open ensured project build cache"
-        );
-        let facts = Facts::new(host, &path, &Self::facts_dir(&managed_backends_root))
-            .map_err(FailToOpenProject::BuildCache)?;
 
         let cargo_layout = spawn_cargo_layout_resolution(
             &facts,
@@ -2445,7 +2454,7 @@ async fn write_channel_file(path: &Path, contents: Option<&[u8]>) -> std::io::Re
 /// The `cargo metadata` invocation a [`CargoLayout`] is read from.
 fn cargo_layout_command(
     current_dir: &Path,
-    mode: &CargoResolution,
+    mode: CargoResolution,
 ) -> cargo_metadata::MetadataCommand {
     let mut command = cargo_metadata::MetadataCommand::new();
     command.current_dir(current_dir);
@@ -2471,25 +2480,85 @@ async fn resolve_cargo_layout(
     mode: CargoResolution,
 ) -> eyre::Result<CargoLayout> {
     let metadata = host
-        .cargo_metadata(&cargo_layout_command(current_dir, &mode))
+        .cargo_metadata(&cargo_layout_command(current_dir, mode))
         .await?;
-    cargo_layout_from(host, current_dir, framework, metadata).await
+    let water_lock = match &framework {
+        Some(framework) if framework.channel() != Some(FrameworkChannel::Stable) => {
+            Some(smol::fs::read(current_dir.join("Water.lock")).await?)
+        }
+        _ => None,
+    };
+    cargo_layout_from(
+        host,
+        current_dir,
+        framework,
+        &metadata,
+        water_lock.as_deref(),
+    )
+}
+
+/// The project's [`CargoLayout`] as a [`Fact`]: the small answer a
+/// build replays instead of the whole `cargo metadata` document.
+struct CargoLayoutFact {
+    current_dir: PathBuf,
+    mode: CargoResolution,
+    framework: Option<ResolvedFramework>,
+}
+
+impl Fact for CargoLayoutFact {
+    const KIND: &'static str = "cargo-layout";
+    /// The project directory and how its resolve may move; the framework
+    /// selection is `Water.toml`'s, an input of every fact.
+    type Question = (PathBuf, CargoResolution);
+    type Value = CargoLayout;
+
+    fn question(&self) -> Self::Question {
+        (self.current_dir.clone(), self.mode)
+    }
+
+    async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<CargoLayout> {
+        let metadata = scope
+            .cargo_metadata(&cargo_layout_command(&self.current_dir, self.mode))
+            .await?;
+        let water_lock = match &self.framework {
+            Some(framework) if framework.channel() != Some(FrameworkChannel::Stable) => Some(
+                scope
+                    .read(&self.current_dir.join("Water.lock"))
+                    .await?
+                    .ok_or_else(|| {
+                        eyre::eyre!(
+                            "{} is missing",
+                            self.current_dir.join("Water.lock").display()
+                        )
+                    })?,
+            ),
+            _ => None,
+        };
+        cargo_layout_from(
+            scope.host(),
+            &self.current_dir,
+            self.framework.clone(),
+            &metadata,
+            water_lock.as_deref(),
+        )
+    }
 }
 
 /// The layout `metadata` reports for the project at `current_dir`, once
-/// the resolve is checked against the CLI and the framework's lock.
-async fn cargo_layout_from(
+/// the resolve is checked against the CLI and — for a channel framework —
+/// the framework's lock, `water_lock`.
+fn cargo_layout_from(
     host: &Host,
     current_dir: &Path,
     framework: Option<ResolvedFramework>,
-    metadata: cargo_metadata::Metadata,
+    metadata: &cargo_metadata::Metadata,
+    water_lock: Option<&[u8]>,
 ) -> eyre::Result<CargoLayout> {
-    validate_resolved_cli(host, &metadata)?;
+    validate_resolved_cli(host, metadata)?;
     if let Some(framework) = framework
-        && framework.channel() != Some(FrameworkChannel::Stable)
+        && let Some(lockfile) = water_lock
     {
-        let lockfile = smol::fs::read(current_dir.join("Water.lock")).await?;
-        framework.validate_dependencies(&metadata, &lockfile)?;
+        framework.validate_dependencies(metadata, lockfile)?;
     }
 
     // `dunce`, not `std::fs::canonicalize`: on Windows the standard one
@@ -2497,13 +2566,13 @@ async fn cargo_layout_from(
     // metadata` reports the plain one — comparing the two would never
     // match the application package (part of #152).
     let application_manifest = dunce::canonicalize(current_dir.join("Cargo.toml"))?;
-    let root_package = package_at_manifest(&metadata, &application_manifest)?;
+    let root_package = package_at_manifest(metadata, &application_manifest)?;
     let root_package_id = root_package.id.to_string();
     let root_package_version = root_package.version.to_string();
 
     Ok(CargoLayout {
-        target_dir: metadata.target_directory.into_std_path_buf(),
-        workspace_root: metadata.workspace_root.into_std_path_buf(),
+        target_dir: metadata.target_directory.clone().into_std_path_buf(),
+        workspace_root: metadata.workspace_root.clone().into_std_path_buf(),
         root_package_id,
         root_package_version,
     })
@@ -2611,36 +2680,78 @@ impl Fact for CargoTree {
         )
     }
 
-    fn cwd(&self) -> &Path {
-        &self.project_root
-    }
-
-    async fn resolve(&self, host: &Host) -> eyre::Result<String> {
+    /// Cargo reads the application manifest, the lockfile, and the
+    /// manifest of every path package the tree printed.
+    async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<String> {
         let _permit = self.permits.acquire_arc().await;
-        cargo_tree(
-            host,
+        scope.toolchain(&self.project_root);
+        let tree = cargo_tree(
+            scope.host(),
             &self.project_root,
             &self.package,
             self.edges,
             &self.targets,
             false,
         )
-        .await
-    }
-
-    /// The application manifest, the lockfile, and the manifest of every
-    /// path package the tree printed.
-    fn seeds(&self, tree: &String) -> eyre::Result<BTreeSet<PathBuf>> {
-        let mut seeds = BTreeSet::from([
+        .await?;
+        scope.manifests([
             dunce::canonicalize(self.project_root.join("Cargo.toml"))?,
             self.lockfile.clone(),
         ]);
-        seeds.extend(
+        scope.manifests(
             tree.lines()
                 .filter_map(tree_package_directory)
                 .map(|directory| directory.join("Cargo.toml")),
         );
-        Ok(seeds)
+        Ok(tree)
+    }
+}
+
+/// Every package's enabled features in a manifest's resolved graph for
+/// one target — the answer `Project::generated_manifest_features` replays
+/// instead of the whole `cargo metadata --filter-platform` document.
+struct ManifestFeatures {
+    manifest: PathBuf,
+    target: String,
+    permits: Arc<async_lock::Semaphore>,
+}
+
+impl Fact for ManifestFeatures {
+    const KIND: &'static str = "manifest-features";
+    type Question = (PathBuf, String);
+    type Value = BTreeMap<String, BTreeSet<String>>;
+
+    fn question(&self) -> Self::Question {
+        (self.manifest.clone(), self.target.clone())
+    }
+
+    async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<Self::Value> {
+        let metadata = {
+            let _permit = self.permits.acquire_arc().await;
+            let mut command = cargo_metadata::MetadataCommand::new();
+            command
+                .manifest_path(&self.manifest)
+                .other_options(vec!["--filter-platform".to_string(), self.target.clone()]);
+            scope.cargo_metadata(&command).await?
+        };
+        let packages: BTreeMap<_, _> = metadata
+            .packages
+            .iter()
+            .map(|package| (&package.id, package.name.as_str()))
+            .collect();
+        let mut features: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        if let Some(resolve) = &metadata.resolve {
+            for node in &resolve.nodes {
+                let Some(name) = packages.get(&node.id) else {
+                    continue;
+                };
+                features
+                    .entry((*name).to_owned())
+                    .or_default()
+                    .extend(node.features.iter().map(ToString::to_string));
+            }
+        }
+        Ok(features)
     }
 }
 
@@ -5396,6 +5507,17 @@ mod local_patch_tests {
 
     const WATER_TOML: &str = "waterui_path = \"../waterui\"\n\n[package]\nname = \"App\"\nbundle_identifier = \"dev.waterui.app\"\n";
 
+    /// [`Project::refresh_local_patches`] with the checkout's members read
+    /// from disk.
+    async fn refresh_from_disk(
+        app: &Path,
+        waterui_path: &Path,
+        written: &cargo_toml::PatchSet,
+    ) -> eyre::Result<()> {
+        let members = crate::framework::checkout_member_packages(&app.join(waterui_path))?;
+        Project::refresh_local_patches(app, waterui_path, written, &members).await
+    }
+
     /// A checkout beside a project directory `app`, returning the project.
     fn checkout_and_project(directory: &Path) -> std::path::PathBuf {
         let checkout = directory.join("waterui");
@@ -5438,12 +5560,8 @@ mod local_patch_tests {
             .expect("water manifest parses")
             .waterui_patches;
 
-        smol::block_on(Project::refresh_local_patches(
-            &app,
-            Path::new("../waterui"),
-            &written,
-        ))
-        .expect("tables refresh");
+        smol::block_on(refresh_from_disk(&app, Path::new("../waterui"), &written))
+            .expect("tables refresh");
         let refreshed = std::fs::read_to_string(&cargo_path).expect("refreshed manifest");
         let manifest = cargo_toml::Manifest::from_str(&refreshed).expect("manifest parses");
         let crates_io = &manifest.patch["crates-io"];
@@ -5465,8 +5583,13 @@ mod local_patch_tests {
             .waterui_patches;
         assert_eq!(
             recorded,
-            crate::templates::local_framework_patches(&app, Path::new("../waterui"))
-                .expect("checkout tables"),
+            crate::templates::local_framework_patches(
+                &app,
+                Path::new("../waterui"),
+                &crate::framework::checkout_member_packages(&app.join("../waterui"))
+                    .expect("checkout members"),
+            )
+            .expect("checkout tables"),
             "Water.toml records exactly the checkout's copy"
         );
         let recorded_text = std::fs::read_to_string(&water_path).expect("water manifest");
@@ -5476,12 +5599,8 @@ mod local_patch_tests {
             "the record is spliced in as one table per entry:\n{recorded_text}"
         );
 
-        smol::block_on(Project::refresh_local_patches(
-            &app,
-            Path::new("../waterui"),
-            &recorded,
-        ))
-        .expect("second refresh");
+        smol::block_on(refresh_from_disk(&app, Path::new("../waterui"), &recorded))
+            .expect("second refresh");
         assert_eq!(
             std::fs::read_to_string(&cargo_path).expect("manifest after the second refresh"),
             refreshed
@@ -5509,7 +5628,7 @@ mod local_patch_tests {
         let water_path = app.join("Water.toml");
         std::fs::write(&water_path, WATER_TOML).expect("water manifest");
 
-        smol::block_on(Project::refresh_local_patches(
+        smol::block_on(refresh_from_disk(
             &app,
             Path::new("../waterui"),
             &cargo_toml::PatchSet::new(),
@@ -5540,12 +5659,8 @@ mod local_patch_tests {
             .expect("crates-io table")
             .remove("vello");
         std::fs::write(&cargo_path, document.to_string()).expect("override dropped");
-        smol::block_on(Project::refresh_local_patches(
-            &app,
-            Path::new("../waterui"),
-            &recorded,
-        ))
-        .expect("second refresh");
+        smol::block_on(refresh_from_disk(&app, Path::new("../waterui"), &recorded))
+            .expect("second refresh");
         let crates_io = cargo_toml::Manifest::from_path(&cargo_path)
             .expect("manifest parses")
             .patch
@@ -5579,7 +5694,7 @@ mod local_patch_tests {
         let cargo_path = app.join("Cargo.toml");
         std::fs::write(&cargo_path, manifest).expect("project manifest");
 
-        smol::block_on(Project::refresh_local_patches(
+        smol::block_on(refresh_from_disk(
             &app,
             Path::new("../.."),
             &cargo_toml::PatchSet::new(),
@@ -5617,7 +5732,7 @@ mod local_patch_tests {
         let cargo_path = app.join("Cargo.toml");
         std::fs::write(&cargo_path, manifest).expect("project manifest");
 
-        let error = smol::block_on(Project::refresh_local_patches(
+        let error = smol::block_on(refresh_from_disk(
             &app,
             Path::new("../../waterui"),
             &cargo_toml::PatchSet::new(),

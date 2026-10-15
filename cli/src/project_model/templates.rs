@@ -1301,9 +1301,17 @@ impl TemplateNamespace {
 #[derive(Debug, Clone, Default)]
 pub struct LocalBackendSources {
     members: BTreeMap<&'static str, PathBuf>,
+    workspace_members: Vec<crate::framework::CheckoutMember>,
 }
 
 impl LocalBackendSources {
+    /// The member packages of the checkout's workspace — the crates a
+    /// generated crate pins into the checkout beside the ones its `[patch]`
+    /// tables name. Empty without a checkout.
+    pub(crate) fn workspace_members(&self) -> &[crate::framework::CheckoutMember] {
+        &self.workspace_members
+    }
+
     /// The validated checkout `member`'s canonical slot supplies, when
     /// present.
     pub(crate) fn member(&self, member: FrameworkMember) -> Option<&Path> {
@@ -1340,7 +1348,10 @@ pub struct SupportAppIdentity {
 /// Returns an error when a slot's entry exists but does not resolve to a
 /// directory containing the required manifest — a dangling symlink, a
 /// non-directory, an unreadable path, or a checkout missing `Cargo.toml`.
-pub async fn local_backend_sources(waterui_root: &Path) -> eyre::Result<LocalBackendSources> {
+pub async fn local_backend_sources(
+    waterui_root: &Path,
+    workspace_members: Vec<crate::framework::CheckoutMember>,
+) -> eyre::Result<LocalBackendSources> {
     let mut members = BTreeMap::new();
     for member in FRAMEWORK_MEMBERS {
         if let Some(path) =
@@ -1349,12 +1360,16 @@ pub async fn local_backend_sources(waterui_root: &Path) -> eyre::Result<LocalBac
             members.insert(member.subdirectory, path);
         }
     }
-    Ok(LocalBackendSources { members })
+    Ok(LocalBackendSources {
+        members,
+        workspace_members,
+    })
 }
 
 /// Resolve the canonical local backend sources a project's `waterui_path`
 /// names — `None` (and an empty [`LocalBackendSources`]) means remote
-/// sources. A relative `waterui_path` resolves against `project_root`.
+/// sources. A relative `waterui_path` resolves against `project_root`;
+/// `workspace_members` are that checkout's member packages.
 ///
 /// # Errors
 /// Returns an error when a present slot is malformed; see
@@ -1362,6 +1377,7 @@ pub async fn local_backend_sources(waterui_root: &Path) -> eyre::Result<LocalBac
 pub async fn project_local_backend_sources(
     waterui_path: Option<&Path>,
     project_root: &Path,
+    workspace_members: Vec<crate::framework::CheckoutMember>,
 ) -> eyre::Result<LocalBackendSources> {
     let Some(waterui_path) = waterui_path else {
         return Ok(LocalBackendSources::default());
@@ -1371,7 +1387,7 @@ pub async fn project_local_backend_sources(
     } else {
         project_root.join(waterui_path)
     };
-    local_backend_sources(&root).await
+    local_backend_sources(&root, workspace_members).await
 }
 
 /// One canonical `backends/<name>` slot under a checkout root: `Ok(None)`
@@ -1522,11 +1538,17 @@ mod tests {
         backend_project_path: Option<PathBuf>,
         project_root_path: Option<PathBuf>,
     ) -> TemplateContext {
+        let project_root = project_root_path
+            .as_deref()
+            .unwrap_or_else(|| Path::new(""));
+        let workspace_members = waterui_path.as_deref().map_or_else(Vec::new, |path| {
+            crate::framework::checkout_member_packages(&project_root.join(path))
+                .expect("fixture checkout members read")
+        });
         let local_sources = smol::block_on(crate::templates::project_local_backend_sources(
             waterui_path.as_deref(),
-            project_root_path
-                .as_deref()
-                .unwrap_or_else(|| Path::new("")),
+            project_root,
+            workspace_members,
         ))
         .expect("fixture checkout resolves canonical backend sources");
         // Fixture contexts answer "no webview, no engine" for every desktop
@@ -1798,9 +1820,14 @@ mod tests {
         let project_root = tempdir.path().join("app");
         std::fs::create_dir_all(&project_root).expect("project dir");
 
-        let patches =
-            super::local_framework_patches(&project_root, std::path::Path::new("../waterui"))
-                .expect("patches from the checkout");
+        let members = crate::framework::checkout_member_packages(&project_root.join("../waterui"))
+            .expect("checkout members");
+        let patches = super::local_framework_patches(
+            &project_root,
+            std::path::Path::new("../waterui"),
+            &members,
+        )
+        .expect("patches from the checkout");
         let crates_io = &patches["crates-io"];
         let cargo_toml::Dependency::Detailed(core) = &crates_io["waterui-core"] else {
             panic!("a path patch stays a detailed dependency");
@@ -1973,19 +2000,19 @@ mod tests {
     fn malformed_local_backend_sources_fail_at_resolution() {
         let root = tempdir().expect("waterui root");
 
-        let sources = smol::block_on(local_backend_sources(root.path()))
+        let sources = smol::block_on(local_backend_sources(root.path(), Vec::new()))
             .expect("absent slots resolve to the remote source");
         assert!(sources.apple().is_none());
 
         let apple = root.path().join("backends/apple");
         std::fs::create_dir_all(&apple).expect("empty apple slot");
-        let error = smol::block_on(local_backend_sources(root.path()))
+        let error = smol::block_on(local_backend_sources(root.path(), Vec::new()))
             .expect_err("a slot without its manifest is malformed");
         assert!(error.to_string().contains("backends/apple"), "{error}");
 
         std::fs::remove_dir(&apple).expect("remove empty slot");
         std::fs::write(&apple, "not a directory\n").expect("file at slot path");
-        let error = smol::block_on(local_backend_sources(root.path()))
+        let error = smol::block_on(local_backend_sources(root.path(), Vec::new()))
             .expect_err("a non-directory slot is malformed");
         assert!(error.to_string().contains("backends/apple"), "{error}");
 
@@ -1993,7 +2020,7 @@ mod tests {
         {
             std::fs::remove_file(&apple).expect("remove file slot");
             std::os::unix::fs::symlink(root.path().join("gone"), &apple).expect("dangling link");
-            let error = smol::block_on(local_backend_sources(root.path()))
+            let error = smol::block_on(local_backend_sources(root.path(), Vec::new()))
                 .expect_err("a dangling symlink is malformed");
             assert!(error.to_string().contains("backends/apple"), "{error}");
         }
@@ -4463,25 +4490,26 @@ fn generated_profiles_fingerprint(project_packages: &BTreeSet<String>) -> String
         .expect("generated profiles must serialize to TOML")
 }
 
+/// The support crate's `Cargo.toml` for `ctx`: its patches come from the
+/// runtime checkout `ctx.waterui_path` names, or the resolved framework's
+/// without one.
 async fn write_support_cargo_toml(
     base_dir: &Path,
-    crate_name: &str,
+    ctx: &TemplateContext,
     features: std::collections::BTreeMap<String, Vec<String>>,
     dependencies: std::collections::BTreeMap<String, SupportDependencyValue>,
-    runtime_root: Option<&Path>,
-    framework: &ResolvedFramework,
-    project_packages: Option<&BTreeSet<String>>,
 ) -> io::Result<()> {
-    let patch = match runtime_root {
+    let patch = match &ctx.waterui_path {
         Some(root) => {
-            let root = root.to_path_buf();
-            smol::unblock(move || collect_framework_checkout_patches(&root)).await?
+            let root = root.clone();
+            let members = ctx.local_sources.workspace_members().to_vec();
+            smol::unblock(move || collect_framework_checkout_patches(&root, &members)).await?
         }
-        None => framework.patches(),
+        None => ctx.framework.patches(),
     };
     let manifest = SupportCargoManifest {
         package: SupportPackageSection {
-            name: crate_name.to_string(),
+            name: ctx.crate_name.as_str().to_string(),
             version: "0.1.0".to_string(),
             edition: "2024".to_string(),
         },
@@ -4492,7 +4520,7 @@ async fn write_support_cargo_toml(
             // dependency graph twice more for products nothing ever loads.
             crate_type: vec!["rlib".to_string()],
         },
-        profile: generated_profiles(project_packages)?,
+        profile: generated_profiles(ctx.project_packages.as_ref())?,
         features,
         dependencies,
         workspace: SupportWorkspaceSection {},
@@ -6288,6 +6316,15 @@ pub mod tui {
     }
 }
 
+/// The manifest at `path` exactly as written — no workspace inheritance
+/// completed and no targets discovered from the package's sources, the
+/// filesystem walks `cargo_toml::Manifest::from_path` performs. Every
+/// reader here takes tables Cargo never inherits (`[workspace]`,
+/// `[patch]`, `[features]`, `[package] name`).
+fn parse_cargo_manifest(path: &Path) -> Result<cargo_toml::Manifest, cargo_toml::Error> {
+    cargo_toml::Manifest::from_slice(&std::fs::read(path)?)
+}
+
 /// Reads the `[patch]` tables from the workspace root that governs a build
 /// rooted at `project_root`, with path patches made absolute and normalized
 /// for config files the same way every other path the crate renders is.
@@ -6359,72 +6396,14 @@ fn patch_framework_git_source(patches: &mut cargo_toml::PatchSet) {
     }
 }
 
-/// Every directory the workspace at `root` declares a member crate in —
-/// `[workspace] members` patterns expanded one path segment at a time and
-/// `exclude` subtracted the same way — paired with the package name the
-/// member's manifest declares. `components/*`-style member globs carry crates
-/// the patch table never names, so generated manifests that copy only the
-/// checkout's `[patch]` leave them unpinned.
-fn workspace_member_packages(root: &Path) -> io::Result<Vec<(String, PathBuf)>> {
-    // A missing manifest is an empty member set, matching
-    // `collect_workspace_patches`' missing-workspace default: a
-    // `waterui_path` that names nothing augments nothing.
-    if !root.join("Cargo.toml").is_file() {
-        return Ok(Vec::new());
-    }
-    let manifest = cargo_toml::Manifest::from_path(root.join("Cargo.toml"))
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
-    let workspace = manifest.workspace.ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!(
-                "{} declares no [workspace]",
-                root.join("Cargo.toml").display()
-            ),
-        )
-    })?;
-    let expand = |pattern: &str| -> io::Result<Vec<PathBuf>> {
-        let mut dirs = vec![root.to_path_buf()];
-        for component in pattern.split('/') {
-            let mut next = Vec::new();
-            for dir in &dirs {
-                if component == "*" {
-                    for entry in std::fs::read_dir(dir)? {
-                        let path = entry?.path();
-                        if path.is_dir() {
-                            next.push(path);
-                        }
-                    }
-                } else {
-                    let path = dir.join(component);
-                    if path.is_dir() {
-                        next.push(path);
-                    }
-                }
-            }
-            dirs = next;
-        }
-        Ok(dirs)
-    };
-    let mut excluded = std::collections::BTreeSet::new();
-    for pattern in &workspace.exclude {
-        excluded.extend(expand(pattern)?);
-    }
-    let mut packages = Vec::new();
-    for pattern in &workspace.members {
-        for dir in expand(pattern)? {
-            if excluded.contains(&dir) {
-                continue;
-            }
-            let member_manifest = dir.join("Cargo.toml");
-            if let Ok(member) = cargo_toml::Manifest::from_path(&member_manifest)
-                && let Some(package) = member.package
-            {
-                packages.push((package.name, dir));
-            }
-        }
-    }
-    Ok(packages)
+/// Whether a checkout member package is part of the framework a generated
+/// crate pins: a `waterui*` crate or a framework member such as
+/// `hydrolysis`.
+fn is_framework_package(name: &str) -> bool {
+    name.starts_with("waterui")
+        || FRAMEWORK_MEMBERS
+            .iter()
+            .any(|member| member.package == name)
 }
 
 /// [`collect_workspace_patches`] plus a `{ path }` entry for every framework
@@ -6438,19 +6417,16 @@ fn workspace_member_packages(root: &Path) -> io::Result<Vec<(String, PathBuf)>> 
 /// and the repository-source mirror alike.
 pub fn collect_framework_checkout_patches(
     workspace_root: &Path,
+    members: &[crate::framework::CheckoutMember],
 ) -> io::Result<cargo_toml::PatchSet> {
     let mut patches = collect_workspace_patches(workspace_root)?;
-    for (name, dir) in workspace_member_packages(workspace_root)? {
-        if !(name.starts_with("waterui")
-            || FRAMEWORK_MEMBERS
-                .iter()
-                .any(|member| member.package == name))
-        {
+    for member in members {
+        if !is_framework_package(&member.name) {
             continue;
         }
-        let path = normalize_path_for_config(&dir);
+        let path = normalize_path_for_config(&workspace_root.join(&member.dir));
         for table in patches.values_mut() {
-            table.entry(name.clone()).or_insert_with(|| {
+            table.entry(member.name.clone()).or_insert_with(|| {
                 cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
                     path: Some(path.clone()),
                     ..cargo_toml::DependencyDetail::default()
@@ -6479,7 +6455,7 @@ fn generated_crate_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::Patc
 fn framework_crate_patches(ctx: &TemplateContext) -> io::Result<cargo_toml::PatchSet> {
     ctx.waterui_workspace_root().map_or_else(
         || Ok(ctx.framework.patches()),
-        |root| collect_framework_checkout_patches(&root),
+        |root| collect_framework_checkout_patches(&root, ctx.local_sources.workspace_members()),
     )
 }
 
@@ -6522,7 +6498,7 @@ pub const LOCKFILE_SEED: &str = "Cargo.lock.seed";
 /// way the project lock is: a CLI whose rules differ must re-seed once
 /// rather than trust a stamp an older merge wrote. Bump this when the
 /// merge — or the stamp's own layout — changes.
-const LOCKFILE_SEED_FORMAT: u32 = 2;
+const LOCKFILE_SEED_FORMAT: u32 = 3;
 
 /// Seed a managed crate's `Cargo.lock` from the application's lockfile.
 ///
@@ -6556,7 +6532,7 @@ const LOCKFILE_SEED_FORMAT: u32 = 2;
 pub async fn seed_lockfile(
     base_dir: &Path,
     project_lockfile: &Path,
-    canonical: Option<&cargo_lock::Lockfile>,
+    canonical: Option<&crate::framework::CanonicalLock<'_>>,
 ) -> io::Result<()> {
     let seed = match fs::read(project_lockfile).await {
         Ok(seed) => seed,
@@ -6592,8 +6568,13 @@ pub async fn seed_lockfile(
     // the registry holds newest — an `accesskit` generation `Water.lock`
     // contradicts (#203). `previous` fills what neither lock names so
     // packages only the managed crate adds stay put.
+    let canonical = canonical
+        .map(crate::framework::CanonicalLock::lock)
+        .transpose()
+        .map_err(io::Error::other)?;
     let mut merged = parse_lockfile(&seed)?;
-    merged.packages = crate::framework::seed_packages(canonical, &merged, previous.as_ref());
+    merged.packages =
+        crate::framework::seed_packages(canonical.as_ref(), &merged, previous.as_ref());
 
     tracing::debug!(
         lockfile = %project_lockfile.display(),
@@ -6661,18 +6642,18 @@ async fn restore_seeded_file(path: &Path, previous: Option<&[u8]>) -> io::Result
 /// and the canonical lock's checksum, so the stamp still parses as the
 /// lockfile it copies. A changed project lock, canonical checksum or merge
 /// format fails the byte comparison and re-seeds.
-fn seed_stamp(project_lock: &[u8], canonical: Option<&cargo_lock::Lockfile>) -> Vec<u8> {
-    use sha2::Digest as _;
+fn seed_stamp(
+    project_lock: &[u8],
+    canonical: Option<&crate::framework::CanonicalLock<'_>>,
+) -> Vec<u8> {
     let mut stamp = project_lock.to_vec();
     if !stamp.ends_with(b"\n") {
         stamp.push(b'\n');
     }
     stamp.extend_from_slice(format!("# seed-format: {LOCKFILE_SEED_FORMAT}\n").as_bytes());
-    stamp.extend_from_slice(b"# canonical-lock-sha256: ");
+    stamp.extend_from_slice(b"# canonical-lock: ");
     match canonical {
-        Some(canonical) => stamp.extend_from_slice(
-            hex::encode(sha2::Sha256::digest(canonical.to_string().as_bytes())).as_bytes(),
-        ),
+        Some(canonical) => stamp.extend_from_slice(canonical.digest().as_bytes()),
         None => stamp.extend_from_slice(b"none"),
     }
     stamp.push(b'\n');
@@ -6701,10 +6682,10 @@ fn parse_lockfile(contents: &[u8]) -> io::Result<cargo_lock::Lockfile> {
 pub fn local_framework_patches(
     project_root: &Path,
     waterui_path: &Path,
+    members: &[crate::framework::CheckoutMember],
 ) -> io::Result<cargo_toml::PatchSet> {
-    let manifest =
-        cargo_toml::Manifest::from_path(project_root.join(waterui_path).join("Cargo.toml"))
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let manifest = parse_cargo_manifest(&project_root.join(waterui_path).join("Cargo.toml"))
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let mut patches = manifest.patch;
     for deps in patches.values_mut() {
         for dependency in deps.values_mut() {
@@ -6720,20 +6701,14 @@ pub fn local_framework_patches(
     // framework member's directory the same relative way (#197) — the `*-path`
     // members included, so an independent dependent's crates.io requirement
     // (`hydrolysis-m3`'s `hydrolysis` edge) resolves into the checkout too.
-    let checkout_root = project_root.join(waterui_path);
-    for (name, dir) in workspace_member_packages(&checkout_root)? {
-        if !(name.starts_with("waterui")
-            || FRAMEWORK_MEMBERS
-                .iter()
-                .any(|member| member.package == name))
-            || !dir.starts_with(&checkout_root)
-        {
+    for member in members {
+        // A member outside the checkout has no path relative to it.
+        if !is_framework_package(&member.name) || member.dir.is_absolute() {
             continue;
         }
-        let path = waterui_path.join(dir.strip_prefix(&checkout_root).unwrap_or(&dir));
-        let path = normalize_path_for_config(&path);
+        let path = normalize_path_for_config(&waterui_path.join(&member.dir));
         for table in patches.values_mut() {
-            table.entry(name.clone()).or_insert_with(|| {
+            table.entry(member.name.clone()).or_insert_with(|| {
                 cargo_toml::Dependency::Detailed(Box::new(cargo_toml::DependencyDetail {
                     path: Some(path.clone()),
                     ..cargo_toml::DependencyDetail::default()
@@ -6772,7 +6747,7 @@ fn local_checkout_dependency(
         )
     })?;
     let manifest_path = root.join("Cargo.toml");
-    let manifest = cargo_toml::Manifest::from_path(&manifest_path)
+    let manifest = parse_cargo_manifest(&manifest_path)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let declared = manifest
         .workspace
@@ -6876,7 +6851,10 @@ pub fn project_patches(
     match (&manifest.framework, &manifest.waterui_path) {
         (Some(framework), _) => Ok(framework.patches()),
         (None, Some(waterui_path)) => {
-            local_framework_patches(project_root, Path::new(waterui_path))
+            let members =
+                crate::framework::checkout_member_packages(&project_root.join(waterui_path))
+                    .map_err(io::Error::other)?;
+            local_framework_patches(project_root, Path::new(waterui_path), &members)
         }
         (None, None) => Ok(cargo_toml::PatchSet::default()),
     }
@@ -6908,7 +6886,7 @@ fn find_workspace_manifest(
         if !manifest_path.is_file() {
             continue;
         }
-        let manifest = cargo_toml::Manifest::from_path(&manifest_path)
+        let manifest = parse_cargo_manifest(&manifest_path)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         if manifest.workspace.is_some() {
             return Ok(Some((dir.to_path_buf(), manifest)));
@@ -7113,18 +7091,17 @@ async fn resolved_forward_tables(
             Some(path) => {
                 let dep_manifest_path =
                     collapse_dotdot(&manifest_dir.join(path)).join("Cargo.toml");
-                let dep_manifest =
-                    cargo_toml::Manifest::from_path(&dep_manifest_path).map_err(|error| {
-                        io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "cannot load the manifest of `{target}` at {} \
+                let dep_manifest = parse_cargo_manifest(&dep_manifest_path).map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "cannot load the manifest of `{target}` at {} \
                                  (dependency of {}): {error}",
-                                dep_manifest_path.display(),
-                                generated_manifest.display(),
-                            ),
-                        )
-                    })?;
+                            dep_manifest_path.display(),
+                            generated_manifest.display(),
+                        ),
+                    )
+                })?;
                 tables.insert(
                     target.to_string(),
                     dep_manifest.features.keys().cloned().collect(),
@@ -7326,7 +7303,7 @@ async fn probe_forward_tables(
 /// # Errors
 /// Returns an error when the manifest cannot be read or parsed.
 pub fn generated_manifest_declares(manifest_path: &Path, feature: &str) -> io::Result<bool> {
-    let manifest = cargo_toml::Manifest::from_path(manifest_path)
+    let manifest = parse_cargo_manifest(manifest_path)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     Ok(manifest.features.contains_key(feature))
 }
@@ -7682,8 +7659,9 @@ pub mod root {
                 Some(waterui_path) => {
                     let (project_root, waterui_path) =
                         (base_dir.to_path_buf(), waterui_path.clone());
+                    let members = ctx.local_sources.workspace_members().to_vec();
                     smol::unblock(move || {
-                        super::local_framework_patches(&project_root, &waterui_path)
+                        super::local_framework_patches(&project_root, &waterui_path, &members)
                     })
                     .await?
                 }
@@ -7849,16 +7827,7 @@ pub mod inspector {
             vec!["waterui/dynamic_linking".to_string()],
         )]);
 
-        write_support_cargo_toml(
-            base_dir,
-            ctx.crate_name.as_str(),
-            features,
-            dependencies,
-            ctx.waterui_path.as_deref(),
-            &ctx.framework,
-            ctx.project_packages.as_ref(),
-        )
-        .await
+        write_support_cargo_toml(base_dir, ctx, features, dependencies).await
     }
 
     #[cfg(test)]

@@ -603,75 +603,106 @@ fn link_search_flag(dir: &OsStr) -> String {
 /// The archive keeps every member — only the symbol's visibility changes —
 /// so the symbols still resolve for the member's own internal references
 /// while stopping `ld`'s duplicate-symbol diagnostics.
+///
+/// The members are read in-process; `ld -r` and `ar r` run only for a
+/// member that still exports one of the symbols, so an archive localized
+/// by an earlier build — Cargo did not rewrite it — costs one read.
 #[cfg(target_os = "macos")]
 async fn localize_archive_symbols(
     host: &crate::toolchain::Host,
     archive: &Path,
     symbols: &[&str],
 ) -> eyre::Result<()> {
+    let path = archive.to_path_buf();
+    let names = symbols
+        .iter()
+        .map(|symbol| format!("_{symbol}"))
+        .collect::<Vec<_>>();
+    let exporting = smol::unblock(move || archive_members_exporting(&path, &names)).await?;
+    if exporting.is_empty() {
+        return Ok(());
+    }
     let scratch = archive.with_extension("localize-work");
     fs::create_dir_all(&scratch).await?;
-    let members = host
-        .run(
-            "ar",
-            ["t".into(), archive.as_os_str().to_owned()].map(OsString::from),
-        )
-        .await?;
-    for member in members
-        .lines()
-        .map(str::trim)
-        .filter(|member| !member.is_empty() && *member != "__.SYMDEF")
-    {
-        let member_path = scratch.join(member);
-        host.run(
-            "sh",
-            [
-                OsString::from("-c"),
-                OsString::from(format!(
-                    "ar p '{}' '{}' > '{}'",
-                    archive.display(),
-                    member,
-                    member_path.display()
-                )),
-            ],
-        )
-        .await?;
-        let nm = host
-            .run("nm", [member_path.as_os_str().to_owned()])
-            .await
-            .unwrap_or_default();
-        let mut args = vec![member_path.as_os_str().to_owned()];
-        let mut changed = false;
-        for symbol in symbols {
-            if nm
-                .lines()
-                .any(|line| line.contains(&format!(" T _{symbol}")))
-            {
-                args.push("-unexported_symbol".into());
-                args.push(format!("_{symbol}").into());
-                changed = true;
-            }
-        }
-        if !changed {
-            continue;
+    for member in exporting {
+        let member_path = scratch.join(&member.name);
+        fs::write(&member_path, &member.data).await?;
+        let mut args = vec![OsString::from("-r"), member_path.clone().into_os_string()];
+        for symbol in member.symbols {
+            args.push("-unexported_symbol".into());
+            args.push(symbol.into());
         }
         args.push("-o".into());
-        args.push(member_path.as_os_str().to_owned());
-        host.run("ld", std::iter::once(OsString::from("-r")).chain(args))
-            .await?;
+        args.push(member_path.clone().into_os_string());
+        host.run("ld", args).await?;
         host.run(
             "ar",
             [
-                "r".into(),
+                OsString::from("r"),
                 archive.as_os_str().to_owned(),
-                member_path.as_os_str().to_owned(),
-            ]
-            .map(OsString::from),
+                member_path.into_os_string(),
+            ],
         )
         .await?;
     }
     let _ = fs::remove_dir_all(&scratch).await;
     Ok(())
+}
+
+/// An archive member that defines some of the wanted symbols as global
+/// text — `nm`'s `T`.
+#[cfg(target_os = "macos")]
+struct ExportingMember {
+    name: String,
+    data: Vec<u8>,
+    symbols: Vec<String>,
+}
+
+/// The members of the archive at `archive` that define one of `symbols`
+/// (Mach-O names, underscore included) as an external text symbol. A
+/// member that is not an object file — `lib.rmeta` — defines nothing.
+#[cfg(target_os = "macos")]
+fn archive_members_exporting(
+    archive: &Path,
+    symbols: &[String],
+) -> eyre::Result<Vec<ExportingMember>> {
+    use object::{Object as _, ObjectSymbol as _};
+
+    let data =
+        std::fs::read(archive).wrap_err_with(|| format!("cannot read {}", archive.display()))?;
+    let parsed = object::read::archive::ArchiveFile::parse(data.as_slice())
+        .wrap_err_with(|| format!("{} is not an archive", archive.display()))?;
+    let mut exporting = Vec::new();
+    for member in parsed.members() {
+        let member = member.wrap_err_with(|| format!("{} is corrupt", archive.display()))?;
+        let bytes = member
+            .data(data.as_slice())
+            .wrap_err_with(|| format!("{} is corrupt", archive.display()))?;
+        let Ok(file) = object::File::parse(bytes) else {
+            continue;
+        };
+        let defined = file
+            .symbols()
+            .filter(|symbol| {
+                symbol.is_global()
+                    && symbol.is_definition()
+                    && symbol.kind() == object::SymbolKind::Text
+            })
+            .filter_map(|symbol| symbol.name().ok())
+            .filter(|name| symbols.iter().any(|symbol| symbol == name))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if !defined.is_empty() {
+            exporting.push(ExportingMember {
+                name: String::from_utf8(member.name().to_vec()).wrap_err_with(|| {
+                    format!("{} names a member in non-UTF-8", archive.display())
+                })?,
+                data: bytes.to_vec(),
+                symbols: defined,
+            });
+        }
+    }
+    Ok(exporting)
 }
 
 /// The framework metadata key for each Apple platform family.
