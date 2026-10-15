@@ -790,10 +790,10 @@ async fn sign_device_app(
                         "xcodebuild installed a profile but no installed profile qualifies: {still}"
                     )
                 }
-                Err(provisioning::SelectError::Failed(error)) => return Err(error),
+                Err(error) => return Err(error.into()),
             }
         }
-        Err(provisioning::SelectError::Failed(error)) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
 
     // Selection already paired the profile with a usable keychain identity:
