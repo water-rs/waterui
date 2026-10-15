@@ -165,11 +165,12 @@ pub async fn render_preview_with_hydrolysis_android(
             events: scenario.events.clone(),
         },
     );
-    let run_config = run_config_json(&PreviewRunConfig {
-        width: request.width,
-        height: request.height,
+    let run_config = run_config_json(&PreviewRunConfig::new(
+        request.width,
+        request.height,
         mode,
-    })?;
+        request.content_deadline,
+    ))?;
 
     render_on_device(
         host,

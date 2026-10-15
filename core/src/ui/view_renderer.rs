@@ -3,29 +3,43 @@
 //! This module provides the `ViewRenderer` capability that native backends
 //! install via FFI. It allows capturing `WaterUI` views as RGBA pixel data.
 
+use alloc::borrow::Cow;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
+use core::time::Duration;
 
 use crate::AnyView;
+use crate::layout::Size;
+use crate::ui::content_ledger::{ContentError, DisplayList, PendingContent};
 
-/// Size for view rendering.
+/// What a [`ViewRenderer`] capture renders: the size it proposes to the
+/// view, and how long it waits for content the view owes after mount.
+///
+/// The renderer installs a fresh [`ContentLedger`](crate::ui::content_ledger::ContentLedger)
+/// for the captured view and rasterizes only once nothing in it is owed, or
+/// fails with [`RenderError::ContentPending`] when `content_deadline` passes
+/// first.
 #[derive(Debug, Clone, Copy)]
-pub struct RenderSize {
-    /// Width in points.
-    pub width: f32,
-    /// Height in points.
-    pub height: f32,
+pub struct RenderRequest {
+    /// The size proposed to the view, in points.
+    pub size: Size,
+    /// How long the capture waits for owed content.
+    pub content_deadline: Duration,
 }
 
-impl RenderSize {
-    /// Create a new render size.
+impl RenderRequest {
+    /// A request proposing `size` that waits up to `content_deadline` for
+    /// owed content.
     #[must_use]
-    pub const fn new(width: f32, height: f32) -> Self {
-        Self { width, height }
+    pub const fn new(size: Size, content_deadline: Duration) -> Self {
+        Self {
+            size,
+            content_deadline,
+        }
     }
 }
 
@@ -58,6 +72,46 @@ pub enum RenderError {
     /// A native host completed the render with this failure message.
     #[error("native host failed to render the view: {0}")]
     Host(String),
+    /// The content deadline passed while views of the captured subtree still
+    /// owed content.
+    #[error("{} still owe{} content after {deadline:?}", DisplayList(outstanding), if outstanding.len() == 1 { "s" } else { "" })]
+    ContentPending {
+        /// Every entry still owed when the deadline passed.
+        outstanding: Vec<PendingContent>,
+        /// The bound the capture waited for.
+        deadline: Duration,
+    },
+    /// A view of the captured subtree reported that its content failed to
+    /// load.
+    #[error("{view} ({detail}) failed to load its content")]
+    ContentFailed {
+        /// The owing view's type name, without its path.
+        view: &'static str,
+        /// What the view was waiting for.
+        detail: Cow<'static, str>,
+        /// Why the load failed.
+        #[source]
+        source: Box<dyn core::error::Error + Send + Sync>,
+    },
+}
+
+impl From<ContentError> for RenderError {
+    fn from(error: ContentError) -> Self {
+        match error {
+            ContentError::Pending {
+                outstanding,
+                deadline,
+            } => Self::ContentPending {
+                outstanding,
+                deadline,
+            },
+            ContentError::Failed(failure) => Self::ContentFailed {
+                view: failure.view,
+                detail: failure.detail,
+                source: failure.source,
+            },
+        }
+    }
 }
 
 /// Trait for custom view renderers.
@@ -70,19 +124,25 @@ pub trait CustomViewRenderer: 'static {
     /// Render a view to RGBA bytes.
     ///
     /// The implementation should:
-    /// 1. Create an offscreen rendering context at the given size
-    /// 2. Render the view hierarchy (native widgets + GPU surfaces)
-    /// 3. Capture the final composited result to RGBA pixels
-    /// 4. Return the pixel data
+    /// 1. Create an offscreen rendering context at the requested size
+    /// 2. Mount the view hierarchy (native widgets + GPU surfaces) under a
+    ///    fresh [`ContentLedger`](crate::ui::content_ledger::ContentLedger)
+    /// 3. Await [`ContentLedger::wait`](crate::ui::content_ledger::ContentLedger::wait)
+    ///    bounded by the request's content deadline, draining the backend
+    ///    between passes
+    /// 4. Capture the final composited result to RGBA pixels
+    /// 5. Return the pixel data
     ///
     /// # Errors
     ///
     /// Returns [`RenderError`] when the capture cannot produce the view's
-    /// pixels.
+    /// pixels — including [`RenderError::ContentPending`] when owed content
+    /// misses the deadline and [`RenderError::ContentFailed`] when it fails to
+    /// load.
     fn render_to_rgba(
         &self,
         view: AnyView,
-        size: RenderSize,
+        request: RenderRequest,
     ) -> impl Future<Output = Result<RenderResult, RenderError>>;
 }
 
@@ -93,7 +153,7 @@ trait CustomViewRendererImpl: 'static {
     fn render_to_rgba<'a>(
         &'a self,
         view: AnyView,
-        size: RenderSize,
+        request: RenderRequest,
     ) -> Pin<Box<dyn 'a + Future<Output = Result<RenderResult, RenderError>>>>;
 }
 
@@ -101,9 +161,9 @@ impl<T: CustomViewRenderer> CustomViewRendererImpl for T {
     fn render_to_rgba<'a>(
         &'a self,
         view: AnyView,
-        size: RenderSize,
+        request: RenderRequest,
     ) -> Pin<Box<dyn 'a + Future<Output = Result<RenderResult, RenderError>>>> {
-        Box::pin(CustomViewRenderer::render_to_rgba(self, view, size))
+        Box::pin(CustomViewRenderer::render_to_rgba(self, view, request))
     }
 }
 
@@ -132,9 +192,9 @@ impl ViewRenderer {
     pub async fn render(
         &self,
         view: AnyView,
-        size: RenderSize,
+        request: RenderRequest,
     ) -> Result<RenderResult, RenderError> {
-        self.0.render_to_rgba(view, size).await
+        self.0.render_to_rgba(view, request).await
     }
 }
 

@@ -35,7 +35,7 @@ use core::future::Future;
 
 use executor_core::spawn_local;
 use waterui_core::{
-    AnyView, Environment, View,
+    AnyView, ContentLedger, Environment, View,
     handler::{AnyViewBuilder, ViewBuilder},
 };
 
@@ -263,10 +263,18 @@ where
         let (handler, view) = Dynamic::new();
         handler.set(self.loading);
 
+        // A capture waits for the loaded content, not the loading view: the
+        // entry is owed from mount and resolves once the content is swapped
+        // in — after it mounted, so content that owes something of its own
+        // is already recorded when this entry resolves.
+        let owed = ContentLedger::owe::<Self>(env, core::any::type_name::<V>());
         let new_env = env.clone();
         spawn_local(async move {
             let content = SuspendedView::body(self.content, new_env).await;
             handler.set(content);
+            if let Some(owed) = owed {
+                owed.fulfil();
+            }
         })
         .detach();
 

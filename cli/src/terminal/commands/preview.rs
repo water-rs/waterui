@@ -66,6 +66,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
                 platform: target_platform,
                 width,
                 height,
+                content_deadline: request::DEFAULT_CONTENT_DEADLINE,
                 sccache_path: sccache_path.clone(),
                 progress: Some(shell.build_progress()),
             },
@@ -121,6 +122,16 @@ pub struct Args {
     #[arg(short, long, default_value = "preview.png")]
     output: PathBuf,
 
+    /// Seconds the capture waits for content its views still owe — a
+    /// decoding image, a `Suspense` future — before the preview fails naming
+    /// them.
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        default_value_t = request::DEFAULT_CONTENT_DEADLINE.as_secs_f64()
+    )]
+    content_timeout: f64,
+
     /// Hydrolysis scenario TOML for interaction/timeline capture.
     #[arg(long)]
     scenario: Option<PathBuf>,
@@ -161,6 +172,7 @@ impl Args {
             theme: self.theme,
             platform: self.platform,
             device: self.device.clone(),
+            content_timeout: Some(self.content_timeout),
         }
     }
 }
@@ -292,6 +304,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 platform,
                 width: request.width,
                 height: request.height,
+                content_deadline: request.content_deadline,
                 sccache_path,
                 progress: Some(shell.build_progress()),
             },
@@ -330,6 +343,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
                 source: request.target.source(),
                 width: request.width,
                 height: request.height,
+                content_deadline: request.content_deadline,
                 sccache_path,
                 progress: Some(shell.build_progress()),
             },

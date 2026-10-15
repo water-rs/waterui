@@ -59,6 +59,10 @@ pub trait RuntimeDriver {
     fn request_redraw(&mut self);
     /// Returns whether anything held UI focus to clear.
     fn clear_ui_focus(&mut self) -> bool;
+    /// Blocks until a task parked on an external wake — a timer, a fetch, a
+    /// decode on a worker thread — re-queues on the runtime's local executor,
+    /// returning whether one arrived within `timeout`.
+    fn wait_for_local_work(&self, timeout: Duration) -> bool;
 }
 
 /// What one pump produced: whether it rebuilt, the phase timings, the
@@ -76,6 +80,10 @@ pub struct DriverPumpResult {
 }
 
 impl RuntimeDriver for SemanticRuntime {
+    fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        Self::wait_for_local_work(self, timeout)
+    }
+
     fn pump_at(&mut self, at: Instant, _capture_snapshot: bool) -> DriverPumpResult {
         let result = Self::pump_at(self, at);
         DriverPumpResult {
@@ -114,6 +122,10 @@ impl RuntimeDriver for SemanticRuntime {
 }
 
 impl RuntimeDriver for HeadlessRuntime {
+    fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        Self::wait_for_local_work(self, timeout)
+    }
+
     fn pump_at(&mut self, at: Instant, capture_snapshot: bool) -> DriverPumpResult {
         let result = Self::pump_at(self, capture_snapshot, at);
         DriverPumpResult {

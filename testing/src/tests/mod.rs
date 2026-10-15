@@ -25,7 +25,7 @@ use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
 use waterui_canvas::Canvas;
 use waterui_core::layout::{Point, Rect, Size};
-use waterui_core::{AnyView, Native, Signal, View};
+use waterui_core::{AnyView, ContentLedger, Native, Signal, View};
 
 #[derive(Debug)]
 struct NoopDriver;
@@ -59,6 +59,10 @@ impl RuntimeDriver for NoopDriver {
     fn request_redraw(&mut self) {}
 
     fn clear_ui_focus(&mut self) -> bool {
+        false
+    }
+
+    fn wait_for_local_work(&self, _timeout: Duration) -> bool {
         false
     }
 }
@@ -159,6 +163,7 @@ fn mounted_on<R: RuntimeDriver>(runtime: R, tree: TreeSnapshot) -> SemanticApp<R
         viewport: (0, 0),
         clock: None,
         resources: ResourceSampler::new(),
+        ledger: ContentLedger::new(),
     }
 }
 
@@ -205,6 +210,10 @@ impl RuntimeDriver for EmitThenSettleDriver {
     fn request_redraw(&mut self) {}
 
     fn clear_ui_focus(&mut self) -> bool {
+        false
+    }
+
+    fn wait_for_local_work(&self, _timeout: Duration) -> bool {
         false
     }
 }

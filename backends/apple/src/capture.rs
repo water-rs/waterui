@@ -42,33 +42,6 @@ pub enum CaptureError {
     NoWindowScene,
 }
 
-/// Attaches `view` inside a window that never orders in and captures the
-/// presented result — the `view_renderer` service's entry: the view arrives
-/// already measured and laid out under its proposal.
-///
-/// # Errors
-///
-/// Returns [`CaptureError`] when `AppKit` cannot produce the bitmap.
-#[cfg(all(
-    target_os = "macos",
-    feature = "view_renderer",
-    not(feature = "gpu_surface")
-))]
-#[expect(
-    clippy::future_not_send,
-    reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
-)]
-pub async fn capture_view(
-    view: &cocoa_ui::PlatformView,
-    actual: cocoa_ui::Size,
-    mtm: cocoa_ui::MainThreadMarker,
-) -> Result<RenderResult, CaptureError> {
-    let window = cocoa_ui::bitmap::capture_window(mtm, actual);
-    let content_view = window.contentView().expect("offscreen window content");
-    cocoa_ui::view::add_subview(&content_view, view);
-    capture_presented(view).await
-}
-
 /// The shared tail of every `AppKit` capture: `host` is already inside its
 /// never-ordered window and laid out under its proposal; `AppKit`'s
 /// `cacheDisplayInRect:` rasterizes the whole subtree into premultiplied

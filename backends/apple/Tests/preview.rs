@@ -44,7 +44,8 @@ mod suite {
     use waterui::{AnyView, ResourceContext};
     use waterui_apple::preview::PreviewError;
     use waterui_preview_protocol::run::{
-        PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode, RunConfigError,
+        DEFAULT_CONTENT_DEADLINE, PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
+        RunConfigError,
     };
 
     /// The argument that turns a spawned copy of this binary into a
@@ -91,6 +92,27 @@ mod suite {
         vec![
             Trial::test("preview::captures_the_issue_view_set_windowless", || {
                 run_trial("view_set", Expect::Png);
+                Ok(())
+            }),
+            Trial::test("preview::awaits_an_image_asset_decode", || {
+                run_trial("image_asset", Expect::Png);
+                Ok(())
+            }),
+            Trial::test(
+                "preview::fails_naming_content_still_owed_at_the_deadline",
+                || {
+                    run_trial(
+                        "content_deadline",
+                        Expect::Failure("still owes content after 200ms"),
+                    );
+                    Ok(())
+                },
+            ),
+            Trial::test("preview::fails_naming_content_that_failed_to_load", || {
+                run_trial(
+                    "content_failed",
+                    Expect::Failure("failed to load its content"),
+                );
                 Ok(())
             }),
             #[cfg(feature = "gpu_surface")]
@@ -241,6 +263,21 @@ mod suite {
     fn child(slug: &str) -> i32 {
         let result: Result<(), Box<dyn std::error::Error>> = match slug {
             "view_set" => image_run("view_set", 390.0, 760.0, issue_view_set).map_err(Into::into),
+            "image_asset" => {
+                image_run("image_asset", 200.0, 200.0, image_asset_view).map_err(Into::into)
+            }
+            "content_deadline" => content_run(
+                "content_deadline",
+                Duration::from_millis(200),
+                never_loading_view,
+            )
+            .map_err(Into::into),
+            "content_failed" => content_run(
+                "content_failed",
+                DEFAULT_CONTENT_DEADLINE,
+                missing_image_view,
+            )
+            .map_err(Into::into),
             #[cfg(feature = "gpu_surface")]
             "gpu_set" => image_run("gpu_set", 390.0, 760.0, gpu_set).map_err(Into::into),
             "scenario" => error_run("scenario", |dir| PreviewRunMode::Scenario {
@@ -381,16 +418,29 @@ mod suite {
         height: f32,
         view: impl FnOnce() -> AnyView + 'static,
     ) -> Result<(), PreviewError> {
+        run_with_deadline(slug, mode, width, height, DEFAULT_CONTENT_DEADLINE, view)
+    }
+
+    /// [`run_with_config`] with an explicit content deadline.
+    fn run_with_deadline(
+        slug: &str,
+        mode: PreviewRunMode,
+        width: f32,
+        height: f32,
+        content_deadline: Duration,
+        view: impl FnOnce() -> AnyView + 'static,
+    ) -> Result<(), PreviewError> {
         let dir = output_dir();
         fs::create_dir_all(&dir).expect("the preview capture directory is creatable");
         let config_path = dir.join(format!("{slug}.run-config.json"));
         fs::write(
             &config_path,
-            serde_json::to_string_pretty(&PreviewRunConfig {
+            serde_json::to_string_pretty(&PreviewRunConfig::new(
                 width,
                 height,
                 mode,
-            })
+                content_deadline,
+            ))
             .expect("a run configuration serializes"),
         )
         .expect("the run configuration writes");
@@ -530,11 +580,9 @@ mod suite {
         // `image.png` is generated into the run's assets directory by
         // `run_with_config` before `run` mounts this view — the same
         // directory the run's explicit `ResourceContext` mounts as
-        // `Bundle::main()`'s root. `ImageAsset` resolves there but loads
-        // through `Photo`'s asynchronous decode, which this
-        // first-presented-frames capture does not wait on — its blank
-        // slot is water-rs/waterui#2149, kept visible here rather than
-        // worked around.
+        // `Bundle::main()`'s root. `ImageAsset` resolves there and loads
+        // through `Photo`'s asynchronous decode, which the capture awaits
+        // through the content ledger.
         let wifi = Binding::bool(true);
         let level = Binding::f64(0.6);
         let count = Binding::i32(1);
@@ -591,6 +639,50 @@ mod suite {
     ))
     .padding()
     .anyview()
+    }
+
+    /// One image asset, large enough to read: the capture must show the
+    /// decoded image, not the empty slot its asynchronous load starts as.
+    fn image_asset_view() -> AnyView {
+        waterui::ImageAsset::new(waterui::Bundle::main(), "image.png")
+            .size(160.0, 160.0)
+            .padding()
+            .anyview()
+    }
+
+    /// A `Suspense` whose content never arrives: the capture fails at its
+    /// content deadline, naming it.
+    fn never_loading_view() -> AnyView {
+        waterui::widget::suspense::Suspense::new(core::future::pending::<waterui::text::Text>())
+            .loading(text("loading"))
+            .anyview()
+    }
+
+    /// An image asset whose file does not exist: its load fails and the
+    /// capture reports the failure, naming it.
+    fn missing_image_view() -> AnyView {
+        waterui::ImageAsset::new(waterui::Bundle::main(), "missing.png")
+            .size(48.0, 48.0)
+            .anyview()
+    }
+
+    /// A content-ledger run that must fail: an image run whose `view` owes
+    /// content the capture never receives, under `content_deadline`.
+    fn content_run(
+        slug: &str,
+        content_deadline: Duration,
+        view: impl FnOnce() -> AnyView + 'static,
+    ) -> Result<(), PreviewError> {
+        run_with_deadline(
+            slug,
+            PreviewRunMode::Image {
+                output: output_dir().join(format!("{slug}.png")),
+            },
+            200.0,
+            200.0,
+            content_deadline,
+            view,
+        )
     }
 
     /// The GPU-surface set: a shader canvas and filtered views — the content

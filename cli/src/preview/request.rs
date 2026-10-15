@@ -6,6 +6,8 @@
 //! overrides — and resolve them through the functions here, so the two can
 //! never drift apart.
 
+use std::time::Duration;
+
 use clap::ValueEnum;
 use eyre::{Result, bail};
 use schemars::JsonSchema;
@@ -16,6 +18,7 @@ use crate::preview::protocol::function_path_to_symbol;
 use crate::preview::{HydrolysisPreviewTheme, PreviewSource};
 use crate::project::{Manifest, resolve_backend};
 use crate::toolchain_checks;
+pub use waterui_preview_protocol::run::DEFAULT_CONTENT_DEADLINE;
 
 /// Default frame size shared by `water preview --frame` and the MCP `preview`
 /// tool's `frame` argument.
@@ -156,6 +159,27 @@ pub struct PreviewRequest {
     pub width: f32,
     /// Frame height in logical units.
     pub height: f32,
+    /// How long a capture waits for the content its views owe — a decoding
+    /// image, a `Suspense` future — before the preview fails naming them.
+    pub content_deadline: Duration,
+}
+
+/// Parse a content timeout given in seconds — how long a capture waits for
+/// the content its views owe before the preview fails naming them. `None`
+/// takes the protocol's default.
+///
+/// # Errors
+/// Returns an error if the timeout is not a positive finite number of
+/// seconds.
+pub fn parse_content_timeout(seconds: Option<f64>) -> Result<Duration> {
+    let Some(seconds) = seconds else {
+        return Ok(DEFAULT_CONTENT_DEADLINE);
+    };
+    if !seconds.is_finite() || seconds <= 0.0 {
+        bail!("Invalid content timeout: must be a positive finite number of seconds");
+    }
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|error| eyre::eyre!("Invalid content timeout of {seconds}s: {error}"))
 }
 
 /// Parse frame size from a `WIDTHxHEIGHT` string.
