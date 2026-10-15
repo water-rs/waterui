@@ -29,6 +29,7 @@ use crate::render::instance::{
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
+use crate::render::raster;
 
 /// The target a pass draws into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1188,6 +1189,7 @@ impl Isolation {
 pub struct Lowering<'a> {
     frame: &'a mut Frame,
     anchor_scratch: &'a mut AnchorScratch,
+    raster_scratch: raster::BandRaster,
     width: f32,
     height: f32,
     transform: Affine,
@@ -1316,6 +1318,7 @@ impl<'a> Lowering<'a> {
         Self {
             frame,
             anchor_scratch,
+            raster_scratch: raster::BandRaster::new(),
             width: size.0 as f32,
             height: size.1 as f32,
             transform: Affine::IDENTITY,
@@ -4697,11 +4700,13 @@ impl<'a> Lowering<'a> {
             let device =
                 pl.raster * shader_path.unwrap_or_else(|| make.take().expect("path factory")());
             let (segments, bbox) = path::flatten_segments(&device, path::FLATTEN);
-            let Some(coverage) = path::rasterize(
+            let Some(emitted) = path::rasterize_emit(
                 &segments,
                 bbox,
                 (f64::from(self.width), f64::from(self.height)),
                 rule,
+                &mut self.raster_scratch,
+                &mut self.path_arena,
             ) else {
                 // Missing the surface at this offset says nothing about
                 // other offsets — and an empty emission carries no bands,
@@ -4711,15 +4716,11 @@ impl<'a> Lowering<'a> {
                 break 'stored (PathEmit::default(), None);
             };
             self.paths += 1;
-            let (emit, cells) = path::emit(&coverage, &mut self.path_arena)?;
+            let (emit, cells, clipped) = emitted?;
             // Emission rects are relative to the placement offset; the
             // stored record keeps that frame.
             let stored = emit.translated(-pl.offset.x, -pl.offset.y);
-            let key = if coverage.clipped {
-                pl.key_exact()
-            } else {
-                pl.key
-            };
+            let key = if clipped { pl.key_exact() } else { pl.key };
             let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
             self.pending.push(PendingRaster::Path {
                 key,
