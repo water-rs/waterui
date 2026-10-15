@@ -101,10 +101,10 @@ pub const FLAG_TEX_SRGB: u32 = 0x10;
 /// the isolated plane's storage space differs from the pass's.
 pub const FLAG_BLEND_SRC: u32 = 0x20;
 /// A `PAINT_BACKDROP` member draws against its group's union field: the
-/// instance's clip carries the ancestors only, `uv.xy` bitcast holds the
-/// record run's base `vec4` index and the member's index, and `params.x`
-/// its `outer` extent. The ownership-weighted field replaces the
-/// member's clip coverage for the composite.
+/// instance's clip carries the ancestors only, `inner.half` bitcast holds
+/// the record run's base `vec4` index and the member's index, and
+/// `params.x` its `outer` extent. The ownership-weighted field replaces
+/// the member's clip coverage for the composite.
 pub const FLAG_UNION: u32 = 0x40;
 
 /// Projected-area threshold in device px² above which a solid ellipse's
@@ -204,7 +204,8 @@ impl From<RoundedBox> for Shape {
     }
 }
 
-/// One instanced quad, mirroring the WGSL `Instance`.
+/// One instanced quad, mirroring the WGSL `Instance`. The first 128
+/// bytes hold transform, geometry and solid-paint fields.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Instance {
@@ -217,31 +218,9 @@ pub struct Instance {
     pub bounds: [f32; 4],
     /// The shape being drawn.
     pub shape: Shape,
-    /// The inner shape of an offset stroke.
-    pub inner: Shape,
-    /// Device-to-clip-local affine.
-    pub clip_inv: [f32; 8],
-    /// The clip shape. A masked clip is a sharp rect, so `aspect` and
-    /// `exponent` (unused by its SDF) carry the mask cell size.
-    pub clip: Shape,
-    /// Straight-alpha working-space colour. `PAINT_BACKDROP`: x the
-    /// member's recording scale (device pixels per logical pixel), yz the
-    /// device origin of the backdrop copy when the member composites in
-    /// the space the pass does not store (`FLAG_BLEND_SRC`); its alpha
-    /// stays 0, so a member span is never an opaque span.
+    /// Straight-alpha working-space colour; precision is retained until
+    /// target storage.
     pub color: [f32; 4],
-    /// Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
-    /// Sweep: centre.xy. Image: local→image affine `[a, b, c, d]`.
-    /// `PAINT_TEXTURE`: source region origin.xy. `PAINT_BACKDROP`: the
-    /// capture region's texel origin.xy, the capture scale in z and the
-    /// capture's level count in w.
-    pub grad: [f32; 4],
-    /// Radial: start radius, end radius, identical-circles flag (1 or 0).
-    /// Sweep: start angle, end angle.
-    /// Image: local→image affine `[e, f]` and image `[w, h]`.
-    pub grad2: [f32; 4],
-    /// Glyph/cell: atlas cell origin in texels. zw: mask atlas cell origin.
-    pub uv: [f32; 4],
     /// x: stroke half width or shadow sigma. y: opacity. zw: mask device
     /// origin.
     pub params: [f32; 4],
@@ -253,6 +232,70 @@ pub struct Instance {
     /// flags<<24`.
     /// For `KIND_REGION`, `first_stop` holds the full-column interval instead.
     pub meta: [u32; 4],
+    /// The inner shape of an offset stroke. `PAINT_BACKDROP` spans never
+    /// read it as an SDF, so it carries the member's metadata instead:
+    /// `half` bitcast the union record run's base and member index
+    /// (`FLAG_UNION`), `aspect` the member's recording scale (device
+    /// pixels per logical pixel), and `exponent`/`radii[0]` the backdrop
+    /// copy's device origin when `FLAG_BLEND_SRC` is set. A member's
+    /// colour stays transparent, so a member span is never an opaque span.
+    pub inner: Shape,
+    /// Device-to-clip-local linear coefficients `[a, b, c, d]`.
+    pub clip_linear: [f32; 4],
+    /// Device-to-clip-local translation `[e, f]`.
+    pub clip_translation: [f32; 2],
+    /// Four u16 texel origins packed as two u32s: xy the glyph/cell atlas
+    /// origin, zw the mask atlas origin — or an external frame's binding
+    /// size, whose pixel extent stays inside the u16 texel bound. Write
+    /// through [`pack_uv`].
+    pub uv: [u32; 2],
+    /// The clip shape. A masked clip is a sharp rect, so `aspect` and
+    /// `exponent` (unused by its SDF) carry the mask cell size.
+    pub clip: Shape,
+    /// Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
+    /// Sweep: centre.xy. Image: local→image affine `[a, b, c, d]`.
+    /// `PAINT_TEXTURE`: source region origin.xy. `PAINT_BACKDROP`: the
+    /// capture region's texel origin.xy, the capture scale in z and the
+    /// capture's level count in w.
+    pub grad: [f32; 4],
+    /// Radial: start radius, end radius, identical-circles flag (1 or 0).
+    /// Sweep: start angle, end angle.
+    /// Image: local→image affine `[e, f]` and image `[w, h]`.
+    pub grad2: [f32; 4],
+}
+
+/// The colour the payload can carry: every channel finite.
+///
+/// # Errors
+/// [`RenderError::Render`] when a channel is non-finite.
+pub fn check_color(c: [f32; 4]) -> Result<[f32; 4], cherenkov::RenderError> {
+    if c.iter().all(|v| v.is_finite()) {
+        Ok(c)
+    } else {
+        Err(cherenkov::RenderError::Render(
+            "colour channel is non-finite".into(),
+        ))
+    }
+}
+
+/// Packs two texel coordinates as the u16 pair of one `uv` word.
+pub const fn pack_uv(x: f32, y: f32) -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "atlas texel origins and binding sizes are integral and u16-bounded"
+    )]
+    let (x, y) = (x as u32, y as u32);
+    x | (y << 16)
+}
+
+/// The two texel coordinates packed in one `uv` word, expanded to f32.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "u16 texel origins are exact in f32"
+)]
+pub const fn unpack_uv(v: u32) -> [f32; 2] {
+    [(v & 0xffff) as f32, (v >> 16) as f32]
 }
 
 impl Instance {
@@ -262,15 +305,16 @@ impl Instance {
             affine: [0.0; 8],
             bounds: [0.0; 4],
             shape: Shape::rect([0.0; 2]),
-            inner: Shape::rect([0.0; 2]),
-            clip_inv: [0.0; 8],
-            clip: Shape::rect([0.0; 2]),
             color: [0.0; 4],
-            grad: [0.0; 4],
-            grad2: [0.0; 4],
-            uv: [0.0; 4],
             params: [0.0, 1.0, 0.0, 0.0],
             meta: [kind, PAINT_SOLID, 0, 0],
+            inner: Shape::rect([0.0; 2]),
+            clip_linear: [0.0; 4],
+            clip_translation: [0.0; 2],
+            uv: [0; 2],
+            clip: Shape::rect([0.0; 2]),
+            grad: [0.0; 4],
+            grad2: [0.0; 4],
         }
     }
 }
@@ -304,24 +348,68 @@ pub struct Globals {
     pub attachment_origin: [f32; 2],
 }
 
-/// Converts a kurbo affine into the shader's `[a, b, c, d, e, f, 0, 0]`.
+/// Converts a kurbo affine to its six f32 coefficients.
 #[expect(clippy::cast_possible_truncation, reason = "instance data is f32")]
-pub const fn affine(transform: kurbo::Affine) -> [f32; 8] {
+pub const fn affine_coefficients(transform: kurbo::Affine) -> [f32; 6] {
     let [c0, c1, c2, c3, c4, c5] = transform.as_coeffs();
     [
-        c0 as f32, c1 as f32, c2 as f32, c3 as f32, c4 as f32, c5 as f32, 0.0, 0.0,
+        c0 as f32, c1 as f32, c2 as f32, c3 as f32, c4 as f32, c5 as f32,
     ]
+}
+
+/// Converts a kurbo affine into the shader's `[a, b, c, d, e, f, 0, 0]`.
+pub const fn affine(transform: kurbo::Affine) -> [f32; 8] {
+    let [c0, c1, c2, c3, c4, c5] = affine_coefficients(transform);
+    [c0, c1, c2, c3, c4, c5, 0.0, 0.0]
 }
 
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
+    use std::mem::{offset_of, size_of};
 
     use super::*;
 
     #[test]
     fn layouts_match_the_shader() {
-        assert_eq!(size_of::<Instance>(), 272);
+        assert_eq!(size_of::<Instance>(), 256);
+        assert_eq!(offset_of!(Instance, color), 80);
+        assert_eq!(offset_of!(Instance, params), 96);
+        assert_eq!(offset_of!(Instance, meta), 112);
+        assert_eq!(offset_of!(Instance, clip_linear), 160);
+        assert_eq!(offset_of!(Instance, clip_translation), 176);
+        assert_eq!(offset_of!(Instance, uv), 184);
+        assert_eq!(offset_of!(Instance, clip), 192);
+        let module =
+            naga::front::wgsl::parse_str(include_str!("shared.wgsl")).expect("shared WGSL parses");
+        let (_, instance) = module
+            .types
+            .iter()
+            .find(|(_, ty)| ty.name.as_deref() == Some("Instance"))
+            .expect("shared WGSL declares Instance");
+        let naga::TypeInner::Struct { members, span } = &instance.inner else {
+            panic!("WGSL Instance is a struct");
+        };
+        let fields = [
+            ("affine", offset_of!(Instance, affine)),
+            ("bounds", offset_of!(Instance, bounds)),
+            ("shape", offset_of!(Instance, shape)),
+            ("color", offset_of!(Instance, color)),
+            ("params", offset_of!(Instance, params)),
+            ("meta_", offset_of!(Instance, meta)),
+            ("inner", offset_of!(Instance, inner)),
+            ("clip_linear", offset_of!(Instance, clip_linear)),
+            ("clip_translation", offset_of!(Instance, clip_translation)),
+            ("uv", offset_of!(Instance, uv)),
+            ("clip", offset_of!(Instance, clip)),
+            ("grad", offset_of!(Instance, grad)),
+            ("grad2", offset_of!(Instance, grad2)),
+        ];
+        assert_eq!(*span, u32::try_from(size_of::<Instance>()).unwrap());
+        assert_eq!(members.len(), fields.len());
+        for (member, (name, offset)) in members.iter().zip(fields) {
+            assert_eq!(member.name.as_deref(), Some(name));
+            assert_eq!(member.offset, u32::try_from(offset).unwrap(), "{name}");
+        }
         assert_eq!(size_of::<Shape>(), 32);
         assert_eq!(size_of::<Stop>(), 32);
         assert_eq!(size_of::<Globals>(), 32);
@@ -329,5 +417,20 @@ mod tests {
             super::super::bindings::ENGINE_GROUP0[0].min_size,
             size_of::<Globals>() as u64
         );
+    }
+
+    #[test]
+    fn check_color_requires_finite_channels() {
+        assert_eq!(
+            check_color([70000.0, -70000.0, 0.0, 0.00001]).unwrap(),
+            [70000.0, -70000.0, 0.0, 0.00001]
+        );
+        for c in [
+            [f32::NAN, 0.0, 0.0, 1.0],
+            [0.0, f32::INFINITY, 0.0, 1.0],
+            [0.0, 0.0, 0.0, f32::NEG_INFINITY],
+        ] {
+            assert!(check_color(c).is_err(), "{c:?}");
+        }
     }
 }

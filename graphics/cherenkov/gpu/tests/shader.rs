@@ -34,18 +34,24 @@ fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
     } else {
         ("", SHADER_NO_UNION, "")
     };
-    let source =
-        format!("const VARIANT: u32 = {variant}u;\n{cap}{SHARED}\n{shader}\n{union}{BLEND}");
+    // `enable f16;` heads the module exactly as in build.rs's engine
+    // prefix: `shared.wgsl` uses f16 arithmetic.
+    let source = format!(
+        "enable f16;\nconst VARIANT: u32 = {variant}u;\n{cap}{SHARED}\n{shader}\n{union}{BLEND}"
+    );
     let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
     (module, info)
 }
 
 split_test! {
 fn every_variant_emits_msl() {
-    for variant in 0..4 {
+    for variant in 0..6 {
         let (module, info) = composed(variant);
         let options = msl::Options {
             lang_version: MSL_VERSION,
@@ -59,7 +65,7 @@ fn every_variant_emits_msl() {
 
 split_test! {
 fn every_variant_emits_spirv() {
-    for variant in 0..4 {
+    for variant in 0..6 {
         let (module, info) = composed(variant);
         let mut writer = spv::Writer::new(&spv::Options::default())
             .unwrap_or_else(|e| panic!("variant {variant}: spv: {e}"));
@@ -74,7 +80,7 @@ fn every_variant_emits_spirv() {
 
 split_test! {
 fn every_variant_emits_hlsl() {
-    for variant in 0..4 {
+    for variant in 0..6 {
         let (module, info) = composed(variant);
         let options = hlsl::Options::default();
         let mut out = String::new();
@@ -98,14 +104,20 @@ fn effect_module(name: &str, user: &str) -> (Module, naga::valid::ModuleInfo) {
     let union_text = cherenkov_gpu::backdrop_effect_text(user, true);
     let union_module =
         wgsl::parse_str(&union_text).unwrap_or_else(|e| panic!("{name} (union): {e}"));
-    Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&union_module)
-        .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
+    Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&union_module)
+    .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
     let text = cherenkov_gpu::backdrop_effect_text(user, false);
     let module = wgsl::parse_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     (module, info)
 }
 
@@ -136,10 +148,23 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
 
 split_test! {
 fn silhouette_shadow_emits() {
-    let module = wgsl::parse_str(include_str!("../src/render/shadow.wgsl")).expect("silhouette WGSL");
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module).expect("valid silhouette module");
-    effect_emits("silhouette shadow", &module, &info);
+    for (name, integral_sampling, source) in [
+        ("fractional", false, include_str!(concat!(env!("OUT_DIR"), "/shadow_fractional.wgsl"))),
+        ("integral", true, include_str!(concat!(env!("OUT_DIR"), "/shadow_integral.wgsl"))),
+    ] {
+        let module = wgsl::parse_str(source).expect("fixed silhouette WGSL");
+        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+            .validate(&module).expect("valid fixed silhouette module");
+        assert!(module.overrides.is_empty());
+        let constant = module.constants.iter()
+            .find(|(_, constant)| constant.name.as_deref() == Some("INTEGRAL_SAMPLING"))
+            .expect("sampling constant remains named").1;
+        assert!(matches!(
+            module.global_expressions[constant.init],
+            naga::Expression::Literal(naga::Literal::Bool(value)) if value == integral_sampling
+        ));
+        effect_emits(name, &module, &info);
+    }
 }
 }
 
@@ -200,12 +225,17 @@ split_test! {
 /// as in build.rs.
 fn standalone_modules_emit() {
     for (name, source) in [
-        ("projective", format!("{SHARED}\n{BLEND}\n{PROJECTIVE}")),
+        // `projective` includes `shared.wgsl`, so it carries the same
+        // `enable f16;` head as build.rs's composition.
+        (
+            "projective",
+            format!("enable f16;\n{SHARED}\n{BLEND}\n{PROJECTIVE}"),
+        ),
         ("mip", MIP.to_owned()),
         ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32))
             .validate(&module)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         effect_emits(name, &module, &info);

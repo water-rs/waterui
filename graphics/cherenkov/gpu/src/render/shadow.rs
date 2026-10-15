@@ -15,12 +15,20 @@ pub struct Parameters {
 struct Kernel {
     key: Vec<u64>,
     buffer: wgpu::Buffer,
+    integral_sampling: bool,
 }
 
-/// Fixed pipeline, one reusable intermediate, and at most three last kernels.
+fn has_integral_offsets(taps: &[[f32; 4]]) -> bool {
+    taps.iter()
+        .all(|tap| tap[0].fract() == 0.0 && tap[1].fract() == 0.0)
+}
+
+/// Two fixed sampling pipelines, one reusable intermediate, and at most three
+/// last kernels.
 /// Bind groups retain replaced buffers until their queued commands complete.
 pub struct Blur {
-    pipeline: wgpu::RenderPipeline,
+    integral_pipeline: wgpu::RenderPipeline,
+    fractional_pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     kernels: [Option<Kernel>; 3],
     temporary: Option<super::ScratchTarget>,
@@ -41,39 +49,42 @@ impl Blur {
         // logical source size, which is within the scratch texture, and the
         // uploaded count equals the following tap array's length, capped to
         // the storage binding limit.
-        let shader = delivery.shadow_module(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("silhouette blur"),
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("silhouette blur"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[],
-            },
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let create_pipeline = |integral_sampling: bool| {
+            let shader = delivery.shadow_module(device, integral_sampling);
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("silhouette blur"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
         Self {
-            pipeline,
+            integral_pipeline: create_pipeline(true),
+            fractional_pipeline: create_pipeline(false),
             layout,
             kernels: std::array::from_fn(|_| None),
             temporary: None,
@@ -168,6 +179,7 @@ impl Blur {
                     shadow_taps::gaussian_taps(axis, parameters.sigma, count_limit)?
                 };
                 let taps: Vec<[f32; 4]> = taps.into_iter().map(|[x, y, w]| [x, y, w, 0.]).collect();
+                let integral_sampling = has_integral_offsets(&taps);
                 let count = u32::try_from(taps.len()).map_err(|_| {
                     RenderError::Render("shadow kernel exceeds addressable storage".into())
                 })?;
@@ -178,7 +190,11 @@ impl Blur {
                     contents: &bytes,
                     usage: wgpu::BufferUsages::STORAGE,
                 });
-                self.kernels[slot] = Some(Kernel { key, buffer });
+                self.kernels[slot] = Some(Kernel {
+                    key,
+                    buffer,
+                    integral_sampling,
+                });
             }
             self.dispatch(device, encoder, input, size, slot);
         }
@@ -224,7 +240,11 @@ impl Blur {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(if kernel.integral_sampling {
+            &self.integral_pipeline
+        } else {
+            &self.fractional_pipeline
+        });
         pass.set_bind_group(0, &bindings, &[]);
         pass.draw(0..3, 0..1);
         drop(pass);
@@ -237,5 +257,45 @@ impl Blur {
                 depth_or_array_layers: 1,
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uploaded(taps: Vec<[f32; 3]>) -> Vec<[f32; 4]> {
+        taps.into_iter().map(|[x, y, w]| [x, y, w, 0.]).collect()
+    }
+
+    #[test]
+    fn integral_sampling_follows_the_uploaded_offsets() {
+        const LIMIT: f64 = 1.0e6;
+        let gaussian =
+            |axis: [f64; 2]| uploaded(shadow_taps::gaussian_taps(axis, 3.0, LIMIT).unwrap());
+        // Axis-aligned Gaussian taps land on texel centers.
+        assert!(has_integral_offsets(&gaussian([1.0, 0.0])));
+        assert!(has_integral_offsets(&gaussian([0.0, -2.0])));
+        // A rotated axis produces fractional offsets.
+        assert!(!has_integral_offsets(&gaussian([0.6, 0.8])));
+
+        // Morphology taps cover the spread disk at half-pixel steps.
+        let spread = uploaded(shadow_taps::spread_taps([1.0, 0.0, 0.0, 1.0], 1.0, LIMIT).unwrap());
+        assert!(!has_integral_offsets(&spread));
+
+        // Signed integral offsets, negative zero included, stay integral.
+        assert!(has_integral_offsets(&[
+            [-0.0, 2.0, 1.0, 0.0],
+            [3.0, -1.0, 1.0, 0.0],
+        ]));
+        // A fractional offset on either axis rejects the whole kernel.
+        assert!(!has_integral_offsets(&[
+            [0.5, 0.0, 1.0, 0.0],
+            [1.0, 0.0, 1.0, 0.0],
+        ]));
+        assert!(!has_integral_offsets(&[
+            [0.0, -0.25, 1.0, 0.0],
+            [1.0, 0.0, 1.0, 0.0],
+        ]));
     }
 }

@@ -19,6 +19,8 @@ const VARIANT_SIMPLE: u32 = 0u;
 const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
 const VARIANT_UNION: u32 = 3u;
+const VARIANT_ATLAS: u32 = 4u;
+const VARIANT_RECT: u32 = 5u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
@@ -517,11 +519,11 @@ fn backdrop_field(q: vec2<f32>) -> BackdropField {
     let inst = instances[backdrop_member];
     // union-stub
     if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
-        let u = union_field(bitcast<u32>(inst.uv.x), bitcast<u32>(inst.uv.y), q);
+        let u = union_field(bitcast<u32>(inst.inner.half.x), bitcast<u32>(inst.inner.half.y), q);
         return BackdropField(u.d, u.n, u.w_own);
     }
     // union-stub
-    let own = device_sdf(inst.clip_inv, inst.clip, q);
+    let own = device_sdf(expand_affine(inst.clip_linear, inst.clip_translation), inst.clip, q);
     return BackdropField(own.x, own.yz, 1.0);
 }
 
@@ -569,7 +571,7 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     var px: BackdropPixel;
     px.p = pixel;
     px.size = inst.grad2.zw;
-    px.scale = inst.color.x;
+    px.scale = inst.inner.aspect;
     px.local = apply_inverse(inst.affine, pixel);
     // union-stub
     if ((inst.meta_.w >> 24u) & FLAG_UNION) != 0u {
@@ -580,7 +582,7 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
     } else
     // union-stub
     {
-        let own = device_sdf(inst.clip_inv, inst.clip, pixel);
+        let own = device_sdf(expand_affine(inst.clip_linear, inst.clip_translation), inst.clip, pixel);
         px.own_sdf = own.x;
         px.sdf = own.x;
         px.normal = own.yz;
@@ -623,10 +625,16 @@ fn paint_backdrop(i: u32, pixel: vec2<f32>) -> vec4<f32> {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if VARIANT == VARIANT_SIMPLE {
-        return fs_simple(in, false);
+        return fs_simple(in);
     }
     if VARIANT == VARIANT_SHADOW {
         return fs_shadow(in);
+    }
+    if VARIANT == VARIANT_ATLAS {
+        return fs_atlas(in);
+    }
+    if VARIANT == VARIANT_RECT {
+        return fs_rect(in);
     }
     return fs_full(in);
 }
@@ -643,42 +651,57 @@ fn read_composite_backdrop(coord: vec2<i32>) -> vec4<f32> {
 
 // Solid fill/span/glyph coverage: no clip, mask, inner, or paint()
 // evaluation, and no `instances` reads at all.
-fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
+fn fs_simple(in: VsOut) -> vec4<f32> {
     let s = Shape(in.shape_a.xy, in.shape_a.z, in.shape_a.w, in.shape_radii);
-    let m = array<vec4<f32>, 2>(in.affine0, in.affine1);
+    let m = in.affine0;
     var cov: f32;
     switch in.meta_.x {
         case KIND_GLYPH: {
-            var texel: vec2<i32>;
-            if classified {
-                texel = vec2<i32>(floor(in.local));
-            } else {
-                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
-            }
-            cov = textureLoad(atlas, texel, 0).r;
+            cov = painter_atlas_coverage(in);
         }
         case KIND_SPAN: {
             cov = 1.0;
         }
         default: {
-            if classified && in.affine1.w > 0.0 {
-                let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
-                let u = abs(in.local) / r;
-                let rr = dot(u, u);
-                if rr < in.affine1.z {
-                    cov = 1.0;
-                } else if rr > in.affine1.w {
-                    cov = 0.0;
-                } else {
-                    cov = shape_coverage(s, in.local, m, classified);
-                }
-            } else {
-                cov = shape_coverage(s, in.local, m, classified);
-            }
+            cov = shape_coverage(s, in.local, m, false);
         }
     }
-    cov = clamp(cov, 0.0, 1.0) * in.params.y;
-    return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
+    return solid_coverage_color(in.color, in.params.y, cov);
+}
+
+// Atlas primitives: glyph/region texels plus uniform spans. The Rust
+// classifier admits only these kinds into the atlas variants.
+fn atlas_coverage(kind: u32, texel: vec2<i32>) -> f32 {
+    if kind == KIND_SPAN {
+        return 1.0;
+    }
+    return textureLoad(atlas, texel, 0).r;
+}
+
+fn painter_atlas_coverage(in: VsOut) -> f32 {
+    let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
+    return atlas_coverage(in.meta_.x, texel);
+}
+
+fn fs_atlas(in: VsOut) -> vec4<f32> {
+    return solid_coverage_color(in.color, in.params.y, painter_atlas_coverage(in));
+}
+
+// Sharp-rectangle fills plus atlas primitives: the exact rect coverage
+// beside the atlas lookup, without the Lamé call chain.
+fn fs_rect(in: VsOut) -> vec4<f32> {
+    var cov: f32;
+    if in.meta_.x == KIND_FILL {
+        cov = rect_coverage(in.shape_a.xy, in.local, in.affine0);
+    } else {
+        cov = painter_atlas_coverage(in);
+    }
+    return solid_coverage_color(in.color, in.params.y, cov);
+}
+
+fn solid_coverage_color(color: vec4<f32>, opacity: f32, coverage: f32) -> vec4<f32> {
+    let cov = clamp(coverage, 0.0, 1.0) * opacity;
+    return move_space(vec4<f32>(color.rgb * color.a, color.a) * cov, SPACE_LINEAR, globals.space);
 }
 
 // Retained path spans already describe full coverage. Their opacity is
@@ -693,14 +716,20 @@ struct OpaqueOut {
     @location(0) @interpolate(flat) color: vec3<f32>,
 }
 
-// Coverage replay needs only the original local/atlas coordinate, the
-// instance identity, and the conservative ellipse bounds. Pull the uniform
-// primitive fields in the fragment stage instead of duplicating them in
-// every vertex's rasterizer payload.
+// All eight primitive kinds fit three bits. MAX_PASS_INSTANCES = 1 << 21
+// leaves room to pack the instance index and original kind in one u32.
+const PARTIAL_KIND_BITS: u32 = 3u;
+const PARTIAL_KIND_MASK: u32 = (1u << PARTIAL_KIND_BITS) - 1u;
+const_assert (((KIND_FILL | KIND_STROKE_OFFSET | KIND_STROKE_DIST | KIND_SHADOW
+    | KIND_GLYPH | KIND_SPAN | KIND_REGION | KIND_POLYGON) & ~PARTIAL_KIND_MASK) == 0u);
+
+// Coverage replay keeps five rasterizer scalars: two local/atlas coordinates,
+// one packed instance/kind, and two conservative ellipse bounds. Packing
+// avoids a fragment storage fetch for the kind without adding varyings.
 struct PartialOut {
     @builtin(position) position: vec4<f32>,
     @location(0) local: vec2<f32>,
-    @location(1) @interpolate(flat) instance: u32,
+    @location(1) @interpolate(flat) instance_kind: u32,
     @location(2) @interpolate(flat) coverage: vec2<f32>,
 }
 
@@ -785,25 +814,69 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     return OpaqueOut(out.position, out.color.rgb);
 }
 
-@vertex
-fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PartialOut {
+struct BasicPartialOut {
+    @builtin(position) position: vec4<f32>,
+    @location(0) local: vec2<f32>,
+    @location(1) @interpolate(flat) instance_kind: u32,
+}
+
+@fragment
+fn fs_partial_atlas(in: BasicPartialOut) -> @location(0) vec4<f32> {
+    let i = in.instance_kind >> PARTIAL_KIND_BITS;
+    let kind = in.instance_kind & PARTIAL_KIND_MASK;
+    let cov = atlas_coverage(kind, vec2<i32>(floor(in.local)));
+    if cov <= 0.0 {
+        discard;
+    }
+    return solid_coverage_color(instances[i].color, instances[i].params.y, cov);
+}
+
+@fragment
+fn fs_partial_rect(in: BasicPartialOut) -> @location(0) vec4<f32> {
+    let i = in.instance_kind >> PARTIAL_KIND_BITS;
+    let kind = in.instance_kind & PARTIAL_KIND_MASK;
+    var cov: f32;
+    if kind == KIND_FILL {
+        cov = rect_coverage(instances[i].shape.half, in.local, instances[i].affine[0]);
+    } else {
+        cov = atlas_coverage(kind, vec2<i32>(floor(in.local)));
+    }
+    if cov <= 0.0 {
+        discard;
+    }
+    return solid_coverage_color(instances[i].color, instances[i].params.y, cov);
+}
+
+fn partial_vertex(vi: u32, ii: u32) -> VsOut {
     var out = quad_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[vi], ii);
     out.position.z = bitcast<f32>(0x3e000000u + ii * 8u);
+    if opaque_span(instances[ii]) {
+        out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    out.local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
+    return out;
+}
+
+@vertex
+fn vs_partial_basic(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> BasicPartialOut {
+    let out = partial_vertex(vi, ii);
+    return BasicPartialOut(out.position, out.local, (ii << PARTIAL_KIND_BITS) | instances[ii].meta_.x);
+}
+
+@vertex
+fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PartialOut {
+    var out = partial_vertex(vi, ii);
     let inst = instances[ii];
     let s = inst.shape;
     if inst.meta_.x == KIND_FILL && s.exponent == 2.0 && all(s.radii == vec4<f32>(s.half.x)) {
         let m = inst.affine[0];
         let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
-        let h = 0.5 * device_grad_scale(inst.affine) * vec2<f32>(abs(m.w) + abs(m.z), abs(m.y) + abs(m.x));
+        let h = 0.5 * device_grad_scale(m) * vec2<f32>(abs(m.w) + abs(m.z), abs(m.y) + abs(m.x));
         let margin = length(h) / min(r.x, r.y);
         out.affine1.z = max(1.0 - margin, 0.0) * max(1.0 - margin, 0.0);
         out.affine1.w = (1.0 + margin) * (1.0 + margin);
     }
-    if opaque_span(instances[ii]) {
-        out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-    }
-    let local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
-    return PartialOut(out.position, local, ii, out.affine1.zw);
+    return PartialOut(out.position, out.local, (ii << PARTIAL_KIND_BITS) | inst.meta_.x, out.affine1.zw);
 }
 
 @fragment
@@ -813,25 +886,50 @@ fn fs_opaque(in: OpaqueOut) -> @location(0) vec4<f32> {
 
 @fragment
 fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
-    let inst = instances[in.instance];
-    var data: VsOut;
-    data.local = in.local;
-    data.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
-    data.color = inst.color;
-    data.params.y = inst.params.y;
-    if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {
-        data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
-        data.shape_radii = inst.shape.radii;
-        data.affine0 = inst.affine[0];
+    let i = in.instance_kind >> PARTIAL_KIND_BITS;
+    var cov: f32;
+    switch in.instance_kind & PARTIAL_KIND_MASK {
+        case KIND_GLYPH, KIND_REGION: {
+            cov = textureLoad(atlas, vec2<i32>(floor(in.local)), 0).r;
+        }
+        case KIND_SPAN: {
+            cov = 1.0;
+        }
+        default: {
+            cov = partial_shape_coverage(in);
+        }
     }
-    data.affine1 = vec4<f32>(0.0, 0.0, in.coverage);
-    return fs_simple(data, true);
+    // This replay uses source-over without depth writes. Zero coverage
+    // leaves the destination unchanged and needs no paint loads or blend.
+    if cov <= 0.0 {
+        discard;
+    }
+    // Keep paint storage loads after coverage, outside the corner solve's
+    // register lifetime. Varying-backed fs_simple shares the same color tail.
+    return solid_coverage_color(instances[i].color, instances[i].params.y, cov);
+}
+
+fn partial_shape_coverage(in: PartialOut) -> f32 {
+    let i = in.instance_kind >> PARTIAL_KIND_BITS;
+    let s = instances[i].shape;
+    if in.coverage.y > 0.0 {
+        let r = vec2<f32>(s.half.x, s.half.x * s.aspect);
+        let u = abs(in.local) / r;
+        let rr = dot(u, u);
+        if rr < in.coverage.x {
+            return 1.0;
+        }
+        if rr > in.coverage.y {
+            return 0.0;
+        }
+    }
+    return shape_coverage(s, in.local, instances[i].affine[0], true);
 }
 
 // The shadow kernel plus the same opacity/solid-colour tail.
 fn fs_shadow(in: VsOut) -> vec4<f32> {
     let s = Shape(in.shape_a.xy, in.shape_a.z, in.shape_a.w, in.shape_radii);
-    let m = array<vec4<f32>, 2>(in.affine0, in.affine1);
+    let m = in.affine0;
     let sigma = in.params.x;
     var cov: f32;
     if sigma < 0.25 {
@@ -849,7 +947,7 @@ fn fs_full(in: VsOut) -> vec4<f32> {
     // mask, gradient data).
     let i = in.instance;
     let s = Shape(in.shape_a.xy, in.shape_a.z, in.shape_a.w, in.shape_radii);
-    let m = array<vec4<f32>, 2>(in.affine0, in.affine1);
+    let m = in.affine0;
     let flags = (in.meta_.w >> 24u) & 0xffu;
     var cov: f32;
     switch in.meta_.x {
@@ -895,11 +993,11 @@ fn fs_full(in: VsOut) -> vec4<f32> {
         // A union member's instance clip carries the ancestors only; the
         // member's own coverage term is the ownership-weighted union
         // field `w_own · AA(field < outer)`, `outer` in params.x. The
-        // record base and member index arrive bitcast in `uv.xy` — read
-        // from `instances` storage, not a varying: the small u32s are
+        // record base and member index arrive bitcast in `inner.half` —
+        // read from `instances` storage, not a varying: the small u32s are
         // subnormals as f32 and could flush to zero.
-        let base = bitcast<u32>(instances[i].uv.x);
-        let ord = bitcast<u32>(instances[i].uv.y);
+        let base = bitcast<u32>(instances[i].inner.half.x);
+        let ord = bitcast<u32>(instances[i].inner.half.y);
         member_field = union_field(base, ord, in.device);
         cov *= union_coverage(member_field, instances[i].params.x);
     }
@@ -940,10 +1038,10 @@ fn fs_full(in: VsOut) -> vec4<f32> {
             // The member blends in its group's space, unlike the pass's
             // storage (two spaces exist, so it is the other one): the
             // canvas comes from the backdrop copy at device origin
-            // `color.yz`, the sample source-over in the member space,
-            // the result written verbatim. An uncovered pixel keeps the
-            // canvas untouched.
-            let coord = vec2<i32>(floor(in.device - instances[i].color.yz));
+            // `inner.exponent`/`inner.radii.x`, the sample source-over in
+            // the member space, the result written verbatim. An uncovered
+            // pixel keeps the canvas untouched.
+            let coord = vec2<i32>(floor(in.device - vec2<f32>(instances[i].inner.exponent, instances[i].inner.radii.x)));
             let cb = read_composite_backdrop(coord);
             if cov <= 0.0 {
                 return cb;

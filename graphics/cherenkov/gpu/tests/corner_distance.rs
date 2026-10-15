@@ -51,8 +51,10 @@ struct Sweep {
 /// the nearest boundary point is not unique and the normal is either of
 /// the tied ones.
 fn sweep(shape: &Shape, probes: &[[f64; 2]], medial: impl Fn([f64; 2]) -> bool) -> Sweep {
-    let source = include_str!("../src/render/shared.wgsl");
-    let module = naga::front::wgsl::parse_str(source).expect("shared.wgsl parses");
+    // `enable f16;` heads the module as in build.rs: `shared.wgsl` uses
+    // f16 arithmetic.
+    let source = format!("enable f16;\n{}", include_str!("../src/render/shared.wgsl"));
+    let module = naga::front::wgsl::parse_str(&source).expect("shared.wgsl parses");
     let eval = Eval::new(&module);
     let sdf_sample = eval.function("sdf_sample");
     let (boxed, extra) = box_params(shape).expect("the shape is a box");
@@ -182,6 +184,33 @@ fn check_ellipse(radii: [f64; 2], centre: f64) {
         &format!("{a}x{b} ellipse at {centre}"),
         &sweep(&shape, &probes, on_axis),
     );
+}
+
+#[test]
+fn sharp_rectangle_distance_is_exact() {
+    // Fractional samples avoid the undefined normal at a sharp vertex.
+    let probes = [
+        [-48.25, -32.25],
+        [-48.25, 32.25],
+        [48.25, -32.25],
+        [48.25, 32.25],
+        [-49.0, 0.0],
+        [49.0, 0.0],
+        [0.0, -33.0],
+        [0.0, 33.0],
+    ];
+    for centre in [72.0, 72.25] {
+        let shape = Shape::Rect(Rect::new(
+            centre - 48.0,
+            centre - 32.0,
+            centre + 48.0,
+            centre + 32.0,
+        ));
+        let tied = |p: [f64; 2]| {
+            (p[1] == 0.0 && p[0].abs() <= 16.0) || p[0].abs() - 48.0 - (p[1].abs() - 32.0) == 0.0
+        };
+        check("sharp rectangle", &sweep(&shape, &probes, tied));
+    }
 }
 
 #[test]

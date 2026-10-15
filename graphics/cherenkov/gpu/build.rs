@@ -224,16 +224,16 @@ struct Modules<'a> {
     tile: &'a str,
 }
 
-/// The fixed module set `render` creates: four VARIANT specializations
+/// The fixed module set `render` creates: six VARIANT specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
-/// `projective`, `mip`, `resolve`, `reduce` and `shadow`. The engine, external
-/// and projective modules share the `shared.wgsl` prelude; the engine
-/// and projective tails share the `blend.wgsl` compositing helpers.
+/// `projective`, `mip`, `resolve`, `reduce` and the two shadow sampling modules.
+/// The engine, external and projective modules share the `shared.wgsl` prelude.
+/// Engine and projective tails share the `blend.wgsl` compositing helpers.
 /// Variant 3 (Union) additionally prepends `UNION_MAX_MEMBERS` and links
 /// `union.wgsl`; the plain variants drop every `// union-stub` span, so
 /// their modules carry no union fold or member-cap arrays.
 fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
-    let mut specs: Vec<Spec> = (0..4u32)
+    let mut specs: Vec<Spec> = (0..6u32)
         .map(|variant| {
             let (cap, shader, union) = if variant == 3 {
                 (m.union_max, m.shader, m.union)
@@ -243,7 +243,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
             Spec {
                 name: format!("engine{variant}"),
                 source: format!(
-                    "const VARIANT: u32 = {variant}u;\n{cap}{}\n{shader}\n{union}{}",
+                    "enable f16;\nconst VARIANT: u32 = {variant}u;\n{cap}{}\n{shader}\n{union}{}",
                     m.shared, m.blend
                 ),
                 groups: bindings::ENGINE_GROUPS,
@@ -263,7 +263,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
     });
     specs.push(Spec {
         name: "external".into(),
-        source: format!("{}\n{}", m.shared, m.external),
+        source: format!("enable f16;\n{}\n{}", m.shared, m.external),
         groups: bindings::EXTERNAL_GROUPS,
         metal: true,
         merge_pair: None,
@@ -275,7 +275,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
     // `VkSamplerYcbcrConversion` immutable sampler occupies.
     specs.push(Spec {
         name: "external_native".into(),
-        source: format!("{}\n{}\n{}", m.shared, m.external, m.native),
+        source: format!("enable f16;\n{}\n{}\n{}", m.shared, m.external, m.native),
         groups: bindings::NATIVE_EXTERNAL_GROUPS,
         metal: false,
         merge_pair: Some((5, 6)),
@@ -283,7 +283,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
     });
     specs.push(Spec {
         name: "projective".into(),
-        source: format!("{}\n{}\n{}", m.shared, m.blend, m.projective),
+        source: format!("enable f16;\n{}\n{}\n{}", m.shared, m.blend, m.projective),
         groups: bindings::PROJECTIVE_GROUPS,
         metal: true,
         merge_pair: None,
@@ -293,12 +293,21 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         ("mip", m.mip, bindings::MIP_GROUPS),
         ("resolve", m.resolve, bindings::RESOLVE_GROUPS),
         ("reduce", m.reduce, bindings::REDUCE_GROUPS),
-        ("shadow", m.shadow, bindings::SHADOW_GROUPS),
     ] {
         specs.push(Spec {
             name: name.into(),
             source: source.into(),
             groups,
+            metal: true,
+            merge_pair: None,
+            attachment: false,
+        });
+    }
+    for (name, integral_sampling) in [("shadow_fractional", false), ("shadow_integral", true)] {
+        specs.push(Spec {
+            name: name.into(),
+            source: shadow_source(m.shadow, integral_sampling),
+            groups: bindings::SHADOW_GROUPS,
             metal: true,
             merge_pair: None,
             attachment: false,
@@ -320,6 +329,35 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
     specs
 }
 
+/// Freeze the sampling choice before any backend compiles the module.
+fn shadow_source(source: &str, integral_sampling: bool) -> String {
+    let module = naga::front::wgsl::parse_str(source).expect("parse silhouette convolution");
+    let mut validator = Validator::new(ValidationFlags::all(), Capabilities::empty());
+    let info = validator
+        .validate(&module)
+        .expect("validate silhouette convolution");
+    let constants = naga::back::PipelineConstants::from_iter([(
+        String::from("INTEGRAL_SAMPLING"),
+        if integral_sampling { 1.0 } else { 0.0 },
+    )]);
+    let (module, _) =
+        naga::back::pipeline_constants::process_overrides(&module, &info, None, &constants)
+            .expect("resolve silhouette sampling constant");
+    let mut module = module.into_owned();
+    // Resolution replaces uses with constants but retains override declarations.
+    // Prune those declarations before serializing the fixed module.
+    naga::compact::compact(&mut module, naga::compact::KeepUnused::No);
+    assert!(
+        module.overrides.is_empty(),
+        "fixed shadow module retains an override"
+    );
+    let info = validator
+        .validate(&module)
+        .expect("validate fixed silhouette convolution");
+    naga::back::wgsl::write_string(&module, &info, naga::back::wgsl::WriterFlags::empty())
+        .expect("serialize fixed silhouette convolution")
+}
+
 fn compile_specs(out_dir: &Path, specs: &[Spec]) {
     // wasm builds embed no passthrough artifacts, and Apple builds embed
     // no `.spv` (issue #241), so `xcrun` is required only on the targets
@@ -335,6 +373,11 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
         println!("cargo::rustc-cfg=cherenkov_spirv");
     }
     for spec in specs {
+        // The runtime WGSL is the exact source the passthrough artifacts
+        // are compiled from, so `shaders.rs` includes `engineN.wgsl`
+        // rather than reassembling the module.
+        std::fs::write(out_dir.join(format!("{}.wgsl", spec.name)), &spec.source)
+            .expect("write fixed WGSL source");
         compile(out_dir, spec, apple.as_ref(), wasm, spirv);
     }
     if let Some(apple) = apple.as_ref() {
@@ -388,9 +431,12 @@ fn compile(out_dir: &Path, spec: &Spec, apple: Option<&AppleTarget>, wasm: bool,
     if spec.name == "engine_tile" {
         tile::attachment_inputs(&mut module);
     }
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     if wasm {
         return;
     }
@@ -820,9 +866,12 @@ fn merge_sampled_pair(words: &mut Vec<u32>, binding_tex: u32, binding_smp: u32, 
 
 fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option<&AppleTarget>) {
     let module = pin_runtime_arrays(module);
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16.union(Capabilities::SHADER_FLOAT16_IN_FLOAT32),
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     let options = msl::Options {
         // The floor Metal language version wgpu selects on supported
         // hardware; the shader test covers the same value.

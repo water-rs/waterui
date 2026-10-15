@@ -25,7 +25,7 @@ use crate::render::instance::{
     FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
     KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
     KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID, PAINT_TEXTURE, Shape, Stop,
-    affine, blend_code,
+    affine, affine_coefficients, blend_code, check_color, pack_uv, unpack_uv,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -94,6 +94,34 @@ pub enum ShaderVariant {
     /// `Full` plus the backdrop union field: the module carries the
     /// member-record fold and its ownership weights.
     Union,
+    /// Solid glyph/region/span coverage: atlas or uniform coverage plus
+    /// a solid colour, without an analytic solve.
+    Atlas,
+    /// Solid sharp-rectangle and atlas coverage: the exact rect solve and
+    /// atlas texels plus a solid colour, without the general SDF chain.
+    Rect,
+}
+
+impl ShaderVariant {
+    /// Whether the variant draws only coverage-ordered shapes: those
+    /// replay under the depth-tested partial pipeline.
+    pub const fn supports_coverage_order(self) -> bool {
+        matches!(self, Self::Simple | Self::Atlas | Self::Rect)
+    }
+
+    /// A kernel that covers both compatible solid batches. Atlas-only and
+    /// rect batches retain their specialization; a mixed batch with an
+    /// analytic fill needs Simple, and atlas instances ride on Rect.
+    fn batch_with(self, other: Self) -> Option<Self> {
+        match (self, other) {
+            (Self::Simple, Self::Atlas | Self::Rect) | (Self::Atlas | Self::Rect, Self::Simple) => {
+                Some(Self::Simple)
+            }
+            (Self::Rect, Self::Atlas) | (Self::Atlas, Self::Rect) => Some(Self::Rect),
+            (left, right) if left == right => Some(left),
+            _ => None,
+        }
+    }
 }
 
 /// A texture identity scoped to its resource owner.
@@ -472,7 +500,27 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
     if inst.meta[0] == KIND_SHADOW {
         return ShaderVariant::Shadow;
     }
+    if matches!(inst.meta[0], KIND_GLYPH | KIND_REGION | KIND_SPAN) {
+        return ShaderVariant::Atlas;
+    }
+    if inst.meta[0] == KIND_FILL {
+        return fill_variant(&inst.shape);
+    }
     ShaderVariant::Simple
+}
+
+/// The specialization a solid fill's shape admits: a sharp rectangle
+/// takes the rect kernel; rounded or superelliptic shapes stay Simple.
+const fn fill_variant(shape: &Shape) -> ShaderVariant {
+    if shape.radii[0] == 0.0
+        && shape.radii[1] == 0.0
+        && shape.radii[2] == 0.0
+        && shape.radii[3] == 0.0
+    {
+        ShaderVariant::Rect
+    } else {
+        ShaderVariant::Simple
+    }
 }
 
 /// The part of a shadow its following opaque fill hides, in shadow-local
@@ -736,7 +784,7 @@ impl RetainedInstance {
     fn restore(self, template: &InstanceTemplate, stop_base: u32) -> Instance {
         let mut inst = template.restore();
         inst.bounds = self.bounds;
-        inst.uv[..2].copy_from_slice(&self.uv);
+        inst.uv[0] = pack_uv(self.uv[0], self.uv[1]);
         inst.meta[0] = self.kind;
         inst.meta[2] = self.first_stop
             + if self.kind == KIND_REGION {
@@ -1935,7 +1983,7 @@ impl<'a> Lowering<'a> {
                 instances: open.seg_start..end,
             });
             open.maybe_coverage &= open.pipeline == PipelineKind::SrcOver
-                && open.variant == ShaderVariant::Simple
+                && open.variant.supports_coverage_order()
                 && open.source.is_none()
                 && open.image.is_none()
                 && open.mask.is_none();
@@ -2235,19 +2283,27 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Starts a new draw range when the shader variant changes.
+    /// Selects a kernel for the whole compatible batch, ending the range
+    /// only when its required shader cannot share that batch.
     fn set_variant(&mut self, variant: ShaderVariant) {
-        if self
-            .frame
-            .open
-            .as_ref()
-            .is_some_and(|o| o.variant != variant)
-        {
-            self.end_segment();
-            if let Some(open) = &mut self.frame.open {
-                open.variant = variant;
-            }
+        let end = instance_index(self.frame.instances.len());
+        let Some(open) = &mut self.frame.open else {
+            return;
+        };
+        if open.seg_start == end {
+            open.variant = variant;
+            return;
         }
+        if let Some(combined) = open.variant.batch_with(variant) {
+            open.variant = combined;
+            return;
+        }
+        self.end_segment();
+        self.frame
+            .open
+            .as_mut()
+            .expect("open pass kept by segmentation")
+            .variant = variant;
     }
 
     /// Emits `inst` into the current draw range, segmenting on its
@@ -2917,8 +2973,8 @@ impl<'a> Lowering<'a> {
             inst.grad[2] = scale.get();
             // `grad.w` is the group's level count for `backdrop_sample_level`.
             inst.grad[3] = spec.levels().get() as f32;
-            // `color.x` is the member's recording scale, `px.scale`.
-            inst.color[0] = sample.recording_scale().get();
+            // `inner.aspect` is the member's recording scale, `px.scale`.
+            inst.inner.aspect = sample.recording_scale().get();
             // The span's bounds are device space, so its affine is free:
             // it carries the member layer's transform, `px.local`'s
             // inverse.
@@ -2939,11 +2995,11 @@ impl<'a> Lowering<'a> {
             }
         }
         if let Some(base) = entry.union {
-            // `uv.xy` bitcast carries the record run's base and the
+            // `inner.half` bitcast carries the record run's base and the
             // member's index; `params.x` the member's outer extent.
             inst.meta[3] |= FLAG_UNION << 24;
-            inst.uv[0] = f32::from_bits(base);
-            inst.uv[1] = f32::from_bits(entry.ord);
+            inst.inner.half[0] = f32::from_bits(base);
+            inst.inner.half[1] = f32::from_bits(entry.ord);
             inst.params[0] = entry.outer;
         }
         if let Some(effect) = effect
@@ -3007,7 +3063,8 @@ impl<'a> Lowering<'a> {
 
     /// Opens the pass a member blending in a space unlike the pass's
     /// storage composites in: its backdrop copy covers the instance,
-    /// `color.yz` carries the copy's device origin, and `FLAG_BLEND_SRC`
+    /// `inner.exponent`/`inner.radii[0]` carry the copy's device origin,
+    /// and `FLAG_BLEND_SRC`
     /// marks the member's space. The result is written unblended, so a
     /// source-over composite becomes `Replace`.
     #[expect(clippy::cast_precision_loss, reason = "region fits the surface")]
@@ -3017,8 +3074,8 @@ impl<'a> Lowering<'a> {
         if let Some(open) = &mut self.frame.open {
             open.backdrop_copy = Some(copy);
         }
-        inst.color[1] = copy[0] as f32;
-        inst.color[2] = copy[1] as f32;
+        inst.inner.exponent = copy[0] as f32;
+        inst.inner.radii[0] = copy[1] as f32;
         inst.meta[3] |= FLAG_BLEND_SRC << 24;
         if *pipeline == PipelineKind::SrcOver {
             *pipeline = PipelineKind::Replace;
@@ -3101,7 +3158,9 @@ impl<'a> Lowering<'a> {
     /// Clip state belongs to composition; coverage and glyph atlas UVs remain retained.
     const fn apply_clip(inst: &mut Instance, clip: Option<DeviceClip>) {
         if let Some(clip) = clip {
-            inst.clip_inv = affine(clip.inv);
+            let [c0, c1, c2, c3, c4, c5] = affine_coefficients(clip.inv);
+            inst.clip_linear = [c0, c1, c2, c3];
+            inst.clip_translation = [c4, c5];
             inst.clip = clip.shape;
             inst.meta[3] |= FLAG_HAS_CLIP << 24;
             if let Some(mask) = clip.mask {
@@ -3116,8 +3175,7 @@ impl<'a> Lowering<'a> {
                 inst.meta[3] |= FLAG_HAS_MASK << 24;
                 match mask {
                     ClipMask::Cell(cell) => {
-                        inst.uv[2] = cell.atlas[0];
-                        inst.uv[3] = cell.atlas[1];
+                        inst.uv[1] = pack_uv(cell.atlas[0], cell.atlas[1]);
                     }
                     ClipMask::Texture(..) => {
                         inst.meta[3] |= FLAG_MASK_TEXTURE << 24;
@@ -3767,7 +3825,7 @@ impl<'a> Lowering<'a> {
                         reason = "a binding size is a pixel extent within the device limit"
                     )]
                     let quad = [binding.size.0 as f32, binding.size.1 as f32, 0.0, 0.0];
-                    inst.uv = quad;
+                    inst.uv = [pack_uv(quad[0], quad[1]), pack_uv(quad[2], quad[3])];
                     self.set_image(Some(ImageSource::Content(binding.producer())));
                     self.push_shaped(inst, transform, boxed.bounds, margin);
                     // The frame draw is its own range: following siblings
@@ -3986,7 +4044,7 @@ impl<'a> Lowering<'a> {
             .extend(self.frame.instances[first_instance..].iter().map(|inst| {
                 let retained = RetainedInstance {
                     bounds: inst.bounds,
-                    uv: [inst.uv[0], inst.uv[1]],
+                    uv: unpack_uv(inst.uv[0]),
                     kind: inst.meta[0],
                     first_stop: if inst.meta[0] == KIND_REGION {
                         inst.meta[2]
@@ -4058,11 +4116,21 @@ impl<'a> Lowering<'a> {
         let instance_base = instance_index(self.frame.instances.len());
         let retained = &storage.instances[emission.instances.clone()];
         if let Some(first) = retained.first() {
-            // A realized leaf shares paint and clip fields. Its varying
-            // kinds (fill/span/cell) all use the same shader specialization.
+            // A realized leaf shares paint and clip fields. Its instances
+            // draw as one batch over the compatible families — atlas
+            // primitives, sharp-rect fills and general fills: atlas-only
+            // batches keep their dedicated shader, a batch whose fill is
+            // a sharp rect takes Rect, and one with a general fill needs
+            // Simple.
             let mut template = first.restore(&storage.templates[emission.template], offset);
             Self::apply_clip(&mut template, clip);
-            self.set_variant(variant_of(&template));
+            let mut variant = variant_of(&template);
+            if variant == ShaderVariant::Atlas
+                && retained.iter().any(|source| source.kind == KIND_FILL)
+            {
+                variant = fill_variant(&template.shape);
+            }
+            self.set_variant(variant);
             let first = self.frame.instances.len();
             check_instance_bound(first + retained.len());
             self.frame
@@ -4070,7 +4138,7 @@ impl<'a> Lowering<'a> {
                 .resize(first + retained.len(), template);
             for (inst, source) in self.frame.instances[first..].iter_mut().zip(retained) {
                 inst.bounds = source.bounds;
-                inst.uv[..2].copy_from_slice(&source.uv);
+                inst.uv[0] = pack_uv(source.uv[0], source.uv[1]);
                 inst.meta[0] = source.kind;
                 inst.meta[2] = source.first_stop
                     + if source.kind == KIND_REGION {
@@ -4078,7 +4146,7 @@ impl<'a> Lowering<'a> {
                     } else {
                         offset
                     };
-                debug_assert_eq!(variant_of(inst), variant_of(&template));
+                debug_assert_eq!(variant.batch_with(variant_of(inst)), Some(variant));
             }
             if let Some(pending) = self.mask_pending {
                 self.mask_patches.extend(
@@ -4287,7 +4355,7 @@ impl<'a> Lowering<'a> {
                 inst.bounds = [f32_f64(b.x0), f32_f64(b.y0), f32_f64(b.x1), f32_f64(b.y1)];
                 inst.shape = *shape;
                 inst.params[0] = f32_f64(*sigma_eff);
-                inst.color = *color;
+                inst.color = check_color(*color)?;
                 inst.meta[1] = PAINT_SOLID;
                 self.push_shadow_quads(&inst, b, cover);
             }
@@ -4806,7 +4874,7 @@ impl<'a> Lowering<'a> {
                 f32_f64(f64::from(rect[2]) + offset.x),
                 f32_f64(f64::from(rect[3]) + offset.y),
             ];
-            inst.uv[..2].copy_from_slice(&uv);
+            inst.uv[0] = pack_uv(uv[0], uv[1]);
             if interior != 0 && inst.meta[1] == PAINT_SOLID {
                 inst.meta[0] = KIND_REGION;
                 inst.meta[2] = interior;
@@ -5016,7 +5084,7 @@ impl<'a> Lowering<'a> {
                 f32_f64(rect.x1),
                 f32_f64(rect.y1),
             ];
-            inst.uv = [f32::from(entry.x), f32::from(entry.y), 0.0, 0.0];
+            inst.uv = [pack_uv(f32::from(entry.x), f32::from(entry.y)), 0];
             self.push_instance(&inst);
             if let Some(pending) = pending {
                 let patch = (instance_index(self.frame.instances.len() - 1), pending, 0);
@@ -5080,7 +5148,7 @@ impl<'a> Lowering<'a> {
             let x0 = f32_f64(ix + f64::from(entry.left));
             let y0 = f32_f64(iy + f64::from(entry.top));
             inst.bounds = [x0, y0, x0 + f32::from(entry.w), y0 + f32::from(entry.h)];
-            inst.uv = [f32::from(entry.x), f32::from(entry.y), 0.0, 0.0];
+            inst.uv = [pack_uv(f32::from(entry.x), f32::from(entry.y)), 0];
             self.push_instance(&inst);
             if let Some(pending) = pending {
                 let patch = (instance_index(self.frame.instances.len() - 1), pending, 0);
@@ -5594,6 +5662,26 @@ mod tests {
             let translated = Affine::new([a, b, c, d, 123.0, -456.0]);
             assert_eq!(lowering.margin(translated).to_bits(), expected);
         }
+    }
+
+    #[test]
+    fn near_opaque_ellipse_is_not_promoted_after_retention() {
+        let mut inst = Instance::new(KIND_FILL);
+        inst.affine = affine(Affine::IDENTITY);
+        inst.bounds = [-128.0, -128.0, 128.0, 128.0];
+        inst.shape = Shape {
+            half: [128.0; 2],
+            aspect: 1.0,
+            exponent: 2.0,
+            radii: [128.0; 4],
+        };
+        inst.color = [1.0, 0.0, 0.0, 0.9998];
+        assert_eq!(interior_tier(&inst), 0);
+        let mut retained = InstanceTemplate::new(&inst).restore();
+        retained.bounds = inst.bounds;
+        assert_eq!(interior_tier(&retained), 0);
+        inst.color[3] = 1.0;
+        assert_eq!(interior_tier(&inst), 2);
     }
 
     #[test]
@@ -6556,7 +6644,12 @@ mod tests {
             .filter(|p| p.target == Target::Scratch(0))
             .flat_map(|p| &p.ranges)
             .flat_map(|r| &frame.instances[r.instances.start as usize..r.instances.end as usize])
-            .map(|inst| (inst.clip_inv, bytemuck::bytes_of(&inst.clip).to_vec()))
+            .map(|inst| {
+                (
+                    (inst.clip_linear, inst.clip_translation),
+                    bytemuck::bytes_of(&inst.clip).to_vec(),
+                )
+            })
             .collect::<Vec<_>>();
         assert_eq!(clips.len(), 4);
         assert!(clips.iter().all(|clip| *clip == clips[0]), "{clips:?}");
@@ -6802,5 +6895,93 @@ mod tests {
             .plan_anchors(&tree)
             .expect("a plan after an error has no stale links");
         assert_eq!(lowering.anchor_scratch.links, [(anchor_a, 10)]);
+    }
+
+    /// A retained leaf's instances draw as one batch over the compatible
+    /// families: a leaf mixing atlas primitives with a sharp-rect fill
+    /// takes Rect, a rounded fill forces Simple, an atlas-only leaf keeps
+    /// Atlas, and a rounded leaf appended after the batch widens the same
+    /// range to Simple — never an additional range. The pass still
+    /// qualifies for coverage order.
+    #[test]
+    fn retained_coverage_batches_preserve_order() {
+        let mixed = [KIND_SPAN, KIND_FILL, KIND_GLYPH, KIND_REGION, KIND_SPAN];
+        let atlas = [KIND_SPAN, KIND_GLYPH, KIND_REGION, KIND_SPAN];
+        for (kinds, radius, append_rounded, expected_variant) in [
+            (&mixed[..], 0.0, false, ShaderVariant::Rect),
+            (&mixed[..], 2.0, false, ShaderVariant::Simple),
+            (&atlas[..], 0.0, false, ShaderVariant::Atlas),
+            (&mixed[..], 0.0, true, ShaderVariant::Simple),
+        ] {
+            let mut frame = Frame::default();
+            let mut anchor_scratch = AnchorScratch::default();
+            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            lowering.begin_pass(Target::Part(0), Some([0.0; 4]));
+
+            let mut inst = Instance::new(KIND_FILL);
+            inst.affine = affine(Affine::IDENTITY);
+            inst.bounds = [0.0, 0.0, 32.0, 32.0];
+            inst.color = [0.5, 0.25, 0.75, 0.5];
+            inst.shape.half = [16.0; 2];
+            inst.shape.radii = [radius; 4];
+            let mut storage = EmissionStorage {
+                templates: vec![InstanceTemplate::new(&inst)],
+                covers: Vec::new(),
+                instances: kinds
+                    .iter()
+                    .map(|&kind| RetainedInstance {
+                        bounds: [0.0, 0.0, 32.0, 32.0],
+                        uv: [0.0, 0.0],
+                        kind,
+                        first_stop: 0,
+                    })
+                    .collect(),
+                stops: Vec::new(),
+                refs: Vec::new(),
+            };
+            let mut emission = Emission {
+                pending_cells: 0,
+                refs: 0,
+                live_stamp: 0,
+                template: 0,
+                cover: None,
+                transform: Affine::IDENTITY,
+                size: [32.0, 32.0],
+                instances: 0..kinds.len(),
+                stops: 0..0,
+                image: None,
+            };
+            lowering.compose(&emission, &storage, None);
+            let mut expected_kinds = kinds.to_vec();
+            if append_rounded {
+                storage.templates[0].shape.radii = [2.0; 4];
+                storage.instances[0].kind = KIND_FILL;
+                emission.instances = 0..1;
+                lowering.compose(&emission, &storage, None);
+                expected_kinds.push(KIND_FILL);
+            }
+            lowering.end_segment();
+
+            assert_eq!(
+                frame
+                    .instances
+                    .iter()
+                    .map(|inst| inst.meta[0])
+                    .collect::<Vec<_>>(),
+                expected_kinds
+            );
+            let open = frame.open.as_ref().expect("part pass still open");
+            assert_eq!(
+                open.ranges
+                    .iter()
+                    .map(|range| (range.variant, range.instances.clone()))
+                    .collect::<Vec<_>>(),
+                [(
+                    expected_variant,
+                    0..u32::try_from(expected_kinds.len()).unwrap()
+                )]
+            );
+            assert!(open.maybe_coverage);
+        }
     }
 }

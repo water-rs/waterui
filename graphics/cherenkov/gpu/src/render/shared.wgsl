@@ -58,6 +58,7 @@ struct Shape {
     radii: vec4<f32>,
 }
 
+// The first 128 bytes hold transform, geometry and solid-paint fields.
 struct Instance {
     // local -> device, kurbo coefficient order [a, b, c, d, e, f]:
     // x' = a x + c y + e ; y' = b x + d y + f.
@@ -66,25 +67,36 @@ struct Instance {
     // KIND_SPAN where it is the device-space atlas cell rectangle.
     bounds: vec4<f32>,
     shape: Shape,
-    inner: Shape,
-    // device -> clip-local affine, same coefficient order.
-    clip_inv: array<vec4<f32>, 2>,
-    // The clip shape; for a masked clip (always a sharp rect) `aspect` and
-    // `exponent` — unread by its SDF — carry the mask cell size.
-    clip: Shape,
-    // Straight-alpha working-space colour (solid paint, glyph, shadow).
+    // Straight-alpha working-space colour; precision is retained until
+    // target storage.
     color: vec4<f32>,
-    // Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
-    grad: vec4<f32>,
-    // Radial: start radius, end radius.
-    grad2: vec4<f32>,
-    // Glyph/cell: atlas cell origin (x, y) in texels. zw: mask atlas origin.
-    uv: vec4<f32>,
     // x: stroke half width (STROKE_DIST) or shadow sigma. y: opacity.
     // zw: mask device origin.
     params: vec4<f32>,
     // x: kind, y: paint, z: first stop index, w: stops | interp << 16 | extend << 20 | flags << 24
     meta_: vec4<u32>,
+    // The offset stroke's inner shape. A `PAINT_BACKDROP` span never reads
+    // it as an SDF, so it carries the member's metadata instead: `half`
+    // bitcast holds the union record run's base and the member's index
+    // (`FLAG_UNION`), `aspect` the member's recording scale, and
+    // `exponent`/`radii.x` the backdrop copy's device origin
+    // (`FLAG_BLEND_SRC`).
+    inner: Shape,
+    // device -> clip-local linear coefficients [a, b, c, d] and
+    // translation [e, f], same coefficient order.
+    clip_linear: vec4<f32>,
+    clip_translation: vec2<f32>,
+    // Four u16 texel origins packed as two u32s: xy the glyph/cell atlas
+    // origin, zw the mask atlas origin — or an external frame's binding
+    // size, whose pixel extent stays inside the u16 texel bound.
+    uv: vec2<u32>,
+    // The clip shape; for a masked clip (always a sharp rect) `aspect` and
+    // `exponent` — unread by its SDF — carry the mask cell size.
+    clip: Shape,
+    // Linear: start.xy, end.xy. Radial: start centre.xy, end centre.xy.
+    grad: vec4<f32>,
+    // Radial: start radius, end radius.
+    grad2: vec4<f32>,
 }
 
 struct Stop {
@@ -125,6 +137,8 @@ struct VsOut {
     @location(1) device: vec2<f32>,
     @location(2) @interpolate(flat) instance: u32,
     @location(3) @interpolate(flat) meta_: vec4<u32>,
+    // Straight-alpha working-space colour; precision is retained until
+    // target storage.
     @location(4) @interpolate(flat) color: vec4<f32>,
     @location(5) @interpolate(flat) params: vec4<f32>,
     // half.xy, aspect, exponent.
@@ -134,6 +148,17 @@ struct VsOut {
     @location(9) @interpolate(flat) affine1: vec4<f32>,
     // bounds.xy, uv.xy (glyph/mask cell texel origin).
     @location(10) @interpolate(flat) cell: vec4<f32>,
+}
+
+// The two u16 texel origins packed in one `uv` word, expanded to f32.
+fn uv_unpack(v: u32) -> vec2<f32> {
+    return vec2<f32>(f32(v & 0xffffu), f32(v >> 16u));
+}
+
+// Expand the inverse clip's linear coefficients and translation to
+// `apply`'s two vec4s.
+fn expand_affine(linear: vec4<f32>, translation: vec2<f32>) -> array<vec4<f32>, 2> {
+    return array<vec4<f32>, 2>(linear, vec4<f32>(translation, 0.0, 0.0));
 }
 
 fn apply(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
@@ -192,7 +217,7 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     out.shape_radii = inst.shape.radii;
     out.affine0 = inst.affine[0];
     out.affine1 = inst.affine[1];
-    out.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
+    out.cell = vec4<f32>(inst.bounds.xy, uv_unpack(inst.uv.x));
     return out;
 }
 
@@ -218,7 +243,10 @@ struct LamePoint {
 
 fn lame_point(r: vec2<f32>, n: f32, w: f32) -> LamePoint {
     // w^(n-2) is 1 at w = 0 for an ellipse (n = 2) and 0 for n > 2.
-    let wm2 = pow(max(w, 1e-30), n - 2.0);
+    var wm2 = 1.0;
+    if n != 2.0 {
+        wm2 = pow(max(w, 1e-30), n - 2.0);
+    }
     let p = w * wm2;
     let one = 1.0 + w * p;
     let s = pow(one, -1.0 / n);
@@ -323,17 +351,12 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
     }
     var lo = 0.0;
     var hi = 1.0;
-    var foot = vec4<f32>(0.0);
-    for (var i = 0; i < LAME_EVALS; i++) {
+    // Refine to the last evaluated point. The final evaluation needs no
+    // further Newton update; its distance and differential geometry are
+    // computed once below, outside the refinement loop.
+    for (var i = 0; i < LAME_EVALS - 1; i++) {
         let pt = lame_point(r, n, w);
-        let len = length(pt.normal);
-        let normal = pt.normal / len;
         let qc = q - pt.c;
-        // Curvature from the implicit form,
-        // κ = (n - 1)(w^(2n-2) + w^(n-2))·r.x·r.y / (s·|normal|³).
-        let p = pt.normal.y / r.x;
-        let kappa = (n - 1.0) * (p * p + pt.wm2) * r.x * r.y / (pt.s * len * len * len);
-        foot = vec4<f32>(dot(qc, normal), normal, kappa);
         let t = vec2<f32>(-pt.normal.y, pt.normal.x);
         let f = dot(qc, t);
         let df = -pt.s / pt.one * dot(t, t) - qc.x * r.x * (n - 1.0) * pt.wm2;
@@ -344,6 +367,15 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
         }
         w = select(0.5 * (lo + hi), clamp(w - f / df, lo, hi), df < 0.0);
     }
+    let pt = lame_point(r, n, w);
+    let qc = q - pt.c;
+    let len = length(pt.normal);
+    let normal = pt.normal / len;
+    // Curvature from the implicit form,
+    // κ = (n - 1)(w^(2n-2) + w^(n-2))·r.x·r.y / (s·|normal|³).
+    let p = pt.normal.y / r.x;
+    let kappa = (n - 1.0) * (p * p + pt.wm2) * r.x * r.y / (pt.s * len * len * len);
+    let foot = vec4<f32>(dot(qc, normal), normal, kappa);
     return vec4<f32>(foot.x, select(foot.yz, foot.zy, swap), 1.0 / max(foot.w, 1e-6));
 }
 
@@ -352,6 +384,19 @@ fn lame_corner(q_in: vec2<f32>, r_in: vec2<f32>, n: f32) -> vec4<f32> {
 struct DistanceSample {
     distance: f32,
     gradient: vec4<f32>,
+}
+
+fn rect_sample(half: vec2<f32>, p: vec2<f32>) -> DistanceSample {
+    let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+    let a = abs(p) - half;
+    let d = length(max(a, vec2<f32>(0.0))) + min(max(a.x, a.y), 0.0);
+    var g: vec4<f32>;
+    if a.x > 0.0 && a.y > 0.0 {
+        g = vec4<f32>(a / length(a), 0.0, 1.0);
+    } else {
+        g = vec4<f32>(select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), a.x > a.y), 0.0, 0.0);
+    }
+    return DistanceSample(d, vec4<f32>(sgn * g.xy, g.zw));
 }
 
 fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSample {
@@ -367,14 +412,7 @@ fn sdf_sample(s: Shape, p: vec2<f32>, specialize_quadratic: bool) -> DistanceSam
     let ry = rx * s.aspect;
     let a = abs(p) - s.half;
     if rx <= 0.0 || ry <= 0.0 {
-        let d = length(max(a, vec2<f32>(0.0))) + min(max(a.x, a.y), 0.0);
-        var g: vec4<f32>;
-        if a.x > 0.0 && a.y > 0.0 {
-            g = vec4<f32>(a / length(a), 0.0, 1.0);
-        } else {
-            g = vec4<f32>(select(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0), a.x > a.y), 0.0, 0.0);
-        }
-        return DistanceSample(d, vec4<f32>(sgn * g.xy, g.zw));
+        return rect_sample(s.half, p);
     }
     let q = a + vec2<f32>(rx, ry);
     if abs(s.exponent - 2.0) < 1e-4 && abs(s.aspect - 1.0) < 1e-4 {
@@ -419,23 +457,23 @@ fn device_sdf(ci: array<vec4<f32>, 2>, s: Shape, pixel: vec2<f32>) -> vec4<f32> 
     return vec4<f32>(sample.distance / len, dg / len, 0.0);
 }
 
-// Device-space gradient of a signed distance, for the local -> device
-// affine `m` (J^-T g), before its length is scaled into per-pixel change.
-fn device_grad_vec(m: array<vec4<f32>, 2>, g: vec2<f32>) -> vec2<f32> {
-    let a = m[0].x;
-    let b = m[0].y;
-    let c = m[0].z;
-    let d = m[0].w;
+// Device-space gradient of a signed distance, for the affine's linear
+// coefficients (J^-T g), before its length is scaled into per-pixel change.
+fn device_grad_vec(m: vec4<f32>, g: vec2<f32>) -> vec2<f32> {
+    let a = m.x;
+    let b = m.y;
+    let c = m.z;
+    let d = m.w;
     return vec2<f32>(d * g.x - b * g.y, -c * g.x + a * g.y);
 }
 
 // Per-device-pixel scale for a gradient returned by `device_grad_vec`:
 // |det^-1| of the affine's linear part.
-fn device_grad_scale(m: array<vec4<f32>, 2>) -> f32 {
-    let a = m[0].x;
-    let b = m[0].y;
-    let c = m[0].z;
-    let d = m[0].w;
+fn device_grad_scale(m: vec4<f32>) -> f32 {
+    let a = m.x;
+    let b = m.y;
+    let c = m.z;
+    let d = m.w;
     let det = a * d - b * c;
     return abs(select(1.0 / det, 0.0, abs(det) < 1e-12));
 }
@@ -573,15 +611,33 @@ fn corner_coverage(a: vec2<f32>, v1: vec2<f32>, v2: vec2<f32>, scale: f32) -> f3
     return clamp(abs(sum) * 0.5, 0.0, 1.0);
 }
 
-// Coverage of the shape `s` at local point `p`, `m` mapping local to device.
-fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_quadratic: bool) -> f32 {
-    let sample = sdf_sample(s, p, specialize_quadratic);
-    let g = sample.gradient;
+fn rect_coverage(half: vec2<f32>, p: vec2<f32>, m: vec4<f32>) -> f32 {
     // A sharp corner inside this pixel: the exact area inside both
-    // half-planes. `a`, `sgn`, and the quadrant radius mirror `sdf_sample`;
-    // the strict `<` keeps a corner exactly on a pixel boundary on the
-    // old path.
+    // half-planes. The strict `<` keeps a corner exactly on a pixel
+    // boundary on the distance-coverage path.
     let sgn = select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+    let a = abs(p) - half;
+    let scale = device_grad_scale(m);
+    let v1 = device_grad_vec(m, vec2<f32>(sgn.x, 0.0));
+    let v2 = device_grad_vec(m, vec2<f32>(0.0, sgn.y));
+    let h1 = 0.5 * scale * (abs(v1.x) + abs(v1.y));
+    let h2 = 0.5 * scale * (abs(v2.x) + abs(v2.y));
+    if abs(a.x) < h1 && abs(a.y) < h2 {
+        return corner_coverage(a, v1, v2, scale);
+    }
+    let sample = rect_sample(half, p);
+    let g = sample.gradient;
+    return coverage_dir(
+        sample.distance,
+        device_grad_vec(m, g.xy),
+        device_grad_scale(m),
+        g.w > 0.0,
+        g.z,
+    );
+}
+
+// Coverage of shape `s` at local point `p`; `m` holds local-to-device linear coefficients.
+fn shape_coverage(s: Shape, p: vec2<f32>, m: vec4<f32>, specialize_quadratic: bool) -> f32 {
     let right = p.x > 0.0;
     let bottom = p.y > 0.0;
     let r = select(
@@ -591,17 +647,11 @@ fn shape_coverage(s: Shape, p: vec2<f32>, m: array<vec4<f32>, 2>, specialize_qua
     );
     let rx = max(r, 0.0);
     let ry = rx * s.aspect;
-    let a = abs(p) - s.half;
     if rx <= 0.0 || ry <= 0.0 {
-        let scale = device_grad_scale(m);
-        let v1 = device_grad_vec(m, vec2<f32>(sgn.x, 0.0));
-        let v2 = device_grad_vec(m, vec2<f32>(0.0, sgn.y));
-        let h1 = 0.5 * scale * (abs(v1.x) + abs(v1.y));
-        let h2 = 0.5 * scale * (abs(v2.x) + abs(v2.y));
-        if abs(a.x) < h1 && abs(a.y) < h2 {
-            return corner_coverage(a, v1, v2, scale);
-        }
+        return rect_coverage(s.half, p, m);
     }
+    let sample = sdf_sample(s, p, specialize_quadratic);
+    let g = sample.gradient;
     return coverage_dir(
         sample.distance,
         device_grad_vec(m, g.xy),
@@ -620,12 +670,12 @@ fn clip_mask_coverage(in: VsOut) -> f32 {
     let flags = (in.meta_.w >> 24u) & 0xffu;
     var cov = 1.0;
     if (flags & FLAG_HAS_CLIP) != 0u {
-        // `clip_inv` maps device to clip-local: J^-T is its transpose.
-        let pc = apply(instances[i].clip_inv, in.device);
+        // The inverse clip maps device to clip-local: J^-T is its transpose.
+        let pc = apply(expand_affine(instances[i].clip_linear, instances[i].clip_translation), in.device);
         let sample = sdf_sample(instances[i].clip, pc, false);
         let g = sample.gradient;
-        let ci = instances[i].clip_inv;
-        let dg = vec2<f32>(ci[0].x * g.x + ci[0].y * g.y, ci[0].z * g.x + ci[0].w * g.y);
+        let ci = instances[i].clip_linear;
+        let dg = vec2<f32>(ci.x * g.x + ci.y * g.y, ci.z * g.x + ci.w * g.y);
         cov = coverage_dir(sample.distance, dg, 1.0, g.w > 0.0, g.z);
     }
     if (flags & FLAG_HAS_MASK) != 0u {
@@ -638,7 +688,7 @@ fn clip_mask_coverage(in: VsOut) -> f32 {
         if (flags & FLAG_MASK_TEXTURE) != 0u {
             m = textureLoad(mask_tex, vec2<i32>(mp), 0).r;
         } else {
-            m = textureLoad(atlas, vec2<i32>(mp) + vec2<i32>(instances[i].uv.zw), 0).r;
+            m = textureLoad(atlas, vec2<i32>(mp) + vec2<i32>(uv_unpack(instances[i].uv.y)), 0).r;
         }
         cov *= select(0.0, m, inside);
     }

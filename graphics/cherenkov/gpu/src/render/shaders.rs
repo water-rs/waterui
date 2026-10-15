@@ -76,6 +76,18 @@ const ENGINE_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
         name: Cow::Borrowed("fs_partial"),
         workgroup_size: (0, 0, 0),
     },
+    wgpu::PassthroughShaderEntryPoint {
+        name: Cow::Borrowed("vs_partial_basic"),
+        workgroup_size: (0, 0, 0),
+    },
+    wgpu::PassthroughShaderEntryPoint {
+        name: Cow::Borrowed("fs_partial_atlas"),
+        workgroup_size: (0, 0, 0),
+    },
+    wgpu::PassthroughShaderEntryPoint {
+        name: Cow::Borrowed("fs_partial_rect"),
+        workgroup_size: (0, 0, 0),
+    },
 ];
 
 /// `vs_main` + `fs_external`, the external module's entry points.
@@ -116,46 +128,24 @@ const SHADOW_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
 
 /// The `VARIANT = 0` specialization of `shader.wgsl` (simple).
 ///
-/// Non-union variants compile `shader_no_union.wgsl` — `shader.wgsl`
-/// with every `// union-stub` span removed by `build.rs` — so the
-/// pipelines plain draws use contain neither the union fold nor its
-/// member-cap arrays.
-const ENGINE_WGSL0: &str = concat!(
-    "const VARIANT: u32 = 0u;\n",
-    include_str!("shared.wgsl"),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
-    "\n",
-    include_str!("blend.wgsl")
-);
+/// Every `ENGINE_WGSL` constant is the `engineN.wgsl` `build.rs` wrote
+/// from the same `Spec.source` its passthrough artifacts compile — the
+/// runtime WGSL cannot drift from the SPIR-V/metallib. Non-union
+/// variants are built from `shader.wgsl` with every `// union-stub`
+/// span removed, so their pipelines carry neither the union fold nor
+/// its member-cap arrays; variant 3 additionally prepends
+/// `UNION_MAX_MEMBERS` and links the `union.wgsl` fold.
+const ENGINE_WGSL0: &str = include_str!(concat!(env!("OUT_DIR"), "/engine0.wgsl"));
 /// The `VARIANT = 1` specialization (shadow).
-const ENGINE_WGSL1: &str = concat!(
-    "const VARIANT: u32 = 1u;\n",
-    include_str!("shared.wgsl"),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
-    "\n",
-    include_str!("blend.wgsl")
-);
+const ENGINE_WGSL1: &str = include_str!(concat!(env!("OUT_DIR"), "/engine1.wgsl"));
 /// The `VARIANT = 2` specialization (full).
-const ENGINE_WGSL2: &str = concat!(
-    "const VARIANT: u32 = 2u;\n",
-    include_str!("shared.wgsl"),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
-    "\n",
-    include_str!("blend.wgsl")
-);
-/// The `VARIANT = 3` specialization (union): the full module plus the
-/// `UNION_MAX_MEMBERS` prepend — `BackdropUnion::MAX_MEMBERS` verbatim,
-/// emitted by `build.rs` — and the `union.wgsl` fold.
-const ENGINE_WGSL3: &str = concat!(
-    "const VARIANT: u32 = 3u;\n",
-    include_str!(concat!(env!("OUT_DIR"), "/union_max_members.wgsl")),
-    include_str!("shared.wgsl"),
-    include_str!("shader.wgsl"),
-    "\n",
-    include_str!("union.wgsl"),
-    "\n",
-    include_str!("blend.wgsl")
-);
+const ENGINE_WGSL2: &str = include_str!(concat!(env!("OUT_DIR"), "/engine2.wgsl"));
+/// The `VARIANT = 3` specialization (union).
+const ENGINE_WGSL3: &str = include_str!(concat!(env!("OUT_DIR"), "/engine3.wgsl"));
+/// The `VARIANT = 4` specialization (atlas coverage).
+const ENGINE_WGSL4: &str = include_str!(concat!(env!("OUT_DIR"), "/engine4.wgsl"));
+/// The `VARIANT = 5` specialization (rect coverage).
+const ENGINE_WGSL5: &str = include_str!(concat!(env!("OUT_DIR"), "/engine5.wgsl"));
 
 /// The effect-module text for a user `backdrop_effect` source.
 ///
@@ -198,7 +188,11 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
     // creation on the render thread, which reports it as a rejection.
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::default(),
+        // SHADER_FLOAT16 is on the engine floor: the shared prelude the
+        // user source joins carries f16 arithmetic.
+        naga::valid::Capabilities::default()
+            .union(naga::valid::Capabilities::SHADER_FLOAT16)
+            .union(naga::valid::Capabilities::SHADER_FLOAT16_IN_FLOAT32),
     )
     .validate(&module)
     .map_err(|error| ResourceError::Shader(error.emit_to_string(text)))?;
@@ -214,13 +208,15 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
 /// exactly those targets, so the condition lives in one place (issue #241).
 #[cfg(cherenkov_spirv)]
 pub mod spirv {
-    /// naga SPIR-V for the four `VARIANT` specializations of
+    /// naga SPIR-V for the six `VARIANT` specializations of
     /// `shader.wgsl`.
-    pub const ENGINE: [&[u8]; 4] = [
+    pub const ENGINE: [&[u8]; 6] = [
         include_bytes!(concat!(env!("OUT_DIR"), "/engine0.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine1.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine2.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine3.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine4.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine5.spv")),
     ];
     /// `present.wgsl`.
     pub const PRESENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.spv"));
@@ -234,8 +230,12 @@ pub mod spirv {
     pub const RESOLVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/resolve.spv"));
     /// `reduce.wgsl`.
     pub const REDUCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.spv"));
-    /// `shadow.wgsl`, the silhouette convolution module.
-    pub const SHADOW: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.spv"));
+    /// Silhouette convolution with fractional sampling.
+    pub const SHADOW_FRACTIONAL: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shadow_fractional.spv"));
+    /// Silhouette convolution with integral sampling.
+    pub const SHADOW_INTEGRAL: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shadow_integral.spv"));
     /// `external_native.spv` — the Vulkan native module: `vs_main`,
     /// `fs_external` and `fs_external_format`, with the external-format
     /// pair merged into a combined sampled image by the build's
@@ -261,14 +261,16 @@ pub mod spirv {
 // produce them otherwise, and a Metal backend cannot appear on a
 // non-Apple build), so the empty slices are unreachable.
 #[cfg(target_vendor = "apple")]
-const ENGINE_METALLIB: [&[u8]; 4] = [
+const ENGINE_METALLIB: [&[u8]; 6] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/engine0.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine1.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine2.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine3.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine4.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine5.metallib")),
 ];
 #[cfg(not(target_vendor = "apple"))]
-const ENGINE_METALLIB: [&[u8]; 4] = [&[], &[], &[], &[]];
+const ENGINE_METALLIB: [&[u8]; 6] = [&[], &[], &[], &[], &[], &[]];
 #[cfg(target_vendor = "apple")]
 const PRESENT_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.metallib"));
 #[cfg(not(target_vendor = "apple"))]
@@ -294,13 +296,19 @@ const REDUCE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.
 #[cfg(not(target_vendor = "apple"))]
 const REDUCE_METALLIB: &[u8] = &[];
 #[cfg(target_vendor = "apple")]
-const SHADOW_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.metallib"));
+const SHADOW_FRACTIONAL_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/shadow_fractional.metallib"));
 #[cfg(not(target_vendor = "apple"))]
-const SHADOW_METALLIB: &[u8] = &[];
+const SHADOW_FRACTIONAL_METALLIB: &[u8] = &[];
+#[cfg(target_vendor = "apple")]
+const SHADOW_INTEGRAL_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/shadow_integral.metallib"));
+#[cfg(not(target_vendor = "apple"))]
+const SHADOW_INTEGRAL_METALLIB: &[u8] = &[];
 
-/// The four `VARIANT` specializations of `shader.wgsl`, indexed by
+/// The six `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
-const ENGINE: [Fixed; 4] = [
+const ENGINE: [Fixed; 6] = [
     Fixed {
         wgsl: ENGINE_WGSL0,
         #[cfg(cherenkov_spirv)]
@@ -327,6 +335,20 @@ const ENGINE: [Fixed; 4] = [
         #[cfg(cherenkov_spirv)]
         spirv: spirv::ENGINE[3],
         metallib: ENGINE_METALLIB[3],
+        entries: ENGINE_ENTRIES,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL4,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[4],
+        metallib: ENGINE_METALLIB[4],
+        entries: ENGINE_ENTRIES,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL5,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[5],
+        metallib: ENGINE_METALLIB[5],
         entries: ENGINE_ENTRIES,
     },
 ];
@@ -393,13 +415,22 @@ const REDUCE: Fixed = Fixed {
 };
 
 /// General silhouette convolution, with host-bounded taps and explicit texel bounds.
-const SHADOW: Fixed = Fixed {
-    wgsl: include_str!("shadow.wgsl"),
-    #[cfg(cherenkov_spirv)]
-    spirv: spirv::SHADOW,
-    metallib: SHADOW_METALLIB,
-    entries: SHADOW_ENTRIES,
-};
+const SHADOW: [Fixed; 2] = [
+    Fixed {
+        wgsl: include_str!(concat!(env!("OUT_DIR"), "/shadow_fractional.wgsl")),
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::SHADOW_FRACTIONAL,
+        metallib: SHADOW_FRACTIONAL_METALLIB,
+        entries: SHADOW_ENTRIES,
+    },
+    Fixed {
+        wgsl: include_str!(concat!(env!("OUT_DIR"), "/shadow_integral.wgsl")),
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::SHADOW_INTEGRAL,
+        metallib: SHADOW_INTEGRAL_METALLIB,
+        entries: SHADOW_ENTRIES,
+    },
+];
 
 /// How the fixed engine modules reach the device — a property of the
 /// selected backend, not a runtime fallback.
@@ -504,8 +535,16 @@ impl ShaderDelivery {
 
     /// The general silhouette convolution module.
     #[must_use]
-    pub fn shadow_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
-        self.module(device, "cherenkov silhouette convolution", &SHADOW)
+    pub fn shadow_module(
+        self,
+        device: &wgpu::Device,
+        integral_sampling: bool,
+    ) -> wgpu::ShaderModule {
+        self.module(
+            device,
+            "cherenkov silhouette convolution",
+            &SHADOW[usize::from(integral_sampling)],
+        )
     }
 
     fn module(

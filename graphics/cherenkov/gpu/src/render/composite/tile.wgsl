@@ -25,7 +25,7 @@ fn tile_in(in: VsOut) -> VsOut {
 
 @fragment
 fn tile_simple(in: VsOut) -> @location(0) vec4<f32> {
-    return fs_simple(tile_in(in), false);
+    return fs_simple(tile_in(in));
 }
 
 @fragment

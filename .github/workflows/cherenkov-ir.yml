@@ -1,0 +1,207 @@
+name: Cherenkov CPU instructions
+
+# Explicit opt-in while the hosted gate's runtime and portability are measured
+# for #1936. The ordinary compile-check workflow keeps its existing coverage.
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Full baseline commit SHA
+        required: true
+        type: string
+      head:
+        description: Full candidate commit SHA
+        required: true
+        type: string
+  pull_request:
+    branches: [dev]
+    types: [opened, reopened, synchronize, labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  instructions:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'cherenkov-ir') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'cherenkov-ir'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_RELEASE_DEBUG: "1"
+      CARGO_PROFILE_RELEASE_STRIP: "false"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head || github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Pin both source trees
+        id: refs
+        env:
+          BASE_INPUT: ${{ inputs.base || github.event.pull_request.base.sha }}
+          HEAD_INPUT: ${{ inputs.head || github.event.pull_request.head.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          mkdir ir-results
+          python3 - <<'PY'
+          import json, os, pathlib, re, subprocess
+          base, head = os.environ["BASE_INPUT"], os.environ["HEAD_INPUT"]
+          for revision in (base, head):
+              if not re.fullmatch(r"[0-9a-f]{40}", revision):
+                  raise ValueError("base and head must be full commit SHAs")
+              subprocess.run(["git", "cat-file", "-e", revision + "^{commit}"], check=True)
+          if os.environ["EVENT_NAME"] == "pull_request":
+              base = subprocess.check_output(["git", "merge-base", base, head], text=True).strip()
+          base_dir = pathlib.Path(os.environ["RUNNER_TEMP"]) / "cherenkov-ir-base"
+          subprocess.run(["git", "worktree", "add", "--detach", str(base_dir), base], check=True)
+          plan = {
+              "base": base, "head": head, "base_directory": str(base_dir),
+              "runner": os.uname().machine, "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "profile": "release", "debug": "1", "strip": False,
+              "pause_at": 8, "warmup": 30, "jobs": 2,
+              "harness": "candidate graphics/cherenkov/bench/scripts/ir_gate.py",
+              "scene_source": head,
+              "scope": "CPU instructions and call counts; no GPU timing claims",
+          }
+          pathlib.Path("ir-results/plan.json").write_text(json.dumps(plan, indent=2) + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
+              stream.write(f"base_directory={base_dir}\n")
+          PY
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+      - uses: ./.github/actions/cargo-sources
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: "true"
+          extra-packages: valgrind vulkan-tools
+      - name: Check the stock gate's host requirements
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, shutil, sys
+          sys.path.insert(0, "graphics/cherenkov/bench/scripts")
+          import ir_gate
+          icd = ir_gate.lavapipe_icd()
+          shutil.copyfile(icd, "ir-results/lavapipe-icd.json")
+          pathlib.Path("ir-results/icd-source.json").write_text(json.dumps({
+              "path": str(icd), "sha256": hashlib.sha256(icd.read_bytes()).hexdigest(),
+          }, indent=2) + "\n")
+          with open(os.environ["GITHUB_ENV"], "a") as stream:
+              stream.write(f"CHERENKOV_IR_ICD={icd}\n")
+          PY
+          rustc -Vv > ir-results/rustc.txt
+          cargo -V > ir-results/cargo.txt
+          valgrind --version > ir-results/valgrind.txt
+          lscpu > ir-results/cpu.txt
+          cp graphics/cherenkov/bench/scripts/ir_gate.py ir-results/
+          cp graphics/cherenkov/bench/scripts/ir_no_raster.c ir-results/
+          sha256sum ir-results/ir_gate.py ir-results/ir_no_raster.c > ir-results/harness.sha256
+      - name: Check the gate and loader dispatch
+        run: python3 -m unittest discover -s graphics/cherenkov/bench/scripts -p 'test_ir*.py'
+      - name: Check tile-attachment memory before building
+        timeout-minutes: 1
+        run: |
+          set -euo pipefail
+          runtime_dir=$(mktemp -d)
+          trap 'rmdir "$runtime_dir"' EXIT
+          VK_DRIVER_FILES="$CHERENKOV_IR_ICD" VK_ICD_FILENAMES="$CHERENKOV_IR_ICD" \
+            XDG_RUNTIME_DIR="$runtime_dir" vulkaninfo --text \
+            > ir-results/vulkaninfo.txt 2> ir-results/vulkaninfo.stderr
+          if ! grep -q 'MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT' ir-results/vulkaninfo.txt; then
+            echo "::error::Selected driver lacks lazily allocated memory for tile attachments. No CPU measurement can be collected."
+            exit 1
+          fi
+      - uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
+      - name: Build the candidate and reuse dependency artifacts
+        env:
+          BASE_DIRECTORY: ${{ steps.refs.outputs.base_directory }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p cherenkov-bench --features cherenkov --bin cherenkov-bench
+          cp target/release/cherenkov-bench ir-results/bench-head
+          cp -a --reflink=auto target "$BASE_DIRECTORY/target"
+          # Copied workspace artifacts can retain the candidate's manifest
+          # paths and freshness timestamps. Reuse dependencies, rebuild the
+          # baseline's workspace packages from its own source tree.
+          python3 - <<'PY'
+          import json, os, subprocess
+          base = os.environ["BASE_DIRECTORY"]
+          metadata = json.loads(subprocess.check_output(
+              ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+              cwd=base, timeout=120,
+          ))
+          members = set(metadata["workspace_members"])
+          packages = [package["name"] for package in metadata["packages"] if package["id"] in members]
+          subprocess.run(
+              ["cargo", "clean", *[argument for package in packages for argument in ("--package", package)]],
+              cwd=base, check=True, timeout=120,
+          )
+          PY
+      - name: Generate the baseline's compile-time fonts
+        working-directory: ${{ steps.refs.outputs.base_directory }}/graphics/cherenkov
+        run: |
+          set -euo pipefail
+          uv run --python 3.12 --with-requirements scenes/fonts/tools/requirements.txt \
+            python scenes/tools/generate.py --fonts-only
+      - name: Build the baseline using its own workspace configuration
+        working-directory: ${{ steps.refs.outputs.base_directory }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --release -p cherenkov-bench --features cherenkov --bin cherenkov-bench
+          cp target/release/cherenkov-bench "$GITHUB_WORKSPACE/ir-results/bench-base"
+      - name: Freeze executable and scene hashes
+        run: |
+          set -euo pipefail
+          sha256sum ir-results/bench-base ir-results/bench-head > ir-results/binaries.sha256
+          find graphics/cherenkov/scenes/perf -type f -print0 \
+            | sort -z | xargs -0 sha256sum > ir-results/scenes.sha256
+      - name: Profile the baseline
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          sudo -n systemd-run --quiet --wait --pipe --collect \
+            --property="User=$(id -un)" --property="WorkingDirectory=$PWD" \
+            --property=RuntimeMaxSec=600s --property=TimeoutStopSec=60s \
+            --property=KillSignal=SIGINT --property=KillMode=control-group \
+            /usr/bin/python3 "$PWD/graphics/cherenkov/bench/scripts/ir_gate.py" batch \
+            --binary "$PWD/ir-results/bench-base" --tag base \
+            --repo "$PWD/graphics/cherenkov" --out "$PWD/ir-results/base" \
+            --pause-at 8 --warmup 30 --jobs 2 --icd "$CHERENKOV_IR_ICD" \
+            2>&1 | tee ir-results/base-driver.log
+      - name: Profile the candidate
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          sudo -n systemd-run --quiet --wait --pipe --collect \
+            --property="User=$(id -un)" --property="WorkingDirectory=$PWD" \
+            --property=RuntimeMaxSec=600s --property=TimeoutStopSec=60s \
+            --property=KillSignal=SIGINT --property=KillMode=control-group \
+            /usr/bin/python3 "$PWD/graphics/cherenkov/bench/scripts/ir_gate.py" batch \
+            --binary "$PWD/ir-results/bench-head" --tag head \
+            --repo "$PWD/graphics/cherenkov" --out "$PWD/ir-results/head" \
+            --pause-at 8 --warmup 30 --jobs 2 --icd "$CHERENKOV_IR_ICD" \
+            2>&1 | tee ir-results/head-driver.log
+      - name: Apply the existing instruction and call-count gate
+        run: |
+          set -euo pipefail
+          python3 graphics/cherenkov/bench/scripts/ir_gate.py compare \
+            --out ir-results base head | tee ir-results/comparison.md
+      - name: Preserve provenance and every collected profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-ir-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ir-results/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
