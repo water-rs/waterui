@@ -2367,7 +2367,7 @@ mod gpu_surface {
             GpuRuntime, HostedLayerError, install_service, scene_engine,
         };
         use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderError, RenderSize, ViewRenderer};
+        use waterui_core::view_renderer::{RenderError, RenderRequest, ViewRenderer};
         use waterui_graphics::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
@@ -2402,7 +2402,10 @@ mod gpu_surface {
             30.0,
             renderer.render(
                 AnyView::new(fixture_scene_view()),
-                RenderSize::new(64.0, 64.0),
+                RenderRequest::new(
+                    waterui_core::layout::Size::new(64.0, 64.0),
+                    std::time::Duration::from_secs(10),
+                ),
             ),
         ) else {
             return Err(
@@ -2438,7 +2441,7 @@ mod gpu_surface {
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
         use waterui_apple::native_test_support::view_renderer::{GpuRuntime, install_service};
         use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderSize, ViewRenderer};
+        use waterui_core::view_renderer::{RenderRequest, ViewRenderer};
 
         let (_runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
@@ -2456,7 +2459,10 @@ mod gpu_surface {
             30.0,
             renderer.render(
                 AnyView::new(fixture_scene_view()),
-                RenderSize::new(64.0, 64.0),
+                RenderRequest::new(
+                    waterui_core::layout::Size::new(64.0, 64.0),
+                    std::time::Duration::from_secs(10),
+                ),
             ),
         )
         .map_err(|error| format!("a render over the healthy GPU child resolves Ok: {error}"))?;

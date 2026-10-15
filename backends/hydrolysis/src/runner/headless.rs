@@ -862,6 +862,17 @@ impl HeadlessRuntime {
             })
     }
 
+    /// Blocks until work parked outside the runtime — a timer, a fetch, a
+    /// decode on a worker thread — re-queues a task on this runtime's local
+    /// executor, returning whether one arrived within `timeout`.
+    ///
+    /// The event-driven wait for a host that is settled but still waiting on
+    /// such work: the next pump drains what arrived.
+    #[must_use]
+    pub fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        self.local_executor.wait_queued(timeout)
+    }
+
     /// Whether a state change has been requested but not yet flushed, so the
     /// semantics this runtime last produced are stale.
     ///

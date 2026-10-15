@@ -6,12 +6,21 @@
 //! the same PNG writer.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 /// Environment variable carrying the path of the JSON-encoded
 /// [`PreviewRunConfig`] for the generated preview binary.
 pub const PREVIEW_RUN_CONFIG_ENV: &str = "WATERUI_PREVIEW_RUN_CONFIG";
+
+/// How long a capture waits for owed content when the caller names no bound.
+///
+/// Owed content is what a view still loads after mount — a decoding image,
+/// a `Suspense` still loading. The bound is long enough for a local decode
+/// or a fetch on a slow link, short enough that a load that never lands
+/// fails the run instead of hanging it.
+pub const DEFAULT_CONTENT_DEADLINE: Duration = Duration::from_secs(10);
 
 /// One offscreen preview invocation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +31,9 @@ pub struct PreviewRunConfig {
     pub height: f32,
     /// What the run produces.
     pub mode: PreviewRunMode,
+    /// How long, in milliseconds, an image or scenario capture waits for
+    /// content its views owe after mount before the run fails naming them.
+    pub content_deadline_ms: u64,
 }
 
 /// What a preview run produces.
@@ -95,6 +107,29 @@ pub enum ScenarioPointerButton {
 }
 
 impl PreviewRunConfig {
+    /// A configuration for a `width`×`height` viewport producing `mode`,
+    /// whose captures wait up to `content_deadline` for owed content.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `content_deadline` does not fit `u64` milliseconds.
+    #[must_use]
+    pub fn new(width: f32, height: f32, mode: PreviewRunMode, content_deadline: Duration) -> Self {
+        Self {
+            width,
+            height,
+            mode,
+            content_deadline_ms: u64::try_from(content_deadline.as_millis())
+                .expect("a preview content deadline fits u64 milliseconds"),
+        }
+    }
+
+    /// How long a capture waits for owed content.
+    #[must_use]
+    pub const fn content_deadline(&self) -> Duration {
+        Duration::from_millis(self.content_deadline_ms)
+    }
+
     /// Reads the JSON configuration file [`PREVIEW_RUN_CONFIG_ENV`] names.
     ///
     /// A relative `output`/`output_dir` resolves against the configuration

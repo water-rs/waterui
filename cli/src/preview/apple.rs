@@ -11,6 +11,7 @@
 //! Catalyst, exec'd on this Mac with no simulator.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use askama::Template;
 use eyre::{Context as _, Result, bail};
@@ -44,6 +45,9 @@ pub struct ApplePreviewRequest<'a> {
     pub width: f32,
     /// Preview height in logical pixels.
     pub height: f32,
+    /// How long a capture waits for the content its views owe — a decoding
+    /// image, a `Suspense` future — before the preview fails naming them.
+    pub content_deadline: Duration,
     /// Optional sccache binary path.
     pub sccache_path: Option<PathBuf>,
     /// Optional build progress sink.
@@ -148,16 +152,23 @@ impl ApplePreviewBinary {
     ///
     /// Returns an error when the run configuration cannot be written, the
     /// binary fails, or the image was not produced.
-    pub async fn render(&self, width: f32, height: f32, output_path: &Path) -> Result<()> {
+    pub async fn render(
+        &self,
+        width: f32,
+        height: f32,
+        content_deadline: Duration,
+        output_path: &Path,
+    ) -> Result<()> {
         let output_path = absolute_output_path(self.project.host(), output_path);
         let crate_dir = self.project.apple_preview_crate_path();
-        let run_config = PreviewRunConfig {
+        let run_config = PreviewRunConfig::new(
             width,
             height,
-            mode: PreviewRunMode::Image {
+            PreviewRunMode::Image {
                 output: output_path.clone(),
             },
-        };
+            content_deadline,
+        );
         let run_config_path = write_run_config(&crate_dir, &run_config).await?;
         run::run_preview_binary(
             self.project.host(),
@@ -249,9 +260,10 @@ pub async fn render_preview_with_apple(
     request: ApplePreviewRequest<'_>,
     output_path: &Path,
 ) -> Result<()> {
-    let (width, height) = (request.width, request.height);
+    let (width, height, content_deadline) =
+        (request.width, request.height, request.content_deadline);
     build_preview_with_apple(request)
         .await?
-        .render(width, height, output_path)
+        .render(width, height, content_deadline, output_path)
         .await
 }

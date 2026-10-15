@@ -70,6 +70,12 @@ pub struct PreviewArgs {
     /// single candidate; several candidates are an error naming every one.
     #[serde(default)]
     pub device: Option<String>,
+
+    /// Seconds the capture waits for content its views still owe — a
+    /// decoding image, a `Suspense` future — before the preview fails
+    /// naming them (default `10`).
+    #[serde(default)]
+    pub content_timeout: Option<f64>,
 }
 
 impl PreviewArgs {
@@ -77,11 +83,12 @@ impl PreviewArgs {
     /// `water preview` applies to its clap arguments.
     ///
     /// # Errors
-    /// Returns an error for a malformed frame or an unsupported
-    /// platform/backend/theme combination.
+    /// Returns an error for a malformed frame or content timeout, or an
+    /// unsupported platform/backend/theme combination.
     pub fn resolve(&self, project: &Manifest, crate_name: &str) -> Result<PreviewRequest> {
         let frame = self.frame.as_deref().unwrap_or(DEFAULT_FRAME);
         let (width, height) = request::parse_frame(frame)?;
+        let content_deadline = request::parse_content_timeout(self.content_timeout)?;
         let platform = request::resolve_preview_platform(self.platform)?;
         let backend = request::resolve_preview_backend(project, platform, self.backend)?;
         let hydrolysis_theme = request::resolve_hydrolysis_preview_theme(backend, self.theme)?;
@@ -93,6 +100,7 @@ impl PreviewArgs {
             target,
             width,
             height,
+            content_deadline,
         })
     }
 }
@@ -206,6 +214,7 @@ impl PreviewTool {
                         platform,
                         width: request.width,
                         height: request.height,
+                        content_deadline: request.content_deadline,
                         sccache_path: self.sccache_path.clone(),
                         // MCP serves JSON-RPC over stdio — there is no
                         // terminal sink to render compile progress into.
@@ -227,6 +236,7 @@ impl PreviewTool {
                         source: request.target.source(),
                         width: request.width,
                         height: request.height,
+                        content_deadline: request.content_deadline,
                         sccache_path: self.sccache_path.clone(),
                         // MCP serves JSON-RPC over stdio — there is no
                         // terminal sink to render compile progress into.
@@ -356,6 +366,7 @@ mod tests {
             "backend": "hydrolysis",
             "theme": "material3",
             "platform": platform_name,
+            "content_timeout": 2.5,
         }))
         .expect("args parse");
         let request = args
@@ -372,6 +383,7 @@ mod tests {
                 },
                 width: 800.0,
                 height: 600.0,
+                content_deadline: std::time::Duration::from_millis(2500),
             }
         );
     }

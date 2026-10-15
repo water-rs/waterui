@@ -13,7 +13,6 @@
 //! let photo = Photo::new(url);
 //! ```
 
-#[cfg(feature = "remote")]
 use alloc::borrow::ToOwned;
 use alloc::rc::Rc;
 use alloc::string::String;
@@ -27,9 +26,10 @@ use futures::StreamExt;
 use std::path::Path;
 #[cfg(target_arch = "wasm32")]
 use waterkit_fs::WaterFs;
+use waterui_core::content_ledger::OwedContent;
 use waterui_core::event::{LifeCycle, LifeCycleHook};
 use waterui_core::reactive::signal::IntoComputed;
-use waterui_core::{AnyView, Computed, Environment, Metadata, Retain, Signal, View};
+use waterui_core::{AnyView, Computed, ContentLedger, Environment, Metadata, Retain, Signal, View};
 use waterui_image::{ContentMode, Image, ReactiveImage, ReactiveImageHandle, reactive_image};
 #[cfg(feature = "remote")]
 use zenwave::{Client, Method};
@@ -173,17 +173,28 @@ impl View for Photo {
         let env_for_event = env.clone();
         let on_event = Rc::new(RefCell::new(on_event));
         let generation = Rc::new(Cell::new(0));
-        let start = move |url| {
-            start_load_task(
-                url,
-                Rc::clone(&on_event),
-                content_handler.clone(),
-                env_for_event.clone(),
-                generation.clone(),
-            );
-        };
         let load_state = Rc::new(RefCell::new(PhotoLoadState::default()));
-        let guard = subscribe_photo_source(&source, &load_state, start.clone());
+        let start = {
+            let load_state = Rc::clone(&load_state);
+            move |url| {
+                start_load_task(
+                    url,
+                    Rc::clone(&on_event),
+                    content_handler.clone(),
+                    env_for_event.clone(),
+                    generation.clone(),
+                    Rc::clone(&load_state),
+                );
+            }
+        };
+        // Each source owes a capture its first decoded frame from the moment
+        // it is set — from mount for the initial one — not from `Appear`,
+        // which a capture's mount may not have reached yet.
+        let owe = {
+            let env = env.clone();
+            move |url: &Url| ContentLedger::owe::<Self>(&env, url.as_str().to_owned())
+        };
+        let guard = subscribe_photo_source(&source, &load_state, owe, start.clone());
 
         AnyView::new(Metadata::new(
             Metadata::new(
@@ -193,7 +204,7 @@ impl View for Photo {
                     move || appear_photo(&load_state, &start)
                 }),
             ),
-            Retain::new((guard, source)),
+            Retain::new((guard, source, load_state)),
         ))
     }
 
@@ -210,10 +221,20 @@ struct PhotoLoadState {
     appeared: bool,
     latest_source: Option<Url>,
     last_started_source: Option<Url>,
+    /// The first frame of `latest_source`, owed to a capture until it is
+    /// published. Replacing it releases the previous source's entry.
+    owed: Option<OwedContent>,
 }
 
 impl PhotoLoadState {
-    fn update_source(&mut self, source: Url) -> Option<Url> {
+    fn update_source(
+        &mut self,
+        source: Url,
+        owe: impl FnOnce(&Url) -> Option<OwedContent>,
+    ) -> Option<Url> {
+        if self.latest_source.as_ref() != Some(&source) {
+            self.owed = owe(&source);
+        }
         self.latest_source = Some(source.clone());
         self.start_if_ready(source)
     }
@@ -236,8 +257,13 @@ impl PhotoLoadState {
     }
 }
 
-fn update_photo_source(state: &Rc<RefCell<PhotoLoadState>>, source: Url, start: &impl Fn(Url)) {
-    let source = state.borrow_mut().update_source(source);
+fn update_photo_source(
+    state: &Rc<RefCell<PhotoLoadState>>,
+    source: Url,
+    owe: impl FnOnce(&Url) -> Option<OwedContent>,
+    start: &impl Fn(Url),
+) {
+    let source = state.borrow_mut().update_source(source, owe);
     if let Some(source) = source {
         start(source);
     }
@@ -250,23 +276,38 @@ fn appear_photo(state: &Rc<RefCell<PhotoLoadState>>, start: &impl Fn(Url)) {
     }
 }
 
-fn subscribe_photo_source<S, F>(
+fn subscribe_photo_source<S, O, F>(
     source: &S,
     state: &Rc<RefCell<PhotoLoadState>>,
+    owe: O,
     start: F,
 ) -> S::Guard
 where
     S: Signal<Output = Url>,
+    O: Clone + Fn(&Url) -> Option<OwedContent> + 'static,
     F: Clone + Fn(Url) + 'static,
 {
     let guard = source.watch({
         let state = Rc::clone(state);
+        let owe = owe.clone();
         let start = start.clone();
-        move |context| update_photo_source(&state, context.into_value(), &start)
+        move |context| update_photo_source(&state, context.into_value(), &owe, &start)
     });
-    update_photo_source(state, source.snapshot(), &start);
+    update_photo_source(state, source.snapshot(), owe, &start);
     guard
 }
+
+/// Why a photo's source did not decode, as a capture reports it.
+#[derive(Debug)]
+struct PhotoLoadError(String);
+
+impl core::fmt::Display for PhotoLoadError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl core::error::Error for PhotoLoadError {}
 
 type PhotoEventHandler = Rc<RefCell<Option<waterui_core::handler::BoxedEventAction<Event>>>>;
 
@@ -276,6 +317,7 @@ fn start_load_task(
     handler: ReactiveImageHandle,
     env: Environment,
     generation: Rc<Cell<usize>>,
+    load_state: Rc<RefCell<PhotoLoadState>>,
 ) {
     let token = generation
         .get()
@@ -285,9 +327,15 @@ fn start_load_task(
     handler.clear();
     spawn_local(async move {
         let frame_generation = generation.clone();
+        let frame_state = Rc::clone(&load_state);
         match fetch_and_decode_streaming(url, move |image| {
             if frame_generation.get() == token {
                 publish_decoded_frame(&handler, image);
+                // The first published frame is the content the source owed.
+                let owed = frame_state.borrow_mut().owed.take();
+                if let Some(owed) = owed {
+                    owed.fulfil();
+                }
             }
         })
         .await
@@ -301,10 +349,14 @@ fn start_load_task(
             }
             Err(e) => {
                 tracing::error!("[Photo] Failed to load: {}", e);
-                if generation.get() == token
-                    && let Some(on_event) = on_event.borrow_mut().as_mut()
-                {
-                    on_event(Event::Error(e), &env);
+                if generation.get() == token {
+                    let owed = load_state.borrow_mut().owed.take();
+                    if let Some(owed) = owed {
+                        owed.fail(PhotoLoadError(e.clone()));
+                    }
+                    if let Some(on_event) = on_event.borrow_mut().as_mut() {
+                        on_event(Event::Error(e), &env);
+                    }
                 }
             }
         }
@@ -399,10 +451,10 @@ mod tests {
 
     #[cfg(feature = "remote")]
     use super::fetch_and_decode_streaming;
-    use super::{PhotoLoadState, appear_photo, subscribe_photo_source};
+    use super::{Photo, PhotoLoadState, appear_photo, subscribe_photo_source};
     use crate::Url;
     use image::ImageEncoder as _;
-    use waterui_core::{Binding, Signal, reactive::watcher::Context};
+    use waterui_core::{Binding, ContentLedger, Environment, Signal, reactive::watcher::Context};
     use waterui_image::{DecodePath, Image};
 
     #[derive(Clone)]
@@ -442,7 +494,7 @@ mod tests {
             move |source| started.borrow_mut().push(source)
         };
 
-        let _guard = subscribe_photo_source(&signal, &load_state, start.clone());
+        let _guard = subscribe_photo_source(&signal, &load_state, |_: &Url| None, start.clone());
         assert!(
             started.borrow().is_empty(),
             "source updates before Appear must not start offscreen loading"
@@ -454,6 +506,55 @@ mod tests {
         source.set(next.clone());
 
         assert_eq!(*started.borrow(), vec![replacement, next]);
+    }
+
+    #[test]
+    fn each_new_source_owes_a_capture_its_first_frame() {
+        let mut env = Environment::new();
+        let ledger = ContentLedger::new();
+        env.insert(ledger.clone());
+        let initial = Url::from_file_path_str("/photos/initial.png");
+        let source = Binding::container(initial.clone());
+        let load_state = Rc::new(RefCell::new(PhotoLoadState::default()));
+        let owe = move |url: &Url| ContentLedger::owe::<Photo>(&env, url.as_str().to_owned());
+
+        let _guard = subscribe_photo_source(&source, &load_state, owe, |_| {});
+        assert_eq!(
+            ledger
+                .outstanding()
+                .iter()
+                .map(|entry| (entry.view, entry.detail.to_string()))
+                .collect::<Vec<_>>(),
+            vec![("Photo", initial.as_str().to_owned())],
+            "the initial source is owed from mount, before Appear"
+        );
+
+        source.set(initial);
+        assert_eq!(
+            ledger.outstanding().len(),
+            1,
+            "an unchanged source owes nothing new"
+        );
+
+        let next = Url::from_file_path_str("/photos/next.png");
+        source.set(next.clone());
+        assert_eq!(
+            ledger
+                .outstanding()
+                .iter()
+                .map(|entry| entry.detail.to_string())
+                .collect::<Vec<_>>(),
+            vec![next.as_str().to_owned()],
+            "a new source releases the previous entry and owes its own"
+        );
+
+        load_state
+            .borrow_mut()
+            .owed
+            .take()
+            .expect("the current source is owed")
+            .fulfil();
+        assert_eq!(ledger.pending().snapshot(), 0);
     }
 
     fn sample_png_bytes() -> Vec<u8> {

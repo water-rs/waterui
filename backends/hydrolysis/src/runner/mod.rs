@@ -63,6 +63,8 @@ pub mod android_executor;
 /// for its tests; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod android_metrics;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod content_tests;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
 /// The `InputConnection` protocol state machine — compiled on Android for the
