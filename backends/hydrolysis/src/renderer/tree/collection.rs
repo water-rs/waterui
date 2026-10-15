@@ -16,7 +16,7 @@ use waterui_core::views::ViewSnapshot;
 
 use super::transition::{
     TransitionPaint, TransitionRun, TransitionRuntime, claim_transition, flush_transitioned,
-    member_host, start_ghost,
+    start_ghost,
 };
 
 /// Collect into `out` the ids occupying the positions a [`CollectionChange`]
@@ -49,7 +49,7 @@ fn frozen_placement_dimensions(sub: &dyn SubView, placement: &SubviewPlacement) 
 }
 
 /// One retained entry of a [`CollectionNode`]: the item's persistent node, the
-/// `.transition()` declaration claimed from its built root chain, and the
+/// `.transition()` declaration claimed from its built root, and the
 /// in-flight insertion.
 pub(super) struct CollectionEntry {
     /// Stable item identity from the source collection.
@@ -60,7 +60,7 @@ pub(super) struct CollectionEntry {
     pub(crate) core: NodeCore,
     /// The item's retained node, kept across membership changes by id.
     pub(super) node: RenderNode,
-    /// The `.transition(...)` the built item declares on its root chain;
+    /// The `.transition(...)` the built item declares at its root;
     /// `None` means this item pops on membership changes.
     pub(super) spec: Option<TransitionSpec>,
     /// Independent insertion while the entry animates in; `None` at rest and
@@ -73,15 +73,12 @@ pub(super) struct CollectionEntry {
 
 impl CollectionEntry {
     /// An at-rest entry over a built item node: the item's declaration is
-    /// claimed from the node itself, so a row whose declaration sits beneath
-    /// other modifiers or behind type erasure is owned the same way. The
+    /// claimed from the node's root, so a row whose declaration sits behind
+    /// type erasure is owned the same way; one beneath a modifier is not. The
     /// initial membership of a collection is built from these (no insertion
     /// runs); later additions get their clock from [`Self::begin_insertion`].
     pub(super) fn new(id: CollectionItemId, node: RenderNode, core: NodeCore) -> Self {
         let spec = claim_transition(&node);
-        if let Some(host) = member_host(&node) {
-            host.join_container();
-        }
         Self {
             id,
             core,
@@ -97,9 +94,6 @@ impl CollectionEntry {
     fn replace_node(&mut self, node: RenderNode) {
         node.core().cell.set_parent(&self.core.cell);
         self.spec = claim_transition(&node);
-        if let Some(host) = member_host(&node) {
-            host.join_container();
-        }
         self.node = node;
     }
 
@@ -279,54 +273,38 @@ pub(super) struct CollectionGhost {
     runtime: TransitionRuntime,
 }
 
-/// One layout/flush position in display order: a live entry, a ghost the
-/// collection retains itself, or a ghost of a conditional at an entry's root
-/// (the instance that conditional swapped out, laid out beside the entry).
+/// One layout/flush position in display order: a live entry, or a removal
+/// ghost the collection retains in the slot its row held.
 #[derive(Clone, Copy)]
 enum CollectionSlot {
     Entry(usize),
     Ghost(usize),
-    HostGhost {
-        entry: usize,
-        ghost: usize,
-        slot: usize,
-    },
 }
 
-/// A collection's members in display order, with the slots of the
-/// entry-root conditionals' ghosts.
-struct CollectionOrder {
-    order: Vec<CollectionSlot>,
-    host_slots: Vec<GhostSlot>,
-}
-
-impl CollectionOrder {
-    /// The members as the layout sees them, `subs` being the entries'
-    /// sub-views by entry index.
-    fn refs<'a, S: SubView>(
-        &'a self,
-        subs: &'a [S],
-        ghosts: &'a [CollectionGhost],
-    ) -> Vec<&'a dyn SubView> {
-        self.order
-            .iter()
-            .map(|slot| match *slot {
-                CollectionSlot::Entry(index) => &subs[index] as &dyn SubView,
-                CollectionSlot::Ghost(index) => &ghosts[index].ghost.slot as &dyn SubView,
-                CollectionSlot::HostGhost { slot, .. } => &self.host_slots[slot] as &dyn SubView,
-            })
-            .collect()
-    }
+/// The members of `order` as the layout sees them, `subs` being the entries'
+/// sub-views by entry index.
+fn slot_refs<'a, S: SubView>(
+    order: &[CollectionSlot],
+    subs: &'a [S],
+    ghosts: &'a [CollectionGhost],
+) -> Vec<&'a dyn SubView> {
+    order
+        .iter()
+        .map(|slot| match *slot {
+            CollectionSlot::Entry(index) => &subs[index] as &dyn SubView,
+            CollectionSlot::Ghost(index) => &ghosts[index].ghost.slot as &dyn SubView,
+        })
+        .collect()
 }
 
 impl CollectionNode {
     /// Display order for measure, layout and flush: head-anchored ghosts first,
-    /// then each live entry — preceded by the ghosts its root conditional
-    /// swapped out — followed by the ghosts anchored to it. Ghosts whose
-    /// anchor left in the same reconcile trail at the end.
-    fn slot_order(&self) -> CollectionOrder {
+    /// then each live entry followed by the ghosts anchored to it. Ghosts
+    /// whose anchor left in the same reconcile trail at the end. A
+    /// conditional at an entry's root keeps its own ghosts inside the entry
+    /// (layout-spec.md §4.5), so the entry is one member either way.
+    fn slot_order(&self) -> Vec<CollectionSlot> {
         let mut order = Vec::with_capacity(self.entries.len() + self.ghosts.len());
-        let mut host_slots = Vec::new();
         let mut anchored = vec![false; self.ghosts.len()];
         for (index, ghost) in self.ghosts.iter().enumerate() {
             if ghost.anchor.is_none() {
@@ -335,16 +313,6 @@ impl CollectionNode {
             }
         }
         for (entry_index, entry) in self.entries.iter().enumerate() {
-            if let Some(host) = member_host(&entry.node) {
-                for (ghost, slot) in host.member_ghost_slots().into_iter().enumerate() {
-                    order.push(CollectionSlot::HostGhost {
-                        entry: entry_index,
-                        ghost,
-                        slot: host_slots.len(),
-                    });
-                    host_slots.push(slot);
-                }
-            }
             order.push(CollectionSlot::Entry(entry_index));
             for (index, ghost) in self.ghosts.iter().enumerate() {
                 if ghost.anchor == Some(entry.id) {
@@ -356,7 +324,7 @@ impl CollectionNode {
         for (index, _) in anchored.iter().enumerate().filter(|(_, a)| !**a) {
             order.push(CollectionSlot::Ghost(index));
         }
-        CollectionOrder { order, host_slots }
+        order
     }
 
     /// Build the `NodeSubView` proxies for this collection's entries, sharing one
@@ -377,7 +345,7 @@ impl CollectionNode {
         // layout member: a ghost keeps the fixed slot it had at removal until
         // its clock completes, and an insertion allocates its slot immediately.
         let order = self.slot_order();
-        let refs = order.refs(&subs, &self.ghosts);
+        let refs = slot_refs(&order, &subs, &self.ghosts);
         ViewDimensions::new(self.layout.size_that_fits(proposal, &refs))
     }
 
@@ -402,7 +370,7 @@ impl CollectionNode {
             // Ghost slots stay ordinary layout members at their frozen size:
             // the container's membership only reflows when a ghost's clock
             // completes and its slot is released.
-            let refs = order.refs(&subs, &self.ghosts);
+            let refs = slot_refs(&order, &subs, &self.ghosts);
             // Only the accessibility scope reads `resolved` — skip the measure
             // in builds without it.
             #[cfg(feature = "accessibility")]
@@ -415,7 +383,7 @@ impl CollectionNode {
             // guides at the placed proposal) while `subs` is still borrowed —
             // the removal ghost keeps them fixed afterward.
             let mut frozen: Vec<Option<ViewDimensions>> = vec![None; self.entries.len()];
-            for (slot, placement) in order.order.iter().zip(&placed) {
+            for (slot, placement) in order.iter().zip(&placed) {
                 if let CollectionSlot::Entry(index) = *slot {
                     frozen[index] = Some(frozen_placement_dimensions(&subs[index], placement));
                 }
@@ -424,15 +392,10 @@ impl CollectionNode {
         };
         let mut entry_frames = vec![None; self.entries.len()];
         let mut ghost_frames = vec![None; self.ghosts.len()];
-        for (slot, placement) in order.order.iter().zip(&placements) {
+        for (slot, placement) in order.iter().zip(&placements) {
             match *slot {
                 CollectionSlot::Entry(index) => entry_frames[index] = Some(placement),
                 CollectionSlot::Ghost(index) => ghost_frames[index] = Some(placement),
-                CollectionSlot::HostGhost { entry, ghost, .. } => {
-                    member_host(&self.entries[entry].node)
-                        .expect("hydrolysis collection: a host ghost's entry lost its Dynamic host")
-                        .place_ghost(ghost, placement.frame);
-                }
             }
         }
         for (index, (entry, placement)) in self.entries.iter_mut().zip(&entry_frames).enumerate() {
@@ -472,7 +435,7 @@ impl CollectionNode {
             renderer.pop_accessibility_owner();
             scope
         });
-        for slot in self.slot_order().order {
+        for slot in self.slot_order() {
             match slot {
                 CollectionSlot::Entry(index) => {
                     let (entry, rect) = (&self.entries[index], self.placed[index]);
@@ -517,11 +480,6 @@ impl CollectionNode {
                             );
                         });
                     });
-                }
-                CollectionSlot::HostGhost { entry, ghost, .. } => {
-                    member_host(&self.entries[entry].node)
-                        .expect("hydrolysis collection: a host ghost's entry lost its Dynamic host")
-                        .flush_ghost(renderer, ctx, ghost);
                 }
             }
         }

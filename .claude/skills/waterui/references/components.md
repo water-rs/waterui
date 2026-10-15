@@ -466,7 +466,9 @@ List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
 For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
 modifiers, `VStack`/`HStack` have `for_each` too; membership animation is declared per row
 with `.transition(...)` plus `.animation(...)` (a removed row's ghost holds its slot
-while it fades):
+while it fades). `.transition(...)` must be the outermost modifier of the row — or of a
+`when`/`watch` branch, or of the conditional itself; one beneath `.padding()`, `.frame()`
+or any other modifier is never picked up and panics, so put it last:
 
 ```rust
 use waterui::layout::stack::VStack;

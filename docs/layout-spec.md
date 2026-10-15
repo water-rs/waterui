@@ -255,8 +255,9 @@ view swap does.
 
 A view with a removal transition leaves semantic membership immediately: it
 is absent from accessibility, testing, hit testing, and focus traversal. Its
-outgoing realization becomes a non-interactive ghost, with a layout-only slot
-in the original container. The slot is a fixed-size leaf: every proposal
+outgoing realization becomes a non-interactive ghost. A row leaving a
+collection's membership (`ForEach`, `List`, a lazy stack) keeps a layout-only
+slot in that collection. The slot is a fixed-size leaf: every proposal
 returns the dimensions and alignment guides recorded at removal, its stretch
 axis is `None`, and its layout priority is preserved. It remains a layout
 member, including spacing, until the transition completes. At completion the
@@ -271,18 +272,19 @@ ancestor movement. A pixel transition is drawn in a window-filling overlay
 anchored to that frame; ancestor clipping does not clip the effect. Retention
 does not preserve removed descendants as semantic members.
 
-These rules apply at every structural site: dynamic replacement, collection
-membership, navigation, and overlays. Scalar property updates do not create
-transition instances or affect membership.
+The semantic rules apply at every structural site: dynamic replacement,
+collection membership, navigation, and overlays. Scalar property updates do
+not create transition instances or affect membership.
 
-Where the replaced view is not a member of a container — a scroll, page, or
-overlay root, the content of a painting modifier, a lazy-stack row root — there
-is no container slot to hold. The ghost paints at its last placed frame,
-overlapping the slot, and the slot is sized by the live content alone; the
-ghost takes no part in layout and, as above, no part in input or
-accessibility. A navigation page root's declared transition is that page's
-insertion transition on push and its removal transition on pop, in place of
-the stack's own transition for that page.
+A conditional (`when`, `watch`) owns the ghosts of the content it replaces,
+whatever layout encloses it, and so does a scroll, page, or overlay root:
+none of them holds a slot for a ghost. The enclosing layout sees one child,
+sized by the live content alone. The ghost paints at its last placed frame,
+overlapping that slot beneath the live content, and follows scrolling and
+ancestor movement; it takes no part in layout and, as above, no part in
+input or accessibility. A navigation page root's declared transition is that
+page's insertion transition on push and its removal transition on pop, in
+place of the stack's own transition for that page.
 
 ## 5. Other containers
 
