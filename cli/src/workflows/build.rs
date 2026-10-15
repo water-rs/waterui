@@ -1163,6 +1163,20 @@ impl BuildOptions {
         }
     }
 
+    /// Create options for `backend`'s default development build — the
+    /// profile a flag-free `water build` and `water run` select.
+    ///
+    /// Every development build of a backend's generated crate that has no
+    /// profile flag of its own — previews, the MCP runtime — starts here, so
+    /// it compiles the shared runtime and its dependency graph under the
+    /// same `CARGO_PROFILE_*` overrides as `water run`. A different profile
+    /// re-fingerprints every unit in the shared target directory, and each
+    /// switch between the two commands would recompile the framework.
+    #[must_use]
+    pub fn default_development(backend: crate::platform::TargetBackend) -> Self {
+        Self::development(backend.default_development_profile())
+    }
+
     /// Link the Rust runtime in, whatever the caller asked for.
     ///
     /// A platform whose loader cannot accept the toolchain's prebuilt runtime

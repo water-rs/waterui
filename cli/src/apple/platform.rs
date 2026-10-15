@@ -239,7 +239,7 @@ pub(crate) async fn apple_dependency_features(
     Ok(features)
 }
 
-pub(crate) async fn apple_build_features(
+async fn apple_build_features(
     project: &Project,
     browser_runtime: BrowserRuntimePlan,
     linkage: RustLinkage,
@@ -261,6 +261,56 @@ pub(crate) async fn apple_build_features(
         }
     }
     Ok(features)
+}
+
+/// The cargo configuration every Apple build of a generated crate compiles
+/// under: the companion `water build`/`water run` link, and the in-process
+/// preview binary.
+///
+/// Everything that reaches a unit's fingerprint — features, the
+/// `CARGO_PROFILE_*` overrides of `options`' profile, the rustflags of its
+/// linkage, the environment build scripts read, the target directory — is
+/// decided here once. The generated crates share the target directory, so
+/// two builds that disagreed on any of it would recompile the shared runtime
+/// and its dependency graph on every switch between them. A caller adds only
+/// what is specific to its final artifact, as `cargo rustc` trailing
+/// arguments that leave dependency fingerprints alone.
+///
+/// # Errors
+///
+/// Returns an error when the browser runtime plan, the features, or the
+/// target directory cannot be resolved.
+pub(crate) async fn apple_rust_build(
+    project: &Project,
+    crate_path: PathBuf,
+    platform: TargetPlatform,
+    triple: Triple,
+    options: &BuildOptions,
+) -> eyre::Result<RustBuild> {
+    let browser_runtime_plan = project
+        .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
+        .await?;
+    let features =
+        apple_build_features(project, browser_runtime_plan, options.linkage(), &triple).await?;
+    let target = triple.to_string();
+    let target_underscore = target.replace('-', "_");
+    let mut build = RustBuild::for_project(project, crate_path, triple)
+        .with_features(features)
+        .with_envs(options.cargo_envs().iter().cloned())
+        .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
+        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
+        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target}"), "1")
+        .with_target_dir(project.water_target_dir(options.linkage()).await?);
+    if options.linkage() == RustLinkage::SharedRuntime {
+        build = build.with_preferred_dynamic_linking();
+    }
+    if let Some(sccache_path) = options.sccache_path() {
+        build = build.with_sccache(sccache_path.to_path_buf());
+    }
+    if let Some(progress) = options.progress() {
+        build = build.with_progress(progress.clone());
+    }
+    Ok(build)
 }
 
 /// The triple an Apple build produces — the explicitly requested target,
@@ -332,37 +382,21 @@ pub(crate) async fn build_rust_lib_with_links(
     )
     .await?;
     let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
-    let browser_runtime_plan = project
-        .browser_runtime_plan(platform, TargetBackend::Apple, &triple)
-        .await?;
 
     let target = triple.to_string();
-    let target_underscore = target.replace('-', "_");
     let host_library = AppleHostLibrary::for_linkage(options.linkage());
-    let mut build = RustBuild::for_project(project, project.apple_crate_path(), triple.clone())
-        .with_features(
-            apple_build_features(project, browser_runtime_plan, options.linkage(), &triple).await?,
-        )
-        .with_envs(options.cargo_envs().iter().cloned());
-    if let Some(sccache_path) = options.sccache_path() {
-        build = build.with_sccache(sccache_path.to_path_buf());
-    }
-    if let Some(progress) = options.progress() {
-        build = build.with_progress(progress.clone());
-    }
+    let mut build = apple_rust_build(
+        project,
+        project.apple_crate_path(),
+        platform,
+        triple.clone(),
+        &options,
+    )
+    .await?;
     if project.manifest().package.embedded {
         build = build.with_final_rustc_arg("--print=native-static-libs");
     }
-    build = build
-        .with_env("PKG_CONFIG_ALLOW_CROSS", "1")
-        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target_underscore}"), "1")
-        .with_env(format!("PKG_CONFIG_ALLOW_CROSS_{target}"), "1");
-    if options.linkage() == RustLinkage::SharedRuntime {
-        build = build.with_preferred_dynamic_linking();
-    }
-
     let target_dir = project.water_target_dir(options.linkage()).await?;
-    let build = build.with_target_dir(target_dir.clone());
     let mut built_target = match host_library {
         // The shared runtime's lib build emits every crate type the
         // manifest declares — not a `--crate-type` selection, which
