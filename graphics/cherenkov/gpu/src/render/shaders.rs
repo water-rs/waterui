@@ -344,18 +344,20 @@ const ENGINE: [Fixed; 6] = [
     },
 ];
 
-/// `present.wgsl`, the presenter's module.
+/// `present.wgsl` behind filtrate-core's space conversion, the
+/// presenter's module, as `build.rs` composed it.
 const PRESENT: Fixed = Fixed {
-    wgsl: include_str!("present.wgsl"),
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/present.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::PRESENT,
     metallib: PRESENT_METALLIB,
     entries: VS_FS_MAIN,
 };
 
-/// `shared.wgsl` plus `external.wgsl`, the external-frame module.
+/// `shared.wgsl` plus `external.wgsl`, the external-frame module, as
+/// `build.rs` composed it.
 const EXTERNAL: Fixed = Fixed {
-    wgsl: concat!(include_str!("shared.wgsl"), include_str!("external.wgsl")),
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/external.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::EXTERNAL,
     metallib: EXTERNAL_METALLIB,
@@ -363,15 +365,9 @@ const EXTERNAL: Fixed = Fixed {
 };
 
 /// `shared.wgsl`, `blend.wgsl` and `projective.wgsl`, the projective
-/// composite module (#84).
+/// composite module (#84), as `build.rs` composed it.
 const PROJECTIVE: Fixed = Fixed {
-    wgsl: concat!(
-        include_str!("shared.wgsl"),
-        "\n",
-        include_str!("blend.wgsl"),
-        "\n",
-        include_str!("projective.wgsl")
-    ),
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/projective.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::PROJECTIVE,
     metallib: PROJECTIVE_METALLIB,

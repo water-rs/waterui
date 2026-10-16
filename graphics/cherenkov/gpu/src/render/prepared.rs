@@ -12,6 +12,7 @@ use cherenkov::{
     RenderError, ShapeData,
 };
 use cherenkov::{GlyphRun, GlyphStyle};
+use filtrate_core::space::{P3_TO_SRGB, srgb_encode, transform};
 
 use super::instance::{
     EXTEND_NONE, EXTEND_PAD, EXTEND_REFLECT, EXTEND_REPEAT, FLAG_HAS_INNER, INTERP_SRGB,
@@ -25,14 +26,6 @@ use crate::render::glyph::FontData;
 use skrifa::MetadataProvider as _;
 use skrifa::raw::TableProvider as _;
 use skrifa::raw::types::F2Dot14;
-
-/// Linear Display P3 to linear sRGB (the inverse of the shader's
-/// `SRGB_TO_P3`), used to store `SrgbEncoded` gradient stops.
-const P3_TO_SRGB: [[f32; 3]; 3] = [
-    [1.224_940_1, -0.224_940_4, 0.0],
-    [-0.042_056_9, 1.042_057_1, 0.0],
-    [-0.019_637_6, -0.078_636_1, 1.098_273_5],
-];
 
 /// f64 to f32; instance data is f32 by design.
 #[expect(clippy::cast_possible_truncation)]
@@ -167,16 +160,6 @@ pub struct ResolvedShader {
     pub sampling: Affine,
 }
 
-/// sRGB-encodes one channel, preserving sign.
-fn srgb_encode(x: f32) -> f32 {
-    let e = if x.abs() <= 0.003_130_8 {
-        x.abs() * 12.92
-    } else {
-        1.055f32.mul_add(x.abs().powf(1.0 / 2.4), -0.055)
-    };
-    e.copysign(x)
-}
-
 fn push_stops(
     stops: &mut Vec<Stop>,
     gradient_stops: &[cherenkov::ColorStop],
@@ -190,12 +173,9 @@ fn push_stops(
     for stop in sorted.iter().take(count as usize) {
         let [r, g, b, a] = stop.color.components;
         let color = if interpolation == Interpolation::SrgbEncoded {
-            let [sr, sg, sb] = [
-                P3_TO_SRGB[0][0].mul_add(r, P3_TO_SRGB[0][1].mul_add(g, P3_TO_SRGB[0][2] * b)),
-                P3_TO_SRGB[1][0].mul_add(r, P3_TO_SRGB[1][1].mul_add(g, P3_TO_SRGB[1][2] * b)),
-                P3_TO_SRGB[2][0].mul_add(r, P3_TO_SRGB[2][1].mul_add(g, P3_TO_SRGB[2][2] * b)),
-            ];
-            [srgb_encode(sr), srgb_encode(sg), srgb_encode(sb), a]
+            // The CPU backend's stop conversion (`cpu/src/render/paint.rs`).
+            let [sr, sg, sb] = transform(&P3_TO_SRGB, [r, g, b]).map(srgb_encode);
+            [sr, sg, sb, a]
         } else {
             [r, g, b, a]
         };

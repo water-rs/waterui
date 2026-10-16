@@ -17,7 +17,7 @@ const ENGINE_SOURCES: [&str; 6] = [
     include_str!(concat!(env!("OUT_DIR"), "/engine4.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine5.wgsl")),
 ];
-const SHARED: &str = include_str!("../src/render/shared.wgsl");
+const SHARED: &str = include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl"));
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
 const PROJECTIVE: &str = include_str!("../src/render/projective.wgsl");
 const MIP: &str = include_str!("../src/render/mip.wgsl");

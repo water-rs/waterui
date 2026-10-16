@@ -1808,6 +1808,7 @@ name = "cherenkov-record"
 version = "0.0.0"
 dependencies = [
  "color",
+ "filtrate-core",
  "kurbo 0.13.1",
  "nami",
  "nami-core",
@@ -3590,6 +3591,7 @@ dependencies = [
 name = "filtrate-core"
 version = "0.2.0"
 dependencies = [
+ "askama",
  "libm",
 ]
 
@@ -12973,6 +12975,7 @@ dependencies = [
  "color",
  "event-listener",
  "filtrate",
+ "filtrate-core",
  "fontique",
  "half",
  "image",
