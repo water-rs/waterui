@@ -41,6 +41,7 @@ use crate::{
 /// the most stable across reboots and reconnects, so it is what
 /// [`Self::selector`] returns and what `water run --device` should be given.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ApplePhysicalDevice {
     /// `CoreDevice` identifier (e.g. `898E9834-79A1-5EAD-AA1A-C54E27F04456`).
     pub identifier: String,
@@ -68,6 +69,10 @@ pub struct ApplePhysicalDevice {
 
 /// How a paired device is connected to this Mac.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each device transport variant by variant"
+)]
 pub enum Transport {
     /// USB or Thunderbolt cable.
     Wired,
@@ -79,6 +84,7 @@ pub enum Transport {
 
 /// `CoreDevice` tunnel reachability state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TunnelState {
     /// The `CoreDevice` tunnel is up.
     Connected,
@@ -286,6 +292,7 @@ impl ApplePhysicalDevice {
 /// Why a paired device cannot run an app; each variant maps to the remedy the
 /// error message should name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeviceUnusable {
     /// The `CoreDevice` tunnel is `unavailable` — the device is off, unplugged
     /// and off-LAN, or locked out.

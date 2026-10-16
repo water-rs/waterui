@@ -42,33 +42,6 @@ pub enum CaptureError {
     NoWindowScene,
 }
 
-/// Attaches `view` inside a window that never orders in and captures the
-/// presented result — the `view_renderer` service's entry: the view arrives
-/// already measured and laid out under its proposal.
-///
-/// # Errors
-///
-/// Returns [`CaptureError`] when `AppKit` cannot produce the bitmap.
-#[cfg(all(
-    target_os = "macos",
-    feature = "view_renderer",
-    not(feature = "gpu_surface")
-))]
-#[expect(
-    clippy::future_not_send,
-    reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
-)]
-pub async fn capture_view(
-    view: &cocoa_ui::PlatformView,
-    actual: cocoa_ui::Size,
-    mtm: cocoa_ui::MainThreadMarker,
-) -> Result<RenderResult, CaptureError> {
-    let window = cocoa_ui::bitmap::capture_window(mtm, actual);
-    let content_view = window.contentView().expect("offscreen window content");
-    cocoa_ui::view::add_subview(&content_view, view);
-    capture_presented(view).await
-}
-
 /// The shared tail of every `AppKit` capture: `host` is already inside its
 /// never-ordered window and laid out under its proposal; `AppKit`'s
 /// `cacheDisplayInRect:` rasterizes the whole subtree into premultiplied
@@ -139,11 +112,11 @@ pub async fn capture_presented(
     cocoa_ui::view::cache_display(host, &rep);
     let image = rep.CGImage().ok_or(CaptureError::NoImage)?;
     cocoa_ui::bitmap::draw_image(&context, &image, bounds);
-    Ok(RenderResult {
-        rgba_data: pixels,
-        width: pixel_width as u32,
-        height: pixel_height as u32,
-    })
+    Ok(RenderResult::new(
+        pixels,
+        pixel_width as u32,
+        pixel_height as u32,
+    ))
 }
 
 /// The `UIKit` tail of every capture: `host` is already inside its
@@ -152,6 +125,15 @@ pub async fn capture_presented(
 /// This path exists only without `gpu_surface`: with it, `Metal` layer
 /// contents never reach the bitmap and `capture_image`'s `ViewCapture` is
 /// the readback.
+///
+/// `renderInContext` replays the layer model through `Core Graphics`, not the
+/// `Core Animation` compositor, so backdrop filters are not evaluated: a
+/// `UIVisualEffectView` material draws its tint without blurring what lies
+/// behind it. No public capture primitive closes that without a window —
+/// `CARenderer` evaluates the filters but presents Catalyst's layer contents
+/// in the opposite vertical orientation to their geometry, and GPU surfaces
+/// are composited outside the layer tree — so this is a documented
+/// limitation of windowless capture (water-rs/waterui#2660).
 ///
 /// # Errors
 ///
@@ -202,9 +184,9 @@ pub async fn capture_presented(
     });
     cocoa_ui::bitmap::end_layer_flip(&context);
     drop(context);
-    Ok(RenderResult {
-        rgba_data: pixels,
-        width: pixel_width as u32,
-        height: pixel_height as u32,
-    })
+    Ok(RenderResult::new(
+        pixels,
+        pixel_width as u32,
+        pixel_height as u32,
+    ))
 }

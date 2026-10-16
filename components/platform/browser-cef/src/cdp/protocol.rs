@@ -44,12 +44,12 @@ impl CdpCommand for AddBinding {
     type Response = Empty;
 }
 
-/// Enables the page domain, which [`AddScriptToEvaluateOnNewDocument`] needs.
+/// Enables the page domain, which [`AddScriptToEvaluateOnNewDocument`] and
+/// `Page.frameNavigated` need.
 ///
 /// Chromium accepts a document-start script whether or not the domain is
 /// enabled, and only *runs* the registered scripts while it is, so leaving this
-/// out installed the bridge into no document at all and reported success doing
-/// it.
+/// out ran no later script in any document and reported success doing it.
 #[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 pub struct PageEnable {}
@@ -60,7 +60,12 @@ impl CdpCommand for PageEnable {
     type Response = Empty;
 }
 
-/// Registers a script that runs before anything else in each new document.
+/// Registers a script that runs at the start of each new document, after
+/// the renderer's own context hook.
+///
+/// Chromium runs it in the default world of every frame's every document,
+/// whatever its origin, so a source registered here must decide for itself
+/// whether the document is one it may run in.
 #[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 pub struct AddScriptToEvaluateOnNewDocument<'a> {
@@ -86,8 +91,8 @@ pub struct ScriptIdentifier {
 /// [`AddScriptToEvaluateOnNewDocument`].
 ///
 /// Replacement is add-then-remove: a keyed injection has to drop the script it
-/// supersedes, or a view that re-seeds its mirrored state on every navigation
-/// accumulates one stale seed per navigation and the oldest still runs first.
+/// supersedes, or every replacement stacks another copy and the oldest still
+/// runs first.
 #[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,6 +224,43 @@ pub struct SetCookie<'a> {
 impl CdpCommand for SetCookie<'_> {
     const METHOD: &'static str = "Network.setCookie";
     type Response = Empty;
+}
+
+/// Reads the page's frame tree; a web view needs only its root, the main
+/// frame, whose id stays the same across every navigation of the page.
+#[cfg(feature = "webview")]
+#[derive(Debug, Serialize)]
+pub struct GetFrameTree {}
+
+#[cfg(feature = "webview")]
+impl CdpCommand for GetFrameTree {
+    const METHOD: &'static str = "Page.getFrameTree";
+    type Response = GetFrameTreeResponse;
+}
+
+/// The frame tree Chromium returned.
+#[cfg(feature = "webview")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetFrameTreeResponse {
+    /// The tree's root.
+    pub frame_tree: FrameTree,
+}
+
+/// One node of a frame tree; its children are not read.
+#[cfg(feature = "webview")]
+#[derive(Debug, Deserialize)]
+pub struct FrameTree {
+    /// The frame at this node.
+    pub frame: FrameDescription,
+}
+
+/// What a web view reads of a frame.
+#[cfg(feature = "webview")]
+#[derive(Debug, Deserialize)]
+pub struct FrameDescription {
+    /// The frame's id — the `frameId` its execution contexts report.
+    pub id: String,
 }
 
 /// Reads the cookies visible to the given URLs.

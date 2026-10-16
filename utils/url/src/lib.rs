@@ -197,6 +197,7 @@ pub struct Url {
 
 /// The kind of URL.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum UrlKind {
     /// A web URL (http/https/ftp etc)
     Web,
@@ -927,6 +928,7 @@ impl Signal for Fetched {
 #[cfg(feature = "remote")]
 /// Errors that can occur while downloading a remote resource into memory.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RemoteDownloadError {
     /// The HTTP transport or request pipeline failed.
     Http(Box<zenwave::Error>),

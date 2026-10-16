@@ -176,6 +176,7 @@ impl fmt::Debug for ParamGuards {
 
 /// The pixel dimensions of a filtered view's output texture.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[non_exhaustive]
 pub enum OutputSize {
     /// Match the captured input dimensions.
     #[default]
@@ -807,6 +808,10 @@ impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
 /// registering it with its engine (`Engine::effect`) — and keeps `guards`
 /// alive as long as the realization.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole filtered view, so a new field must fail their build instead of being ignored"
+)]
 pub struct FilteredView {
     /// The filtered subtree.
     pub content: AnyView,

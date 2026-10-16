@@ -78,6 +78,7 @@ impl fmt::Debug for LifeCycleHook {
 
 /// Pointer hover event carrying the current local pointer location.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct HoverEvent {
     /// Current local pointer location in logical points.
     pub location: Point,

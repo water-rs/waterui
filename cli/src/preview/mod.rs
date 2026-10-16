@@ -2,27 +2,28 @@
 //!
 //! This module provides infrastructure for the `water preview` command:
 //!
-//! - `app_client`: TCP client for communicating with the preview support app
-//! - [`protocol`]: Message definitions for preview support app communication
-//! - `inputs`: Content fingerprinting for preview build caching
-//! - `launcher`: Preview support app lifecycle management
+//! - [`apple`]: the in-process Apple preview binary (`AppKit` on macOS,
+//!   `UIKit` through Mac Catalyst for `--platform ios`)
+//! - [`hydrolysis`]: the desktop Hydrolysis preview binary, and
+//!   `hydrolysis_android`: the Android preview host's instrumentation
+//! - [`protocol`]: the `waterui_preview_*` export symbol naming
+//! - [`run`]: the `WATERUI_PREVIEW_RUN_CONFIG` channel every generated
+//!   preview binary reads
 //! - [`request`]: Preview argument resolution shared by `water preview` and
 //!   the `water mcp` `preview` tool
 
-mod app_client;
 pub(crate) mod apple;
 pub(crate) mod hydrolysis;
 pub(crate) mod hydrolysis_android;
-mod inputs;
-mod launcher;
 pub mod protocol;
 pub mod request;
 pub(crate) mod run;
 
 use askama::Template;
 
-pub use app_client::{PreviewAppClient, PreviewProbe};
-pub use apple::{ApplePreviewRequest, render_preview_with_apple};
+pub use apple::{
+    ApplePreviewBinary, ApplePreviewRequest, build_preview_with_apple, render_preview_with_apple,
+};
 pub use hydrolysis::{
     HydrolysisPreviewEventKind, HydrolysisPreviewPointerButton, HydrolysisPreviewRequest,
     HydrolysisPreviewScenario, HydrolysisPreviewScenarioEvent, HydrolysisPreviewTheme,
@@ -30,42 +31,14 @@ pub use hydrolysis::{
     test_preview_with_hydrolysis,
 };
 
-pub use launcher::{PreviewSession, launch_preview_session};
-pub use protocol::{PreviewPlatform, Size};
 pub use request::{
     CliHydrolysisPreviewTheme, CliPreviewBackend, CliPreviewPlatform, PreviewRequest, PreviewTarget,
 };
 
-/// The cache root preview support assets live under on `host`:
-/// `WATER_CACHE_DIR` when set, the host's cache directory joined with
-/// `waterui`, else `waterui-cache` in the host's temporary directory. The
-/// spawned support app is handed this root through `WATER_CACHE_DIR`, so it
-/// registers where the CLI watches, whatever its own default would be.
-fn water_cache_dir(host: &crate::toolchain::Host) -> std::path::PathBuf {
-    if let Some(dir) = host.env("WATER_CACHE_DIR") {
-        return std::path::PathBuf::from(dir);
-    }
-    if let Some(cache_dir) = host.cache_dir() {
-        return cache_dir.join("waterui");
-    }
-    host.temp_dir().join("waterui-cache")
-}
-
-/// Root of the preview support assets on `host`.
-fn preview_cache_root_dir(host: &crate::toolchain::Host) -> std::path::PathBuf {
-    waterui_preview_protocol::registry::preview_cache_root_dir_in(&water_cache_dir(host))
-}
-
-/// Directory the CLI watches for preview support app registrations on `host`.
-pub(crate) fn preview_instance_registry_dir(host: &crate::toolchain::Host) -> std::path::PathBuf {
-    waterui_preview_protocol::registry::preview_instance_registry_dir_in(&preview_cache_root_dir(
-        host,
-    ))
-}
-
 /// Source used to produce a preview view — an existing `#[preview]` export
 /// or an inline `WaterUI` expression. Shared by every preview backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PreviewSource<'a> {
     /// Existing `#[preview]` export symbol.
     Symbol(&'a str),

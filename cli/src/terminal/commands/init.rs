@@ -181,11 +181,7 @@ fn resolve_answers(shell: &Shell, args: &Args, entries: &[String]) -> Result<Ini
         None => Some(web::lockfile_package_manager(entries).unwrap_or_default()),
     };
 
-    Ok(InitAnswers {
-        web,
-        web_mode,
-        package_manager,
-    })
+    Ok(InitAnswers::new(web, web_mode, package_manager))
 }
 
 fn prompt_web_source() -> Result<WebSource> {
@@ -295,22 +291,16 @@ async fn scaffold_shell(
     let project = Project::init(
         host,
         root,
-        CreateOptions {
+        CreateOptions::new(
             name,
-            bundle_identifier: BundleIdentifier::try_from(bundle_id.as_str())
-                .map_err(|error| eyre!(error))?,
-            waterui_path: args.waterui_path.clone(),
-            channel: args.channel,
-            framework_manifest: args.framework_manifest.clone(),
-            framework: None,
-            framework_lock: None,
-            author: whoami::username()
+            BundleIdentifier::try_from(bundle_id.as_str()).map_err(|error| eyre!(error))?,
+            whoami::username()
                 .map_err(|error| eyre!("Failed to determine project author: {error}"))?,
-            web: Some(WebScaffold {
-                package_manager,
-                include_arg: include_arg.to_string(),
-            }),
-        },
+        )
+        .with_waterui_path(args.waterui_path.clone())
+        .with_channel(args.channel)
+        .with_framework_manifest(args.framework_manifest.clone())
+        .with_web(Some(WebScaffold::new(package_manager, include_arg))),
     )
     .await?;
     if let Some(pb) = spinner {

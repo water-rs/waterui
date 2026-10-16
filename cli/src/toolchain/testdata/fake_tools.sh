@@ -237,6 +237,11 @@ rustc)
             fi
             respond RUSTC_VERBOSE
             ;;
+        --print)
+            # `rustc --print <what>` answers the staged `RUSTC_PRINT_<what>`
+            # file (`<what>` carries `-`, so only the file form fits).
+            respond_file "RUSTC_PRINT_$2"
+            ;;
         *)
             exit 2
             ;;

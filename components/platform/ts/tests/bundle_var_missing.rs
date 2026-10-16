@@ -12,7 +12,9 @@ use std::sync::Once;
 use waterui::ts::{BUNDLE_VARIABLE, Components, configured_runtime};
 use waterui::tsx;
 use waterui_core::{AnyView, Environment};
-use waterui_preview::with_configured_runtime;
+#[path = "support/host_view.rs"]
+mod host_view;
+use host_view::with_configured_runtime;
 use waterui_testing::UiBuilder;
 
 /// Where the variable points: a path nothing writes to.
@@ -78,7 +80,7 @@ fn ts_a_test_session_fails_before_mounting_anything(ui: UiBuilder) {
 }
 
 #[test]
-fn ts_a_preview_render_fails_before_rendering_anything() {
+fn ts_a_host_scoped_view_fails_before_rendering_anything() {
     configure();
     let error = with_configured_runtime(
         &Environment::new(),

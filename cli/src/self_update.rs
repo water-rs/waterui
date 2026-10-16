@@ -52,6 +52,7 @@ const PASSIVE_CHECK_INTERVAL: Duration = Duration::from_hours(24);
 /// The install channel the running `water` binary came through — the four
 /// rows the update path distinguishes before touching anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InstallSource {
     /// A cargo-dist install receipt covers this executable; the release's own
     /// installer may rewrite it in place (`water update`).
@@ -132,6 +133,10 @@ impl InstallSource {
 
 /// What a completed `water update` leaves behind.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each update outcome variant by variant"
+)]
 pub enum UpdateOutcome {
     /// The release installer moved the binary between versions.
     Updated {
@@ -155,6 +160,7 @@ pub enum UpdateOutcome {
 
 /// The result of a `water update` operation.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct UpdateReport {
     /// The channel that owns the running executable.
     pub source: InstallSource,
@@ -166,6 +172,10 @@ pub struct UpdateReport {
 
 /// What `water update --check` reports.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each update check outcome variant by variant"
+)]
 pub enum CheckOutcome {
     /// The running version is the newest the release source lists.
     UpToDate {

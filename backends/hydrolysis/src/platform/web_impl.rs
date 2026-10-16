@@ -59,7 +59,11 @@ impl BrowserSurface {
         clippy::future_not_send,
         reason = "the future runs on the browser main thread via spawn_local; wgpu handles' Send bound varies with Cargo feature unification"
     )]
-    pub async fn new(root: HtmlElement, width: u32, height: u32) -> Self {
+    pub async fn new(
+        root: HtmlElement,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, BrowserGpuUnavailable> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         // Every adapter a browser hands out presents to a canvas, so the
         // request names no surface: the engine creates its canvases on
@@ -72,9 +76,7 @@ impl BrowserSurface {
                 apply_limit_buckets: false,
             })
             .await
-            .expect(
-                "hydrolysis web surface: browser WebGPU adapter unavailable; ensure WebGPU is enabled",
-            );
+            .map_err(BrowserGpuUnavailable::NoAdapter)?;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -82,7 +84,7 @@ impl BrowserSurface {
                 ..Default::default()
             })
             .await
-            .expect("hydrolysis web surface: failed to request WebGPU device");
+            .map_err(BrowserGpuUnavailable::NoDevice)?;
         let context_id = super::next_gpu_context_id();
         let shared_device = cherenkov_gpu::interop::SharedDevice {
             instance,
@@ -92,7 +94,7 @@ impl BrowserSurface {
         };
         let device_loss = crate::platform::DeviceLoss::observe(shared_device, context_id);
 
-        Self {
+        Ok(Self {
             adapter,
             device,
             queue,
@@ -100,7 +102,43 @@ impl BrowserSurface {
             root,
             size: (width.max(1), height.max(1)),
             engine_window: None,
-        }
+        })
+    }
+}
+
+/// Why the page cannot host a Hydrolysis window: Hydrolysis renders through
+/// WebGPU, and this browser does not provide it.
+#[derive(Debug, thiserror::Error)]
+pub enum BrowserGpuUnavailable {
+    #[error("This browser does not provide WebGPU, which this app needs to render.")]
+    NoAdapter(#[source] wgpu::RequestAdapterError),
+    #[error("This browser refused to open a WebGPU device, which this app needs to render.")]
+    NoDevice(#[source] wgpu::RequestDeviceError),
+}
+
+/// The event the page's bootstrap shows as its startup error: the runtime
+/// cannot run, and `detail` says why.
+const FATAL_ERROR_EVENT: &str = "waterui:fatal-error";
+
+/// Tells the page that the app cannot run, as a bubbling
+/// `waterui:fatal-error` event on the root element whose `detail` is
+/// `message`; the page replaces itself with that message.
+///
+/// The panic hook calls this too, so it reports what it can and never
+/// panics: a page missing its root or refusing the event leaves only the
+/// console report the hook has already made.
+pub fn report_fatal_error(message: &str) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let target: EventTarget = document
+        .get_element_by_id(ROOT_ID)
+        .map_or_else(|| document.into(), Into::into);
+    let init = web_sys::CustomEventInit::new();
+    init.set_bubbles(true);
+    init.set_detail(&wasm_bindgen::JsValue::from_str(message));
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(FATAL_ERROR_EVENT, &init) {
+        let _ = target.dispatch_event(&event);
     }
 }
 
@@ -215,11 +253,20 @@ impl BrowserWindow {
     /// When the page exposes no window, document, root or input element
     /// the host cannot function, so the constructor panics naming the
     /// missing object rather than failing the first paint later.
+    ///
+    /// # Errors
+    ///
+    /// [`BrowserGpuUnavailable`] when the browser provides no WebGPU
+    /// adapter or device: the page cannot host a window at all, and the
+    /// caller reports that to the page.
     #[expect(
         clippy::future_not_send,
         reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
     )]
-    pub async fn new(schedule_frame: Rc<dyn Fn()>, occlusion_wake: Rc<dyn Fn()>) -> Self {
+    pub async fn new(
+        schedule_frame: Rc<dyn Fn()>,
+        occlusion_wake: Rc<dyn Fn()>,
+    ) -> Result<Self, BrowserGpuUnavailable> {
         let browser_window =
             web_sys::window().expect("hydrolysis web platform: browser window unavailable");
         let document = browser_window
@@ -243,7 +290,7 @@ impl BrowserWindow {
         });
 
         let surface =
-            BrowserSurface::new(root.clone(), initial_resize.width, initial_resize.height).await;
+            BrowserSurface::new(root.clone(), initial_resize.width, initial_resize.height).await?;
 
         let mut listeners = register_listeners(
             &browser_window,
@@ -298,7 +345,7 @@ impl BrowserWindow {
             (observer, callback)
         };
 
-        Self {
+        Ok(Self {
             host_window: browser_window,
             document,
             root,
@@ -315,7 +362,7 @@ impl BrowserWindow {
             current_cursor_style: CursorStyle::Arrow,
             _intersection_observer: intersection_observer,
             _listeners: listeners,
-        }
+        })
     }
 
     /// Tells the page that the first frame is on screen, as a bubbling

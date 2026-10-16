@@ -29,7 +29,7 @@ use crate::{
 };
 
 /// The raw reply of [`WebViewHandle::run_javascript`](crate::WebViewHandle::run_javascript)
-/// is the JSON encoding of the evaluated value.
+/// is the JSON encoding of the evaluated value, made by the page.
 ///
 /// `evaluate` is the engine's raw path — `|script| handle.run_javascript(script)`
 /// on a handle, or the same call on a `WebView`, whichever the suite holds —
@@ -39,26 +39,50 @@ use crate::{
 /// # Panics
 ///
 /// When a string arrives unquoted, an object does not parse as JSON with its
-/// fields intact, a number is not its literal, or `undefined` is anything but
-/// `null`.
+/// fields intact, a number is not its literal, a value JSON has no spelling for
+/// is anything but `null`, a comma expression or a trailing comment changes the
+/// value, a promise is awaited, or a throwing expression, a statement or a cyclic
+/// value answers `Ok`.
 #[expect(
     clippy::future_not_send,
     reason = "web views are confined to the UI thread, and so is the suite that drives them"
 )]
 pub async fn raw_evaluation_answers_json(evaluate: impl AsyncFn(&str) -> Result<Str, Str>) {
-    let string = evaluate("'waterui'")
-        .await
-        .expect("a string literal evaluates");
-    assert_eq!(
-        string.as_str(),
+    let answers = async |script: &str, expected: &str, why: &str| {
+        let reply = evaluate(script)
+            .await
+            .unwrap_or_else(|error| panic!("`{script}` failed to evaluate: {error}"));
+        assert_eq!(reply.as_str(), expected, "`{script}`: {why}");
+    };
+    answers(
+        "'waterui'",
         "\"waterui\"",
-        "a string result arrives as JSON, quoted"
-    );
-
-    let number = evaluate("40 + 2")
-        .await
-        .expect("an arithmetic expression evaluates");
-    assert_eq!(number.as_str(), "42", "a number arrives as its literal");
+        "a string arrives as JSON, quoted",
+    )
+    .await;
+    answers("40 + 2", "42", "a number arrives as its literal").await;
+    answers("1 < 2", "true", "a boolean arrives as its literal").await;
+    answers(
+        "undefined",
+        "null",
+        "JSON has no undefined; the typed path is where it stays distinct",
+    )
+    .await;
+    answers("() => 1", "null", "a function has no JSON spelling").await;
+    answers("0 / 0", "null", "NaN has no JSON spelling").await;
+    answers("1, 2", "2", "a comma expression is one value").await;
+    answers(
+        "'noted' // a trailing comment",
+        "\"noted\"",
+        "a trailing comment does not swallow the evaluation",
+    )
+    .await;
+    answers(
+        "Promise.resolve(1)",
+        "{}",
+        "the raw path does not await a promise",
+    )
+    .await;
 
     let object = evaluate("({name: 'waterui', ok: true, items: [1, 2]})")
         .await
@@ -71,12 +95,20 @@ pub async fn raw_evaluation_answers_json(evaluate: impl AsyncFn(&str) -> Result<
         "an object arrives as JSON with its fields intact"
     );
 
-    let nothing = evaluate("undefined").await.expect("undefined evaluates");
-    assert_eq!(
-        nothing.as_str(),
-        "null",
-        "JSON has no undefined; the typed path is where it stays distinct"
-    );
+    for (script, why) in [
+        (
+            "(() => { throw new Error('raw'); })()",
+            "an exception the expression throws",
+        ),
+        ("let x = 1", "a statement, which is not an expression"),
+        (
+            "(() => { const cycle = {}; cycle.self = cycle; return cycle; })()",
+            "a value JSON.stringify throws on",
+        ),
+    ] {
+        let reply = evaluate(script).await;
+        assert!(reply.is_err(), "{why} answers Err, not {reply:?}");
+    }
 }
 
 /// The engine's asset origin serves the bundled site as a secure context.
@@ -127,13 +159,14 @@ pub async fn asset_origin_serves_bundled_content_with(
     controller: &WebViewController,
     server: AssetServer,
 ) {
+    let origin = controller
+        .asset_origin()
+        .expect("an engine that serves bundled assets reports the origin it serves them under");
     let webview = controller.open_with(WebViewConfig {
         asset_server: Some(server),
+        ..WebViewConfig::default()
     });
     let handle = webview.handle().clone();
-    let origin = handle
-        .asset_origin()
-        .expect("a web view opened with an asset server reports the origin it serves");
     assert!(
         origin.as_str() == ASSET_ORIGIN || origin.as_str() == ASSET_HTTPS_ORIGIN,
         "the asset origin is `{ASSET_ORIGIN}` or `{ASSET_HTTPS_ORIGIN}`, not `{origin}`"
@@ -396,10 +429,11 @@ fn describe_error(error: &WebViewError) -> String {
 /// subject view walks through the admitted origin and then the refused one;
 /// a witness view stays on the admitted origin, exposing the same binding.
 ///
-/// - The subject's first document is seeded, and gets a change.
+/// - The subject's first document receives the current value with its first
+///   pull — no value is injected — and gets a change.
 /// - It still gets one after a same-document navigation, a fragment change
 ///   and a `pushState`, which the engine may report as a navigation.
-/// - The next document is seeded with the current value and gets a change.
+/// - The next document receives the current value and gets a change.
 /// - Going back restores the first document from the back/forward cache
 ///   (its `pageshow` is `persisted`); it catches up on the change it missed
 ///   while frozen, and gets the next one.
@@ -413,11 +447,11 @@ fn describe_error(error: &WebViewError) -> String {
 ///   witness proves a change was delivered while the refused document was
 ///   showing, and the subject is then read back after a round trip ordered
 ///   behind anything the change or the held reply could have sent it.
-///   Engines that inject nothing into a refused document pass the seeding
+///   Engines that inject nothing into a refused document pass the declaration
 ///   check without running the seed's origin guard; the guard itself is
 ///   covered by the bridge script's own tests.
-/// - Navigating on to an admitted document, the subject is seeded with the
-///   current value and gets the next change.
+/// - Navigating on to an admitted document, the subject receives the current
+///   value and gets the next change.
 ///
 /// `controller` is the engine's [`WebViewController`]. The views are built
 /// through the same path [`WebView::open`](crate::WebView::open) takes at
@@ -456,7 +490,7 @@ pub async fn mirrored_state_reaches_only_admitted_documents(controller: &WebView
         .next(0, |report| shown(report, &witness_url, false, 0))
         .await;
 
-    // Seeded, then changed.
+    // The first pull's value, then a change.
     let one = admitted.url("/one");
     let mark = reports.mark();
     subject.go_to(one.clone());
@@ -474,7 +508,7 @@ pub async fn mirrored_state_reaches_only_admitted_documents(controller: &WebView
     let pushed = admitted.url("/one?pushed");
     set_observed(&reports, &count, 2, &[&pushed]).await;
 
-    // A cross-document navigation is seeded with the current value.
+    // A cross-document navigation pulls the current value.
     let two = admitted.url("/two");
     let mark = reports.mark();
     subject.go_to(two.clone());
@@ -529,8 +563,7 @@ pub async fn mirrored_state_reaches_only_admitted_documents(controller: &WebView
     let _ = raw_eval(subject.handle(), "0").await;
     assert_untouched_by_the_host(&raw_eval(subject.handle(), "globalThis.__hostile").await);
 
-    // Onward to an admitted document: seeded with the current value, and kept
-    // up to date.
+    // Onward to an admitted document: the current value, and kept up to date.
     let three = admitted.url("/three");
     let mark = reports.mark();
     subject.go_to(three.clone());
@@ -541,14 +574,14 @@ pub async fn mirrored_state_reaches_only_admitted_documents(controller: &WebView
 }
 
 /// Asserts that the refused document's recorder saw the host do nothing: no
-/// seed, no evaluation into its bridge globals, and no answer to any request
+/// declaration, no evaluation into its bridge globals, and no answer to any request
 /// it made, while it did reach a transport and every promise-returning one
 /// refused each request.
 fn assert_untouched_by_the_host(record: &Value) {
     assert_eq!(
         record["injected"]["stateKeys"],
         serde_json::json!([]),
-        "a refused document must not be seeded: {record}"
+        "a refused document must not be declared any state: {record}"
     );
     assert_eq!(
         record["calls"],

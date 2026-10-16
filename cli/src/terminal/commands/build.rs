@@ -293,14 +293,10 @@ async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<Option<Buil
         args.backend.map(TargetBackend::lib_backend),
     )?);
     validate_backend_args(args, backend)?;
-    // Hydrolysis on Android opens no managed backend crate: its runtime is
-    // the Hydrolysis launcher crate `ensure_generated_backend` produces.
-    let managed_backends =
-        if (args.platform, backend) == (TargetPlatform::Android, TargetBackend::Hydrolysis) {
-            ManagedBackends::NONE
-        } else {
-            ManagedBackends::for_platform(lib_platform(args.platform))
-        };
+    // A build opens only the managed backend it builds with: a Hydrolysis
+    // build — on Android or a desktop — compiles the Hydrolysis launcher
+    // crate `ensure_generated_backend` produces, never the Apple backend.
+    let managed_backends = ManagedBackends::for_backend(backend.lib_backend());
     let project = Project::open_for_build(
         &waterui_cli::toolchain::Host::current(),
         &project_path,

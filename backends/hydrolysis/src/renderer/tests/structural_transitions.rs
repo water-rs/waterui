@@ -753,19 +753,16 @@ impl waterui::navigation::NavigationTransition for EdgeSlide {
         use waterui::navigation::{
             NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
         };
-        let moving = |offset_x| NavigationTransitionLayer {
-            offset_x,
-            ..NavigationTransitionLayer::IDENTITY
-        };
+        let moving = |offset_x| NavigationTransitionLayer::new(offset_x, 0.0, 1.0, 1.0);
         match direction {
-            NavigationTransitionDirection::Push => NavigationTransitionFrame {
-                outgoing: NavigationTransitionLayer::IDENTITY,
-                incoming: moving(1.0 - progress),
-            },
-            NavigationTransitionDirection::Pop => NavigationTransitionFrame {
-                outgoing: moving(progress),
-                incoming: NavigationTransitionLayer::IDENTITY,
-            },
+            NavigationTransitionDirection::Push => NavigationTransitionFrame::new(
+                NavigationTransitionLayer::IDENTITY,
+                moving(1.0 - progress),
+            ),
+            NavigationTransitionDirection::Pop => NavigationTransitionFrame::new(
+                moving(progress),
+                NavigationTransitionLayer::IDENTITY,
+            ),
         }
     }
 }

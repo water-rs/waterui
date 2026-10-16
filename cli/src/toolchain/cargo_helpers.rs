@@ -53,6 +53,7 @@ impl CargoHelpersInstallation {
 
 /// Errors from `cargo install`/`cargo binstall` helper installation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallCargoHelpers {
     /// cargo was not found.
     #[error(

@@ -11,8 +11,8 @@
 //! — the `ColorScheme` and the colour tokens — out of the environment the
 //! runtime was created in, and those are installed by the Hydrolysis runtime
 //! and the builder's style, both of which sit above the builder environment.
-//! Scoping it here is also what `waterui-preview` does for a rendered
-//! preview, for the same reason.
+//! Scoping it to the mounted view is what any host that renders a view
+//! outside the application does, for the same reason.
 
 use waterui::ts::{Components, configured_runtime};
 use waterui::{Plugin, ViewExt as _};

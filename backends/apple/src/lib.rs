@@ -15,6 +15,10 @@ extern crate alloc;
     any(feature = "view_renderer", preview_entry)
 ))]
 pub(crate) mod capture;
+/// Awaiting the content a captured subtree owes — shared by the same two
+/// captures.
+#[cfg(any(feature = "view_renderer", preview_entry))]
+pub(crate) mod content;
 pub mod contract;
 pub mod dispatch;
 pub mod embedding;

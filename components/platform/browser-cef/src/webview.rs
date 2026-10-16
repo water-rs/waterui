@@ -9,12 +9,13 @@ use suiteki::Str;
 use waterui_core::{Computed, Signal};
 use waterui_url::Url;
 use waterui_webview::{
-    ASSET_ORIGIN, Cookie, CustomWebViewController, ScriptInjectionTime, WatcherGuard,
+    ASSET_ORIGIN, Cookie, CustomWebViewController, OriginPolicy, ScriptInjectionTime, WatcherGuard,
     WebViewConfig, WebViewHandle, bridge,
 };
 
 use crate::cdp::{CefCdpSession, protocol};
 use crate::page::{CefController, CefPageConfiguration, CefPageHandle, CefPageMode};
+use crate::renderer::{RendererBundle, document_source};
 
 type MessageHandler = waterui_webview::ScriptMessageHandler;
 
@@ -22,16 +23,12 @@ type MessageHandler = waterui_webview::ScriptMessageHandler;
 /// Standard `WaterUI` `WebView` handle backed by a CEF page.
 pub struct CefWebViewHandle {
     page: CefPageHandle,
-    /// The `waterui://localhost` origin this view serves, when it was opened
-    /// with an asset server.
-    asset_origin: Option<Url>,
     handlers: Rc<RefCell<HashMap<String, Rc<MessageHandler>>>>,
-    /// Which documents may reach the bridge. Checked on every call, because the
-    /// CDP binding is installed for every execution context and any frame in
-    /// the page can reach it.
-    origins: Rc<RefCell<Option<waterui_webview::OriginPolicy>>>,
-    /// Document-start scripts by key, so injecting again under a key replaces
-    /// the script rather than stacking another copy in front of it.
+    /// Scripts injected after creation, by key, so injecting again under a
+    /// key replaces the script rather than stacking another copy in front of
+    /// it. The creation-time scripts live in every renderer's copy of the
+    /// browser's `extra_info` instead; their keys never arrive here, because
+    /// `AnyWebViewHandle::inject_script` refuses them.
     scripts: Rc<RefCell<HashMap<String, String>>>,
     /// Unregisters the CDP event watcher when the last clone goes away.
     ///
@@ -70,21 +67,27 @@ impl core::fmt::Debug for CefWebViewHandle {
 }
 
 impl CefWebViewHandle {
-    fn new(page: CefPageHandle, asset_origin: Option<Url>) -> Self {
+    /// Wraps a page whose browser was created with the bundle of `config`.
+    ///
+    /// The renderer decides which documents get the bridge; this side
+    /// authenticates every call against the same admission rules, because the
+    /// CDP binding reaches every context of every frame regardless.
+    fn new(page: CefPageHandle, config: &WebViewConfig) -> Self {
         let handlers = Rc::new(RefCell::new(HashMap::<String, Rc<MessageHandler>>::new()));
-        let origins: Rc<RefCell<Option<waterui_webview::OriginPolicy>>> =
-            Rc::new(RefCell::new(None));
+        let origins = config.bridge_origins.clone();
         let contexts = Rc::new(RefCell::new(HashMap::<i64, TrackedContext>::new()));
+        let main_frame = Rc::new(RefCell::new(None::<String>));
         let scripts = Rc::new(RefCell::new(HashMap::<String, String>::new()));
         let session = page.cdp();
-        install_bridge(&session);
+        install_bridge(&session, &main_frame);
         let events = session.watch_events({
             let handlers = Rc::clone(&handlers);
-            let origins = Rc::clone(&origins);
             let contexts = Rc::clone(&contexts);
+            let main_frame = Rc::clone(&main_frame);
             let session = session.clone();
             move |event| match event.method.as_str() {
                 "Runtime.executionContextCreated" => track_context(&contexts, &event.params),
+                "Page.frameNavigated" => track_main_frame(&main_frame, &event.params),
                 "Runtime.executionContextDestroyed" => {
                     if let Some(id) = context_id(&event.params, "executionContextId") {
                         contexts.borrow_mut().remove(&id);
@@ -93,7 +96,7 @@ impl CefWebViewHandle {
                 "Runtime.executionContextsCleared" => contexts.borrow_mut().clear(),
                 "Runtime.bindingCalled" => {
                     let context = context_id(&event.params, "executionContextId");
-                    if !frame_may_use_bridge(&contexts, &origins, context) {
+                    if !frame_may_use_bridge(&contexts, &main_frame, &origins, context) {
                         tracing::warn!(
                             "a frame outside the bridge origin policy tried to call a WaterUI handler"
                         );
@@ -107,9 +110,7 @@ impl CefWebViewHandle {
         Self {
             _close: Rc::new(CloseBrowserOnDrop { page: page.clone() }),
             page,
-            asset_origin,
             handlers,
-            origins,
             scripts,
             _events: Rc::new(events),
         }
@@ -127,10 +128,6 @@ impl CefWebViewHandle {
 }
 
 impl WebViewHandle for CefWebViewHandle {
-    fn asset_origin(&self) -> Option<Url> {
-        self.asset_origin.clone()
-    }
-
     fn go_back(&self) {
         self.page
             .host()
@@ -152,13 +149,15 @@ impl WebViewHandle for CefWebViewHandle {
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        let source = match time {
-            ScriptInjectionTime::DocumentStart => script.to_string(),
-            ScriptInjectionTime::DocumentEnd => format!(
-                "globalThis.addEventListener('DOMContentLoaded',()=>globalThis.eval({}),{{once:true}});",
-                serde_json::to_string(script).expect("WebView script must serialize")
-            ),
-        };
+        // `Page.addScriptToEvaluateOnNewDocument` runs in every document of
+        // every frame. The renderer defines `waterui` in exactly the documents
+        // it admitted — the main frame's default world of a document the rules
+        // admit — and does so before Chromium runs these sources, so its
+        // presence at document start is the admission decision, made once.
+        let source = format!(
+            "if(globalThis.waterui!==undefined){{{}}}",
+            document_source(script, time)
+        );
         let session = self.session();
         // Add before removing, so a document that commits between the two runs
         // one of the versions rather than none.
@@ -198,10 +197,6 @@ impl WebViewHandle for CefWebViewHandle {
         self.handlers
             .borrow_mut()
             .insert(name.to_string(), Rc::from(handler));
-    }
-
-    fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
-        self.origins.replace(Some(policy));
     }
 
     fn remove_handler(&self, name: &str) {
@@ -318,7 +313,8 @@ impl WebViewHandle for CefWebViewHandle {
         reason = "CEF pages and DevTools sessions are confined to the UI thread"
     )]
     async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
-        self.evaluate(script).await
+        self.evaluate(&waterui_webview::raw_evaluation(script))
+            .await
     }
 
     #[expect(
@@ -329,13 +325,20 @@ impl WebViewHandle for CefWebViewHandle {
         // `body` is a function body, so it cannot be evaluated as an
         // expression; wrapping it in an async IIFE gives CDP the promise it
         // awaits.
-        let expression = format!("(async () => {{ {body} }})()");
-        self.evaluate(&expression).await
+        self.evaluate(&format!("(async () => {{ {body} }})()"))
+            .await
     }
 }
 
 impl CefWebViewHandle {
-    /// Evaluates `expression` in the main frame, awaiting a promise result.
+    /// Evaluates `expression` in the main frame, awaiting a promise result,
+    /// and answers the string it produced.
+    ///
+    /// Both paths evaluate scripts that encode their answer in the page — the
+    /// raw path through `waterui_webview::raw_evaluation`, the awaited one
+    /// through the shared wrapper's envelope — so the value is a string,
+    /// returned as it is. Anything else means the script broke that contract
+    /// and is reported rather than re-encoded here.
     #[expect(
         clippy::future_not_send,
         reason = "CEF pages and DevTools sessions are confined to the UI thread"
@@ -354,33 +357,51 @@ impl CefWebViewHandle {
         if let Some(exception) = response.exception_details {
             return Err(Str::from(exception.text));
         }
-        if let Some(value) = response.result.value {
-            return Ok(Str::from(match value {
-                Value::String(value) => value,
-                value => value.to_string(),
-            }));
+        match response.result.value {
+            Some(Value::String(value)) => Ok(Str::from(value)),
+            Some(value) => Err(Str::from(format!(
+                "the script evaluated to `{value}`, not the string it must answer"
+            ))),
+            None => Err(Str::from(format!(
+                "the script evaluated to {}, not the string it must answer",
+                response
+                    .result
+                    .description
+                    .as_deref()
+                    .unwrap_or("`undefined`")
+            ))),
         }
-        Ok(Str::from(response.result.description.unwrap_or_default()))
     }
 }
 
 impl CustomWebViewController for CefController {
     fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
-        let page = self.open_page(CefPageConfiguration::default(), CefPageMode::Visible);
+        let page = self.open_page(
+            CefPageConfiguration {
+                renderer: Some(RendererBundle::new(&config)),
+                ..CefPageConfiguration::default()
+            },
+            CefPageMode::Visible,
+        );
+        let handle = CefWebViewHandle::new(page, &config);
         // The factory goes onto the page's private request context before any
         // asset URL can navigate — the view still sits on `about:blank` here.
-        let asset_origin = config.asset_server.map(|server| {
-            crate::assets::register_scheme_handler(&page.request_context(), server);
-            Url::new(ASSET_ORIGIN)
-        });
-        CefWebViewHandle::new(page, asset_origin)
+        if let Some(server) = config.asset_server {
+            crate::assets::register_scheme_handler(&handle.page.request_context(), server);
+        }
+        handle
+    }
+
+    fn asset_origin(&self) -> Option<Url> {
+        Some(Url::new(ASSET_ORIGIN))
     }
 }
 
 /// What the host keeps about one live execution context.
 ///
-/// `origin` answers the bridge admission check; `unique_id` names the context
-/// to `Runtime.evaluate` when a reply goes back to it. The map is keyed by the
+/// `origin`, `is_default` and `frame_id` answer the bridge admission check;
+/// `unique_id` names the context to `Runtime.evaluate` when a reply goes back
+/// to it. The map is keyed by the
 /// numeric `executionContextId` because that is what `Runtime.bindingCalled`
 /// and the destruction events report — but the number is a per-renderer
 /// handle, and after a cross-process navigation another renderer can reuse it,
@@ -390,13 +411,20 @@ struct TrackedContext {
     origin: String,
     /// The context's `uniqueId` — the `uniqueContextId` a reply is sent to.
     unique_id: String,
+    /// Whether the context is its frame's default world. An isolated world
+    /// reaches the binding too, and must not reach the bridge.
+    is_default: bool,
+    /// The frame the context belongs to; only the main frame's contexts may
+    /// send.
+    frame_id: String,
 }
 
-/// Records the origin and unique id of a newly created execution context.
+/// Records what the bridge needs about a newly created execution context.
 ///
-/// Both arrive in the `context` object of `Runtime.executionContextCreated`;
-/// a context whose `uniqueId` is missing can neither be authenticated for a
-/// call nor addressed for a reply, so it is not tracked at all.
+/// Everything arrives in the `context` object of
+/// `Runtime.executionContextCreated`; a context whose `uniqueId`, world or
+/// frame is missing can neither be authenticated for a call nor addressed for
+/// a reply, so it is not tracked at all.
 fn track_context(contexts: &RefCell<HashMap<i64, TrackedContext>>, params: &Value) {
     let Some(context) = params.get("context") else {
         return;
@@ -405,6 +433,15 @@ fn track_context(contexts: &RefCell<HashMap<i64, TrackedContext>>, params: &Valu
         return;
     };
     let Some(unique_id) = context.get("uniqueId").and_then(Value::as_str) else {
+        return;
+    };
+    let Some(aux) = context.get("auxData") else {
+        return;
+    };
+    let Some(is_default) = aux.get("isDefault").and_then(Value::as_bool) else {
+        return;
+    };
+    let Some(frame_id) = aux.get("frameId").and_then(Value::as_str) else {
         return;
     };
     let origin = context
@@ -417,8 +454,24 @@ fn track_context(contexts: &RefCell<HashMap<i64, TrackedContext>>, params: &Valu
         TrackedContext {
             origin,
             unique_id: unique_id.to_string(),
+            is_default,
+            frame_id: frame_id.to_string(),
         },
     );
+}
+
+/// Records the main frame's id from `Page.frameNavigated`: the frame with no
+/// `parentId` is the main one.
+fn track_main_frame(main_frame: &RefCell<Option<String>>, params: &Value) {
+    let Some(frame) = params.get("frame") else {
+        return;
+    };
+    if frame.get("parentId").is_some() {
+        return;
+    }
+    if let Some(id) = frame.get("id").and_then(Value::as_str) {
+        main_frame.replace(Some(id.to_string()));
+    }
 }
 
 /// Reads an execution-context id out of an event's parameters.
@@ -429,28 +482,26 @@ fn context_id(params: &Value, key: &str) -> Option<i64> {
 /// Whether the frame a bridge call came from may use the bridge.
 ///
 /// CEF installs the binding in every execution context, so this is the gate,
-/// and it has to be answered about the *calling* frame. Reading the top
-/// document's URL instead — which is what this used to do — meant a
-/// cross-origin iframe inside an allowed page passed the check and could call
-/// every registered handler.
+/// and it has to be answered about the *calling* context: the main frame's
+/// default world, at an admitted origin. A subframe of an admitted page, an
+/// isolated world of the main frame and a context nobody saw created are all
+/// refused.
 fn frame_may_use_bridge(
     contexts: &RefCell<HashMap<i64, TrackedContext>>,
-    origins: &RefCell<Option<waterui_webview::OriginPolicy>>,
+    main_frame: &RefCell<Option<String>>,
+    policy: &OriginPolicy,
     context: Option<i64>,
 ) -> bool {
-    let Some(policy) = origins.borrow().clone() else {
-        // No policy installed yet means no handler has been registered either.
-        return false;
-    };
-    // A call from a context we never saw created cannot be authenticated.
     let Some(context) = context else {
         return false;
     };
-    let origin = contexts
-        .borrow()
-        .get(&context)
-        .map(|tracked| tracked.origin.clone());
-    origin.is_some_and(|origin| policy.allows_origin(&origin))
+    let contexts = contexts.borrow();
+    let Some(tracked) = contexts.get(&context) else {
+        return false;
+    };
+    tracked.is_default
+        && main_frame.borrow().as_deref() == Some(tracked.frame_id.as_str())
+        && policy.allows_origin(&tracked.origin)
 }
 
 fn dispatch_bridge_call(
@@ -531,10 +582,14 @@ fn dispatch_bridge_call(
     .detach();
 }
 
-fn install_bridge(session: &CefCdpSession) {
+/// Opens the `DevTools` side of the bridge: the transport binding and the
+/// events that authenticate its calls. The page-facing scripts are the
+/// renderer's to inject.
+fn install_bridge(session: &CefCdpSession, main_frame: &Rc<RefCell<Option<String>>>) {
+    // Both enables come before the things that need them: context and frame
+    // events authenticate calls, and Chromium only runs later document-start
+    // scripts while the page domain is enabled.
     execute_without_result(session, &protocol::RuntimeEnable {});
-    // Both enables come before the things that need them: Chromium only runs
-    // document-start scripts while the page domain is enabled.
     execute_without_result(session, &protocol::PageEnable {});
     execute_without_result(
         session,
@@ -542,12 +597,17 @@ fn install_bridge(session: &CefCdpSession) {
             name: bridge::SEND_FUNCTION,
         },
     );
-    execute_without_result(
-        session,
-        &protocol::AddScriptToEvaluateOnNewDocument {
-            source: waterui_webview::DOCUMENT_START_SCRIPT,
-        },
-    );
+    // The main frame keeps its id for the page's life, so it is read once,
+    // before anything navigates; `Page.frameNavigated` only ever repeats it.
+    let tree = session.execute(&protocol::GetFrameTree {});
+    let main_frame = Rc::clone(main_frame);
+    executor_core::spawn_local(async move {
+        let tree = tree
+            .await
+            .expect("CEF must describe the frame tree of a page it just created");
+        main_frame.replace(Some(tree.frame_tree.frame.id));
+    })
+    .detach();
 }
 
 /// Issues a command whose result nobody waits for.

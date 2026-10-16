@@ -394,6 +394,7 @@ impl CefRuntimePaths {
 
 /// Configuration required to initialize a sandboxed CEF runtime.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CefRuntimeConfiguration {
     /// Staged runtime layout.
     pub paths: CefRuntimePaths,

@@ -66,6 +66,7 @@ fn install_event_observer(
             status.set(Str::from_static("Chromium page closed"));
             progress_value.set(0.0);
         }
+        _ => {}
     });
 }
 

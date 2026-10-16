@@ -778,10 +778,9 @@ async fn augment_event_with_crash_report(
             let Some(report) = find_latest_ips_report(ctx).await else {
                 return DeviceEvent::Crashed(crash);
             };
-            DeviceEvent::Crashed(Crash {
-                report: Some(Box::new(report)),
-                ..crash
-            })
+            let mut crash = crash;
+            crash.report = Some(Box::new(report));
+            DeviceEvent::Crashed(crash)
         }
         other => other,
     }

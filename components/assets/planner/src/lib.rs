@@ -25,8 +25,23 @@ pub use font_declarations::{
 };
 pub use launch::{ColorScheme, LaunchConfig, LaunchPlan};
 
+/// One `with_<slot>` builder method per theme color slot.
+macro_rules! theme_slot_setters {
+    ($($(#[$doc:meta])* $method:ident => $slot:ident;)*) => {
+        $(
+            $(#[$doc])*
+            #[must_use]
+            pub const fn $method(mut self, color: HexColor) -> Self {
+                self.$slot = Some(color);
+                self
+            }
+        )*
+    };
+}
+
 /// The `[theme]` section of `Water.toml`: the theme color slots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ThemeConfig {
     /// Window or page background color.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,15 +82,43 @@ impl ThemeConfig {
             && self.accent.is_none()
             && self.accent_foreground.is_none()
     }
+
+    theme_slot_setters! {
+        /// Sets the window or page background color.
+        with_background => background;
+        /// Sets the main surface color.
+        with_surface => surface;
+        /// Sets the secondary surface color.
+        with_surface_variant => surface_variant;
+        /// Sets the border color.
+        with_border => border;
+        /// Sets the primary foreground color.
+        with_foreground => foreground;
+        /// Sets the muted foreground color.
+        with_muted_foreground => muted_foreground;
+        /// Sets the accent color.
+        with_accent => accent;
+        /// Sets the foreground color used on accent surfaces.
+        with_accent_foreground => accent_foreground;
+    }
 }
 
 /// Asset bundle mounted from an application or included bundle root.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BundleMount {
     /// Logical mount name.
     pub name: String,
     /// Filesystem root for this mount.
     pub root: PathBuf,
+}
+
+impl BundleMount {
+    /// The mount `name` rooted at `root`.
+    #[must_use]
+    pub const fn new(name: String, root: PathBuf) -> Self {
+        Self { name, root }
+    }
 }
 
 /// Name prefix for `include_bundle!` mount metadata records.
@@ -91,6 +134,7 @@ pub const BUNDLE_META_PREFIX: &str = "waterui_meta_bundle_";
 /// NUL-terminated payload of a `waterui_meta_bundle_*` record in the app
 /// crate's metadata directory section.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BundleMountMeta {
     /// Logical mount name; `"assets"` is the main application asset root.
     pub mount: String,
@@ -104,6 +148,17 @@ pub struct BundleMountMeta {
 }
 
 impl BundleMountMeta {
+    /// The mount `mount` of the directory `path`, produced by the toolchain
+    /// project at `project` when it is a web mount.
+    #[must_use]
+    pub const fn new(mount: String, path: PathBuf, project: Option<PathBuf>) -> Self {
+        Self {
+            mount,
+            path,
+            project,
+        }
+    }
+
     /// The record's name — also the emitted static's item name, since a
     /// record names itself.
     #[must_use]
@@ -174,6 +229,7 @@ impl BundleMountMeta {
 
 /// Semantic role assigned to a planned asset.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AssetRole {
     /// Normal asset exposed through generated asset modules.
     Regular,
@@ -230,6 +286,7 @@ impl RootArtwork {
 
 /// Asset discovered during bundle planning.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PlannedAsset {
     /// Mount name, empty for the main application asset root.
     pub mount: String,
@@ -246,6 +303,28 @@ pub struct PlannedAsset {
 }
 
 impl PlannedAsset {
+    /// The asset at `source_path`, mounted under `mount` at `relative_path`
+    /// and exposed to generated code as `logical_path`, with its kind and
+    /// role.
+    #[must_use]
+    pub const fn new(
+        mount: String,
+        source_path: PathBuf,
+        relative_path: PathBuf,
+        logical_path: PathBuf,
+        kind: AssetKind,
+        role: AssetRole,
+    ) -> Self {
+        Self {
+            mount,
+            source_path,
+            relative_path,
+            logical_path,
+            kind,
+            role,
+        }
+    }
+
     /// Returns Rust module path segments for this asset, relative to its
     /// mount's generated module.
     #[must_use]
@@ -280,6 +359,7 @@ impl PlannedAsset {
 
 /// Complete manifest describing assets discovered for a crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BundleManifest {
     /// Root directory of the application crate.
     pub crate_root: PathBuf,
@@ -292,6 +372,23 @@ pub struct BundleManifest {
 }
 
 impl BundleManifest {
+    /// The manifest of the crate at `crate_root` whose main assets live in
+    /// `assets_root`, with its additional mounts and every planned asset.
+    #[must_use]
+    pub const fn new(
+        crate_root: PathBuf,
+        assets_root: PathBuf,
+        mounts: Vec<BundleMount>,
+        assets: Vec<PlannedAsset>,
+    ) -> Self {
+        Self {
+            crate_root,
+            assets_root,
+            mounts,
+            assets,
+        }
+    }
+
     /// The root-level artwork claiming `role` (`Icon.*`, `Launch.*`), if the
     /// project provides one.
     #[must_use]
@@ -302,6 +399,7 @@ impl BundleManifest {
 
 /// Errors produced while discovering and planning asset bundles.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum PlannerError {
     /// Failed to read `Water.toml`.
     #[error("Failed to read Water.toml at '{path}': {source}")]

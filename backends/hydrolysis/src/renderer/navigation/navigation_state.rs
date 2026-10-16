@@ -337,10 +337,7 @@ impl PageMotion for InteractivePageTransition {
     ) -> crate::renderer::TransitionPaint<'a> {
         self.removal.paint(
             self.progress,
-            waterui_core::transition::TransitionGeometry {
-                size,
-                direction: self.direction,
-            },
+            waterui_core::transition::TransitionGeometry::new(size, self.direction),
             hit,
             owner,
         )

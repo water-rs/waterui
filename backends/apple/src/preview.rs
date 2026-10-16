@@ -5,10 +5,12 @@
 //! `Result`. The process brings the backend up the way `crate::entry`
 //! does — startup, the GPU runtime, native services — under the main run
 //! loop rather than the platform's application run loop, mounts the view
-//! on a root `HostView` inside a capture window, waits for GPU surfaces to
-//! present, captures the whole subtree and writes the PNG. The process
-//! answers only through `main`'s return — no Dock icon, no focus, no
-//! on-screen window, ever.
+//! on a root `HostView` inside a capture window under a fresh
+//! [`ContentLedger`](waterui_core::ContentLedger), waits for the content
+//! its views owe — bounded by the run's content deadline — and for GPU
+//! surfaces to present, captures the whole subtree and writes the PNG. The
+//! process answers only through `main`'s return — no Dock icon, no focus,
+//! no on-screen window, ever.
 //!
 //! - **`AppKit`:** the activation policy is `Prohibited` before `AppKit`
 //!   finishes launching, and the capture window is never ordered in.
@@ -77,6 +79,7 @@ macro_rules! preview_info_plist {
 /// Why a preview run failed — the generated `main` propagates it for the
 /// process to report and exit non-zero.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PreviewError {
     /// The run mode is not implemented by the Apple preview.
     #[error("apple preview supports image captures only; {0} runs are not implemented")]
@@ -84,6 +87,10 @@ pub enum PreviewError {
     /// Mounting, presenting or rasterizing the view failed.
     #[error(transparent)]
     Capture(#[from] CaptureFailure),
+    /// A view still owed content when the run's content deadline passed, or
+    /// its content failed to load.
+    #[error(transparent)]
+    Content(#[from] waterui_core::content_ledger::ContentError),
     /// Encoding or writing the capture PNG failed.
     #[error(transparent)]
     Write(#[from] waterui_preview_protocol::run::PngError),
@@ -113,9 +120,11 @@ pub enum PreviewError {
 /// # Errors
 ///
 /// [`PreviewError::UnsupportedMode`] for `Scenario` and `Semantic` runs —
-/// the Apple preview captures images only. [`PreviewError::Capture`] when
-/// the view cannot be mounted or rasterized. [`PreviewError::Write`]
-/// when the PNG cannot be encoded or written. [`PreviewError::RunLoopExited`] when the main run
+/// the Apple preview captures images only. [`PreviewError::Content`] when a
+/// view still owes content at the run's content deadline or its load
+/// fails. [`PreviewError::Capture`] when the view cannot be mounted or
+/// rasterized. [`PreviewError::Write`] when the PNG cannot be encoded or
+/// written. [`PreviewError::RunLoopExited`] when the main run
 /// loop returns without the capture's result — a return is never success
 /// on its own.
 ///
@@ -156,6 +165,7 @@ fn drive(
     // everything else through.
     let inspector = crate::startup::initialize_for_preview();
 
+    let content_deadline = config.content_deadline();
     let output = match config.mode {
         PreviewRunMode::Image { output } => output,
         PreviewRunMode::Scenario { .. } => {
@@ -194,8 +204,20 @@ fn drive(
                     env
                 };
                 executor_core::spawn_local(async move {
-                    *outcome.borrow_mut() =
-                        Some(render_and_write(&env, mtm, &host, view, size, &output).await);
+                    *outcome.borrow_mut() = Some(
+                        render_and_write(
+                            &env,
+                            mtm,
+                            &host,
+                            view,
+                            Capture {
+                                size,
+                                content_deadline,
+                                output: &output,
+                            },
+                        )
+                        .await,
+                    );
                     CFRunLoop::current()
                         .expect("the render task runs on a thread that has a run loop")
                         .stop();
@@ -301,18 +323,32 @@ pub(crate) fn prepare(
     (env, host)
 }
 
-/// Renders `view` under `env` inside a capture window, captures the
-/// presented subtree and writes its PNG — the one tail [`run`] runs and
-/// every capture the entry performs ends in.
+/// What one capture produces: the viewport, how long it waits for owed
+/// content, and where the PNG goes.
+struct Capture<'a> {
+    /// The capture window's size.
+    size: cocoa_ui::Size,
+    /// How long the capture waits for content its views owe.
+    content_deadline: core::time::Duration,
+    /// The PNG destination.
+    output: &'a std::path::Path,
+}
+
+/// Renders `view` under `env` inside a capture window, awaits the content
+/// its views owe, captures the presented subtree and writes its PNG — the
+/// one tail [`run`] runs and every capture the entry performs ends in.
 ///
+/// The view mounts under a fresh [`ContentLedger`](waterui_core::ContentLedger):
+/// the capture rasterizes only once a full drain leaves nothing owed.
 /// Apple's bitmap context reads premultiplied RGBA8 — the convention the
 /// writer declares for the capture.
 ///
 /// # Errors
 ///
-/// Returns [`PreviewError::Capture`] when the platform cannot mount,
-/// present or rasterize the view, and [`PreviewError::Write`] when the PNG
-/// cannot be encoded or written.
+/// Returns [`PreviewError::Content`] when content is still owed at the
+/// deadline or fails to load, [`PreviewError::Capture`] when the platform
+/// cannot mount, present or rasterize the view, and
+/// [`PreviewError::Write`] when the PNG cannot be encoded or written.
 #[expect(
     clippy::future_not_send,
     reason = "the capture runs on the main thread; the Retained native objects it holds across the wait are not Send"
@@ -322,14 +358,16 @@ async fn render_and_write(
     mtm: MainThreadMarker,
     host: &Host,
     view: impl FnOnce() -> waterui::AnyView,
-    size: cocoa_ui::Size,
-    output: &std::path::Path,
+    capture: Capture<'_>,
 ) -> Result<(), PreviewError> {
-    let stage = Stage::mount(env, mtm, host, view, size);
+    let ledger = waterui_core::ContentLedger::new();
+    let content_env = env.extending(ledger.clone());
+    let stage = Stage::mount(&content_env, mtm, host, view, capture.size);
+    crate::content::await_content(&ledger, &stage.root, capture.content_deadline).await?;
     let result = stage.capture(env, mtm).await?;
     drop(stage);
     waterui_preview_protocol::run::write_png(
-        output,
+        capture.output,
         result.width,
         result.height,
         result.rgba_data,
@@ -461,7 +499,9 @@ impl Stage {
     }
 
     /// Captures the presented subtree: `ViewCapture` composites the native
-    /// raster with every GPU surface inside it.
+    /// raster with every GPU surface inside it. The owed content has
+    /// settled by now, so a zero-size subtree is genuinely empty, not still
+    /// loading.
     #[cfg(feature = "gpu_surface")]
     #[expect(
         clippy::future_not_send,
@@ -472,19 +512,19 @@ impl Stage {
         env: &Environment,
         mtm: MainThreadMarker,
     ) -> Result<waterui_core::view_renderer::RenderResult, CaptureFailure> {
-        // The preview mounts and captures inside one run-loop turn, so the
-        // window's display pass never runs: run it explicitly — it draws the
-        // backing stores and attaches every subview's backing layer into the
-        // root layer tree `ViewCapture`'s `renderInContext` reads.
+        // The window is never ordered in, so its display pass never runs on
+        // its own: run it explicitly — it draws the backing stores and
+        // attaches every subview's backing layer into the root layer tree
+        // `ViewCapture`'s `renderInContext` reads.
         #[cfg(target_os = "macos")]
         self.window.displayIfNeeded();
         let scale = cocoa_ui::view::backing_scale_factor(&self.root);
         let result = crate::capture_image::capture_rgba(&self.root, env, scale, mtm).await?;
-        Ok(waterui_core::view_renderer::RenderResult {
-            rgba_data: result.pixels,
-            width: result.width,
-            height: result.height,
-        })
+        Ok(waterui_core::view_renderer::RenderResult::new(
+            result.pixels,
+            result.width,
+            result.height,
+        ))
     }
 
     /// The `gpu_surface`-free capture: every leaf rasterizes through the

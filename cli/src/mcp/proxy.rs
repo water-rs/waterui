@@ -34,12 +34,13 @@ use waterui_mcp_protocol::{
 };
 use waterui_preview_protocol::hydrolysis::{MCP_RUN_CONFIG_ENV, McpRunConfig};
 
-use crate::build::{BuildOptions, BuildProfile};
+use crate::build::BuildOptions;
 use crate::hydrolysis::backend::{self, HydrolysisBackend};
 use crate::hydrolysis::platform::{
     build_hydrolysis_with_envs_and_features, stage_hydrolysis_shared_runtime,
 };
 use crate::mcp::{host_platform, write_run_config};
+use crate::platform::TargetBackend;
 use crate::preview::hydrolysis::{HydrolysisPreviewTheme, stage_hydrolysis_resources};
 
 /// The Cargo feature that builds the generated backend as an MCP child.
@@ -300,7 +301,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
     let platform = host_platform();
     let project = backend::open_ready(&config.host, &config.project_path).await?;
 
-    let mut build_options = BuildOptions::development(BuildProfile::Debug);
+    let mut build_options = BuildOptions::default_development(TargetBackend::Hydrolysis);
     if let Some(sccache_path) = &config.sccache_path {
         build_options = build_options.with_sccache(sccache_path.clone());
     }
@@ -322,11 +323,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
     stage_hydrolysis_shared_runtime(&project, &built, platform).await?;
     let binary_path = built.executable()?;
 
-    let run_config = McpRunConfig {
-        width: config.width,
-        height: config.height,
-        scale_factor: config.scale_factor,
-    };
+    let run_config = McpRunConfig::new(config.width, config.height, config.scale_factor);
     let config_path = write_run_config(&project, &run_config).await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
 

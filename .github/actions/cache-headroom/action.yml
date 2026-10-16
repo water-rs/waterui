@@ -1,0 +1,83 @@
+name: Cache headroom
+
+description: >-
+  Fails the job unless the archive about to be saved fits under the
+  repository's Actions cache storage limit next to every entry that exists
+  now. Writers save the replacement generation BEFORE retiring the one it
+  supersedes, so pull requests always find one of the two; this check is
+  what keeps that save from pushing usage over the limit, where GitHub
+  evicts caches by last access and takes live, unrelated entries with it.
+  The archive size is measured with the pipeline actions/cache uses
+  (tar | zstd -T0 --long=30), and current usage is the sum of the live
+  cache listing — the usage endpoint is refreshed only about every five
+  minutes, so it can miss a save that just finished. The limit comes from
+  the ACTIONS_CACHE_LIMIT_BYTES repository variable, because reading the
+  configured storage limit needs repository admin rights the job token
+  does not carry.
+
+inputs:
+  path:
+    description: The newline-separated paths the save step archives, exactly as given to actions/cache.
+    required: true
+  key:
+    description: The key the save step writes, named in the report.
+    required: true
+  limit-bytes:
+    description: The repository's cache storage limit in bytes (vars.ACTIONS_CACHE_LIMIT_BYTES).
+    required: true
+  github-token:
+    description: Token that can list the repository's Actions caches.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Measure the archive
+      id: archive
+      shell: bash
+      env:
+        CACHE_PATHS: ${{ inputs.path }}
+      run: |
+        set -euo pipefail
+        paths=()
+        while IFS= read -r line; do
+          [ -n "${line// /}" ] || continue
+          paths+=("${line/#\~/${HOME}}")
+        done <<< "${CACHE_PATHS}"
+        bytes="$(tar -cPf - "${paths[@]}" | zstd -q -T0 --long=30 -c | wc -c | tr -d ' ')"
+        echo "bytes=${bytes}" >> "${GITHUB_OUTPUT}"
+    - name: Check headroom
+      uses: actions/github-script@v7
+      env:
+        ARCHIVE_BYTES: ${{ steps.archive.outputs.bytes }}
+        CACHE_KEY: ${{ inputs.key }}
+        LIMIT_BYTES: ${{ inputs.limit-bytes }}
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const limitText = process.env.LIMIT_BYTES;
+          if (!/^[0-9]+$/.test(limitText)) {
+            core.setFailed(limitText === ''
+              ? 'ACTIONS_CACHE_LIMIT_BYTES is not set: set the repository variable to the Actions cache storage limit in bytes'
+              : `ACTIONS_CACHE_LIMIT_BYTES is not a byte count: ${limitText}`);
+            return;
+          }
+          const limit = Number(limitText);
+          const archive = Number(process.env.ARCHIVE_BYTES);
+          const { owner, repo } = context.repo;
+          const entries = await github.paginate(
+            github.rest.actions.getActionsCacheList,
+            { owner, repo, per_page: 100 });
+          const usage = entries.reduce((sum, e) => sum + e.size_in_bytes, 0);
+          const needed = usage + archive;
+          const report = `${process.env.CACHE_KEY}: ${archive} B archive + ${usage} B in ${entries.length} live entries = ${needed} B against ACTIONS_CACHE_LIMIT_BYTES ${limit} B`;
+          if (needed > limit) {
+            const largest = [...entries]
+              .sort((a, b) => b.size_in_bytes - a.size_in_bytes)
+              .slice(0, 5)
+              .map((e) => `${e.key} on ${e.ref} (${e.size_in_bytes} B)`)
+              .join(', ');
+            core.setFailed(`saving would exceed the cache limit and evict live caches: ${report}; largest entries: ${largest}`);
+            return;
+          }
+          core.info(`headroom ok: ${report}`);

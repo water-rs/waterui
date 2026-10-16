@@ -11,6 +11,7 @@ use crate::project::Manifest;
 /// Platform names accepted by the CLI and by `[platforms.<platform>]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum PlatformName {
     /// iOS device.
     Ios,
@@ -56,6 +57,7 @@ impl PlatformName {
 /// Backend selection for a single platform.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct PlatformConfig {
     /// Backend this project requires for the platform.
     pub backend: TargetBackend,

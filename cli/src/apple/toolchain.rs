@@ -11,6 +11,10 @@ pub type AppleToolchain = (Xcode, AppleSdk);
 
 /// Represents the Xcode toolchain
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct Xcode;
 
 impl Toolchain for Xcode {
@@ -33,6 +37,7 @@ impl Toolchain for Xcode {
 
 /// Represents an Apple SDK (e.g., iOS, macOS)
 #[derive(Debug, Deserialize, Serialize, Clone, Copy)]
+#[non_exhaustive]
 pub enum AppleSdk {
     /// iOS SDK
     #[serde(rename = "iOS")]
