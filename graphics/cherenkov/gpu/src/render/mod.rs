@@ -10602,9 +10602,9 @@ fn image_texels_f16(image: &ImageUpload) -> Result<Vec<u8>, ResourceError> {
                 [decode(enc[0]), decode(enc[1]), decode(enc[2])]
             }
             _ => [
-                srgb_decode_u8_f64(decode(enc[0])),
-                srgb_decode_u8_f64(decode(enc[1])),
-                srgb_decode_u8_f64(decode(enc[2])),
+                cherenkov::srgb_decode(decode(enc[0])),
+                cherenkov::srgb_decode(decode(enc[1])),
+                cherenkov::srgb_decode(decode(enc[2])),
             ],
         };
         // sRGB-primaries input additionally needs the primaries' matrix;
@@ -10684,9 +10684,9 @@ fn image_texels(
                 [decode(px[0]), decode(px[1]), decode(px[2])]
             }
             _ => [
-                srgb_decode_u8_f64(decode(px[0])),
-                srgb_decode_u8_f64(decode(px[1])),
-                srgb_decode_u8_f64(decode(px[2])),
+                cherenkov::srgb_decode(decode(px[0])),
+                cherenkov::srgb_decode(decode(px[1])),
+                cherenkov::srgb_decode(decode(px[2])),
             ],
         };
         let lin_p3 = match color_space {
@@ -10741,14 +10741,6 @@ fn create_gpu_image(
         view,
         width,
         height,
-    }
-}
-
-fn srgb_decode_u8_f64(v: f64) -> f64 {
-    if v <= 0.04045 {
-        v / 12.92
-    } else {
-        ((v + 0.055) / 1.055).powf(2.4)
     }
 }
 

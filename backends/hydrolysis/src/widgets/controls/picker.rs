@@ -19,16 +19,16 @@ use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::id::Id;
-use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::layout::{
+    HorizontalAlignment, ProposalSize, Size as LayoutSize, StretchAxis, ViewDimensions,
+};
 use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::local_interaction_state;
 use crate::theme::PickerMetrics;
-use crate::widgets::util::label_beside_control_bounds;
-#[cfg(feature = "accessibility")]
-use crate::widgets::util::widget_disabled;
+use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 
 impl HydroNativeView for Native<PickerConfig> {
     fn intrinsic(
@@ -465,21 +465,30 @@ pub fn picker_accessibility(
 /// Measures a retained picker leaf from its [`PickerRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and the
 /// in-field label render agree (mirrors [`measure_picker_intrinsic`]).
+///
+/// A segmented picker (`StretchAxis::Horizontal`) answers a finite width
+/// proposal, never below its intrinsic width; every other picker answers its
+/// intrinsic size (`docs/layout-spec.md` §6).
 pub fn measure_picker_node(
     state: &PickerRenderState,
-    _proposal: ProposalSize,
+    proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
     theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_size = state.label_view.measure_built(hydro, env, theme);
-    ViewDimensions::new(measure_picker_intrinsic_with_label_size(
-        &state.config,
-        label_size,
-        hydro,
-        env,
-        theme,
-    ))
+    let intrinsic =
+        measure_picker_intrinsic_with_label_size(&state.config, label_size, hydro, env, theme);
+    let width = match (
+        waterui_core::NativeView::stretch_axis(&state.config),
+        proposal.width,
+    ) {
+        (StretchAxis::Horizontal, Some(proposed)) if proposed.is_finite() => {
+            proposed.max(intrinsic.width)
+        }
+        _ => intrinsic.width,
+    };
+    ViewDimensions::new(LayoutSize::new(width, intrinsic.height))
 }
 
 /// Renders a retained picker leaf every flush: emits a11y (unless hidden) then the
@@ -940,6 +949,13 @@ pub fn render_segmented_picker(
     let selected = ctx.renderer_mut().read_signal(&selection);
     let bounds = ctx.bounds;
     let item_count = items.len();
+    // Reading the disabled signal watches it, so a change schedules a frame
+    // and this persistent node re-renders (and re-registers input) with the
+    // new state.
+    let disabled = {
+        let signal = widget_disabled(env);
+        ctx.renderer_mut().read_signal(&signal)
+    };
     // The group heading spans the full width at the top edge; the segment
     // row keeps its unlabelled height in the space below it, and keeps the
     // full bounds when the label is hidden.
@@ -953,6 +969,12 @@ pub fn render_segmented_picker(
     }
     let segment_width = row_bounds.width() / crate::num_cast::usize_as_f64(item_count);
 
+    // The container is recorded first so it sits beneath every segment, state
+    // layer and label.
+    ctx.draw_context(|draw| {
+        theme.draw_segmented_picker_container(&mut *draw, row_bounds, item_count);
+    });
+
     for (index, item) in items.into_iter().enumerate() {
         let x0 = segment_width.mul_add(crate::num_cast::usize_as_f64(index), row_bounds.x0);
         let segment_rect = kurbo::Rect::new(x0, row_bounds.y0, x0 + segment_width, row_bounds.y1);
@@ -960,9 +982,12 @@ pub fn render_segmented_picker(
         let hit_rect = segment_rect;
         let discriminator = crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
         let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
-        let (interaction, press_slot, _) =
-            ctx.renderer_mut()
-                .bind_interaction_target(interaction_key, hit_rect, env);
+        let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
+            interaction_key,
+            hit_rect,
+            env,
+            disabled,
+        );
         let interaction =
             local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
         {
@@ -1001,6 +1026,12 @@ pub fn render_segmented_picker(
         };
         ctx.render_styled_text(styled, HorizontalAlignment::Leading, env, label_rect);
 
+        // A disabled segmented picker registers no tap target: the pointer
+        // neither presses nor selects a segment. Targets are re-registered
+        // every flush, so re-enabling restores interactivity on the next frame.
+        if disabled {
+            continue;
+        }
         let tag = item.tag;
         ctx.renderer_mut()
             .register_interactive_pointer_target(hit_rect, press_slot, {
@@ -1014,10 +1045,6 @@ pub fn render_segmented_picker(
                 }
             });
     }
-
-    ctx.draw_context(|draw| {
-        theme.draw_segmented_picker_container(&mut *draw, row_bounds, item_count);
-    });
 }
 
 fn segmented_label_rect(

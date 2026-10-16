@@ -127,7 +127,8 @@ wrapped at the proposal the column was measured with.
   `Color` and shapes are `Both`; text, buttons and other content controls
   are `None`; a text field is `Horizontal`; a toggle is `Horizontal` when it
   draws the switch style with a visible label, and `None` otherwise; a stepper
-  is `Horizontal` when its label is visible, and `None` otherwise.
+  is `Horizontal` when its label is visible, and `None` otherwise; a picker
+  is `Horizontal` in the segmented style, and `None` otherwise.
 
 ## 4. Stacks (`HStack`, `VStack`)
 
@@ -412,7 +413,11 @@ A backend hosts native leaves inside Rust-driven containers. The leaf's
   before this rule applies. A stepper with a visible label answers the
   proposal width (`Horizontal`) and its intrinsic height, placing the label at
   the leading edge and the buttons at the trailing edge with the free space
-  between; a stepper with a hidden label answers its intrinsic size.
+  between; a stepper with a hidden label answers its intrinsic size. A picker
+  in the segmented style answers the proposal width (`Horizontal`) and its
+  intrinsic height, dividing the width into equal segments; an unbounded
+  width proposal answers the intrinsic width. Every other picker style
+  answers the control's intrinsic size.
 - **ScrollView**: a scroll claims the whole offer — a finite proposal on
   either axis is answered with that proposal; only a `0` proposal measures the
   content, answering its intrinsic extent on the non-scrolling axis and `0` on

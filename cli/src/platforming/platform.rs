@@ -82,6 +82,15 @@ pub enum TargetBackend {
 }
 
 impl TargetBackend {
+    /// Whether the backend is experimental: shipped without full testing
+    /// ahead of milestone releases, and never a prerequisite of a mainline
+    /// build. Apple and Hydrolysis are the mainline backends; GTK4 and `WinUI`
+    /// are experimental.
+    #[must_use]
+    pub const fn is_experimental(&self) -> bool {
+        matches!(self, Self::Gtk4 | Self::WinUi)
+    }
+
     /// The framework scaffold packages the backend's generated crate links —
     /// the names a `framework.json` `scaffold` (or `experimental-packages`)
     /// table keys on. A withheld package means the selected channel cannot
