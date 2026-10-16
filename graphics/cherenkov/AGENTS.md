@@ -57,9 +57,11 @@ belong to water-rs/waterui.
   counts:** Ir for `lower` and `encode` at the second steady frame of the
   perf scenes, sampled by frame index (`bench/scripts/ir_gate.py`, which runs
   `measure --pause-at`). CI runs it for a pull request that carries the
-  `cherenkov-ir` label, or by dispatch of `cherenkov-ir.yml` for any revision
-  against its merge base with dev. The gated Ir excludes the allocator (calls
-  into the Rust allocator shims and the libc malloc family) and the libc memory
+  `cherenkov-ir` label, measured as merged into dev, or by dispatch of
+  `cherenkov-ir.yml` for any revision against its merge base with dev
+  (`-f head=refs/pull/<number>/merge` for a pull request). The gated Ir
+  excludes the allocator (calls into the Rust allocator shims and the libc
+  malloc family) and the libc memory
   primitives (memcpy, memmove, memset, memcmp, bcmp), whose Ir depends on
   buffer addresses: at most +1% per scene against dev, and alloc, realloc,
   dealloc and memory-primitive calls per frame must not rise.
