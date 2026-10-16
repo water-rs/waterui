@@ -5705,6 +5705,8 @@ mod winit_impl {
 pub use web_impl::ExportedBrowserSurface as BrowserSurface;
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 pub use web_impl::ExportedBrowserWindow as BrowserWindow;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::report_fatal_error;
 #[cfg(all(
     target_arch = "wasm32",
     feature = "web",
