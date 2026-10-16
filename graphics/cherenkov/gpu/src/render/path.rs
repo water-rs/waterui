@@ -8,7 +8,7 @@ use cherenkov::{FillRule, ShapeData};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Vec2};
 
 use crate::render::glyph::{CellTexels, PathCell, PathEmit};
-use crate::render::raster::Raster;
+use crate::render::raster::{self, Raster};
 use cherenkov::RenderError;
 
 /// Coverage strip height in device rows.
@@ -290,7 +290,6 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
 /// upload has consumed them.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_precision_loss)]
-#[expect(clippy::cast_sign_loss)]
 #[expect(
     clippy::too_many_lines,
     reason = "one emission walk: small-cell fast path, strip loop"
@@ -323,7 +322,8 @@ pub fn emit(
             arena.extend(
                 coverage.data[(y + row) * coverage.w + x..][..w]
                     .iter()
-                    .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8),
+                    .copied()
+                    .map(raster::texel),
             );
         }
         rasters.push((w32, h32, start..arena.len()));
@@ -412,16 +412,14 @@ pub fn emit(
     Ok((out, rasters))
 }
 
-/// Classifies one strip's columns as 0 empty, 1 full (1.0 in every row),
-/// 2 partial. Full runs narrower than `FULL_RUN_MIN` are demoted to
-/// partial so a partial run is not fragmented by isolated full columns,
-/// and empty gaps up to `PARTIAL_GAP_MAX` between two partial runs are
-/// carried as zero texels inside one cell rather than as a separate cell
-/// instance.
-#[expect(
-    clippy::float_cmp,
-    reason = "a column is 'full' exactly when coverage clamped to 1.0"
-)]
+/// Classifies one strip's columns by the texels the atlas stores
+/// ([`raster::texel`]): 0 empty (every texel 0), 1 full (every texel
+/// `u8::MAX`), 2 partial. Coverage the quantization rounds away, such as
+/// floating-point residue, never decides where a cell starts. Full runs
+/// narrower than `FULL_RUN_MIN` are demoted to partial so a partial run
+/// is not fragmented by isolated full columns, and empty gaps up to
+/// `PARTIAL_GAP_MAX` between two partial runs are carried as zero texels
+/// inside one cell rather than as a separate cell instance.
 fn strip_class(coverage: &Coverage, sy: usize, sh: usize, class: &mut Vec<u8>) {
     class.clear();
     class.resize(coverage.w, 0);
@@ -429,9 +427,9 @@ fn strip_class(coverage: &Coverage, sy: usize, sh: usize, class: &mut Vec<u8>) {
         let mut empty = true;
         let mut full = true;
         for row in 0..sh {
-            let v = coverage.data[(sy + row) * coverage.w + x];
-            empty &= v == 0.0;
-            full &= v == 1.0;
+            let t = raster::texel(coverage.data[(sy + row) * coverage.w + x]);
+            empty &= t == 0;
+            full &= t == u8::MAX;
         }
         *c = if empty {
             0
@@ -878,6 +876,35 @@ mod tests {
         assert_eq!(emitted.cells.len(), 1);
         assert_eq!(emitted.cells[0].interior, 3 | (20 << 16));
         assert_eq!(rasters[0].0, 23);
+    }
+
+    /// A column holding only floating-point residue uploads zero texels,
+    /// so it classifies empty and the cell starts at the first column the
+    /// atlas actually covers.
+    #[test]
+    fn a_residue_only_column_classifies_empty() {
+        let (w, h) = (40, STRIP_H);
+        let mut data = vec![0.0f32; w * h];
+        for row in data.chunks_exact_mut(w) {
+            row[9] = 6e-14;
+            row[10..13].fill(0.5);
+        }
+        let coverage = Coverage {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h,
+            clipped: false,
+            data,
+        };
+        let mut class = Vec::new();
+        strip_class(&coverage, 0, h, &mut class);
+        assert_eq!(class[9], 0, "the residue column is empty");
+        assert_eq!(class[10..13], [2, 2, 2]);
+        let mut arena = Vec::new();
+        let (emitted, rasters) = emit(&coverage, &mut arena).unwrap();
+        assert_eq!(emitted.cells.len(), 1);
+        assert_eq!(rasters[0].0, 3, "the cell spans only the uploaded coverage");
     }
 }
 

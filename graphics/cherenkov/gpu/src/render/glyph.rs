@@ -13,7 +13,7 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::TableProvider;
 use skrifa::raw::types::F2Dot14;
 
-use crate::render::raster::Raster;
+use crate::render::raster::{self, Raster};
 use cherenkov::RenderError;
 
 /// Initial atlas edge length.
@@ -2372,10 +2372,7 @@ fn rasterize_texels(
         raster.draw_line(x0 - ox, y0 - oy, x1 - ox, y1 - oy);
     }
     let coverage = raster.coverage();
-    let texels: Vec<u8> = coverage
-        .iter()
-        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-        .collect();
+    let texels: Vec<u8> = coverage.iter().copied().map(raster::texel).collect();
     Ok(Some(CellRaster {
         left,
         top,

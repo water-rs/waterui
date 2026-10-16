@@ -146,6 +146,20 @@ impl Raster {
     }
 }
 
+/// The atlas's R8 texel for coverage `c`: the one quantization every
+/// coverage upload uses, and the value strip classification judges a
+/// column by, so cell layout depends only on what the atlas stores.
+#[inline]
+#[must_use]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the clamped, rounded value lies in 0..=255"
+)]
+pub fn texel(c: f32) -> u8 {
+    (c.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
