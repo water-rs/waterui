@@ -15,6 +15,58 @@ SPEC.loader.exec_module(ir_gate)
 
 DATA = SOURCE / 'testdata' / 'ir_gate'
 ROOT = '_RNvCs1_5bench4root'
+# The CPU leg's roots, in the shapes the real binary's names take.
+MARKER = '_RNvXs5_NtCs1_15cherenkov_bench16cherenkov_cpu_adNtB5_9CherenkovNtB7_6Engine6submit'
+RENDER = '_RINvNtNtCs1_9cherenkov6engine6thread13apply_messageNtCs1_13cherenkov_cpu6RasterECs1_15cherenkov_bench'
+WAITER = '_RNvMs8_NtCs1_10rayon_core8registryNtB5_12WorkerThread15wait_until_cold'
+JOB = '_RNvXs2_NtCs1_10rayon_core3jobINtB5_8StackJobNtB5_4BandE0ENtB5_3Job7executeB3l_'
+RUN = '_RINvNtNtCs1_9cherenkov6engine6thread3runNtCs1_13cherenkov_cpu6RasterE'
+LATCH = '_RNvXs4_NtCs1_10rayon_core5latchNtB5_9LockLatchNtB5_5Latch3set'
+WAIT = '_RNvMs3_NtCs1_10rayon_core5latchNtB5_9LockLatch14wait_and_reset'
+ALLOC = '_RNvCs1_7___rustc12___rust_alloc'
+ROOTS = ir_gate.CpuRoots(marker=MARKER, render=RENDER, waiter=WAITER, jobs=(JOB,))
+
+
+def write_dump(directory, number, trigger, edges):
+    """One Callgrind dump `cpu.<number>`: `edges` are (caller, callee, calls, inclusive Ir)."""
+    lines = ['# callgrind format', 'version: 1', 'creator: callgrind-3.22.0', 'cmd: cherenkov-bench measure',
+             f'part: {number}', '', f'desc: Trigger: --dump-{trigger[0]}={trigger[1]}', '', 'positions: line',
+             'events: Ir', '', '', 'ob=(1) /bench', 'fl=(1) ???']
+    ids = {}
+
+    def name(function):
+        if function in ids:
+            return f'({ids[function]})'
+        ids[function] = len(ids) + 1
+        return f'({ids[function]}) {function}'
+    for caller, callee, calls, cost in edges:
+        lines += [f'fn={name(caller)}', '0 1', f'cfn={name(callee)}', f'calls={calls} 0', f'0 {cost}', '']
+    (directory / f'cpu.{number}').write_text('\n'.join(lines) + '\n')
+
+
+def chain(function, *callers):
+    return "'".join((function, *callers))
+
+
+# Four bench frames. The render thread's call is entered at dump 1 (an
+# earlier one, in flight when instrumentation switched on, returns there);
+# frame 1's job returns only after the frame's `submit` (dump 3), in dump 4.
+# Its allocator, memory-primitive and latch calls land in the dumps between
+# its entry and its return; a call inside the latch wait is part of it.
+CPU_RUN = {
+    1: (('before', RENDER), [(RUN, RENDER, 1, 9)]),
+    2: (('before', JOB), [(RENDER, chain(ALLOC, RENDER, RUN), 1, 5)]),
+    3: (('after', MARKER), [(RUN, RENDER, 1, 100), (RENDER, chain(WAIT, RENDER, RUN), 1, 20),
+                            (WAIT, chain(ALLOC, WAIT, RENDER, RUN), 1, 4), (JOB, chain('memcpy', JOB, WAITER), 1, 8)]),
+    4: (('before', RENDER), [(WAITER, JOB, 1, 300), (JOB, chain(LATCH, JOB, WAITER), 1, 6)]),
+    5: (('before', JOB), []),
+    6: (('after', MARKER), [(RUN, RENDER, 1, 110), (WAITER, JOB, 1, 280), (JOB, chain('free', JOB, WAITER), 1, 3)]),
+    7: (('before', RENDER), []),
+    8: (('before', JOB), []),
+    9: (('after', MARKER), [(RUN, RENDER, 1, 120), (WAITER, JOB, 1, 290)]),
+    10: (('before', RENDER), []),
+    11: (('after', MARKER), [(RUN, RENDER, 1, 130)]),
+}
 
 
 class Host(unittest.TestCase):
@@ -154,6 +206,21 @@ class Sampling(unittest.TestCase):
         with self.assertRaises(AssertionError):
             ir_gate.measure(DATA / 'unseparated.1', ROOT)
 
+    def test_leg_builds_its_engine(self):
+        self.assertIn('cherenkov', ir_gate.build_args(ir_gate.LEGS['gpu']))
+        self.assertIn('cherenkov-cpu', ir_gate.build_args(ir_gate.LEGS['cpu']))
+        self.assertEqual(list(ir_gate.LEGS['cpu'].scenes), list(ir_gate.SCENES))
+
+    def test_sync_is_subtracted_only_where_the_leg_asks(self):
+        latch = '_RNvXs4_NtCs1_10rayon_core5latchNtB5_9LockLatchNtB5_5Latch3set'
+        self.assertIsNone(ir_gate.subtracted(latch))
+        self.assertEqual(ir_gate.subtracted(latch, ir_gate.SYNC), ('sync', None))
+        self.assertIsNone(ir_gate.subtracted(JOB, ir_gate.SYNC))
+        options = ir_gate.function_options([], ir_gate.SYNC, before=[RENDER, ir_gate.CPU_JOB], marker=MARKER)
+        self.assertIn(f'--separate-callers{ir_gate.CALLERS}=*10rayon_core5latch*5Latch3set*', options)
+        self.assertIn(f'--dump-before={ir_gate.CPU_JOB}', options)
+        self.assertIn(f'--dump-after={MARKER}', options)
+
     def test_one_table_classifies_and_separates(self):
         cases = {'_RNvCs1_7___rustc12___rust_alloc': ('alloc', 'allocs'),
                  '_RNvCs1_7___rustc19___rust_alloc_zeroed': ('alloc', 'allocs'),
@@ -167,6 +234,48 @@ class Sampling(unittest.TestCase):
         options = ir_gate.function_options([])
         self.assertIn(f'--separate-callers{ir_gate.CALLERS}=*___rust_dealloc', options)
         self.assertIn(f'--separate-callers{ir_gate.CALLERS}=__memset_*', options)
+
+
+class CpuFrames(unittest.TestCase):
+    def samples(self, run):
+        with tempfile.TemporaryDirectory() as root:
+            directory = pathlib.Path(root)
+            for number, (trigger, edges) in run.items():
+                write_dump(directory, number, trigger, edges)
+            return ir_gate.frame_samples(directory, 'cpu', {n: t for n, (t, _) in run.items()}, ROOTS)
+
+    def test_calls_belong_to_the_frame_of_their_entry(self):
+        first, second, third = self.samples(CPU_RUN)
+        self.assertEqual((first['ir'], first['jobs'], first['messages']), (100 + 300, 1, 1))
+        self.assertEqual((first['alloc_ir'], first['allocs']), (5, 1))
+        self.assertEqual((first['mem_ir'], first['mem_calls']), (8, 1))
+        self.assertEqual((first['sync_ir'], first['sync_calls']), (20 + 6, 2))
+        self.assertEqual(first['rust_ir'], 400 - 5 - 8 - 26)
+        self.assertEqual((second['ir'], second['alloc_ir'], second['deallocs'], second['rust_ir']), (390, 3, 1, 387))
+        self.assertEqual((third['ir'], third['rust_ir']), (410, 410))
+
+    def test_a_lost_return_fails(self):
+        run = dict(CPU_RUN)
+        run[4] = (('before', RENDER), [])
+        with self.assertRaisesRegex(AssertionError, 'never returned'):
+            self.samples(run)
+
+    def test_a_return_without_its_entry_fails(self):
+        run = dict(CPU_RUN)
+        run[5] = (('before', RENDER), [])
+        with self.assertRaisesRegex(AssertionError, 'returned without an entry'):
+            self.samples(run)
+
+    def test_a_nested_job_fails(self):
+        run = dict(CPU_RUN)
+        run[6] = (('after', MARKER), [(RUN, RENDER, 1, 110), (JOB, JOB, 1, 280)])
+        with self.assertRaisesRegex(AssertionError, 'one worker per pool'):
+            self.samples(run)
+
+    def test_too_few_frames_fail(self):
+        run = {n: v for n, v in CPU_RUN.items() if n < 11}
+        with self.assertRaisesRegex(AssertionError, 'frames closed'):
+            self.samples(run)
 
 
 if __name__ == '__main__':
