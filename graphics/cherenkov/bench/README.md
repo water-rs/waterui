@@ -130,8 +130,8 @@ interval is no wider than the 2% limit fails above +2% and passes otherwise; a
 wider interval is `unresolved`, never a pass. Full-size scenes resolve in 120
 frames per invocation. Scenes whose GPU time is a fraction of a millisecond
 are not judged on the Pixel (#2775). They vary per process by more than more
-frames remove. Their GPU time also does not grow with added GPU work: a fixed
-buffer clear inside the timed span moved continuous-s50 by −2.5% at
+frames remove, and their GPU time is not additive in GPU work: a fixed buffer
+clear added just before the pass moved continuous-s50 by −2.5% at
 `--frames 1200 --rounds 16`.
 `--governor` leaves the clocks to the governors, for the 8.33 ms p99 budget
 check:
