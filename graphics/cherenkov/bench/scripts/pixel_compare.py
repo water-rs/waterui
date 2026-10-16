@@ -82,6 +82,14 @@ import time
 from pathlib import Path
 from typing import Any
 
+# What `analyze` compares per frame: GPU milliseconds from timestamps, or
+# the shader cores' active cycles from the Mali counters (`--gpu-counters`).
+METRICS = {
+    "gpu-time": ("ms", lambda sample: sample["gpu_seconds"] * 1000),
+    "shader-core-cycles": ("cycles",
+                           lambda sample: sample["gpu_counters"]["shader_core_active_cycles"]),
+}
+
 # A collection's identity: every field `analyze` relies on is in the plan.
 PLAN = "plan.json"
 CONTROL = "control.json"
@@ -253,6 +261,7 @@ class Session:
             "arms": {side: {"path": str(path), "sha256": sha256(path)} for side, path in arms.items()},
             "scenes": scenes, "rounds": args.rounds, "frames": args.frames,
             "warmup": args.warmup, "width": args.width, "rate_hz": RATE_HZ, "cpu": CPU,
+            "metric": "shader-core-cycles" if args.gpu_counters else "gpu-time",
             "clocks": "governor" if args.governor else {"gpu_khz": args.gpu_khz,
                                                          "cpu_khz": args.cpu_khz},
             "battery_c": args.battery_c, "serial": args.serial,
@@ -285,6 +294,8 @@ class Session:
                    "--scene", f"{self.remote}/scenes/{scene['name']}",
                    "--rate", str(RATE_HZ), "--energy", "--cpu", str(CPU),
                    "--warmup", str(args.warmup), "--frames", str(args.frames), "--out", report]
+        if args.gpu_counters:
+            command.append("--gpu-counters")
         if scene["perf"]:
             spec = json.loads((Path(scene["path"]) / "scene.json").read_text())
             height = round(args.width * spec["height"] / spec["width"])
@@ -306,6 +317,9 @@ class Session:
         if any(s["migrated"] or s["cpu_start"] != CPU or s["cpu_end"] != CPU
                for s in report["samples"]):
             failures.append("measuring thread left the pinned CPU")
+        if self.args.gpu_counters and (report.get("gpu_counters") is None or any(
+                s.get("gpu_counters") is None for s in report["samples"])):
+            failures.append("report carries no per-frame GPU counters")
         residency = report["gpu_clock"]
         if residency is None:
             failures.append("report carries no GPU clock residency")
@@ -434,6 +448,7 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
     control = json.loads((out / CONTROL).read_text())
     runs = [json.loads(line) for line in (out / RUNS).read_text().splitlines()]
     pinned = plan["clocks"] != "governor"
+    unit, value = METRICS[plan["metric"]]
     result: dict[str, Any] = {"plan": plan, "completed": control["completed"], "scenes": {}}
     for scene in plan["scenes"]:
         name = scene["name"]
@@ -454,24 +469,24 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
             report = json.loads((out / f"{row['run_id']}.json").read_text())
             if sha256(out / f"{row['run_id']}.json") != row["report_sha256"]:
                 raise SystemExit(f"{row['run_id']}.json changed after collection")
-            gpu = [s["gpu_seconds"] * 1000 for s in report["samples"]]
-            if len(gpu) != plan["frames"] or report["warmup_frames"] != plan["warmup"]:
+            values = [value(s) for s in report["samples"]]
+            if len(values) != plan["frames"] or report["warmup_frames"] != plan["warmup"]:
                 raise SystemExit(f"{row['run_id']}: frame counts differ from the plan")
-            frames[row["side"]].append(gpu)
-            arms[row["side"]]["p50"].append(quantile(gpu, 0.5))
-            arms[row["side"]]["p99"].append(quantile(gpu, 0.99))
+            frames[row["side"]].append(values)
+            arms[row["side"]]["p50"].append(quantile(values, 0.5))
+            arms[row["side"]]["p99"].append(quantile(values, 0.99))
         change = median_change(frames)
         low, high = change_interval(frames, random.Random(name))
-        entry.update({"gpu_p50_ms": arms, "change_percent": change,
-                      "interval_percent": [low, high],
-                      "worst_p99_ms": {side: max(v["p99"]) for side, v in arms.items()}})
+        entry.update({"metric": plan["metric"], "unit": unit, "per_invocation": arms,
+                      "change_percent": change, "interval_percent": [low, high],
+                      "worst_p99": {side: max(v["p99"]) for side, v in arms.items()}})
         if pinned:
             if (high - low) / 2 > limit_percent / 2:
                 entry["verdict"] = "unresolved"
             else:
                 entry["verdict"] = "fail" if change > limit_percent else "pass"
         else:
-            entry["verdict"] = "within budget" if entry["worst_p99_ms"]["head"] <= budget_ms \
+            entry["verdict"] = "within budget" if entry["worst_p99"]["head"] <= budget_ms \
                 else "over budget"
         result["scenes"][name] = entry
     return result
@@ -488,6 +503,7 @@ def main() -> None:
     run.add_argument("--out", type=Path, required=True)
     run.add_argument("--serial", required=True)
     run.add_argument("--governor", action="store_true")
+    run.add_argument("--gpu-counters", action="store_true")
     run.add_argument("--gpu-khz", type=int, default=649000)
     run.add_argument("--cpu-khz", type=int, default=2294000)
     run.add_argument("--rounds", type=int, default=4)
@@ -502,6 +518,9 @@ def main() -> None:
     report.add_argument("--budget-ms", type=float, default=1000 / RATE_HZ)
     args = parser.parse_args()
     if args.command == "run":
+        if args.governor and args.gpu_counters:
+            parser.error("--gpu-counters measures cost at pinned clocks; --governor measures "
+                         "the frame budget")
         if args.rounds < 2 or args.rounds % 2:
             parser.error("--rounds must be even, so each arm runs first equally often")
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(124))
