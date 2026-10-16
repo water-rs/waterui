@@ -8,6 +8,7 @@ mod blend;
 mod colr;
 mod filter;
 mod font;
+mod geometry;
 mod glyph;
 mod image;
 mod mesh;
@@ -113,6 +114,9 @@ pub struct RasterRenderer {
     glyph_cache: glyph::GlyphCache,
     /// Decoded colour-font bitmaps, bounded by `Budget::cpu`.
     bitmap_cache: bitmap::BitmapCache,
+    /// Swept fill and stroke geometry offered by realizations dropped or
+    /// rebuilt this frame; empty between frames.
+    geometry: geometry::GeometryCache,
     /// Bumped on every image replacement: the one change to what a
     /// current projective image read that arrives without a tree edit.
     /// A removal only runs once no installed content draws the image
@@ -161,6 +165,7 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     image_budget: config.budget.cpu.0,
                     glyph_cache: glyph::GlyphCache::new(config.budget.cpu.0),
                     bitmap_cache: bitmap::BitmapCache::new(config.budget.cpu.0),
+                    geometry: geometry::GeometryCache::default(),
                     image_replacements: 0,
                     frame_count: 0,
                 },
@@ -460,7 +465,10 @@ impl Renderer for RasterRenderer {
             Some(ContentOp::Replace(list)) => state
                 .layers
                 .insert(layer, ContentData::new(list))
-                .map(cherenkov::lowering::Content::into_picture),
+                .map(|previous| {
+                    lower::harvest(&mut self.geometry, &previous);
+                    previous.into_picture()
+                }),
             Some(ContentOp::Update(updates)) => {
                 state
                     .layers
@@ -472,7 +480,10 @@ impl Renderer for RasterRenderer {
             Some(ContentOp::Picture(picture)) => state
                 .layers
                 .insert(layer, ContentData::picture(picture))
-                .map(cherenkov::lowering::Content::into_picture),
+                .map(|previous| {
+                    lower::harvest(&mut self.geometry, &previous);
+                    previous.into_picture()
+                }),
             None => state
                 .layers
                 .remove(&layer)
@@ -577,6 +588,7 @@ impl Renderer for RasterRenderer {
         categories.images = self.images.values().map(|image| image.bytes()).sum();
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
         categories.bitmaps = self.bitmap_cache.bytes();
+        categories.geometry = self.geometry.bytes();
         categories.projective = self.projective_bytes();
         tracing::debug!(
             target: "cherenkov_cpu::memory",
@@ -587,6 +599,7 @@ impl Renderer for RasterRenderer {
             glyphs = categories.glyphs,
             colr = categories.colr,
             bitmaps = categories.bitmaps,
+            geometry = categories.geometry,
             projective = categories.projective,
             "memory usage",
         );
@@ -623,6 +636,7 @@ impl Renderer for RasterRenderer {
             self.fonts.shrink_to_fit();
             self.glyph_cache.clear();
             self.bitmap_cache.clear();
+            self.geometry.clear();
             for surface in self.surfaces.values_mut() {
                 for content in surface.layers.values_mut() {
                     content.trim();
@@ -663,6 +677,7 @@ impl RasterRenderer {
         }
         let (used, used_groups) = self.filter_uses();
         self.evict_projective();
+        self.geometry.finish_frame();
         self.filters.finish_frame(&used, &used_groups);
         self.update_filter_wakes();
         // Every visible surface whose filter or backdrop group still
@@ -855,7 +870,7 @@ impl RasterRenderer {
                 frame,
                 &mut self.fonts,
                 &self.bitmap_fonts,
-                &mut self.bitmap_cache,
+                (&mut self.bitmap_cache, &mut self.geometry),
             );
             lowering.project(local, projected);
             let result = lowering.run(id, sf.tree, &mut caches, &self.images);
