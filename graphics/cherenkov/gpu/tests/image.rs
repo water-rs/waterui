@@ -403,16 +403,22 @@ fn registered_images_count_against_the_gpu_budget() -> Result<(), Box<dyn std::e
     let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     // Two images that each take three quarters of what is left: either
-    // fits alone, both together do not. Rgba8 is stored as is, four bytes
-    // a texel.
+    // fits alone, both together do not. `Rgba16F` is stored at eight bytes
+    // a texel, the size the per-image texel limit is derived from, so each
+    // image stays inside that limit (native `Rgba8` storage is half the
+    // size and could not reach three quarters of the budget).
     let available = budget.0 - wait!(engine.memory()).gpu.0;
-    let side = u32::try_from((available * 3 / 4 / 4).isqrt())?;
+    let side = u32::try_from((available * 3 / 4 / 8).isqrt())?;
     let pixels = || {
-        ImageData::<Rgba8>::new(side, side, vec![255; side as usize * side as usize * 4])
+        ImageData::<cherenkov::Rgba16F>::new(
+            side,
+            side,
+            f16_px([1.0; 4]).repeat(side as usize * side as usize),
+        )
     };
     let first = engine.image(pixels()?)?;
     let second = engine.image(pixels()?)?;
-    let draw = |image: &Image<Rgba8>| {
+    let draw = |image: &Image<cherenkov::Rgba16F>| {
         let id = image.id();
         surface.update(|tx| {
             tx[surface.root()].record(|c| {
