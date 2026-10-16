@@ -8,7 +8,7 @@ use cherenkov::{FillRule, ShapeData};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Vec2};
 
 use crate::render::glyph::{CellTexels, PathCell, PathEmit};
-use crate::render::instance::{Instance, Middle};
+use crate::render::instance::Instance;
 #[cfg(test)]
 use crate::render::raster::Raster;
 use crate::render::raster::{self, Band, BandRaster};
@@ -473,7 +473,7 @@ pub fn emit(
             ],
             coverage.w,
             coverage.h,
-            Middle::NONE,
+            0..0,
             &mut out.cells,
             &mut rasters,
             arena,
@@ -503,10 +503,9 @@ pub fn emit(
 
 /// One cell's `w` × `h` coverage rect streamed a row at a time into
 /// `R8` texels appended to `arena`, plus its [`PathCell`] record
-/// with `rect` in device space. The `middle` columns are constant
-/// coverage and store no texels: each row stores the columns left of
-/// them, then the columns right of them. `reserve` is the emission's pending
-/// reservation: its grid area before the first cell, zero after.
+/// with `rect` in device space and `interior` its full columns from `x`.
+/// `reserve` is the emission's pending reservation: its grid area before
+/// the first cell, zero after.
 #[expect(clippy::too_many_arguments)]
 fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
     append_row: &mut F,
@@ -514,14 +513,13 @@ fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
     rect: [f32; 4],
     w: usize,
     h: usize,
-    middle: Middle,
+    interior: std::ops::Range<usize>,
     cells: &mut Vec<PathCell>,
     rasters: &mut Vec<CellTexels>,
     arena: &mut Vec<u8>,
     reserve: &mut usize,
 ) -> Result<(), RenderError> {
-    let columns = middle.columns();
-    let (Ok(w32), Ok(h32)) = (u32::try_from(w - columns.len()), u32::try_from(h)) else {
+    let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
         return Err(RenderError::AtlasFull);
     };
     // The emission's first cell reserves its whole grid area, which bounds
@@ -530,12 +528,8 @@ fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
     // more reallocations than one per path.
     arena.reserve(std::mem::take(reserve));
     let start = arena.len();
-    let (left, right) = (x..x + columns.start, x + columns.end..x + w);
     for row in 0..h {
-        if !left.is_empty() {
-            append_row(row, left.clone(), arena);
-        }
-        append_row(row, right.clone(), arena);
+        append_row(row, x..x + w, arena);
     }
     rasters.push((w32, h32, start..arena.len()));
     cells.push(PathCell {
@@ -544,7 +538,8 @@ fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
         y: 0,
         // Filled by `Atlas::place_path` on the render thread.
         slot: 0,
-        middle,
+        interior: u32::from(u16::try_from(interior.start).map_err(|_| RenderError::AtlasFull)?)
+            | (u32::from(u16::try_from(interior.end).map_err(|_| RenderError::AtlasFull)?) << 16),
     });
     Ok(())
 }
@@ -624,8 +619,7 @@ fn emit_strip_sparse(
 /// Emits a band's class runs as [`partition`] splits them: a span for
 /// each full segment, a cell for every other, its rows streamed in by
 /// `append_row`. `band` is the grid origin, the band's first row and its
-/// height. A cell's widest full run is its middle, which stores no
-/// texels (see [`make_cell`]).
+/// height. A cell's widest full run is its interior.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_precision_loss)]
 fn emit_runs<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
@@ -666,24 +660,20 @@ fn emit_runs<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
             Link::Cell(_) => unreachable!("the backward pass marks every cell on its first run"),
         };
         let (start, end) = (run.start, runs[last].end);
-        let middle = runs[k..=last]
+        let interior = runs[k..=last]
             .iter()
-            .filter(|run| run.class != Class::Partial)
+            .filter(|run| run.class == Class::Full)
             .max_by_key(|run| (run.end - run.start, std::cmp::Reverse(run.start)))
-            .map_or(Some(Middle::NONE), |run| {
-                Middle::new(
-                    (run.start - start) as usize..(run.end - start) as usize,
-                    run.class == Class::Full,
-                )
-            })
-            .ok_or(RenderError::AtlasFull)?;
+            .map_or(0..0, |run| {
+                (run.start - start) as usize..(run.end - start) as usize
+            });
         make_cell(
             append_row,
             start as usize,
             rect(start, end),
             (end - start) as usize,
             sh,
-            middle,
+            interior,
             &mut out.cells,
             rasters,
             arena,
@@ -837,20 +827,16 @@ const INSTANCE_BYTES: u32 = RESIDENT_INSTANCE_COPIES * size_of::<Instance>() as 
 
 /// Chooses the band's emission with the least byte cost: every instance
 /// costs [`INSTANCE_BYTES`], and every texel a cell stores its byte in
-/// the atlas. A cell stores no texels for its widest constant run, full
-/// or empty — its [`Middle`] — so it costs `instance + sh · (width −
-/// middle)`. A further empty gap is bridged, and a further full run
-/// carried as texels, exactly when that is cheaper than the instance a
-/// split would add.
+/// the atlas, so a cell costs `instance + sh · width`. An empty gap
+/// emits nothing and a full run outside a cell is a span, so a gap is
+/// bridged, and a full run carried as texels, exactly when that is
+/// cheaper than the instances a split would add.
 ///
-/// With the middle fixed at a constant run `f`, a cell from run `j`
-/// through run `k` costs `before_j − sh · start_j − sh · width_f +
-/// instance + sh · end_k` for any `j ≤ f ≤ k`, and leaving out a
-/// narrower run than the widest only overestimates. The cheapest cell
-/// ending at `k` is therefore the lesser of two running minima — over
-/// starts `j` alone, and over constant runs `f` of the best start up to
-/// `f` less `f`'s texels — and one pass solves the band. The backward
-/// pass marks each emitted cell on its first run.
+/// A cell from run `j` through run `k` costs `before_j − sh · start_j +
+/// instance + sh · end_k`, so the cheapest cell ending at `k` starts at
+/// the running minimum of `before_j − sh · start_j` over non-empty runs,
+/// and one pass solves the band. The backward pass marks each emitted
+/// cell on its first run.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "runs never outnumber columns"
@@ -858,22 +844,13 @@ const INSTANCE_BYTES: u32 = RESIDENT_INSTANCE_COPIES * size_of::<Instance>() as 
 fn partition(runs: &mut [Run], sh: usize) {
     let sh = i64::from(u32::try_from(sh).expect("a band is at most STRIP_H rows"));
     let instance = i64::from(INSTANCE_BYTES);
-    // The cheapest cell start so far as `before_j − sh · start_j`, and
-    // the cheapest with a constant middle as that less the middle's texels.
+    // The cheapest cell start so far, as `before_j − sh · start_j`.
     let mut open: Option<(i64, usize)> = None;
-    let mut hollow: Option<(i64, usize)> = None;
     for k in 0..runs.len() {
         let run = runs[k];
         let before = i64::from(run.before);
         let (cost, link) = if run.class == Class::Empty {
-            // A gap is a middle only between two cells' worth of runs:
-            // a cell never starts or ends on it.
-            if let Some((best, from)) = open {
-                let middle = best - sh * i64::from(run.end - run.start);
-                if hollow.is_none_or(|(best, _)| middle < best) {
-                    hollow = Some((middle, from));
-                }
-            }
+            // A cell never starts or ends on a gap.
             (before, Link::Skip)
         } else {
             let here = before - sh * i64::from(run.start);
@@ -881,16 +858,6 @@ fn partition(runs: &mut [Run], sh: usize) {
                 open = Some((here, k));
             }
             let (best, from) = open.expect("a non-empty run opened a cell start");
-            if run.class == Class::Full {
-                let middle = best - sh * i64::from(run.end - run.start);
-                if hollow.is_none_or(|(best, _)| middle < best) {
-                    hollow = Some((middle, from));
-                }
-            }
-            let (best, from) = match hollow {
-                Some((middle, from)) if middle < best => (middle, from),
-                _ => (best, from),
-            };
             let cell = best + instance + sh * i64::from(run.end);
             let span = before + instance;
             if run.class == Class::Full && span <= cell {
@@ -1291,121 +1258,63 @@ mod tests {
         }
     }
 
-    /// An empty gap between partial runs, however wide, is the empty
-    /// middle of one cell and stores no texels.
+    /// An empty gap is carried as zero texels while they cost fewer bytes
+    /// than the instance a second cell would, and splits the cell into
+    /// two, drawing nothing between them, when they cost more.
     #[test]
-    fn a_wide_gap_is_an_empty_middle_without_texels() {
-        let g = 1000;
-        let mut arena = Vec::new();
-        let (emitted, rasters) =
-            emit(&strip(&[(0, 3), (3 + g, 6 + g)], &[], 2000), &mut arena).unwrap();
-        assert_eq!((emitted.cells.len(), emitted.spans.len()), (1, 0));
-        assert_eq!(
-            emitted.cells[0].middle,
-            Middle::new(3..3 + g, false).unwrap()
-        );
-        assert_eq!((rasters[0].0, rasters[0].1), (6, 4));
-        assert!(
-            arena[rasters[0].2.clone()]
-                .iter()
-                .all(|&t| t == raster::texel(0.5)),
-            "only the partial columns store texels"
-        );
-    }
-
-    /// A cell leaves out only its widest gap. A narrower one is carried
-    /// as zero texels while they cost fewer bytes than the instance a
-    /// second cell would, and splits the cell when they cost more.
-    #[test]
-    fn a_second_gap_is_bridged_while_its_texels_cost_less_than_an_instance() {
+    fn a_gap_is_bridged_while_its_texels_cost_less_than_an_instance() {
         let g = INSTANCE_BYTES as usize / STRIP_H;
-        let wide = 1000;
         let mut arena = Vec::new();
         for (gap, cells) in [(g - 1, 1), (g + 1, 2)] {
-            let third = 6 + wide + gap;
-            let (emitted, rasters) = emit(
-                &strip(
-                    &[(0, 3), (3 + wide, 6 + wide), (third, third + 3)],
-                    &[],
-                    2000,
-                ),
-                &mut arena,
-            )
-            .unwrap();
+            let (emitted, rasters) =
+                emit(&strip(&[(0, 3), (3 + gap, 6 + gap)], &[], 2000), &mut arena).unwrap();
             assert_eq!((emitted.cells.len(), emitted.spans.len()), (cells, 0));
-            assert_eq!(
-                emitted.cells[0].middle,
-                Middle::new(3..3 + wide, false).unwrap()
-            );
             if cells == 1 {
-                let stored = 9 + gap;
+                let stored = 6 + gap;
                 assert_eq!(rasters[0].0 as usize, stored);
                 for row in arena[rasters[0].2.clone()].chunks_exact(stored) {
                     assert!(
-                        row[6..6 + gap].iter().all(|&t| t == 0),
+                        row[3..3 + gap].iter().all(|&t| t == 0),
                         "the carried gap is zero coverage"
                     );
                 }
+            } else {
+                assert_eq!(rasters.iter().map(|r| r.0).collect::<Vec<_>>(), [3, 3]);
             }
         }
     }
 
-    /// A full run between partial runs, however wide, is the middle of
-    /// one cell and stores no texels: the cell's texels are its partial
-    /// columns alone. A full run with no partial neighbour is a span.
+    /// A full run between partial runs is carried as texels, and is the
+    /// cell's interior, while they cost fewer bytes than the two instances
+    /// a split adds; wider, it is a span between two cells. A full run
+    /// with no partial neighbour is a span.
     #[test]
-    fn a_wide_full_run_is_a_cell_middle_without_texels() {
-        let f = 1000;
+    fn a_full_run_splits_a_cell_only_when_its_texels_cost_more() {
+        let limit = 2 * INSTANCE_BYTES as usize / STRIP_H;
         let mut arena = Vec::new();
-        let (emitted, rasters) = emit(
-            &strip(&[(0, 3), (3 + f, 6 + f)], &[(3, 3 + f)], 2000),
-            &mut arena,
-        )
-        .unwrap();
-        assert_eq!(emitted.spans.len(), 0);
-        assert_eq!(emitted.cells.len(), 1);
-        assert_eq!(emitted.cells[0].rect[2] - emitted.cells[0].rect[0], 1006.0);
-        assert_eq!(
-            emitted.cells[0].middle,
-            Middle::new(3..3 + f, true).unwrap()
-        );
-        assert_eq!((rasters[0].0, rasters[0].1), (6, 4));
-        assert!(
-            arena[rasters[0].2.clone()]
-                .iter()
-                .all(|&t| t == raster::texel(0.5)),
-            "only the partial columns store texels"
-        );
-        let (emitted, _) = emit(&strip(&[], &[(10, 20)], 400), &mut arena).unwrap();
-        assert_eq!(emitted.spans.len(), 1);
-        assert_eq!(emitted.cells.len(), 0);
-    }
-
-    /// A cell leaves out only its widest full run. A narrower full run
-    /// stays inside as texels while they cost less than the instance a
-    /// second cell would add; wider, it becomes that cell's middle.
-    #[test]
-    fn a_second_full_run_splits_a_cell_only_when_its_texels_cost_more() {
-        let limit = INSTANCE_BYTES as usize / STRIP_H;
-        let wide = 1000;
-        let mut arena = Vec::new();
-        for (f, cells) in [(limit - 6, 1), (limit + 6, 2)] {
-            let second = 6 + wide;
+        for (f, cells, spans) in [(limit - 6, 1, 0), (limit + 6, 2, 1)] {
             let (emitted, _) = emit(
-                &strip(
-                    &[(0, 3), (3 + wide, second), (second + f, second + f + 3)],
-                    &[(3, 3 + wide), (second, second + f)],
-                    2000,
-                ),
+                &strip(&[(0, 3), (3 + f, 6 + f)], &[(3, 3 + f)], 2000),
                 &mut arena,
             )
             .unwrap();
-            assert_eq!((emitted.cells.len(), emitted.spans.len()), (cells, 0));
-            assert_eq!(emitted.cells[0].middle.width() as usize, wide);
-            if cells == 2 {
-                assert_eq!(emitted.cells[1].middle.width() as usize, f);
+            assert_eq!((emitted.cells.len(), emitted.spans.len()), (cells, spans));
+            if cells == 1 {
+                assert_eq!(
+                    emitted.cells[0].interior,
+                    3 | u32::try_from(3 + f).unwrap() << 16
+                );
+            } else {
+                assert_eq!(
+                    emitted.spans[0][2] - emitted.spans[0][0],
+                    f32::from(u16::try_from(f).unwrap())
+                );
+                assert!(emitted.cells.iter().all(|cell| cell.interior == 0));
             }
         }
+        let (emitted, _) = emit(&strip(&[], &[(10, 20)], 400), &mut arena).unwrap();
+        assert_eq!(emitted.spans.len(), 1);
+        assert_eq!(emitted.cells.len(), 0);
     }
 
     /// A column holding only floating-point residue uploads zero texels,
@@ -1504,7 +1413,7 @@ mod emit_eq {
         assert_eq!(dp.cells.len(), bp.cells.len(), "{name}: cell count");
         for (i, (a, b)) in dp.cells.iter().zip(bp.cells.iter()).enumerate() {
             assert_eq!(a.rect, b.rect, "{name}: cell {i} rect");
-            assert_eq!(a.middle, b.middle, "{name}: cell {i} middle");
+            assert_eq!(a.interior, b.interior, "{name}: cell {i} interior");
         }
         assert_eq!(dr.len(), br.len(), "{name}: raster count");
         for (i, (a, b)) in dr.iter().zip(br.iter()).enumerate() {
@@ -1574,7 +1483,7 @@ mod emit_eq {
             assert_eq!(dp.cells.len(), sp.cells.len());
             for (a, b) in dp.cells.iter().zip(&sp.cells) {
                 assert_eq!(a.rect, b.rect);
-                assert_eq!(a.middle, b.middle);
+                assert_eq!(a.interior, b.interior);
             }
             assert_eq!(dr, sr);
             assert_eq!(da, sa);

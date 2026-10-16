@@ -690,9 +690,6 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
             }
             cov = textureLoad(atlas, texel, 0).r;
         }
-        case KIND_REGION, KIND_CELL: {
-            cov = packed_cell_coverage(in.device - in.cell.xy, instances[in.instance].uv.xy);
-        }
         case KIND_SPAN: {
             cov = 1.0;
         }
@@ -750,10 +747,8 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     var promoted = false;
     if inst.meta_.x == KIND_REGION {
         let x = inst.bounds.x;
-        // A region's middle is full: `uv.y` holds its columns, no flag.
-        let middle = unpack_columns(bitcast<u32>(inst.uv.y));
-        inst.bounds.x = x + middle.x;
-        inst.bounds.z = x + middle.y;
+        inst.bounds.x = x + f32(inst.meta_.z & 0xffffu);
+        inst.bounds.z = x + f32(inst.meta_.z >> 16u);
     }
     if inst.meta_.x == KIND_POLYGON {
         // An appended interior tier: grad.x bitcast holds the painter
@@ -854,15 +849,10 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     let inst = instances[in.instance];
     var data: VsOut;
     data.local = in.local;
-    data.meta_.x = inst.meta_.x;
+    data.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
     data.color = inst.color;
     data.params.y = inst.params.y;
     if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {
-        // A packed cell samples from its device offset like the
-        // unclassified path; `vs_partial` resolves only glyph texels.
-        data.device = in.position.xy + globals.origin;
-        data.cell = vec4<f32>(inst.bounds.xy, 0.0, 0.0);
-        data.instance = in.instance;
         data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
         data.shape_radii = inst.shape.radii;
         data.affine0 = inst.affine[0];
@@ -924,9 +914,6 @@ fn fs_full(in: VsOut) -> vec4<f32> {
         case KIND_GLYPH: {
             let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
             cov = textureLoad(atlas, texel, 0).r;
-        }
-        case KIND_REGION, KIND_CELL: {
-            cov = packed_cell_coverage(in.device - in.cell.xy, instances[in.instance].uv.xy);
         }
         case KIND_SPAN: {
             cov = 1.0;

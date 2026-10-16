@@ -6919,11 +6919,8 @@ impl GpuRenderer {
     ) {
         let mut hint = None;
         for inst in instances {
-            if matches!(
-                inst.kind,
-                instance::KIND_GLYPH | instance::KIND_REGION | instance::KIND_CELL
-            ) && let [x, y] = instance::cell_origin(inst.kind, inst.uv)
-                && let Some(slot) = atlas.shelf_at_hint(x, y, &mut hint)
+            if matches!(inst.kind, instance::KIND_GLYPH | instance::KIND_REGION)
+                && let Some(slot) = atlas.shelf_at_hint(inst.uv[0], inst.uv[1], &mut hint)
             {
                 f(slot);
             }
@@ -6954,6 +6951,10 @@ impl GpuRenderer {
         }
     }
 
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "atlas coordinates fit exactly in f32"
+    )]
     fn apply_pending(
         &mut self,
         surf: &mut SurfaceState,
@@ -6974,10 +6975,7 @@ impl GpuRenderer {
                 unreachable!("cell patch must reference cell raster");
             };
             let (x, y) = cells[c as usize];
-            (
-                u16::try_from(x).expect("an atlas origin fits u16"),
-                u16::try_from(y).expect("an atlas origin fits u16"),
-            )
+            [x as f32, y as f32]
         };
         for content in surf.layers.values_mut() {
             let (_, emissions) = content.retained.prepared();
@@ -6998,10 +6996,9 @@ impl GpuRenderer {
                     for i in emission.pending_cells() {
                         let (inst, p, c) = lowered.emission_patches[i];
                         let local = inst - emission.cell_inst_base();
-                        let retained = &mut content.storage.instances
-                            [emission.instances.start + local as usize];
-                        let (x, y) = cell_origin(p, c);
-                        retained.uv = instance::with_cell_origin(retained.kind, retained.uv, x, y);
+                        content.storage.instances[emission.instances.start + local as usize].uv
+                            [..2]
+                            .copy_from_slice(&cell_origin(p, c));
                         if let PendingOrigin::Cells(_, bands) = &origins[p as usize] {
                             content.storage.refs.extend(
                                 bands
@@ -7040,11 +7037,8 @@ impl GpuRenderer {
             }
         }
         for (inst, p, c) in lowered.cell_patches.drain(..) {
-            let (x, y) = cell_origin(p, c);
-            let inst = &mut surf.frame.instances[inst as usize];
-            let [u0, u1] = instance::with_cell_origin(inst.meta[0], [inst.uv[0], inst.uv[1]], x, y);
-            inst.uv[0] = u0;
-            inst.uv[1] = u1;
+            let [x, y] = cell_origin(p, c);
+            surf.frame.instances[inst as usize].uv[..2].copy_from_slice(&[x, y]);
         }
         for (inst, p) in lowered.mask_patches.drain(..) {
             let PendingOrigin::Mask(origin) = &origins[p as usize] else {

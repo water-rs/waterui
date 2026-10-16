@@ -12,9 +12,8 @@ const KIND_STROKE_DIST: u32 = 2u;   // coverage(d - hw) - coverage(d + hw)
 const KIND_SHADOW: u32 = 3u;        // Gaussian-blurred rounded box
 const KIND_GLYPH: u32 = 4u;         // coverage from the glyph atlas
 const KIND_SPAN: u32 = 5u;          // a full-coverage device-space run
-const KIND_REGION: u32 = 6u;        // solid packed cell with a full middle
+const KIND_REGION: u32 = 6u;        // atlas cell with a retained full interval
 const KIND_POLYGON: u32 = 7u;       // appended opaque interior tier (opaque phase only)
-const KIND_CELL: u32 = 8u;          // any other packed cell
 
 const PAINT_SOLID: u32 = 0u;
 const PAINT_LINEAR: u32 = 1u;
@@ -184,6 +183,9 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     // Hoist the constants every fragment reads into flat varyings so the
     // fragment shader only touches `instances` for kind-specific fields.
     out.meta_ = inst.meta_;
+    // Region metadata belongs to the opaque vertex stage. Sampled coverage
+    // uses the original atlas-cell fragment path for both cell kinds.
+    out.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
     out.color = inst.color;
     out.params = inst.params;
     out.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
@@ -192,32 +194,6 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     out.affine1 = inst.affine[1];
     out.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
     return out;
-}
-
-// The two u16 halves of `lo | hi << 16`.
-fn unpack_columns(bits: u32) -> vec2<f32> {
-    return vec2<f32>(f32(bits & 0xffffu), f32(bits >> 16u));
-}
-
-// Coverage of a packed cell (`KIND_REGION`, `KIND_CELL`) at a fragment `d`
-// device pixels from its quad's origin. `uv` is the instance's own field,
-// read from the storage buffer rather than a varying so its bit patterns
-// (some of them subnormal floats) never pass through interpolation: the
-// atlas origin `x | y << 16` and the `instance::Middle`, columns
-// `start | end << 16` from the quad's left edge with bit 31 set when empty.
-// The middle stores no texels, so a column right of it reads its width
-// further left. Glyphs and cells without a middle never come here: their
-// fragment is a single atlas read.
-fn packed_cell_coverage(d: vec2<f32>, uv: vec2<f32>) -> f32 {
-    let bits = bitcast<u32>(uv.y);
-    let middle = unpack_columns(bits & 0x7fffffffu);
-    let x = floor(d.x);
-    if x >= middle.x && x < middle.y {
-        return select(1.0, 0.0, (bits >> 31u) != 0u);
-    }
-    let column = select(x, x - (middle.y - middle.x), x >= middle.y);
-    let origin = unpack_columns(bitcast<u32>(uv.x));
-    return textureLoad(atlas, vec2<i32>(vec2<f32>(column, floor(d.y)) + origin), 0).r;
 }
 
 // Distance evaluations `lame_corner` spends on one point.

@@ -13,7 +13,6 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::TableProvider;
 use skrifa::raw::types::F2Dot14;
 
-use crate::render::instance::Middle;
 use crate::render::raster::{self, Raster};
 use cherenkov::RenderError;
 
@@ -161,9 +160,7 @@ struct CachedGlyph {
 }
 
 /// One atlas cell emitted by the path rasterizer: a device-space quad
-/// sampling coverage texels at `(x, y)`. The texels cover the quad's
-/// columns except its constant middle ([`Self::middle`]), which stores
-/// none.
+/// sampling `w` × `h` coverage texels at `(x, y)`.
 #[derive(Clone, Copy, Debug)]
 pub struct PathCell {
     /// Device-space quad `(x0, y0, x1, y1)`.
@@ -174,8 +171,9 @@ pub struct PathCell {
     pub y: u16,
     /// Shelf the cell lives on, for [`Atlas::begin_commit`] touches.
     pub slot: u32,
-    /// The constant middle, in columns from x0.
-    pub middle: Middle,
+    /// Full columns inside this cell: `start | end << 16`, relative to x0.
+    /// Zero means that the entire cell needs sampled coverage.
+    pub interior: u32,
 }
 
 /// What a cached path draw replays: full-coverage spans and atlas cells,
@@ -220,7 +218,7 @@ impl PathEmit {
                     x: c.x,
                     y: c.y,
                     slot: c.slot,
-                    middle: c.middle,
+                    interior: c.interior,
                 })
                 .collect(),
             slots: self.slots.clone(),
@@ -993,7 +991,7 @@ impl Atlas {
             for cell in &emit.cells {
                 if touched(cell.slot) {
                     self.plan_all.push((
-                        (cell.rect[2] - cell.rect[0]).round().max(0.0) as u32 - cell.middle.width(),
+                        (cell.rect[2] - cell.rect[0]).round().max(0.0) as u32,
                         (cell.rect[3] - cell.rect[1]).round().max(0.0) as u32,
                     ));
                 }
@@ -3115,7 +3113,7 @@ mod tests {
                         x: 0,
                         y: 0,
                         slot: 0,
-                        middle: Middle::NONE,
+                        interior: 0,
                     })
                     .collect(),
                 ..PathEmit::default()
@@ -3170,7 +3168,7 @@ mod tests {
                         x: 0,
                         y: 0,
                         slot: 0,
-                        middle: Middle::NONE,
+                        interior: 0,
                     })
                     .collect(),
                 ..PathEmit::default()
