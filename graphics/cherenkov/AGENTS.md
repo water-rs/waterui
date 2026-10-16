@@ -56,7 +56,10 @@ belong to water-rs/waterui.
 - **CPU-side changes are accepted on deterministic Callgrind instruction
   counts:** Ir for `lower` and `encode` at the second steady frame of the
   perf scenes, sampled by frame index (`bench/scripts/ir_gate.py`, which runs
-  `measure --pause-at`). CI runs it on every pull request that touches
+  `measure --pause-at`). Its CPU leg counts the CPU backend's whole frame on
+  the same scenes — the render thread's message handling and every raster job
+  its rayon pools run, at one worker per pool — and also excludes the
+  cross-thread synchronization. CI runs it on every pull request that touches
   `graphics/cherenkov/`, measured as merged into dev, and by dispatch of
   `cherenkov-ir.yml` for any revision against its merge base with dev
   (`-f head=refs/pull/<number>/merge` for a pull request). The gated Ir
@@ -74,8 +77,9 @@ belong to water-rs/waterui.
 - **Pixel cost comparisons hold the GPU and the measuring CPU at one clock**
   and check every run's clock residency (`bench/scripts/pixel_compare.py`):
   the GPU governor's per-process clock moves identical builds by the clock
-  ratio. A scene is decided only when the change's bootstrap interval is no
-  wider than the limit; frame-budget checks run under the default governor.
+  ratio. A scene fails when the change's whole bootstrap interval lies above
+  the limit; otherwise it is decided only when that interval is no wider than
+  the limit. Frame-budget checks run under the default governor.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five
