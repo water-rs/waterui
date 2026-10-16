@@ -33,9 +33,11 @@ use std::rc::Rc;
 use accesskit::{Action, ActionRequest, NodeId, Role, TreeId, TreeUpdate};
 use waterui::accessibility::AccessibilityRole;
 use waterui::gesture::{DragEvent, DragGesture, TapGesture};
+use waterui::style::Anchor;
 use waterui::{AnyView, Binding, Color, ViewExt as _};
 use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
 use waterui_core::Environment;
+use waterui_core::event::{Event, HoverEvent};
 use waterui_core::extract::{State, Use};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_layout::stack::hstack;
@@ -493,6 +495,44 @@ fn repeated_state_binding_order_is_identical_in_both_placements() {
         inside_fires,
         vec![(1, 2)],
         "the first `.state` call feeds the first parameter in both spellings"
+    );
+}
+
+/// water-rs/waterui#2743 — a `HoverMove` handler reads `HoverEvent::location`
+/// in its own view's space. Registrations are node-local and the pointer
+/// arrives in window space, so the dispatcher maps the point through the
+/// region's inverse hit transform: a translated view and a scaled one both
+/// see local coordinates.
+#[test]
+fn hover_move_location_is_view_local() {
+    let record = |sink: Rc<RefCell<Vec<(f32, f32)>>>| {
+        move |Use(event): Use<HoverEvent>| {
+            sink.borrow_mut().push((event.location.x, event.location.y));
+        }
+    };
+
+    // The handle sits at x = 390 between two 390-point panes.
+    let translated_fired = Rc::new(RefCell::new(Vec::new()));
+    let translated = handle().event(Event::HoverMove, record(Rc::clone(&translated_fired)));
+    let mut runtime = runtime_with(split(AnyView::new(translated)));
+    pointer_move(&mut runtime, 400.0, 300.0);
+    assert_eq!(
+        translated_fired.borrow().last().copied(),
+        Some((10.0, 300.0)),
+        "a translated view's hover location must be relative to its own origin"
+    );
+
+    // Doubled from its top-left corner: window (400, 300) is local (5, 150).
+    let scaled_fired = Rc::new(RefCell::new(Vec::new()));
+    let scaled = handle()
+        .event(Event::HoverMove, record(Rc::clone(&scaled_fired)))
+        .scale_from(2.0, 2.0, Anchor::TOP_LEFT);
+    let mut runtime = runtime_with(split(AnyView::new(scaled)));
+    pointer_move(&mut runtime, 400.0, 300.0);
+    assert_eq!(
+        scaled_fired.borrow().last().copied(),
+        Some((5.0, 150.0)),
+        "a scaled view's hover location must be mapped through the inverse transform"
     );
 }
 
