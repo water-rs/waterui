@@ -643,26 +643,27 @@ fn emit_runs<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
             bottom,
         ]
     };
+    let start_of = |k: usize| if k == 0 { 0 } else { runs[k - 1].end };
     let mut k = 0;
     while k < runs.len() {
         let run = runs[k];
-        let last = match run.link {
+        let last = match run.link() {
             Link::Skip => {
                 k += 1;
                 continue;
             }
             Link::Span => {
-                out.spans.push(rect(run.start, run.end));
+                out.spans.push(rect(start_of(k), run.end));
                 k += 1;
                 continue;
             }
             Link::Head(last) => last as usize,
             Link::Cell(_) => unreachable!("the backward pass marks every cell on its first run"),
         };
-        let (start, end) = (run.start, runs[last].end);
-        let interior = runs[k..=last]
-            .iter()
-            .filter(|run| run.class == Class::Full)
+        let (start, end) = (start_of(k), runs[last].end);
+        let interior = (k..=last)
+            .filter(|&i| runs[i].class() == Class::Full)
+            .map(|i| start_of(i)..runs[i].end)
             .max_by_key(|run| (run.end - run.start, std::cmp::Reverse(run.start)))
             .map_or(0..0, |run| {
                 (run.start - start) as usize..(run.end - start) as usize
@@ -691,11 +692,11 @@ fn emit_runs<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
     /// Every texel is 0.
-    Empty,
+    Empty = 0,
     /// Every texel is `u8::MAX`.
-    Full,
+    Full = 1,
     /// Anything else.
-    Partial,
+    Partial = 2,
 }
 
 impl Class {
@@ -724,7 +725,7 @@ impl Class {
 /// of the cheapest prefix; the backward pass then marks the first run of
 /// every chosen cell `Head`, and the emission walk only lands on runs
 /// that start a choice.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Link {
     /// The run is empty and emits nothing.
     Skip,
@@ -736,31 +737,76 @@ enum Link {
     Head(u32),
 }
 
-/// A maximal run of equal-class columns in one band. Columns, indices
-/// and byte costs are `u32`: a band is at most a surface wide, so they
-/// stay far below its range.
+/// A maximal run of equal-class columns in one band, ending at column
+/// `end`; it starts where the run before it ends, or at column 0. The
+/// emission keeps one per class change, so the record is one word of
+/// columns and one `mark`: the [`Class`] in bits 0–1, the [`Link`] kind
+/// in bits 2–3 and a link's run index above them. Columns and indices
+/// are `u32`: a band is at most a surface wide, far below their range.
 #[derive(Clone, Copy, Debug)]
 struct Run {
-    start: u32,
     end: u32,
-    class: Class,
-    /// Least byte cost of emitting every run before this one.
-    before: u32,
-    link: Link,
+    mark: u32,
 }
 
-/// Appends columns `start..end` of `class`, extending the last run when
-/// it has the same class.
-fn push_run(runs: &mut Vec<Run>, start: u32, end: u32, class: Class) {
-    match runs.last_mut() {
-        Some(run) if run.class == class => run.end = end,
-        _ => runs.push(Run {
-            start,
+// The emission scratch holds one `Run` per class change of its widest
+// band: two words, like an `(end, class)` interval.
+const _: () = assert!(size_of::<Run>() == 8);
+
+impl Run {
+    /// Bits of `mark` below a link's run index.
+    const INDEX_SHIFT: u32 = 4;
+
+    /// A run of `class` ending at `end`, not yet partitioned.
+    const fn new(end: u32, class: Class) -> Self {
+        Self {
             end,
-            class,
-            before: 0,
-            link: Link::Skip,
-        }),
+            mark: class as u32,
+        }
+    }
+
+    /// The run's class.
+    const fn class(self) -> Class {
+        match self.mark & 0b11 {
+            0 => Class::Empty,
+            1 => Class::Full,
+            _ => Class::Partial,
+        }
+    }
+
+    /// What the run became; `Skip` until [`partition`] sets it.
+    const fn link(self) -> Link {
+        let index = self.mark >> Self::INDEX_SHIFT;
+        match self.mark >> 2 & 0b11 {
+            0 => Link::Skip,
+            1 => Link::Span,
+            2 => Link::Cell(index),
+            _ => Link::Head(index),
+        }
+    }
+
+    /// Records what the run became, keeping its class.
+    fn set_link(&mut self, link: Link) {
+        let (kind, index) = match link {
+            Link::Skip => (0, 0),
+            Link::Span => (1, 0),
+            Link::Cell(index) => (2, index),
+            Link::Head(index) => (3, index),
+        };
+        assert!(
+            index < 1 << (u32::BITS - Self::INDEX_SHIFT),
+            "a band's run index fits its mark"
+        );
+        self.mark = self.mark & 0b11 | kind << 2 | index << Self::INDEX_SHIFT;
+    }
+}
+
+/// Appends the columns up to `end` as `class`, extending the last run
+/// when it has the same class.
+fn push_run(runs: &mut Vec<Run>, end: u32, class: Class) {
+    match runs.last_mut() {
+        Some(run) if run.class() == class => run.end = end,
+        _ => runs.push(Run::new(end, class)),
     }
 }
 
@@ -773,7 +819,7 @@ fn dense_runs(strip: &[f32], w: usize, sh: usize, runs: &mut Vec<Run>) {
         for row in 0..sh {
             state = Class::fold(state, strip[row * w + x as usize]);
         }
-        push_run(runs, x, x + 1, Class::new(state.0, state.1));
+        push_run(runs, x + 1, Class::new(state.0, state.1));
     }
 }
 
@@ -802,7 +848,7 @@ fn sparse_runs(coverage: &[(u32, f32)], ends: &[usize], w: usize, runs: &mut Vec
             next = next.min(end);
             state = Class::fold(state, v);
         }
-        push_run(runs, pos, next, Class::new(state.0, state.1));
+        push_run(runs, next, Class::new(state.0, state.1));
         pos = next;
         for cursor in cursors.iter_mut() {
             if coverage[*cursor].0 == next {
@@ -846,38 +892,37 @@ fn partition(runs: &mut [Run], sh: usize) {
     let instance = i64::from(INSTANCE_BYTES);
     // The cheapest cell start so far, as `before_j − sh · start_j`.
     let mut open: Option<(i64, usize)> = None;
-    for k in 0..runs.len() {
-        let run = runs[k];
-        let before = i64::from(run.before);
-        let (cost, link) = if run.class == Class::Empty {
+    // The least byte cost of emitting every run before run `k`, and the
+    // column run `k` starts at.
+    let (mut before, mut start) = (0, 0);
+    for (k, run) in runs.iter_mut().enumerate() {
+        let (cost, link) = if run.class() == Class::Empty {
             // A cell never starts or ends on a gap.
             (before, Link::Skip)
         } else {
-            let here = before - sh * i64::from(run.start);
+            let here = before - sh * i64::from(start);
             if open.is_none_or(|(best, _)| here < best) {
                 open = Some((here, k));
             }
             let (best, from) = open.expect("a non-empty run opened a cell start");
             let cell = best + instance + sh * i64::from(run.end);
             let span = before + instance;
-            if run.class == Class::Full && span <= cell {
+            if run.class() == Class::Full && span <= cell {
                 (span, Link::Span)
             } else {
                 (cell, Link::Cell(from as u32))
             }
         };
-        runs[k].link = link;
-        if let Some(next) = runs.get_mut(k + 1) {
-            next.before = u32::try_from(cost).expect("a band's byte cost fits u32");
-        }
+        run.set_link(link);
+        (before, start) = (cost, run.end);
     }
     let mut k = runs.len();
     while k > 0 {
         let last = k - 1;
-        k = match runs[last].link {
+        k = match runs[last].link() {
             Link::Skip | Link::Span => last,
             Link::Cell(from) => {
-                runs[from as usize].link = Link::Head(last as u32);
+                runs[from as usize].set_link(Link::Head(last as u32));
                 from as usize
             }
             Link::Head(_) => unreachable!("the forward pass marks no heads"),
@@ -1328,17 +1373,10 @@ mod tests {
         }
         let mut runs = Vec::new();
         dense_runs(&coverage.data, coverage.w, STRIP_H, &mut runs);
-        let classes: Vec<_> = runs
-            .iter()
-            .map(|run| (run.start, run.end, run.class))
-            .collect();
+        let classes: Vec<_> = runs.iter().map(|run| (run.end, run.class())).collect();
         assert_eq!(
             classes,
-            [
-                (0, 10, Class::Empty),
-                (10, 13, Class::Partial),
-                (13, 40, Class::Empty)
-            ]
+            [(10, Class::Empty), (13, Class::Partial), (40, Class::Empty)]
         );
         let mut arena = Vec::new();
         let (emitted, rasters) = emit(&coverage, &mut arena).unwrap();
@@ -1454,9 +1492,7 @@ mod emit_eq {
             dense_runs(&strip, w, sh, &mut dense);
             sparse_runs(&runs, &ends, w, &mut sparse);
             let classes = |runs: &[Run]| -> Vec<_> {
-                runs.iter()
-                    .map(|run| (run.start, run.end, run.class))
-                    .collect()
+                runs.iter().map(|run| (run.end, run.class())).collect()
             };
             assert_eq!(classes(&dense), classes(&sparse));
             let (mut dp, mut sp) = (PathEmit::default(), PathEmit::default());
