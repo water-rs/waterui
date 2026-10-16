@@ -47,13 +47,21 @@ does not isolate threads — after instrumentation switches on mid-run, a
 thread's call-stack underflow can attach its calls to a record another thread
 owns, so another thread's frees land in the root thread's dumps.
 
+  ir_gate.py ab      --base REV --head REV --work W --out O  # build both, profile, compare
   ir_gate.py profile --binary B --tag T --scene S --repo R --out O
   ir_gate.py batch   --binary B --tag T --repo R --out O
   ir_gate.py compare --out O BASE HEAD      # the +1% / no-more-calls rule
   ir_gate.py same    --out O TAG TAG [TAG]  # identical Ir across re-profiles
 
-Build release binaries with CARGO_PROFILE_RELEASE_DEBUG=1 and
-CARGO_PROFILE_RELEASE_STRIP=false so the roots remain identifiable.
+`ab` is the whole gate for one change: it checks out the merge base of BASE
+and HEAD and HEAD itself as worktrees of equal path length under W, builds
+each tree's `cherenkov-bench` from its own source with the gate's build
+settings (release, unstripped symbols, limited debug info) into one shared target
+directory, profiles both against the perf scenes of the checkout this script
+belongs to, writes provenance and `comparison.md` into O, and exits non-zero
+when the gate fails. A revision the checkout does not hold is fetched from
+origin. `profile` and `batch` take a binary built the same way: without
+symbols the roots cannot be found and the run stops.
 
 For Lavapipe it finds the installed driver manifest by its library, or
 accepts an explicit --icd manifest. It sets VK_DRIVER_FILES,
@@ -65,12 +73,16 @@ sits outside the measured lower/encode roots, so skipping it cannot change
 the counted Ir. NODEVICE_SELECT disables the MESA device_select layer, whose
 teardown crashes when another instance layer sits in front of it.
 """
-import argparse, collections, concurrent.futures, ctypes, fnmatch, hashlib, json, os, pathlib, re, selectors, struct, subprocess, sys
+import argparse, collections, concurrent.futures, ctypes, fnmatch, hashlib, json, os, pathlib, platform, re, selectors, shutil, struct, subprocess, sys
 
 SCENES = ['map', 'chart', 'text-page', 'ui-list', 'effects', 'road-network', 'brick-grid']
 ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6encode', 'cherenkov_ad'),
          'run_transaction': ('15run_transaction', 'cherenkov_record')}
 PAUSE = 'cherenkov-bench: paused before frame {}'
+# The build every profiled binary comes from. The profile overrides apply to
+# any revision, so a baseline that predates the gate builds the same way.
+BUILD_ENV = {'CARGO_PROFILE_RELEASE_DEBUG': '1', 'CARGO_PROFILE_RELEASE_STRIP': 'false'}
+BUILD = ['--release', '-p', 'cherenkov-bench', '--features', 'cherenkov', '--bin', 'cherenkov-bench']
 # Callgrind name patterns (`*` matches any run) of the functions a sample
 # subtracts, with the call count each one adds to; Callgrind separates these
 # by caller chain and the gate classifies them, from this one table. Names
@@ -396,46 +408,50 @@ def verify_reused_profile(result, binary, icd):
     assert result['icd_sha256'] == hashlib.sha256(icd.read_bytes()).hexdigest()
 
 
-def batch(args):
-    out = pathlib.Path(args.out); out.mkdir(parents=True, exist_ok=True)
-    icd = lavapipe_icd(args.icd)
+def batch(binary, tag, repo, out, pause_at, warmup, jobs, icd=None):
+    """Profiles every scene, `jobs` at a time, and writes the tag's report."""
+    out = pathlib.Path(out); out.mkdir(parents=True, exist_ok=True)
+    icd = lavapipe_icd(icd)
 
     def task(scene):
-        path = out / f'{args.tag}-{scene}.result.json'
+        path = out / f'{tag}-{scene}.result.json'
         if path.is_file():
-            d = json.loads(path.read_text())
-            verify_reused_profile(d, args.binary, icd)
-            return f'{args.tag} {scene} reused completed profile'
-        with (out / f'{args.tag}-{scene}.progress.log').open('w') as log:
-            subprocess.run([sys.executable, __file__, 'profile', '--binary', args.binary, '--tag', args.tag, '--scene', scene,
-                            '--repo', args.repo, '--out', args.out, '--pause-at', str(args.pause_at), '--warmup', str(args.warmup),
-                            '--icd', str(icd)],
-                           stdout=log, stderr=subprocess.STDOUT, check=True)
-        return f'{args.tag} {scene} done'
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
+            verify_reused_profile(json.loads(path.read_text()), binary, icd)
+            return f'{tag} {scene} reused completed profile'
+        progress = out / f'{tag}-{scene}.progress.log'
+        with progress.open('w') as log:
+            status = subprocess.run([sys.executable, __file__, 'profile', '--binary', str(binary), '--tag', tag, '--scene', scene,
+                                     '--repo', str(repo), '--out', str(out), '--pause-at', str(pause_at), '--warmup', str(warmup),
+                                     '--icd', str(icd)],
+                                    stdout=log, stderr=subprocess.STDOUT).returncode
+        if status:
+            raise RuntimeError(f'{tag} {scene}: profile exited with {status}\n{progress.read_text()}')
+        return f'{tag} {scene} done'
+    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
         for line in pool.map(task, SCENES):
             print(line, flush=True)
-    lines = [f'# Ir at the second steady frame: `{args.tag}`', '',
-             f'Instrumentation on at frame {args.pause_at}; sample 2 of each root. Rust Ir excludes the allocator and the libc memory primitives.', '',
+    lines = [f'# Ir at the second steady frame: `{tag}`', '',
+             f'Instrumentation on at frame {pause_at}; sample 2 of each root. Rust Ir excludes the allocator and the libc memory primitives.', '',
              '| Scene | Phase | Ir | Allocator Ir | Mem Ir | Rust Ir | allocs | reallocs | deallocs | mem calls | Rust Ir 2nd → 3rd |',
              '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
     for scene in SCENES:
-        d = load(args.out, args.tag, scene)
+        d = load(out, tag, scene)
         for phase in ROOTS:
             s, t = d[phase]['second'], d[phase]['third']
             lines.append(f"| {scene} | {phase} | {s['ir']:,} | {s['alloc_ir']:,} | {s['mem_ir']:,} | {s['rust_ir']:,} | {s['allocs']} | {s['reallocs']} | {s['deallocs']} | {s['mem_calls']} | "
                          f"{t['rust_ir']:,} ({d[phase]['third_delta_percent']:+.3f}%) |")
     report = '\n'.join(lines) + '\n'
-    (out / f'{args.tag}-ir.md').write_text(report); print(report)
+    (out / f'{tag}-ir.md').write_text(report); print(report)
 
 
-def compare(args):
-    lines = [f'# Rust Ir and allocator calls: `{args.base}` → `{args.head}`', '',
+def compare(out, base, head):
+    """The gate's verdict on `head` against `base`: the report and whether it failed."""
+    lines = [f'# Rust Ir and allocator calls: `{base}` → `{head}`', '',
              'Second steady frame. Fails when Rust Ir rises more than 1% or any allocator or memory-primitive call count rises.', '',
              '| Scene | Phase | Rust Ir base | Rust Ir head | Δ | allocs | reallocs | deallocs | mem calls | |', '|---|---|---:|---:|---:|---:|---:|---:|---:|---|']
     failed = False
     for scene in SCENES:
-        a, b = load(args.out, args.base, scene), load(args.out, args.head, scene)
+        a, b = load(out, base, scene), load(out, head, scene)
         for phase in ROOTS:
             x, y = a[phase]['second'], b[phase]['second']
             delta = 100 * (y['rust_ir'] / x['rust_ir'] - 1)
@@ -443,7 +459,94 @@ def compare(args):
             failed |= not ok
             counts = [f"{x[k]} → {y[k]}" for k in ('allocs', 'reallocs', 'deallocs', 'mem_calls')]
             lines.append(f"| {scene} | {phase} | {x['rust_ir']:,} | {y['rust_ir']:,} | {delta:+.3f}% | {' | '.join(counts)} | {'ok' if ok else 'FAIL'} |")
-    print('\n'.join(lines))
+    return '\n'.join(lines) + '\n', failed
+
+
+def run(command, **kwargs):
+    print('+', ' '.join(map(str, command)), flush=True)
+    return subprocess.run(command, check=True, **kwargs)
+
+
+def output(command, **kwargs):
+    return subprocess.run(command, check=True, capture_output=True, text=True, **kwargs).stdout.strip()
+
+
+def commit(checkout, revision):
+    """`revision` as a full commit SHA; fetched from origin when the checkout does not hold it."""
+    found = subprocess.run(['git', 'rev-parse', '--verify', '--quiet', '--end-of-options', f'{revision}^{{commit}}'],
+                           cwd=checkout, capture_output=True, text=True)
+    if found.returncode == 0:
+        return found.stdout.strip()
+    run(['git', 'fetch', '--no-tags', 'origin', revision], cwd=checkout)
+    return output(['git', 'rev-parse', '--verify', 'FETCH_HEAD^{commit}'], cwd=checkout)
+
+
+def executable(messages):
+    """The one executable in Cargo's JSON build messages."""
+    found = [m['executable'] for m in map(json.loads, messages.splitlines())
+             if m.get('reason') == 'compiler-artifact' and m.get('executable')]
+    if len(found) != 1:
+        raise RuntimeError(f'expected one executable from cargo, got {found}')
+    return pathlib.Path(found[0])
+
+
+def build_bench(tree, target_dir, destination):
+    """Builds `tree`'s cherenkov-bench with the gate's settings and copies it to `destination`.
+
+    The tree's compile-time fonts come from its own generator, run with this
+    interpreter. Every tree shares one target directory: dependencies build
+    once, and each tree's workspace packages keep their own artifacts.
+    """
+    env = dict(os.environ, CARGO_TARGET_DIR=str(target_dir), **BUILD_ENV)
+    run(['uv', 'run', '--python', sys.executable, '--with-requirements', 'scenes/fonts/tools/requirements.txt',
+         'python', 'scenes/tools/generate.py', '--fonts-only'], cwd=tree / 'graphics' / 'cherenkov', env=env)
+    print('+ cargo build --locked', *BUILD, flush=True)
+    messages = subprocess.run(['cargo', 'build', '--locked', '--message-format=json-render-diagnostics', *BUILD],
+                              cwd=tree, env=env, check=True, stdout=subprocess.PIPE, text=True).stdout
+    shutil.copyfile(executable(messages), destination)
+    destination.chmod(0o755)
+
+
+def digests(paths, relative_to):
+    return {str(path.relative_to(relative_to)): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+
+
+def ab(args):
+    """Builds the merge base of BASE and HEAD and HEAD, profiles both, and applies the gate."""
+    scripts = pathlib.Path(__file__).resolve().parent
+    checkout = pathlib.Path(output(['git', 'rev-parse', '--show-toplevel'], cwd=scripts))
+    cherenkov = scripts.parents[1]
+    perf = cherenkov / 'scenes' / 'perf'
+    missing = [scene for scene in SCENES if not (perf / scene).is_dir()]
+    if missing:
+        raise RuntimeError(f'{perf} lacks {missing}; generate it with scenes/tools/generate.py --corpus-only.')
+    icd = lavapipe_icd(args.icd)
+    head = commit(checkout, args.head)
+    base = output(['git', 'merge-base', commit(checkout, args.base), head], cwd=checkout)
+    work = pathlib.Path(args.work).resolve(); out = pathlib.Path(args.out).resolve()
+    work.mkdir(parents=True); out.mkdir(parents=True)
+    # Equal-length tree paths keep the source paths the binaries embed, and
+    # with them the binaries' layout, the same length on both sides.
+    trees = {'base': (base, work / 'base'), 'head': (head, work / 'head')}
+    plan = {'requested': {'base': args.base, 'head': args.head}, 'base': base, 'head': head,
+            'harness': output(['git', 'rev-parse', 'HEAD'], cwd=checkout),
+            'harness_sha256': digests([scripts / 'ir_gate.py', scripts / 'ir_no_raster.c'], scripts),
+            'scenes_sha256': digests(sorted(p for scene in SCENES for p in (perf / scene).rglob('*') if p.is_file()), perf),
+            'build_env': BUILD_ENV, 'build': BUILD, 'pause_at': args.pause_at, 'warmup': args.warmup, 'jobs': args.jobs,
+            'icd': str(icd), 'icd_sha256': hashlib.sha256(icd.read_bytes()).hexdigest(), 'machine': platform.machine(),
+            'cpu': output(['lscpu']), 'rustc': output(['rustc', '-Vv'], cwd=checkout),
+            'cargo': output(['cargo', '-V'], cwd=checkout), 'valgrind': output(['valgrind', '--version'])}
+    binaries = {}
+    for tag, (revision, tree) in trees.items():
+        run(['git', 'worktree', 'add', '--detach', str(tree), revision], cwd=checkout)
+        binaries[tag] = out / f'bench-{tag}'
+        build_bench(tree, work / 'target', binaries[tag])
+    plan['binaries_sha256'] = digests(binaries.values(), out)
+    (out / 'plan.json').write_text(json.dumps(plan, indent=2) + '\n')
+    for tag, binary in binaries.items():
+        batch(binary, tag, cherenkov, out / tag, args.pause_at, args.warmup, args.jobs, icd)
+    report, failed = compare(out, 'base', 'head')
+    (out / 'comparison.md').write_text(report); print(report)
     return 1 if failed else 0
 
 
@@ -466,25 +569,39 @@ def same(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='cmd', required=True)
+
+    def sampling(p):
+        p.add_argument('--pause-at', type=int, default=8); p.add_argument('--warmup', type=int, default=30)
+        p.add_argument('--icd', type=pathlib.Path, help='explicit Lavapipe ICD manifest; otherwise require one installed driver')
+
+    p = sub.add_parser('ab')
+    p.add_argument('--base', required=True, help='revision whose merge base with --head is the baseline')
+    p.add_argument('--head', required=True, help='candidate revision')
+    p.add_argument('--work', required=True, help='new directory for both source trees and their target directory')
+    p.add_argument('--out', required=True, help='new directory for binaries, provenance, profiles and the verdict')
+    p.add_argument('--jobs', type=int, default=os.cpu_count()); sampling(p)
     for name in ('profile', 'batch'):
         p = sub.add_parser(name)
         p.add_argument('--binary', required=True); p.add_argument('--tag', required=True)
         p.add_argument('--repo', required=True, help='checkout holding scenes/perf')
-        p.add_argument('--out', required=True); p.add_argument('--pause-at', type=int, default=8); p.add_argument('--warmup', type=int, default=30)
-        p.add_argument('--icd', type=pathlib.Path, help='explicit Lavapipe ICD manifest; otherwise require one installed driver')
+        p.add_argument('--out', required=True); sampling(p)
         if name == 'profile':
             p.add_argument('--scene', required=True, choices=SCENES)
         else:
-            p.add_argument('--jobs', type=int, default=2)
+            p.add_argument('--jobs', type=int, default=os.cpu_count())
     p = sub.add_parser('compare'); p.add_argument('--out', required=True); p.add_argument('base'); p.add_argument('head')
     p = sub.add_parser('same'); p.add_argument('--out', required=True); p.add_argument('tags', nargs='+')
     args = parser.parse_args()
-    if args.cmd == 'profile':
+    if args.cmd == 'ab':
+        sys.exit(ab(args))
+    elif args.cmd == 'profile':
         profile(args.binary, args.tag, args.scene, args.repo, args.out, args.pause_at, args.warmup, args.icd)
     elif args.cmd == 'batch':
-        batch(args)
+        batch(args.binary, args.tag, args.repo, args.out, args.pause_at, args.warmup, args.jobs, args.icd)
     elif args.cmd == 'compare':
-        sys.exit(compare(args))
+        report, failed = compare(args.out, args.base, args.head)
+        print(report, end='')
+        sys.exit(1 if failed else 0)
     else:
         sys.exit(same(args))
 

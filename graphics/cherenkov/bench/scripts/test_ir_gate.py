@@ -71,6 +71,17 @@ class Host(unittest.TestCase):
                 ir_gate.verify_reused_profile(result, old, icd)
 
 
+    def test_build_takes_the_one_executable_cargo_reports(self):
+        artifact = {'reason': 'compiler-artifact', 'executable': '/target/release/cherenkov-bench'}
+        library = {'reason': 'compiler-artifact', 'executable': None}
+        messages = '\n'.join(json.dumps(m) for m in (library, {'reason': 'build-finished'}, artifact))
+        self.assertEqual(ir_gate.executable(messages), pathlib.Path('/target/release/cherenkov-bench'))
+        with self.assertRaisesRegex(RuntimeError, 'one executable'):
+            ir_gate.executable(json.dumps(library))
+        with self.assertRaisesRegex(RuntimeError, 'one executable'):
+            ir_gate.executable('\n'.join(json.dumps(artifact) for _ in range(2)))
+
+
 class Sampling(unittest.TestCase):
     def test_span_subtracts_only_calls_under_the_root(self):
         # run.1 closes the call in flight when instrumentation switched on,
