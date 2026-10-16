@@ -117,6 +117,16 @@ pub enum CoverageRoute {
 // from inside the crate instead.
 #[cfg(test)]
 thread_local! {
+    // Android's emulated TLS expands even a `const { … }` initializer into a
+    // non-const init fn, which the lint inspects; native-TLS targets keep it
+    // const, so the expectation is Android-only.
+    #[cfg_attr(
+        target_os = "android",
+        expect(
+            clippy::missing_const_for_thread_local,
+            reason = "the initializer is already const; the lint misfires on std's emulated-TLS expansion (rust-lang/rust-clippy#13422)"
+        )
+    )]
     static FORCED_ROUTE: std::cell::Cell<Option<CoverageRoute>> =
         const { std::cell::Cell::new(None) };
 }
