@@ -2515,13 +2515,19 @@ async fn write_channel_file(path: &Path, contents: Option<&[u8]>) -> std::io::Re
     }
 }
 
-/// The `cargo metadata` invocation a [`CargoLayout`] is read from.
+/// The `cargo metadata` invocation a [`CargoLayout`] is read from: run in
+/// `current_dir`, so Cargo loads that directory's configuration, and
+/// handed `application_manifest` — the spelling [`package_at_manifest`]
+/// looks the application package up by.
 fn cargo_layout_command(
     current_dir: &Path,
+    application_manifest: &Path,
     mode: CargoResolution,
 ) -> cargo_metadata::MetadataCommand {
     let mut command = cargo_metadata::MetadataCommand::new();
-    command.current_dir(current_dir);
+    command
+        .current_dir(current_dir)
+        .manifest_path(application_manifest);
     match mode {
         CargoResolution::Local => {
             command.no_deps();
@@ -2543,8 +2549,13 @@ async fn resolve_cargo_layout(
     framework: Option<ResolvedFramework>,
     mode: CargoResolution,
 ) -> eyre::Result<CargoLayout> {
+    let application_manifest = application_manifest(current_dir).await?;
     let metadata = host
-        .cargo_metadata(&cargo_layout_command(current_dir, mode))
+        .cargo_metadata(&cargo_layout_command(
+            current_dir,
+            &application_manifest,
+            mode,
+        ))
         .await?;
     let water_lock = match &framework {
         Some(framework) if framework.channel() != Some(FrameworkChannel::Stable) => {
@@ -2554,7 +2565,7 @@ async fn resolve_cargo_layout(
     };
     cargo_layout_from(
         host,
-        current_dir,
+        &application_manifest,
         framework,
         &metadata,
         water_lock.as_deref(),
@@ -2581,8 +2592,13 @@ impl Fact for CargoLayoutFact {
     }
 
     async fn resolve(&self, scope: &Scope<'_>) -> eyre::Result<CargoLayout> {
+        let application_manifest = application_manifest(&self.current_dir).await?;
         let metadata = scope
-            .cargo_metadata(&cargo_layout_command(&self.current_dir, self.mode))
+            .cargo_metadata(&cargo_layout_command(
+                &self.current_dir,
+                &application_manifest,
+                self.mode,
+            ))
             .await?;
         let water_lock = match &self.framework {
             Some(framework) if framework.channel() != Some(FrameworkChannel::Stable) => Some(
@@ -2600,7 +2616,7 @@ impl Fact for CargoLayoutFact {
         };
         cargo_layout_from(
             scope.host(),
-            &self.current_dir,
+            &application_manifest,
             self.framework.clone(),
             &metadata,
             water_lock.as_deref(),
@@ -2608,12 +2624,12 @@ impl Fact for CargoLayoutFact {
     }
 }
 
-/// The layout `metadata` reports for the project at `current_dir`, once
-/// the resolve is checked against the CLI and — for a channel framework —
-/// the framework's lock, `water_lock`.
+/// The layout `metadata` reports for the project whose manifest is
+/// `application_manifest`, once the resolve is checked against the CLI and
+/// — for a channel framework — the framework's lock, `water_lock`.
 fn cargo_layout_from(
     host: &Host,
-    current_dir: &Path,
+    application_manifest: &Path,
     framework: Option<ResolvedFramework>,
     metadata: &cargo_metadata::Metadata,
     water_lock: Option<&[u8]>,
@@ -2625,12 +2641,7 @@ fn cargo_layout_from(
         framework.validate_dependencies(metadata, lockfile)?;
     }
 
-    // `dunce`, not `std::fs::canonicalize`: on Windows the standard one
-    // returns an extended-length path (`\\?\D:\...`), while `cargo
-    // metadata` reports the plain one — comparing the two would never
-    // match the application package (part of #152).
-    let application_manifest = dunce::canonicalize(current_dir.join("Cargo.toml"))?;
-    let root_package = package_at_manifest(metadata, &application_manifest)?;
+    let root_package = package_at_manifest(metadata, application_manifest)?;
     let root_package_id = root_package.id.to_string();
     let root_package_version = root_package.version.to_string();
 
@@ -2642,8 +2653,32 @@ fn cargo_layout_from(
     })
 }
 
-/// The package whose manifest is `application_manifest` — the exact
-/// manifest path, canonicalized the same `dunce` way cargo reports it.
+/// The canonical path of the application manifest at `project_root` — the
+/// one spelling every Cargo invocation that must find the application
+/// package is handed through `--manifest-path`.
+///
+/// Cargo reports a package's `manifest_path` lexically derived from the
+/// manifest path it was given, or from its working directory when given
+/// none, and never canonicalizes it. A project directory can be spelled
+/// many ways — through a symlink, or on Windows with an 8.3 short-name
+/// component such as `C:\Users\RUNNER~1\...` — so a manifest path
+/// derived from the working directory cannot be compared with one this
+/// CLI derived itself. Handing Cargo this path makes its report and the
+/// lookup in [`package_at_manifest`] the same string by construction.
+/// `dunce`, not `std::fs::canonicalize`, because on Windows the standard
+/// one returns an extended-length `\\?\` path no other tool spells.
+async fn application_manifest(project_root: &Path) -> eyre::Result<PathBuf> {
+    let manifest = project_root.join("Cargo.toml");
+    unblock(move || {
+        dunce::canonicalize(&manifest)
+            .wrap_err_with(|| format!("cannot canonicalize {}", manifest.display()))
+    })
+    .await
+}
+
+/// The package whose manifest is `application_manifest`, as returned by
+/// [`application_manifest`] and handed to the `cargo metadata` run that
+/// produced `metadata`.
 fn package_at_manifest<'a>(
     metadata: &'a cargo_metadata::Metadata,
     application_manifest: &Path,
@@ -2681,7 +2716,7 @@ async fn cargo_tree(
     targets: &[Triple],
     locked: bool,
 ) -> eyre::Result<String> {
-    let application_manifest = dunce::canonicalize(project_root.join("Cargo.toml"))?;
+    let application_manifest = application_manifest(project_root).await?;
     let mut tree = host.command("cargo");
     tree.arg("tree")
         .arg("--manifest-path")
@@ -2898,7 +2933,7 @@ async fn application_package_spec(
     project_root: &Path,
     locked: bool,
 ) -> eyre::Result<String> {
-    let application_manifest = dunce::canonicalize(project_root.join("Cargo.toml"))?;
+    let application_manifest = application_manifest(project_root).await?;
     let mut command = cargo_metadata::MetadataCommand::new();
     command.no_deps().manifest_path(&application_manifest);
     if locked {
