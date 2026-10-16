@@ -71,7 +71,9 @@ jobs:
       - name: Build, profile and compare
         timeout-minutes: 45
         env:
-          IR_BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+          # A pull request's merge commit is measured against its first
+          # parent, the dev commit it merges into.
+          IR_BASE: ${{ inputs.base || format('{0}^1', github.sha) }}
           IR_HEAD: ${{ inputs.head || github.sha }}
         run: >-
           python3 graphics/cherenkov/bench/scripts/ir_gate.py ab --leg ${{ matrix.leg }}
