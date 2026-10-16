@@ -382,6 +382,69 @@ fn an_image_beyond_the_per_image_budget_fails_registration()
 }
 
 split_test! {
+/// Registered images stay resident, so they count against the GPU
+/// budget beside everything else resident: an image the per-image limit
+/// admits but the rest of the budget cannot hold is rejected, and the
+/// renders that draw it fail naming it instead of allocating past the
+/// budget. Once another image is released, re-registering it succeeds.
+fn registered_images_count_against_the_gpu_budget() -> Result<(), Box<dyn std::error::Error>> {
+    let budget = cherenkov::Bytes::mib(16);
+    let engine = match wait!(Engine::<Gpu>::new(GpuConfig {
+        budget: cherenkov::Budget {
+            gpu: budget,
+            cpu: budget,
+        },
+        ..GpuConfig::default()
+    })) {
+        Ok(engine) => engine,
+        Err(EngineError::Backend(_)) => return Ok(()),
+        Err(e) => panic!("engine init failed: {e}"),
+    };
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    // Two images that each take three quarters of what is left: either
+    // fits alone, both together do not. Rgba8 is stored as is, four bytes
+    // a texel.
+    let available = budget.0 - wait!(engine.memory()).gpu.0;
+    let side = u32::try_from((available * 3 / 4 / 4).isqrt())?;
+    let pixels = || {
+        ImageData::<Rgba8>::new(side, side, vec![255; side as usize * side as usize * 4])
+    };
+    let first = engine.image(pixels()?)?;
+    let second = engine.image(pixels()?)?;
+    let draw = |image: &Image<Rgba8>| {
+        let id = image.id();
+        surface.update(|tx| {
+            tx[surface.root()].record(|c| {
+                c.image(id, Rect::new(0., 0., 8., 8.), Sampling::Nearest);
+            });
+        });
+    };
+
+    draw(&first);
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    draw(&second);
+    match wait!(engine.render(cherenkov::FrameTime::now())) {
+        Err(cherenkov::RenderError::Rejected { resource, reason }) => {
+            assert_eq!(resource, cherenkov::ResourceId::Image(second.id()));
+            assert!(
+                matches!(*reason, cherenkov::ResourceError::Image(_)),
+                "the budget rejection names the image: {reason}"
+            );
+        }
+        other => panic!("an image past the GPU budget registered: {other:?}"),
+    }
+
+    // No content draws the first image any more: releasing it frees its
+    // texture, and replacing the rejected image registers it anew.
+    drop(first);
+    second.replace(pixels()?)?;
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    Ok(())
+}
+}
+
+split_test! {
 /// An image whose last handle drops between recording the content that
 /// replaces it and installing that content still draws correctly in a
 /// render issued before the install; the render after the install draws

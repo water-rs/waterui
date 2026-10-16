@@ -32,7 +32,7 @@ use std::rc::Rc;
 
 use accesskit::{Action, ActionRequest, NodeId, Role, TreeId, TreeUpdate};
 use waterui::accessibility::AccessibilityRole;
-use waterui::gesture::{DragEvent, DragGesture, TapGesture};
+use waterui::gesture::{DragEvent, DragGesture, GesturePoint, TapEvent, TapGesture};
 use waterui::style::Anchor;
 use waterui::{AnyView, Binding, Color, ViewExt as _};
 use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
@@ -533,6 +533,48 @@ fn hover_move_location_is_view_local() {
         scaled_fired.borrow().last().copied(),
         Some((5.0, 150.0)),
         "a scaled view's hover location must be mapped through the inverse transform"
+    );
+}
+
+/// water-rs/waterui#2749 — gesture events are delivered in their view's own
+/// space through the region's inverse hit transform, not as an offset from
+/// the window bounding box: on a handle doubled from its top-left corner at
+/// window x = 390, a tap at window (410, 20) is local (10, 10) and a drag's
+/// 40-point window translation is 20 local points.
+#[test]
+fn gesture_event_locations_are_view_local_under_scale() {
+    let taps = Rc::new(RefCell::new(Vec::new()));
+    let tapped = handle()
+        .gesture(TapGesture::new(), {
+            let taps = Rc::clone(&taps);
+            move |Use(event): Use<TapEvent>| taps.borrow_mut().push(event.location)
+        })
+        .scale_from(2.0, 2.0, Anchor::TOP_LEFT);
+    let mut runtime = runtime_with(split(AnyView::new(tapped)));
+    pointer_down(&mut runtime, 410.0, 20.0);
+    pointer_up(&mut runtime, 410.0, 20.0);
+    assert_eq!(
+        taps.borrow().as_slice(),
+        [GesturePoint::new(10.0, 10.0)],
+        "a scaled view's tap location must be mapped through the inverse transform"
+    );
+
+    let drags = Rc::new(RefCell::new(Vec::new()));
+    let dragged = handle()
+        .gesture(DragGesture::new(0.0), {
+            let drags = Rc::clone(&drags);
+            move |Use(event): Use<DragEvent>| {
+                drags.borrow_mut().push((event.location, event.translation));
+            }
+        })
+        .scale_from(2.0, 2.0, Anchor::TOP_LEFT);
+    let mut runtime = runtime_with(split(AnyView::new(dragged)));
+    pointer_down(&mut runtime, 410.0, 20.0);
+    pointer_move(&mut runtime, 450.0, 20.0);
+    assert_eq!(
+        drags.borrow().last().copied(),
+        Some((GesturePoint::new(30.0, 10.0), GesturePoint::new(20.0, 0.0))),
+        "a scaled view's drag location maps as a point and its translation as a vector"
     );
 }
 

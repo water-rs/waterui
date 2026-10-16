@@ -455,7 +455,7 @@ Lazy::hstack(ForEach::new(records.clone(), row))
 
 List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
-    .on_delete(|ListDelete(i), s: AppState| { let _ = s.rows.remove(i); })
+    .on_delete(|ListDelete(i), mut s: AppState| { let _ = s.rows.remove(i); })
     .on_move(|ListMove(m), s: AppState| { /* m.from(), m.to() */ })
     .scroll_controller(&controller)
 ```
@@ -499,10 +499,11 @@ List::content((
 `ListItem` modifiers: `.deletable(signal)`, `.section(section)`. Selection lives on the
 list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
 `.multi_selection(&Binding<BTreeSet<V::Id>>)` on both `List` and `ListBuilder`; for
-`List::content` rows `V::Id` is `SelfId<usize>`, for `List::for_each` it is
-`Identifiable::Id`. At most one mode per list: a later call replaces an earlier one.
-`List::for_each` requires `C::Item: Identifiable`; `List::content` takes the structural
-tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
+`List::content` rows `V::Id` is the row index (`usize`), for `List::for_each` it is the
+collection's id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`, the index for an
+array or static slice. At most one mode per list: a later call replaces an earlier one.
+`List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
+structural tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
 
 A row whose content sits under `.disabled(true)` is inert to selection the way a

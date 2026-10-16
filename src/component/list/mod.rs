@@ -16,12 +16,11 @@ use nami::watcher::Context;
 use nami::{Binding, Computed, signal::IntoComputed};
 
 use crate::views::{AnyViews, ForEach, SharedAnyViews, ViewSnapshot, Views, ViewsExt};
-use waterui_core::id::{Id as RawId, Mapping, SelfId};
+use waterui_core::id::{Id as RawId, Mapping};
 use waterui_core::view::{ConfigurableView, Hook, ViewConfiguration};
 use waterui_core::{
     AnyView, Environment, Metadata, Native, NativeView, View,
     handler::{AnyViewBuilder, Handler, shared_action},
-    id::Identifiable,
     impl_extractor,
     layout::StretchAxis,
 };
@@ -91,7 +90,7 @@ pub type OnMove = Box<dyn Fn(&Environment, Move)>;
 /// set of rows — at most one mode per list.
 ///
 /// The generic `Id` is the row's identity type: `V::Id` while the binding is
-/// stored typed on [`ListBuilder`], `SelfId<RawId>` after `config()` erases
+/// stored typed on [`ListBuilder`], `RawId` after `config()` erases
 /// it through the same generator the collection's `get_id` reports, so the
 /// backends and the FFI read and write exactly the ids the rows answer to.
 #[derive(Clone, Default)]
@@ -118,10 +117,10 @@ impl<Id: 'static> core::fmt::Debug for ListSelection<Id> {
 
 impl<Id: 'static + Ord + Clone> ListSelection<Id> {
     /// Re-keys the bindings through `ids`, the same generator the erased
-    /// contents feed: reads register each `Id` to the `SelfId<RawId>` the
+    /// contents feed: reads register each `Id` to the `RawId` the
     /// collection reports, and backend writes resolve it back — both
     /// directions the way `Mapping::binding` maps a `Picker` selection.
-    fn erased(self, ids: &Mapping<Id>) -> ListSelection<SelfId<RawId>> {
+    fn erased(self, ids: &Mapping<Id>) -> ListSelection<RawId> {
         match self {
             Self::None => ListSelection::None,
             Self::Single(binding) => {
@@ -129,10 +128,10 @@ impl<Id: 'static + Ord + Clone> ListSelection<Id> {
                 let from = ids.clone();
                 ListSelection::Single(Binding::mapping(
                     &binding,
-                    move |selected| selected.map(|id| SelfId::new(to.to_id(id))),
+                    move |selected| selected.map(|id| to.to_id(id)),
                     move |binding, erased| {
                         binding.set(erased.map(|id| {
-                            from.to_data(id.into_inner()).expect(
+                            from.to_data(id).expect(
                                 "list selection row id is not registered in the list's id mapping",
                             )
                         }));
@@ -144,18 +143,13 @@ impl<Id: 'static + Ord + Clone> ListSelection<Id> {
                 let from = ids.clone();
                 ListSelection::Multiple(Binding::mapping(
                     &binding,
-                    move |selected| {
-                        selected
-                            .iter()
-                            .map(|id| SelfId::new(to.to_id(id.clone())))
-                            .collect()
-                    },
-                    move |binding, erased: BTreeSet<SelfId<RawId>>| {
+                    move |selected| selected.iter().map(|id| to.to_id(id.clone())).collect(),
+                    move |binding, erased: BTreeSet<RawId>| {
                         binding.set(
                             erased
                                 .iter()
                                 .map(|id| {
-                                    from.to_data(id.into_inner()).expect(
+                                    from.to_data(*id).expect(
                                         "list selection row id is not registered in the list's id mapping",
                                     )
                                 })
@@ -176,7 +170,7 @@ pub struct ListConfig {
     /// The list's selection bindings, keyed by the same erased row ids
     /// `contents.get_id` returns. `ListSelection::None` when the list is not
     /// selectable.
-    pub selection: ListSelection<SelfId<RawId>>,
+    pub selection: ListSelection<RawId>,
     /// Read-only signal for edit mode state.
     pub editing: Computed<bool>,
     /// Optional callback when any item is deleted.
@@ -345,7 +339,7 @@ where
 impl<C, F> List<ForEach<C, F, ListItem>>
 where
     C: Collection + Clone,
-    C::Item: Identifiable + Clone,
+    C::Item: Clone,
     F: 'static + Fn(C::Item) -> ListItem,
 {
     /// Creates a lazy list over an identity-keyed reactive collection.
@@ -436,7 +430,7 @@ impl core::fmt::Debug for BuiltViewsSnapshot {
 }
 
 impl ViewSnapshot for BuiltViewsSnapshot {
-    type Id = SelfId<usize>;
+    type Id = usize;
     type View = ListItem;
 
     fn range(&self) -> Range<usize> {
@@ -444,19 +438,19 @@ impl ViewSnapshot for BuiltViewsSnapshot {
     }
 
     fn get_id(&self, index: usize) -> Option<Self::Id> {
-        (index < self.entries.len()).then(|| SelfId::new(index))
+        (index < self.entries.len()).then_some(index)
     }
 
     fn get_view(&self, index: usize) -> Option<Self::View> {
         let (builder, section) = self.entries.get(index)?;
         let mut item = builder.build();
-        item.section = section;
+        item.section.clone_from(section);
         Some(item)
     }
 }
 
 impl Views for BuiltViews {
-    type Id = SelfId<usize>;
+    type Id = usize;
     type Guard = ();
     type View = ListItem;
     type Snapshot = BuiltViewsSnapshot;
@@ -474,7 +468,7 @@ impl Views for BuiltViews {
     fn watch(
         &self,
         _range: impl RangeBounds<usize>,
-        _watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        _watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
     }
 }
@@ -633,7 +627,7 @@ where
     fn watch(
         &self,
         range: impl RangeBounds<usize>,
-        watcher: impl Fn(Context<Self::Snapshot>, CollectionChange) + 'static,
+        watcher: impl Fn(Context<Self::Snapshot>, &CollectionChange) + 'static,
     ) -> Self::Guard {
         let transform = self.transform.clone();
         self.contents.watch(range, move |ctx, change| {
@@ -663,11 +657,7 @@ fn resolve_item_section(mut item: ListItem, env: &Environment) -> ListItem {
 /// color over it. Anything the row resolves through the theme's foreground,
 /// muted-foreground, or accent slots follows the `selected` signal reactively;
 /// the row itself is not rebuilt.
-fn selection_themed(
-    mut item: ListItem,
-    selection: &ListSelection<SelfId<RawId>>,
-    id: SelfId<RawId>,
-) -> ListItem {
+fn selection_themed(mut item: ListItem, selection: &ListSelection<RawId>, id: RawId) -> ListItem {
     use crate::color::WorkingColor;
     use crate::theme::{color, install_color_signal};
     use nami::SignalExt;
@@ -1059,7 +1049,7 @@ mod tests {
     /// selection transforms `render_list_config` wraps every item in.
     #[test]
     fn row_insets_survive_the_section_and_selection_transform() {
-        let selection = nami::Binding::container(Option::<SelfId<usize>>::None);
+        let selection = nami::Binding::container(Option::<usize>::None);
         let config = render_config(
             ConfigurableView::config(
                 List::content((

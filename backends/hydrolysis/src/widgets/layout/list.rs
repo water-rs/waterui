@@ -26,7 +26,7 @@ use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::animation::Animation;
 use waterui_core::handler::{BoxedAction, boxed_action};
-use waterui_core::id::{Id as RawId, SelfId};
+use waterui_core::id::Id as RawId;
 use waterui_core::interaction::Selected;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
@@ -45,7 +45,7 @@ use waterui_graphics::draw::Draw as _;
 
 /// The stable per-row id used to key the retained content sub-view cache, matching
 /// the id `ListConfig::contents` (a `SharedAnyViews<ListItem>`) yields per index.
-pub type ListItemId = SelfId<RawId>;
+pub type ListItemId = RawId;
 
 #[derive(Clone, Copy)]
 struct ListViewportAnchor {
@@ -447,7 +447,7 @@ impl ListRenderState {
             let event_snapshot = ctx.into_value();
             crate::renderer::collect_replaced_ids(
                 &event_snapshot,
-                &change,
+                change,
                 &mut replaced_for_watch.borrow_mut(),
             );
             *snapshot_for_watch.borrow_mut() = event_snapshot;
@@ -949,7 +949,7 @@ const A11Y_KEY_MOVE_DOWN: i64 = 5;
 
 #[cfg(feature = "accessibility")]
 fn row_a11y_key_base(row_id: ListItemId) -> i64 {
-    i64::from(i32::from(*row_id)) * A11Y_KEYS_PER_ROW
+    i64::from(i32::from(row_id)) * A11Y_KEYS_PER_ROW
 }
 
 /// Registers one section header or footer as its own accessibility node.
@@ -1396,7 +1396,7 @@ pub fn list_accessibility(
                 // resolves the row node through to parent its content under.
                 // Each press slot links to the node that control emits below,
                 // so a pointer press lands keyboard focus on it.
-                let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(*row_id))
+                let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(row_id))
                     as usize)
                     .checked_mul(5)
                     .expect("hydrolysis List interaction identity overflow");
@@ -2002,7 +2002,7 @@ pub fn render_list_parts(
         // press slots, 2 the delete control's, 3 the row's own selection
         // press, 4 the row's anchor — the key `list_accessibility` links the
         // row node to and this pass resolves it through below.
-        let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(*row_id)) as usize)
+        let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(row_id)) as usize)
             .checked_mul(5)
             .expect("hydrolysis List interaction identity overflow");
         let chrome = state.borrow().section_chrome(index);

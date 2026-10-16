@@ -979,9 +979,10 @@ impl RenderNode {
         let replaced_ids = Rc::new(RefCell::new(std::collections::HashSet::new()));
         let replaced_for_watch = Rc::clone(&replaced_ids);
         // The node retains one immutable row set per applied event: the
-        // watcher swaps in the snapshot each notification carried — captured
-        // from the exact data that emitted it — so reconcile never re-reads
-        // the live source while applying an older change.
+        // watcher swaps in the snapshot delivered with each notification, so
+        // reconcile never re-reads the live source while applying a change.
+        // Registering delivers nothing; the initial membership is this
+        // snapshot.
         let applied = Rc::new(RefCell::new(views.snapshot()));
         let applied_for_watch = Rc::clone(&applied);
         // A rebuild in progress already recaptures the whole membership —
@@ -994,7 +995,7 @@ impl RenderNode {
                 let event_snapshot = ctx.into_value();
                 collect_replaced_ids(
                     &event_snapshot,
-                    &change,
+                    change,
                     &mut replaced_for_watch.borrow_mut(),
                 );
                 *applied_for_watch.borrow_mut() = event_snapshot;
@@ -1100,15 +1101,16 @@ impl RenderNode {
             move |ctx, change| {
                 // Membership changed: request a fine-grained refresh; the flush
                 // re-resolves the visible window over the event's own snapshot.
-                // The reported replaced positions accumulate their ids so the
-                // patch invalidates exactly those rows. Registration itself
-                // fires the initial snapshot — gated like the collection's.
+                // The reported in-place updates accumulate their ids so the
+                // patch invalidates exactly those rows. Registration delivers
+                // nothing: the initial window resolves from the snapshot read
+                // above.
                 dirty_for_watch.set(true);
                 membership_for_watch.set(true);
                 let event_snapshot = ctx.into_value();
                 collect_replaced_ids(
                     &event_snapshot,
-                    &change,
+                    change,
                     &mut replaced_for_watch.borrow_mut(),
                 );
                 *snapshot_for_watch.borrow_mut() = event_snapshot;

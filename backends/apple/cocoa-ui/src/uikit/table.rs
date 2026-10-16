@@ -654,9 +654,17 @@ impl TableView {
         self.reloadData();
     }
 
-    /// Applies `deletes` and `inserts` as one animated batch — `.automatic`
-    /// when `animated`, `.none` otherwise.
-    pub fn apply_row_updates(&self, deletes: &[IndexPath], inserts: &[IndexPath], animated: bool) {
+    /// Applies `deletes`, `inserts` and `moves` as one animated batch —
+    /// `.automatic` when `animated`, `.none` otherwise. Batch-update
+    /// indexing: `deletes` and each move's source name rows before the
+    /// batch, `inserts` and each move's destination name rows after it.
+    pub fn apply_row_updates(
+        &self,
+        deletes: &[IndexPath],
+        inserts: &[IndexPath],
+        moves: &[(IndexPath, IndexPath)],
+        animated: bool,
+    ) {
         let animation = if animated {
             UITableViewRowAnimation::Automatic
         } else {
@@ -668,10 +676,17 @@ impl TableView {
         let insert_array = NSArray::from_retained_slice(
             &inserts.iter().map(|i| index_path(*i)).collect::<Vec<_>>(),
         );
+        let move_paths: Vec<_> = moves
+            .iter()
+            .map(|(from, to)| (index_path(*from), index_path(*to)))
+            .collect();
         let table = self.retain();
         let updates = RcBlock::new(move || {
             table.deleteRowsAtIndexPaths_withRowAnimation(&delete_array, animation);
             table.insertRowsAtIndexPaths_withRowAnimation(&insert_array, animation);
+            for (from, to) in &move_paths {
+                table.moveRowAtIndexPath_toIndexPath(from, to);
+            }
         });
         // `performBatchUpdates` invokes `updates` synchronously, so the
         // captured `NSArray`s stay alive for the whole batch.

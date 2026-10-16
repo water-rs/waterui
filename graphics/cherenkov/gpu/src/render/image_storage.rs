@@ -206,7 +206,8 @@ pub(super) fn bytes(texture: &wgpu::Texture) -> u64 {
     storage_bytes(texture.format(), texture.width(), texture.height())
 }
 
-fn storage_bytes(format: wgpu::TextureFormat, width: u32, height: u32) -> u64 {
+/// The bytes `format` stores for a `width`×`height` texture: whole blocks.
+pub(super) fn storage_bytes(format: wgpu::TextureFormat, width: u32, height: u32) -> u64 {
     let (bw, bh) = format.block_dimensions();
     u64::from(width.div_ceil(bw))
         * u64::from(height.div_ceil(bh))

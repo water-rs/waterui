@@ -149,7 +149,7 @@ fn dynamic_swap_replaces_only_the_swapped_mounts() {
 /// cells.
 #[test]
 fn collection_reconcile_replaces_only_the_touched_mounts() {
-    #[derive(Clone)]
+    #[derive(Clone, PartialEq)]
     struct Shade {
         id: u64,
         level: u8,
@@ -176,7 +176,7 @@ fn collection_reconcile_replaces_only_the_touched_mounts() {
 
     // Removal: only the dropped item's cells leave; every survivor keeps its
     // node.
-    let list: List<Shade> = List::from(vec![
+    let mut list: List<Shade> = List::from(vec![
         Shade { id: 0, level: 0 },
         Shade { id: 1, level: 1 },
         Shade { id: 2, level: 2 },

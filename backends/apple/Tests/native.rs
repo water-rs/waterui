@@ -5488,7 +5488,7 @@ mod owner_lifetimes {
         // afterwards names a real retainer, not a pooled autorelease.
         let mut env = resolve::env();
         let track = binding(String::from("first"));
-        let items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
         // The theme `Foreground` slot backs every unstyled chunk — the
         // `label_leaf` default watcher this fix touches. Reinstall it
         // from a binding the test keeps, so a live update is reachable.

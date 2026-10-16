@@ -714,20 +714,6 @@ impl InstanceTemplate {
             packed: inst.meta[3],
         }
     }
-
-    fn restore(&self) -> Instance {
-        let mut inst = Instance::new(0);
-        inst.affine[..6].copy_from_slice(&self.affine);
-        inst.shape = self.shape;
-        inst.inner = self.inner;
-        inst.color = self.color;
-        inst.grad = self.grad;
-        inst.grad2 = self.grad2;
-        inst.params[..2].copy_from_slice(&self.params);
-        inst.meta[1] = self.paint;
-        inst.meta[3] = self.packed;
-        inst
-    }
 }
 
 /// Fields that vary within one realized leaf. Shape, placement and paint are
@@ -741,18 +727,36 @@ pub struct RetainedInstance {
 }
 
 impl RetainedInstance {
-    fn restore(self, template: &InstanceTemplate, stop_base: u32) -> Instance {
-        let mut inst = template.restore();
-        inst.bounds = self.bounds;
-        inst.uv[..2].copy_from_slice(&self.uv);
-        inst.meta[0] = self.kind;
-        inst.meta[2] = self.first_stop
+    /// The instance `template` and this quad's fields describe; every
+    /// field the template does not keep takes `Instance::new`'s value.
+    /// Built as one literal from whole arrays: this runs once per retained
+    /// quad per frame, and a slice-range copy here costs an outlined
+    /// bounds-checked call plus a `memcpy` whenever the optimizer declines
+    /// to inline the range indexing.
+    const fn restore(self, template: &InstanceTemplate, stop_base: u32) -> Instance {
+        const BLANK: Instance = Instance::new(0);
+        let [a0, a1, a2, a3, a4, a5] = template.affine;
+        let [u0, u1] = self.uv;
+        let [p0, p1] = template.params;
+        let first_stop = self.first_stop
             + if self.kind == KIND_REGION {
                 0
             } else {
                 stop_base
             };
-        inst
+        Instance {
+            affine: [a0, a1, a2, a3, a4, a5, BLANK.affine[6], BLANK.affine[7]],
+            bounds: self.bounds,
+            shape: template.shape,
+            inner: template.inner,
+            color: template.color,
+            grad: template.grad,
+            grad2: template.grad2,
+            uv: [u0, u1, BLANK.uv[2], BLANK.uv[3]],
+            params: [p0, p1, BLANK.params[2], BLANK.params[3]],
+            meta: [self.kind, template.paint, first_stop, template.packed],
+            ..BLANK
+        }
     }
 }
 
@@ -1196,6 +1200,9 @@ impl Isolation {
 pub struct Lowering<'a> {
     frame: &'a mut Frame,
     anchor_scratch: &'a mut AnchorScratch,
+    /// Path emission buffers, owned by the surface so their capacity
+    /// carries across frames.
+    raster_scratch: &'a mut path::EmitScratch,
     width: f32,
     height: f32,
     transform: Affine,
@@ -1319,11 +1326,13 @@ impl<'a> Lowering<'a> {
         frame: &'a mut Frame,
         size: (u32, u32),
         anchor_scratch: &'a mut AnchorScratch,
+        raster_scratch: &'a mut path::EmitScratch,
     ) -> Self {
         anchor_scratch.clear();
         Self {
             frame,
             anchor_scratch,
+            raster_scratch,
             width: size.0 as f32,
             height: size.1 as f32,
             transform: Affine::IDENTITY,
@@ -4705,11 +4714,13 @@ impl<'a> Lowering<'a> {
             let device =
                 pl.raster * shader_path.unwrap_or_else(|| make.take().expect("path factory")());
             let (segments, bbox) = path::flatten_segments(&device, path::FLATTEN);
-            let Some(coverage) = path::rasterize(
+            let Some(emitted) = path::rasterize_emit(
                 &segments,
                 bbox,
                 (f64::from(self.width), f64::from(self.height)),
                 rule,
+                self.raster_scratch,
+                &mut self.path_arena,
             ) else {
                 // Missing the surface at this offset says nothing about
                 // other offsets — and an empty emission carries no bands,
@@ -4719,15 +4730,11 @@ impl<'a> Lowering<'a> {
                 break 'stored (PathEmit::default(), None);
             };
             self.paths += 1;
-            let (emit, cells) = path::emit(&coverage, &mut self.path_arena)?;
+            let (emit, cells, clipped) = emitted?;
             // Emission rects are relative to the placement offset; the
             // stored record keeps that frame.
             let stored = emit.translated(-pl.offset.x, -pl.offset.y);
-            let key = if coverage.clipped {
-                pl.key_exact()
-            } else {
-                pl.key
-            };
+            let key = if clipped { pl.key_exact() } else { pl.key };
             let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
             self.pending.push(PendingRaster::Path {
                 key,
@@ -4879,6 +4886,7 @@ impl<'a> Lowering<'a> {
                 bbox,
                 (f64::from(self.width), f64::from(self.height)),
                 rule,
+                self.raster_scratch,
             ) else {
                 // Clipping to nothing at this offset draws nothing.
                 return Ok(());
@@ -5583,7 +5591,13 @@ mod tests {
     fn cached_margin_preserves_exact_transform_results() {
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         let transforms = [
             Affine::IDENTITY,
             Affine::scale_non_uniform(2.0, 3.0),
@@ -5673,7 +5687,13 @@ mod tests {
         let bitmaps = FxHashMap::default();
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         lowering.begin_pass(Target::Part(0), None);
         let glyphs = GlyphContext {
             atlas: &atlas,
@@ -5771,7 +5791,13 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         lowering.begin_pass(Target::Part(0), None);
         lowering
             .isolate(
@@ -5850,7 +5876,13 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         lowering.begin_pass(Target::Part(0), None);
         lowering
             .isolate(
@@ -5940,7 +5972,13 @@ mod tests {
     fn a_collapsed_shadow_emits_no_quads() {
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         let Some((device, _queue)) = device_and_queue() else {
             return;
         };
@@ -6240,7 +6278,13 @@ mod tests {
             };
             let mut frame = Frame::default();
             let mut anchor_scratch = AnchorScratch::default();
-            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            let mut raster_scratch = path::EmitScratch::new();
+            let mut lowering = Lowering::new(
+                &mut frame,
+                (32, 32),
+                &mut anchor_scratch,
+                &mut raster_scratch,
+            );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
                 .run(
@@ -6346,7 +6390,13 @@ mod tests {
             };
             let mut frame = Frame::default();
             let mut anchor_scratch = AnchorScratch::default();
-            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            let mut raster_scratch = path::EmitScratch::new();
+            let mut lowering = Lowering::new(
+                &mut frame,
+                (32, 32),
+                &mut anchor_scratch,
+                &mut raster_scratch,
+            );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
                 .run(
@@ -6399,7 +6449,13 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (32, 32),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
             .run(
@@ -6653,7 +6709,13 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (32, 32),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
             .run(
@@ -6749,7 +6811,8 @@ mod tests {
         let mut frame = Frame::default();
         let mut scratch = AnchorScratch::default();
         assert_eq!(scratch.heap_bytes(), 0);
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch, &mut raster_scratch);
         lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
         lowering.backdrops.insert(7, plan(anchor_a, member));
         lowering.anchor_scratch.members.push((7, None, 2));
