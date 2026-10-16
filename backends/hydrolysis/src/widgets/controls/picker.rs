@@ -19,7 +19,9 @@ use waterui_core::AnyView;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::id::Id;
-use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
+use waterui_core::layout::{
+    HorizontalAlignment, ProposalSize, Size as LayoutSize, StretchAxis, ViewDimensions,
+};
 use waterui_form::picker::PickerItem;
 use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_text::styled::StyledStr;
@@ -463,21 +465,30 @@ pub fn picker_accessibility(
 /// Measures a retained picker leaf from its [`PickerRenderState`], reading the
 /// label size from its already-built [`RetainedSubview`] so layout and the
 /// in-field label render agree (mirrors [`measure_picker_intrinsic`]).
+///
+/// A segmented picker (`StretchAxis::Horizontal`) answers a finite width
+/// proposal, never below its intrinsic width; every other picker answers its
+/// intrinsic size (`docs/layout-spec.md` §6).
 pub fn measure_picker_node(
     state: &PickerRenderState,
-    _proposal: ProposalSize,
+    proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
     theme: &Rc<dyn crate::engine::WidgetTheme>,
 ) -> ViewDimensions {
     let label_size = state.label_view.measure_built(hydro, env, theme);
-    ViewDimensions::new(measure_picker_intrinsic_with_label_size(
-        &state.config,
-        label_size,
-        hydro,
-        env,
-        theme,
-    ))
+    let intrinsic =
+        measure_picker_intrinsic_with_label_size(&state.config, label_size, hydro, env, theme);
+    let width = match (
+        waterui_core::NativeView::stretch_axis(&state.config),
+        proposal.width,
+    ) {
+        (StretchAxis::Horizontal, Some(proposed)) if proposed.is_finite() => {
+            proposed.max(intrinsic.width)
+        }
+        _ => intrinsic.width,
+    };
+    ViewDimensions::new(LayoutSize::new(width, intrinsic.height))
 }
 
 /// Renders a retained picker leaf every flush: emits a11y (unless hidden) then the
