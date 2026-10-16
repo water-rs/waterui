@@ -9,7 +9,7 @@
 use crate::Image;
 use crate::color::{
     hlg_encode_channel, hlg_inverse_ootf, linear_bt2020_to_linear_p3, linear_srgb_to_linear_p3,
-    mat3_mul, pq_encode, srgb_decode, srgb_decode_extended, srgb_encode, srgb_encode_extended,
+    mat3_mul, pq_encode, srgb_decode, srgb_encode,
 };
 
 /// Linear Display P3 → linear sRGB — the Bradford-adapted D65 matrix of
@@ -149,9 +149,9 @@ pub fn present_extended_srgb(headroom: f64, image: &Image) -> Image {
                     crate::tone::tone_map(headroom, straight),
                 );
                 [
-                    srgb_encode_extended(srgb[0]) * p[3],
-                    srgb_encode_extended(srgb[1]) * p[3],
-                    srgb_encode_extended(srgb[2]) * p[3],
+                    srgb_encode(srgb[0]) * p[3],
+                    srgb_encode(srgb[1]) * p[3],
+                    srgb_encode(srgb[2]) * p[3],
                     p[3],
                 ]
             })
@@ -174,9 +174,9 @@ pub fn present_extended_display_p3(headroom: f64, image: &Image) -> Image {
                 let straight = straighten(p);
                 let p3 = crate::tone::tone_map(headroom, straight);
                 [
-                    srgb_encode_extended(p3[0]) * p[3],
-                    srgb_encode_extended(p3[1]) * p[3],
-                    srgb_encode_extended(p3[2]) * p[3],
+                    srgb_encode(p3[0]) * p[3],
+                    srgb_encode(p3[1]) * p[3],
+                    srgb_encode(p3[2]) * p[3],
                     p[3],
                 ]
             })
@@ -263,7 +263,7 @@ pub fn presented_display_p3_to_working([r, g, b, a]: [f64; 4]) -> [f64; 4] {
 /// pixel back into the working space. `encoded` selects the wire format.
 #[must_use]
 pub fn presented_extended_srgb_to_working(encoded: bool, [r, g, b, a]: [f64; 4]) -> [f64; 4] {
-    let decode = if encoded { srgb_decode_extended } else { |c| c };
+    let decode = if encoded { srgb_decode } else { |c| c };
     let p3 = linear_srgb_to_linear_p3([decode(r), decode(g), decode(b)]);
     [p3[0], p3[1], p3[2], a]
 }
@@ -272,12 +272,7 @@ pub fn presented_extended_srgb_to_working(encoded: bool, [r, g, b, a]: [f64; 4])
 /// the working space.
 #[must_use]
 pub fn presented_extended_p3_to_working([r, g, b, a]: [f64; 4]) -> [f64; 4] {
-    [
-        srgb_decode_extended(r),
-        srgb_decode_extended(g),
-        srgb_decode_extended(b),
-        a,
-    ]
+    [srgb_decode(r), srgb_decode(g), srgb_decode(b), a]
 }
 
 /// Lifts one premultiplied PQ signal pixel back into the working space:
