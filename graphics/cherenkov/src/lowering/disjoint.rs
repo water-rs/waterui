@@ -17,10 +17,10 @@
 //!
 //! The segments are grouped into maximal connected y-monotone chains in
 //! input order and swept by chain events only — a chain's top inserts it,
-//! its bottom removes it — keeping the live chains in x order. Every pair
-//! of chains that becomes adjacent is walked over its whole remaining
-//! common y-span, and after every event ordinate the winding prefix of
-//! the chain order is checked. The test returns `true` only when:
+//! its bottom removes it — keeping the live chains in x order. After the
+//! events of each ordinate, every pair of chains that became adjacent is
+//! walked over its whole remaining common y-span, and the directions are
+//! checked where the order changed. The test returns `true` only when:
 //!
 //! 1. every coordinate is finite with magnitude at most `2^19`, and every
 //!    ordinate is `0` or at least `2^-6` in magnitude;
@@ -29,7 +29,12 @@
 //!    segments' coordinate magnitudes; the only exception is a pair of
 //!    chains that start (or end) at one shared vertex, whose segments
 //!    there diverge with slopes at least `APEX_ULPS·ε·m / EPS` apart;
-//! 3. every winding prefix is `0` or one global sign `s ∈ {1, -1}`.
+//! 3. every winding prefix is `0` or one global sign `s ∈ {1, -1}`: the
+//!    first live chain runs in direction `s` and adjacent chains run in
+//!    opposite directions, which is the same condition, since a prefix of
+//!    `±1` steps stays in `{0, s}` exactly when it starts with `s` and
+//!    alternates. Only the chains whose neighbours changed at an ordinate
+//!    are checked there; every other adjacency was checked when it formed.
 //!
 //! # Why `true` means the sweep returns its input unchanged
 //!
@@ -58,8 +63,9 @@
 //!
 //! When any check fails the test answers `false` — "in doubt", not
 //! "overlapping" — and the sweep decides. A work budget proportional to
-//! the input bounds the walks, so the test stays `O(n + k log k)` for `k`
-//! chains; exhausting it is a doubt too.
+//! the input bounds the walks, the checks and the reordering of the live
+//! chains, so the test stays `O(n + k log k)` for `k` chains; exhausting
+//! it is a doubt too.
 
 use super::{EPS, Seg};
 
@@ -78,14 +84,20 @@ const LIMIT: f64 = 524_288.0;
 /// The smallest non-zero ordinate magnitude the test accepts. `f32` values
 /// at or above it are at least `2^-29` apart, more than `EPS`.
 const Y_FLOOR: f64 = 0.015_625;
-/// Walk steps the test may spend per segment before it leaves the input
-/// to the sweep.
+/// Walk, check and reordering steps the test may spend per segment before
+/// it leaves the input to the sweep.
 const BUDGET_PER_SEGMENT: usize = 16;
 
 /// The scratch words one chain occupies: top segment, bottom segment,
-/// direction, bottom `x` (`f32` bits), cursor, verified right neighbour.
-const CHAIN_WORDS: usize = 6;
-/// No chain: an empty verified-neighbour slot.
+/// direction, bottom `x` (`f32` bits), cursor, verified right neighbour,
+/// position in the live order.
+const CHAIN_WORDS: usize = 7;
+/// The scratch words per chain besides its record: its start event, its
+/// end event, a live-order slot and three slots for the chains whose
+/// neighbours changed at one ordinate (an insertion changes one, a
+/// removal two).
+const EVENT_WORDS: usize = 6;
+/// No chain, or no position: an empty slot.
 const NONE: u32 = u32::MAX;
 
 /// Segments in input order, normalized like the sweep's, and a scratch
@@ -136,8 +148,7 @@ pub(super) fn prepare<S: Copy + Into<(f32, f32, f32, f32)>>(segments: &[S]) -> (
         count += 1;
     }
     let mut segs = Vec::with_capacity(count);
-    // Chain records, start events, end events and the live order.
-    let words = chains * (CHAIN_WORDS + 3);
+    let words = chains * (CHAIN_WORDS + EVENT_WORDS);
     let mut scratch = Vec::with_capacity(words.max(2 * count));
     let mut last: Option<(f32, f32, bool)> = None;
     for &s in segments {
@@ -174,6 +185,7 @@ pub(super) fn prepare<S: Copy + Into<(f32, f32, f32, f32)>>(segments: &[S]) -> (
                     bottom_x.to_bits(),
                     index,
                     NONE,
+                    NONE,
                 ]);
             }
         }
@@ -203,36 +215,44 @@ pub(super) fn prepare<S: Copy + Into<(f32, f32, f32, f32)>>(segments: &[S]) -> (
 
 /// The chain-level sweep over the prepared segments. Chain records live in
 /// `scratch[..k * CHAIN_WORDS]`, followed by the start events, the end
-/// events and the live order.
+/// events, the live order and the chains whose neighbours changed at the
+/// current ordinate.
 struct Sweep<'a> {
     segs: &'a [Seg],
     chains: &'a mut [u32],
     starts: &'a mut [u32],
     ends: &'a mut [u32],
     live: &'a mut [u32],
+    changed: &'a mut [u32],
     len: usize,
+    changes: usize,
+    sign: i32,
     budget: usize,
 }
 
 impl<'a> Sweep<'a> {
     fn new(segs: &'a [Seg], scratch: &'a mut Vec<u32>, chains: usize) -> Self {
         let records = chains * CHAIN_WORDS;
-        scratch.resize(chains * (CHAIN_WORDS + 3), 0);
+        // Every event region starts as the chain ids; only the start and
+        // end events read them, the other regions are written before read.
+        let ids = 0..u32::try_from(chains).expect("chain count fits u32");
+        for _ in 0..EVENT_WORDS {
+            scratch.extend(ids.clone());
+        }
         let (chain_words, rest) = scratch.split_at_mut(records);
         let (starts, rest) = rest.split_at_mut(chains);
-        let (ends, live) = rest.split_at_mut(chains);
-        for (i, (start, end)) in starts.iter_mut().zip(ends.iter_mut()).enumerate() {
-            let id = u32::try_from(i).expect("chain count fits u32");
-            *start = id;
-            *end = id;
-        }
+        let (ends, rest) = rest.split_at_mut(chains);
+        let (live, changed) = rest.split_at_mut(chains);
         Self {
             segs,
             chains: chain_words,
             starts,
             ends,
             live,
+            changed,
             len: 0,
+            changes: 0,
+            sign: 0,
             budget: segs.len() * BUDGET_PER_SEGMENT + 1024,
         }
     }
@@ -309,13 +329,20 @@ impl<'a> Sweep<'a> {
                 .then(sa.x0.total_cmp(&sb.x0))
                 .then(sa.slope.total_cmp(&sb.slope))
         });
+        // Rightmost bottom first within an ordinate, so each removal moves
+        // as few live chains as possible.
         self.ends.sort_unstable_by(|&a, &b| {
-            segs[self.chains[a as usize * CHAIN_WORDS + 1] as usize]
-                .y1
-                .total_cmp(&segs[self.chains[b as usize * CHAIN_WORDS + 1] as usize].y1)
+            let bottom = |chain: u32| {
+                let record = chain as usize * CHAIN_WORDS;
+                (
+                    segs[self.chains[record + 1] as usize].y1,
+                    f32::from_bits(self.chains[record + 3]),
+                )
+            };
+            let ((ya, xa), (yb, xb)) = (bottom(a), bottom(b));
+            ya.total_cmp(&yb).then(xb.total_cmp(&xa))
         });
         let (mut next_start, mut next_end) = (0, 0);
-        let mut sign = 0i32;
         while next_end < self.ends.len() {
             let y_end = self.bottom(self.ends[next_end]).y1;
             let y = match self.starts.get(next_start) {
@@ -323,26 +350,49 @@ impl<'a> Sweep<'a> {
                 None => y_end,
             };
             while next_end < self.ends.len() && self.bottom(self.ends[next_end]).y1 == y {
-                if !self.remove(self.ends[next_end], y) {
+                if !self.remove(self.ends[next_end]) {
                     return false;
                 }
                 next_end += 1;
             }
             while next_start < self.starts.len() && self.top(self.starts[next_start]).y0 == y {
-                self.insert(self.starts[next_start], y);
+                if !self.insert(self.starts[next_start], y) {
+                    return false;
+                }
                 next_start += 1;
             }
-            if !self.settle(y, &mut sign) {
+            if !self.settle(y) {
                 return false;
             }
         }
         true
     }
 
+    /// Charges `count` steps to the budget; `false` when it runs out.
+    const fn spend(&mut self, count: usize) -> bool {
+        if self.budget < count {
+            return false;
+        }
+        self.budget -= count;
+        true
+    }
+
+    /// Places `chain` at live position `at` and records it there.
+    fn place(&mut self, at: usize, chain: u32) {
+        self.live[at] = chain;
+        self.set(chain, 6, u32::try_from(at).expect("live position fits u32"));
+    }
+
+    /// Records that `chain`'s neighbours changed at the current ordinate.
+    const fn touch(&mut self, chain: u32) {
+        self.changed[self.changes] = chain;
+        self.changes += 1;
+    }
+
     /// Inserts `chain`, which starts at `y`, at its position in the live
     /// order: after every chain left of its top vertex, and after a chain
     /// starting at the same vertex with a smaller or equal slope.
-    fn insert(&mut self, chain: u32, y: f64) {
+    fn insert(&mut self, chain: u32, y: f64) -> bool {
         let (x, slope) = (self.top(chain).x0, self.top(chain).slope);
         let (mut lo, mut hi) = (0, self.len);
         while lo < hi {
@@ -358,73 +408,87 @@ impl<'a> Sweep<'a> {
                 hi = mid;
             }
         }
-        self.live.copy_within(lo..self.len, lo + 1);
-        self.live[lo] = chain;
-        self.len += 1;
-    }
-
-    /// Removes `chain`, which ends at `y`. Chains are strictly ordered
-    /// between vertices, so it sits among the chains whose `x` at `y` equals
-    /// its bottom vertex — the partners of a shared bottom apex.
-    #[expect(clippy::float_cmp, reason = "a shared vertex ties exactly")]
-    fn remove(&mut self, chain: u32, y: f64) -> bool {
-        let x = self.bottom_x(chain);
-        let (mut lo, mut hi) = (0, self.len);
-        while lo < hi {
-            let mid = lo.midpoint(hi);
-            let other = self.live[mid];
-            let segment = self.seek(other, y);
-            if self.x(other, segment, y) < x {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        while lo < self.len && self.live[lo] != chain {
-            let other = self.live[lo];
-            let segment = self.seek(other, y);
-            if self.x(other, segment, y) != x {
-                return false;
-            }
-            lo += 1;
-        }
-        if lo == self.len {
+        if !self.spend(self.len - lo) {
             return false;
         }
-        self.live.copy_within(lo + 1..self.len, lo);
+        for at in (lo..self.len).rev() {
+            self.place(at + 1, self.live[at]);
+        }
+        self.place(lo, chain);
+        self.len += 1;
+        self.touch(chain);
+        true
+    }
+
+    /// Removes `chain`, which ends at the current ordinate, from its
+    /// recorded position; its neighbours become adjacent.
+    fn remove(&mut self, chain: u32) -> bool {
+        let at = self.word(chain, 6) as usize;
+        if !self.spend(self.len - at) {
+            return false;
+        }
+        if at > 0 {
+            self.touch(self.live[at - 1]);
+        }
+        if at + 1 < self.len {
+            self.touch(self.live[at + 1]);
+        }
+        for next in at + 1..self.len {
+            self.place(next - 1, self.live[next]);
+        }
+        self.set(chain, 6, NONE);
         self.len -= 1;
         true
     }
 
-    /// After every event at `y`: checks each winding prefix of the live
-    /// order and walks each adjacent pair not yet walked.
-    fn settle(&mut self, y: f64, sign: &mut i32) -> bool {
-        let mut winding = 0;
-        for i in 0..self.len {
-            if self.budget == 0 {
+    /// After every event at `y`: around each still-live chain whose
+    /// neighbours changed, checks the directions — the first chain runs in
+    /// the global sign, neighbours run opposite — and walks each adjacent
+    /// pair not yet walked.
+    fn settle(&mut self, y: f64) -> bool {
+        for i in 0..self.changes {
+            if !self.spend(1) {
                 return false;
             }
-            self.budget -= 1;
-            let chain = self.live[i];
-            winding += self.step(chain);
-            if winding != 0 {
-                if *sign == 0 {
-                    *sign = winding;
+            let chain = self.changed[i];
+            let at = self.word(chain, 6);
+            if at == NONE {
+                continue;
+            }
+            let at = at as usize;
+            let step = self.step(chain);
+            if at == 0 {
+                if self.sign == 0 {
+                    self.sign = step;
                 }
-                if winding != *sign {
+                if step != self.sign {
                     return false;
                 }
+            } else if !self.verify(self.live[at - 1], chain, y) {
+                return false;
             }
-            if i + 1 < self.len {
-                let right = self.live[i + 1];
-                if self.word(chain, 5) != right {
-                    if !self.walk(chain, right, y) {
-                        return false;
-                    }
-                    self.set(chain, 5, right);
-                }
+            if at + 1 < self.len && !self.verify(chain, self.live[at + 1], y) {
+                return false;
             }
         }
+        self.changes = 0;
+        true
+    }
+
+    /// Whether the adjacent pair `left`, `right` runs in opposite
+    /// directions and keeps its gap from `y` on; a pair is walked once
+    /// for as long as it stays adjacent.
+    fn verify(&mut self, left: u32, right: u32, y: f64) -> bool {
+        if self.step(left) == self.step(right) {
+            return false;
+        }
+        if self.word(left, 5) == right {
+            return true;
+        }
+        if !self.walk(left, right, y) {
+            return false;
+        }
+        self.set(left, 5, right);
         true
     }
 
