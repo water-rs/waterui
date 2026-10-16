@@ -520,7 +520,6 @@ all = [
 [lints]
 workspace = true
 
-# Optimize release builds for size
 # Development builds of this repository. Cargo only honours profiles from the
 # top-level workspace, so none of this reaches an application built against the
 # published crates — it tunes how WaterUI itself is developed.
@@ -557,7 +556,7 @@ opt-level = 0
 [profile.release]
 lto = true
 codegen-units = 1
-opt-level = "z"    # Optimize for size
+opt-level = 3
 strip = true       # Strip symbols
 
 # cargo-dist builds release binaries with `--profile=dist`; the profile must

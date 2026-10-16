@@ -1103,12 +1103,10 @@ impl BuildProfile {
                 ("CARGO_PROFILE_DEV_OVERFLOW_CHECKS", "false"),
             ],
             Self::Release => &[
-                ("CARGO_PROFILE_RELEASE_OPT_LEVEL", "3"),
                 ("CARGO_PROFILE_RELEASE_PANIC", "unwind"),
                 ("CARGO_PROFILE_RELEASE_LTO", "off"),
             ],
             Self::Profiling => &[
-                ("CARGO_PROFILE_RELEASE_OPT_LEVEL", "3"),
                 ("CARGO_PROFILE_RELEASE_PANIC", "unwind"),
                 ("CARGO_PROFILE_RELEASE_LTO", "off"),
                 ("CARGO_PROFILE_RELEASE_DEBUG", "true"),
@@ -1145,10 +1143,11 @@ pub struct BuildOptions {
 impl BuildOptions {
     /// Create options for a development build that uses the shared Rust runtime.
     ///
-    /// Development runs want wall-clock speed: `Release` and `Profiling` force
-    /// `opt-level 3` rather than the size-optimized `opt-level "z"` the
-    /// packaging profile declares, and `Optimized`/`Profiling`/`Release` all
-    /// carry `CARGO_PROFILE_*` overrides the cargo invocation applies.
+    /// Development runs want wall-clock speed: `Optimized` lifts the dev
+    /// profile to `opt-level 1` while `Release` and `Profiling` run the
+    /// declared release profile's `opt-level 3`, and
+    /// `Optimized`/`Profiling`/`Release` all carry `CARGO_PROFILE_*`
+    /// overrides the cargo invocation applies.
     #[must_use]
     pub fn development(profile: BuildProfile) -> Self {
         Self {
@@ -1196,8 +1195,8 @@ impl BuildOptions {
     /// Create options for a self-contained package build.
     ///
     /// A packaged artifact builds under the profile the workspace declares —
-    /// no `CARGO_PROFILE_*` overrides: the release profile's size tuning
-    /// (`opt-level "z"`, symbol stripping) is the shipped configuration.
+    /// no `CARGO_PROFILE_*` overrides: the release profile's tuning
+    /// (`opt-level 3`, LTO, symbol stripping) is the shipped configuration.
     #[must_use]
     pub const fn packaging(profile: BuildProfile) -> Self {
         Self {
@@ -3954,11 +3953,7 @@ mod tests {
             envs.contains(unwind),
             "profiling links the shared runtime too"
         );
-        for key in [
-            "CARGO_PROFILE_RELEASE_OPT_LEVEL",
-            "CARGO_PROFILE_RELEASE_DEBUG",
-            "CARGO_PROFILE_RELEASE_STRIP",
-        ] {
+        for key in ["CARGO_PROFILE_RELEASE_DEBUG", "CARGO_PROFILE_RELEASE_STRIP"] {
             assert!(
                 envs.iter().any(|(env_key, _)| env_key == key),
                 "profiling keeps debug info and symbols: missing {key} in {envs:?}"
