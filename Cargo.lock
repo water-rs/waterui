@@ -2132,7 +2132,7 @@ checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
 dependencies = [
  "serde",
  "termcolor",
- "unicode-width 0.2.2",
+ "unicode-width 0.1.14",
 ]
 
 [[package]]
@@ -4228,7 +4228,7 @@ dependencies = [
  "log",
  "presser",
  "thiserror 2.0.21",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -4794,7 +4794,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.61.2",
 ]
 
 [[package]]
@@ -9136,7 +9136,7 @@ dependencies = [
  "cfg-if 1.0.5",
  "libc",
  "rustix 1.1.5",
- "windows 0.62.2",
+ "windows 0.61.3",
 ]
 
 [[package]]
@@ -13074,7 +13074,7 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=feat%2Fwaterkit-0.2#ada14523c687e27374e83d681f3ea963f6990615"
+source = "git+https://github.com/water-rs/image?branch=feat%2Fwaterkit-0.2#0d345f0c5a7b7d7e28535e4ba2e443e4e62472e2"
 dependencies = [
  "half",
  "image",
@@ -13588,7 +13588,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=feat%2Fwaterkit-0.2#075a4bdf95db31b957104e327f89af0599fb394e"
+source = "git+https://github.com/water-rs/video-gpu?branch=feat%2Fwaterkit-0.2#de7dc0b947391e06f33c63cd9fb84b4079d4f158"
 dependencies = [
  "async-channel",
  "executor-core",
