@@ -50,6 +50,10 @@ use super::window::WindowState;
 /// What an [`Window::on_close_request`](crate::window::Window::on_close_request)
 /// handler answers for a close request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed answer: the window closes or cancels the close"
+)]
 pub enum CloseReply {
     /// Close the window: `Window::state` is written
     /// [`WindowState::Closed`] and the normal teardown runs.

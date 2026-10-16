@@ -385,11 +385,7 @@ const fn build_gesture_options(
     diff_output: Option<PathBuf>,
     delay: u32,
 ) -> gesture::GestureOptions {
-    gesture::GestureOptions {
-        diff,
-        diff_output,
-        delay_ms: Some(delay),
-    }
+    gesture::GestureOptions::new(diff, diff_output, Some(delay))
 }
 
 /// Print diff result if present.

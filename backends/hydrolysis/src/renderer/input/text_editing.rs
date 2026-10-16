@@ -2297,12 +2297,12 @@ impl SemanticCore {
         // `KeyPress` rebuilt from the `KeyCode` — the winit/semantic paths
         // carry real `logical_key`/`physical_code` and call
         // `handle_key_press` instead.
-        let press = KeyPress {
-            key: key.to_w3c_key(),
-            code: keyboard_types::Code::Unidentified,
-            modifiers: modifiers.into(),
-            repeat: false,
-        };
+        let press = KeyPress::new(
+            key.to_w3c_key(),
+            keyboard_types::Code::Unidentified,
+            modifiers.into(),
+            false,
+        );
         self.handle_key_press(key, modifiers, env, &press) != KeyPressOutcome::Ignored
     }
 

@@ -20,6 +20,11 @@
 //! - [`Content::record_layered`] opens a recording that may declare
 //!   backdrop materials ([`material`]), which never enter a display list:
 //!   the recording comes back split at each one for its host to realize.
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 pub mod animation;
 pub mod backdrop;

@@ -247,6 +247,7 @@ impl DeviceLoss {
 
 /// Input button mapped from a platform pointer event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PointerButton {
     /// The primary button — the left button for right-handed mice.
     Primary,
@@ -264,6 +265,7 @@ pub enum PointerButton {
 
 /// Physical pointer source reported by the platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PointerKind {
     /// A mouse pointer.
     Mouse,
@@ -275,6 +277,10 @@ pub enum PointerKind {
 
 /// Input key state mapped from a platform keyboard event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a key is pressed or released"
+)]
 pub enum KeyState {
     /// The button or contact is down.
     Pressed,
@@ -289,6 +295,7 @@ pub enum KeyState {
 /// and `physical_code` instead — the W3C UI Events pair, which is what GPU
 /// surfaces receive and what the browser engines will move to.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KeyCode {
     /// A printable character key, as the layout resolved it.
     Character(String),
@@ -326,6 +333,10 @@ impl KeyCode {
 // than an evolving state machine, so per-flag bools are the honest shape.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "mirrors the fixed four-flag modifier set"
+)]
 pub struct Modifiers {
     /// Whether a Shift modifier was held.
     pub shift: bool,
@@ -361,6 +372,7 @@ impl From<keyboard_types::Modifiers> for Modifiers {
 
 /// IME purpose for the focused text input target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TextInputPurpose {
     /// Plain single-line text.
     Normal,
@@ -379,6 +391,7 @@ pub use waterui_backend_core::input::TouchPhase;
 /// and speed is in logical units — the space [`InputEvent`] pointer
 /// positions already arrive in.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct TouchScrollConfig {
     /// How far a touch may travel from its down point before a scroll view
     /// claims the gesture — the platform's scaled touch slop, in logical
@@ -422,6 +435,7 @@ impl TouchScrollConfig {
 /// `SplineScroller`); the platform computes the coefficients for its own
 /// display and feel.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct FlingDeceleration {
     /// `SplineScroller`'s `mPhysicalCoeff` — the physical-pixel acceleration
     /// scale the spline's distance and duration derive from, in logical
@@ -434,6 +448,7 @@ pub struct FlingDeceleration {
 
 /// Focused text-input area used for IME activation and candidate-window placement.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct TextInputState {
     /// Left edge of the input field, in logical points.
     pub x: f64,
@@ -453,6 +468,7 @@ pub struct TextInputState {
 
 /// Input events emitted by a windowing backend.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum InputEvent {
     /// A pointer button pressed or a contact started.
     PointerDown {
@@ -660,6 +676,10 @@ pub enum InputEvent {
 
 /// Which screen edge a system back gesture started from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a back gesture starts from the left edge, the right edge, or no edge"
+)]
 pub enum BackEdge {
     /// The gesture started at the leading edge.
     Left,
@@ -679,6 +699,7 @@ pub enum BackEdge {
 /// [`BackEdge::None`], or, on a platform that has no progress to report,
 /// deliver `Invoked` alone.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum BackNavigation {
     /// The platform began a predictive back gesture from `edge`.
     Started {
@@ -698,6 +719,7 @@ pub enum BackNavigation {
 
 /// Errors raised by surface acquisition/presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SurfaceError {
     /// Surface acquisition timed out waiting for the next frame.
     Timeout,
@@ -728,6 +750,7 @@ impl std::error::Error for SurfaceError {}
 /// A frame acquired from a host-presented surface, such as
 /// [`OffscreenSurface::acquire`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum SurfaceFrame {
     /// An offscreen render target: the frame already lives in a texture.
     Offscreen {
@@ -888,6 +911,10 @@ pub struct EngineWindowTarget<'a> {
 /// in the session environment so an update re-lays out through the ordinary
 /// input path; hosts with no unsafe regions simply never install one.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "environment newtype over the window's safe-area binding"
+)]
 pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// The window's *keyboard* region in logical units.
@@ -904,6 +931,10 @@ pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>
 /// whose bottom touches it extends through it and scrolls a focused field
 /// clear of the keyboard band (layout-spec.md §7.1).
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "environment newtype over the window's keyboard-area binding"
+)]
 pub struct WindowKeyboardArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// Asserts the app's `Window::frame` binding carries finite components on
@@ -5711,6 +5742,8 @@ pub use web_impl::ExportedBrowserWindow as BrowserWindow;
     any(feature = "video", feature = "webview-system")
 ))]
 pub use web_impl::OcclusionShields;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::report_fatal_error;
 #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
 pub use web_impl::yield_wheel;
 

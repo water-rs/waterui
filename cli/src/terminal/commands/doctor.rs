@@ -445,29 +445,12 @@ mod tests {
     }
 
     fn ok_item(id: &'static str) -> DoctorItem {
-        DoctorItem {
-            id,
-            name: id,
-            group: DoctorGroup::Helpers,
-            optional: false,
-            system_wide: false,
-            status: CheckStatus::Ok,
-            message: None,
-            install_fn: None,
-        }
+        DoctorItem::new(id, id, DoctorGroup::Helpers, CheckStatus::Ok)
     }
 
     fn manual_item(id: &'static str) -> DoctorItem {
-        DoctorItem {
-            id,
-            name: id,
-            group: DoctorGroup::Helpers,
-            optional: false,
-            system_wide: false,
-            status: CheckStatus::Missing,
-            message: Some(String::from("manual steps required")),
-            install_fn: None,
-        }
+        DoctorItem::new(id, id, DoctorGroup::Helpers, CheckStatus::Missing)
+            .with_message("manual steps required")
     }
 
     /// A missing item whose install records its id into `calls` and yields
@@ -482,16 +465,9 @@ mod tests {
             calls.lock().expect("install call log").push(id);
             Box::pin(async move { outcome })
         });
-        DoctorItem {
-            id,
-            name: id,
-            group: DoctorGroup::Helpers,
-            optional: false,
-            system_wide: false,
-            status: CheckStatus::Missing,
-            message: Some(String::from("fixable")),
-            install_fn: Some(install_fn),
-        }
+        DoctorItem::new(id, id, DoctorGroup::Helpers, CheckStatus::Missing)
+            .with_message("fixable")
+            .with_install_fn(install_fn)
     }
 
     /// A missing, fixable item that modifies the system outside `~/.water`

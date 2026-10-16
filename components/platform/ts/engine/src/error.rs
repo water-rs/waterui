@@ -13,6 +13,7 @@ use std::fmt;
 /// `waterui_core::Error::from` accepts it and renders the stack as part of
 /// the message.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct JsError {
     /// The exception class name (`"Error"`, `"TypeError"`, …).
     pub name: String,

@@ -35,9 +35,9 @@ use waterui_backend_core::Environment;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 use waterui_webview::{
     ASSET_HOST, ASSET_ORIGIN, ASSET_SCHEME, BackendEvent, Cookie, CustomWebViewController,
-    DOCUMENT_START_SCRIPT, OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url,
-    WatcherGuard, WatcherSet, WebViewConfig, WebViewError, WebViewEvent, WebViewHandle, assets,
-    bridge,
+    DOCUMENT_START_SCRIPT, DocumentScripts, OriginPolicy, ScriptInjectionTime,
+    ScriptMessageHandler, Url, UserScript, WatcherGuard, WatcherSet, WebViewConfig, WebViewError,
+    WebViewEvent, WebViewHandle, assets, bridge,
 };
 
 use crate::contract::NativeLeaf;
@@ -46,14 +46,6 @@ use crate::dispatch::Dispatcher;
 /// The page-visible global the bridge script calls — `bridge::SEND_FUNCTION`,
 /// which is also the name the script-message transport registers under.
 const SEND_FUNCTION: &str = bridge::SEND_FUNCTION;
-
-/// A user script as the leaf tracks it: the registry key the platform
-/// cannot remove by, its source, and its injection time.
-struct UserScript {
-    key: String,
-    source: String,
-    time: web_kit::InjectionTime,
-}
 
 /// What the handle and the kit's delegate closures share.
 ///
@@ -69,8 +61,9 @@ struct Shared {
     watchers: WatcherSet<BackendEvent>,
     /// Page-callable handlers by name; registering a name twice replaces.
     handlers: RefCell<BTreeMap<String, Rc<ScriptMessageHandler>>>,
-    /// Which documents may reach the bridge; checked per message.
-    bridge_origins: RefCell<Option<OriginPolicy>>,
+    /// Which documents may reach the bridge, fixed at creation; checked
+    /// per message and per navigation.
+    bridge_origins: OriginPolicy,
     /// The last emitted `WillNavigate` URL — `emitWillNavigate`'s dedupe.
     last_navigation: RefCell<Option<String>>,
     /// `WebViewWrapper.redirectsEnabled`.
@@ -86,13 +79,11 @@ struct Shared {
     /// rebuilt for every main-frame navigation and on every server
     /// redirect, and installed only when its destination is admitted.
     bridge_admitted: Cell<bool>,
-    /// Keyed user scripts, in injection order — replacement rebuilds the
-    /// whole list, and the order is kept so a re-rendered seed runs where
-    /// it always did. Transport and bridge are not keyed: every rebuild
-    /// puts them first.
-    scripts: RefCell<Vec<UserScript>>,
-    /// The origin this view serves bundled assets under, when armed.
-    asset_origin: Option<Url>,
+    /// Keyed user scripts — the creation-time ones, then those injected
+    /// later. Replacement rebuilds the whole list, and the order is kept so a
+    /// replaced script runs where it always did. Transport and bridge are not
+    /// keyed: every rebuild puts them first.
+    scripts: RefCell<DocumentScripts>,
 }
 
 impl Shared {
@@ -167,18 +158,13 @@ impl Shared {
     /// [`OriginPolicy`] decides, which is the same policy that authenticates
     /// bridge messages in `frame_may_use_bridge`.
     ///
-    /// No policy means no bridge: a handle whose origins were never chosen
-    /// has nothing to authenticate a page against, and the seed script
-    /// carries the live value of every exposed binding. The URL is parsed
-    /// with `FromStr`, not `Url::parse`: the policy's own `allows` handles
-    /// `file:` documents and `BridgeOrigins::Any`, which `Url::parse`'s
-    /// web-only filter would refuse before the policy could see them.
+    /// The URL is parsed with `FromStr`, not `Url::parse`: the policy's own
+    /// `allows` handles `file:` documents and `BridgeOrigins::Any`, which
+    /// `Url::parse`'s web-only filter would refuse before the policy could
+    /// see them.
     fn admits(&self, url: &str) -> bool {
-        let policy = self.bridge_origins.borrow();
-        let Some(policy) = policy.as_ref() else {
-            return false;
-        };
-        url.parse::<Url>().is_ok_and(|url| policy.allows(&url))
+        url.parse::<Url>()
+            .is_ok_and(|url| self.bridge_origins.allows(&url))
     }
 
     /// Re-decides whether the document at `url` gets the bridge and rebuilds
@@ -193,9 +179,8 @@ impl Shared {
     /// `WKUserContentController` can only remove its scripts as a set, so a
     /// rebuild starts from empty — which is also what makes replacing a
     /// keyed script work. A document outside the policy gets no transport,
-    /// no bridge and no keyed scripts: the mirrored-state seed is one of
-    /// them, and it declares the current value of every exposed `Binding`,
-    /// so handing it to a non-admitted page would publish the app's state.
+    /// no bridge and no keyed scripts — the application's scripts and the
+    /// mirrored-state declarations among them.
     /// Transport goes first, since the shared bridge script calls the
     /// `__wateruiSend` it defines.
     fn rebuild_user_scripts(&self) {
@@ -214,27 +199,15 @@ impl Shared {
             true,
         );
         for entry in self.scripts.borrow().iter() {
-            self.view().add_user_script(&entry.source, entry.time, true);
+            self.view()
+                .add_user_script(&entry.source, injection_time(entry.time), true);
         }
     }
 
     /// `injectScript` — keyed replacement that preserves each key's original
     /// position, since `WKUserContentController` has no per-script removal.
-    fn inject_script(&self, key: &str, source: &str, time: web_kit::InjectionTime) {
-        {
-            let mut scripts = self.scripts.borrow_mut();
-            match scripts.iter_mut().find(|entry| entry.key == key) {
-                Some(entry) => {
-                    entry.source = source.to_string();
-                    entry.time = time;
-                }
-                None => scripts.push(UserScript {
-                    key: key.to_string(),
-                    source: source.to_string(),
-                    time,
-                }),
-            }
-        }
+    fn inject_script(&self, script: UserScript) {
+        self.scripts.borrow_mut().inject(script);
         self.rebuild_user_scripts();
     }
 
@@ -249,10 +222,7 @@ impl Shared {
             &message.frame_host,
             message.frame_port,
         );
-        self.bridge_origins
-            .borrow()
-            .as_ref()
-            .is_some_and(|policy| policy.allows_origin(&candidate))
+        self.bridge_origins.allows_origin(&candidate)
     }
 
     /// `handleScriptMessage`: authenticate the frame, parse the envelope,
@@ -330,25 +300,27 @@ impl WkWebViewHandle {
     /// Creates a handle owning a fresh kit controller.
     ///
     /// `scheme` is the `waterui://localhost` interception to register while
-    /// the `WKWebViewConfiguration` exists — it cannot be added later.
+    /// the `WKWebViewConfiguration` exists — it cannot be added later. The
+    /// admission rules and the creation-time scripts are in place before the
+    /// view loads anything.
     fn new(
         mtm: MainThreadMarker,
         scheme: Option<web_kit::SchemeHandler>,
-        asset_origin: Option<Url>,
+        bridge_origins: OriginPolicy,
+        scripts: DocumentScripts,
     ) -> Self {
         let shared = Rc::new(Shared {
             view: OnceCell::new(),
             watchers: WatcherSet::new(),
             handlers: RefCell::new(BTreeMap::new()),
-            bridge_origins: RefCell::new(None),
+            bridge_origins,
             last_navigation: RefCell::new(None),
             // `WebViewWrapper`'s default: redirects allowed.
             redirects_enabled: Cell::new(true),
             redirects: RefCell::new(None),
             transport_registered: Cell::new(false),
             bridge_admitted: Cell::new(false),
-            scripts: RefCell::new(Vec::new()),
-            asset_origin,
+            scripts: RefCell::new(scripts),
         });
         let weak = Rc::downgrade(&shared);
 
@@ -579,11 +551,8 @@ impl WebViewHandle for WkWebViewHandle {
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        let time = match time {
-            ScriptInjectionTime::DocumentStart => web_kit::InjectionTime::DocumentStart,
-            ScriptInjectionTime::DocumentEnd => web_kit::InjectionTime::DocumentEnd,
-        };
-        self.shared.inject_script(key, script, time);
+        self.shared
+            .inject_script(UserScript::new(key.to_string(), script.to_string(), time));
     }
 
     fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>) {
@@ -598,24 +567,11 @@ impl WebViewHandle for WkWebViewHandle {
         self.shared.handlers.borrow_mut().remove(name);
     }
 
-    fn set_bridge_origins(&self, policy: OriginPolicy) {
-        self.shared.bridge_origins.replace(Some(policy));
-        // The policy decides what is injected as well as what is answered,
-        // so the document being shown or loaded is re-judged against the new
-        // one; an admission decided under the old policy must not outlive it.
-        let url = self.controller().url_string().unwrap_or_default();
-        self.shared.admit_document(&url);
-    }
-
     fn set_cookie(&self, cookie: Cookie<'static>) {
         let header = cookie.to_string();
         self.controller()
             .set_cookie_header(&header)
             .expect("WebView received an invalid Set-Cookie value");
-    }
-
-    fn asset_origin(&self) -> Option<Url> {
-        self.shared.asset_origin.clone()
     }
 
     fn set_redirects_enabled(&self, enabled: impl Signal<Output = bool>) {
@@ -658,10 +614,12 @@ impl WebViewHandle for WkWebViewHandle {
     )]
     async fn run_javascript(&self, script: &str) -> Result<Str, Str> {
         let (sender, receiver) = async_channel::bounded(1);
-        self.controller()
-            .evaluate_javascript(script, move |result| {
+        self.controller().evaluate_javascript(
+            &waterui_webview::raw_evaluation(script),
+            move |result| {
                 let _ = sender.try_send(result.map(Str::from).map_err(Str::from));
-            });
+            },
+        );
         receiver.recv().await.unwrap_or_else(|error| {
             Err(Str::from(format!(
                 "WebView JavaScript channel closed: {error}"
@@ -743,9 +701,21 @@ impl CustomWebViewController for AppleWebViewController {
         let mtm = MainThreadMarker::new().expect("a WebView opens on the main thread");
         // Interception can only be registered while the configuration is
         // being assembled, so the asset server arrives at creation.
+        let scripts = DocumentScripts::new(&config);
         let scheme = config.asset_server.map(|server| asset_scheme(&server));
-        let asset_origin = scheme.as_ref().map(|_| Url::new(ASSET_ORIGIN));
-        WkWebViewHandle::new(mtm, scheme, asset_origin)
+        WkWebViewHandle::new(mtm, scheme, config.bridge_origins, scripts)
+    }
+
+    fn asset_origin(&self) -> Option<Url> {
+        Some(Url::new(ASSET_ORIGIN))
+    }
+}
+
+/// The kit's spelling of an injection time.
+const fn injection_time(time: ScriptInjectionTime) -> web_kit::InjectionTime {
+    match time {
+        ScriptInjectionTime::DocumentStart => web_kit::InjectionTime::DocumentStart,
+        ScriptInjectionTime::DocumentEnd => web_kit::InjectionTime::DocumentEnd,
     }
 }
 

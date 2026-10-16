@@ -8,6 +8,7 @@ use std::{
 };
 
 use crate::project::Project;
+use crate::project_model::facts::{Disk, Fact, Facts, InputFiles, Scope};
 use crate::toolchain::Host;
 use cargo_lock::{Dependency as LockedDependency, Lockfile};
 use cargo_toml::{Dependency, DependencyDetail, PatchSet};
@@ -22,6 +23,7 @@ use git_tree::FrameworkTree;
 /// A framework distribution channel, independent of the Rust toolchain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum FrameworkChannel {
     /// The integration branch, resolved to an exact compilation-checked
     /// commit; the Apple backend's `dev` HEAD resolves the same way.
@@ -176,6 +178,7 @@ impl fmt::Display for ResolvedFramework {
 /// registry release, so the manifest records the pin — git URL, commit and
 /// declared version — by name instead of emitting `scaffold` entries for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ExperimentalPackage {
     /// The repository the framework pins the package to.
     pub git: String,
@@ -391,7 +394,7 @@ impl ResolvedFramework {
     /// saved selection is incompatible with this CLI, or the local checkout's
     /// framework facts cannot be read.
     pub(crate) async fn for_manifest(
-        host: &crate::toolchain::Host,
+        facts: &Facts,
         manifest: &crate::project::Manifest,
         project_root: &Path,
     ) -> Result<Self> {
@@ -409,7 +412,14 @@ impl ResolvedFramework {
                  to select one or point `waterui_path` at a checkout"
             );
         };
-        Self::for_local_checkout(host, &project_root.join(waterui_path)).await
+        let root = project_root.join(waterui_path);
+        let checkout = facts
+            .answer(&LocalCheckout {
+                root: root.clone(),
+                cli: CliFloor::of(facts.host()),
+            })
+            .await?;
+        Self::from_local_checkout(&root, checkout.as_ref().clone())
     }
 
     /// The framework facts a local checkout supplies: its own
@@ -420,47 +430,30 @@ impl ResolvedFramework {
         host: &crate::toolchain::Host,
         root: &Path,
     ) -> Result<Self> {
-        let manifest: toml::Value = toml::from_str(
-            &smol::fs::read_to_string(root.join("Cargo.toml"))
-                .await
-                .wrap_err_with(|| {
-                    format!(
-                        "the WaterUI checkout at {} has no Cargo.toml",
-                        root.display()
-                    )
-                })?,
-        )?;
-        let metadata = framework_metadata(&manifest)?;
-        let minimum_cli_version = minimum_cli_version(&metadata)?;
-        let rust_version = manifest_rust_version(&manifest)?;
-        if let Some(minimum) = &minimum_cli_version {
-            validate_installed_cli(host, minimum, &checkout_cli_update())?;
-        }
-        let mut scaffold = framework_scaffold(&manifest)?;
-        let lock: Lockfile = smol::fs::read_to_string(root.join("Cargo.lock"))
-            .await
-            .wrap_err_with(|| {
-                format!(
-                    "the WaterUI checkout at {} has no Cargo.lock",
-                    root.display()
-                )
-            })?
-            .parse()?;
-        complete_scaffold(&mut scaffold, &lock)?;
+        let checkout = {
+            let (root, cli) = (root.to_path_buf(), CliFloor::of(host));
+            smol::unblock(move || CheckoutFacts::derive(&mut Disk, &root, &cli)).await?
+        };
+        Self::from_local_checkout(root, checkout)
+    }
+
+    /// The selection a checkout at `root` makes from the facts its
+    /// manifest and lock supply.
+    fn from_local_checkout(root: &Path, checkout: CheckoutFacts) -> Result<Self> {
         Self {
             source: Source::Local {
                 root: root.to_path_buf(),
             },
-            minimum_cli_version,
-            rust_version,
-            metadata,
-            scaffold,
+            minimum_cli_version: checkout.minimum_cli_version,
+            rust_version: checkout.rust_version,
+            metadata: checkout.metadata,
+            scaffold: checkout.scaffold,
             // A local checkout is a filesystem source, not a channel: it
             // withholds nothing.
             experimental_packages: BTreeMap::new(),
             packages: BTreeMap::new(),
             patches: PatchSet::default(),
-            locked_versions: locked_package_versions(&lock),
+            locked_versions: checkout.locked_versions,
         }
         .validated()
     }
@@ -1195,7 +1188,7 @@ impl ResolvedFramework {
             let mut command = cargo_metadata::MetadataCommand::new();
             command.current_dir(directory).no_deps();
             project
-                .host()
+                .facts()
                 .cargo_metadata(&command)
                 .await?
                 .workspace_root
@@ -1226,8 +1219,12 @@ impl ResolvedFramework {
             Some(smol::fs::read(project.root().join("Water.lock")).await?)
         };
         let canonical_lock = canonical
-            .as_deref()
-            .map(|contents| self.cargo_lock(contents))
+            .clone()
+            .map(|contents| self.canonical_lock_of(contents))
+            .transpose()?;
+        let canonical_packages = canonical_lock
+            .as_ref()
+            .map(CanonicalLock::lock)
             .transpose()?;
         // Every identity an input lock records is an acceptable resolution
         // outcome — a second version beside a locked one is an addition, not
@@ -1236,7 +1233,11 @@ impl ResolvedFramework {
             previous
                 .iter()
                 .flat_map(|lock| lock.packages.iter())
-                .chain(canonical_lock.iter().flat_map(|lock| lock.packages.iter()))
+                .chain(
+                    canonical_packages
+                        .iter()
+                        .flat_map(|lock| lock.packages.iter()),
+                )
                 .chain(project_lock.packages.iter()),
         );
         // The stamp is part of the state the error path below restores —
@@ -1264,7 +1265,7 @@ impl ResolvedFramework {
         let result = match seeded {
             Ok(()) => {
                 self.validate_seeded_build(
-                    project.host(),
+                    project.facts(),
                     directory,
                     features,
                     allow_new,
@@ -1303,18 +1304,19 @@ impl ResolvedFramework {
     /// failure rolls the seeded lock and its stamp back together.
     async fn validate_seeded_build(
         &self,
-        host: &crate::toolchain::Host,
+        facts: &crate::project_model::facts::Facts,
         root: &Path,
         features: &[String],
         allow_new: bool,
         seeded: &SeededLock<'_>,
     ) -> Result<()> {
+        let host = facts.host();
         // A previous lock resolved without the canonical pins can carry a
         // generation the seeded locks contradict — an `accesskit_winit`
         // wanting an `accesskit` newer than the pin the channel certifies
         // (#203). That is the project's state, not something to resolve
         // past: name it and say how the seed is regenerated.
-        let metadata = managed_crate_metadata(host, root, features)
+        let metadata = managed_crate_metadata(facts, root, features)
             .await
             .map_err(|error| {
                 eyre!(
@@ -1362,12 +1364,16 @@ impl ResolvedFramework {
     ///
     /// Returns an error when `Water.lock` (or a local checkout's `Cargo.lock`)
     /// cannot be read or no longer matches the pinned revision's checksum.
-    pub(crate) async fn canonical_lock(&self, project_root: &Path) -> Result<Option<Lockfile>> {
+    pub(crate) async fn canonical_lock(
+        &self,
+        project_root: &Path,
+    ) -> Result<Option<CanonicalLock<'_>>> {
         if let Source::Local { root } = &self.source {
             let contents = smol::fs::read(root.join("Cargo.lock")).await?;
-            let mut lock: Lockfile = std::str::from_utf8(&contents)?.parse()?;
-            lock.packages.retain(|package| package.source.is_some());
-            return Ok(Some(lock));
+            return Ok(Some(CanonicalLock {
+                framework: self,
+                contents,
+            }));
         }
         if self.channel() != Some(FrameworkChannel::Dev)
             && self.channel() != Some(FrameworkChannel::Nightly)
@@ -1375,7 +1381,40 @@ impl ResolvedFramework {
             return Ok(None);
         }
         let contents = smol::fs::read(project_root.join("Water.lock")).await?;
-        Ok(Some(self.cargo_lock(&contents)?))
+        Ok(Some(self.canonical_lock_of(contents)?))
+    }
+
+    /// The canonical lock a channel's `Water.lock` `contents` carry, its
+    /// checksum verified against the selection now and its parse deferred
+    /// to the seed that needs it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selection is not a dev or nightly channel
+    /// or `contents` no longer match its checksum.
+    pub(crate) fn canonical_lock_of(&self, contents: Vec<u8>) -> Result<CanonicalLock<'_>> {
+        let (revision, expected) = match &self.source {
+            Source::Dev {
+                revision,
+                lock_sha256,
+                ..
+            }
+            | Source::Nightly {
+                revision,
+                lock_sha256,
+                ..
+            } => (revision, lock_sha256),
+            Source::Stable { .. } => bail!("stable uses the application's Cargo.lock"),
+            Source::Local { .. } => bail!("a local framework checkout has no canonical lock"),
+        };
+        let found = hex::encode(Sha256::digest(&contents));
+        if found != *expected {
+            return Err(self.lock_mismatch_error(revision, expected, &found));
+        }
+        Ok(CanonicalLock {
+            framework: self,
+            contents,
+        })
     }
 
     pub(crate) fn cargo_lock(&self, contents: &[u8]) -> Result<Lockfile> {
@@ -1722,15 +1761,15 @@ impl ResolvedFramework {
 /// Resolve a managed crate's dependency metadata for the feature selection
 /// the build was invoked with.
 async fn managed_crate_metadata(
-    host: &crate::toolchain::Host,
+    facts: &crate::project_model::facts::Facts,
     root: &std::path::Path,
     features: &[String],
-) -> std::result::Result<cargo_metadata::Metadata, cargo_metadata::Error> {
+) -> Result<cargo_metadata::Metadata> {
     let mut command = cargo_metadata::MetadataCommand::new();
     command
         .current_dir(root)
         .features(cargo_metadata::CargoOpt::SomeFeatures(features.to_vec()));
-    host.cargo_metadata(&command).await
+    facts.cargo_metadata(&command).await
 }
 
 /// Every version the framework's own lock records for a package name —
@@ -1853,6 +1892,255 @@ const fn same_caret_family(base: &semver::Version, candidate: &semver::Version) 
         return true;
     }
     base.minor == candidate.minor && (base.minor > 0 || base.patch == candidate.patch)
+}
+
+/// A framework's canonical lock as its source holds it — a local checkout's
+/// `Cargo.lock` or a channel's verified `Water.lock` — parsed only by the
+/// seed that needs the packages, while its [`Self::digest`] identifies it
+/// from the bytes alone.
+pub(crate) struct CanonicalLock<'a> {
+    framework: &'a ResolvedFramework,
+    contents: Vec<u8>,
+}
+
+impl CanonicalLock<'_> {
+    /// An identity of the lock this canonical lock parses to: the source
+    /// it is derived under and the digest of its bytes.
+    pub(crate) fn digest(&self) -> String {
+        let source = match &self.framework.source {
+            Source::Local { .. } => "local".to_owned(),
+            Source::Dev {
+                repository,
+                revision,
+                ..
+            }
+            | Source::Nightly {
+                repository,
+                revision,
+                ..
+            } => format!("{repository}@{revision}"),
+            Source::Stable { .. } => "stable".to_owned(),
+        };
+        format!("{source}:{}", hex::encode(Sha256::digest(&self.contents)))
+    }
+
+    /// The lock itself. A local checkout contributes only its sourced
+    /// entries: a source-less workspace member resolves by path inside the
+    /// generated workspace, where a seed entry would name nothing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the bytes do not parse as a lock.
+    pub(crate) fn lock(&self) -> Result<Lockfile> {
+        if matches!(self.framework.source, Source::Local { .. }) {
+            let mut lock: Lockfile = std::str::from_utf8(&self.contents)?.parse()?;
+            lock.packages.retain(|package| package.source.is_some());
+            return Ok(lock);
+        }
+        self.framework.cargo_lock(&self.contents)
+    }
+}
+
+/// The running CLI a checkout's `minimum-cli-version` is checked against.
+///
+/// A checkout fact checks the floor while it resolves, in the order the
+/// checkout's files are read, so a checkout that needs a newer CLI says so
+/// before anything else about it fails. Every record is the running CLI
+/// build's own, so a recorded answer has passed this CLI's check.
+struct CliFloor {
+    host: Host,
+}
+
+impl CliFloor {
+    fn of(host: &Host) -> Self {
+        Self { host: host.clone() }
+    }
+
+    /// The checkout's root manifest at `root`, parsed, once its declared
+    /// floor admits the running CLI.
+    fn checked_manifest(&self, files: &mut dyn InputFiles, root: &Path) -> Result<toml::Value> {
+        let manifest: toml::Value = toml::from_slice(&checkout_file(files, root, "Cargo.toml")?)?;
+        if let Some(minimum) = minimum_cli_version(&framework_metadata(&manifest)?)? {
+            validate_installed_cli(&self.host, &minimum, &checkout_cli_update())?;
+        }
+        Ok(manifest)
+    }
+}
+
+/// The bytes of the checkout file `name`, which must exist.
+fn checkout_file(files: &mut dyn InputFiles, root: &Path, name: &str) -> Result<Vec<u8>> {
+    files
+        .read(&root.join(name))?
+        .ok_or_else(|| eyre!("the WaterUI checkout at {} has no {name}", root.display()))
+}
+
+/// What a local framework checkout's root `Cargo.toml` and `Cargo.lock`
+/// say about the framework — the part of a checkout selection derived
+/// from those two files alone, recorded so a build replays it instead of
+/// parsing the checkout's lock again.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CheckoutFacts {
+    minimum_cli_version: Option<cargo_toml::SemVer>,
+    rust_version: Option<cargo_toml::SemVer>,
+    metadata: toml::Table,
+    scaffold: BTreeMap<String, String>,
+    locked_versions: BTreeMap<String, Vec<String>>,
+}
+
+impl CheckoutFacts {
+    /// The facts of the checkout at `root`, read through `files`.
+    fn derive(files: &mut dyn InputFiles, root: &Path, cli: &CliFloor) -> Result<Self> {
+        let manifest = cli.checked_manifest(files, root)?;
+        let metadata = framework_metadata(&manifest)?;
+        let minimum_cli_version = minimum_cli_version(&metadata)?;
+        let rust_version = manifest_rust_version(&manifest)?;
+        let mut scaffold = framework_scaffold(&manifest)?;
+        let lock: Lockfile =
+            std::str::from_utf8(&checkout_file(files, root, "Cargo.lock")?)?.parse()?;
+        complete_scaffold(&mut scaffold, &lock)?;
+        Ok(Self {
+            minimum_cli_version,
+            rust_version,
+            metadata,
+            scaffold,
+            locked_versions: locked_package_versions(&lock),
+        })
+    }
+}
+
+/// A package the workspace of a local checkout declares as a member.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CheckoutMember {
+    /// The package name its manifest declares.
+    pub(crate) name: String,
+    /// Its directory relative to the checkout root, or absolute when the
+    /// member lies outside it.
+    pub(crate) dir: PathBuf,
+}
+
+/// The member packages of the checkout at `root`, read from disk; none
+/// when nothing is there.
+///
+/// # Errors
+/// Returns an error when the checkout's root manifest cannot be read or
+/// parsed, or declares no `[workspace]`.
+pub(crate) fn checkout_member_packages(root: &Path) -> Result<Vec<CheckoutMember>> {
+    let Some(manifest) = Disk.read(&root.join("Cargo.toml"))? else {
+        return Ok(Vec::new());
+    };
+    workspace_members(&mut Disk, root, &toml::from_slice(&manifest)?)
+}
+
+/// Every package the `[workspace]` of `manifest`, the root manifest at
+/// `root`, declares a member: each `members` pattern names the directories
+/// whose `Cargo.toml` declares a package, less those an `exclude` pattern
+/// names. The patterns are matched as globs — a `components/*` member
+/// pattern carries crates no `[patch]` table names.
+fn workspace_members(
+    files: &mut dyn InputFiles,
+    root: &Path,
+    manifest: &toml::Value,
+) -> Result<Vec<CheckoutMember>> {
+    let workspace = manifest
+        .get("workspace")
+        .and_then(toml::Value::as_table)
+        .ok_or_else(|| {
+            eyre!(
+                "{} declares no [workspace]",
+                root.join("Cargo.toml").display()
+            )
+        })?;
+    let base = PathBuf::from(glob::Pattern::escape(&root.to_string_lossy()));
+    let manifests = |files: &mut dyn InputFiles, key: &str| {
+        workspace
+            .get(key)
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(toml::Value::as_str)
+            .flat_map(|pattern| files.glob(&base.join(pattern).join("Cargo.toml")))
+            .collect::<Vec<_>>()
+    };
+    let excluded: BTreeSet<PathBuf> = manifests(files, "exclude").into_iter().collect();
+    let mut members = Vec::new();
+    for manifest in manifests(files, "members") {
+        if excluded.contains(&manifest) {
+            continue;
+        }
+        let Some(bytes) = files.read(&manifest)? else {
+            continue;
+        };
+        let Some(name) = toml::from_slice::<toml::Table>(&bytes)
+            .ok()
+            .and_then(|table| {
+                table
+                    .get("package")?
+                    .get("name")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+        else {
+            continue;
+        };
+        let dir = manifest.parent().unwrap_or(root);
+        members.push(CheckoutMember {
+            name,
+            dir: dir.strip_prefix(root).unwrap_or(dir).to_path_buf(),
+        });
+    }
+    Ok(members)
+}
+
+/// The [`CheckoutFacts`] of the checkout at `root`, as a [`Fact`] whose
+/// inputs are the checkout's root `Cargo.toml` and `Cargo.lock`.
+struct LocalCheckout {
+    root: PathBuf,
+    cli: CliFloor,
+}
+
+impl Fact for LocalCheckout {
+    const KIND: &'static str = "local-checkout";
+    type Question = PathBuf;
+    type Value = CheckoutFacts;
+
+    fn question(&self) -> PathBuf {
+        self.root.clone()
+    }
+
+    async fn resolve(&self, scope: &Scope<'_>) -> Result<CheckoutFacts> {
+        let (root, cli) = (self.root.clone(), CliFloor::of(&self.cli.host));
+        scope
+            .derive(move |files| CheckoutFacts::derive(files, &root, &cli))
+            .await
+    }
+}
+
+/// The workspace member packages of the checkout at `root`, as a [`Fact`]
+/// whose inputs are the checkout's root `Cargo.toml`, the member patterns'
+/// matches and each member's manifest.
+struct CheckoutMembers {
+    root: PathBuf,
+    cli: CliFloor,
+}
+
+impl Fact for CheckoutMembers {
+    const KIND: &'static str = "checkout-members";
+    type Question = PathBuf;
+    type Value = Vec<CheckoutMember>;
+
+    fn question(&self) -> PathBuf {
+        self.root.clone()
+    }
+
+    async fn resolve(&self, scope: &Scope<'_>) -> Result<Vec<CheckoutMember>> {
+        let (root, cli) = (self.root.clone(), CliFloor::of(&self.cli.host));
+        scope
+            .derive(move |files| {
+                let manifest = cli.checked_manifest(files, &root)?;
+                workspace_members(files, &root, &manifest)
+            })
+            .await
+    }
 }
 
 /// The packages the generated crate's `Cargo.lock` seed carries.
@@ -2067,7 +2355,6 @@ const FRAMEWORK_PACKAGES: &[&str] = &[
     "waterui-testing",
     "waterui-locale",
     "waterui-browser-cef",
-    "waterui-preview",
     "waterui-preview-protocol",
     "waterui-mcp",
 ];
@@ -2354,13 +2641,23 @@ fn require_framework_members(metadata: &toml::Table, origin: &str) -> Result<()>
     );
 }
 
-pub(crate) async fn validate_local_cli(host: &crate::toolchain::Host, root: &Path) -> Result<()> {
-    let contents = smol::fs::read_to_string(root.join("Cargo.toml")).await?;
-    let manifest = toml::from_str(&contents)?;
-    if let Some(minimum) = minimum_cli_version(&framework_metadata(&manifest)?)? {
-        validate_installed_cli(host, &minimum, &checkout_cli_update())?;
-    }
-    Ok(())
+/// The workspace member packages of the local checkout at `root`, once
+/// the running CLI is held to the checkout's floor.
+///
+/// # Errors
+/// Returns an error when the checkout cannot be read, declares no
+/// `[workspace]` or requires a newer CLI.
+pub(crate) async fn local_checkout_members(
+    facts: &Facts,
+    root: &Path,
+) -> Result<Vec<CheckoutMember>> {
+    let members = facts
+        .answer(&CheckoutMembers {
+            root: root.to_path_buf(),
+            cli: CliFloor::of(facts.host()),
+        })
+        .await?;
+    Ok(members.as_ref().clone())
 }
 
 pub(crate) fn validate_resolved_cli(
@@ -3568,7 +3865,7 @@ fn rebase_patches_onto_source(
 /// The checkout's patch table only lists the members its own crates depend on
 /// through `path`; a member resolved through `[workspace.dependencies]` —
 /// `waterui-internal`, `waterui-media`, `waterui-mcp`,
-/// `waterui-preview`, `waterui-preview-protocol`, `waterui-testing`, … — can
+/// `waterui-preview-protocol`, `waterui-testing`, … — can
 /// still be requested by bare version from a generated or transitive manifest,
 /// and without an entry that request resolves a published release built from a
 /// different revision (water-rs/cli#197). The lock's source-less packages are
@@ -3908,9 +4205,9 @@ mod tests {
             toml::from_str(include_str!("../../tests/fixtures/dev_channel/Water.toml")).unwrap();
         let canonical = manifest
             .framework
-            .cargo_lock(include_bytes!(
-                "../../tests/fixtures/dev_channel/Water.lock"
-            ))
+            .canonical_lock_of(
+                include_bytes!("../../tests/fixtures/dev_channel/Water.lock").to_vec(),
+            )
             .unwrap();
         let project: Lockfile = include_str!("../../tests/fixtures/dev_channel/Cargo.lock")
             .parse()
@@ -3933,7 +4230,7 @@ mod tests {
                 .unwrap()
                 .parse()
                 .unwrap();
-            for pin in &canonical.packages {
+            for pin in &canonical.lock().unwrap().packages {
                 assert!(
                     seed.packages.contains(pin),
                     "the seed must carry the certified identity of {}",
@@ -4534,8 +4831,15 @@ mod tests {
         });
         manifest.framework = Some(framework);
 
-        let error = smol::block_on(ResolvedFramework::for_manifest(
+        let scratch = tempfile::tempdir().unwrap();
+        let facts = Facts::new(
             &crate::toolchain::Host::current(),
+            scratch.path(),
+            &scratch.path().join("facts"),
+        )
+        .unwrap();
+        let error = smol::block_on(ResolvedFramework::for_manifest(
+            &facts,
             &manifest,
             Path::new("."),
         ))

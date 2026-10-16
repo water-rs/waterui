@@ -28,6 +28,7 @@ use waterui_core::metadata::MetadataKey;
 ///     .hittable(can_interact);
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Hittable {
     /// Whether hit testing is enabled.
     /// `true` means the view responds to touch events (default behavior).

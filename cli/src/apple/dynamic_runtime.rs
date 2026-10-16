@@ -34,7 +34,7 @@ pub fn runtime_link_name(staged_name: &str) -> String {
 
 pub async fn prepare_host_runtime(host: &crate::toolchain::Host, path: &Path) -> Result<()> {
     require_runtime(path)?;
-    if install_name(host, path).await? != INSTALL_NAME {
+    if install_name(path).await? != INSTALL_NAME {
         host.run(
             "install_name_tool",
             [
@@ -46,7 +46,7 @@ pub async fn prepare_host_runtime(host: &crate::toolchain::Host, path: &Path) ->
         .await
         .wrap_err("Failed to assign the shared WaterUI runtime install name")?;
     }
-    if install_name(host, path).await? != INSTALL_NAME {
+    if install_name(path).await? != INSTALL_NAME {
         bail!(
             "Shared WaterUI runtime {} did not retain install name {}",
             path.display(),
@@ -63,7 +63,7 @@ pub async fn canonicalize_install_name(host: &crate::toolchain::Host, path: &Pat
         .file_name()
         .ok_or_else(|| eyre::eyre!("Module {} has no file name", path.display()))?;
     let wanted = format!("@rpath/{}", file_name.to_string_lossy());
-    if install_name(host, path).await? != wanted {
+    if install_name(path).await? != wanted {
         host.run(
             "install_name_tool",
             [
@@ -75,7 +75,7 @@ pub async fn canonicalize_install_name(host: &crate::toolchain::Host, path: &Pat
         .await
         .wrap_err("Failed to assign the module install name")?;
     }
-    if install_name(host, path).await? != wanted {
+    if install_name(path).await? != wanted {
         bail!(
             "Module {} did not retain install name {}",
             path.display(),
@@ -91,7 +91,7 @@ pub async fn retarget_module(
     runtime_path: &Path,
 ) -> Result<()> {
     require_runtime(runtime_path)?;
-    let current_install_name = install_name(host, runtime_path).await?;
+    let current_install_name = install_name(runtime_path).await?;
     if current_install_name != INSTALL_NAME {
         host.run(
             "install_name_tool",
@@ -131,18 +131,46 @@ fn require_runtime(path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn install_name(host: &crate::toolchain::Host, path: &Path) -> Result<String> {
-    let output = host
-        .run("otool", [OsStr::new("-D"), path.as_os_str()])
-        .await
-        .wrap_err_with(|| format!("Failed to inspect dynamic library {}", path.display()))?;
-    output
-        .lines()
-        .skip(1)
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| eyre::eyre!("Dynamic library {} has no install name", path.display()))
+/// The `LC_ID_DYLIB` install name the 64-bit Mach-O dylib at `path`
+/// records for itself, read from its load commands alone — the image
+/// itself (tens of megabytes for the shared runtime) is never read.
+async fn install_name(path: &Path) -> Result<String> {
+    let path = path.to_path_buf();
+    smol::unblock(move || {
+        recorded_install_name(&path)
+            .wrap_err_with(|| format!("Failed to inspect dynamic library {}", path.display()))?
+            .ok_or_else(|| eyre::eyre!("Dynamic library {} has no install name", path.display()))
+    })
+    .await
+}
+
+fn recorded_install_name(path: &Path) -> Result<Option<String>> {
+    use object::read::macho::{LoadCommandVariant, MachHeader as _};
+
+    let cache = object::ReadCache::new(std::fs::File::open(path)?);
+    let header = object::macho::MachHeader64::<object::Endianness>::parse(&cache, 0)
+        .map_err(|error| eyre::eyre!("not a 64-bit Mach-O image: {error}"))?;
+    let endian = header
+        .endian()
+        .map_err(|error| eyre::eyre!("unreadable Mach-O header: {error}"))?;
+    let mut commands = header
+        .load_commands(endian, &cache, 0)
+        .map_err(|error| eyre::eyre!("unreadable load commands: {error}"))?;
+    while let Some(command) = commands
+        .next()
+        .map_err(|error| eyre::eyre!("unreadable load command: {error}"))?
+    {
+        if let LoadCommandVariant::IdDylib(dylib) = command
+            .variant()
+            .map_err(|error| eyre::eyre!("unreadable load command: {error}"))?
+        {
+            let name = command
+                .string(endian, dylib.dylib.name)
+                .map_err(|error| eyre::eyre!("unreadable install name: {error}"))?;
+            return Ok(Some(String::from_utf8_lossy(name).into_owned()));
+        }
+    }
+    Ok(None)
 }
 
 fn linked_libraries(output: &str) -> impl Iterator<Item = &str> {

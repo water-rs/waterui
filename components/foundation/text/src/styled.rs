@@ -15,6 +15,7 @@ use waterui_graphics::color::{Color, SurfaceVariantColor};
 
 /// A set of text attributes for rich text formatting.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Style {
     /// The font to use.
     pub font: Font,

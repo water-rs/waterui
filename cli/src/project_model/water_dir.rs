@@ -45,6 +45,7 @@ const DEFAULT_BUILD_CACHE_CLEANUP_AFTER_UNUSED_DAYS: u64 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 /// Global Water CLI configuration persisted to `~/.water/config.toml`.
+#[non_exhaustive]
 pub struct WaterConfig {
     /// Managed build-cache policy.
     #[serde(default)]
@@ -63,6 +64,7 @@ pub struct WaterConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 /// Cleanup policy for the global managed build cache.
+#[non_exhaustive]
 pub struct BuildCacheConfig {
     /// Remove build-cache entries that have been unused for more than this many days.
     #[serde(default = "default_build_cache_cleanup_after_unused_days")]
@@ -86,6 +88,7 @@ struct CacheMetadata {
 
 /// Summary of one managed build-cache garbage-collection pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BuildCacheGcSummary {
     /// Number of managed cache entries inspected, excluding the active project cache.
     pub scanned_entries: usize,
@@ -95,6 +98,10 @@ pub struct BuildCacheGcSummary {
 
 /// Result of attempting to garbage-collect stale managed build-cache entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each cache collection outcome variant by variant"
+)]
 pub enum BuildCacheGcOutcome {
     /// Cleanup ran to completion and produced a removal summary.
     Ran(BuildCacheGcSummary),
@@ -109,6 +116,10 @@ const fn default_build_cache_cleanup_after_unused_days() -> u64 {
 /// The current user's home directory could not be determined.
 #[derive(Debug, thiserror::Error)]
 #[error("Could not determine home directory")]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit error marker with no fields to add"
+)]
 pub struct HomeDirError;
 
 /// Return the Water home directory root at `~/.water` for `host`.
@@ -1250,6 +1261,7 @@ async fn remove_legacy_local_water_dir(project_root: &Path) -> eyre::Result<()> 
 
 /// On-disk usage of one managed build-cache entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BuildCacheEntryUsage {
     /// Project the cache entry belongs to.
     pub project_root: PathBuf,
@@ -1265,6 +1277,7 @@ pub struct BuildCacheEntryUsage {
 
 /// What the managed build cache is currently spending disk on.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BuildCacheUsageReport {
     /// Entries, largest first.
     pub entries: Vec<BuildCacheEntryUsage>,

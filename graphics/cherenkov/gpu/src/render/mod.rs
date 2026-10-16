@@ -965,12 +965,13 @@ pub struct GpuRenderer {
     /// The Vulkan tile executor's mirror of the engine's pipeline
     /// layout, descriptor sets and attachments (#2191).
     ///
-    /// `None` where the device was not opened with per-pixel attachment
-    /// access, which is also what makes [`GpuRenderer::tile_limits`]
-    /// decline to plan; the two answers come from this one field, so
-    /// no frame can be planned for an executor that is not there.
+    /// The reason the device declined where it cannot run an epoch —
+    /// it lacks per-pixel attachment access or lazily allocated memory
+    /// — which is also what makes [`GpuRenderer::tile_limits`] decline
+    /// to plan; the two answers come from this one field, so no frame
+    /// can be planned for an executor that is not there.
     #[cfg(all(unix, not(target_vendor = "apple")))]
-    tile_mirror: Option<composite::vulkan::Mirror>,
+    tile_mirror: Result<composite::vulkan::Mirror, composite::vulkan::Declined>,
     /// The configured pipeline cache, opened once for the whole set.
     pipeline_cache: Option<wgpu::PipelineCache>,
     /// Registered backdrop effect shaders, by raw id — see
@@ -1003,7 +1004,8 @@ pub struct GpuRenderer {
     /// The globals buffer size `bind0` was built against.
     bound_globals_size: u64,
     atlas: Atlas,
-    /// Per-commit cell writes, rebuilt in place each frame.
+    /// Per-commit cell writes: the emptied container the last upload
+    /// returned, refilled in place each frame (#2671).
     commit_writes: glyph::CellWrites,
     /// Per-surface pending origins, rebuilt in place each apply.
     pending_origins: Vec<PendingOrigin>,
@@ -2513,14 +2515,17 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         // The tile executor's mirror, built once for a device that can
         // run an epoch. Its shader modules and layouts are the whole
         // cost here — every pipeline is created on first use — and a
-        // device that cannot run an epoch builds none of it (#2191).
+        // device that cannot run an epoch builds none of it (#2191,
+        // #2689). Once the device is eligible, a mirror that fails to
+        // build is an engine failure.
         #[cfg(all(unix, not(target_vendor = "apple")))]
-        let tile_mirror = match composite::vulkan::device_access(&device) {
-            composite::vulkan::Access::PerPixel => Some(
-                composite::vulkan::Mirror::new(&device, &adapter)
-                    .map_err(|e| EngineError::Backend(format!("tile composition: {e}")))?,
-            ),
-            composite::vulkan::Access::None | composite::vulkan::Access::PerDraw => None,
+        let tile_mirror = match composite::vulkan::device_eligibility(&device, &adapter) {
+            Ok(eligible) => Ok(composite::vulkan::Mirror::new(&device, &adapter, eligible)
+                .map_err(|e| EngineError::Backend(format!("tile composition: {e}")))?),
+            Err(declined) => {
+                tracing::info!(?declined, "vulkan tile composition unavailable");
+                Err(declined)
+            }
         };
         let renderer = GpuRenderer {
             instance,
@@ -3736,6 +3741,10 @@ impl Renderer for GpuRenderer {
                 },
             );
         }
+        // The commit batch's reusable lists are the same kind of
+        // retained scratch: a trimmed engine keeps none of their peak
+        // capacity, and the next commit regrows them as needed (#2711).
+        self.commit_writes = glyph::CellWrites::default();
         if pressure != Pressure::Critical {
             return;
         }
@@ -6734,8 +6743,10 @@ impl GpuRenderer {
         if plan_dbg != "fits" {
             self.atlas.enable_evicting();
         }
+        // The upload consumes its batch and returns the emptied
+        // container, so `commit_writes` always comes back empty and the
+        // next commit refills the same lists (#2671).
         let mut writes = std::mem::take(&mut self.commit_writes);
-        writes.clear();
         let mut failed = None;
         for (i, (surf, result)) in pending.iter_mut().zip(results.iter_mut()).enumerate() {
             match result {
@@ -6787,9 +6798,9 @@ impl GpuRenderer {
                 },
             );
         }
-        self.atlas
-            .upload_committed(&self.device, &self.queue, &writes);
-        self.commit_writes = writes;
+        self.commit_writes = self
+            .atlas
+            .upload_committed(&self.device, &self.queue, writes);
         Commit::Done
     }
 
@@ -7128,9 +7139,9 @@ impl GpuRenderer {
     /// - Apple's shaders come from the prebuilt metallib (#57), so a
     ///   build that delivers WGSL has no executor to plan for.
     /// - Vulkan's need the device to have been opened with per-pixel
-    ///   attachment access; [`GpuRenderer::tile_mirror`] holds the
-    ///   mirror exactly when it was, and the `Err` says the device is
-    ///   what declined.
+    ///   attachment access and to have lazily allocated memory for the
+    ///   slots; [`GpuRenderer::tile_mirror`] holds the mirror exactly
+    ///   when both hold, and otherwise the capability that is missing.
     ///
     /// The error is the reason the frame's images are attributed to, so
     /// a census distinguishes "this build has no executor" from "this
@@ -7138,8 +7149,9 @@ impl GpuRenderer {
     fn tile_limits(&self) -> Result<composite::plan::Limits, composition::Materialization> {
         // Which executor this target has, and whether it is installed.
         // The mirror is absent only because the Vulkan device declined,
-        // so that is the reason; a non-metallib Apple build and a
-        // target with no executor at all share `NoExecutor`.
+        // so the capability it lacks is the reason; a non-metallib
+        // Apple build and a target with no executor at all share
+        // `NoExecutor`.
         #[cfg(target_vendor = "apple")]
         let (slots, available) = (
             composite::metal::SLOTS,
@@ -7153,7 +7165,14 @@ impl GpuRenderer {
             self.tile_mirror
                 .as_ref()
                 .map(|_| ())
-                .ok_or(composition::Materialization::DeviceAccess),
+                .map_err(|declined| match declined {
+                    composite::vulkan::Declined::Access(_) => {
+                        composition::Materialization::DeviceAccess
+                    }
+                    composite::vulkan::Declined::TransientMemory => {
+                        composition::Materialization::TransientMemory
+                    }
+                }),
         );
         #[cfg(not(unix))]
         let (slots, available) = (0, Err(composition::Materialization::NoExecutor));
@@ -8144,6 +8163,7 @@ impl GpuRenderer {
         let tile_frame = match self
             .tile_mirror
             .as_mut()
+            .ok()
             .filter(|_| surf.composition.epochs().next().is_some())
         {
             Some(mirror) => {
@@ -9362,6 +9382,7 @@ impl GpuRenderer {
             let (peak_reserved_bytes, peak_committed_bytes) = self
                 .tile_mirror
                 .as_ref()
+                .ok()
                 .filter(|_| tile_frame)
                 .map_or((0, None), |mirror| {
                     (mirror.memoryless_bytes(), Some(mirror.committed_bytes()))
@@ -9392,6 +9413,7 @@ impl GpuRenderer {
         let tile_idle = self
             .tile_mirror
             .as_mut()
+            .ok()
             .filter(|_| tile_frame)
             .and_then(|mirror| {
                 mirror.finish_frame();
@@ -10376,5 +10398,26 @@ mod tests {
     fn poll_errors_other_than_timeout_still_fail_fast() {
         let outcome = drive([Err(wgpu::PollError::WrongSubmissionIndex(9, 3))], [0]);
         assert!(matches!(outcome, Err(RenderError::DeviceLost)));
+    }
+
+    /// A commit's emptied `CellWrites` shell keeps its list capacities
+    /// for reuse; `trim` replaces the container so a pressured engine
+    /// retains none of them (#2711).
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn trim_releases_the_reused_commit_lists() {
+        let mut renderer = match init(GpuConfig::default()) {
+            Ok((renderer, _)) => renderer,
+            Err(EngineError::Backend(_)) => return,
+            Err(e) => panic!("engine init failed: {e}"),
+        };
+        renderer.commit_writes.push_arena(vec![0xAB; 64]);
+        assert!(renderer.commit_writes.heap_bytes() > 0);
+        renderer.trim(Pressure::Moderate);
+        assert_eq!(
+            renderer.commit_writes.heap_bytes(),
+            0,
+            "a trimmed engine retains no commit_writes capacity"
+        );
     }
 }

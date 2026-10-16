@@ -173,28 +173,36 @@ are unchanged, so the flattened geometry the kernel integrates is the
 same geometry the CPU route would have produced to within the flattener's
 own tolerance.
 
-**Decision G1 — winding resolves inside the kernels; no intersections
-are solved anywhere.** The GPU route does not run `resolve_winding`, and
-it does not solve segment intersections. Each cell accumulates the signed
-area its segment pieces deposit *and* the signed cover (net winding
-crossing the cell's right edge); a prefix along the strip turns per-cell
-cover into each cell's backdrop winding; the fill-rule fold of section
-1.1 step 7 then maps `backdrop + local area` to coverage. Overlap is
-therefore correct because the accumulated quantity is a true winding
-number per pixel, not a clamped sum of per-contour coverages — the
-failure `resolve_winding` exists to prevent (`lowering.rs:2033`–2047)
-cannot arise, because nothing clamps before the fold.
+**Decision G1 — resolve the fill-rule region analytically inside boundary cells.**
+The GPU route does not run the CPU `resolve_winding` sweep. It flattens
+curves, bins segments into four-row strips and clips their pieces into
+boundary cells. A row prefix of signed crossings seeds winding at each
+cell's lower-left corner. Local left-boundary events recover winding as
+a function of height inside the cell. Local segment intersections divide
+edges into intervals on which the fill-rule transition is constant;
+integrating those exposed boundary intervals gives the analytic area of
+the fill-rule region. Full interior cells need only their winding seed.
+No cell scans the path's unrelated segments. Painting and blending remain
+in the raster pipeline.
+
+Folding an integrated signed area is not equivalent to integrating the
+fill-rule region. As a counterexample, put two identical, same-direction
+contours over the left half of one pixel. The integrated winding is `1`,
+so applying either fill-rule fold afterwards gives coverage `1`. The true
+NonZero coverage is `0.5`, and the true EvenOdd coverage is `0`. Delaying
+the fold does not resolve that discrepancy: the fill rule must be applied
+to the local winding before the area is integrated.
+
+Work scales with segment/strip/cell incidences and local arrangement
+complexity. Boundary-cell intersections are permitted and necessary for
+exact analytic coverage. Arbitrarily dense overlap in a single cell may
+have superlinear arrangement complexity; no worst-case linear guarantee
+is made for such geometry. The measured scaling gates in section 4 remain
+binding, and neither supersampling nor weaker oracle thresholds may be
+used to pass them.
 
 `resolve_winding` stays on the CPU route, unchanged, and keeps its
-`None` fast path so non-overlapping CPU-routed scenes stay
-bit-identical.
-
-*Alternatives considered:* keep the CPU sweep and hand the kernel
-resolved boundary edges (smallest change, but it leaves on the CPU
-exactly the cost #2536 exists to remove, and the sweep's sort dominates
-large self-intersecting paths); run the sweep itself as a GPU pass
-(solves intersections on the GPU, far more complex than area-and-cover
-accumulation and unnecessary once nothing clamps early).
+`None` fast path so non-overlapping CPU-routed scenes stay bit-identical.
 
 ## 3. The shared emission form
 
@@ -657,7 +665,7 @@ depend on memory pressure.
 | --- | --- |
 | — | No CPU readback anywhere in the route; this decides most of the rest |
 | C1 | `f32` accumulation on the GPU; bit-identity with the CPU route is not the contract |
-| G1 | Winding resolves in-kernel: per-cell area and cover, strip backdrop prefix, fill-rule fold, no intersections solved |
+| G1 | Analytic fill-rule region integration in boundary cells, with local intersections and row-prefix winding seeds |
 | E1 | A second kernel classifies strips and writes compact span/cell lists plus indirect draw arguments |
 | T1 | Tolerance-based acceptance, thresholds 1–5 of section 4.3 |
 | T2 | #2546 adds large corpus scenes; route equivalence uses a `#[cfg(test)]`-only forcing hook |

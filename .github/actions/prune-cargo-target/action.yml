@@ -1,0 +1,31 @@
+name: Prune Cargo target
+
+description: >-
+  Shrinks a Cargo target directory to the units this run's cargo
+  invocations used, before a writer saves it as a cache archive. A target
+  archive restored through its prefix key otherwise carries every
+  superseded dependency version and feature-set unit forward forever, and
+  the archive grows with each lockfile generation. Every cargo step of the
+  writer appends its `--message-format=json-render-diagnostics` stdout to
+  the messages file; entries of deps/, build/, examples/ and .fingerprint/
+  that no recorded unit names are deleted. Deleting a live unit only costs
+  a rebuild.
+
+inputs:
+  messages:
+    description: The JSON-lines file every cargo step of the run appended its messages to.
+    required: true
+  target-dir:
+    description: The Cargo target directory to prune.
+    required: false
+    default: target
+
+runs:
+  using: composite
+  steps:
+    - name: Prune Cargo target
+      shell: bash
+      env:
+        TARGET_DIR: ${{ inputs.target-dir }}
+        MESSAGES: ${{ inputs.messages }}
+      run: node "${GITHUB_ACTION_PATH}/prune.mjs" "${TARGET_DIR}" "${MESSAGES}"

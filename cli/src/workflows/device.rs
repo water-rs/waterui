@@ -83,6 +83,7 @@ pub(crate) const PANIC_LOG_QUERY_DEADLINE: std::time::Duration = std::time::Dura
 
 /// Minimum log level for streaming device logs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum LogLevel {
     /// Only errors
     Error,
@@ -161,32 +162,6 @@ pub struct RunOptions {
     /// If true, stream all native platform logs (`NSLog`, `print`, etc.), not just `WaterUI` logs.
     /// This filters by process ID instead of subsystem, which is noisier but includes all output.
     native_logs: bool,
-
-    /// If true, terminate existing local macOS app instances for the same executable before
-    /// launching a new one. Preview support apps must disable this so multiple pooled instances
-    /// can coexist across runtime fingerprints.
-    replace_existing_macos_app_instances: bool,
-
-    /// TCP ports to forward from the host loopback to the device's loopback
-    /// (`adb forward`) for the lifetime of the run.
-    ///
-    /// Only Android honors this: the preview support app binds its TCP server
-    /// to the device's loopback, which the host cannot reach otherwise. The
-    /// mappings are removed when the [`Running`] is dropped, unless it is
-    /// detached — a detached preview app keeps serving future sessions through
-    /// the same ports.
-    forward_tcp_ports: Vec<u16>,
-
-    /// File the launched app's stdout and stderr append to instead of pipes.
-    ///
-    /// A pipe is only as alive as the reader at its other end: a support app
-    /// designed to outlive the CLI (the preview support app detaches and keeps
-    /// serving the next `water preview`) would keep writing to a pipe whose
-    /// reader is gone — on unix that write raises SIGPIPE and kills the app
-    /// (water-rs/cli#197). A file is the right channel for a process that
-    /// outlives the command; the launch still follows it into [`DeviceEvent::Log`]
-    /// events while the command runs.
-    app_log_file: Option<PathBuf>,
 }
 
 impl RunOptions {
@@ -197,9 +172,6 @@ impl RunOptions {
             env_vars: HashMap::new(),
             log_level: None,
             native_logs: false,
-            replace_existing_macos_app_instances: true,
-            forward_tcp_ports: Vec::new(),
-            app_log_file: None,
         }
     }
 
@@ -256,43 +228,6 @@ impl RunOptions {
     #[must_use]
     pub const fn native_logs(&self) -> bool {
         self.native_logs
-    }
-
-    /// Set whether launching a local macOS `.app` should replace existing instances of the same
-    /// executable.
-    pub const fn set_replace_existing_macos_app_instances(&mut self, replace: bool) {
-        self.replace_existing_macos_app_instances = replace;
-    }
-
-    /// Get whether launching a local macOS `.app` should replace existing instances.
-    #[must_use]
-    pub const fn replace_existing_macos_app_instances(&self) -> bool {
-        self.replace_existing_macos_app_instances
-    }
-
-    /// Send the launched app's stdout and stderr to `path` (appended, created
-    /// with parents) instead of pipes. Use for a process designed to outlive
-    /// this command — a pipe whose reader has exited raises SIGPIPE on unix.
-    pub fn set_app_log_file(&mut self, path: PathBuf) {
-        self.app_log_file = Some(path);
-    }
-
-    /// The file the launched app's stdout and stderr are redirected to, if any.
-    #[must_use]
-    pub fn app_log_file(&self) -> Option<&Path> {
-        self.app_log_file.as_deref()
-    }
-
-    /// Forward the given TCP ports from the host loopback to the device's
-    /// loopback for the lifetime of the run.
-    pub fn set_forward_tcp_ports(&mut self, ports: impl IntoIterator<Item = u16>) {
-        self.forward_tcp_ports = ports.into_iter().collect();
-    }
-
-    /// The TCP ports to forward to the device's loopback, if any.
-    #[must_use]
-    pub fn forward_tcp_ports(&self) -> &[u16] {
-        &self.forward_tcp_ports
     }
 }
 
@@ -403,6 +338,7 @@ pub struct Running {
 
 /// What a run's supervisor asks the device monitor to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StopRequest {
     /// Send one termination signal, then wait for the monitor's grace bound.
     Terminate,
@@ -569,8 +505,8 @@ impl Running {
 
     /// Detach the running instance, preventing the app from being killed on drop.
     ///
-    /// This is useful for long-running apps like the preview support app that should
-    /// stay running after the CLI command completes.
+    /// This is useful for long-running apps that should stay running after the
+    /// CLI command completes.
     pub fn detach(self: Pin<&mut Self>) {
         let this = self.get_mut();
         // Detach keeps every retained resource alive, so the hooks are
@@ -620,6 +556,7 @@ impl Drop for Running {
 
 /// Errors that can occur when running an application on a device
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToRun {
     /// Invalid artifact provided.
     #[error("Invalid artifact")]
@@ -690,6 +627,7 @@ impl ApplicationExit {
 
 /// Reason attached to a clean application exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ApplicationExitReason {
     /// The launched process returned a successful exit status.
     Completed,
@@ -699,6 +637,10 @@ pub enum ApplicationExitReason {
 
 /// Events emitted by a running application on a device
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each device event variant by variant"
+)]
 pub enum DeviceEvent {
     /// Application has started
     Started,
@@ -747,6 +689,7 @@ impl DeviceEvent {
 
 /// An application crash observed by a device monitor.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Crash {
     /// What ended the application.
     pub cause: CrashCause,
@@ -759,6 +702,7 @@ pub struct Crash {
 
 /// How a process ended: the signal that killed it or the code it exited with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProcessEnd {
     /// The process was killed by a signal.
     Signal(i32),
@@ -832,6 +776,7 @@ impl std::fmt::Display for Crash {
 
 /// What ended a crashed application.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum CrashCause {
     /// A Rust panic captured from the app's output or logs.
     Panic(PanicInfo),
@@ -882,6 +827,7 @@ impl std::fmt::Display for CrashCause {
 
 /// A Rust panic reported by a running application.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PanicInfo {
     /// The panic message payload.
     pub payload: String,
@@ -891,6 +837,7 @@ pub struct PanicInfo {
 
 /// Represents the kind of device
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeviceKind {
     /// Simulator device
     Simulator,
@@ -900,6 +847,7 @@ pub enum DeviceKind {
 
 /// Represents the state of a device
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeviceState {
     /// Device is booted and ready
     Booted,
@@ -1218,6 +1166,10 @@ async fn fetch_recent_panic_logs(
 ///
 /// The artifact type determines how it's executed.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit marker for the local machine with no fields to add"
+)]
 pub struct Local;
 
 impl Device for Local {
@@ -1580,10 +1532,8 @@ async fn run_macos_app_with_grace(
     let launch = prepare_macos_bundle_launch(artifact).await?;
     let started_at = Instant::now();
 
-    if options.replace_existing_macos_app_instances() {
-        let existing_pids = list_conflicting_macos_app_pids(host, &launch).await?;
-        terminate_pids(host, &existing_pids).await?;
-    }
+    let existing_pids = list_conflicting_macos_app_pids(host, &launch).await?;
+    terminate_pids(host, &existing_pids).await?;
 
     info!("Launching app on macOS: {}", launch.artifact_path.display());
     // The app leads its own process group: a terminal `Ctrl-C` must reach
@@ -1598,7 +1548,7 @@ async fn run_macos_app_with_grace(
         .stdin(Stdio::null())
         .current_dir("/")
         .kill_on_drop(true);
-    let app_log_file = configure_app_stdio(&mut command, options.app_log_file())?;
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
     let child = command.spawn().map_err(|error| {
         FailToRun::Launch(eyre::eyre!(
             "Failed to launch '{}': {error}",
@@ -1607,9 +1557,6 @@ async fn run_macos_app_with_grace(
     })?;
     let app_pid = child.id();
     let (mut running, sender, control) = Running::new();
-    if let Some(log_file) = app_log_file {
-        spawn_app_log_file_follower(log_file, sender.clone());
-    }
     // Unique per run: `log stream` admits this text through the marker
     // clause of its predicate, and the exit monitor writes it after the
     // child exits to end the log reader only once every earlier entry the
@@ -1634,112 +1581,6 @@ async fn run_macos_app_with_grace(
     );
 
     Ok(running)
-}
-
-/// Route a spawned macOS app's stdout and stderr.
-///
-/// With a log file, both streams append to it (created, with parents): a file
-/// is the right channel for an app designed to outlive this command, where a
-/// pipe whose reader has exited raises SIGPIPE on unix (water-rs/cli#197).
-/// Without one, the streams keep the pipes the [`ChildMonitor`] forwards while
-/// the app is supervised.
-///
-/// Returns the log file's path when the streams were redirected to it.
-#[cfg(target_os = "macos")]
-fn configure_app_stdio(
-    command: &mut Command,
-    app_log_file: Option<&Path>,
-) -> Result<Option<PathBuf>, FailToRun> {
-    let Some(path) = app_log_file else {
-        command.stdout(Stdio::piped()).stderr(Stdio::piped());
-        return Ok(None);
-    };
-    let open_log = || {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-    };
-    let stdout = open_log().map_err(|error| {
-        FailToRun::Launch(eyre::eyre!(
-            "Failed to open the app log file {}: {error}",
-            path.display()
-        ))
-    })?;
-    let stderr = open_log().map_err(|error| {
-        FailToRun::Launch(eyre::eyre!(
-            "Failed to open the app log file {}: {error}",
-            path.display()
-        ))
-    })?;
-    command
-        .stdout(Stdio::from(stdout))
-        .stderr(Stdio::from(stderr));
-    Ok(Some(path.to_path_buf()))
-}
-
-/// Follow the file a spawned app logs to and forward new lines as
-/// [`DeviceEvent::Log`].
-///
-/// The file is the app's log channel for the rest of its life — a detached
-/// support app keeps writing long after this command exits — but this run
-/// still streams what lands while it runs. A task, not a `tail` child: a child
-/// retained on the [`Running`] would be forgotten by [`Running::detach`] and
-/// orphaned past the command's exit.
-#[cfg(target_os = "macos")]
-fn spawn_app_log_file_follower(path: PathBuf, sender: Sender<DeviceEvent>) {
-    use smol::io::{AsyncReadExt, AsyncSeekExt};
-    spawn(async move {
-        let mut file = match smol::fs::File::open(&path).await {
-            Ok(file) => file,
-            Err(error) => {
-                tracing::warn!(path = %path.display(), "Cannot follow the app log file: {error}");
-                return;
-            }
-        };
-        // Only lines written during this run matter.
-        if let Err(error) = file.seek(std::io::SeekFrom::End(0)).await {
-            tracing::warn!(path = %path.display(), "Cannot seek the app log file: {error}");
-            return;
-        }
-        let mut pending = String::new();
-        loop {
-            let mut chunk = [0u8; 8192];
-            match file.read(&mut chunk).await {
-                Ok(0) => {
-                    if sender.is_closed() {
-                        return;
-                    }
-                    Timer::after(Duration::from_millis(200)).await;
-                }
-                Ok(read) => {
-                    pending.push_str(&String::from_utf8_lossy(&chunk[..read]));
-                    while let Some(newline) = pending.find('\n') {
-                        let line = pending[..newline].trim_end().to_string();
-                        pending.drain(..=newline);
-                        if !line.is_empty()
-                            && sender
-                                .try_send(DeviceEvent::Log {
-                                    level: parse_log_level(&line),
-                                    message: line,
-                                })
-                                .is_err()
-                        {
-                            return;
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(path = %path.display(), "App log file read failed: {error}");
-                    return;
-                }
-            }
-        }
-    })
-    .detach();
 }
 
 /// Run a macOS .app bundle on non-macOS platforms (not supported).
@@ -2887,66 +2728,6 @@ mod tests {
         assert!(!fired.load(Ordering::SeqCst));
     }
 
-    /// The preview support app outlives `water preview`; a pipe whose reader
-    /// has exited turns the app's next write into SIGPIPE (water-rs/cli#197).
-    /// With an app log file set, the spawned child must carry no pipes.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_app_stdio_lands_in_the_log_file_not_pipes() {
-        use futures_util::future::{Either, select};
-        use std::time::Duration;
-
-        smol::block_on(async {
-            let machine = crate::toolchain::testing::TestMachine::new();
-            let host = machine.host(Vec::<(String, String)>::new());
-            let script = machine.root().join("emit");
-            std::fs::write(
-                &script,
-                "#!/bin/sh\nprintf 'out-line\\n'\nprintf 'err-line\\n' >&2\n",
-            )
-            .expect("write emitter script");
-            {
-                use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-                    .expect("mark emitter executable");
-            }
-            let log = machine.root().join("logs/support-app.log");
-
-            let mut command = host.command(&script);
-            let redirected = super::configure_app_stdio(&mut command, Some(&log))
-                .expect("configure app log-file stdio");
-            assert_eq!(redirected.as_deref(), Some(log.as_path()));
-            let mut child = command.spawn().expect("spawn the emitter");
-            assert!(
-                child.stdout.is_none() && child.stderr.is_none(),
-                "a log-file app's stdio must be files, not pipes"
-            );
-            let deadline = std::pin::pin!(smol::Timer::after(Duration::from_secs(5)));
-            let status = match select(Box::pin(child.status()), deadline).await {
-                Either::Left((status, _)) => status.expect("await the emitter"),
-                Either::Right(_) => panic!("stdio emitter exceeded five seconds"),
-            };
-            assert!(status.success());
-            let contents = std::fs::read_to_string(&log).expect("read the app log");
-            assert!(contents.contains("out-line") && contents.contains("err-line"));
-
-            // Supervised apps (no log file) keep the pipes the monitor
-            // forwards.
-            let mut piped = host.command(&script);
-            super::configure_app_stdio(&mut piped, None).expect("configure piped stdio");
-            let mut piped_child = piped.spawn().expect("spawn the piped emitter");
-            assert!(piped_child.stdout.is_some() && piped_child.stderr.is_some());
-            let _ = piped_child.kill();
-            let deadline = std::pin::pin!(smol::Timer::after(Duration::from_secs(5)));
-            match select(Box::pin(piped_child.status()), deadline).await {
-                Either::Left((status, _)) => {
-                    let _ = status.expect("reap the piped emitter");
-                }
-                Either::Right(_) => panic!("piped emitter exceeded five seconds"),
-            }
-        });
-    }
-
     /// Everything a signal-counting fixture `.app` needs: the file its
     /// `SIGTERM` trap appends one `t` to per delivery, the fifo whose read
     /// side the app blocks on until a "done" line arrives, and the
@@ -3314,13 +3095,13 @@ mod tests {
         let machine = crate::toolchain::testing::TestMachine::new();
         machine.install("log");
         machine.install("logger");
+        machine.install("ps");
         let host = machine.host(Vec::<(String, String)>::new());
         let fixture = signal_counting_app(&machine, false);
         let fifo = fixture.fifo.clone();
         let marker = fixture.marker.clone();
 
-        let mut options = super::RunOptions::new();
-        options.set_replace_existing_macos_app_instances(false);
+        let options = super::RunOptions::new();
 
         let launch = super::run_macos_app_with_grace(
             &host,
@@ -3555,7 +3336,6 @@ mod tests {
         smol::block_on(async {
             let mut options = super::RunOptions::new();
             options.set_log_level(super::LogLevel::Debug);
-            options.set_replace_existing_macos_app_instances(false);
             options.insert_env_var(SIGINT_ROLE_ENV.to_string(), "app".to_string());
             options.insert_env_var(SIGINT_MARKER_ENV.to_string(), marker);
             options.insert_env_var(SIGINT_EVENTS_ENV.to_string(), events_path);
@@ -3605,7 +3385,7 @@ mod tests {
         let machine = crate::toolchain::testing::TestMachine::new();
         // The supervisor runs the real macOS tools its app monitor needs,
         // resolved on this machine and linked into the declared PATH.
-        for tool in ["log", "logger", "kill"] {
+        for tool in ["log", "logger", "kill", "ps"] {
             let real = smol::block_on(current.which(tool)).expect("macOS provides the tool");
             std::os::unix::fs::symlink(real, machine.bin().join(tool))
                 .expect("link the real tool into the fixture PATH");

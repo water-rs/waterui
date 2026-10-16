@@ -22,6 +22,11 @@
 //! });
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 #[cfg(feature = "bench")]
 pub mod bench;

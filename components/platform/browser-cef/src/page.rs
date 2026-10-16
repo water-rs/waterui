@@ -61,6 +61,7 @@ const EVENTFLAG_COMMAND_DOWN: u32 = 1 << 7;
     clippy::struct_excessive_bools,
     reason = "CEF models keyboard and pointer modifier flags independently"
 )]
+#[non_exhaustive]
 pub struct CefInputModifiers {
     /// Shift key.
     pub shift: bool,
@@ -108,6 +109,7 @@ impl CefInputModifiers {
 
 /// Pointer buttons represented by CEF's OSR input ABI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CefPointerButton {
     /// Primary button.
     Primary,
@@ -129,6 +131,7 @@ impl CefPointerButton {
 
 /// Native keyboard metadata sent to CEF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CefKeyInput {
     /// Platform hardware keycode, or zero when unavailable.
     pub native_keycode: u32,
@@ -140,6 +143,10 @@ pub struct CefKeyInput {
 
 /// A half-open UTF-16 range used by CEF text editing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a half-open range: start and end are the whole value"
+)]
 pub struct CefTextRange {
     /// Inclusive UTF-16 start offset.
     pub start: u32,
@@ -186,6 +193,10 @@ pub trait AcceleratedFrameSink: 'static {
 
 /// CEF popup widget bounds in view coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a rectangle: origin and size are the whole value"
+)]
 pub struct CefPopupRect {
     /// Horizontal origin.
     pub x: i32,
@@ -233,6 +244,10 @@ pub struct CefPageConfiguration {
     pub proxy: Option<String>,
     pub language: Option<String>,
     pub user_agent: Option<String>,
+    /// What every renderer of a web view's browser injects, delivered as the
+    /// browser's `extra_info`; `None` for a page that is not a web view.
+    #[cfg(feature = "webview")]
+    pub renderer: Option<crate::renderer::RendererBundle>,
 }
 
 #[cfg(feature = "chromium")]
@@ -885,7 +900,7 @@ impl CefPageHandle {
                 windowless_frame_rate: 60,
                 ..Default::default()
             }),
-            None,
+            extra_info(&configuration).as_mut(),
             Some(&mut request_context),
         )
         .expect("CEF failed to create a shared-texture windowless browser");
@@ -1510,7 +1525,28 @@ impl From<ChromiumConfiguration> for CefPageConfiguration {
             proxy,
             language,
             user_agent,
+            // A Chromium page is not a web view: its renderers inject nothing.
+            #[cfg(feature = "webview")]
+            renderer: None,
         }
+    }
+}
+
+/// The `extra_info` a page's browser is created with: CEF hands it to every
+/// renderer process the browser is created in, before that process loads a
+/// document.
+fn extra_info(configuration: &CefPageConfiguration) -> Option<cef::DictionaryValue> {
+    #[cfg(feature = "webview")]
+    {
+        configuration
+            .renderer
+            .as_ref()
+            .map(crate::renderer::RendererBundle::to_extra_info)
+    }
+    #[cfg(not(feature = "webview"))]
+    {
+        let _ = configuration;
+        None
     }
 }
 

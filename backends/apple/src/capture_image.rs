@@ -160,7 +160,7 @@ impl Signal {
 /// Hosts a detached view in a private offscreen window while a capture
 /// needs window-bound control rendering; restores the original parent on
 /// drop. `None` while the view already has a window.
-struct WindowHost {
+pub struct WindowHost {
     /// The temporary window — kept alive for the capture's duration and
     /// never ordered in; the struct's drop restores the view before the
     /// window dies. Never read directly: its only job is to live.
@@ -204,7 +204,7 @@ impl WindowHost {
             reason = "only UIKit's window-scene lookup can fail; AppKit's offscreen window always attaches"
         )
     )]
-    fn attach_if_windowless(
+    pub fn attach_if_windowless(
         view: &Retained<cocoa_ui::PlatformView>,
         mtm: cocoa_ui::MainThreadMarker,
     ) -> Result<Option<Self>, CaptureFailure> {

@@ -42,6 +42,10 @@ pub const ASSET_HTTPS_ORIGIN: &str = "https://waterui.localhost";
 
 /// The only methods an asset origin answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the only methods an asset origin answers are GET and HEAD"
+)]
 pub enum AssetMethod {
     /// `GET`.
     Get,
@@ -51,6 +55,7 @@ pub enum AssetMethod {
 
 /// One request the engine intercepted on the asset origin.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct AssetRequest {
     /// The request method.
     pub method: AssetMethod,
@@ -63,6 +68,7 @@ pub struct AssetRequest {
 
 /// What the asset origin answers.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AssetResponse {
     /// The HTTP status code.
     pub status: u16,
@@ -132,30 +138,6 @@ impl AssetResponse {
 /// scheme callback, a CEF IO thread — hence `Send + Sync`, and it must not
 /// block on the engine's UI thread.
 pub type AssetServer = Arc<dyn Fn(&AssetRequest) -> AssetResponse + Send + Sync>;
-
-/// Creation-time configuration for a web view.
-///
-/// Engines that expose an asset origin register their interception facility
-/// while the native view is constructed — `WKWebView` takes scheme handlers on
-/// its configuration before the view exists — so this is an input to
-/// [`CustomWebViewController::open`](crate::CustomWebViewController::open), not
-/// a method that could be called later.
-#[derive(Clone, Default)]
-pub struct WebViewConfig {
-    #[cfg(not(target_arch = "wasm32"))]
-    /// The server behind the engine's local asset origin, when the view was
-    /// opened with one.
-    pub asset_server: Option<AssetServer>,
-}
-
-impl std::fmt::Debug for WebViewConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut debug = f.debug_struct("WebViewConfig");
-        #[cfg(not(target_arch = "wasm32"))]
-        debug.field("asset_server", &self.asset_server.as_ref().map(|_| ".."));
-        debug.finish()
-    }
-}
 
 /// The single entry point every engine routes an intercepted request through.
 ///

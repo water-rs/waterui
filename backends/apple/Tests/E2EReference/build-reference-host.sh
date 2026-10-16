@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Builds the SwiftUI reference host as a minimal .app bundle — no Xcode project
 # required, so it compiles in seconds with just the toolchain.
 #

@@ -44,10 +44,18 @@ pub struct Move {
 
 /// Per-row delete payload injected into list delete handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "handler payload newtype destructured in handler parameters"
+)]
 pub struct ListDelete(pub usize);
 
 /// Per-row move payload injected into list move handlers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "handler payload newtype destructured in handler parameters"
+)]
 pub struct ListMove(pub Move);
 
 impl_extractor!(ListDelete);
@@ -87,6 +95,10 @@ pub type OnMove = Box<dyn Fn(&Environment, Move)>;
 /// it through the same generator the collection's `get_id` reports, so the
 /// backends and the FFI read and write exactly the ids the rows answer to.
 #[derive(Clone, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each selection mode variant by variant; a new selection mode must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ListSelection<Id: 'static> {
     /// Rows are not selectable.
     #[default]
@@ -157,6 +169,7 @@ impl<Id: 'static + Ord + Clone> ListSelection<Id> {
 }
 
 /// Configuration for a list component.
+#[non_exhaustive]
 pub struct ListConfig {
     /// Content items to be displayed in the list.
     pub contents: SharedAnyViews<ListItem>,
@@ -187,6 +200,10 @@ impl_debug!(ListConfig);
 /// against. `0.0` sizes each row to its content plus its insets. Set it with
 /// [`ViewExt::list_min_row_height`](crate::ViewExt::list_min_row_height).
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "environment newtype over the minimum row height"
+)]
 pub struct ListMinRowHeight(pub f32);
 
 impl NativeView for ListConfig {
@@ -855,6 +872,7 @@ where
 /// typography belongs to the platform, so a header takes the list's own
 /// section style regardless of any styling applied to the text.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct ListSection {
     /// Title shown above the section.
     pub label: Option<Text>,
@@ -911,6 +929,7 @@ impl ListSection {
 /// [`.disabled(true)`](crate::ViewExt::disabled) to make the row inert to
 /// selection — the way a disabled `Button` cannot be pressed — while its
 /// label and disabled accessibility state still report.
+#[non_exhaustive]
 pub struct ListItem {
     /// The view content to display for this item.
     pub content: AnyView,

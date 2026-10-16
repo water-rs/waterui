@@ -21,6 +21,10 @@ macro_rules! impl_error {
     ($ident:ident,$message:expr) => {
         #[derive(Debug, Clone, Copy)]
         #[doc = $message]
+        #[expect(
+            clippy::exhaustive_structs,
+            reason = "field-less validation error, used by name"
+        )]
         pub struct $ident;
 
         impl fmt::Display for $ident {
@@ -134,6 +138,7 @@ where
 
 /// An error indicating that a value is out of a specified range.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OutOfRange<T>(pub Range<T>);
 
 impl<T: Display> Display for OutOfRange<T> {
@@ -230,6 +235,10 @@ pub struct And<A, B>(A, B);
 
 /// An error type for the `And` validator, representing which validator failed.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: exactly one of the two combined validators failed"
+)]
 pub enum AndError<A, B> {
     /// The first validator failed.
     A(A),
@@ -278,6 +287,10 @@ pub struct Or<A, B>(A, B);
 
 /// An error type for the `Or` validator, representing both validation failures.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a pair of the two failures, built and destructured positionally"
+)]
 pub struct OrError<A, B>(pub A, pub B);
 
 impl<A, B> Display for OrError<A, B>
@@ -317,6 +330,10 @@ where
 
 /// A validator that checks if a value is present (not None or not empty).
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less validator used by name"
+)]
 pub struct Required;
 
 impl_error!(RequiredError, "Value is required.");
@@ -358,6 +375,10 @@ impl_required_for_text!(&str, Str, String);
 /// ValidatableView::new(field, Plain(Required))
 /// ```
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "validator adapter newtype over the wrapped validator"
+)]
 pub struct Plain<V>(pub V);
 
 impl<V> Validator<StyledStr> for Plain<V>

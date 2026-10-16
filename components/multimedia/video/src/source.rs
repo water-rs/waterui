@@ -103,6 +103,10 @@ impl MediaMetadata {
 /// Transport/delivery strategy for a media item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations open each delivery strategy variant by variant; a new strategy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum Delivery {
     /// Progressive file playback (local file or HTTP object URL).
     #[default]
@@ -320,6 +324,7 @@ mod drm_tests {
 
 /// Sidecar subtitle track associated with a media item.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct SubtitleTrack {
     /// Location of the subtitle asset.
     pub source: Url,
@@ -366,6 +371,7 @@ impl SubtitleTrack {
 
 /// Canonical description of one playable media item.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct MediaItem {
     /// Stable identity used by playlists and item-transition events.
     pub id: MediaItemId,

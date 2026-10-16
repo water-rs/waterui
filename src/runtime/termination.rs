@@ -39,6 +39,7 @@ use crate::task::spawn_local;
 
 /// What kind of termination the platform is asking for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TerminationKind {
     /// The user or the system asked the application to quit, and the
     /// application may still say no — `on_quit_request` runs first.
