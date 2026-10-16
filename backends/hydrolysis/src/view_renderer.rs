@@ -16,7 +16,7 @@ use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 /// retained tree between passes, then renders it once.
 pub struct HydrolysisViewRenderer {
     surface: Rc<RefCell<Option<OffscreenSurface>>>,
-    theme: Rc<dyn crate::engine::WidgetTheme>,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
     configure_environment: Rc<dyn Fn(&mut Environment)>,
 }
 
@@ -30,7 +30,7 @@ impl core::fmt::Debug for HydrolysisViewRenderer {
 impl HydrolysisViewRenderer {
     #[must_use]
     /// Creates a renderer drawing with `theme`.
-    pub fn new(theme: Rc<dyn crate::engine::WidgetTheme>) -> Self {
+    pub fn new(theme: Rc<dyn crate::theme::WidgetTheme>) -> Self {
         Self {
             surface: Rc::new(RefCell::new(None)),
             theme,
@@ -41,7 +41,7 @@ impl HydrolysisViewRenderer {
     #[must_use]
     /// Creates a renderer whose environment is first configured by `configure_environment`.
     pub fn with_environment(
-        theme: Rc<dyn crate::engine::WidgetTheme>,
+        theme: Rc<dyn crate::theme::WidgetTheme>,
         configure_environment: impl Fn(&mut Environment) + 'static,
     ) -> Self {
         Self {

@@ -1,8 +1,8 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::engine::WidgetTheme;
 use crate::text::TextLayout as _;
+use crate::theme::WidgetTheme;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
 use waterui::navigation::tab::TabIcon;
@@ -22,7 +22,7 @@ pub fn table_header_cell_rect(
     origin_y: f64,
     x_offset: f64,
     width: f64,
-    metrics: waterui_backend_core::widget::TableMetrics,
+    metrics: crate::theme::TableMetrics,
 ) -> kurbo::Rect {
     kurbo::Rect::new(
         origin_x + x_offset,
@@ -38,7 +38,7 @@ pub fn table_data_cell_rect(
     x_offset: f64,
     width: f64,
     row_index: usize,
-    metrics: waterui_backend_core::widget::TableMetrics,
+    metrics: crate::theme::TableMetrics,
 ) -> kurbo::Rect {
     let y0 = metrics.row_height.mul_add(
         crate::num_cast::usize_as_f64(row_index),
@@ -93,7 +93,7 @@ pub fn navigation_base_bar_height_for_display_mode(
 
 const fn navigation_base_bar_height_for_display_mode_metrics(
     display_mode: waterui::navigation::NavigationTitleDisplayMode,
-    metrics: waterui_backend_core::widget::NavigationMetrics,
+    metrics: crate::theme::NavigationMetrics,
 ) -> f64 {
     match display_mode {
         waterui::navigation::NavigationTitleDisplayMode::Automatic => metrics.automatic_bar_height,
@@ -891,7 +891,7 @@ pub fn tabs_button_rect(
 
 pub fn navigation_back_button_rect(
     bounds: kurbo::Rect,
-    metrics: waterui_backend_core::widget::NavigationMetrics,
+    metrics: crate::theme::NavigationMetrics,
 ) -> kurbo::Rect {
     kurbo::Rect::new(
         bounds.x0 + metrics.back_button_leading_inset,
@@ -989,7 +989,7 @@ pub fn list_row_height_for_content(
     content_height: f64,
     insets: Option<&waterui_layout::padding::EdgeInsets>,
     min_height: Option<f32>,
-    metrics: waterui_backend_core::widget::ListMetrics,
+    metrics: crate::theme::ListMetrics,
 ) -> f64 {
     let vertical_insets = insets.map_or(metrics.vertical_inset * 2.0, |insets| {
         f64::from(insets.top() + insets.bottom())
@@ -1006,8 +1006,7 @@ pub fn measure_progress_intrinsic(
 ) -> LayoutSize {
     match progress.style {
         ProgressStyle::Linear => {
-            let metrics = theme
-                .progress_metrics(waterui_backend_core::widget::ProgressIndicatorStyle::Linear);
+            let metrics = theme.progress_metrics(crate::theme::ProgressIndicatorStyle::Linear);
             let label_height = f64::from(
                 waterui_text::font::Font::default()
                     .resolve(env)
@@ -1031,8 +1030,7 @@ pub fn measure_progress_intrinsic(
             )
         }
         ProgressStyle::Circular => {
-            let metrics = theme
-                .progress_metrics(waterui_backend_core::widget::ProgressIndicatorStyle::Circular);
+            let metrics = theme.progress_metrics(crate::theme::ProgressIndicatorStyle::Circular);
             LayoutSize::new(
                 crate::num_cast::f64_as_f32(metrics.circular_diameter),
                 crate::num_cast::f64_as_f32(metrics.circular_diameter),
@@ -1203,7 +1201,7 @@ fn measured_input_label_height(label_size: LayoutSize, label_height: f64) -> f64
 fn measured_input_field_height(
     text_height: f32,
     label_height: f64,
-    metrics: waterui_backend_core::widget::InputFieldMetrics,
+    metrics: crate::theme::InputFieldMetrics,
 ) -> f64 {
     let text_height = f64::from(text_height);
     let measured_height = if label_height > 0.0 {
@@ -1581,14 +1579,14 @@ pub fn measure_picker_intrinsic_with_label_size(
 #[cfg(test)]
 mod tests {
     use super::{measure_view_dimensions, measured_input_field_height};
-    use crate::engine::WidgetTheme;
     use crate::renderer::tests::{MinimalTestTheme, test_environment};
     use crate::renderer::{HydroState, normalize_layout_view};
     use crate::text::{FontFamilyResolution, SessionTextEngine};
+    use crate::theme::InputFieldMetrics;
+    use crate::theme::WidgetTheme;
     use std::rc::Rc;
     use waterui::theme::install_font_signal;
     use waterui::{Binding, Computed};
-    use waterui_backend_core::widget::InputFieldMetrics;
     use waterui_controls::text_field::field;
     use waterui_core::{AnyView, Str};
     use waterui_form::secure::{Secure, secure};

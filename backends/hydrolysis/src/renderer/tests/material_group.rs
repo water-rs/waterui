@@ -43,7 +43,6 @@ use super::{
     mounts, pumped_test_environment, test_environment, test_renderer, window_mount,
 };
 use crate::HeadlessRuntime;
-use crate::engine::WidgetTheme;
 use crate::platform::{InputEvent, PointerButton, PointerKind};
 use crate::renderer::mount::backdrop::BackdropScope;
 use crate::renderer::{
@@ -51,6 +50,7 @@ use crate::renderer::{
     normalize_layout_view, view_renders_nothing,
 };
 use crate::text::SessionTextEngine;
+use crate::theme::WidgetTheme;
 
 /// The window, in points.
 const WIDTH: u32 = 160;

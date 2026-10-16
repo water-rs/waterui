@@ -4,6 +4,8 @@ Pixel-class device.
 
   pixel_compare.py run     --base B --head H --scene DIR... --out O
                            [--governor | --gpu-counters]
+  pixel_compare.py run     --base B --head H --scene DIR... --out O
+                           --engine E --workers N --cpus LIST --cluster-khz POLICY=KHZ...
   pixel_compare.py analyze O
 
 `run` pushes both binaries and the scene directories, then measures every
@@ -37,48 +39,81 @@ identical binaries, while frames within it agree, so such a scene needs many
 short invocations: `--rounds 32 --frames 300` resolves the 96 px corpus
 scenes.
 
+`--engine cherenkov-cpu` (or the reference CPU engines `vello-cpu` and
+`skia-cpu`) measures a CPU rasterizer instead: `measure --engine E --cpu
+LIST` with every bench thread confined to the CPU set `--cpus`, the engine at
+`--workers` workers, each scene at its own size, and no pacing or energy
+window, so frames run back to back and measure cost. The worker count reaches
+the engine through its own control: cherenkov-cpu's raster pool, and rayon's
+global pool beside it, through `RAYON_NUM_THREADS`; vello-cpu's dispatcher
+through `VELLO_CPU_THREADS` (one worker is its single-threaded dispatcher, N
+its multithreaded one with N workers); skia-cpu is single-threaded and runs
+at one worker only. The GPU is left to its governor. Every CPU frequency
+policy holding a CPU of the set is held at its `--cluster-khz` clock for the
+whole collection instead, and policies outside the set are left alone.
+
 Controls, checked for every invocation and recorded with it:
 
 - before: screen off; thermal status below moderate; battery below
   `--battery-c`; every CPU and GPU cooling device at state 0; in pinned mode
-  both policy ranges collapsed onto the requested clocks;
-- during: the report's `gpu_clock` residency over the measured window (in
-  pinned mode all of its powered time at `--gpu-khz`); the measuring thread
-  on the pinned CPU without migrating;
-- after: thermal status below moderate; in pinned mode both policy ranges
-  still on the requested clocks and the measuring CPU's `time_in_state`
-  residency over the whole process at `--cpu-khz` alone; under the governor
+  every pinned policy's range collapsed onto its requested clock. Android's
+  power HAL rewrites a policy's limits on its own hints: while no cooling
+  device is active the check writes the pin back and records it in
+  `control.json` (`repins`); with one active it waits, so a thermal cap is
+  never written over;
+- during: for the GPU engine, the report's `gpu_clock` residency over the
+  measured window (in pinned mode all of its powered time at `--gpu-khz`);
+  the measuring thread starting and ending every frame on a CPU of the set
+  (CPU 7 for the GPU engine, so it never migrates); for a CPU engine, the
+  report's `device.adapter` stating the requested worker count;
+- after: thermal status below moderate; in pinned mode every pinned policy's
+  range still on its clock and every pinned CPU policy's `time_in_state`
+  residency over the whole process at that clock alone; under the governor
   every cooling device still at 0, since a cooling device narrows the range
   the governor picks from. A pinned run is not invalidated by a cooling
-  device that moved neither clock.
+  device that moved no pinned clock.
 
 A failed control marks the invocation invalid and stops the collection:
 `analyze` reports a scene with an invalid invocation as `invalid`, never as
 a pass, and the raw report stays on disk.
 
-`analyze` reads a collection and, per scene, takes each invocation's p50 of
-the plan's metric (GPU milliseconds, or shader-core active cycles with
-`--gpu-counters`) over its measured frames, the median of those per arm, and
-their change. A
+`analyze` reads a collection and, per scene and per metric of the plan, takes
+each invocation's p50 of the metric over its measured frames, the median of
+those per arm, and their change. The metrics are GPU milliseconds (or
+shader-core active cycles with `--gpu-counters`) for the GPU engine; for a
+CPU engine the frame (encode and submit together, in milliseconds: an engine
+may rasterize in either, as vello-cpu dispatches strips while it records),
+and for cherenkov-cpu also its raster pass (`shade`, the backend's phase). A
 p50 over a finite frame count has a sampling error, and a fresh process can
 land at a different cost, so the change alone does not say whether the
-collection can tell a 2% change from none. `analyze` therefore puts a 95% interval
-around the change by a hierarchical bootstrap (invocations, then the frames
-of each). A scene whose whole interval lies above `--limit-percent` (2%)
-`fails` whatever the interval's width: the collection has shown the change
-exceeds the limit at that confidence. Any other scene is decided only when
-its interval is no wider than the limit (half-width at most half of
+collection can tell a 2% change from none. `analyze` therefore puts a 95%
+interval around the change by a hierarchical bootstrap (invocations, then the
+frames of each). A metric whose whole interval lies above `--limit-percent`
+(2%) `fails` whatever the interval's width: the collection has shown the
+change exceeds the limit at that confidence. Any other metric is decided only
+when its interval is no wider than the limit (half-width at most half of
 `--limit-percent`), so a true change of zero reads above the limit with
 probability far below a percent; it then `fails` above the limit and passes
 otherwise. A wider interval is `unresolved`, never a pass. The limit bounds a
 cost increase, so an interval wholly below the negative limit — the head
 measurably cheaper — is no failure, and like any other it passes only at that
-width and is `unresolved` beyond it. More `--frames` shrink the sampling error of
-each p50 and more `--rounds` average over more processes; full-size scenes
-resolve on GPU time at the defaults, and scenes of a fraction of a
-millisecond on shader-core cycles. In governor mode `analyze` reports
-each arm's worst invocation GPU p99 against `--budget-ms` and makes no cost
-decision.
+width and is `unresolved` beyond it. The scene's verdict is its first
+metric's (GPU time, cycles or the frame). Each metric also carries the change
+of the median invocation p99 and its interval, which decide nothing. More
+`--frames` shrink the sampling error of each p50 and more `--rounds` average
+over more processes; full-size scenes resolve on GPU time at the defaults,
+and scenes of a fraction of a millisecond on shader-core cycles. In governor
+mode `analyze` reports each arm's worst invocation GPU p99 against
+`--budget-ms` and makes no cost decision.
+
+For cherenkov-cpu `analyze` also reports, per arm, how much of `submit` the
+backend's phases (`lower`, `glyph`, `shade`) leave unaccounted: the render
+thread's message handoff and the frame's work outside the three phases.
+
+`analyze` needs from a collection only `plan.json` (`scenes`, `rounds`,
+`frames`, `warmup`, `metrics`, `engine`, `clocks`), `control.json`
+(`completed`), `runs.jsonl` and the reports, so a collector for another
+device can write the same layout and be judged by the same rule.
 """
 
 from __future__ import annotations
@@ -96,16 +131,53 @@ import statistics
 import subprocess
 import sys
 import time
+import typing
 from pathlib import Path
 from typing import Any
 
-# What `analyze` compares per frame: GPU milliseconds from timestamps, or
-# the shader cores' active cycles from the Mali counters (`--gpu-counters`).
+
+def phase(sample: dict[str, Any], name: str) -> float:
+    """Seconds of the frame's phase `name`; a frame that does not report it
+    exactly once is an error."""
+    matches = [p["seconds"] for p in sample["phases"] if p["name"] == name]
+    if len(matches) != 1:
+        raise SystemExit(f"a frame reports phase {name!r} {len(matches)} times")
+    return matches[0]
+
+
+# What `analyze` compares per frame: GPU milliseconds from timestamps, the
+# shader cores' active cycles from the Mali counters (`--gpu-counters`), a CPU
+# engine's frame milliseconds, or the CPU backend's raster pass.
 METRICS = {
     "gpu-time": ("ms", lambda sample: sample["gpu_seconds"] * 1000),
     "shader-core-cycles": ("cycles",
                            lambda sample: sample["gpu_counters"]["shader_core_active_cycles"]),
+    "frame": ("ms", lambda sample: (sample["encode_seconds"] + sample["submit_seconds"]) * 1000),
+    "shade": ("ms", lambda sample: phase(sample, "shade") * 1000),
 }
+# The CPU backend's phases, in render order; they run inside `submit`.
+CPU_PHASES = ("lower", "glyph", "shade")
+
+
+class CpuEngine(typing.NamedTuple):
+    """A CPU rasterizer the bench measures: the environment that sets its
+    worker count, the `device.adapter` a report states for that count, the
+    metrics `analyze` decides it on, and its most workers."""
+    environment: typing.Callable[[int], dict[str, str]]
+    adapter: typing.Callable[[int], str]
+    metrics: tuple[str, ...]
+    max_workers: int | None
+
+
+CPU_ENGINES = {
+    "cherenkov-cpu": CpuEngine(lambda n: {"RAYON_NUM_THREADS": str(n)},
+                               lambda n: f"cherenkov-cpu ({n} threads)", ("frame", "shade"), None),
+    "vello-cpu": CpuEngine(lambda n: {"VELLO_CPU_THREADS": "0" if n == 1 else str(n)},
+                           lambda n: "vello-cpu (single-threaded dispatcher)" if n == 1
+                           else f"vello-cpu ({n} threads)", ("frame",), None),
+    "skia-cpu": CpuEngine(lambda n: {}, lambda n: "Skia raster surface", ("frame",), 1),
+}
+GPU_ENGINE = "cherenkov"
 
 # A collection's identity: every field `analyze` relies on is in the plan.
 PLAN = "plan.json"
@@ -113,11 +185,13 @@ CONTROL = "control.json"
 RUNS = "runs.jsonl"
 RATE_HZ = 120
 BOOTSTRAP_RESAMPLES = 2000
+# The GPU engine's measuring CPU.
 CPU = 7
 # Thermal status from `dumpsys thermalservice`: 2 is MODERATE.
 THERMAL_STATUS_BELOW = 2
 # CoolingDevice types of `android.os.CoolingDevice`: CPU and GPU.
 COOLING_TYPES = (2, 3)
+CPUFREQ = "/sys/devices/system/cpu/cpufreq"
 
 
 class ControlError(Exception):
@@ -155,14 +229,40 @@ def save(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
 
 
-class Clocks:
-    """The GPU and measuring-CPU frequency policies, read and pinned through
-    sysfs. The GPU is the Mali device behind `/sys/class/misc/mali0`."""
+def cpu_list(text: str) -> list[int]:
+    """The CPUs of a `measure --cpu` list such as `0-3,7`, sorted."""
+    cpus: set[int] = set()
+    for part in text.split(","):
+        low, _, high = part.partition("-")
+        cpus.update(range(int(low), int(high or low) + 1))
+    return sorted(cpus)
 
-    def __init__(self, device: Device) -> None:
+
+class Clocks:
+    """Frequency policies read and pinned through sysfs, by name: `gpu` is
+    the Mali device behind `/sys/class/misc/mali0`, `policyN` a CPU
+    frequency policy."""
+
+    def __init__(self, device: Device, names: list[str]) -> None:
         self.device = device
-        gpu = device.root("readlink -f /sys/class/misc/mali0/device").strip()
-        self.paths = {"gpu": gpu, "cpu": f"/sys/devices/system/cpu/cpu{CPU}/cpufreq"}
+        self.paths = {name: device.root("readlink -f /sys/class/misc/mali0/device").strip()
+                      if name == "gpu" else f"{CPUFREQ}/{name}" for name in names}
+
+    @staticmethod
+    def describe(device: Device) -> dict[str, dict[str, Any]]:
+        """Every CPU frequency policy: its CPUs, its hardware ceiling and its
+        available clocks."""
+        out = {}
+        for name in device.root(f"ls {CPUFREQ}").split():
+            if not name.startswith("policy"):
+                continue
+            path = f"{CPUFREQ}/{name}"
+            cpus, ceiling, available = device.root(
+                f"cat {path}/related_cpus {path}/cpuinfo_max_freq "
+                f"{path}/scaling_available_frequencies").split("\n")[:3]
+            out[name] = {"cpus": [int(c) for c in cpus.split()], "cpuinfo_max": int(ceiling),
+                         "available": [int(v) for v in available.split()]}
+        return out
 
     def available(self, name: str) -> list[int]:
         node = "available_frequencies" if name == "gpu" else "scaling_available_frequencies"
@@ -177,11 +277,17 @@ class Clocks:
             state[name] = dict(zip(("min", "max", "current"), map(int, values)))
         return state
 
-    def cpu_residency(self) -> dict[int, int]:
-        """The measuring CPU's cumulative time per clock (kHz to 10 ms
-        ticks, cpufreq `stats/time_in_state`)."""
-        text = self.device.root(f"cat {self.paths['cpu']}/stats/time_in_state")
-        return {int(khz): int(ticks) for khz, ticks in (line.split() for line in text.splitlines())}
+    def cpu_residency(self) -> dict[str, dict[int, int]]:
+        """Every CPU policy's cumulative time per clock (kHz to 10 ms ticks,
+        cpufreq `stats/time_in_state`)."""
+        out = {}
+        for name, path in self.paths.items():
+            if name == "gpu":
+                continue
+            text = self.device.root(f"cat {path}/stats/time_in_state")
+            out[name] = {int(khz): int(ticks) for khz, ticks
+                         in (line.split() for line in text.splitlines())}
+        return out
 
     def write(self, name: str, low: int, high: int) -> None:
         path = self.paths[name]
@@ -221,15 +327,28 @@ class Session:
         self.args = args
         self.out: Path = args.out
         self.device = Device(args.serial)
-        self.clocks = Clocks(self.device)
-        self.pinned = None if args.governor else {"gpu": args.gpu_khz, "cpu": args.cpu_khz}
+        self.cpu_engine = CPU_ENGINES.get(args.engine)
+        if self.cpu_engine is None:
+            self.cpus = [CPU]
+            self.pinned = None if args.governor else {"gpu": args.gpu_khz,
+                                                      self.policy_of(CPU): args.cpu_khz}
+        else:
+            self.cpus = cpu_list(args.cpus)
+            self.pinned = dict(args.cluster_khz)
+        self.clocks = Clocks(self.device, list(self.pinned or {"gpu": 0, self.policy_of(CPU): 0}))
         self.remote = f"/data/local/tmp/pixel-compare-{self.out.name}"
+        self.repins: list[dict[str, Any]] = []
+
+    def policy_of(self, cpu: int) -> str:
+        return self.device.root(f"readlink -f /sys/devices/system/cpu/cpu{cpu}/cpufreq").strip(
+            ).rsplit("/", 1)[1]
 
     def quiet(self, pinned: bool) -> dict[str, Any]:
         """Waits, bounded, until the device is cool and — when `pinned` —
-        both policies sit on the requested clocks. Unpinned, a requested
-        clock must lie inside the effective range, which a thermal cap
-        narrows; this never lifts a cap."""
+        every pinned policy sits on its requested clock. A pinned CPU policy
+        the power HAL moved is written back while no cooling device is
+        active. Unpinned, a requested clock must lie inside the effective
+        range, which a thermal cap narrows; this never lifts a cap."""
         deadline = time.clock_gettime(time.CLOCK_MONOTONIC) + self.args.cool_seconds
         while True:
             wakefulness = screen_off(self.device)
@@ -249,6 +368,10 @@ class Session:
                 low, high = clocks[name]["min"], clocks[name]["max"]
                 if pinned and (low, high) != (khz, khz):
                     reasons.append(f"{name} policy {low}-{high} not pinned at {khz}")
+                    if not hot and name != "gpu":
+                        self.clocks.write(name, khz, khz)
+                        self.repins.append({"policy": name, "found": [low, high],
+                                            "time_unix": time.time()})
                 if not pinned and not low <= khz <= high:
                     reasons.append(f"{name} {khz} outside the effective range {low}-{high}")
             if not reasons:
@@ -270,17 +393,29 @@ class Session:
                            "sha256": tree_sha256(directory)})
         if len({s["name"] for s in scenes}) != len(scenes):
             raise SystemExit("scene names must be unique")
+        policies = None
+        if self.cpu_engine is not None:
+            policies = Clocks.describe(self.device)
+            holding = {name for name, policy in policies.items()
+                       if set(policy["cpus"]) & set(self.cpus)}
+            if set(self.pinned) != holding:
+                raise SystemExit(f"--cluster-khz must name exactly the policies holding CPUs "
+                                 f"{self.cpus}: {sorted(holding)}")
         if self.pinned:
             for name, khz in self.pinned.items():
                 if khz not in self.clocks.available(name):
                     raise SystemExit(f"{name} {khz} kHz is not an available frequency")
+        if self.cpu_engine is None:
+            metrics = ["shader-core-cycles" if args.gpu_counters else "gpu-time"]
+        else:
+            metrics = list(self.cpu_engine.metrics)
         plan = {
             "arms": {side: {"path": str(path), "sha256": sha256(path)} for side, path in arms.items()},
             "scenes": scenes, "rounds": args.rounds, "frames": args.frames,
-            "warmup": args.warmup, "width": args.width, "rate_hz": RATE_HZ, "cpu": CPU,
-            "metric": "shader-core-cycles" if args.gpu_counters else "gpu-time",
-            "clocks": "governor" if args.governor else {"gpu_khz": args.gpu_khz,
-                                                         "cpu_khz": args.cpu_khz},
+            "warmup": args.warmup, "width": args.width, "rate_hz": RATE_HZ,
+            "engine": args.engine, "workers": args.workers, "cpus": self.cpus,
+            "metrics": metrics, "policies": policies,
+            "clocks": "governor" if self.pinned is None else self.pinned,
             "battery_c": args.battery_c, "serial": args.serial,
             "script_sha256": sha256(Path(__file__)),
         }
@@ -307,17 +442,24 @@ class Session:
     def measure(self, scene: dict[str, Any], side: str, run_id: str) -> Path:
         args = self.args
         report = f"{self.remote}/{run_id}.json"
-        command = [f"{self.remote}/bench-{side}", "measure", "--engine", "cherenkov",
+        command = [f"{self.remote}/bench-{side}", "measure", "--engine", args.engine,
                    "--scene", f"{self.remote}/scenes/{scene['name']}",
-                   "--rate", str(RATE_HZ), "--energy", "--cpu", str(CPU),
+                   "--cpu", ",".join(map(str, self.cpus)),
                    "--warmup", str(args.warmup), "--frames", str(args.frames), "--out", report]
-        if args.gpu_counters:
-            command.append("--gpu-counters")
-        if scene["perf"]:
-            spec = json.loads((Path(scene["path"]) / "scene.json").read_text())
-            height = round(args.width * spec["height"] / spec["width"])
-            command += ["--native", f"{args.width}x{height}"]
-        log = self.device.root("timeout 300 " + shlex.join(command), timeout=330)
+        environment: dict[str, str] = {}
+        if self.cpu_engine is None:
+            command += ["--rate", str(RATE_HZ), "--energy"]
+            if args.gpu_counters:
+                command.append("--gpu-counters")
+            if scene["perf"]:
+                spec = json.loads((Path(scene["path"]) / "scene.json").read_text())
+                height = round(args.width * spec["height"] / spec["width"])
+                command += ["--native", f"{args.width}x{height}"]
+        else:
+            environment = self.cpu_engine.environment(args.workers)
+        prefix = ["env", *(f"{k}={v}" for k, v in environment.items())] if environment else []
+        log = self.device.root(f"timeout {args.run_seconds} " + shlex.join(prefix + command),
+                               timeout=args.run_seconds + 30)
         (self.out / f"{run_id}.log").write_text(log)
         local = self.out / f"{run_id}.json"
         self.device.adb("pull", report, str(local), timeout=60)
@@ -326,14 +468,22 @@ class Session:
     def check_report(self, local: Path) -> list[str]:
         """The in-window controls a report carries."""
         report = json.loads(local.read_text())
+        if "unsupported" in report:
+            return [f"the engine does not support {report['unsupported']}"]
         failures = []
         if report["conditions"]["screen_state"] not in ("off", "dozing", "asleep"):
             failures.append(f"screen {report['conditions']['screen_state']}")
-        if not (report["placement"]["controlled"] and report["placement"]["requested"] == [CPU]):
+        if not (report["placement"]["controlled"] and report["placement"]["requested"] == self.cpus):
             failures.append("placement not pinned")
-        if any(s["migrated"] or s["cpu_start"] != CPU or s["cpu_end"] != CPU
+        if any(s["cpu_start"] not in self.cpus or s["cpu_end"] not in self.cpus
                for s in report["samples"]):
-            failures.append("measuring thread left the pinned CPU")
+            failures.append(f"measuring thread left CPUs {self.cpus}")
+        if self.cpu_engine is not None:
+            adapter = self.cpu_engine.adapter(self.args.workers)
+            if report["device"]["adapter"] != adapter:
+                failures.append(f"the engine reports {report['device']['adapter']!r}, "
+                                f"not {adapter!r}")
+            return failures
         if self.args.gpu_counters and (report.get("gpu_counters") is None or any(
                 s.get("gpu_counters") is None for s in report["samples"])):
             failures.append("report carries no per-frame GPU counters")
@@ -352,7 +502,7 @@ class Session:
         # The limits to restore are read from a cool device: a thermal cap
         # reads as a lowered `scaling_max_freq`, and writing that back would
         # leave the cap in place as a user limit.
-        control: dict[str, Any] = {"completed": False}
+        control: dict[str, Any] = {"completed": False, "repins": self.repins}
         control["original_cooled"] = self.quiet(pinned=False)
         original = control["original_cooled"]["clocks"]
         control["original"] = original
@@ -369,50 +519,57 @@ class Session:
                 for pair in range(self.args.rounds):
                     order = ("base", "head") if pair % 2 == 0 else ("head", "base")
                     for side in order:
-                        run_id = f"{scene['name']}-p{pair}-{side}"
-                        before = self.quiet(pinned=self.pinned is not None)
-                        cpu_before = self.clocks.cpu_residency()
-                        local = self.measure(scene, side, run_id)
-                        cpu_ticks = {khz: ticks - cpu_before[khz] for khz, ticks
-                                     in self.clocks.cpu_residency().items()}
-                        after = {"thermal": thermal(self.device), "clocks": self.clocks.state(),
-                                 "cpu_residency_ticks": {k: v for k, v in cpu_ticks.items() if v}}
-                        failures = self.check_report(local)
-                        if after["thermal"]["status"] >= THERMAL_STATUS_BELOW:
-                            failures.append(f"thermal status {after['thermal']['status']} after")
-                        if self.pinned:
-                            # What a pinned run controls is the clocks: a
-                            # cooling device that moved neither leaves the run
-                            # valid. Its range is checked after the run, and
-                            # the CPU's residency over the whole process.
-                            for name, khz in self.pinned.items():
-                                state = after["clocks"][name]
-                                if state["min"] != khz or state["max"] != khz:
-                                    failures.append(f"{name} policy after {state}")
-                            other = {k: v for k, v in cpu_ticks.items()
-                                     if k != self.pinned["cpu"] and v}
-                            if other:
-                                failures.append(f"CPU left {self.pinned['cpu']} kHz: {other}")
-                        else:
-                            # Under the governor a cooling device narrows the
-                            # range the governor picks from.
-                            hot = {k: v for k, v in after["thermal"]["cooling"].items() if v}
-                            if hot:
-                                failures.append(f"cooling after {hot}")
-                        record = {"scene": scene["name"], "pair": pair, "side": side,
-                                  "run_id": run_id, "report_sha256": sha256(local),
-                                  "before": before, "after": after, "failures": failures}
-                        with (self.out / RUNS).open("a") as stream:
-                            stream.write(json.dumps(record) + "\n")
-                        print("RUN", run_id, "invalid: " + "; ".join(failures) if failures
-                              else "valid", flush=True)
-                        if failures:
-                            raise ControlError(f"{run_id}: {'; '.join(failures)}")
+                        self.invocation(scene, pair, side)
             control["completed"] = True
         finally:
             self.device.root(f"rm -r {self.remote}")
             if self.pinned:
                 self.restore(original, control)
+            save(self.out / CONTROL, control)
+
+    def invocation(self, scene: dict[str, Any], pair: int, side: str) -> None:
+        """Measures one invocation between its controls and logs it; a
+        failed control stops the collection."""
+        run_id = f"{scene['name']}-p{pair}-{side}"
+        before = self.quiet(pinned=self.pinned is not None)
+        residency_before = self.clocks.cpu_residency()
+        local = self.measure(scene, side, run_id)
+        residency = {name: {khz: ticks - residency_before[name].get(khz, 0)
+                            for khz, ticks in table.items()}
+                     for name, table in self.clocks.cpu_residency().items()}
+        after = {"thermal": thermal(self.device), "clocks": self.clocks.state(),
+                 "cpu_residency_ticks": {name: {k: v for k, v in table.items() if v}
+                                         for name, table in residency.items()}}
+        failures = self.check_report(local)
+        if after["thermal"]["status"] >= THERMAL_STATUS_BELOW:
+            failures.append(f"thermal status {after['thermal']['status']} after")
+        if self.pinned:
+            # What a pinned run controls is the clocks: a cooling device
+            # that moved none leaves the run valid. Each range is checked
+            # after the run, and each CPU policy's residency over the whole
+            # process.
+            for name, khz in self.pinned.items():
+                state = after["clocks"][name]
+                if state["min"] != khz or state["max"] != khz:
+                    failures.append(f"{name} policy after {state}")
+                other = {k: v for k, v in residency.get(name, {}).items() if k != khz and v}
+                if other:
+                    failures.append(f"{name} left {khz} kHz: {other}")
+        else:
+            # Under the governor a cooling device narrows the range the
+            # governor picks from.
+            hot = {k: v for k, v in after["thermal"]["cooling"].items() if v}
+            if hot:
+                failures.append(f"cooling after {hot}")
+        record = {"scene": scene["name"], "pair": pair, "side": side, "run_id": run_id,
+                  "report_sha256": sha256(local), "before": before, "after": after,
+                  "failures": failures}
+        with (self.out / RUNS).open("a") as stream:
+            stream.write(json.dumps(record) + "\n")
+        print("RUN", run_id, "invalid: " + "; ".join(failures) if failures else "valid",
+              flush=True)
+        if failures:
+            raise ControlError(f"{run_id}: {'; '.join(failures)}")
 
     def restore(self, original: dict[str, Any], control: dict[str, Any]) -> None:
         """Writes the original policy limits back, then verifies them once
@@ -436,25 +593,25 @@ def quantile(values: list[float], q: float) -> float:
     return ordered[math.ceil(q * len(ordered)) - 1]
 
 
-def median_change(arms: dict[str, list[list[float]]]) -> float:
-    """The change of the median invocation GPU p50, head against base, in
-    percent."""
-    medians = {side: statistics.median(quantile(run, 0.5) for run in runs)
+def median_change(arms: dict[str, list[list[float]]], q: float = 0.5) -> float:
+    """The change of the median invocation quantile `q` (the p50 unless
+    given), head against base, in percent."""
+    medians = {side: statistics.median(quantile(run, q) for run in runs)
                for side, runs in arms.items()}
     return (medians["head"] / medians["base"] - 1) * 100
 
 
-def change_interval(arms: dict[str, list[list[float]]],
-                    rng: random.Random) -> tuple[float, float]:
+def change_interval(arms: dict[str, list[list[float]]], rng: random.Random,
+                    q: float = 0.5) -> tuple[float, float]:
     """The 95% interval of `median_change` by a hierarchical bootstrap:
     each resample draws an arm's invocations with replacement, then each
     drawn invocation's frames with replacement, so both the spread between
-    processes and the sampling error of a p50 over a finite frame count
+    processes and the sampling error of a quantile over a finite frame count
     widen it."""
     changes = sorted(
         median_change({side: [rng.choices(run, k=len(run))
                               for run in rng.choices(runs, k=len(runs))]
-                       for side, runs in arms.items()})
+                       for side, runs in arms.items()}, q)
         for _ in range(BOOTSTRAP_RESAMPLES))
     tail = round(BOOTSTRAP_RESAMPLES * 0.025)
     return changes[tail], changes[-tail - 1]
@@ -471,12 +628,30 @@ def decide(change: float, low: float, high: float, limit_percent: float) -> str:
     return "fail" if change > limit_percent else "pass"
 
 
+def phase_gap(reports: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    """Per arm, what the CPU backend's phases leave of each frame's
+    `submit`, in milliseconds and as a share of that submit: its p50, p99
+    and maximum over every measured frame."""
+    out = {}
+    for side, runs in reports.items():
+        gaps, shares = [], []
+        for report in runs:
+            for sample in report["samples"]:
+                submit = sample["submit_seconds"]
+                gap = submit - sum(phase(sample, name) for name in CPU_PHASES)
+                gaps.append(gap * 1000)
+                shares.append(gap / submit * 100)
+        out[side] = {"ms": [quantile(gaps, 0.5), quantile(gaps, 0.99), max(gaps)],
+                     "percent_of_submit": [quantile(shares, 0.5), quantile(shares, 0.99),
+                                           max(shares)]}
+    return out
+
+
 def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]:
     plan = json.loads((out / PLAN).read_text())
     control = json.loads((out / CONTROL).read_text())
     runs = [json.loads(line) for line in (out / RUNS).read_text().splitlines()]
     pinned = plan["clocks"] != "governor"
-    unit, value = METRICS[plan["metric"]]
     result: dict[str, Any] = {"plan": plan, "completed": control["completed"], "scenes": {}}
     for scene in plan["scenes"]:
         name = scene["name"]
@@ -490,29 +665,41 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
             entry["missing_runs"] = expected - len(rows)
             result["scenes"][name] = entry
             continue
-        arms: dict[str, dict[str, list[float]]] = {"base": {"p50": [], "p99": []},
-                                                    "head": {"p50": [], "p99": []}}
-        frames: dict[str, list[list[float]]] = {"base": [], "head": []}
+        reports: dict[str, list[dict[str, Any]]] = {"base": [], "head": []}
         for row in sorted(rows, key=lambda r: r["pair"]):
-            report = json.loads((out / f"{row['run_id']}.json").read_text())
-            if sha256(out / f"{row['run_id']}.json") != row["report_sha256"]:
+            path = out / f"{row['run_id']}.json"
+            if sha256(path) != row["report_sha256"]:
                 raise SystemExit(f"{row['run_id']}.json changed after collection")
-            values = [value(s) for s in report["samples"]]
-            if len(values) != plan["frames"] or report["warmup_frames"] != plan["warmup"]:
+            report = json.loads(path.read_text())
+            if len(report["samples"]) != plan["frames"] or report["warmup_frames"] != plan["warmup"]:
                 raise SystemExit(f"{row['run_id']}: frame counts differ from the plan")
-            frames[row["side"]].append(values)
-            arms[row["side"]]["p50"].append(quantile(values, 0.5))
-            arms[row["side"]]["p99"].append(quantile(values, 0.99))
-        change = median_change(frames)
-        low, high = change_interval(frames, random.Random(name))
-        entry.update({"metric": plan["metric"], "unit": unit, "per_invocation": arms,
+            reports[row["side"]].append(report)
+        entry["metrics"] = {}
+        for metric in plan["metrics"]:
+            unit, value = METRICS[metric]
+            frames = {side: [[value(s) for s in report["samples"]] for report in side_reports]
+                      for side, side_reports in reports.items()}
+            per_invocation = {side: {"p50": [quantile(run, 0.5) for run in runs_],
+                                     "p99": [quantile(run, 0.99) for run in runs_]}
+                              for side, runs_ in frames.items()}
+            change = median_change(frames)
+            low, high = change_interval(frames, random.Random(f"{name}/{metric}"))
+            p99_low, p99_high = change_interval(frames, random.Random(f"{name}/{metric}/p99"),
+                                                0.99)
+            judged = {"unit": unit, "per_invocation": per_invocation,
                       "change_percent": change, "interval_percent": [low, high],
-                      "worst_p99": {side: max(v["p99"]) for side, v in arms.items()}})
-        if pinned:
-            entry["verdict"] = decide(change, low, high, limit_percent)
-        else:
-            entry["verdict"] = "within budget" if entry["worst_p99"]["head"] <= budget_ms \
-                else "over budget"
+                      "p99_change_percent": median_change(frames, 0.99),
+                      "p99_interval_percent": [p99_low, p99_high],
+                      "worst_p99": {side: max(v["p99"]) for side, v in per_invocation.items()}}
+            if pinned:
+                judged["verdict"] = decide(change, low, high, limit_percent)
+            else:
+                judged["verdict"] = "within budget" if judged["worst_p99"]["head"] <= budget_ms \
+                    else "over budget"
+            entry["metrics"][metric] = judged
+        entry["verdict"] = entry["metrics"][plan["metrics"][0]]["verdict"]
+        if plan["engine"] == "cherenkov-cpu":
+            entry["phase_gap"] = phase_gap(reports)
         result["scenes"][name] = entry
     return result
 
@@ -527,6 +714,12 @@ def main() -> None:
     run.add_argument("--scene", type=Path, action="append", required=True)
     run.add_argument("--out", type=Path, required=True)
     run.add_argument("--serial", required=True)
+    run.add_argument("--engine", choices=[GPU_ENGINE, *CPU_ENGINES], default=GPU_ENGINE)
+    run.add_argument("--workers", type=int)
+    run.add_argument("--cpus")
+    run.add_argument("--cluster-khz", action="append", default=[],
+                     type=lambda text: (text.split("=", 1)[0], int(text.split("=", 1)[1])),
+                     metavar="POLICY=KHZ")
     run.add_argument("--governor", action="store_true")
     run.add_argument("--gpu-counters", action="store_true")
     run.add_argument("--gpu-khz", type=int, default=649000)
@@ -535,6 +728,7 @@ def main() -> None:
     run.add_argument("--frames", type=int, default=120)
     run.add_argument("--warmup", type=int, default=10)
     run.add_argument("--width", type=int, default=1280)
+    run.add_argument("--run-seconds", type=int, default=300)
     run.add_argument("--battery-c", type=float, default=45.0)
     run.add_argument("--cool-seconds", type=float, default=600.0)
     report = commands.add_parser("analyze")
@@ -546,6 +740,20 @@ def main() -> None:
         if args.governor and args.gpu_counters:
             parser.error("--gpu-counters measures cost at pinned clocks; --governor measures "
                          "the frame budget")
+        engine = CPU_ENGINES.get(args.engine)
+        if engine is None:
+            if args.workers is not None or args.cpus is not None or args.cluster_khz:
+                parser.error("--workers, --cpus and --cluster-khz select a CPU engine's cells")
+        else:
+            if args.governor or args.gpu_counters:
+                parser.error("a CPU engine is measured at pinned CPU clocks, without GPU counters")
+            if args.workers is None or args.cpus is None or not args.cluster_khz:
+                parser.error("a CPU engine needs --workers, --cpus and --cluster-khz")
+            if args.workers < 1 or (engine.max_workers is not None
+                                    and args.workers > engine.max_workers):
+                parser.error(f"{args.engine} runs at 1 to {engine.max_workers or 'any'} workers")
+            if len(dict(args.cluster_khz)) != len(args.cluster_khz):
+                parser.error("--cluster-khz names a policy twice")
         if args.rounds < 2 or args.rounds % 2:
             parser.error("--rounds must be even, so each arm runs first equally often")
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(124))
@@ -556,13 +764,20 @@ def main() -> None:
         result = analyze(args.out, args.limit_percent, args.budget_ms)
         save(args.out / "analysis.json", result)
         for name, entry in result["scenes"].items():
-            change = entry.get("change_percent")
-            if change is None:
+            if "metrics" not in entry:
                 print(f"{name}: {entry['verdict']}")
-            else:
-                low, high = entry["interval_percent"]
-                print(f"{name}: {entry['verdict']} ({change:+.3f}%, 95% interval "
-                      f"{low:+.3f}% to {high:+.3f}%)")
+                continue
+            for metric, judged in entry["metrics"].items():
+                low, high = judged["interval_percent"]
+                p99_low, p99_high = judged["p99_interval_percent"]
+                print(f"{name} {metric}: {judged['verdict']} ({judged['change_percent']:+.3f}%, "
+                      f"95% interval {low:+.3f}% to {high:+.3f}%; p99 "
+                      f"{judged['p99_change_percent']:+.3f}%, {p99_low:+.3f}% to {p99_high:+.3f}%)")
+            if "phase_gap" in entry:
+                for side, gap in entry["phase_gap"].items():
+                    print(f"{name} {side} submit outside the phases: p50 {gap['ms'][0]:.3f} ms "
+                          f"({gap['percent_of_submit'][0]:.2f}%), p99 {gap['ms'][1]:.3f} ms "
+                          f"({gap['percent_of_submit'][1]:.2f}%), max {gap['ms'][2]:.3f} ms")
 
 
 if __name__ == "__main__":

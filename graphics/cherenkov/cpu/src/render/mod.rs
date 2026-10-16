@@ -8,6 +8,7 @@ mod blend;
 mod colr;
 mod filter;
 mod font;
+mod geometry;
 mod glyph;
 mod image;
 mod mesh;
@@ -113,6 +114,9 @@ pub struct RasterRenderer {
     glyph_cache: glyph::GlyphCache,
     /// Decoded colour-font bitmaps, bounded by `Budget::cpu`.
     bitmap_cache: bitmap::BitmapCache,
+    /// Swept fill and stroke geometry offered by realizations dropped or
+    /// rebuilt this frame; empty between frames.
+    geometry: geometry::GeometryCache,
     /// Bumped on every image replacement: the one change to what a
     /// current projective image read that arrives without a tree edit.
     /// A removal only runs once no installed content draws the image
@@ -161,6 +165,7 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     image_budget: config.budget.cpu.0,
                     glyph_cache: glyph::GlyphCache::new(config.budget.cpu.0),
                     bitmap_cache: bitmap::BitmapCache::new(config.budget.cpu.0),
+                    geometry: geometry::GeometryCache::default(),
                     image_replacements: 0,
                     frame_count: 0,
                 },
@@ -460,7 +465,10 @@ impl Renderer for RasterRenderer {
             Some(ContentOp::Replace(list)) => state
                 .layers
                 .insert(layer, ContentData::new(list))
-                .map(cherenkov::lowering::Content::into_picture),
+                .map(|previous| {
+                    lower::harvest(&mut self.geometry, &previous);
+                    previous.into_picture()
+                }),
             Some(ContentOp::Update(updates)) => {
                 state
                     .layers
@@ -472,7 +480,10 @@ impl Renderer for RasterRenderer {
             Some(ContentOp::Picture(picture)) => state
                 .layers
                 .insert(layer, ContentData::picture(picture))
-                .map(cherenkov::lowering::Content::into_picture),
+                .map(|previous| {
+                    lower::harvest(&mut self.geometry, &previous);
+                    previous.into_picture()
+                }),
             None => state
                 .layers
                 .remove(&layer)
@@ -577,6 +588,7 @@ impl Renderer for RasterRenderer {
         categories.images = self.images.values().map(|image| image.bytes()).sum();
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
         categories.bitmaps = self.bitmap_cache.bytes();
+        categories.geometry = self.geometry.bytes();
         categories.projective = self.projective_bytes();
         tracing::debug!(
             target: "cherenkov_cpu::memory",
@@ -587,6 +599,7 @@ impl Renderer for RasterRenderer {
             glyphs = categories.glyphs,
             colr = categories.colr,
             bitmaps = categories.bitmaps,
+            geometry = categories.geometry,
             projective = categories.projective,
             "memory usage",
         );
@@ -623,6 +636,7 @@ impl Renderer for RasterRenderer {
             self.fonts.shrink_to_fit();
             self.glyph_cache.clear();
             self.bitmap_cache.clear();
+            self.geometry.clear();
             for surface in self.surfaces.values_mut() {
                 for content in surface.layers.values_mut() {
                     content.trim();
@@ -663,6 +677,7 @@ impl RasterRenderer {
         }
         let (used, used_groups) = self.filter_uses();
         self.evict_projective();
+        self.geometry.finish_frame();
         self.filters.finish_frame(&used, &used_groups);
         self.update_filter_wakes();
         // Every visible surface whose filter or backdrop group still
@@ -740,7 +755,8 @@ impl RasterRenderer {
         self.glyph_cache
             .set_budget(available.saturating_sub(self.bitmap_cache.bytes()));
     }
-    /// Lowers and rasterizes one surface's frame.
+    /// Lowers and rasterizes one surface's frame, adding the time of each
+    /// phase to `stats.phases`.
     #[expect(
         clippy::many_single_char_names,
         reason = "w/h and r/g/b/a are the natural names"
@@ -751,8 +767,7 @@ impl RasterRenderer {
         frame: cherenkov::FrameId,
         stats: &mut FrameStats,
     ) -> Result<(), RenderError> {
-        let profile = tracing::enabled!(target: "cherenkov_cpu::profile", tracing::Level::DEBUG);
-        let start = profile.then(cherenkov::Instant::now);
+        let phases = stats.phases;
         let id = sf.id;
         let size = match self.surfaces.get(&id) {
             Some(surf) => surf.size,
@@ -760,7 +775,7 @@ impl RasterRenderer {
         };
         let (projected, mut used) = self.realize_projective(sf, frame, stats)?;
         let mut items: Vec<Item> = Vec::new();
-        let (glyph_reqs, lowered_at) = self.lower_items(
+        let glyph_reqs = self.lower_items(
             sf,
             &mut items,
             size,
@@ -773,7 +788,6 @@ impl RasterRenderer {
             surf.filters = used.filters.into_iter().collect();
             surf.groups = used.groups.into_iter().collect();
         }
-        let resolved_at = start.map(|_| cherenkov::Instant::now());
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
         };
@@ -783,6 +797,7 @@ impl RasterRenderer {
         let pool = &self.pool;
         let peak = std::sync::atomic::AtomicU64::new(0);
         let has_backdrop = !surf.groups.is_empty();
+        let shade_at = cherenkov::Instant::now();
         let (draws, edges) = match &mut surf.output {
             Output::F32(fb) => pool.install(|| {
                 raster::render_bands(&items, clear, fb, w, h, Some(&peak), has_backdrop)
@@ -801,14 +816,13 @@ impl RasterRenderer {
                 has_backdrop,
             )?,
         };
+        stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
         surf.backdrop_capture_peak = peak.load(std::sync::atomic::Ordering::Relaxed);
-        if let (Some(start), Some(lowered), Some(resolved)) = (start, lowered_at, resolved_at) {
-            tracing::debug!(target: "cherenkov_cpu::profile",
-                lower_ns = lowered.duration_since(start).as_nanos(),
-                glyph_ns = resolved.duration_since(lowered).as_nanos(),
-                shade_ns = resolved.elapsed().as_nanos(),
-                items = items.len(), glyphs = glyph_reqs, "raster phases");
-        }
+        tracing::debug!(target: "cherenkov_cpu::profile",
+            lower_s = stats.phases.lower_seconds - phases.lower_seconds,
+            glyph_s = stats.phases.glyph_seconds - phases.glyph_seconds,
+            shade_s = stats.phases.shade_seconds - phases.shade_seconds,
+            items = items.len(), glyphs = glyph_reqs, "raster phases");
         stats.draws += draws;
         stats.instances += edges;
         stats.passes += u32::try_from(h.div_ceil(raster::BAND_H)).unwrap_or(u32::MAX);
@@ -818,9 +832,9 @@ impl RasterRenderer {
     /// Lowers the tree into `items` for a raster of `size` — the surface,
     /// or with `local` a projective layer's local image — placing nested
     /// projective images from `projected`, then fills every glyph slot the
-    /// items read. Returns the glyph request count and the instant
-    /// lowering finished, before glyph resolution; the filters and
-    /// backdrop groups the items use are added to `used`.
+    /// items read. Returns the glyph request count; the filters and
+    /// backdrop groups the items use are added to `used`, and the time of
+    /// each step to `stats.phases` (`lower_seconds`, `glyph_seconds`).
     #[expect(
         clippy::too_many_arguments,
         reason = "one lowering's inputs travel together"
@@ -837,7 +851,8 @@ impl RasterRenderer {
             FxHashMap<LayerId, projective::Placed>,
         ),
         used: &mut projective::Used,
-    ) -> Result<(usize, Option<cherenkov::Instant>), RenderError> {
+    ) -> Result<usize, RenderError> {
+        let lower_at = cherenkov::Instant::now();
         let id = sf.id;
         let glyph_reqs;
         let glyphs_rasterized;
@@ -845,7 +860,7 @@ impl RasterRenderer {
         // before glyph resolution touches `self.fonts`/`self.glyph_cache`.
         let lowered = {
             let Some(surf) = self.surfaces.get_mut(&id) else {
-                return Ok((0, None));
+                return Ok(0);
             };
             let mut caches = std::mem::take(&mut surf.layers);
             let mut lowering = Lowering::new(
@@ -855,7 +870,7 @@ impl RasterRenderer {
                 frame,
                 &mut self.fonts,
                 &self.bitmap_fonts,
-                &mut self.bitmap_cache,
+                (&mut self.bitmap_cache, &mut self.geometry),
             );
             lowering.project(local, projected);
             let result = lowering.run(id, sf.tree, &mut caches, &self.images);
@@ -872,10 +887,11 @@ impl RasterRenderer {
         if glyphs_rasterized > 0 {
             self.refresh_cache_budgets();
         }
-        let lowered_at = tracing::enabled!(target: "cherenkov_cpu::profile", tracing::Level::DEBUG)
-            .then(cherenkov::Instant::now);
+        let glyph_at = cherenkov::Instant::now();
+        stats.phases.lower_seconds += glyph_at.duration_since(lower_at).as_secs_f64();
         self.resolve_glyphs(&glyph_reqs)?;
-        Ok((glyph_reqs.len(), lowered_at))
+        stats.phases.glyph_seconds += glyph_at.elapsed().as_secs_f64();
+        Ok(glyph_reqs.len())
     }
 
     /// Realizes every visible projective layer's local image, innermost
@@ -939,6 +955,7 @@ impl RasterRenderer {
                     (Some((plan.layer, layout.local_to_texel)), nested),
                     &mut local_used,
                 )?;
+                let shade_at = cherenkov::Instant::now();
                 let (w, h) = (layout.size.0 as usize, layout.size.1 as usize);
                 let mut base = vec![[0.0_f32; 4]; w * h];
                 let has_backdrop = !local_used.groups.is_empty();
@@ -949,6 +966,7 @@ impl RasterRenderer {
                 stats.instances += edges;
                 stats.passes += u32::try_from(h.div_ceil(raster::BAND_H)).unwrap_or(u32::MAX);
                 let image = Arc::new(projective::ProjectedImage::build(&base, layout.size));
+                stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
                 stats.projective_realized += 1;
                 let entry = projective::Entry {
                     key,

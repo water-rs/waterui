@@ -289,7 +289,7 @@ impl RetainedSubview {
         &self,
         state: &mut HydroState,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> Size {
         self.expect_built("measure_built")
             .node
@@ -305,7 +305,7 @@ impl RetainedSubview {
         &self,
         state: &mut HydroState,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> Size {
         self.expect_built("measure_built_with_proposal")
@@ -805,7 +805,7 @@ pub trait WidgetBehavior {
         state: &mut HydroState,
         proposal: ProposalSize,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> ViewDimensions;
 
     /// Runs the leaf's layout-time prepare step: applying theme paint that

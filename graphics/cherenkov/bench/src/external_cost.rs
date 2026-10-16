@@ -1196,25 +1196,13 @@ pub(crate) fn run(args: &ExternalCostArgs) -> Result<(), BenchError> {
         if frame < warmup {
             warmup_snapshots.push(memory_snapshot(&engine, &shared, SampleDetail::Frame));
         } else {
-            let phases = stats.phases;
             samples.push(CostSample {
                 encode_seconds: t1.duration_since(t0).as_secs_f64(),
                 submit_seconds: t2.duration_since(t1).as_secs_f64(),
                 gpu_seconds: None,
                 handoff_seconds: None,
                 convert_seconds: None,
-                phases: [
-                    ("lower", phases.lower_seconds),
-                    ("encode", phases.encode_seconds),
-                    ("stamp", phases.stamp_seconds),
-                    ("wait", phases.wait_seconds),
-                ]
-                .into_iter()
-                .map(|(name, seconds)| PhaseSample {
-                    name: name.to_string(),
-                    seconds,
-                })
-                .collect(),
+                phases: crate::cherenkov_ad::phase_samples(&stats.phases),
             });
         }
     }
