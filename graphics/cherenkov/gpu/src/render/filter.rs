@@ -111,6 +111,10 @@ where
     fn retained_memory(&self) -> RetainedMemory {
         Effect::retained_memory(&self.0)
     }
+
+    fn trim(&mut self) {
+        Effect::trim(&mut self.0);
+    }
 }
 
 /// A registered filter's identity: a layer filter or a backdrop group's
@@ -156,6 +160,11 @@ pub trait Runnable {
     /// registry's per-size input/output targets are the registry's, not
     /// the effect's, and count elsewhere.
     fn retained_memory(&self) -> RetainedMemory;
+    /// Drops the retained targets the effect's next encode recreates —
+    /// a chain's intermediates. Auxiliary images stay: the effect cannot
+    /// recreate them without its inputs. Called under memory pressure
+    /// with the registry's own target drop.
+    fn trim(&mut self);
 }
 
 impl<E: Effect> Runnable for E {
@@ -186,6 +195,9 @@ impl<E: Effect> Runnable for E {
     }
     fn retained_memory(&self) -> RetainedMemory {
         Effect::retained_memory(self)
+    }
+    fn trim(&mut self) {
+        Effect::trim(self);
     }
 }
 
@@ -514,14 +526,19 @@ impl Registry {
     }
 
     /// Drops every entry's input/output targets — grow-only caches the
-    /// renderer releases explicitly outside the hot frame path (#169 A4).
-    /// Returns the freed bytes for diagnostics.
+    /// renderer releases explicitly outside the hot frame path (#169 A4) —
+    /// and tells each effect to drop the retained targets its next encode
+    /// recreates, such as a chain's intermediates. Returns the freed io
+    /// bytes for diagnostics; the effect's own targets are not included:
+    /// the allocation diagnostic never recorded them growing, so it must
+    /// not record them being retired.
     pub(super) fn trim(&mut self) -> u64 {
         let mut bytes = 0;
         for entry in self.entries.values_mut() {
             for (_, targets) in std::mem::take(&mut entry.io) {
                 bytes += targets.bytes();
             }
+            entry.effect.trim();
         }
         bytes
     }

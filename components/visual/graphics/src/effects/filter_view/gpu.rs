@@ -45,6 +45,8 @@ pub trait ErasedEffect {
     fn redraw_hint(&self) -> bool;
     /// Device-resident bytes the effect itself retains between frames.
     fn retained_memory(&self) -> RetainedMemory;
+    /// Drops the retained targets the effect's next encode can recreate.
+    fn trim(&mut self);
 }
 
 impl<E: Effect> ErasedEffect for E {
@@ -75,6 +77,10 @@ impl<E: Effect> ErasedEffect for E {
 
     fn retained_memory(&self) -> RetainedMemory {
         Effect::retained_memory(self)
+    }
+
+    fn trim(&mut self) {
+        Effect::trim(self);
     }
 }
 
@@ -165,6 +171,10 @@ impl<E: Effect> Effect for OutputSizedEffect<E> {
 
     fn retained_memory(&self) -> RetainedMemory {
         self.effect.retained_memory()
+    }
+
+    fn trim(&mut self) {
+        self.effect.trim();
     }
 }
 

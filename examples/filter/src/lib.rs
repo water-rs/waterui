@@ -411,6 +411,8 @@ impl Effect for FillEffect {
     fn retained_memory(&self) -> RetainedMemory {
         RetainedMemory::default()
     }
+
+    fn trim(&mut self) {}
 }
 
 /// A custom `Effect` over a view.

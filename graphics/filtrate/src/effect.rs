@@ -452,4 +452,17 @@ pub trait Effect: 'static {
     /// [`RetainedMemory::default()`], and a wrapper forwards its inner
     /// effect's value, so no retained resource goes unreported.
     fn retained_memory(&self) -> RetainedMemory;
+
+    /// Drops every render target the effect retains between frames that
+    /// its next encode can recreate, such as a multi-pass chain's
+    /// intermediates. It keeps what it cannot recreate without its
+    /// inputs, such as auxiliary images it uploaded. After `trim`,
+    /// [`RetainedMemory::targets`] in [`Self::retained_memory`] reports
+    /// `0`. A host calls it under memory pressure.
+    ///
+    /// There is no default, for the same reason as
+    /// [`retained_memory`](Self::retained_memory): an effect that
+    /// retains no targets states an empty body, and a wrapper forwards
+    /// to its inner effect, so no retained target survives a trim.
+    fn trim(&mut self);
 }

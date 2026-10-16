@@ -144,6 +144,8 @@ impl Effect for CopyTextureEffect {
     fn retained_memory(&self) -> RetainedMemory {
         RetainedMemory::default()
     }
+
+    fn trim(&mut self) {}
 }
 
 #[derive(Clone)]
