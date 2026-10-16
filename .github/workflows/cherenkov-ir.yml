@@ -26,10 +26,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: cherenkov-ir-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
-
 jobs:
   instructions:
     if: >-
@@ -37,6 +33,11 @@ jobs:
       (contains(github.event.pull_request.labels.*.name, 'cherenkov-ir') &&
        (github.event.action != 'labeled' || github.event.label.name == 'cherenkov-ir'))
     runs-on: ubuntu-24.04
+    # Job-level, so an event the `if` skips (another label) never cancels
+    # a running measurement.
+    concurrency:
+      group: cherenkov-ir-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: true
     timeout-minutes: 60
     env:
       CARGO_TERM_COLOR: always
