@@ -458,6 +458,10 @@ const COVERAGE: Fixed = Fixed {
             workgroup_size: (64, 1, 1),
         },
         wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("fill_cells"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("emit_args"),
             workgroup_size: (64, 1, 1),
         },

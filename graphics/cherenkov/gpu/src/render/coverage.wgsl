@@ -760,15 +760,47 @@ fn emit_span(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, sy: u32, s
     emit_instance(pi, slot, b, vec2<u32>(0u), KIND_SPAN, 0u);
 }
 
+// Classification only reserves a cell's instance slot and texel words;
+// `fill_cells` writes the texels with one invocation per cell, so a strip's
+// cells no longer serialize behind its owner invocation.
 fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y1: u32, interior: u32) {
     let slot = atomicAdd(&paths[path_i].atom[4], 1u);
     let cw = x1 - x0;
-    let ch = y1 - y0;
-    let interior_start = interior & 65535u;
-    let interior_end = interior >> 16u;
-    let stored_width = cw - (interior_end - interior_start);
-    let words = (stored_width * ch + 3u) / 4u;
+    let stored_width = cw - ((interior >> 16u) - (interior & 65535u));
+    let words = (stored_width * (y1 - y0) + 3u) / 4u;
     let tex_off = atomicAdd(&paths[path_i].atom[6], words);
+    let b = vec4<f32>(rect.x + f32(x0), rect.y + f32(y0), rect.x + f32(x1), rect.y + f32(y1));
+    emit_instance(pi, slot, b, vec2<u32>(paths[pi].texel_base + tex_off, cw), KIND_GLYPH, interior);
+}
+
+// One invocation per reserved instance slot. A cell's geometry is read back
+// from its instance exactly as the raster decodes it, so the texels land
+// where the fetch reads them; spans and unused slots return at once.
+@compute @workgroup_size(64)
+fn fill_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = invocation(gid);
+    var lo = 0u;
+    var hi = params.path_count;
+    while lo + 1u < hi {
+        let mid = (lo + hi) / 2u;
+        if paths[mid].inst_base <= i { lo = mid; } else { hi = mid; }
+    }
+    let pi = lo;
+    if i - paths[pi].inst_base >= atomicLoad(&paths[pi].atom[4]) { return; }
+    let dst = (params.inst_origin + i) * 17u;
+    if instances[dst + 16u].x == KIND_SPAN { return; }
+    let rect = grid_rect(pi);
+    let bounds = bitcast<vec4<f32>>(instances[dst + 2u]);
+    let x0 = u32(bounds.x - rect.x);
+    let y0 = u32(bounds.y - rect.y);
+    let ch = u32(bounds.w - rect.y) - y0;
+    let origin = bitcast<vec2<f32>>(instances[dst + 14u].xy);
+    let interior = bitcast<vec2<f32>>(instances[dst + 3u].xy);
+    let interior_start = u32(interior.x);
+    let interior_end = u32(interior.y);
+    let stored_width = u32(origin.y) - (interior_end - interior_start);
+    let tex = u32(origin.x);
+    let words = (stored_width * ch + 3u) / 4u;
     // Each row walks sparse boundary groups once, including jumps over the
     // implicit full interval. No global binary search is needed per texel.
     var previous_row = 0xffffffffu;
@@ -809,10 +841,8 @@ fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y
                 packed |= q << (lane * 8u);
             }
         }
-        texels[paths[pi].texel_base + tex_off + word] = packed;
+        texels[tex + word] = packed;
     }
-    let b = vec4<f32>(rect.x + f32(x0), rect.y + f32(y0), rect.x + f32(x1), rect.y + f32(y1));
-    emit_instance(pi, slot, b, vec2<u32>(paths[pi].texel_base + tex_off, cw), KIND_GLYPH, interior);
 }
 
 // ---- indirect arguments ----------------------------------------------------

@@ -92,6 +92,7 @@ struct Pipes {
     prefix: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
     classify: wgpu::ComputePipeline,
+    fill_cells: wgpu::ComputePipeline,
     emit_args: wgpu::ComputePipeline,
 }
 
@@ -582,6 +583,8 @@ impl GpuCoverage {
             dispatch(&mut pass, self.fragment_total);
             pass.set_pipeline(&pipes.classify);
             dispatch(&mut pass, strip_total);
+            pass.set_pipeline(&pipes.fill_cells);
+            dispatch(&mut pass, self.inst_total);
             pass.set_pipeline(&pipes.emit_args);
             dispatch(
                 &mut pass,
@@ -634,6 +637,7 @@ impl GpuCoverage {
             prefix: make("prefix"),
             integrate: make("integrate"),
             classify: make("classify"),
+            fill_cells: make("fill_cells"),
             emit_args: make("emit_args"),
         });
         self.layout = Some(layout);
