@@ -10053,9 +10053,9 @@ impl GpuRenderer {
 /// its upload.
 #[cfg_attr(
     target_arch = "wasm32",
-    expect(
+    allow(
         clippy::future_not_send,
-        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+        reason = "the browser engine runs this future on the page's event loop; whether wgpu's handles are Send on wasm32 depends on the backends the build enables"
     )
 )]
 async fn upload_image(
@@ -10102,9 +10102,9 @@ async fn upload_image(
 /// staging memory; the texture keeps its previous texels.
 #[cfg_attr(
     target_arch = "wasm32",
-    expect(
+    allow(
         clippy::future_not_send,
-        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+        reason = "the browser engine runs this future on the page's event loop; whether wgpu's handles are Send on wasm32 depends on the backends the build enables"
     )
 )]
 async fn write_image(
