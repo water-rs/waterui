@@ -48,6 +48,8 @@ impl Effect for CopyEffect {
     fn retained_memory(&self) -> filtrate::RetainedMemory {
         filtrate::RetainedMemory::default()
     }
+
+    fn trim(&mut self) {}
 }
 
 split_test! {
@@ -254,6 +256,8 @@ impl Effect for ObservedEffect {
     fn retained_memory(&self) -> filtrate::RetainedMemory {
         filtrate::RetainedMemory::default()
     }
+
+    fn trim(&mut self) {}
 }
 
 split_test! {
