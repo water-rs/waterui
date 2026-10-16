@@ -15,7 +15,7 @@ use waterui_core::id::SelfId;
 
 #[test]
 fn exiting_member_leaves_the_semantic_tree_immediately_but_holds_its_slot() {
-    let rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1), SelfId::new(2)]);
+    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1), SelfId::new(2)]);
     let view_rows = rows.clone();
     let mut app = ui()
         .viewport(240, 160)

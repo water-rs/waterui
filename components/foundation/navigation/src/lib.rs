@@ -1237,13 +1237,13 @@ fn subscribe_navigation_path<R: Clone + 'static>(
     same: impl Fn(&R, &R) -> bool + 'static,
     build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
 ) -> impl nami::watcher::WatcherGuard {
-    let current_path = Rc::new(RefCell::new(Vec::new()));
+    let current_path = RefCell::new(Vec::new());
     // A path write issued while a reconcile still runs lands here
     // re-entrantly; queue it and let the dispatch in flight drain it once the
     // current reconcile returns, keeping snapshots in order.
     let pending = SerialDispatch::new();
     let receiver = receiver.clone();
-    path.watch(move |next_path| {
+    let reconcile = Rc::new(move |next_path: Vec<R>| {
         pending.deliver(next_path, |next_path| {
             reconcile_navigation_path(
                 &receiver,
@@ -1253,7 +1253,11 @@ fn subscribe_navigation_path<R: Clone + 'static>(
                 &build,
             );
         });
-    })
+    });
+    // Subscribing delivers nothing: the path's current routes are the
+    // controller's starting stack.
+    reconcile(path.snapshot());
+    path.watch(move |next_path| reconcile(next_path))
 }
 
 /// Shared body of every path-backed stack: publish the `Navigator`, install the

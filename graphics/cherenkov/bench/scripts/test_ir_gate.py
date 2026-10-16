@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """The Ir gate's sampling over hand-made Callgrind dumps (testdata/ir_gate)."""
 import importlib.util
+import hashlib
+import json
 import pathlib
+import tempfile
 import unittest
 from unittest import mock
 
@@ -12,6 +15,79 @@ SPEC.loader.exec_module(ir_gate)
 
 DATA = SOURCE / 'testdata' / 'ir_gate'
 ROOT = '_RNvCs1_5bench4root'
+
+
+class Host(unittest.TestCase):
+    def write_icd(self, directory, name, library='libvulkan_lvp.so'):
+        path = directory / name
+        path.write_text(json.dumps({'file_format_version': '1.0.0',
+                                    'ICD': {'library_path': library, 'api_version': '1.3.0'}}))
+        return path
+
+    def test_selects_library_independently_of_manifest_filename(self):
+        for name in ('lvp_icd.json', 'lvp_icd.x86_64.json', 'lvp_icd.aarch64.json'):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as root:
+                directory = pathlib.Path(root)
+                chosen = self.write_icd(directory, name)
+                self.write_icd(directory, 'intel.json', 'libvulkan_intel.so')
+                self.assertEqual(ir_gate.lavapipe_icd(directories=[directory]), chosen.resolve())
+
+    def test_missing_or_ambiguous_driver_requires_explicit_selection(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = pathlib.Path(root)
+            with self.assertRaisesRegex(RuntimeError, '--icd'):
+                ir_gate.lavapipe_icd(directories=[directory])
+            chosen = self.write_icd(directory, 'one.json')
+            self.write_icd(directory, 'two.json')
+            with self.assertRaisesRegex(RuntimeError, '--icd'):
+                ir_gate.lavapipe_icd(directories=[directory])
+            self.assertEqual(ir_gate.lavapipe_icd(chosen, [directory]), chosen.resolve())
+
+    def test_driver_search_follows_the_loader(self):
+        self.assertEqual(ir_gate.icd_directories({'HOME': '/home/u'}),
+                         [pathlib.Path(p) / 'vulkan' / 'icd.d' for p in
+                          ('/home/u/.config', '/etc/xdg', '/etc', '/home/u/.local/share', '/usr/local/share', '/usr/share')])
+        self.assertEqual(ir_gate.icd_directories({'HOME': '/h', 'XDG_DATA_DIRS': '/a:/b', 'XDG_CONFIG_DIRS': '/c'}),
+                         [pathlib.Path(p) / 'vulkan' / 'icd.d' for p in
+                          ('/h/.config', '/c', '/etc', '/h/.local/share', '/a', '/b')])
+
+    def test_explicit_other_driver_is_rejected(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = self.write_icd(pathlib.Path(root), 'intel.json', 'libvulkan_intel.so')
+            with self.assertRaisesRegex(RuntimeError, 'Lavapipe'):
+                ir_gate.lavapipe_icd(path)
+
+    def test_layer_uses_the_selected_manifest(self):
+        environment = ir_gate.layer_env(pathlib.Path('/test/layers'), pathlib.Path('/test/driver.json'))
+        self.assertEqual(environment['VK_DRIVER_FILES'], '/test/driver.json')
+        self.assertNotIn('VK_ICD_FILENAMES', environment)
+
+    def test_resume_rejects_a_changed_requested_binary_or_driver(self):
+        with tempfile.TemporaryDirectory() as root:
+            directory = pathlib.Path(root)
+            old, new = directory / 'old', directory / 'new'
+            old.write_bytes(b'old executable')
+            new.write_bytes(b'new executable')
+            icd = self.write_icd(directory, 'driver.json')
+            result = {'sha256': hashlib.sha256(old.read_bytes()).hexdigest(),
+                      'icd_sha256': hashlib.sha256(icd.read_bytes()).hexdigest()}
+            ir_gate.verify_reused_profile(result, old, icd)
+            with self.assertRaises(AssertionError):
+                ir_gate.verify_reused_profile(result, new, icd)
+            self.write_icd(directory, 'driver.json', 'libvulkan_lvp.so.1')
+            with self.assertRaises(AssertionError):
+                ir_gate.verify_reused_profile(result, old, icd)
+
+
+    def test_build_takes_the_one_executable_cargo_reports(self):
+        artifact = {'reason': 'compiler-artifact', 'executable': '/target/release/cherenkov-bench'}
+        library = {'reason': 'compiler-artifact', 'executable': None}
+        messages = '\n'.join(json.dumps(m) for m in (library, {'reason': 'build-finished'}, artifact))
+        self.assertEqual(ir_gate.executable(messages), pathlib.Path('/target/release/cherenkov-bench'))
+        with self.assertRaisesRegex(RuntimeError, 'one executable'):
+            ir_gate.executable(json.dumps(library))
+        with self.assertRaisesRegex(RuntimeError, 'one executable'):
+            ir_gate.executable('\n'.join(json.dumps(artifact) for _ in range(2)))
 
 
 class Sampling(unittest.TestCase):
@@ -52,6 +128,15 @@ class Sampling(unittest.TestCase):
             ir_gate.call_samples(DATA, 'run', ROOT, after=[1, 2])
         with self.assertRaises(AssertionError):
             ir_gate.call_samples(DATA, 'first', ROOT, after=[1, 4])
+
+    def test_profile_stops_on_its_declared_roots(self):
+        every, once = ir_gate.EVERY_FRAME, ir_gate.RECORDED_ONCE
+        self.assertTrue(ir_gate.sampled({'lower': [2] * 4, 'encode': [1] * 4, 'run_transaction': []}, once, 's'))
+        self.assertFalse(ir_gate.sampled({'lower': [2] * 3, 'encode': [1] * 8, 'run_transaction': []}, once, 's'))
+        with self.assertRaisesRegex(RuntimeError, 'declare'):
+            ir_gate.sampled({'lower': [2], 'encode': [1], 'run_transaction': [3]}, once, 's')
+        with self.assertRaisesRegex(RuntimeError, 'does not run every frame'):
+            ir_gate.sampled({'lower': [2] * 9, 'encode': [1] * 9, 'run_transaction': []}, every, 's')
 
     def test_options_name_each_function_once(self):
         options = ir_gate.function_options(['_RNvCs1_5bench4root', '_RNvCs1_5bench6nested'])

@@ -137,7 +137,7 @@ fn expanded_rows() -> Vec<Row> {
 /// Expands or collapses a group by reconciling the reactive row collection:
 /// inserting the group's item rows right after its header, or removing them.
 /// The collection engine diffs by id, so only the toggled group's rows change.
-fn set_group_expanded(rows: &ReactiveList<Row>, group: usize, expanded: bool) {
+fn set_group_expanded(rows: &mut ReactiveList<Row>, group: usize, expanded: bool) {
     let items = group_item_indices(group);
     if expanded {
         let snapshot = rows.snapshot();
@@ -435,10 +435,10 @@ fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> i
     drawer_headline(
         section.title(),
         open.clone(),
-        move |State(open): State<Binding<bool>>, State(rows): State<ReactiveList<Row>>| {
+        move |State(open): State<Binding<bool>>, State(mut rows): State<ReactiveList<Row>>| {
             open.toggle();
             let expanded = open.snapshot();
-            set_group_expanded(&rows, group, expanded);
+            set_group_expanded(&mut rows, group, expanded);
         },
     )
     .state(&open)
