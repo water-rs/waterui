@@ -168,6 +168,10 @@ impl Effect for EngineEffect {
     fn redraw_hint(&self) -> bool {
         self.built.as_ref().is_some_and(|built| built.redraw_hint())
     }
+
+    fn target_bytes(&self) -> u64 {
+        self.built.as_ref().map_or(0, |built| built.target_bytes())
+    }
 }
 
 /// UI-side state of one mounted `FilteredView`: owns the effect source until

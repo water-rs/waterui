@@ -347,8 +347,8 @@ fn an_image_beyond_the_texture_limit_fails_registration()
 }
 
 split_test! {
-/// An image inside the dimension limit but over the per-image share of
-/// the GPU budget — eight bytes a texel — is rejected at registration
+/// An image inside the dimension limit but over the whole image budget —
+/// the GPU budget at eight bytes a texel — is rejected at registration
 /// too.
 fn an_image_beyond_the_per_image_budget_fails_registration()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -377,6 +377,70 @@ fn an_image_beyond_the_per_image_budget_fails_registration()
     }
     // An admitted image of the same format registers.
     engine.image(ImageData::<Rgba8>::new(256, 256, vec![255; 256 * 256 * 4])?)?;
+    Ok(())
+}
+}
+
+split_test! {
+/// Registered images share the GPU budget, decided at registration: an
+/// image the budget admits alone but not beside the images already
+/// registered fails `Engine::image` with `OverBudget` and queues nothing,
+/// so no render fails over it. Once another image's last handle drops,
+/// the same registration succeeds and draws.
+fn registered_images_count_against_the_gpu_budget() -> Result<(), Box<dyn std::error::Error>> {
+    let budget = cherenkov::Bytes::mib(16);
+    let engine = match wait!(Engine::<Gpu>::new(GpuConfig {
+        budget: cherenkov::Budget {
+            gpu: budget,
+            cpu: budget,
+        },
+        ..GpuConfig::default()
+    })) {
+        Ok(engine) => engine,
+        Err(EngineError::Backend(_)) => return Ok(()),
+        Err(e) => panic!("engine init failed: {e}"),
+    };
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    // Two images that each take three quarters of the image budget:
+    // either fits alone, both together do not.
+    let limits = engine.image_limits();
+    let side = u32::try_from((limits.max_texels * 3 / 4).isqrt())?;
+    let pixels = || {
+        ImageData::<Rgba8>::new(side, side, vec![255; side as usize * side as usize * 4])
+    };
+    let draw = |image: &Image<Rgba8>| {
+        let id = image.id();
+        surface.update(|tx| {
+            tx[surface.root()].record(|c| {
+                c.image(id, Rect::new(0., 0., 8., 8.), Sampling::Nearest);
+            });
+        });
+    };
+
+    let first = engine.image(pixels()?)?;
+    draw(&first);
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    match engine.image(pixels()?) {
+        Err(cherenkov::ResourceError::OverBudget {
+            width,
+            height,
+            available,
+            limits: rejected,
+        }) => {
+            assert_eq!((width, height, rejected), (side, side, limits));
+            assert_eq!(available, limits.max_texels - u64::from(side) * u64::from(side));
+        }
+        other => panic!("an image past the GPU budget registered: {other:?}"),
+    }
+    // The rejection queued nothing: the frame renders.
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+
+    // The first image's last handle returns its texels; the content that
+    // replaces it draws the second image.
+    drop(first);
+    let second = engine.image(pixels()?)?;
+    draw(&second);
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
     Ok(())
 }
 }

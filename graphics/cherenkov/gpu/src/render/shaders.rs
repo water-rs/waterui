@@ -116,46 +116,19 @@ const SHADOW_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
 
 /// The `VARIANT = 0` specialization of `shader.wgsl` (simple).
 ///
-/// Non-union variants compile `shader_no_union.wgsl` — `shader.wgsl`
-/// with every `// union-stub` span removed by `build.rs` — so the
-/// pipelines plain draws use contain neither the union fold nor its
-/// member-cap arrays.
-const ENGINE_WGSL0: &str = concat!(
-    "const VARIANT: u32 = 0u;\n",
-    include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
-    "\n",
-    include_str!("blend.wgsl")
-);
+/// Each module embeds the exact source `build.rs` composed, validated
+/// and wrote to `OUT_DIR` — no second assembly lives at runtime.
+const ENGINE_WGSL0: &str = include_str!(concat!(env!("OUT_DIR"), "/engine0.wgsl"));
 /// The `VARIANT = 1` specialization (shadow).
-const ENGINE_WGSL1: &str = concat!(
-    "const VARIANT: u32 = 1u;\n",
-    include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
-    "\n",
-    include_str!("blend.wgsl")
-);
+const ENGINE_WGSL1: &str = include_str!(concat!(env!("OUT_DIR"), "/engine1.wgsl"));
 /// The `VARIANT = 2` specialization (full).
-const ENGINE_WGSL2: &str = concat!(
-    "const VARIANT: u32 = 2u;\n",
-    include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
-    "\n",
-    include_str!("blend.wgsl")
-);
-/// The `VARIANT = 3` specialization (union): the full module plus the
-/// `UNION_MAX_MEMBERS` prepend — `BackdropUnion::MAX_MEMBERS` verbatim,
-/// emitted by `build.rs` — and the `union.wgsl` fold.
-const ENGINE_WGSL3: &str = concat!(
-    "const VARIANT: u32 = 3u;\n",
-    include_str!(concat!(env!("OUT_DIR"), "/union_max_members.wgsl")),
-    include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
-    include_str!("shader.wgsl"),
-    "\n",
-    include_str!("union.wgsl"),
-    "\n",
-    include_str!("blend.wgsl")
-);
+const ENGINE_WGSL2: &str = include_str!(concat!(env!("OUT_DIR"), "/engine2.wgsl"));
+/// The `VARIANT = 3` specialization (union): `UNION_MAX_MEMBERS`,
+/// `shader_no_long` and the `union.wgsl` fold, composed by `build.rs`.
+const ENGINE_WGSL3: &str = include_str!(concat!(env!("OUT_DIR"), "/engine3.wgsl"));
+/// The `VARIANT = 4` specialization (long gradient): the long spans
+/// kept, union spans stripped — composed by `build.rs`.
+const ENGINE_WGSL4: &str = include_str!(concat!(env!("OUT_DIR"), "/engine4.wgsl"));
 
 /// The effect-module text for a user `backdrop_effect` source.
 ///
@@ -214,13 +187,14 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
 /// exactly those targets, so the condition lives in one place (issue #241).
 #[cfg(cherenkov_spirv)]
 pub mod spirv {
-    /// naga SPIR-V for the four `VARIANT` specializations of
+    /// naga SPIR-V for the five `VARIANT` specializations of
     /// `shader.wgsl`.
-    pub const ENGINE: [&[u8]; 4] = [
+    pub const ENGINE: [&[u8]; 5] = [
         include_bytes!(concat!(env!("OUT_DIR"), "/engine0.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine1.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine2.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine3.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine4.spv")),
     ];
     /// `present.wgsl`.
     pub const PRESENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.spv"));
@@ -255,20 +229,30 @@ pub mod spirv {
     /// index 0.
     #[cfg(all(cherenkov_spirv, unix))]
     pub const TILE_SELF: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_self.spv"));
+    /// `engine_tile_long.spv` — the tile module built on the variant-4
+    /// (long-gradient) source, for a draw sourcing another slot.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_LONG: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_long.spv"));
+    /// `engine_tile_long_self.spv` — the long-gradient module for a draw
+    /// sourcing its own slot.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_LONG_SELF: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_long_self.spv"));
 }
 
 // `.metallib` files exist only in Apple builds (`build.rs` refuses to
 // produce them otherwise, and a Metal backend cannot appear on a
 // non-Apple build), so the empty slices are unreachable.
 #[cfg(target_vendor = "apple")]
-const ENGINE_METALLIB: [&[u8]; 4] = [
+const ENGINE_METALLIB: [&[u8]; 5] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/engine0.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine1.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine2.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine3.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine4.metallib")),
 ];
 #[cfg(not(target_vendor = "apple"))]
-const ENGINE_METALLIB: [&[u8]; 4] = [&[], &[], &[], &[]];
+const ENGINE_METALLIB: [&[u8]; 5] = [&[], &[], &[], &[], &[]];
 #[cfg(target_vendor = "apple")]
 const PRESENT_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.metallib"));
 #[cfg(not(target_vendor = "apple"))]
@@ -298,9 +282,9 @@ const SHADOW_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.
 #[cfg(not(target_vendor = "apple"))]
 const SHADOW_METALLIB: &[u8] = &[];
 
-/// The four `VARIANT` specializations of `shader.wgsl`, indexed by
+/// The five `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
-const ENGINE: [Fixed; 4] = [
+const ENGINE: [Fixed; 5] = [
     Fixed {
         wgsl: ENGINE_WGSL0,
         #[cfg(cherenkov_spirv)]
@@ -329,9 +313,17 @@ const ENGINE: [Fixed; 4] = [
         metallib: ENGINE_METALLIB[3],
         entries: ENGINE_ENTRIES,
     },
+    Fixed {
+        wgsl: ENGINE_WGSL4,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[4],
+        metallib: ENGINE_METALLIB[4],
+        entries: ENGINE_ENTRIES,
+    },
 ];
 
-/// `present.wgsl`, the presenter's module.
+/// `present.wgsl` behind filtrate-core's space conversion, the
+/// presenter's module, as `build.rs` composed it.
 const PRESENT: Fixed = Fixed {
     wgsl: include_str!(concat!(env!("OUT_DIR"), "/present.wgsl")),
     #[cfg(cherenkov_spirv)]
@@ -340,12 +332,10 @@ const PRESENT: Fixed = Fixed {
     entries: VS_FS_MAIN,
 };
 
-/// `shared.wgsl` plus `external.wgsl`, the external-frame module.
+/// `shared.wgsl` plus `external.wgsl`, the external-frame module, as
+/// `build.rs` composed it.
 const EXTERNAL: Fixed = Fixed {
-    wgsl: concat!(
-        include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
-        include_str!("external.wgsl")
-    ),
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/external.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::EXTERNAL,
     metallib: EXTERNAL_METALLIB,
@@ -353,15 +343,9 @@ const EXTERNAL: Fixed = Fixed {
 };
 
 /// `shared.wgsl`, `blend.wgsl` and `projective.wgsl`, the projective
-/// composite module (#84).
+/// composite module (#84), as `build.rs` composed it.
 const PROJECTIVE: Fixed = Fixed {
-    wgsl: concat!(
-        include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
-        "\n",
-        include_str!("blend.wgsl"),
-        "\n",
-        include_str!("projective.wgsl")
-    ),
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/projective.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::PROJECTIVE,
     metallib: PROJECTIVE_METALLIB,

@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use waterui::Url;
 use waterui::drag_drop::{DragPayload, Files};
 use waterui::gesture::PointerButton as WuiPointerButton;
-use waterui_backend_core::gesture::LONG_PRESS_SLOP;
+use waterui_backend_core::gesture::{GesturePlacement, LONG_PRESS_SLOP};
 use waterui_backend_core::widget::{
     InteractionFocusBinding, ModalInteraction, WidgetInteractionState,
 };
@@ -287,6 +287,11 @@ pub enum KeyboardActivation {
     Semantic,
 }
 
+/// The panic a touch press raises when the platform window reported no
+/// [`crate::platform::TouchScrollConfig`].
+const NO_TOUCH_SCROLL_CONFIG: &str =
+    "hydrolysis: a touch press arrived but the platform window reported no touch_scroll_config";
+
 // The flags track independent input facts (composition in flight, window
 // blur, an armed press); they are orthogonal bits, not states to sequence,
 // so a state-machine refactor would invent transitions that do not exist.
@@ -389,8 +394,9 @@ pub struct HitTestState {
     pub(crate) pointer_press_origin: Option<kurbo::Point>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
     /// The host's touch-drag scroll parameters, pushed by the runner each
-    /// input dispatch — `None` on platforms that carry none, where a
-    /// [`PointerKind::Touch`] drag never claims a scroll view.
+    /// input dispatch — `None` only while the host cannot have them yet,
+    /// a state a [`PointerKind::Touch`] press panics on rather than
+    /// skipping the gesture.
     pub(crate) touch_scroll_config: Option<crate::platform::TouchScrollConfig>,
     /// The touch-drag scroll gesture's in-flight claim, kept across frames
     /// like `active_pointer` — driven only by `PointerKind::Touch`
@@ -564,12 +570,22 @@ impl SemanticCore {
 
             for entry in &regs.gesture_regions {
                 if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
+                    // Events leave the engine in the region's own space,
+                    // origin at its top-left: the inverse of the hit chain,
+                    // then the region's offset within its node.
+                    let to_local = kurbo::Affine::translate(-entry.region.local.origin().to_vec2())
+                        * entry.region.placement.resolved_transform(true).inverse();
+                    let target = &entry.payload.target;
                     orders.push(entry.order.clone());
                     staged_gestures.push(Staged {
                         entry_order: entry.order.clone(),
                         payload: mount::RegisteredGesture {
                             owner: entry.payload.owner.clone(),
-                            target: entry.payload.target.clone(),
+                            target: target.with_placement_depth_and_group(
+                                GesturePlacement::new(resolved.rect, to_local),
+                                target.depth,
+                                target.group_id,
+                            ),
                             owners: entry.payload.owners.clone(),
                         },
                         window: resolved.rect,
@@ -840,11 +856,7 @@ impl SemanticCore {
         targets.clear();
         for staged in staged_gestures {
             let order = rank(&staged.entry_order);
-            let mut target = staged.payload.target.with_bounds_depth_and_group(
-                staged.window,
-                staged.payload.target.depth,
-                staged.payload.target.group_id,
-            );
+            let mut target = staged.payload.target;
             target.order = order;
             self.gesture_engine.register_existing_target(target);
             gesture_regions.push(crate::renderer::GestureRegion {
@@ -3735,17 +3747,25 @@ impl HydrolysisRenderer {
     /// Arms the touch-scroll claim for a `PointerKind::Touch` sequence: a
     /// running fling stops where it is, and the new press watches for a
     /// slop crossing while its press still lands on the content under it.
+    ///
+    /// # Panics
+    /// Panics when the platform window reported no `touch_scroll_config`:
+    /// delivering touch input without the gesture's parameters is a host
+    /// bug, not a scroll-disabled platform.
     fn arm_touch_scroll(&mut self, point: kurbo::Point, button: PointerButton, at: Instant) {
         self.hit_test.touch_fling = None;
-        self.hit_test.touch_scroll =
-            if button == PointerButton::Primary && self.hit_test.touch_scroll_config.is_some() {
-                TouchScrollGesture::Pending(TouchScrollPending {
-                    origin: point,
-                    tracker: VelocityTracker::new(at, point),
-                })
-            } else {
-                TouchScrollGesture::Idle
-            };
+        assert!(
+            self.hit_test.touch_scroll_config.is_some(),
+            "{NO_TOUCH_SCROLL_CONFIG}"
+        );
+        self.hit_test.touch_scroll = if button == PointerButton::Primary {
+            TouchScrollGesture::Pending(TouchScrollPending {
+                origin: point,
+                tracker: VelocityTracker::new(at, point),
+            })
+        } else {
+            TouchScrollGesture::Idle
+        };
     }
 
     /// Drives the touch-drag scroll gesture for a `PointerKind::Touch`
@@ -3789,10 +3809,15 @@ impl HydrolysisRenderer {
                 } else {
                     (displacement_y, false)
                 };
-                let slop = self
-                    .hit_test
-                    .touch_scroll_config
-                    .map_or(0.0, |config| f64::from(config.touch_slop));
+                // A `Pending` gesture exists only where the press armed it
+                // — with a config present — so a missing one here is the
+                // host retracting its parameters mid-sequence.
+                let slop = f64::from(
+                    self.hit_test
+                        .touch_scroll_config
+                        .expect(NO_TOUCH_SCROLL_CONFIG)
+                        .touch_slop,
+                );
                 if dominant.abs() <= slop {
                     self.hit_test.touch_scroll = TouchScrollGesture::Pending(pending);
                     return false;
@@ -3894,9 +3919,10 @@ impl HydrolysisRenderer {
         let TouchScrollGesture::Dragging(drag) = gesture else {
             return false;
         };
-        let Some(config) = self.hit_test.touch_scroll_config else {
-            return false;
-        };
+        let config = self
+            .hit_test
+            .touch_scroll_config
+            .expect(NO_TOUCH_SCROLL_CONFIG);
         let fling = TouchFling::start(
             drag.handle,
             drag.claim,

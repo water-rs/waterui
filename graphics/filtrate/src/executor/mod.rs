@@ -292,4 +292,8 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Effect for Executor<F, 
     fn redraw_hint(&self) -> bool {
         self.animator.redraw_hint()
     }
+
+    fn target_bytes(&self) -> u64 {
+        self.gpu.as_ref().map_or(0, Gpu::target_bytes)
+    }
 }

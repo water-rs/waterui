@@ -114,13 +114,13 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed};
 use std::rc::{Rc, Weak};
 use waterui_core::MainThreadBound;
-use waterui_core::id::{Id as RawId, SelfId};
+use waterui_core::id::Id as RawId;
 use waterui_core::layout::{LayoutPriority, Point, Rect, Size};
 use waterui_core::views::{AnyViews, AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController, ScrollView, ScrollViewParts};
 
 /// The type-erased item identity used by [`CollectionNode`]'s reconcile.
-type CollectionItemId = SelfId<RawId>;
+type CollectionItemId = RawId;
 
 /// A node in the persistent retained render tree. The render-primitive set is
 /// closed by the nature of a self-drawn renderer; the open `HydroDispatcher` maps

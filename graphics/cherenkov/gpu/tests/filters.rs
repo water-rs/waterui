@@ -44,6 +44,10 @@ impl Effect for CopyEffect {
         );
         Ok(true)
     }
+
+    fn target_bytes(&self) -> u64 {
+        0
+    }
 }
 
 split_test! {
@@ -245,6 +249,10 @@ impl Effect for ObservedEffect {
             },
         );
         Ok(false)
+    }
+
+    fn target_bytes(&self) -> u64 {
+        0
     }
 }
 

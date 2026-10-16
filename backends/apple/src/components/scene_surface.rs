@@ -5,7 +5,9 @@ use std::rc::Rc;
 use std::sync::{Arc, mpsc};
 
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, ViewDimensions};
-use waterui_graphics::cherenkov::{DEFAULT_REFRESH, Display, FrameScope, FrameTime, Next, Surface};
+use waterui_graphics::cherenkov::{
+    DEFAULT_REFRESH, Display, FrameScope, FrameTime, Next, Surface, SurfaceId,
+};
 use waterui_graphics::cherenkov_gpu::{
     Gpu,
     interop::{OutputAlpha, OutputColor, Presenter, TextureOutput, TextureTarget, shader_delivery},
@@ -416,6 +418,10 @@ impl SceneParticipant for ScenePart {
         // `settle_failed` on the main queue — a settle already landed
         // for this generation is a no-op there. Nothing stores it here.
         (self.sink)(failure);
+    }
+
+    fn surface(&self) -> SurfaceId {
+        self.surface.id()
     }
 }
 

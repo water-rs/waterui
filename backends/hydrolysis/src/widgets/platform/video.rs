@@ -91,6 +91,7 @@ fn leaf(
                 playback.playback_policy.power
             )
         }
+        other => panic!("hydrolysis web video: unsupported playback power policy {other:?}"),
     }
     let element = video_element(content_mode, controls);
     let player = Player::new(env, element, playback, loops);
@@ -100,6 +101,7 @@ fn leaf(
     match content_mode {
         ContentMode::Fit => AnyView::new(waterui_video::fit_video(hosted, aspect, natural_width)),
         ContentMode::Fill | ContentMode::Stretch => AnyView::new(hosted),
+        other => panic!("hydrolysis web video: unsupported content mode {other:?}"),
     }
 }
 
@@ -126,6 +128,7 @@ fn video_element(content_mode: ContentMode, controls: bool) -> HtmlVideoElement 
                 ContentMode::Fit => "contain",
                 ContentMode::Fill => "cover",
                 ContentMode::Stretch => "fill",
+                other => panic!("hydrolysis web video: unsupported content mode {other:?}"),
             },
         ),
         // A player letterboxes on black, as the platform players do; a bare

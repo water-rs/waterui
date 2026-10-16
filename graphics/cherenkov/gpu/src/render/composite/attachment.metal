@@ -1,5 +1,7 @@
 // Native stage interfaces around the build-time naga fragment bodies.
-#include "engine_tile.metal"
+// The family's generated module (engine_tile.metal or
+// engine_tile_long.metal) arrives through the compiler's -include
+// flag, not an #include.
 
 struct TileInput {
     metal::float2 local [[user(loc0), center_perspective]];
