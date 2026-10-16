@@ -10,8 +10,8 @@ use cherenkov_oracle::color::{
 };
 use cherenkov_oracle::{Renderer, metrics};
 use cherenkov_scene::{
-    BackdropGroup, BlendMode, BlendSpace, Color, Extend, GradientStop, LinearGradient, Paint,
-    Scene, Shape,
+    BackdropGroup, BlendMode, BlendSpace, Color, Draw, Extend, FillRule, GradientStop, Group,
+    GroupItem, LinearGradient, Paint, Scene, Shape,
 };
 use kurbo::Rect;
 
@@ -1153,6 +1153,92 @@ fn an_encoded_member_edge_blends_with_the_content_beneath() {
         assert!((f64::from(got[3]) - 1.0).abs() < 1e-6, "{got:?}");
         // Past the edge the sample is opaque black.
         assert_eq!(img.pixels[row * W as usize + 8][..3], [0.0; 3]);
+    }
+}
+
+/// A pass-through level opens no canvas: an opaque `Normal` child layer
+/// and a pass-through linear group leave an sRGB-encoded group, and an
+/// encoded backdrop member, compositing against the content beneath them
+/// exactly as at the root. A fresh canvas would blend the encoded
+/// composite against transparent black, which is the linear result.
+#[test]
+fn encoded_content_in_a_pass_through_level_renders_as_at_the_root() {
+    #[derive(Clone, Copy)]
+    enum Wrap {
+        Root,
+        Layer,
+        Group,
+    }
+    let encoded = || Group {
+        items: vec![GroupItem::Draw(Draw::Fill {
+            shape: Shape::Rect(Rect::new(2.5, 2.5, 13.5, 13.5)),
+            rule: FillRule::NonZero,
+            paint: Paint::Solid(Color::srgb(0.15, 0.3, 0.85).with_alpha(0.5)),
+        })],
+        opacity: 1.0,
+        blend: BlendMode::Normal,
+        blend_space: BlendSpace::SrgbEncoded,
+        filter: None,
+    };
+    let scene = |group: Wrap, member: bool| {
+        let mut b = Scene::builder(W, H);
+        b.backdrop_group(BackdropGroup {
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(1, vec![], 1.0, 1)
+        });
+        b.root().fill(
+            Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+            Paint::Solid(Color::srgb(0.6, 0.3, 0.8)),
+        );
+        match group {
+            Wrap::Root => {
+                b.root().group(encoded());
+            }
+            Wrap::Layer => {
+                b.root().layer(|l| {
+                    l.group(encoded());
+                });
+            }
+            Wrap::Group => {
+                b.root().group(Group {
+                    items: vec![GroupItem::Group(encoded())],
+                    opacity: 1.0,
+                    blend: BlendMode::Normal,
+                    blend_space: BlendSpace::Linear,
+                    filter: None,
+                });
+            }
+        }
+        let sample = |m: &mut cherenkov_scene::LayerBuilder| {
+            m.clip(Shape::Rect(Rect::new(4.5, 4.5, 11.5, 11.5)));
+            m.backdrop(1);
+            m.backdrop_effect(cherenkov_scene::BackdropEffectSpec::ColorMatrix {
+                matrix: [0.0; 12],
+            });
+        };
+        if member {
+            b.root().layer(|outer| {
+                outer.layer(sample);
+            });
+        } else {
+            b.root().layer(sample);
+        }
+        render(&b.build(), &tmp())
+    };
+    let bits = |img: cherenkov_oracle::F32Image| {
+        img.pixels
+            .iter()
+            .map(|p| p.map(f32::to_bits))
+            .collect::<Vec<_>>()
+    };
+    let root = bits(scene(Wrap::Root, false));
+    for (wrap, member) in [
+        (Wrap::Layer, false),
+        (Wrap::Group, false),
+        (Wrap::Root, true),
+        (Wrap::Layer, true),
+    ] {
+        assert_eq!(bits(scene(wrap, member)), root);
     }
 }
 
