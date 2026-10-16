@@ -32,6 +32,25 @@ permissions:
   contents: read
 
 jobs:
+  # The kernels job's trigger: a pull request touching the CPU backend.
+  # paths-filter cannot see what a workflow edit reaches, so this file
+  # always counts as a change.
+  changes:
+    name: changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      cpu: ${{ steps.filter.outputs.cpu }}
+    steps:
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            cpu:
+              - 'graphics/cherenkov/cpu/**'
+              - '.github/workflows/cherenkov-ir.yml'
+
   instructions:
     name: instructions (${{ matrix.leg }})
     runs-on: ubuntu-24.04
@@ -89,6 +108,104 @@ jobs:
         with:
           name: cherenkov-ir-${{ matrix.leg }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ir-results/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30
+
+  # The span kernels' Callgrind gate: each case's instruction count on
+  # the merge commit against the dev commit it merges into (the merge
+  # commit's first parent), at most +1% Ir per case. A case new at head
+  # has no baseline and is reported, not failed. The wall-clock benches
+  # are compiled here but never run — a shared runner cannot time them.
+  kernels:
+    name: kernels
+    needs: changes
+    if: >-
+      always() && (github.event_name != 'pull_request'
+      || needs.changes.outputs.cpu == 'true')
+    runs-on: ubuntu-24.04
+    # A newer push to the same pull request supersedes the running measurement.
+    concurrency:
+      group: cherenkov-ir-kernels-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: true
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+      - uses: ./.github/actions/cargo-sources
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          extra-packages: valgrind
+      # Every bench target builds; kernels_wall is compiled, never run.
+      - name: Compile the crate and the benches under the kernels' feature
+        run: cargo clippy -p cherenkov-cpu --all-targets --features testing -- -D warnings
+      # gungraun-runner must match the gungraun library exactly; the
+      # lockfile records it.
+      - name: The lockfile's gungraun version
+        id: runner
+        run: >-
+          echo "version=$(cargo metadata --format-version 1 --locked
+          | jq -r '.packages[] | select(.name == "gungraun") | .version')" >> "$GITHUB_OUTPUT"
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: gungraun-runner@${{ steps.runner.outputs.version }}
+      # A pull request's merge commit is measured against its first
+      # parent, the dev commit it merges into; a dispatch resolves its
+      # inputs' merge base. Revisions the checkout does not hold are
+      # fetched from origin, as ir_gate.py does.
+      - name: Resolve the measurement pair
+        id: pair
+        env:
+          IR_BASE: ${{ inputs.base || format('{0}^1', github.sha) }}
+          IR_HEAD: ${{ inputs.head || github.sha }}
+        run: |
+          fetch_rev() {
+            if ! git rev-parse --verify --quiet --end-of-options "$1^{commit}" >/dev/null; then
+              git fetch --no-tags origin "$1" >&2
+              git rev-parse --verify 'FETCH_HEAD^{commit}'
+            else
+              git rev-parse --verify --end-of-options "$1^{commit}"
+            fi
+          }
+          head=$(fetch_rev "$IR_HEAD")
+          base=$(git merge-base "$(fetch_rev "$IR_BASE")" "$head")
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "head=$head" >> "$GITHUB_OUTPUT"
+      - name: Measure the merge base
+        id: baseline
+        run: |
+          git checkout "${{ steps.pair.outputs.base }}"
+          if cargo metadata --format-version 1 --no-deps \
+            | jq -e '[.packages[] | select(.name == "cherenkov-cpu") \
+                | .targets[] | select(.name == "kernels_ir" and (.kind | index("bench") != null))] \
+                | length > 0' >/dev/null; then
+            cargo bench -p cherenkov-cpu --features testing --bench kernels_ir -- --save-baseline=dev
+            echo "saved=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "cherenkov-cpu has no kernels_ir bench at the merge base; the gate runs without a baseline"
+          fi
+      - name: Measure the merge commit and gate
+        run: |
+          git checkout "${{ steps.pair.outputs.head }}"
+          if [ "${{ steps.baseline.outputs.saved }}" = "1" ]; then
+            cargo bench -p cherenkov-cpu --features testing --bench kernels_ir -- --baseline=dev --callgrind-limits='ir=1%'
+          else
+            cargo bench -p cherenkov-cpu --features testing --bench kernels_ir
+          fi
+      - name: Upload gungraun's output directory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-ir-kernels-${{ github.run_id }}-${{ github.run_attempt }}
+          path: target/gungraun/
           if-no-files-found: error
           compression-level: 9
           retention-days: 30
