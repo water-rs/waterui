@@ -77,7 +77,7 @@ pub type ReplaceImage = Rc<dyn Fn(ImageId, ImageUpload) -> Result<(), ResourceEr
 /// it, never on the render thread. An image holds its texels from its
 /// registration until its last handle drops.
 #[derive(Debug)]
-pub(crate) struct ImageBudget {
+pub struct ImageBudget {
     limits: ImageLimits,
     resident: Cell<u64>,
 }
