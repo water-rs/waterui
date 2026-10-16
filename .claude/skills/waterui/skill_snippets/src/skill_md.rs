@@ -175,7 +175,7 @@ pub fn skill_block_06() {
         title: Str::from("Hello"),
     }];
 
-    let rows = ReactiveList::from(seed_rows); // bulk-seed; .push/.insert/.remove diff by id
+    let rows = ReactiveList::from(seed_rows); // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
     let _ = {
         Lazy::for_each(rows.clone(), |row| text(row.title)) // reactive sequence in a stack
