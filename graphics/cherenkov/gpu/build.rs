@@ -429,7 +429,15 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
             format_args!("cargo::rerun-if-changed={}\n", fixture.display()),
         )
         .unwrap();
-        compile_metal(out_dir, "attachment_read", &fixture, apple, (3, 0), None, &[]);
+        compile_metal(
+            out_dir,
+            "attachment_read",
+            &fixture,
+            apple,
+            (3, 0),
+            None,
+            &[],
+        );
     }
 }
 
