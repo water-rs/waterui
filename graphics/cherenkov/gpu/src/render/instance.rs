@@ -15,8 +15,8 @@ pub const KIND_SHADOW: u32 = 3;
 pub const KIND_GLYPH: u32 = 4;
 /// A device-space run of fully covered columns from a path strip.
 pub const KIND_SPAN: u32 = 5;
-/// An atlas cell with an explicit full-coverage horizontal interval.
-/// Solid paint leaves `meta[2]` available for its two u16 column offsets.
+/// A solid-paint atlas cell with a full-coverage middle
+/// (`affine[6..8]`), which the opaque phase also draws.
 pub const KIND_REGION: u32 = 6;
 /// An opaque ellipse interior appended after a coverage-order pass's
 /// painter ranges and drawn only by the opaque phase at the tier's
@@ -208,9 +208,11 @@ impl From<RoundedBox> for Shape {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Instance {
-    /// Local-to-device affine: `[a, b, c, d, e, f, 0, 0]`. A
+    /// Local-to-device affine: `[a, b, c, d, e, f, m0, m1]`. A
     /// `PAINT_BACKDROP` span's bounds are device space; its affine is the
-    /// member layer's transform.
+    /// member layer's transform. `m0..m1` is a path cell's full-coverage
+    /// middle in columns from its left edge, which stores no atlas texels;
+    /// zero for every other quad.
     pub affine: [f32; 8],
     /// Quad rectangle `(x0, y0, x1, y1)`, local space except `KIND_GLYPH`
     /// `KIND_SPAN` and `KIND_REGION`, where it is a device-space rectangle.
@@ -251,7 +253,6 @@ pub struct Instance {
     /// composite: `blend_code<<16 | flags<<24` (the low 16 bits are free
     /// there). For `PAINT_BACKDROP`: `effect_kind | stop_count<<8 |
     /// flags<<24`.
-    /// For `KIND_REGION`, `first_stop` holds the full-column interval instead.
     pub meta: [u32; 4],
 }
 

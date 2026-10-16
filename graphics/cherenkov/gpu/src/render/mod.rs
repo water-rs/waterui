@@ -6919,7 +6919,7 @@ impl GpuRenderer {
     ) {
         let mut hint = None;
         for inst in instances {
-            if matches!(inst.kind, instance::KIND_GLYPH | instance::KIND_REGION)
+            if matches!(inst.kind(), instance::KIND_GLYPH | instance::KIND_REGION)
                 && let Some(slot) = atlas.shelf_at_hint(inst.uv[0], inst.uv[1], &mut hint)
             {
                 f(slot);

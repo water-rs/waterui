@@ -196,6 +196,26 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     return out;
 }
 
+// Coverage of a glyph or path cell at atlas texel `t`. `middle` is the
+// cell's full-coverage middle in atlas columns: it stores no texels, so a
+// column right of it reads `middle.y - middle.x` texels further left. A
+// cell without one has an empty middle and reads its own texel.
+fn cell_coverage(t: vec2<i32>, middle: vec2<i32>) -> f32 {
+    if t.x >= middle.x && t.x < middle.y {
+        return 1.0;
+    }
+    let x = select(t.x, t.x - (middle.y - middle.x), t.x >= middle.y);
+    return textureLoad(atlas, vec2<i32>(x, t.y), 0).r;
+}
+
+// `cell_coverage` at a fragment of a device-space cell quad: `cell` holds
+// its device origin and atlas origin, `affine1.zw` its middle in columns
+// from its left edge.
+fn glyph_coverage(in: VsOut) -> f32 {
+    let t = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
+    return cell_coverage(t, vec2<i32>(in.affine1.zw + in.cell.zz));
+}
+
 // Distance evaluations `lame_corner` spends on one point.
 const LAME_EVALS: i32 = 6;
 const QUARTER_PI: f32 = 0.7853981633974483;

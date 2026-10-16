@@ -682,13 +682,13 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
     var cov: f32;
     switch in.meta_.x {
         case KIND_GLYPH: {
-            var texel: vec2<i32>;
+            // Classified: `local` is the atlas texel and `affine1.zw` the
+            // middle in atlas columns, both resolved by `vs_partial`.
             if classified {
-                texel = vec2<i32>(floor(in.local));
+                cov = cell_coverage(vec2<i32>(floor(in.local)), vec2<i32>(in.affine1.zw));
             } else {
-                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
+                cov = glyph_coverage(in);
             }
-            cov = textureLoad(atlas, texel, 0).r;
         }
         case KIND_SPAN: {
             cov = 1.0;
@@ -747,8 +747,8 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     var promoted = false;
     if inst.meta_.x == KIND_REGION {
         let x = inst.bounds.x;
-        inst.bounds.x = x + f32(inst.meta_.z & 0xffffu);
-        inst.bounds.z = x + f32(inst.meta_.z >> 16u);
+        inst.bounds.x = x + inst.affine[1].z;
+        inst.bounds.z = x + inst.affine[1].w;
     }
     if inst.meta_.x == KIND_POLYGON {
         // An appended interior tier: grad.x bitcast holds the painter
@@ -835,8 +835,12 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
     if opaque_span(instances[ii]) {
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    let local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
-    return PartialOut(out.position, local, ii, out.affine1.zw);
+    // A cell samples in atlas space: its texel, and its middle shifted to
+    // atlas columns.
+    let cell = out.meta_.x == KIND_GLYPH;
+    let local = select(out.local, out.device - out.cell.xy + out.cell.zw, cell);
+    let coverage = select(out.affine1.zw, out.affine1.zw + out.cell.zz, cell);
+    return PartialOut(out.position, local, ii, coverage);
 }
 
 @fragment
@@ -912,8 +916,7 @@ fn fs_full(in: VsOut) -> vec4<f32> {
             }
         }
         case KIND_GLYPH: {
-            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
-            cov = textureLoad(atlas, texel, 0).r;
+            cov = glyph_coverage(in);
         }
         case KIND_SPAN: {
             cov = 1.0;

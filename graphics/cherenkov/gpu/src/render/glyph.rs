@@ -160,7 +160,9 @@ struct CachedGlyph {
 }
 
 /// One atlas cell emitted by the path rasterizer: a device-space quad
-/// sampling `w` × `h` coverage texels at `(x, y)`.
+/// sampling coverage texels at `(x, y)`. The texels cover the quad's
+/// columns except its full-coverage middle ([`Self::interior`]), which
+/// stores none.
 #[derive(Clone, Copy, Debug)]
 pub struct PathCell {
     /// Device-space quad `(x0, y0, x1, y1)`.
@@ -171,9 +173,19 @@ pub struct PathCell {
     pub y: u16,
     /// Shelf the cell lives on, for [`Atlas::begin_commit`] touches.
     pub slot: u32,
-    /// Full columns inside this cell: `start | end << 16`, relative to x0.
-    /// Zero means that the entire cell needs sampled coverage.
+    /// The full-coverage middle columns: `start | end << 16`, relative to
+    /// x0. They store no texels; the columns right of them follow the
+    /// columns left of them in the atlas. Zero means no middle.
     pub interior: u32,
+}
+
+impl PathCell {
+    /// The middle's column count: the quad's columns minus the texels
+    /// each atlas row stores.
+    #[must_use]
+    pub const fn middle_width(&self) -> u32 {
+        (self.interior >> 16) - (self.interior & 0xffff)
+    }
 }
 
 /// What a cached path draw replays: full-coverage spans and atlas cells,
@@ -991,7 +1003,7 @@ impl Atlas {
             for cell in &emit.cells {
                 if touched(cell.slot) {
                     self.plan_all.push((
-                        (cell.rect[2] - cell.rect[0]).round().max(0.0) as u32,
+                        (cell.rect[2] - cell.rect[0]).round().max(0.0) as u32 - cell.middle_width(),
                         (cell.rect[3] - cell.rect[1]).round().max(0.0) as u32,
                     ));
                 }

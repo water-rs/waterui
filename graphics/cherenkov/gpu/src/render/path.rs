@@ -503,7 +503,9 @@ pub fn emit(
 
 /// One cell's `w` × `h` coverage rect streamed a row at a time into
 /// `R8` texels appended to `arena`, plus its [`PathCell`] record
-/// with `rect` in device space. `reserve` is the emission's pending
+/// with `rect` in device space. The `middle` columns are full coverage
+/// and store no texels: each row stores the columns left of it, then
+/// the columns right of it. `reserve` is the emission's pending
 /// reservation: its grid area before the first cell, zero after.
 #[expect(clippy::too_many_arguments)]
 fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
@@ -512,13 +514,13 @@ fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
     rect: [f32; 4],
     w: usize,
     h: usize,
-    interior: std::ops::Range<usize>,
+    middle: std::ops::Range<usize>,
     cells: &mut Vec<PathCell>,
     rasters: &mut Vec<CellTexels>,
     arena: &mut Vec<u8>,
     reserve: &mut usize,
 ) -> Result<(), RenderError> {
-    let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
+    let (Ok(w32), Ok(h32)) = (u32::try_from(w - middle.len()), u32::try_from(h)) else {
         return Err(RenderError::AtlasFull);
     };
     // The emission's first cell reserves its whole grid area, which bounds
@@ -527,8 +529,12 @@ fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
     // more reallocations than one per path.
     arena.reserve(std::mem::take(reserve));
     let start = arena.len();
+    let (left, right) = (x..x + middle.start, x + middle.end..x + w);
     for row in 0..h {
-        append_row(row, x..x + w, arena);
+        if !left.is_empty() {
+            append_row(row, left.clone(), arena);
+        }
+        append_row(row, right.clone(), arena);
     }
     rasters.push((w32, h32, start..arena.len()));
     cells.push(PathCell {
@@ -537,8 +543,8 @@ fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
         y: 0,
         // Filled by `Atlas::place_path` on the render thread.
         slot: 0,
-        interior: u32::from(u16::try_from(interior.start).map_err(|_| RenderError::AtlasFull)?)
-            | (u32::from(u16::try_from(interior.end).map_err(|_| RenderError::AtlasFull)?) << 16),
+        interior: u32::from(u16::try_from(middle.start).map_err(|_| RenderError::AtlasFull)?)
+            | (u32::from(u16::try_from(middle.end).map_err(|_| RenderError::AtlasFull)?) << 16),
     });
     Ok(())
 }
@@ -618,7 +624,8 @@ fn emit_strip_sparse(
 /// Emits a band's class runs as [`partition`] splits them: a span for
 /// each full segment, a cell for every other, its rows streamed in by
 /// `append_row`. `band` is the grid origin, the band's first row and its
-/// height. A cell's interior is the widest full run it carries.
+/// height. A cell's widest full run is its middle, which stores no
+/// texels (see [`make_cell`]).
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_precision_loss)]
 fn emit_runs<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
@@ -634,43 +641,50 @@ fn emit_runs<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
     partition(runs, sh);
     let top = (cov_y + sy as f64) as f32;
     let bottom = (cov_y + (sy + sh) as f64) as f32;
-    let mut k = 0;
-    while k < runs.len() {
-        let Some(segment) = runs[k].segment else {
-            k += 1;
-            continue;
-        };
-        let last = segment.last as usize;
-        let (start, end) = (runs[k].start, runs[last].end);
-        let rect = [
+    let rect = |start: u32, end: u32| {
+        [
             (cov_x + f64::from(start)) as f32,
             top,
             (cov_x + f64::from(end)) as f32,
             bottom,
-        ];
-        if segment.span {
-            out.spans.push(rect);
-        } else {
-            let interior = runs[k..=last]
-                .iter()
-                .filter(|run| run.class == Class::Full)
-                .max_by_key(|run| (run.end - run.start, std::cmp::Reverse(run.start)))
-                .map_or(0..0, |run| {
-                    (run.start - start) as usize..(run.end - start) as usize
-                });
-            make_cell(
-                append_row,
-                start as usize,
-                rect,
-                (end - start) as usize,
-                sh,
-                interior,
-                &mut out.cells,
-                rasters,
-                arena,
-                reserve,
-            )?;
-        }
+        ]
+    };
+    let mut k = 0;
+    while k < runs.len() {
+        let run = runs[k];
+        let last = match run.link {
+            Link::Skip => {
+                k += 1;
+                continue;
+            }
+            Link::Span => {
+                out.spans.push(rect(run.start, run.end));
+                k += 1;
+                continue;
+            }
+            Link::Head(last) => last as usize,
+            Link::Cell(_) => unreachable!("the backward pass marks every cell on its first run"),
+        };
+        let (start, end) = (run.start, runs[last].end);
+        let middle = runs[k..=last]
+            .iter()
+            .filter(|run| run.class == Class::Full)
+            .max_by_key(|run| (run.end - run.start, std::cmp::Reverse(run.start)))
+            .map_or(0..0, |run| {
+                (run.start - start) as usize..(run.end - start) as usize
+            });
+        make_cell(
+            append_row,
+            start as usize,
+            rect(start, end),
+            (end - start) as usize,
+            sh,
+            middle,
+            &mut out.cells,
+            rasters,
+            arena,
+            reserve,
+        )?;
         k = last + 1;
     }
     Ok(())
@@ -711,24 +725,21 @@ impl Class {
     }
 }
 
-/// The last run of an emitted segment that starts at this run, and
-/// whether it is a span (one full run) rather than a cell.
+/// What a run became in the band's cheapest emission. The forward pass
+/// of [`partition`] sets `Skip`, `Span` or `Cell` on each run as the end
+/// of the cheapest prefix; the backward pass then marks the first run of
+/// every chosen cell `Head`, and the emission walk only lands on runs
+/// that start a choice.
 #[derive(Clone, Copy, Debug)]
-struct Segment {
-    last: u32,
-    span: bool,
-}
-
-/// How the cheapest emission of a band's runs up to and including one
-/// run ends.
-#[derive(Clone, Copy, Debug)]
-enum Choice {
+enum Link {
     /// The run is empty and emits nothing.
     Skip,
     /// The run is full and emits a span.
     Span,
     /// A cell spans from the run at the index through this run.
     Cell(u32),
+    /// A cell spans from this run through the run at the index.
+    Head(u32),
 }
 
 /// A maximal run of equal-class columns in one band. Columns, indices
@@ -741,9 +752,7 @@ struct Run {
     class: Class,
     /// Least byte cost of emitting every run before this one.
     before: u32,
-    choice: Choice,
-    /// Set on the first run of each emitted segment.
-    segment: Option<Segment>,
+    link: Link,
 }
 
 /// Appends columns `start..end` of `class`, extending the last run when
@@ -756,8 +765,7 @@ fn push_run(runs: &mut Vec<Run>, start: u32, end: u32, class: Class) {
             end,
             class,
             before: 0,
-            choice: Choice::Skip,
-            segment: None,
+            link: Link::Skip,
         }),
     }
 }
@@ -765,6 +773,8 @@ fn push_run(runs: &mut Vec<Run>, start: u32, end: u32, class: Class) {
 /// Splits a dense band of `w` columns and `sh` rows into class runs.
 fn dense_runs(strip: &[f32], w: usize, sh: usize, runs: &mut Vec<Run>) {
     runs.clear();
+    // Runs never outnumber columns: the scratch grows once, to its bound.
+    runs.reserve(w);
     let columns = u32::try_from(w).expect("a band is at most a surface wide");
     for x in 0..columns {
         let mut state = (true, true);
@@ -780,6 +790,9 @@ fn dense_runs(strip: &[f32], w: usize, sh: usize, runs: &mut Vec<Run>) {
 /// run ends, and every column between two splits shares one class.
 fn sparse_runs(coverage: &[(u32, f32)], ends: &[usize], w: usize, runs: &mut Vec<Run>) {
     runs.clear();
+    // Every run ends where some row's coverage run ends, and never
+    // outnumbers columns: the scratch grows once, to that bound.
+    runs.reserve(w.min(coverage.len()));
     // `ends[r]` bounds row `r`'s runs; the cursors index the flat buffer
     // absolutely and a row's runs always end at column `w`, so no cursor
     // can read past its row.
@@ -818,69 +831,75 @@ fn sparse_runs(coverage: &[(u32, f32)], ends: &[usize], w: usize, runs: &mut Vec
 const INSTANCE_BYTES: u32 = size_of::<Instance>() as u32;
 
 /// Chooses the band's emission with the least byte cost: every instance
-/// costs [`INSTANCE_BYTES`], and every texel a cell carries its byte in
-/// the atlas. An empty gap is bridged, and a full run carried as texels,
-/// exactly when that is cheaper than the instance a split would add. A
-/// cell's cost is linear in its width, so the cheapest cell ending at
-/// each run comes from a running minimum, and one pass solves the band.
-/// Marks each emitted segment on its first run.
+/// costs [`INSTANCE_BYTES`], and every texel a cell stores its byte in
+/// the atlas. A cell stores no texels for its widest full run, its
+/// middle, so it costs `instance + sh · (width − middle)`. An empty gap
+/// is bridged, and a further full run carried as texels, exactly when
+/// that is cheaper than the instance a split would add.
+///
+/// With the middle fixed at a full run `f`, a cell from run `j` through
+/// run `k` costs `before_j − sh · start_j − sh · width_f + instance +
+/// sh · end_k` for any `j ≤ f ≤ k`, and leaving out a narrower run than
+/// the widest only overestimates. The cheapest cell ending at `k` is
+/// therefore the lesser of two running minima — over starts `j` alone,
+/// and over full runs `f` of the best start up to `f` less `f`'s texels —
+/// and one pass solves the band. The backward pass marks each emitted
+/// cell on its first run.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "runs never outnumber columns"
 )]
 fn partition(runs: &mut [Run], sh: usize) {
-    let sh = u32::try_from(sh).expect("a band is at most STRIP_H rows");
-    // The cell start `j` minimising `before_j − sh · start_j`, compared
-    // as `before_j + sh · start_b < before_b + sh · start_j`.
-    let mut cell_from: Option<usize> = None;
+    let sh = i64::from(u32::try_from(sh).expect("a band is at most STRIP_H rows"));
+    let instance = i64::from(INSTANCE_BYTES);
+    // The cheapest cell start so far as `before_j − sh · start_j`, and
+    // the cheapest with a full middle as that less the middle's texels.
+    let mut open: Option<(i64, usize)> = None;
+    let mut hollow: Option<(i64, usize)> = None;
     for k in 0..runs.len() {
-        let Run {
-            start,
-            end,
-            class,
-            before,
-            ..
-        } = runs[k];
-        if class != Class::Empty
-            && cell_from.is_none_or(|b| before + sh * runs[b].start < runs[b].before + sh * start)
-        {
-            cell_from = Some(k);
-        }
-        let (cost, choice) = if class == Class::Empty {
-            (before, Choice::Skip)
+        let run = runs[k];
+        let before = i64::from(run.before);
+        let (cost, link) = if run.class == Class::Empty {
+            (before, Link::Skip)
         } else {
-            let from = cell_from.expect("a non-empty run opened a cell start");
-            let cell = runs[from].before + INSTANCE_BYTES + sh * (end - runs[from].start);
-            if class == Class::Full && before + INSTANCE_BYTES <= cell {
-                (before + INSTANCE_BYTES, Choice::Span)
+            let here = before - sh * i64::from(run.start);
+            if open.is_none_or(|(best, _)| here < best) {
+                open = Some((here, k));
+            }
+            let (best, from) = open.expect("a non-empty run opened a cell start");
+            if run.class == Class::Full {
+                let middle = best - sh * i64::from(run.end - run.start);
+                if hollow.is_none_or(|(best, _)| middle < best) {
+                    hollow = Some((middle, from));
+                }
+            }
+            let (best, from) = match hollow {
+                Some((middle, from)) if middle < best => (middle, from),
+                _ => (best, from),
+            };
+            let cell = best + instance + sh * i64::from(run.end);
+            let span = before + instance;
+            if run.class == Class::Full && span <= cell {
+                (span, Link::Span)
             } else {
-                (cell, Choice::Cell(from as u32))
+                (cell, Link::Cell(from as u32))
             }
         };
-        runs[k].choice = choice;
+        runs[k].link = link;
         if let Some(next) = runs.get_mut(k + 1) {
-            next.before = cost;
+            next.before = u32::try_from(cost).expect("a band's byte cost fits u32");
         }
     }
     let mut k = runs.len();
     while k > 0 {
         let last = k - 1;
-        k = match runs[last].choice {
-            Choice::Skip => last,
-            Choice::Span => {
-                runs[last].segment = Some(Segment {
-                    last: last as u32,
-                    span: true,
-                });
-                last
-            }
-            Choice::Cell(from) => {
-                runs[from as usize].segment = Some(Segment {
-                    last: last as u32,
-                    span: false,
-                });
+        k = match runs[last].link {
+            Link::Skip | Link::Span => last,
+            Link::Cell(from) => {
+                runs[from as usize].link = Link::Head(last as u32);
                 from as usize
             }
+            Link::Head(_) => unreachable!("the forward pass marks no heads"),
         };
     }
 }
@@ -1280,37 +1299,62 @@ mod tests {
         assert_eq!(emitted.cells.len(), 2);
     }
 
-    /// A full run between partial runs stays inside the cell as its
-    /// interior while its texels cost less than the two instances a span
-    /// would add; wider, it becomes a span between two cells. A full run
-    /// with no partial neighbour is always a span.
+    /// A full run between partial runs, however wide, is the middle of
+    /// one cell and stores no texels: the cell's texels are its partial
+    /// columns alone. A full run with no partial neighbour is a span.
     #[test]
-    fn a_full_run_splits_a_cell_only_when_its_texels_cost_more() {
-        let limit = 2 * size_of::<Instance>() / STRIP_H;
+    fn a_wide_full_run_is_a_cell_middle_without_texels() {
+        let f = 1000;
         let mut arena = Vec::new();
-        let f = limit - 6;
-        let (emitted, _) = emit(
-            &strip(&[(0, 3), (3 + f, 6 + f)], &[(3, 3 + f)], 400),
+        let (emitted, rasters) = emit(
+            &strip(&[(0, 3), (3 + f, 6 + f)], &[(3, 3 + f)], 2000),
             &mut arena,
         )
         .unwrap();
         assert_eq!(emitted.spans.len(), 0);
         assert_eq!(emitted.cells.len(), 1);
+        assert_eq!(emitted.cells[0].rect[2] - emitted.cells[0].rect[0], 1006.0);
         assert_eq!(
             emitted.cells[0].interior,
             3 | (u32::try_from(3 + f).unwrap() << 16)
         );
-        let f = limit + 6;
-        let (emitted, _) = emit(
-            &strip(&[(0, 3), (3 + f, 6 + f)], &[(3, 3 + f)], 400),
-            &mut arena,
-        )
-        .unwrap();
-        assert_eq!(emitted.spans.len(), 1);
-        assert_eq!(emitted.cells.len(), 2);
+        assert_eq!((rasters[0].0, rasters[0].1), (6, 4));
+        assert!(
+            arena[rasters[0].2.clone()]
+                .iter()
+                .all(|&t| t == raster::texel(0.5)),
+            "only the partial columns store texels"
+        );
         let (emitted, _) = emit(&strip(&[], &[(10, 20)], 400), &mut arena).unwrap();
         assert_eq!(emitted.spans.len(), 1);
         assert_eq!(emitted.cells.len(), 0);
+    }
+
+    /// A cell leaves out only its widest full run. A narrower full run
+    /// stays inside as texels while they cost less than the instance a
+    /// second cell would add; wider, it becomes that cell's middle.
+    #[test]
+    fn a_second_full_run_splits_a_cell_only_when_its_texels_cost_more() {
+        let limit = size_of::<Instance>() / STRIP_H;
+        let wide = 1000;
+        let mut arena = Vec::new();
+        for (f, cells) in [(limit - 6, 1), (limit + 6, 2)] {
+            let second = 6 + wide;
+            let (emitted, _) = emit(
+                &strip(
+                    &[(0, 3), (3 + wide, second), (second + f, second + f + 3)],
+                    &[(3, 3 + wide), (second, second + f)],
+                    2000,
+                ),
+                &mut arena,
+            )
+            .unwrap();
+            assert_eq!((emitted.cells.len(), emitted.spans.len()), (cells, 0));
+            assert_eq!(emitted.cells[0].middle_width() as usize, wide);
+            if cells == 2 {
+                assert_eq!(emitted.cells[1].middle_width() as usize, f);
+            }
+        }
     }
 
     /// A column holding only floating-point residue uploads zero texels,
