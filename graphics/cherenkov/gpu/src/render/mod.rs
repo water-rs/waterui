@@ -3079,12 +3079,9 @@ type PlatformCommit = <planes::Platform as planes::SystemPlanes>::Commit;
 
 impl GpuRenderer {
     /// [`Renderer::add_image`]'s work, awaiting the device's report.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::future_not_send,
-            reason = "the browser engine is single-threaded and its futures run on the page's event loop"
-        )
+    #[expect(
+        clippy::future_not_send,
+        reason = "the renderer is not Send: native targets block on this future on the render thread, and the browser engine runs it on the page's event loop"
     )]
     async fn register_image(
         &mut self,
@@ -3100,12 +3097,9 @@ impl GpuRenderer {
     }
 
     /// [`Renderer::replace_image`]'s work, awaiting the device's report.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        expect(
-            clippy::future_not_send,
-            reason = "the browser engine is single-threaded and its futures run on the page's event loop"
-        )
+    #[expect(
+        clippy::future_not_send,
+        reason = "the renderer is not Send: native targets block on this future on the render thread, and the browser engine runs it on the page's event loop"
     )]
     async fn swap_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
@@ -3592,6 +3586,10 @@ impl Renderer for GpuRenderer {
     }
 
     #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
     fn add_image(
         &mut self,
         id: ImageId,
@@ -3606,6 +3604,10 @@ impl Renderer for GpuRenderer {
     }
 
     #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
     fn replace_image(
         &mut self,
         id: ImageId,
@@ -3613,6 +3615,7 @@ impl Renderer for GpuRenderer {
     ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
         self.swap_image(id, image)
     }
+
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {
         self.surfaces.get(&surface).is_some_and(|state| {
             state
