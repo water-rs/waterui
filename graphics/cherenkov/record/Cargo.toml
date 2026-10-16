@@ -13,6 +13,9 @@ serde = ["dep:serde", "color/serde", "kurbo/serde"]
 
 [dependencies]
 color = "0.3.3"
+# The working-space matrices (`filtrate_core::space`), the one definition
+# the engine's backends share.
+filtrate-core = { path = "../../filtrate/core" }
 kurbo = "0.13.1"
 nami-core = { version = "0.4", features = ["kurbo"] }
 rustc-hash = "2"

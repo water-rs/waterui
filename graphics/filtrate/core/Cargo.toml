@@ -42,3 +42,8 @@ std = []
 
 [dependencies]
 libm = "0.2"
+
+# The build script renders `space/constants.rs` into the WGSL fragment
+# `space::WGSL` through a typed template.
+[build-dependencies]
+askama = "0.16"

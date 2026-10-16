@@ -122,7 +122,7 @@ const SHADOW_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
 /// member-cap arrays.
 const ENGINE_WGSL0: &str = concat!(
     "const VARIANT: u32 = 0u;\n",
-    include_str!("shared.wgsl"),
+    include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
     "\n",
     include_str!("blend.wgsl")
@@ -130,7 +130,7 @@ const ENGINE_WGSL0: &str = concat!(
 /// The `VARIANT = 1` specialization (shadow).
 const ENGINE_WGSL1: &str = concat!(
     "const VARIANT: u32 = 1u;\n",
-    include_str!("shared.wgsl"),
+    include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
     "\n",
     include_str!("blend.wgsl")
@@ -138,7 +138,7 @@ const ENGINE_WGSL1: &str = concat!(
 /// The `VARIANT = 2` specialization (full).
 const ENGINE_WGSL2: &str = concat!(
     "const VARIANT: u32 = 2u;\n",
-    include_str!("shared.wgsl"),
+    include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
     "\n",
     include_str!("blend.wgsl")
@@ -149,7 +149,7 @@ const ENGINE_WGSL2: &str = concat!(
 const ENGINE_WGSL3: &str = concat!(
     "const VARIANT: u32 = 3u;\n",
     include_str!(concat!(env!("OUT_DIR"), "/union_max_members.wgsl")),
-    include_str!("shared.wgsl"),
+    include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
     include_str!("shader.wgsl"),
     "\n",
     include_str!("union.wgsl"),
@@ -333,7 +333,7 @@ const ENGINE: [Fixed; 4] = [
 
 /// `present.wgsl`, the presenter's module.
 const PRESENT: Fixed = Fixed {
-    wgsl: include_str!("present.wgsl"),
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/present.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::PRESENT,
     metallib: PRESENT_METALLIB,
@@ -342,7 +342,7 @@ const PRESENT: Fixed = Fixed {
 
 /// `shared.wgsl` plus `external.wgsl`, the external-frame module.
 const EXTERNAL: Fixed = Fixed {
-    wgsl: concat!(include_str!("shared.wgsl"), include_str!("external.wgsl")),
+    wgsl: concat!(include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")), include_str!("external.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::EXTERNAL,
     metallib: EXTERNAL_METALLIB,
@@ -353,7 +353,7 @@ const EXTERNAL: Fixed = Fixed {
 /// composite module (#84).
 const PROJECTIVE: Fixed = Fixed {
     wgsl: concat!(
-        include_str!("shared.wgsl"),
+        include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
         "\n",
         include_str!("blend.wgsl"),
         "\n",

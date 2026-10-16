@@ -115,12 +115,6 @@ fn shadow(s: Shape, p: vec2<f32>, sigma: f32) -> f32 {
     return clamp(acc, 0.0, 1.0);
 }
 
-fn srgb_encode(c: vec3<f32>) -> vec3<f32> {
-    let lo = c * 12.92;
-    let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
-    return select(hi, lo, c <= vec3<f32>(0.0031308));
-}
-
 // Returns false when EXTEND_NONE leaves t outside [0,1] — the caller
 // returns transparent. NaN fails the range test and is also rejected.
 fn extend_ok(t: f32, mode: u32) -> bool {
@@ -168,7 +162,7 @@ fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
     }
     var rgb = c.rgb;
     if interp == INTERP_SRGB {
-        rgb = SRGB_TO_P3 * srgb_decode(rgb);
+        rgb = SPACE_SRGB_TO_P3 * space_srgb_decode(rgb);
     }
     return vec4<f32>(rgb * c.a, c.a);
 }

@@ -8,17 +8,10 @@
 
 use crate::Image;
 use crate::color::{
-    hlg_encode_channel, hlg_inverse_ootf, linear_bt2020_to_linear_p3, linear_srgb_to_linear_p3,
+    hlg_encode_channel, hlg_inverse_ootf, linear_bt2020_to_linear_p3, linear_p3_to_linear_srgb,
+    linear_srgb_to_linear_p3,
     mat3_mul, pq_encode, srgb_decode, srgb_decode_extended, srgb_encode, srgb_encode_extended,
 };
-
-/// Linear Display P3 → linear sRGB — the Bradford-adapted D65 matrix of
-/// `present.wgsl`, the same constants in `f64`.
-const P3_TO_LINEAR_SRGB: [[f64; 3]; 3] = [
-    [1.224_940_2, -0.224_940_2, 0.0],
-    [-0.042_056_95, 1.042_056_9, 0.0],
-    [-0.019_637_55, -0.078_636_05, 1.098_273_6],
-];
 
 /// SDR white in nits — the BT.2408 reference white the absolute and
 /// relative HDR encodings calibrate against: working-space `1.0`
@@ -121,10 +114,7 @@ pub fn present_extended_srgb_linear(headroom: f64, image: &Image) -> Image {
             .iter()
             .map(|&p| {
                 let straight = straighten(p);
-                let srgb = mat3_mul(
-                    &P3_TO_LINEAR_SRGB,
-                    crate::tone::tone_map(headroom, straight),
-                );
+                let srgb = linear_p3_to_linear_srgb(crate::tone::tone_map(headroom, straight));
                 [srgb[0] * p[3], srgb[1] * p[3], srgb[2] * p[3], p[3]]
             })
             .collect(),
@@ -144,10 +134,7 @@ pub fn present_extended_srgb(headroom: f64, image: &Image) -> Image {
             .iter()
             .map(|&p| {
                 let straight = straighten(p);
-                let srgb = mat3_mul(
-                    &P3_TO_LINEAR_SRGB,
-                    crate::tone::tone_map(headroom, straight),
-                );
+                let srgb = linear_p3_to_linear_srgb(crate::tone::tone_map(headroom, straight));
                 [
                     srgb_encode_extended(srgb[0]) * p[3],
                     srgb_encode_extended(srgb[1]) * p[3],
@@ -395,7 +382,7 @@ fn present_srgb_pixel([r, g, b, a]: [f64; 4], target: f64) -> [f64; 4] {
     } else {
         [0.0; 3]
     };
-    let srgb = crate::gamut::gamut_map_srgb_analytic(mat3_mul(&P3_TO_LINEAR_SRGB, straight))
+    let srgb = crate::gamut::gamut_map_srgb_analytic(linear_p3_to_linear_srgb(straight))
         .map(srgb_encode);
     [srgb[0] * a, srgb[1] * a, srgb[2] * a, a]
 }

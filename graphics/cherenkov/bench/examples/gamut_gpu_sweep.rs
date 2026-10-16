@@ -13,33 +13,9 @@ use cherenkov_gpu::GpuConfig;
 use cherenkov_gpu::interop::{
     OutputAlpha, OutputColor, Presenter, SharedDevice, TextureOutput, shader_delivery, wgpu,
 };
-use cherenkov_oracle::color::srgb_encode;
+use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_decode_extended, srgb_encode};
 use cherenkov_oracle::gamut::{delta_e_ok, gamut_map_srgb_analytic, linear_srgb_to_oklab};
 use cherenkov_oracle::tone::tone_map;
-
-/// `present.wgsl`'s simplified P3 → linear sRGB matrix (the same
-/// constants, in `f64`).
-const P3_TO_LINEAR_SRGB: [[f64; 3]; 3] = [
-    [1.224_940_2, -0.224_940_2, 0.0],
-    [-0.042_056_95, 1.042_056_9, 0.0],
-    [-0.019_637_55, -0.078_636_05, 1.098_273_6],
-];
-
-fn mat3_mul(m: &[[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
-    [
-        m[0][0].mul_add(v[0], m[0][1].mul_add(v[1], m[0][2] * v[2])),
-        m[1][0].mul_add(v[0], m[1][1].mul_add(v[1], m[1][2] * v[2])),
-        m[2][0].mul_add(v[0], m[2][1].mul_add(v[1], m[2][2] * v[2])),
-    ]
-}
-
-fn srgb_decode(c: f64) -> f64 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
 
 /// The sweep's measurement reference: CSS Color 4 gamut mapping — `OKLCh`
 /// chroma binary search with the local-MINDE rule (`JND` = 0.02 `ΔE_OK`,
@@ -168,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // same effective sRGB input in f64 so both sides see identical data.
     let srgb_inputs: Vec<[f64; 3]> = samples
         .iter()
-        .map(|&p3| mat3_mul(&P3_TO_LINEAR_SRGB, tone_map(1.0, p3)))
+        .map(|&p3| linear_p3_to_linear_srgb(tone_map(1.0, p3)))
         .collect();
     let out_of_gamut = srgb_inputs
         .iter()
@@ -281,9 +257,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpu_linear = |i: usize| -> [f64; 3] {
         let base = (i as u32 / width) as usize * row as usize + (i as u32 % width) as usize * 4;
         [
-            srgb_decode(f64::from(bytes[base]) / 255.0),
-            srgb_decode(f64::from(bytes[base + 1]) / 255.0),
-            srgb_decode(f64::from(bytes[base + 2]) / 255.0),
+            srgb_decode_extended(f64::from(bytes[base]) / 255.0),
+            srgb_decode_extended(f64::from(bytes[base + 1]) / 255.0),
+            srgb_decode_extended(f64::from(bytes[base + 2]) / 255.0),
         ]
     };
 

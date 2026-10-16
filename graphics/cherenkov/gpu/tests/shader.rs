@@ -13,7 +13,7 @@ const SHADER: &str = include_str!("../src/render/shader.wgsl");
 /// `build.rs` ships.
 const SHADER_NO_UNION: &str = include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl"));
 const UNION_MAX: &str = include_str!(concat!(env!("OUT_DIR"), "/union_max_members.wgsl"));
-const SHARED: &str = include_str!("../src/render/shared.wgsl");
+const SHARED: &str = include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl"));
 const UNION: &str = include_str!("../src/render/union.wgsl");
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
 const PROJECTIVE: &str = include_str!("../src/render/projective.wgsl");

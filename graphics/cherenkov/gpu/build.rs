@@ -168,6 +168,21 @@ fn main() {
     ]
     .map(read);
 
+    // The working-space ↔ sRGB conversion every colour-converting module
+    // shares: filtrate-core's `space::WGSL`, rendered from the same
+    // constants as the CPU conversion. It precedes `shared.wgsl` (and so
+    // every module built on it), `present.wgsl` and the `color.wgsl`
+    // producer prelude; the composed sources land in `OUT_DIR`, where the
+    // runtime and the tests read them, so neither can drift from what this
+    // script compiles.
+    let space = filtrate_core::space::WGSL;
+    let shared = format!("{space}\n{shared}");
+    let present = format!("{space}\n{present}");
+    let color = format!("{space}\n{}", read("color"));
+    for (name, text) in [("shared", &shared), ("present", &present), ("color", &color)] {
+        std::fs::write(out_dir.join(format!("{name}.wgsl")), text).unwrap();
+    }
+
     // The union member cap the WGSL fold is compiled against:
     // `union_cap::UNION_MAX_MEMBERS` prepended like `VARIANT`, so the
     // Rust constant stays the single definition. The runtime assembles

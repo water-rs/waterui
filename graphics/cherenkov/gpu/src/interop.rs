@@ -305,7 +305,7 @@ pub fn shader_module(device: &wgpu::Device, label: &str, source: &str) -> wgpu::
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(
-            format!("{}\n{source}", include_str!("render/color.wgsl")).into(),
+            format!("{}\n{source}", include_str!(concat!(env!("OUT_DIR"), "/color.wgsl"))).into(),
         ),
     })
 }
