@@ -711,6 +711,45 @@ fn gaussian_tail_matches_erf() {
     assert!(g[34] > 1e-5);
 }
 
+/// A backdrop group's Gaussian blur is the same true Gaussian as a layer
+/// filter's: a captured vertical step edge, blurred with `σ = 3`, reads
+/// the analytic `½·erfc(d/(σ√2))` at every pixel centre. A tap-sampled
+/// kernel cut off at `⌈3σ⌉` is off by up to `1.7·10⁻³` and reports `0`
+/// past `3σ`.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pixel indices are far below 2^53"
+)]
+#[test]
+fn backdrop_blur_is_the_true_gaussian() {
+    let sigma = 3.0;
+    let (w, h) = (96usize, 8usize);
+    let mut b = Scene::builder(96, 8).clear(Color::srgb(0.0, 0.0, 0.0));
+    b.backdrop_group(BackdropGroup::new(
+        1,
+        vec![cherenkov_scene::BackdropFilter::GaussianBlur { sigma }],
+        1.0,
+        1,
+    ));
+    b.root().fill(
+        Shape::Rect(Rect::new(48.0, 0.0, 96.0, 8.0)),
+        Paint::Solid(Color::srgb(1.0, 1.0, 1.0)),
+    );
+    b.root().layer(|m| {
+        m.clip(Shape::Rect(Rect::new(0.0, 0.0, 96.0, 8.0)));
+        m.backdrop(1);
+    });
+    let img = Renderer::new(w, h)
+        .render(&b.build(), &tmp())
+        .expect("oracle render");
+    let inv = 1.0 / (sigma * std::f64::consts::SQRT_2);
+    for x in 24..72usize {
+        let want = 0.5 * libm::erfc((48.0 - (x as f64 + 0.5)) * inv);
+        let got = f64::from(img.pixels[4 * w + x][0]);
+        assert!((got - want).abs() < 1e-6, "x={x}: got {got}, want {want}");
+    }
+}
+
 /// HDR-FLIP runs a fixed exposure ladder — 0 EV (SDR white = 1.0) to
 /// +4 EV (16× white) in five steps — recorded on every metrics JSON so
 /// reports are self-describing and comparable across scenes.

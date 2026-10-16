@@ -24,8 +24,8 @@ use crate::render::instance::{
     ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
     FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
     KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
-    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID, PAINT_TEXTURE, Shape, Stop,
-    affine, blend_code,
+    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE, PAINT_RADIAL, PAINT_SOLID,
+    PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -94,6 +94,10 @@ pub enum ShaderVariant {
     /// `Full` plus the backdrop union field: the module carries the
     /// member-record fold and its ownership weights.
     Union,
+    /// `Full` with the gradient stop scan compiled to its upper-bound
+    /// binary form: clips, masks and strokes keep every other Full
+    /// behaviour; only the stop lookup differs.
+    LongGradient,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -453,15 +457,23 @@ fn interior_tier(inst: &Instance) -> u32 {
     u32::from(area >= ELLIPSE_TIER16_MIN_AREA) + u32::from(area >= ELLIPSE_TIER32_MIN_AREA)
 }
 
+/// Maximum stop count handled by the original linear-search module.
+const GRADIENT_LINEAR_STOPS: u32 = 8;
+
 /// The specialised fragment pipeline `inst` requires: the union variant
 /// for a backdrop member drawing against the group's shared field, the
-/// uber-shader when it reads rare fields (clip, mask, inner, strokes,
-/// non-solid paint), the shadow kernel otherwise for shadows, and the
-/// trivial coverage path for solid fills, spans, and glyphs.
+/// long-gradient module for a gradient past `GRADIENT_LINEAR_STOPS`,
+/// the uber-shader when it reads rare fields (clip, mask, inner,
+/// strokes, other non-solid paint), the shadow kernel otherwise for
+/// shadows, and the trivial coverage path for solid fills, spans, and
+/// glyphs.
 const fn variant_of(inst: &Instance) -> ShaderVariant {
     let flags = inst.meta[3] >> 24;
     if (flags & FLAG_UNION) != 0 {
         return ShaderVariant::Union;
+    }
+    if is_gradient(inst) && inst.meta[3] & 0xffff > GRADIENT_LINEAR_STOPS {
+        return ShaderVariant::LongGradient;
     }
     if (flags & (FLAG_HAS_CLIP | FLAG_HAS_MASK | FLAG_HAS_INNER)) != 0
         || inst.meta[1] != PAINT_SOLID
@@ -473,6 +485,31 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
         return ShaderVariant::Shadow;
     }
     ShaderVariant::Simple
+}
+
+/// Whether `inst` paints a linear, radial or sweep gradient.
+const fn is_gradient(inst: &Instance) -> bool {
+    matches!(
+        inst.meta[1] & 0xffff,
+        PAINT_LINEAR | PAINT_RADIAL | PAINT_SWEEP
+    )
+}
+
+/// The variant `inst` draws with when the open range draws with `open`:
+/// a gradient the uber-shader would draw joins an open long-gradient
+/// range instead. That module evaluates every linear, radial and sweep
+/// paint the uber-shader does, and its upper-bound search selects the
+/// same stop interval as the linear scan, so interleaved short and long
+/// gradients share one draw instead of switching pipelines per instance.
+const fn variant_after(open: ShaderVariant, inst: &Instance) -> ShaderVariant {
+    let variant = variant_of(inst);
+    if matches!(open, ShaderVariant::LongGradient)
+        && matches!(variant, ShaderVariant::Full)
+        && is_gradient(inst)
+    {
+        return ShaderVariant::LongGradient;
+    }
+    variant
 }
 
 /// The part of a shadow its following opaque fill hides, in shadow-local
@@ -706,20 +743,6 @@ impl InstanceTemplate {
             packed: inst.meta[3],
         }
     }
-
-    fn restore(&self) -> Instance {
-        let mut inst = Instance::new(0);
-        inst.affine[..6].copy_from_slice(&self.affine);
-        inst.shape = self.shape;
-        inst.inner = self.inner;
-        inst.color = self.color;
-        inst.grad = self.grad;
-        inst.grad2 = self.grad2;
-        inst.params[..2].copy_from_slice(&self.params);
-        inst.meta[1] = self.paint;
-        inst.meta[3] = self.packed;
-        inst
-    }
 }
 
 /// Fields that vary within one realized leaf. Shape, placement and paint are
@@ -733,18 +756,36 @@ pub struct RetainedInstance {
 }
 
 impl RetainedInstance {
-    fn restore(self, template: &InstanceTemplate, stop_base: u32) -> Instance {
-        let mut inst = template.restore();
-        inst.bounds = self.bounds;
-        inst.uv[..2].copy_from_slice(&self.uv);
-        inst.meta[0] = self.kind;
-        inst.meta[2] = self.first_stop
+    /// The instance `template` and this quad's fields describe; every
+    /// field the template does not keep takes `Instance::new`'s value.
+    /// Built as one literal from whole arrays: this runs once per retained
+    /// quad per frame, and a slice-range copy here costs an outlined
+    /// bounds-checked call plus a `memcpy` whenever the optimizer declines
+    /// to inline the range indexing.
+    const fn restore(self, template: &InstanceTemplate, stop_base: u32) -> Instance {
+        const BLANK: Instance = Instance::new(0);
+        let [a0, a1, a2, a3, a4, a5] = template.affine;
+        let [u0, u1] = self.uv;
+        let [p0, p1] = template.params;
+        let first_stop = self.first_stop
             + if self.kind == KIND_REGION {
                 0
             } else {
                 stop_base
             };
-        inst
+        Instance {
+            affine: [a0, a1, a2, a3, a4, a5, BLANK.affine[6], BLANK.affine[7]],
+            bounds: self.bounds,
+            shape: template.shape,
+            inner: template.inner,
+            color: template.color,
+            grad: template.grad,
+            grad2: template.grad2,
+            uv: [u0, u1, BLANK.uv[2], BLANK.uv[3]],
+            params: [p0, p1, BLANK.params[2], BLANK.params[3]],
+            meta: [self.kind, template.paint, first_stop, template.packed],
+            ..BLANK
+        }
     }
 }
 
@@ -758,17 +799,9 @@ pub const DEFERRED_REFS: u64 = 1 << 62;
 
 /// Per-operation device output under its sampled placement.
 pub struct Emission {
-    /// `(instance, pending raster, cell)` patch range in the producing
-    /// frame's `Lowering::emission_patches` — `inst_base << 32 | start
-    /// << 11 | len`, verbatim frame indices resolved at apply and never
-    /// carried past it, where `inst_base` is the first frame instance
-    /// slot the leaf occupied so apply and a same-frame recompose can
-    /// recover storage-local indices without copying the patch list.
-    /// The range indexes `emission_patches`, not `cell_patches`: frame
-    /// rollbacks truncate the latter but never the former, so a leaf
-    /// produced inside a rolled-back speculation keeps a valid range
-    /// (#119).
-    pub(crate) pending_cells: u64,
+    /// The leaf's `(instance, pending raster, cell)` patches in the
+    /// producing frame's `Lowering::emission_patches` (#119).
+    pub(crate) pending_cells: PendingCells,
     /// `(start << 32 | len)` range into `EmissionStorage::refs`
     /// holding the `(shelf slot, band epoch)` of every atlas band the
     /// retained instances sample. `DEFERRED_REFS` marks an emission
@@ -846,35 +879,69 @@ impl Emission {
     }
 
     /// The emission's patch range in the producing frame's
-    /// `Lowering::emission_patches`, unpacked from `pending_cells`
-    /// (#119).
+    /// `Lowering::emission_patches` (#119).
     pub(crate) const fn pending_cells(&self) -> Range<usize> {
-        let start = ((self.pending_cells >> 11) & 0x1F_FFFF) as usize;
-        start..start + (self.pending_cells & 0x7FF) as usize
+        self.pending_cells.range()
     }
 
     /// Whether the emission carries no pending cell patches.
     pub(crate) const fn pending_cells_empty(&self) -> bool {
-        self.pending_cells.trailing_zeros() >= 11
+        self.pending_cells.start == self.pending_cells.end
     }
 
     /// Frame instance index the pending-cell entries are relative to
     /// (#119).
     pub(crate) const fn cell_inst_base(&self) -> u32 {
-        (self.pending_cells >> 32) as u32
-    }
-
-    /// Pack `pending_cells` from the producing leaf's cell range and
-    /// its frame instance base (#119).
-    pub(crate) const fn pack_pending_cells(inst_base: u32, start: usize, len: usize) -> u64 {
-        debug_assert!(start < (1 << 21), "cell patch count fits 21 bits");
-        debug_assert!(len <= 0x7FF, "cells per leaf fit 11 bits");
-        ((inst_base as u64) << 32) | ((start as u64) << 11) | len as u64
+        self.pending_cells.inst_base
     }
 
     /// Clear the pending-cell extent after the commit applied it (#119).
     pub(crate) const fn clear_pending_cells(&mut self) {
-        self.pending_cells = 0;
+        self.pending_cells = PendingCells::NONE;
+    }
+}
+
+/// A leaf's cell patches: the range of the producing frame's
+/// `Lowering::emission_patches` its cells occupy, verbatim frame
+/// indices resolved at apply and never carried past it, and
+/// `inst_base`, the first frame instance slot the leaf occupied, so
+/// apply and a same-frame recompose recover storage-local indices
+/// without copying the patch list. The range indexes
+/// `emission_patches`, not `cell_patches`: frame rollbacks truncate the
+/// latter but never the former, so a leaf produced inside a
+/// rolled-back speculation keeps a valid range (#119).
+///
+/// Every bound is a full `u32`, the width of the instance indices the
+/// patches carry, so no leaf's cell count or position in the frame can
+/// overflow it (water-rs/waterui#2778).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingCells {
+    start: u32,
+    end: u32,
+    inst_base: u32,
+}
+
+impl PendingCells {
+    /// No pending patches.
+    pub const NONE: Self = Self {
+        start: 0,
+        end: 0,
+        inst_base: 0,
+    };
+
+    /// The leaf whose first frame instance is `inst_base` and whose
+    /// cells occupy `patches` of the frame's `emission_patches`.
+    pub fn new(inst_base: u32, patches: Range<usize>) -> Self {
+        Self {
+            start: u32::try_from(patches.start).expect("emission patch index fits u32"),
+            end: u32::try_from(patches.end).expect("emission patch index fits u32"),
+            inst_base,
+        }
+    }
+
+    /// The patch range, as indices into `emission_patches`.
+    pub const fn range(self) -> Range<usize> {
+        self.start as usize..self.end as usize
     }
 }
 
@@ -1188,6 +1255,9 @@ impl Isolation {
 pub struct Lowering<'a> {
     frame: &'a mut Frame,
     anchor_scratch: &'a mut AnchorScratch,
+    /// Path emission buffers, owned by the surface so their capacity
+    /// carries across frames.
+    raster_scratch: &'a mut path::EmitScratch,
     width: f32,
     height: f32,
     transform: Affine,
@@ -1311,11 +1381,13 @@ impl<'a> Lowering<'a> {
         frame: &'a mut Frame,
         size: (u32, u32),
         anchor_scratch: &'a mut AnchorScratch,
+        raster_scratch: &'a mut path::EmitScratch,
     ) -> Self {
         anchor_scratch.clear();
         Self {
             frame,
             anchor_scratch,
+            raster_scratch,
             width: size.0 as f32,
             height: size.1 as f32,
             transform: Affine::IDENTITY,
@@ -2235,14 +2307,14 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Starts a new draw range when the shader variant changes.
-    fn set_variant(&mut self, variant: ShaderVariant) {
-        if self
-            .frame
-            .open
-            .as_ref()
-            .is_some_and(|o| o.variant != variant)
-        {
+    /// Starts a new draw range when `inst` needs a different shader
+    /// variant from the open range's.
+    fn set_variant(&mut self, inst: &Instance) {
+        let Some(open) = &self.frame.open else {
+            return;
+        };
+        let variant = variant_after(open.variant, inst);
+        if open.variant != variant {
             self.end_segment();
             if let Some(open) = &mut self.frame.open {
                 open.variant = variant;
@@ -2254,7 +2326,7 @@ impl<'a> Lowering<'a> {
     /// specialised fragment variant. Under a pending clip mask the
     /// instance's `uv.zw` is patched after the mask is stored.
     fn push_instance(&mut self, inst: &Instance) {
-        self.set_variant(variant_of(inst));
+        self.set_variant(inst);
         if inst.meta[0] == KIND_FILL
             && let Some(open) = &self.frame.open
             && open.maybe_coverage
@@ -4007,15 +4079,10 @@ impl<'a> Lowering<'a> {
             .stops
             .extend_from_slice(&self.frame.stops[first_stop..]);
         cache.data = Some(Emission {
-            pending_cells: if first_epatch == self.emission_patches.len() {
-                0
-            } else {
-                Emission::pack_pending_cells(
-                    instance_base,
-                    first_epatch,
-                    self.emission_patches.len() - first_epatch,
-                )
-            },
+            pending_cells: PendingCells::new(
+                instance_base,
+                first_epatch..self.emission_patches.len(),
+            ),
             // `refs` pairs are derived at apply — deferred, so the
             // leaf check's stamp compare needs nothing extra for a
             // pending emission to hit inside its own frame, and a
@@ -4062,7 +4129,7 @@ impl<'a> Lowering<'a> {
             // kinds (fill/span/cell) all use the same shader specialization.
             let mut template = first.restore(&storage.templates[emission.template], offset);
             Self::apply_clip(&mut template, clip);
-            self.set_variant(variant_of(&template));
+            self.set_variant(&template);
             let first = self.frame.instances.len();
             check_instance_bound(first + retained.len());
             self.frame
@@ -4697,11 +4764,13 @@ impl<'a> Lowering<'a> {
             let device =
                 pl.raster * shader_path.unwrap_or_else(|| make.take().expect("path factory")());
             let (segments, bbox) = path::flatten_segments(&device, path::FLATTEN);
-            let Some(coverage) = path::rasterize(
+            let Some(emitted) = path::rasterize_emit(
                 &segments,
                 bbox,
                 (f64::from(self.width), f64::from(self.height)),
                 rule,
+                self.raster_scratch,
+                &mut self.path_arena,
             ) else {
                 // Missing the surface at this offset says nothing about
                 // other offsets — and an empty emission carries no bands,
@@ -4711,15 +4780,11 @@ impl<'a> Lowering<'a> {
                 break 'stored (PathEmit::default(), None);
             };
             self.paths += 1;
-            let (emit, cells) = path::emit(&coverage, &mut self.path_arena)?;
+            let (emit, cells, clipped) = emitted?;
             // Emission rects are relative to the placement offset; the
             // stored record keeps that frame.
             let stored = emit.translated(-pl.offset.x, -pl.offset.y);
-            let key = if coverage.clipped {
-                pl.key_exact()
-            } else {
-                pl.key
-            };
+            let key = if clipped { pl.key_exact() } else { pl.key };
             let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
             self.pending.push(PendingRaster::Path {
                 key,
@@ -4795,7 +4860,7 @@ impl<'a> Lowering<'a> {
         if quads.len() == 0 {
             return;
         }
-        self.set_variant(variant_of(template));
+        self.set_variant(template);
         let first = self.frame.instances.len();
         check_instance_bound(first + quads.len());
         self.frame.instances.resize(first + quads.len(), *template);
@@ -4871,6 +4936,7 @@ impl<'a> Lowering<'a> {
                 bbox,
                 (f64::from(self.width), f64::from(self.height)),
                 rule,
+                self.raster_scratch,
             ) else {
                 // Clipping to nothing at this offset draws nothing.
                 return Ok(());
@@ -5575,7 +5641,13 @@ mod tests {
     fn cached_margin_preserves_exact_transform_results() {
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         let transforms = [
             Affine::IDENTITY,
             Affine::scale_non_uniform(2.0, 3.0),
@@ -5594,6 +5666,34 @@ mod tests {
             let translated = Affine::new([a, b, c, d, 123.0, -456.0]);
             assert_eq!(lowering.margin(translated).to_bits(), expected);
         }
+    }
+
+    #[test]
+    fn short_gradients_join_an_open_long_gradient_range() {
+        let gradient = |stops: u32| {
+            let mut instance = Instance::new(KIND_FILL);
+            instance.meta[1] = PAINT_LINEAR;
+            instance.meta[3] = stops;
+            instance
+        };
+        let image = {
+            let mut instance = Instance::new(KIND_FILL);
+            instance.meta[1] = PAINT_IMAGE;
+            instance
+        };
+        let mut open = ShaderVariant::Simple;
+        let mut ranges = 0;
+        for instance in [2, 128, 8, 9, 2].map(gradient) {
+            let variant = variant_after(open, &instance);
+            ranges += usize::from(variant != open);
+            open = variant;
+        }
+        assert_eq!((open, ranges), (ShaderVariant::LongGradient, 2));
+        assert_eq!(variant_after(open, &image), ShaderVariant::Full);
+        assert_eq!(
+            variant_after(ShaderVariant::Full, &gradient(2)),
+            ShaderVariant::Full
+        );
     }
 
     #[test]
@@ -5665,7 +5765,13 @@ mod tests {
         let bitmaps = FxHashMap::default();
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         lowering.begin_pass(Target::Part(0), None);
         let glyphs = GlyphContext {
             atlas: &atlas,
@@ -5763,7 +5869,13 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         lowering.begin_pass(Target::Part(0), None);
         lowering
             .isolate(
@@ -5842,7 +5954,13 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         lowering.begin_pass(Target::Part(0), None);
         lowering
             .isolate(
@@ -5932,7 +6050,13 @@ mod tests {
     fn a_collapsed_shadow_emits_no_quads() {
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (64, 64), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (64, 64),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         let Some((device, _queue)) = device_and_queue() else {
             return;
         };
@@ -6232,7 +6356,13 @@ mod tests {
             };
             let mut frame = Frame::default();
             let mut anchor_scratch = AnchorScratch::default();
-            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            let mut raster_scratch = path::EmitScratch::new();
+            let mut lowering = Lowering::new(
+                &mut frame,
+                (32, 32),
+                &mut anchor_scratch,
+                &mut raster_scratch,
+            );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
                 .run(
@@ -6338,7 +6468,13 @@ mod tests {
             };
             let mut frame = Frame::default();
             let mut anchor_scratch = AnchorScratch::default();
-            let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+            let mut raster_scratch = path::EmitScratch::new();
+            let mut lowering = Lowering::new(
+                &mut frame,
+                (32, 32),
+                &mut anchor_scratch,
+                &mut raster_scratch,
+            );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
                 .run(
@@ -6391,7 +6527,13 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (32, 32),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
             .run(
@@ -6645,7 +6787,13 @@ mod tests {
         };
         let mut frame = Frame::default();
         let mut anchor_scratch = AnchorScratch::default();
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut anchor_scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (32, 32),
+            &mut anchor_scratch,
+            &mut raster_scratch,
+        );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
             .run(
@@ -6741,7 +6889,8 @@ mod tests {
         let mut frame = Frame::default();
         let mut scratch = AnchorScratch::default();
         assert_eq!(scratch.heap_bytes(), 0);
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch);
+        let mut raster_scratch = path::EmitScratch::new();
+        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch, &mut raster_scratch);
         lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
         lowering.backdrops.insert(7, plan(anchor_a, member));
         lowering.anchor_scratch.members.push((7, None, 2));

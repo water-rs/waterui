@@ -229,8 +229,8 @@ impl SharedDevice {
 /// with into [`SharedDevice`].
 ///
 /// # Errors
-/// [`EngineError`] when `adapter` is not a Vulkan adapter, or when the
-/// device cannot be created.
+/// [`EngineError`](crate::EngineError) when `adapter` is not a Vulkan
+/// adapter, or when the device cannot be created.
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 pub fn open_vulkan_device(
     adapter: &wgpu::Adapter,

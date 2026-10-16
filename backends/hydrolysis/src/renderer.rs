@@ -42,6 +42,7 @@ mod render;
 mod signals;
 #[cfg(test)]
 pub mod tests;
+mod top_edge;
 mod tree;
 mod views;
 
