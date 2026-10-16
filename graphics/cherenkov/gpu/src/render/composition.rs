@@ -340,11 +340,12 @@ pub struct Traffic {
 /// The fragment stage a tile pipeline composites with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
-    /// Solid and gradient paints.
+    /// The solid-paint stage.
     Simple,
     /// The silhouette-shadow stage.
     Shadow,
-    /// A full paint reading another slot.
+    /// The full paint stage, including gradients and
+    /// corresponding-pixel source reads.
     Source,
     /// The slot clear that reopens a logical image inside an epoch.
     Clear,
