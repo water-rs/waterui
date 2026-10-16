@@ -52,6 +52,8 @@ impl RenderNode {
             Self::Offset(node) => node.child.is_empty(),
             Self::Retain(node) => node.child.is_empty(),
             Self::Env(node) => node.child.is_empty(),
+            // A conditional's ghosts take no part in layout (§4.5): the host
+            // answers for its live content alone.
             Self::Dynamic(node) => node.child.borrow().is_empty(),
             Self::Wrapper(node) => node.child.is_empty(),
             Self::Fill(node) => node.child.is_empty(),

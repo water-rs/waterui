@@ -101,14 +101,11 @@ impl WpeController {
 
 impl CustomWebViewController for WpeController {
     fn open(&self, config: WebViewConfig) -> impl WebViewHandle {
-        let page = WpePage::new(self.runtime());
-        // Interception goes on the page's web context before any asset URL can
-        // navigate — the page still sits blank here.
-        let asset_origin = config.asset_server.map(|server| {
-            page.set_asset_server(server);
-            Url::new(ASSET_ORIGIN)
-        });
-        WpeWebViewHandle::new(page, asset_origin)
+        WpeWebViewHandle::new(WpePage::new(self.runtime()), config)
+    }
+
+    fn asset_origin(&self) -> Option<Url> {
+        Some(Url::new(ASSET_ORIGIN))
     }
 }
 
@@ -127,9 +124,6 @@ type RedirectSubscription = Option<(Computed<bool>, BoxWatcherGuard)>;
 #[derive(Clone)]
 pub struct WpeWebViewHandle {
     page: WpePage,
-    /// The `waterui://localhost` origin this view serves, when it was opened
-    /// with an asset server.
-    asset_origin: Option<Url>,
     redirects: Rc<RefCell<RedirectSubscription>>,
 }
 
@@ -142,12 +136,12 @@ impl core::fmt::Debug for WpeWebViewHandle {
 }
 
 impl WpeWebViewHandle {
-    /// Creates a standard handle around `page`.
-    ///
-    /// `asset_origin` is `Some` when the page was armed with an asset server —
-    /// see [`WpeController::open`](crate::WpeController#impl-CustomWebViewController).
+    /// Creates a standard handle around a blank `page`, configured with
+    /// `config` before anything can navigate it: the asset server on the
+    /// page's web context, the admission rules, the bridge and the
+    /// creation-time scripts.
     #[must_use]
-    pub fn new(page: WpePage, asset_origin: Option<Url>) -> Self {
+    pub fn new(page: WpePage, config: WebViewConfig) -> Self {
         // Transport first: the shared script calls `__wateruiSend`, so the adapter
         // onto WPE's single WebKit message handler has to exist before it runs.
         page.add_script(TRANSPORT_SCRIPT_KEY, TRANSPORT_SCRIPT, false);
@@ -156,9 +150,19 @@ impl WpeWebViewHandle {
             waterui_webview::DOCUMENT_START_SCRIPT,
             false,
         );
+        for script in config.user_scripts() {
+            page.add_script(
+                &script.key,
+                &script.source,
+                script.time == ScriptInjectionTime::DocumentEnd,
+            );
+        }
+        page.set_bridge_origins(config.bridge_origins);
+        if let Some(server) = config.asset_server {
+            page.set_asset_server(server);
+        }
         Self {
             page,
-            asset_origin,
             redirects: Rc::new(RefCell::new(None)),
         }
     }
@@ -171,10 +175,6 @@ impl WpeWebViewHandle {
 }
 
 impl WebViewHandle for WpeWebViewHandle {
-    fn asset_origin(&self) -> Option<Url> {
-        self.asset_origin.clone()
-    }
-
     fn go_back(&self) {
         self.page.go_back();
     }
@@ -194,10 +194,6 @@ impl WebViewHandle for WpeWebViewHandle {
 
     fn add_handler(&self, name: &str, handler: Box<waterui_webview::ScriptMessageHandler>) {
         self.page.add_handler(name, handler);
-    }
-
-    fn set_bridge_origins(&self, policy: waterui_webview::OriginPolicy) {
-        self.page.set_bridge_origins(policy);
     }
 
     fn remove_handler(&self, name: &str) {
@@ -264,7 +260,9 @@ impl WebViewHandle for WpeWebViewHandle {
         reason = "WPE WebKit and WaterUI view state are confined to the UI thread"
     )]
     async fn run_javascript(&self, script: &str) -> Result<suiteki::Str, suiteki::Str> {
-        self.page.run_javascript(script).await
+        self.page
+            .run_javascript(&waterui_webview::raw_evaluation(script))
+            .await
     }
 
     #[expect(

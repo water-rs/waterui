@@ -82,6 +82,7 @@ impl RedrawHandle {
 
 /// The engine's device, handed to [`GpuContent::setup`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Context<'a> {
     /// The adapter the device was created from.
     pub adapter: &'a Adapter,

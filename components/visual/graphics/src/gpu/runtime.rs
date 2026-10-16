@@ -27,6 +27,7 @@ use cherenkov_gpu::{
 
 /// Why a [`GpuRuntime`] could not be created.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GpuRuntimeError {
     /// No adapter satisfied the request.
     #[error("no compatible GPU adapter: {0}")]

@@ -20,7 +20,7 @@ use cocoa_ui::scroll::{
     ScrollObservation, enclosing_scroll_view, observe_scroll_viewport, scroll_viewport,
 };
 use cocoa_ui::{Rect, Retained, view};
-use waterui::id::{Id as RawId, SelfId};
+use waterui::id::Id as RawId;
 use waterui::layout::container::LazyContainer;
 use waterui::layout::stack::{Axis, LazyStackAxis, lazy_stack_axis};
 use waterui::reactive::Signal;
@@ -44,7 +44,7 @@ use cocoa_ui::appkit::{HitTest, HostView};
 use cocoa_ui::uikit::{HitTest, HostView};
 
 /// A child's identity: the collection id `AnyViews` answers for an index.
-type ItemId = SelfId<RawId>;
+type ItemId = RawId;
 
 /// `resolveVisibleWindow`'s answer: the first index inside the range, one
 /// past the last, and the offset the first starts at.
@@ -934,31 +934,27 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // event only records into `pending` while a transaction is
         // active; otherwise it delivers immediately, so an emission
         // inside a child's own materialization can never collide with
-        // the borrow that materialization holds. The subscription itself
-        // runs inside a transaction — `watch` emits synchronously at
-        // subscribe while `state.borrow()` is held, and recording lets
-        // that first emission deliver once the borrow releases.
-        let watcher = with_children_tx(&state, &pending, || {
-            state.borrow().contents.watch(.., {
-                let state = Rc::clone(&state);
-                let pending = Rc::clone(&pending);
-                move |ctx, _change| {
-                    let snapshot = ctx.value().clone();
-                    let metadata = ctx.metadata().clone();
-                    let ids: Vec<ItemId> = snapshot
-                        .range()
-                        .filter_map(|index| snapshot.get_id(index))
-                        .collect();
-                    let in_transaction = {
-                        let mut pending = pending.borrow_mut();
-                        pending.record(snapshot, ids, metadata);
-                        pending.depth > 0
-                    };
-                    if !in_transaction {
-                        deliver_children(&state, &pending);
-                    }
+        // the borrow that materialization holds. Subscribing delivers
+        // nothing: the initial population below reads the snapshot.
+        let watcher = state.borrow().contents.watch(.., {
+            let state = Rc::clone(&state);
+            let pending = Rc::clone(&pending);
+            move |ctx, _change| {
+                let snapshot = ctx.value().clone();
+                let metadata = ctx.metadata().clone();
+                let ids: Vec<ItemId> = snapshot
+                    .range()
+                    .filter_map(|index| snapshot.get_id(index))
+                    .collect();
+                let in_transaction = {
+                    let mut pending = pending.borrow_mut();
+                    pending.record(snapshot, ids, metadata);
+                    pending.depth > 0
+                };
+                if !in_transaction {
+                    deliver_children(&state, &pending);
                 }
-            })
+            }
         });
 
         // The layout's own invalidation signal — `wuiLayout.setOwner` +

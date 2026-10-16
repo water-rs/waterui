@@ -347,11 +347,11 @@ fn my_card() -> impl View {
 
 Symbol format: `waterui_preview_{crate_name}_{fn_name}` (crate name included to avoid conflicts).
 
-The preview system:
-1. Builds the project as a dylib
-2. Launches a preview app that loads the dylib
-3. Renders the view to PNG via native rendering pipeline
-4. Supports macOS, iOS Simulator, and Android
+The preview system builds and runs a generated preview binary in-process; the platform's backend renders the view to PNG:
+
+- `--platform macos` / `--platform ios`: a generated Apple preview binary (`waterui-apple/preview`) — AppKit on macOS, UIKit through Mac Catalyst for iOS, no simulator
+- `--platform android`: the Hydrolysis preview host's instrumentation on a connected device, over `adb`
+- `--platform linux` / `--platform windows`: a generated Hydrolysis preview binary
 
 ## Architecture Overview
 

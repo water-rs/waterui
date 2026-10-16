@@ -15,6 +15,7 @@ use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 
 /// RGBA8 frame captured from a headless hydrolysis render pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Snapshot {
     /// Frame width in pixels.
     pub width: u32,

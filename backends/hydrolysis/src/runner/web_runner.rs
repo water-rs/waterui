@@ -479,13 +479,29 @@ pub fn run(app: App, style: impl crate::Style) {
         // seeded from the collection, and a self-drawn component that typesets
         // text itself reads it out of the environment instead of building a
         // collection of its own.
-        let (mut platform, (fonts, deferred_fonts)) = futures::join!(
+        let (platform, (fonts, deferred_fonts)) = futures::join!(
             BrowserWindow::new(
                 Rc::clone(&browser_schedule),
                 Rc::clone(&browser_occlusion_wake),
             ),
             load_web_fonts()
         );
+        // A browser without WebGPU cannot host the window. The page shows why
+        // in place of the app, and the runner ends here rather than panicking:
+        // a panic traps the wasm instance inside the executor's poll, which
+        // leaves the executor wedged and panicking again on its next task.
+        let mut platform = match platform {
+            Ok(platform) => platform,
+            Err(error) => {
+                tracing::error!(
+                    cause = %std::error::Error::source(&error)
+                        .expect("every BrowserGpuUnavailable carries the browser's error"),
+                    "hydrolysis web runner: {error}"
+                );
+                crate::platform::report_fatal_error(&error.to_string());
+                return;
+            }
+        };
         platform.apply_properties(&window);
         // The root content lays out inside the page's safe area while
         // backgrounds reach under the browser and system chrome around it.

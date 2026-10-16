@@ -1,5 +1,6 @@
-//! The `AppKit` preview entry's own suite — `preview::run` end to end, one
-//! run per child process.
+//! The preview entry's own suite — `preview::run` end to end, one run per
+//! child process, for the `AppKit` realization on macOS and the `UIKit`
+//! realization on Mac Catalyst.
 //!
 //! `run` initializes the process exactly once — startup installs the panic
 //! hook, the tracing subscriber and the executors, and a second call fails
@@ -11,10 +12,17 @@
 //! application before and after, and checks the child's exit status, its
 //! stderr and the PNG it wrote.
 
-// The suite only exists on `AppKit` — the preview entry does too. A
-// target must still own a `main` on every other OS, so the whole suite
-// sits behind the gate and the entry point stays unconditional.
-#[cfg(target_os = "macos")]
+// On Mac Catalyst the executable is exec'd without a bundle: its embedded
+// `Info.plist` puts `UIKit` under the iPad idiom, the contract a generated
+// preview binary keeps the same way.
+#[cfg(catalyst)]
+waterui_apple::preview_info_plist!();
+
+// The suite only exists where the preview entry does — `AppKit` and Mac
+// Catalyst. A target must still own a `main` on every other OS, so the
+// whole suite sits behind the gate and the entry point stays
+// unconditional.
+#[cfg(any(target_os = "macos", catalyst))]
 mod suite {
 
     use std::ffi::c_void;
@@ -22,7 +30,9 @@ mod suite {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant};
 
+    #[cfg(target_os = "macos")]
     use cocoa_ui::MainThreadMarker;
+    #[cfg(target_os = "macos")]
     use cocoa_ui::objc2_app_kit::{NSApplication, NSApplicationActivationPolicy, NSWorkspace};
     use cocoa_ui::objc2_core_foundation::{CFBoolean, CFDictionary, CFNumber, CFNumberType};
     use cocoa_ui::objc2_core_graphics::{
@@ -34,7 +44,8 @@ mod suite {
     use waterui::{AnyView, ResourceContext};
     use waterui_apple::preview::PreviewError;
     use waterui_preview_protocol::run::{
-        PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode, RunConfigError,
+        DEFAULT_CONTENT_DEADLINE, PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
+        RunConfigError,
     };
 
     /// The argument that turns a spawned copy of this binary into a
@@ -63,13 +74,14 @@ mod suite {
             std::process::exit(child(&slug));
         }
         let mut args = Arguments::from_args();
-        // `AppKit` objects may only be built on the real main thread; `run`
+        // Native objects may only be built on the real main thread; `run`
         // executes sequentially in the calling thread at one thread.
         args.test_threads = Some(1);
         libtest_mimic::run(&args, trials()).exit();
     }
 
     /// The real main thread — this binary runs every case there.
+    #[cfg(target_os = "macos")]
     fn mtm() -> MainThreadMarker {
         MainThreadMarker::new().expect("the suite runs on the process's main thread")
     }
@@ -80,6 +92,27 @@ mod suite {
         vec![
             Trial::test("preview::captures_the_issue_view_set_windowless", || {
                 run_trial("view_set", Expect::Png);
+                Ok(())
+            }),
+            Trial::test("preview::awaits_an_image_asset_decode", || {
+                run_trial("image_asset", Expect::Png);
+                Ok(())
+            }),
+            Trial::test(
+                "preview::fails_naming_content_still_owed_at_the_deadline",
+                || {
+                    run_trial(
+                        "content_deadline",
+                        Expect::Failure("still owes content after 200ms"),
+                    );
+                    Ok(())
+                },
+            ),
+            Trial::test("preview::fails_naming_content_that_failed_to_load", || {
+                run_trial(
+                    "content_failed",
+                    Expect::Failure("failed to load its content"),
+                );
                 Ok(())
             }),
             #[cfg(feature = "gpu_surface")]
@@ -230,6 +263,21 @@ mod suite {
     fn child(slug: &str) -> i32 {
         let result: Result<(), Box<dyn std::error::Error>> = match slug {
             "view_set" => image_run("view_set", 390.0, 760.0, issue_view_set).map_err(Into::into),
+            "image_asset" => {
+                image_run("image_asset", 200.0, 200.0, image_asset_view).map_err(Into::into)
+            }
+            "content_deadline" => content_run(
+                "content_deadline",
+                Duration::from_millis(200),
+                never_loading_view,
+            )
+            .map_err(Into::into),
+            "content_failed" => content_run(
+                "content_failed",
+                DEFAULT_CONTENT_DEADLINE,
+                missing_image_view,
+            )
+            .map_err(Into::into),
             #[cfg(feature = "gpu_surface")]
             "gpu_set" => image_run("gpu_set", 390.0, 760.0, gpu_set).map_err(Into::into),
             "scenario" => error_run("scenario", |dir| PreviewRunMode::Scenario {
@@ -276,19 +324,52 @@ mod suite {
         );
         if result.is_ok() {
             tracing::info!("preview capture written to {}", output.display());
-            let mtm = mtm();
-            let application = NSApplication::sharedApplication(mtm);
-            assert_eq!(
-                application.activationPolicy(),
-                NSApplicationActivationPolicy::Prohibited,
-                "the capture process must hold the Prohibited activation policy"
-            );
-            assert!(
-                !application.isActive(),
-                "the capture process must never take focus"
-            );
+            assert_background_application();
         }
         result
+    }
+
+    /// The capture process holds the `Prohibited` activation policy and
+    /// never took focus.
+    #[cfg(target_os = "macos")]
+    fn assert_background_application() {
+        let application = NSApplication::sharedApplication(mtm());
+        assert_eq!(
+            application.activationPolicy(),
+            NSApplicationActivationPolicy::Prohibited,
+            "the capture process must hold the Prohibited activation policy"
+        );
+        assert!(
+            !application.isActive(),
+            "the capture process must never take focus"
+        );
+    }
+
+    /// The capture process holds the `Prohibited` activation policy and
+    /// never took focus — read from the process's `NSApplication` by name,
+    /// since the iOS SDK declares no `AppKit` binding.
+    #[cfg(catalyst)]
+    fn assert_background_application() {
+        use cocoa_ui::objc2::msg_send;
+        use cocoa_ui::objc2::rc::Retained;
+        use cocoa_ui::objc2::runtime::{AnyClass, AnyObject};
+        /// `NSApplicationActivationPolicyProhibited`.
+        const PROHIBITED: isize = 2;
+        let class = AnyClass::get(c"NSApplication").expect("Catalyst loads AppKit");
+        // SAFETY: `+sharedApplication`, `-activationPolicy` and `-isActive`
+        // are `NSApplication`'s, called on the main thread with the
+        // signatures `AppKit` declares.
+        let (policy, active) = unsafe {
+            let application: Retained<AnyObject> = msg_send![class, sharedApplication];
+            let policy: isize = msg_send![&*application, activationPolicy];
+            let active: bool = msg_send![&*application, isActive];
+            (policy, active)
+        };
+        assert_eq!(
+            policy, PROHIBITED,
+            "the capture process must hold the Prohibited activation policy"
+        );
+        assert!(!active, "the capture process must never take focus");
     }
 
     /// A run that must fail: `mode` is written to a real run-configuration
@@ -337,16 +418,29 @@ mod suite {
         height: f32,
         view: impl FnOnce() -> AnyView + 'static,
     ) -> Result<(), PreviewError> {
+        run_with_deadline(slug, mode, width, height, DEFAULT_CONTENT_DEADLINE, view)
+    }
+
+    /// [`run_with_config`] with an explicit content deadline.
+    fn run_with_deadline(
+        slug: &str,
+        mode: PreviewRunMode,
+        width: f32,
+        height: f32,
+        content_deadline: Duration,
+        view: impl FnOnce() -> AnyView + 'static,
+    ) -> Result<(), PreviewError> {
         let dir = output_dir();
         fs::create_dir_all(&dir).expect("the preview capture directory is creatable");
         let config_path = dir.join(format!("{slug}.run-config.json"));
         fs::write(
             &config_path,
-            serde_json::to_string_pretty(&PreviewRunConfig {
+            serde_json::to_string_pretty(&PreviewRunConfig::new(
                 width,
                 height,
                 mode,
-            })
+                content_deadline,
+            ))
             .expect("a run configuration serializes"),
         )
         .expect("the run configuration writes");
@@ -389,10 +483,34 @@ mod suite {
 
     /// `pid` of the workspace's frontmost application — `NSWorkspace`'s
     /// answer for "who holds focus".
+    #[cfg(target_os = "macos")]
     fn frontmost_application() -> Option<i64> {
         NSWorkspace::sharedWorkspace()
             .frontmostApplication()
             .map(|app| i64::from(app.processIdentifier()))
+    }
+
+    /// See the macOS function — `NSWorkspace` read by name, since the iOS
+    /// SDK declares no `AppKit` binding.
+    #[cfg(catalyst)]
+    fn frontmost_application() -> Option<i64> {
+        use cocoa_ui::objc2::msg_send;
+        use cocoa_ui::objc2::rc::Retained;
+        use cocoa_ui::objc2::runtime::{AnyClass, AnyObject};
+        let class = AnyClass::get(c"NSWorkspace").expect("Catalyst loads AppKit");
+        // SAFETY: `+sharedWorkspace`, `-frontmostApplication` and
+        // `-processIdentifier` are `NSWorkspace`'s and
+        // `NSRunningApplication`'s, called with the signatures `AppKit`
+        // declares.
+        unsafe {
+            let workspace: Retained<AnyObject> = msg_send![class, sharedWorkspace];
+            let frontmost: Option<Retained<AnyObject>> =
+                msg_send![&*workspace, frontmostApplication];
+            frontmost.map(|app| {
+                let pid: libc::pid_t = msg_send![&*app, processIdentifier];
+                i64::from(pid)
+            })
+        }
     }
 
     /// `kCGWindowNumber` of every onscreen window `pid` owns — empty when
@@ -450,7 +568,7 @@ mod suite {
         read.then_some(number)
     }
 
-    /// The issue's plain-`AppKit` set: text and a wrapped paragraph, buttons
+    /// The issue's plain native set: text and a wrapped paragraph, buttons
     /// both styles, toggle, slider, stepper, a text field with text, picker,
     /// progress, an image asset, filled shapes and a gradient, a material
     /// background and a scroll view.
@@ -462,11 +580,9 @@ mod suite {
         // `image.png` is generated into the run's assets directory by
         // `run_with_config` before `run` mounts this view — the same
         // directory the run's explicit `ResourceContext` mounts as
-        // `Bundle::main()`'s root. `ImageAsset` resolves there but loads
-        // through `Photo`'s asynchronous decode, which this
-        // first-presented-frames capture does not wait on — its blank
-        // slot is water-rs/waterui#2149, kept visible here rather than
-        // worked around.
+        // `Bundle::main()`'s root. `ImageAsset` resolves there and loads
+        // through `Photo`'s asynchronous decode, which the capture awaits
+        // through the content ledger.
         let wifi = Binding::bool(true);
         let level = Binding::f64(0.6);
         let count = Binding::i32(1);
@@ -525,6 +641,50 @@ mod suite {
     .anyview()
     }
 
+    /// One image asset, large enough to read: the capture must show the
+    /// decoded image, not the empty slot its asynchronous load starts as.
+    fn image_asset_view() -> AnyView {
+        waterui::ImageAsset::new(waterui::Bundle::main(), "image.png")
+            .size(160.0, 160.0)
+            .padding()
+            .anyview()
+    }
+
+    /// A `Suspense` whose content never arrives: the capture fails at its
+    /// content deadline, naming it.
+    fn never_loading_view() -> AnyView {
+        waterui::widget::suspense::Suspense::new(core::future::pending::<waterui::text::Text>())
+            .loading(text("loading"))
+            .anyview()
+    }
+
+    /// An image asset whose file does not exist: its load fails and the
+    /// capture reports the failure, naming it.
+    fn missing_image_view() -> AnyView {
+        waterui::ImageAsset::new(waterui::Bundle::main(), "missing.png")
+            .size(48.0, 48.0)
+            .anyview()
+    }
+
+    /// A content-ledger run that must fail: an image run whose `view` owes
+    /// content the capture never receives, under `content_deadline`.
+    fn content_run(
+        slug: &str,
+        content_deadline: Duration,
+        view: impl FnOnce() -> AnyView + 'static,
+    ) -> Result<(), PreviewError> {
+        run_with_deadline(
+            slug,
+            PreviewRunMode::Image {
+                output: output_dir().join(format!("{slug}.png")),
+            },
+            200.0,
+            200.0,
+            content_deadline,
+            view,
+        )
+    }
+
     /// The GPU-surface set: a shader canvas and filtered views — the content
     /// the `cacheDisplay` capture only shows once the surfaces' first frames
     /// have presented.
@@ -546,10 +706,10 @@ mod suite {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", catalyst))]
 fn main() {
     suite::run();
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", catalyst)))]
 fn main() {}

@@ -40,7 +40,6 @@ waterui-gtk-version = "0.2.1"
 waterui-locale-version = "0.5.1"
 waterui-mcp-version = "0.5.1"
 waterui-preview-protocol-version = "0.5.1"
-waterui-preview-version = "0.5.1"
 waterui-testing-version = "0.5.1"
 waterui-version = "0.5.2"
 waterui-winui-git = "https://github.com/water-rs/waterui-winui"
@@ -78,10 +77,6 @@ git = "https://github.com/water-rs/waterui"
 rev = "896613fec9202cc9e9fd7cc7dc4b06afa54cce50"
 
 [framework.packages.waterui-mcp]
-git = "https://github.com/water-rs/waterui"
-rev = "896613fec9202cc9e9fd7cc7dc4b06afa54cce50"
-
-[framework.packages.waterui-preview]
 git = "https://github.com/water-rs/waterui"
 rev = "896613fec9202cc9e9fd7cc7dc4b06afa54cce50"
 
@@ -405,10 +400,6 @@ rev = "896613fec9202cc9e9fd7cc7dc4b06afa54cce50"
 [framework.patches.crates-io.waterui-particle]
 git = "https://github.com/water-rs/particle"
 rev = "bf663af85211d1f0bcce511b94ac435efad046a6"
-
-[framework.patches.crates-io.waterui-preview]
-git = "https://github.com/water-rs/waterui"
-rev = "896613fec9202cc9e9fd7cc7dc4b06afa54cce50"
 
 [framework.patches.crates-io.waterui-preview-protocol]
 git = "https://github.com/water-rs/waterui"

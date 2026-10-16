@@ -282,10 +282,12 @@ jobs:
   # Platform split: macOS ties GUI app launch to the console login session,
   # so a headless sudo'd account cannot `water run` — the macOS leg runs
   # doctor and the scaffold/build/package cycle as the fresh user, then
-  # smoke-runs the app as the runner (console) user. Linux runs the GTK4 app
-  # under `xvfb-run` inside the fresh account; `xvfb` is test harness, not a
-  # doctor-managed dependency. Windows launches the whole flow as the fresh
-  # user via `Start-Process -Credential` in the runner's session. The Android
+  # smoke-runs the app as the runner (console) user. Linux runs the
+  # Hydrolysis app under `xvfb-run` inside the fresh account; `xvfb` is test
+  # harness, not a doctor-managed dependency. The experimental GTK4 backend's
+  # fresh-user leg lives in water-rs/gtk-backend's own nightly. Windows
+  # launches the whole flow as the fresh user via `Start-Process -Credential`
+  # in the runner's session. The Android
   # leg on Ubuntu stops at packaging — `water run` needs a device — and
   # packages both the debug and the release APK (#2290).
   cli-e2e:
@@ -307,7 +309,7 @@ jobs:
           - name: Ubuntu
             os: ubuntu-latest
             platform: linux
-            backend: gtk4
+            backend: hydrolysis
           - name: Android
             os: ubuntu-latest
             platform: android
@@ -535,6 +537,12 @@ jobs:
               fail "doctor --fix reported failed installs in the Android project"
             fi
           fi
+          # Builds never touch the network: declared remote fonts must be in
+          # the font cache already, so fetch them before building (#2638).
+          phase "water fetch e2eapp"
+          water fetch --path e2eapp 2>&1 | tee e2e-logs/fetch-app.log \
+            || fail "water fetch failed"
+
           phase "water build e2eapp"
           (cd e2eapp && water build --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
             2>&1 | tee ../e2e-logs/build-app.log) || fail "water build failed"
@@ -587,6 +595,16 @@ jobs:
               | tee ../e2e-logs/preview-apple.log) \
               || fail "water preview failed"
             [ -s e2e-logs/preview-apple.png ] || fail "water preview wrote no PNG"
+
+            phase "water preview e2eapp (apple, ios)"
+            # `--platform ios` builds the same generated preview package for
+            # Mac Catalyst and execs it here — the UIKit realization, with no
+            # simulator. Its target is the one `water doctor --fix` installs.
+            (cd e2eapp && water preview main --platform ios \
+              --output ../e2e-logs/preview-apple-ios.png 2>&1 \
+              | tee ../e2e-logs/preview-apple-ios.log) \
+              || fail "water preview --platform ios failed"
+            [ -s e2e-logs/preview-apple-ios.png ] || fail "water preview --platform ios wrote no PNG"
           fi
           SCRIPT
 
@@ -647,6 +665,12 @@ jobs:
           water create e2eapp --waterui-path $wateruiSrc 2>&1 |
             Tee-Object "$logs\create-app.log"
           if ($LASTEXITCODE -or -not (Test-Path "e2eapp\Water.toml")) { Fail "water create failed" }
+
+          # Builds never touch the network: declared remote fonts must be in
+          # the font cache already, so fetch them before building (#2638).
+          Phase "water fetch e2eapp"
+          water fetch --path e2eapp 2>&1 | Tee-Object "$logs\fetch-app.log"
+          if ($LASTEXITCODE) { Fail "water fetch failed" }
 
           Push-Location e2eapp
           Phase "water build e2eapp"

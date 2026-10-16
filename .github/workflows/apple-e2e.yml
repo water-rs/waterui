@@ -47,6 +47,15 @@ on:
     - cron: "23 5 * * 0"
   workflow_call:
     inputs:
+      # A called run inherits its caller's event name, so the Nightly's
+      # scheduled call reports `schedule` like this workflow's own Sunday
+      # trigger. This input tells them apart: a call runs the full suite,
+      # the Sunday trigger (where `inputs` is empty) only the trend series.
+      full_suite:
+        description: Run the e2e suite (the certification legs)
+        required: false
+        type: boolean
+        default: true
       release_metrics:
         description: Also run the release-metrics measurement legs
         required: false
@@ -122,6 +131,10 @@ jobs:
         id: setup
         run: ./.github/scripts/setup-e2e.sh
 
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
+
       # The packaging legs fan out over a matrix of example groups; the
       # partition is computed here, once, from the same discovered set the
       # packaging script sees, so every leg certifies the same set and a
@@ -177,7 +190,7 @@ jobs:
     name: build-ios-${{ matrix.group.i }}
     needs: prepare
     runs-on: macos-26
-    if: github.event_name != 'schedule'
+    if: (github.event_name != 'schedule' || inputs.full_suite)
     # A group's share is ~10 min of thin-LTO packaging warm plus setup and
     # upload; a cold-cache night adds one framework build to the leg's first
     # example. 60 minutes keeps a wide margin over both.
@@ -229,6 +242,10 @@ jobs:
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
 
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
+
       - name: Package this group's iOS examples
         env:
           PLATFORM: ios
@@ -277,7 +294,7 @@ jobs:
     name: build-macos-${{ matrix.group.i }}
     needs: prepare
     runs-on: macos-26
-    if: github.event_name != 'schedule'
+    if: (github.event_name != 'schedule' || inputs.full_suite)
     # A group's share is ~10 min of thin-LTO packaging warm plus setup and
     # upload; a cold-cache night adds one framework build to the leg's first
     # example. 60 minutes keeps a wide margin over both.
@@ -328,6 +345,10 @@ jobs:
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
 
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
+
       - name: Package this group's macOS examples
         env:
           PLATFORM: macos
@@ -376,7 +397,7 @@ jobs:
     name: e2e-ios-${{ matrix.shard }}
     needs: [prepare, build-ios]
     runs-on: macos-26
-    if: github.event_name != 'schedule'
+    if: (github.event_name != 'schedule' || inputs.full_suite)
     # ~7 examples × ~3 min of launch/settle/capture/twin/compare plus
     # simulator boot and the artifact download — no compile. 45 minutes keeps
     # a wide margin over the ~30 measured.
@@ -443,6 +464,10 @@ jobs:
             --cellularBars 4 \
             --wifiBars 3
 
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
+
       - name: Run iOS e2e shard
         env:
           PLATFORM: ios
@@ -498,7 +523,7 @@ jobs:
     name: e2e-macos-${{ matrix.shard }}
     needs: [prepare, build-macos]
     runs-on: macos-26
-    if: github.event_name != 'schedule'
+    if: (github.event_name != 'schedule' || inputs.full_suite)
     # ~7 examples × ~3 min of launch/settle/capture/twin/compare plus the
     # artifact download — no compile. 45 minutes keeps a wide margin over the
     # ~30 measured.
@@ -536,6 +561,10 @@ jobs:
           for archive in packaged-artifacts/packaged-macos-*.tar; do
             tar -xf "${archive}" -C "${{ github.workspace }}"
           done
+
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
 
       - name: Run macOS e2e shard
         env:
@@ -591,7 +620,7 @@ jobs:
   # lane so the dev-push gate stays format + compile/lint.
   host-native:
     name: host-native
-    if: github.event_name != 'schedule'
+    if: (github.event_name != 'schedule' || inputs.full_suite)
     runs-on: macos-26
     timeout-minutes: 45
     env:
@@ -644,7 +673,7 @@ jobs:
     name: ios-device-tests
     needs: prepare
     runs-on: macos-26
-    if: github.event_name != 'schedule'
+    if: (github.event_name != 'schedule' || inputs.full_suite)
     timeout-minutes: 60
     env:
       # This checkout pins `stable` in rust-toolchain.toml and the
@@ -754,7 +783,7 @@ jobs:
   # build-macos built.
   startup-report:
     name: startup-report
-    if: always() && github.event_name != 'schedule' 
+    if: always() && (github.event_name != 'schedule' || inputs.full_suite)
     needs: [prepare, build-ios, build-macos, e2e-ios, e2e-macos]
     runs-on: ubuntu-latest
     steps:
@@ -874,7 +903,7 @@ jobs:
     # Weekly (the Sunday schedule) and on dispatch: measuring release size,
     # startup and memory is a trend series, not a nightly gate, and on the
     # other six nights the slots go to the shards.
-    if: github.event_name == 'schedule' || inputs.release_metrics
+    if: (github.event_name == 'schedule' && !inputs.full_suite) || inputs.release_metrics
     runs-on: macos-26
     strategy:
       fail-fast: false
@@ -978,7 +1007,7 @@ jobs:
   # them into the single release-metrics report the suite reports on.
   release-metrics-report:
     name: release-metrics-report
-    if: always() && (github.event_name == 'schedule' || inputs.release_metrics)
+    if: always() && ((github.event_name == 'schedule' && !inputs.full_suite) || inputs.release_metrics)
     needs: release-metrics
     runs-on: ubuntu-latest
     steps:

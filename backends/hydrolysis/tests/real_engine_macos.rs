@@ -41,8 +41,8 @@ mod real {
     use tiny_http::{Header, Response, Server};
     use waterui_webview::{
         BackendEvent, BridgeOrigins, CustomWebViewController as _, IntoJsReply, JsReply, Json,
-        OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, WatcherGuard, WebViewConfig,
-        WebViewEvent, WebViewHandle,
+        OriginPolicy, ScriptInjectionTime, ScriptMessageHandler, Url, UserScript, WatcherGuard,
+        WebViewConfig, WebViewEvent, WebViewHandle,
     };
 
     /// How long one wait may take before a scenario gives up.
@@ -210,18 +210,44 @@ mod real {
         assert_eq!(unmounts.get(), 2, "closing the window retires the node");
     }
 
-    /// Starts the server, opens one web view and wires the shared contract.
+    /// Starts the server, opens one web view and wires the shared contract,
+    /// under the default policy an opened view resolves to: the origin it was
+    /// opened at, which is the local server. This is the policy under which
+    /// the bridge admits the pages below and refuses everything else.
     fn start(executor: &TestExecutor) -> RealEngine<impl WebViewHandle + use<>> {
+        start_with(executor, &|initial| {
+            OriginPolicy::new(BridgeOrigins::Initial, initial)
+        })
+    }
+
+    /// [`start`] under the admission policy `origins` resolves from the local
+    /// server's address.
+    fn start_with(
+        executor: &TestExecutor,
+        origins: &dyn Fn(&Url) -> OriginPolicy,
+    ) -> RealEngine<impl WebViewHandle + use<>> {
         let server = Server::http("127.0.0.1:0").expect("bind the local page server");
         let address = server
             .server_addr()
             .to_ip()
             .expect("the local page server listens on a TCP port");
         let base = format!("http://{address}");
+        let initial: Url = base
+            .parse()
+            .expect("the local page server address is a URL");
 
         // Exactly what the renderer gets: a genuine WKWebView behind the
-        // shared handle contract.
-        let handle = MacSystemWebViewController.open(WebViewConfig { asset_server: None });
+        // shared handle contract, created with its admission rules and
+        // scripts.
+        let handle = MacSystemWebViewController.open(
+            WebViewConfig::default()
+                .with_bridge_origins(origins(&initial))
+                .with_scripts(vec![UserScript::new(
+                    "waterui:test-state-seed",
+                    STATE_SEED_JS,
+                    ScriptInjectionTime::DocumentStart,
+                )]),
+        );
 
         let events = Rc::new(RefCell::new(Vec::new()));
         let guard = handle.watch({
@@ -269,20 +295,6 @@ mod real {
                 ().into_js_reply()
             })
         });
-
-        handle.inject_script(
-            "waterui:test-state-seed",
-            STATE_SEED_JS,
-            ScriptInjectionTime::DocumentStart,
-        );
-
-        // The default policy an opened view resolves to: the origin it was
-        // opened at, which is the local server. This is the policy under which
-        // the bridge admits the pages below and refuses everything else.
-        let initial: Url = base
-            .parse()
-            .expect("the local page server address is a URL");
-        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Initial, &initial));
 
         RealEngine {
             server,
@@ -422,28 +434,30 @@ mod real {
         }
 
         /// What the engine says the current document's URL is.
-        ///
-        /// This backend marshals a JavaScript string as itself rather than as
-        /// JSON, so the answer is used directly.
         fn location(&self) -> String {
-            self.block_on(self.handle.run_javascript("location.href"))
-                .expect("location.href evaluates")
-                .to_string()
+            let href = self
+                .block_on(self.handle.run_javascript("location.href"))
+                .expect("location.href evaluates");
+            // The raw path answers JSON, so the URL arrives as a quoted string.
+            serde_json::from_str(&href).unwrap_or_else(|error| {
+                panic!("location.href answered {href}, not a string: {error}")
+            })
         }
 
         /// The `typeof` of every global the document-start scripts install —
         /// `waterui`, the `__wateruiEval` wrapper and the `__wateruiState`
         /// store — evaluated in the document currently loaded. The probe goes
         /// through `evaluateJavaScript`, so the answer does not depend on the
-        /// bridge it reports on; an array marshals as its JSON encoding.
-        fn bridge_globals(&self) -> String {
-            self.block_on(
-                self.handle.run_javascript(
+        /// bridge it reports on.
+        fn bridge_globals(&self) -> Vec<String> {
+            let globals = self
+                .block_on(self.handle.run_javascript(
                     "[typeof waterui, typeof __wateruiEval, typeof __wateruiState]",
-                ),
-            )
-            .expect("the bridge globals probe evaluates")
-            .to_string()
+                ))
+                .expect("the bridge globals probe evaluates");
+            serde_json::from_str(&globals).unwrap_or_else(|error| {
+                panic!("the bridge globals probe answered {globals}, not a string array: {error}")
+            })
         }
 
         /// A `greet` through the bridge.
@@ -597,13 +611,23 @@ mod real {
         );
     }
 
+    /// `run_javascript` answers the JSON encoding of the evaluated value, made
+    /// by the page — the shared conformance case on a loaded document.
+    fn raw_evaluation_answers_json(executor: &TestExecutor) {
+        let engine = start(executor);
+        engine.open("/first");
+        engine.block_on(waterui_webview::conformance::raw_evaluation_answers_json(
+            async |script| engine.handle.run_javascript(script).await,
+        ));
+    }
+
     /// Injecting under a key already in use replaces that script.
     ///
-    /// The mirrored-state seed depends on this: it is re-rendered and
-    /// re-injected under the same key before every navigation, and an engine
-    /// that stacks copies instead runs every stale seed ahead of the current
-    /// one. Each probe script *appends* to an array, so a stacked pair is
-    /// visible as two entries where a replaced one leaves exactly the latest.
+    /// A script whose content follows application state is kept current this
+    /// way, and an engine that stacks copies instead runs every stale one
+    /// ahead of the current one. Each probe script *appends* to an array, so a
+    /// stacked pair is visible as two entries where a replaced one leaves
+    /// exactly the latest.
     fn a_keyed_injection_replaces_its_predecessor(executor: &TestExecutor) {
         let engine = start(executor);
 
@@ -624,11 +648,7 @@ mod real {
         engine.open("/second");
 
         let recorded = engine
-            .block_on(
-                engine
-                    .handle
-                    .run_javascript("JSON.stringify(globalThis.__wateruiProbe)"),
-            )
+            .block_on(engine.handle.run_javascript("globalThis.__wateruiProbe"))
             .expect("the probe array evaluates");
         let entries: Vec<String> = serde_json::from_str(&recorded)
             .unwrap_or_else(|error| panic!("the probe recorded `{recorded}`: {error}"));
@@ -646,15 +666,14 @@ mod real {
     /// reports. The document must get the bridge, and a handler call must
     /// cross it, or the two checks disagree.
     fn a_local_file_document_receives_the_bridge(executor: &TestExecutor) {
-        let engine = start(executor);
         let path = std::env::temp_dir().join("waterui-hydrolysis-real-engine-local.html");
         fs::write(&path, LOCAL_HTML).expect("the local test document is writable");
         let url: Url = format!("file://{}", path.display())
             .parse()
             .expect("the test document's file URL parses");
-        engine
-            .handle
-            .set_bridge_origins(OriginPolicy::new(BridgeOrigins::LocalFiles, &url));
+        let engine = start_with(executor, &|_| {
+            OriginPolicy::new(BridgeOrigins::LocalFiles, &url)
+        });
         engine.navigate("the local file document to load", || {
             engine.handle.go_to(&url);
         });
@@ -662,7 +681,7 @@ mod real {
 
         assert_eq!(
             engine.bridge_globals(),
-            r#"["object","function","object"]"#,
+            ["object", "function", "object"],
             "a file: document under BridgeOrigins::LocalFiles must receive the bridge"
         );
         assert_eq!(
@@ -678,20 +697,17 @@ mod real {
     /// first `about:blank` reuses the initial empty document, which runs no
     /// document-start script and would read as a refusal.
     fn an_any_policy_admits_an_opaque_document(executor: &TestExecutor) {
-        let engine = start(executor);
         let page: Url = "data:text/html,admitted"
             .parse()
             .expect("a data: document URL parses");
-        engine
-            .handle
-            .set_bridge_origins(OriginPolicy::new(BridgeOrigins::Any, &page));
+        let engine = start_with(executor, &|_| OriginPolicy::new(BridgeOrigins::Any, &page));
         engine.navigate("the data: document to load", || {
             engine.handle.go_to(&page);
         });
 
         assert_eq!(
             engine.bridge_globals(),
-            r#"["object","function","object"]"#,
+            ["object", "function", "object"],
             "a data: document under BridgeOrigins::Any must receive the bridge"
         );
         assert_eq!(
@@ -743,6 +759,7 @@ mod real {
         the_page_can_reach_the_whole_waterui_object(&executor);
         integers_beyond_two_to_the_fifty_third_cross_intact(&executor);
         typed_evaluation_awaits_the_wrapper(&executor);
+        raw_evaluation_answers_json(&executor);
         a_keyed_injection_replaces_its_predecessor(&executor);
         a_local_file_document_receives_the_bridge(&executor);
         an_any_policy_admits_an_opaque_document(&executor);

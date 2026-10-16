@@ -24,6 +24,7 @@ use std::path::Path;
 /// answers which the target accepts: a target without a platform font stack
 /// rejects the reference with [`ResourceError::Font`].
 #[derive(Clone)]
+#[non_exhaustive]
 pub enum FontSource {
     /// The bytes of a font file, plus the face's index in a collection.
     Bytes {
@@ -98,6 +99,7 @@ impl FontSource {
 
 /// A shading language a [`ShaderSource`] may carry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ShaderLanguage {
     /// WGSL, the Cherenkov GPU backend's language.
     Wgsl,
@@ -121,6 +123,7 @@ impl std::fmt::Display for ShaderLanguage {
 /// is rejected at registration with [`ResourceError::Shader`] naming the
 /// language it did get — never dropped silently.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct ShaderSource {
     /// The fragment's source text in `language`.
     pub source: Cow<'static, str>,

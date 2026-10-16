@@ -63,6 +63,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use ash::vk;
 use rustc_hash::FxHashMap;
 
+use super::Eligible;
 use crate::render::shaders::spirv;
 
 use crate::render::bindings::{
@@ -111,9 +112,8 @@ pub enum MirrorError {
     NotVulkan,
     /// A Vulkan call failed; the `&'static str` names the call.
     Vulkan(&'static str, vk::Result),
-    /// The physical device exposes no memory type a transient
-    /// attachment can be lazily allocated from, so the executor could
-    /// not keep an attachment off device memory.
+    /// None of the device's lazily allocated memory types admits the
+    /// slot image, so the executor could not keep it off device memory.
     NoLazyMemory,
     /// Submission completions stopped arriving and the per-frame
     /// descriptor pools could not be recycled.
@@ -126,7 +126,10 @@ impl std::fmt::Display for MirrorError {
             Self::NotVulkan => write!(f, "the engine device is not Vulkan"),
             Self::Vulkan(call, result) => write!(f, "{call} failed: {result:?}"),
             Self::NoLazyMemory => {
-                write!(f, "no lazily allocated memory type for tile attachments")
+                write!(
+                    f,
+                    "no lazily allocated memory type admits a tile attachment"
+                )
             }
             Self::PoolsExhausted => write!(f, "tile descriptor pools exhausted"),
         }
@@ -260,7 +263,9 @@ pub struct Mirror {
     device: ash::Device,
     rendering: Rendering,
     local_read: ash::khr::dynamic_rendering_local_read::Device,
-    memory_properties: vk::PhysicalDeviceMemoryProperties,
+    /// The eligibility the mirror was built on, which carries the
+    /// device's lazily allocated memory types.
+    eligible: Eligible,
     /// The tile modules, `[long][self]`: `engine_tile{,_long}.spv` for a
     /// draw sourcing another slot, `engine_tile{,_long}_self.spv` for a
     /// draw sourcing its own slot.
@@ -294,13 +299,17 @@ fn words(bytes: &'static [u8]) -> Vec<u32> {
 }
 
 impl Mirror {
-    /// Builds the mirror on the engine's own Vulkan device.
+    /// Builds the mirror on the engine's own Vulkan device, which
+    /// `eligible` says can run an epoch.
     ///
     /// # Errors
-    /// [`MirrorError`] when the device is not Vulkan, when it exposes
-    /// no lazily allocated memory type, or when any Vulkan object fails
-    /// to create.
-    pub fn new(device: &wgpu::Device, adapter: &wgpu::Adapter) -> Result<Self, MirrorError> {
+    /// [`MirrorError`] when the device is not Vulkan or when any Vulkan
+    /// object fails to create.
+    pub fn new(
+        device: &wgpu::Device,
+        adapter: &wgpu::Adapter,
+        eligible: Eligible,
+    ) -> Result<Self, MirrorError> {
         // SAFETY: `as_hal` borrows the adapter for this scope and the
         // callback only reads its instance and physical device.
         let Some(hal_adapter) = (unsafe { adapter.as_hal::<wgpu::hal::vulkan::Api>() }) else {
@@ -338,20 +347,6 @@ impl Mirror {
             ));
         };
         let local_read = ash::khr::dynamic_rendering_local_read::Device::new(&instance, &vk_device);
-        // SAFETY: `physical_device` belongs to `instance`, which is
-        // live; the query writes only its own return value.
-        let memory_properties =
-            unsafe { instance.get_physical_device_memory_properties(physical_device) };
-        if !memory_properties.memory_types
-            [..memory_properties.memory_type_count.try_into().unwrap_or(0)]
-            .iter()
-            .any(|ty| {
-                ty.property_flags
-                    .contains(vk::MemoryPropertyFlags::LAZILY_ALLOCATED)
-            })
-        {
-            return Err(MirrorError::NoLazyMemory);
-        }
 
         let mut built = Built::default();
         let result = built.build(&vk_device);
@@ -365,7 +360,7 @@ impl Mirror {
             device: vk_device,
             rendering,
             local_read,
-            memory_properties,
+            eligible,
             modules: built.modules,
             set_layouts: built.set_layouts,
             layout: built.layout,
@@ -619,7 +614,10 @@ impl Mirror {
         // SAFETY: `image` was created above on `self.device`; a pure
         // query.
         let requirements = unsafe { self.device.get_image_memory_requirements(image) };
-        let Some(index) = self.lazy_memory_type(requirements.memory_type_bits) else {
+        let Some(index) = self
+            .eligible
+            .lazy_memory_type(requirements.memory_type_bits)
+        else {
             return finish(Err(MirrorError::NoLazyMemory));
         };
         // A dedicated allocation is what makes
@@ -677,21 +675,6 @@ impl Mirror {
             view,
             size: requirements.size,
         })
-    }
-
-    /// The first memory type in `bits` that is lazily allocated.
-    fn lazy_memory_type(&self, bits: u32) -> Option<u32> {
-        let count = usize::try_from(self.memory_properties.memory_type_count).unwrap_or(0);
-        self.memory_properties.memory_types[..count]
-            .iter()
-            .enumerate()
-            .position(|(index, ty)| {
-                bits & (1 << index) != 0
-                    && ty
-                        .property_flags
-                        .contains(vk::MemoryPropertyFlags::LAZILY_ALLOCATED)
-            })
-            .and_then(|index| u32::try_from(index).ok())
     }
 
     /// Creates one descriptor pool sized for [`SETS_PER_POOL`] sets of

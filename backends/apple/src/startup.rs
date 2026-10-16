@@ -30,7 +30,7 @@ pub fn initialize() -> Option<InspectorRuntime> {
 /// process is a bug, and the panic hook, subscriber and executor
 /// installs inside make it fail the same loud way a repeated
 /// [`initialize`] does.
-#[cfg(all(target_os = "macos", feature = "preview"))]
+#[cfg(preview_entry)]
 pub fn initialize_for_preview() -> Option<InspectorRuntime> {
     initialize_inner(true)
 }

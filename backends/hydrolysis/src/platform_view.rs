@@ -71,6 +71,7 @@ impl PlatformView {
     derive(serde::Serialize),
     serde(untagged)
 )]
+#[non_exhaustive]
 pub enum PlatformViewSource {
     /// Resolve the named factory and mount the view it builds.
     Factory {
@@ -111,6 +112,7 @@ pub fn next_platform_view_id() -> u64 {
     any(test, target_os = "android", target_arch = "wasm32"),
     derive(serde::Serialize)
 )]
+#[non_exhaustive]
 pub struct PlatformViewPlacement {
     /// The retained node's stable placement id.
     pub id: u64,

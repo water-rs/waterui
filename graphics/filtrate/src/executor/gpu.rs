@@ -898,13 +898,13 @@ mod tests {
         use cherenkov_shader::{Segment, UniformLayout};
 
         let pass = |aux: Vec<PassAux>| PassPlan {
-            segment: Segment {
-                function: "segment".to_owned(),
-                stages: 0..1,
-                variants: Vec::new(),
-                args: Vec::new(),
-                uniform: UniformLayout::default(),
-            },
+            segment: Segment::new(
+                "segment".to_owned(),
+                0..1,
+                Vec::new(),
+                Vec::new(),
+                UniformLayout::default(),
+            ),
             name: "stage",
             sampler: None,
             shape: None,

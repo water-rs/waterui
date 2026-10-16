@@ -1,0 +1,28 @@
+name: Modern bash
+
+description: >-
+  Makes a Homebrew bash >= 4.2 the first `bash` on PATH for the rest of the
+  job. The macos-26 image ships only Apple's /bin/bash 3.2.57, whose SIGCHLD
+  handler lacks SA_RESTART — a builtin write that races a background child's
+  exit fails with EINTR (#2683), and the e2e shard keeps background children
+  alive by design. The .github/scripts e2e scripts assert the floor
+  themselves; this action puts a conforming bash where `#!/usr/bin/env bash`
+  resolves it. A no-op on Linux, whose system bash is already 5.x.
+
+runs:
+  using: composite
+  steps:
+    # Installs the brew bash only when $(brew --prefix)/bin/bash is missing
+    # or reports < 4.2, then puts the brew prefix first on PATH via
+    # $GITHUB_PATH so later steps' `env bash` resolves it ahead of /bin/bash.
+    - name: Prefer Homebrew bash on macOS
+      if: runner.os == 'macOS'
+      shell: bash
+      run: |
+        set -euo pipefail
+        prefix="$(brew --prefix)"
+        if [[ ! -x "${prefix}/bin/bash" ]] || \
+           ! "${prefix}/bin/bash" -c '(( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 2) ))'; then
+          brew install bash
+        fi
+        echo "${prefix}/bin" >> "${GITHUB_PATH}"

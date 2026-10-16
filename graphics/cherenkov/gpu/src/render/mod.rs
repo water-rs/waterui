@@ -254,6 +254,18 @@ pub struct GpuImage {
     pub height: u32,
 }
 
+impl GpuImage {
+    /// The texture's bytes: f16 RGBA, eight a texel.
+    pub fn bytes(&self) -> u64 {
+        image_bytes((self.width, self.height))
+    }
+}
+
+/// The bytes of a [`GpuImage`] of `size`: f16 RGBA, eight a texel.
+fn image_bytes((width, height): (u32, u32)) -> u64 {
+    u64::from(width) * u64::from(height) * 8
+}
+
 pub struct GpuBitmap {
     pub(super) image: GpuImage,
     pub(super) em: kurbo::Rect,
@@ -333,6 +345,9 @@ struct SurfaceState {
     /// Backdrop groups registered on this surface by raw id.
     backdrop_groups: FxHashMap<u64, BackdropGroupState>,
     anchor_scratch: lower::AnchorScratch,
+    /// Path emission buffers, lent to each lowering so their capacity
+    /// carries across frames; released by a critical trim.
+    raster_scratch: path::EmitScratch,
     layers: FxHashMap<LayerId, ContentData>,
     /// GPU producer bindings by layer (`cherenkov::GpuContent`): a layer
     /// binds one producer, a producer serves bindings on any surface,
@@ -574,9 +589,7 @@ impl SurfaceState {
         let shader_bytes = self
             .shader_textures
             .values()
-            .map(|texture| {
-                u64::from(texture.image.width) * u64::from(texture.image.height) * 8 + 272
-            })
+            .map(|texture| texture.image.bytes() + 272)
             .sum::<u64>();
         surface_bytes * (1 + self.parts.len() as u64)
             + self
@@ -963,12 +976,13 @@ pub struct GpuRenderer {
     /// The Vulkan tile executor's mirror of the engine's pipeline
     /// layout, descriptor sets and attachments (#2191).
     ///
-    /// `None` where the device was not opened with per-pixel attachment
-    /// access, which is also what makes [`GpuRenderer::tile_limits`]
-    /// decline to plan; the two answers come from this one field, so
-    /// no frame can be planned for an executor that is not there.
+    /// The reason the device declined where it cannot run an epoch —
+    /// it lacks per-pixel attachment access or lazily allocated memory
+    /// — which is also what makes [`GpuRenderer::tile_limits`] decline
+    /// to plan; the two answers come from this one field, so no frame
+    /// can be planned for an executor that is not there.
     #[cfg(all(unix, not(target_vendor = "apple")))]
-    tile_mirror: Option<composite::vulkan::Mirror>,
+    tile_mirror: Result<composite::vulkan::Mirror, composite::vulkan::Declined>,
     /// The configured pipeline cache, opened once for the whole set.
     pipeline_cache: Option<wgpu::PipelineCache>,
     /// Registered backdrop effect shaders, by raw id — see
@@ -999,7 +1013,8 @@ pub struct GpuRenderer {
     /// The globals buffer size `bind0` was built against.
     bound_globals_size: u64,
     atlas: Atlas,
-    /// Per-commit cell writes, rebuilt in place each frame.
+    /// Per-commit cell writes: the emptied container the last upload
+    /// returned, refilled in place each frame (#2671).
     commit_writes: glyph::CellWrites,
     /// Per-surface pending origins, rebuilt in place each apply.
     pending_origins: Vec<PendingOrigin>,
@@ -2501,14 +2516,17 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         // The tile executor's mirror, built once for a device that can
         // run an epoch. Its shader modules and layouts are the whole
         // cost here — every pipeline is created on first use — and a
-        // device that cannot run an epoch builds none of it (#2191).
+        // device that cannot run an epoch builds none of it (#2191,
+        // #2689). Once the device is eligible, a mirror that fails to
+        // build is an engine failure.
         #[cfg(all(unix, not(target_vendor = "apple")))]
-        let tile_mirror = match composite::vulkan::device_access(&device) {
-            composite::vulkan::Access::PerPixel => Some(
-                composite::vulkan::Mirror::new(&device, &adapter)
-                    .map_err(|e| EngineError::Backend(format!("tile composition: {e}")))?,
-            ),
-            composite::vulkan::Access::None | composite::vulkan::Access::PerDraw => None,
+        let tile_mirror = match composite::vulkan::device_eligibility(&device, &adapter) {
+            Ok(eligible) => Ok(composite::vulkan::Mirror::new(&device, &adapter, eligible)
+                .map_err(|e| EngineError::Backend(format!("tile composition: {e}")))?),
+            Err(declined) => {
+                tracing::info!(?declined, "vulkan tile composition unavailable");
+                Err(declined)
+            }
         };
         let renderer = GpuRenderer {
             instance,
@@ -3162,6 +3180,7 @@ impl Renderer for GpuRenderer {
                 staging_bind: [None, None],
                 backdrop_groups: FxHashMap::default(),
                 anchor_scratch: lower::AnchorScratch::default(),
+                raster_scratch: path::EmitScratch::new(),
                 layers: FxHashMap::default(),
                 bindings: FxHashMap::default(),
                 hosted: FxHashMap::default(),
@@ -3481,13 +3500,10 @@ impl Renderer for GpuRenderer {
     }
 
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        let size = (image.width, image.height);
+        self.admit_image(size, 0)?;
         let data = image_texels_f16(&image)?;
-        let image = upload_image(
-            &self.device,
-            &self.queue,
-            (image.width, image.height),
-            &data,
-        );
+        let image = upload_image(&self.device, &self.queue, size, &data)?;
         self.images.insert(id.raw(), image);
         self.images_gen += 1;
         Ok(())
@@ -3501,18 +3517,20 @@ impl Renderer for GpuRenderer {
             .images
             .get(&id.raw())
             .expect("replace targets a registered image");
-        // Local images that sampled the previous pixels are no longer
-        // current, whichever path the upload takes.
-        self.image_replacements += 1;
         if (current.width, current.height) == size {
             // The copy is queued ahead of the next submission, after every
             // frame already submitted, so no frame samples a partly
             // written texture. The view is unchanged: bind groups and
             // lowered paints stay valid.
-            write_image(&self.device, &self.queue, &current.texture, size, &data);
+            write_image(&self.device, &self.queue, &current.texture, size, &data)?;
+            // Local images that sampled the previous pixels are no longer
+            // current.
+            self.image_replacements += 1;
             return Ok(());
         }
-        let replacement = upload_image(&self.device, &self.queue, size, &data);
+        self.admit_image(size, current.bytes())?;
+        let replacement = upload_image(&self.device, &self.queue, size, &data)?;
+        self.image_replacements += 1;
         let old = self
             .images
             .insert(id.raw(), replacement)
@@ -3523,7 +3541,7 @@ impl Renderer for GpuRenderer {
             diag::RetireArgs {
                 label: "image",
                 class: diag::Class::Image,
-                bytes: u64::from(old.width) * u64::from(old.height) * 8,
+                bytes: old.bytes(),
                 used_in_latest_submit: true,
                 reason: "replace_image",
             },
@@ -3568,7 +3586,7 @@ impl Renderer for GpuRenderer {
                 diag::RetireArgs {
                     label: "image",
                     class: diag::Class::Image,
-                    bytes: u64::from(image.width) * u64::from(image.height) * 8,
+                    bytes: image.bytes(),
                     used_in_latest_submit: true,
                     reason: "remove_image",
                 },
@@ -3708,6 +3726,10 @@ impl Renderer for GpuRenderer {
                 },
             );
         }
+        // The commit batch's reusable lists are the same kind of
+        // retained scratch: a trimmed engine keeps none of their peak
+        // capacity, and the next commit regrows them as needed (#2711).
+        self.commit_writes = glyph::CellWrites::default();
         if pressure != Pressure::Critical {
             return;
         }
@@ -3727,6 +3749,7 @@ impl Renderer for GpuRenderer {
             surf.frame.instances.shrink_to_fit();
             surf.frame.stops.shrink_to_fit();
             surf.frame.passes.shrink_to_fit();
+            surf.raster_scratch = path::EmitScratch::new();
         }
         self.uploads = upload::Uploads::default();
         diag::grow(
@@ -3820,15 +3843,11 @@ impl Renderer for GpuRenderer {
                 .values()
                 .map(gpu_content::Producer::gpu_bytes)
                 .sum::<u64>()
-            + self
-                .images
-                .values()
-                .map(|i| u64::from(i.width) * u64::from(i.height) * 8)
-                .sum::<u64>()
+            + self.images.values().map(GpuImage::bytes).sum::<u64>()
             + self
                 .bitmaps
                 .values()
-                .map(|bitmap| u64::from(bitmap.image.width) * u64::from(bitmap.image.height) * 8)
+                .map(|bitmap| bitmap.image.bytes())
                 .sum::<u64>();
         let captures = self
             .surfaces
@@ -3847,7 +3866,9 @@ impl Renderer for GpuRenderer {
             + self
                 .surfaces
                 .values()
-                .map(|surface| surface.anchor_scratch.heap_bytes())
+                .map(|surface| {
+                    surface.anchor_scratch.heap_bytes() + surface.raster_scratch.heap_bytes()
+                })
                 .sum::<u64>()
             + self
                 .surfaces
@@ -5575,11 +5596,43 @@ impl GpuRenderer {
             .sum()
     }
 
+    /// Every resident GPU byte except the local images, which are
+    /// evictable and give way to everything else.
+    fn resident_bytes(&self) -> u64 {
+        self.memory().gpu.0 - self.projective_bytes()
+    }
+
     /// The bytes local images may hold: the GPU budget less every other
     /// resident resource.
     fn projective_available(&self) -> u64 {
-        let others = self.memory().gpu.0 - self.projective_bytes();
-        self.config.budget.gpu.0.saturating_sub(others)
+        self.config
+            .budget
+            .gpu
+            .0
+            .saturating_sub(self.resident_bytes())
+    }
+
+    /// Admits a registered image of `size` against the GPU budget. A
+    /// registered image stays resident until it is released, so it must
+    /// fit beside every other resident resource; the local images give
+    /// way to it. `replaced` is the bytes of the image a resize frees.
+    ///
+    /// # Errors
+    /// [`ResourceError::Image`] when the image does not fit.
+    fn admit_image(&self, (width, height): (u32, u32), replaced: u64) -> Result<(), ResourceError> {
+        let required = image_bytes((width, height));
+        let available = self
+            .config
+            .budget
+            .gpu
+            .0
+            .saturating_sub(self.resident_bytes() - replaced);
+        if required > available {
+            return Err(ResourceError::Image(format!(
+                "{width}x{height} needs {required} bytes; the GPU budget has {available} left"
+            )));
+        }
+        Ok(())
     }
 
     /// What surface `sf`'s lowering needs to plan and reuse local images.
@@ -6479,7 +6532,12 @@ impl GpuRenderer {
                 bitmaps: resources.bitmaps,
                 content: &surf.bindings,
             };
-            let mut lowering = Lowering::new(&mut surf.frame, surf.size, &mut surf.anchor_scratch);
+            let mut lowering = Lowering::new(
+                &mut surf.frame,
+                surf.size,
+                &mut surf.anchor_scratch,
+                &mut surf.raster_scratch,
+            );
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)
@@ -6704,8 +6762,10 @@ impl GpuRenderer {
         if plan_dbg != "fits" {
             self.atlas.enable_evicting();
         }
+        // The upload consumes its batch and returns the emptied
+        // container, so `commit_writes` always comes back empty and the
+        // next commit refills the same lists (#2671).
         let mut writes = std::mem::take(&mut self.commit_writes);
-        writes.clear();
         let mut failed = None;
         for (i, (surf, result)) in pending.iter_mut().zip(results.iter_mut()).enumerate() {
             match result {
@@ -6757,9 +6817,9 @@ impl GpuRenderer {
                 },
             );
         }
-        self.atlas
-            .upload_committed(&self.device, &self.queue, &writes);
-        self.commit_writes = writes;
+        self.commit_writes = self
+            .atlas
+            .upload_committed(&self.device, &self.queue, writes);
         Commit::Done
     }
 
@@ -7098,9 +7158,9 @@ impl GpuRenderer {
     /// - Apple's shaders come from the prebuilt metallib (#57), so a
     ///   build that delivers WGSL has no executor to plan for.
     /// - Vulkan's need the device to have been opened with per-pixel
-    ///   attachment access; [`GpuRenderer::tile_mirror`] holds the
-    ///   mirror exactly when it was, and the `Err` says the device is
-    ///   what declined.
+    ///   attachment access and to have lazily allocated memory for the
+    ///   slots; [`GpuRenderer::tile_mirror`] holds the mirror exactly
+    ///   when both hold, and otherwise the capability that is missing.
     ///
     /// The error is the reason the frame's images are attributed to, so
     /// a census distinguishes "this build has no executor" from "this
@@ -7108,8 +7168,9 @@ impl GpuRenderer {
     fn tile_limits(&self) -> Result<composite::plan::Limits, composition::Materialization> {
         // Which executor this target has, and whether it is installed.
         // The mirror is absent only because the Vulkan device declined,
-        // so that is the reason; a non-metallib Apple build and a
-        // target with no executor at all share `NoExecutor`.
+        // so the capability it lacks is the reason; a non-metallib
+        // Apple build and a target with no executor at all share
+        // `NoExecutor`.
         #[cfg(target_vendor = "apple")]
         let (slots, available) = (
             composite::metal::SLOTS,
@@ -7123,7 +7184,14 @@ impl GpuRenderer {
             self.tile_mirror
                 .as_ref()
                 .map(|_| ())
-                .ok_or(composition::Materialization::DeviceAccess),
+                .map_err(|declined| match declined {
+                    composite::vulkan::Declined::Access(_) => {
+                        composition::Materialization::DeviceAccess
+                    }
+                    composite::vulkan::Declined::TransientMemory => {
+                        composition::Materialization::TransientMemory
+                    }
+                }),
         );
         #[cfg(not(unix))]
         let (slots, available) = (0, Err(composition::Materialization::NoExecutor));
@@ -8111,6 +8179,7 @@ impl GpuRenderer {
         let tile_frame = match self
             .tile_mirror
             .as_mut()
+            .ok()
             .filter(|_| surf.composition.epochs().next().is_some())
         {
             Some(mirror) => {
@@ -9328,6 +9397,7 @@ impl GpuRenderer {
             let (peak_reserved_bytes, peak_committed_bytes) = self
                 .tile_mirror
                 .as_ref()
+                .ok()
                 .filter(|_| tile_frame)
                 .map_or((0, None), |mirror| {
                     (mirror.memoryless_bytes(), Some(mirror.committed_bytes()))
@@ -9358,6 +9428,7 @@ impl GpuRenderer {
         let tile_idle = self
             .tile_mirror
             .as_mut()
+            .ok()
             .filter(|_| tile_frame)
             .and_then(|mirror| {
                 mirror.finish_frame();
@@ -9944,36 +10015,95 @@ impl GpuRenderer {
 
 /// A registered image's texture of `size`, holding `data` (f16 texels
 /// from [`image_texels_f16`]).
+///
+/// # Errors
+/// [`ResourceError::Image`] when the device cannot back the texture or
+/// its upload.
 fn upload_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     (width, height): (u32, u32),
     data: &[u8],
-) -> GpuImage {
-    let (texture, view) = create_target(
-        device,
-        "image",
-        (width, height),
-        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        TARGET_FORMAT,
-    );
+) -> Result<GpuImage, ResourceError> {
+    let (texture, view) = out_of_memory(device, || {
+        create_target(
+            device,
+            "image",
+            (width, height),
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            TARGET_FORMAT,
+        )
+    })
+    .map_err(|error| {
+        ResourceError::Image(format!(
+            "{width}x{height} texture allocation failed: {error}"
+        ))
+    })?;
     diag::create(
         device,
         "image",
         u64::from(width) * u64::from(height) * texel_bytes(TARGET_FORMAT),
     );
-    write_image(device, queue, &texture, (width, height), data);
-    GpuImage {
+    write_image(device, queue, &texture, (width, height), data)?;
+    Ok(GpuImage {
         texture,
         view,
         width,
         height,
+    })
+}
+
+/// Runs `allocate` under an out-of-memory error scope, so an allocation
+/// the device cannot back is this call's error rather than a panic in
+/// wgpu's uncaptured-error handler. Only the allocation is scoped: a
+/// failed allocation is returned before anything uses its handle.
+///
+/// On the browser's WebGPU an error scope resolves only asynchronously
+/// and `Renderer::add_image` is synchronous, so there the allocation
+/// runs unscoped; an uncaptured error is reported to the page and does
+/// not panic.
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the browser's error scope resolves only asynchronously, so the synchronous browser path has no error to return"
+    )
+)]
+fn out_of_memory<T>(device: &wgpu::Device, allocate: impl FnOnce() -> T) -> Result<T, wgpu::Error> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let value = allocate();
+        pollster::block_on(scope.pop()).map_or(Ok(value), Err)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = device;
+        Ok(allocate())
     }
 }
 
 /// Writes `data` (f16 texels from [`image_texels_f16`]) over the whole of
 /// an image texture of `size`.
+///
+/// # Errors
+/// [`ResourceError::Image`] when the device cannot back the upload's
+/// staging memory; the texture keeps its previous texels.
 fn write_image(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    (width, height): (u32, u32),
+    data: &[u8],
+) -> Result<(), ResourceError> {
+    out_of_memory(device, || {
+        write_texels(device, queue, texture, (width, height), data);
+    })
+    .map_err(|error| ResourceError::Image(format!("{width}x{height} upload failed: {error}")))
+}
+
+/// [`write_image`]'s unscoped copy.
+fn write_texels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
@@ -10471,5 +10601,26 @@ mod tests {
     fn poll_errors_other_than_timeout_still_fail_fast() {
         let outcome = drive([Err(wgpu::PollError::WrongSubmissionIndex(9, 3))], [0]);
         assert!(matches!(outcome, Err(RenderError::DeviceLost)));
+    }
+
+    /// A commit's emptied `CellWrites` shell keeps its list capacities
+    /// for reuse; `trim` replaces the container so a pressured engine
+    /// retains none of them (#2711).
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn trim_releases_the_reused_commit_lists() {
+        let mut renderer = match init(GpuConfig::default()) {
+            Ok((renderer, _)) => renderer,
+            Err(EngineError::Backend(_)) => return,
+            Err(e) => panic!("engine init failed: {e}"),
+        };
+        renderer.commit_writes.push_arena(vec![0xAB; 64]);
+        assert!(renderer.commit_writes.heap_bytes() > 0);
+        renderer.trim(Pressure::Moderate);
+        assert_eq!(
+            renderer.commit_writes.heap_bytes(),
+            0,
+            "a trimmed engine retains no commit_writes capacity"
+        );
     }
 }

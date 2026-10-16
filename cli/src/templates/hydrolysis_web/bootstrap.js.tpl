@@ -77,6 +77,10 @@ function showStartupError(error) {
 
 async function bootstrap() {
   root.addEventListener("waterui:first-frame", dismissLaunchScreen, { once: true });
+  // The runtime cannot run (no WebGPU, or a panic): `detail` says why.
+  root.addEventListener("waterui:fatal-error", (event) => showStartupError(event.detail), {
+    once: true,
+  });
   try {
     await init({ module_or_path: fetchWasm() });
   } catch (error) {

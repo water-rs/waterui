@@ -156,6 +156,7 @@ impl_constant!(Language);
 
 /// Error returned when a language token cannot be parsed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ParseLanguageError;
 
 impl Display for ParseLanguageError {
@@ -280,6 +281,7 @@ impl Highlighter for DefaultHighlighter {
 
 /// A chunk of highlighted text with an associated color.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct HighlightChunk<'a> {
     /// The text content.
     pub text: &'a str,

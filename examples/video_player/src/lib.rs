@@ -132,6 +132,7 @@ pub fn demo() -> impl View {
                     is_buffering.set(false);
                     status.set(format!("Error: {message}").into());
                 }
+                _ => {}
             }
         });
 

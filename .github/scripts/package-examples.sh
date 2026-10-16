@@ -25,6 +25,11 @@
 # example.
 set -euo pipefail
 
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  echo "::error::package-examples.sh needs bash >= 4.2 (found ${BASH_VERSION}); /bin/bash 3.2 lets SIGCHLD interrupt writes with EINTR (#2683)" >&2
+  exit 1
+fi
+
 platform="${PLATFORM:?PLATFORM must be ios or macos}"
 workspace="${GITHUB_WORKSPACE:-$(pwd)}"
 waterui_dir="${WATERUI_DIR:?WATERUI_DIR must point at the prepared waterui checkout}"
@@ -112,9 +117,16 @@ for example in ${selected_examples[@]+"${selected_examples[@]}"}; do
 
   echo "::group::package ${example} (${platform})"
 
+  # Builds never touch the network: a declared remote font must already be
+  # in the font cache, so it is fetched before packaging (#2638). A fetch
+  # failure fails the example the same way a package failure does below.
   app_path=""
-  if water package --platform "${package_platform}" --backend apple --release \
-      --path "${example_path}" > "${run_log}" 2>&1; then
+  fetch_failed=0
+  : > "${run_log}"
+  if ! water fetch --path "${example_path}" >> "${run_log}" 2>&1; then
+    fetch_failed=1
+  elif water package --platform "${package_platform}" --backend apple --release \
+      --path "${example_path}" >> "${run_log}" 2>&1; then
     app_path="$(find_packaged_app "${run_log}")"
   fi
 
@@ -141,6 +153,11 @@ for example in ${selected_examples[@]+"${selected_examples[@]}"}; do
     printf '  "%s": { "app_bytes": %s, "executable_bytes": %s },\n' \
       "${example}" "${app_bytes}" "${executable_bytes}" >> "${size_entries}"
     echo "::notice::${example} packaged: .app=${app_bytes}B executable=${executable_bytes}B (${platform})"
+  elif (( fetch_failed )); then
+    echo "::error::water fetch failed for ${example} (${platform}). Log tail:"
+    tail -n 60 "${run_log}" || true
+    failures+=("${example}")
+    printf '  "%s": null,\n' "${example}" >> "${size_entries}"
   elif grep -qi "unsupported for" "${run_log}"; then
     echo "::notice::${example} is unsupported on ${platform}; skipping."
     printf '  "%s": null,\n' "${example}" >> "${size_entries}"

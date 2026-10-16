@@ -332,7 +332,7 @@ mod uikit_surface {
     use std::cell::Cell;
     use std::rc::Rc;
     use waterui::Identifiable;
-    use waterui::reactive::collection::{Collection, List as ReactiveList};
+    use waterui::reactive::collection::List as ReactiveList;
 
     /// `id`-keyed row whose payload flips between a short label and a tall
     /// one — the stable-id replace regression probe.
@@ -352,7 +352,7 @@ mod uikit_surface {
     }
 
     impl waterui::View for ReentrantRow {
-        fn body(self, _env: &waterui::Environment) -> impl waterui::View {
+        fn body(mut self, _env: &waterui::Environment) -> impl waterui::View {
             if !self.fired.replace(true) {
                 let _ = self.items.set(0, ProbeRow { id: 20, tall: true });
             }
@@ -370,7 +370,7 @@ mod uikit_surface {
     }
 
     impl waterui::View for RemovingRow {
-        fn body(self, _env: &waterui::Environment) -> impl waterui::View {
+        fn body(mut self, _env: &waterui::Environment) -> impl waterui::View {
             if !self.fired.replace(true) {
                 let _ = self.items.remove(0);
             }
@@ -714,7 +714,7 @@ mod uikit_surface {
     /// mounted leaf must be re-materialized and its measured contract
     /// re-derived, not reused — the `#306` regression.
     pub fn stable_id_payload_replace_remateries_the_row() {
-        let items = ReactiveList::from(vec![
+        let mut items = ReactiveList::from(vec![
             ProbeRow { id: 1, tall: false },
             ProbeRow { id: 2, tall: false },
         ]);
@@ -798,7 +798,7 @@ mod uikit_surface {
             "the reinserted row does not keep the replaced leaf"
         );
 
-        mixed_membership_turn_lands_each_contract(&mount, &table, &items, &first_row, short);
+        mixed_membership_turn_lands_each_contract(&mount, &table, &mut items, &first_row, short);
     }
 
     /// Mixed replacement + membership + new id in one turn: the newest
@@ -806,7 +806,7 @@ mod uikit_surface {
     fn mixed_membership_turn_lands_each_contract(
         mount: &waterui_apple::native_test_support::UIKitMount,
         table: &UITableView,
-        items: &ReactiveList<ProbeRow>,
+        items: &mut ReactiveList<ProbeRow>,
         first_row: &NSIndexPath,
         short: f64,
     ) {
@@ -857,7 +857,7 @@ mod uikit_surface {
         // Sectioned shape: a section marker produces a multi-group list,
         // which applies changes through the whole-table `reloadData` path —
         // a stable-id replace must still evict the row's measured contract.
-        let sectioned = ReactiveList::from(vec![
+        let mut sectioned = ReactiveList::from(vec![
             ProbeRow { id: 10, tall: true },
             ProbeRow {
                 id: 11,
@@ -948,7 +948,7 @@ mod uikit_surface {
     pub fn stable_id_payload_replace_under_reentrant_emission() {
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
-        let items = ReactiveList::from(vec![
+        let mut items = ReactiveList::from(vec![
             ProbeRow {
                 id: 20,
                 tall: false,
@@ -1223,7 +1223,7 @@ mod uikit_surface {
         let container = Lazy::vstack(ForEach::new(items.clone(), {
             move |row: ProbeRow| {
                 if !fired.replace(true) {
-                    let _ = items.remove(0);
+                    let _ = items.clone().remove(0);
                 }
                 text(format!("row {}", row.id))
             }
@@ -1260,7 +1260,7 @@ mod uikit_surface {
         let env = crate::resolve::env();
         let first = Rc::new(Cell::new(false));
         let second = Rc::new(Cell::new(false));
-        let items = ReactiveList::from(vec![
+        let mut items = ReactiveList::from(vec![
             ProbeRow {
                 id: 50,
                 tall: false,
@@ -1276,12 +1276,12 @@ mod uikit_surface {
             let second = Rc::clone(&second);
             move |row: ProbeRow| {
                 if !first.replace(true) {
-                    items.push(ProbeRow {
+                    items.clone().push(ProbeRow {
                         id: 52,
                         tall: false,
                     });
                 } else if row.id == 53 && !second.replace(true) {
-                    items.push(ProbeRow {
+                    items.clone().push(ProbeRow {
                         id: 54,
                         tall: false,
                     });
@@ -1338,7 +1338,7 @@ mod uikit_surface {
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
         let cross = Rc::new(Cell::new(false));
-        let items = ReactiveList::from(vec![ProbeRow {
+        let mut items = ReactiveList::from(vec![ProbeRow {
             id: 60,
             tall: false,
         }]);
@@ -1373,7 +1373,7 @@ mod uikit_surface {
                                     // a cross-column emission recorded
                                     // mid-drain must still deliver.
                                     if !cross.replace(true) {
-                                        items.push(ProbeRow {
+                                        items.clone().push(ProbeRow {
                                             id: 62,
                                             tall: false,
                                         });

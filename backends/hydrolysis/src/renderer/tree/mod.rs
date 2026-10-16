@@ -23,7 +23,7 @@
 //! re-dispatching the same screen from the `View` tree costs ~15ms.
 
 macro_rules! impl_widget_behavior {
-    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)?) => {
+    ($state:ty, $render:path, $measure:expr $(, $priority:expr)? $(; prepare: $prepare:ident)? $(; a11y: $a11y:path)? $(; renders_nothing: $renders_nothing:literal)? $(; surface: $surface:ident)? $(; page: $page:path)?) => {
         impl WidgetBehavior for RefCell<$state> {
             $(fn priority(&self) -> i32 { $priority })?
 
@@ -53,6 +53,14 @@ macro_rules! impl_widget_behavior {
             $(fn prepare(&self, renderer: &mut HydrolysisRenderer, env: &Environment) {
                 self.borrow_mut().$prepare(renderer, env);
             })?
+
+            $(
+                fn claim_page_transition(
+                    &self,
+                ) -> Option<waterui_core::transition::TransitionSpec> {
+                    $page(&self.borrow())
+                }
+            )?
 
             $(
                 fn update_scroll_surface(&self, facts: Option<safe_area::ScrollSurfaceFacts>) {
@@ -85,6 +93,7 @@ mod layout;
 mod nodes;
 pub(super) mod safe_area;
 mod subview;
+pub(super) mod transition;
 mod window;
 
 pub use collection::*;
@@ -105,13 +114,13 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Binding, Computed};
 use std::rc::{Rc, Weak};
 use waterui_core::MainThreadBound;
-use waterui_core::id::{Id as RawId, SelfId};
+use waterui_core::id::Id as RawId;
 use waterui_core::layout::{LayoutPriority, Point, Rect, Size};
 use waterui_core::views::{AnyViews, AnyViewsSnapshot, ViewSnapshot, Views};
 use waterui_layout::scroll::{Axis as ScrollAxis, ScrollController, ScrollView, ScrollViewParts};
 
 /// The type-erased item identity used by [`CollectionNode`]'s reconcile.
-type CollectionItemId = SelfId<RawId>;
+type CollectionItemId = RawId;
 
 /// A node in the persistent retained render tree. The render-primitive set is
 /// closed by the nature of a self-drawn renderer; the open `HydroDispatcher` maps

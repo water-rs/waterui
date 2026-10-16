@@ -90,6 +90,11 @@ if [[ "${example}" != "none" ]]; then
     exit 1
   }
 
+  # Builds never touch the network: a declared remote font must already be
+  # in the font cache, so it is fetched before packaging (#2638).
+  "${water_bin}" fetch --path "${example_path}" || {
+    echo "error: water fetch failed for ${example}" >&2; exit 1; }
+
   package_log="$(mktemp)"
   "${water_bin}" package --platform ios-simulator --backend apple --debug --path "${example_path}" \
     2>&1 | tee "${package_log}"

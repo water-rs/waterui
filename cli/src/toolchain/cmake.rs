@@ -15,6 +15,10 @@ use crate::{
 
 /// Toolchain for `CMake`
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct Cmake {}
 
 impl Cmake {
@@ -89,6 +93,7 @@ impl Toolchain for Cmake {
 
 /// Installation for `CMake` — the strategy `check` selected for this host.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum CmakeInstallation {
     /// `brew install cmake`.
     Brew,
@@ -103,6 +108,7 @@ pub enum CmakeInstallation {
 
 /// Errors that can occur during `CMake` installation
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallCmake {
     /// Homebrew not found error
     #[error("Homebrew not found. Please install Homebrew to proceed.")]

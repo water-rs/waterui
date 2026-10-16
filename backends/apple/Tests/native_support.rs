@@ -794,6 +794,7 @@ pub mod menus {
     /// One row of a built menu — what a case asserts without touching
     /// `NSMenuItem`.
     #[derive(Debug)]
+    #[non_exhaustive]
     pub struct MenuRow {
         /// The row's title.
         pub title: String,

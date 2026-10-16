@@ -16,6 +16,10 @@ use crate::{CdpError, CdpSession, ChromiumController, CustomCdpSession};
 
 /// Chromium profile and persistent data-store selection.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "every Chromium host destructures the whole profile, so a new field must fail their build instead of being ignored"
+)]
 pub struct ChromiumProfile {
     /// Optional profile name within the configured data directory.
     pub name: Option<String>,
@@ -27,6 +31,10 @@ pub struct ChromiumProfile {
 
 /// Configuration shared by visible and headless Chromium pages.
 #[derive(Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "every Chromium host destructures the whole configuration, so a new field must fail their build instead of being ignored"
+)]
 pub struct ChromiumConfiguration {
     /// Initial page URL. A missing URL opens `about:blank`.
     pub url: Option<Url>,
@@ -104,6 +112,7 @@ impl ChromiumConfiguration {
 
 /// Presentation mode of a Chromium page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PageMode {
     /// Page owns a visible GPU presenter.
     Visible,
@@ -113,6 +122,7 @@ pub enum PageMode {
 
 /// Chromium page lifecycle events.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum ChromiumEvent {
     /// Browser creation completed and CDP is attached.
     Ready,
@@ -130,6 +140,10 @@ pub enum ChromiumEvent {
 
 /// Encoded screenshot format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every Chromium host encodes each screenshot format variant by variant; a new format must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ScreenshotFormat {
     /// Portable Network Graphics.
     Png,

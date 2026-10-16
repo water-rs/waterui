@@ -5,7 +5,7 @@ use cef::SchemeRegistrar;
 use cef::rc::Rc as _;
 use cef::{
     App, BrowserProcessHandler, CefString, CommandLine, ImplApp, ImplBrowserProcessHandler,
-    ImplCommandLine, WrapApp, WrapBrowserProcessHandler,
+    ImplCommandLine, RenderProcessHandler, WrapApp, WrapBrowserProcessHandler,
 };
 
 use crate::runtime::PumpDeadline;
@@ -61,10 +61,11 @@ fn new_browser_process_handler(schedule: Sender<PumpDeadline>) -> BrowserProcess
     clippy::transmute_ptr_to_ptr,
     reason = "CEF wrapper macros generate ABI pointer casts outside WaterUI's control"
 )]
-fn new_cef_app(handler: BrowserProcessHandler) -> App {
+fn new_cef_app(handler: BrowserProcessHandler, render: Option<RenderProcessHandler>) -> App {
     cef::wrap_app! {
         struct WaterCefApp {
             handler: BrowserProcessHandler,
+            render: Option<RenderProcessHandler>,
         }
 
         impl App {
@@ -126,14 +127,24 @@ fn new_cef_app(handler: BrowserProcessHandler) -> App {
             fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
                 Some(self.handler.clone())
             }
+
+            fn render_process_handler(&self) -> Option<RenderProcessHandler> {
+                self.render.clone()
+            }
         }
     }
 
-    WaterCefApp::new(handler)
+    WaterCefApp::new(handler, render)
 }
 
 pub fn new_app(schedule: Sender<PumpDeadline>) -> App {
-    new_cef_app(new_browser_process_handler(schedule))
+    // Only a web view injects into documents; a Chromium component's renderer
+    // needs no handler of its own.
+    #[cfg(feature = "webview")]
+    let render = Some(crate::renderer::new_render_process_handler());
+    #[cfg(not(feature = "webview"))]
+    let render = None;
+    new_cef_app(new_browser_process_handler(schedule), render)
 }
 
 #[cfg(all(test, target_os = "macos"))]
