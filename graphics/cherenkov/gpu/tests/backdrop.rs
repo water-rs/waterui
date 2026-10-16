@@ -200,9 +200,19 @@ fn trim_drops_the_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
     // intermediate puts the chain above it.
     let held = wait!(engine.memory()).filter_targets;
     assert!(held > Bytes(2 * 64 * 64 * 8), "held {held:?}");
-    for pressure in [Pressure::Critical, Pressure::Moderate] {
+    for (pressure, red) in [(Pressure::Critical, 0.5), (Pressure::Moderate, 1.0)] {
         engine.trim(pressure);
         assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+        // A frame with nothing to redraw does not run the chain; new
+        // backdrop content does, and the chain recreates its targets.
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 64.0, 64.0),
+                    WorkingColor::new([red, 0.0, 0.0, 1.0]),
+                );
+            }));
+        });
         wait!(engine.render(FrameTime::now()))?;
         assert_eq!(wait!(engine.memory()).filter_targets, held);
     }
