@@ -26,7 +26,7 @@ use crate::paint::ImageId;
 use cherenkov_record::ResourceId;
 
 use crate::resource::{
-    Filter, Font, FontSource, FrameSink, GpuProducer, Image, ReplaceImage, Shader,
+    Filter, Font, FontSource, FrameSink, GpuProducer, Image, ImageBudget, ReplaceImage, Shader,
 };
 use crate::style::FilterId;
 use crate::surface::Surface;
@@ -45,7 +45,9 @@ pub struct Engine<B: Backend> {
     tx: Sender<Message<B>>,
     info: B::Info,
     /// The largest image the backend admits, read once after init.
-    image_limits: crate::ImageLimits,
+    /// The image budget every registration and replacement is admitted
+    /// against on the calling thread, read once after init.
+    images: Rc<ImageBudget>,
     stats: RefCell<FrameStats>,
     commits: RefCell<Vec<(SurfaceId, ChangeSet<B>)>>,
     /// The live surfaces' shared queues, drained into one `Render` message
@@ -116,7 +118,6 @@ impl<B: Backend> Engine<B> {
             // The executor wakes the host through every visible surface
             // that draws the image, once it knows which surfaces do.
             Rc::new(move |id: ImageId, image: ImageUpload| {
-                image_limits.check(image.width, image.height)?;
                 tx.send(Message::ReplaceImage { id, image })
                     .map_err(|_| ResourceError::Lost)
             }) as ReplaceImage
@@ -124,7 +125,7 @@ impl<B: Backend> Engine<B> {
         Ok(Self {
             tx,
             info,
-            image_limits,
+            images: ImageBudget::new(image_limits),
             stats: RefCell::new(FrameStats::default()),
             commits: RefCell::new(Vec::new()),
             surfaces: RefCell::new(Vec::new()),
@@ -149,18 +150,21 @@ impl<B: Backend> Engine<B> {
         &self.info
     }
 
-    /// The largest image the backend admits, in each dimension and in
-    /// total texels: the device's texture limit, or the per-image share
-    /// of the backend's memory budget. Read once off the live device and
-    /// budget when the engine is created; it never changes.
+    /// The images the backend admits: the largest image in each
+    /// dimension (the device's texture limit) and the image budget, the
+    /// texels every registered image holds together (the backend's memory
+    /// budget). Read once off the live device and budget when the engine
+    /// is created; it never changes.
     ///
     /// [`Engine::image`] and [`Image::replace`] check it on the calling
     /// thread before anything is queued, so an image the device cannot
-    /// hold fails at registration with [`ResourceError::TooLarge`]
-    /// instead of failing every render that draws it.
+    /// hold fails at registration with [`ResourceError::TooLarge`], and
+    /// one that does not fit beside the images already registered with
+    /// [`ResourceError::OverBudget`], instead of failing every render that
+    /// draws it.
     #[must_use]
-    pub const fn image_limits(&self) -> crate::ImageLimits {
-        self.image_limits
+    pub fn image_limits(&self) -> crate::ImageLimits {
+        self.images.limits()
     }
 
     /// Statistics of the last [`Engine::render`]. GPU timings are kept by
@@ -255,23 +259,27 @@ impl<B: Backend> Engine<B> {
     ///
     /// `image` is validated by [`ImageData::new`] before it is passed here,
     /// and its size is checked against [`Engine::image_limits`] on the
-    /// calling thread: an image the device cannot hold fails at
-    /// registration instead of failing every render that draws it. The
-    /// upload is queued in order with every render and does not wait for
-    /// the backend. A rejection only the backend can detect (a residency
-    /// budget across every registered image) leaves every surface whose
+    /// calling thread: an image the device cannot hold, or one that does
+    /// not fit the image budget beside the images already registered,
+    /// fails at registration instead of failing every render that draws
+    /// it. The image holds its share of the budget until its last handle
+    /// drops. The upload is queued in order with every render and does
+    /// not wait for the backend. A rejection only the backend can detect
+    /// (an allocation the device cannot back) leaves every surface whose
     /// content draws the image out of the frame, reported as
     /// [`RenderError::Rejected`].
     ///
     /// # Errors
     /// [`ResourceError::TooLarge`] when the image exceeds
-    /// [`Engine::image_limits`], [`ResourceError::Lost`] when the executor
+    /// [`Engine::image_limits`], [`ResourceError::OverBudget`] when it
+    /// does not fit the image budget beside the images already
+    /// registered, [`ResourceError::Lost`] when the executor
     /// is gone.
     pub fn image<F: Format>(&self, image: ImageData<F>) -> Result<Image<F>, ResourceError>
     where
         B: Uploads<F>,
     {
-        self.image_limits.check(image.width(), image.height())?;
+        let texels = self.images.admit(image.width(), image.height(), 0)?;
         let id = ImageId::new(Self::alloc(&self.next_image));
         let upload = image.into_upload();
         let resource = ResourceId::Image(id);
@@ -281,9 +289,12 @@ impl<B: Backend> Engine<B> {
                 Box::pin(std::future::ready(r.add_image(id, upload)))
             }),
         )?;
+        self.images.settle(0, texels);
         Ok(Image::new(
             id,
             Rc::clone(&self.replace_image),
+            Rc::clone(&self.images),
+            texels,
             self.on_release(resource, move |r| r.remove_image(id)),
         ))
     }

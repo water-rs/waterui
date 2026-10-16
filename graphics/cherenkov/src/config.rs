@@ -16,13 +16,19 @@ impl Bytes {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
     /// Device-side memory (buffers, textures, the glyph atlas). Registered
-    /// images count against it beside everything else resident: an image
-    /// registration or resize that would overrun it is rejected by the
-    /// backend.
+    /// images together hold at most this much on the GPU backend: the
+    /// engine admits every image registration and resize against it on
+    /// the calling thread, and fails one that would overrun it with
+    /// [`ResourceError::OverBudget`](crate::ResourceError::OverBudget).
+    /// Cached local images take what is left beside everything else
+    /// resident.
     pub gpu: Bytes,
     /// CPU-side resident image and rasterized glyph cache budget.
-    /// This bounds cache residency, not total process memory; surface framebuffers
-    /// and active retained frame data are not evictable caches.
+    /// Registered images together hold at most this much on the CPU
+    /// backend, admitted at registration as on the GPU, and the glyph
+    /// caches take what they leave. This bounds cache residency, not
+    /// total process memory; surface framebuffers and active retained
+    /// frame data are not evictable caches.
     pub cpu: Bytes,
 }
 

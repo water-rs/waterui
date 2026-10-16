@@ -26,6 +26,29 @@ pub enum ResourceError {
         /// The backend's limits.
         limits: ImageLimits,
     },
+    /// The image fits the backend's [`ImageLimits`] alone, but not beside
+    /// the images already registered: together they would hold more than
+    /// [`ImageLimits::max_texels`]. Like [`TooLarge`](Self::TooLarge), the
+    /// check runs where the registration or replacement was made, before
+    /// anything is queued, and a rejected replacement keeps the image's
+    /// previous pixels. An image's texels return to the budget when its
+    /// last handle drops.
+    #[error(
+        "image {width}x{height} does not fit the image budget: {available} of its {} texels are left",
+        limits.max_texels
+    )]
+    OverBudget {
+        /// Requested width.
+        width: u32,
+        /// Requested height.
+        height: u32,
+        /// The texels left for this image: the budget less every other
+        /// registered image, including the replaced image's previous
+        /// pixels' share.
+        available: u64,
+        /// The backend's limits.
+        limits: ImageLimits,
+    },
     /// The shader source is not in a language the target draws, or failed
     /// its validation or pipeline creation.
     #[error("shader: {0}")]

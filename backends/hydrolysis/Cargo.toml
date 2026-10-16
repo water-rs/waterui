@@ -311,6 +311,9 @@ web-sys = { version = "0.3", optional = true, features = [
 ] }
 
 [dev-dependencies]
+# The image-budget test registers through the engine's `testing::Null`
+# backend, whose image limits it sets.
+cherenkov = { workspace = true, features = ["testing"] }
 # The crate's own test targets need the `accessibility` and `testing`
 # feature APIs — the headless runtimes' `new_for_tests` constructors, the
 # merged-tree queries and `testing::TestStyle` — and a dev-dependency on the

@@ -1589,6 +1589,80 @@ mod tests {
         );
     }
 
+    /// Registered images share the image budget, decided on the calling
+    /// thread: a registration or a growing replacement that would take
+    /// the live images past `max_texels` fails with `OverBudget`, queues
+    /// nothing and keeps the previous pixels; a shrinking replacement
+    /// and the last handle's drop return texels, and a clone holds none
+    /// of its own.
+    #[test]
+    fn registered_images_share_the_image_budget() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let limits = crate::ImageLimits {
+            max_dimension: 4,
+            max_texels: 16,
+        };
+        let engine = Engine::<Null>::new(NullConfig {
+            events: tx,
+            reject: HashSet::new(),
+            image_limits: limits,
+        })
+        .expect("init");
+        let image = |w: u32, h: u32| {
+            let len = usize::try_from(w * h * 4).expect("a small image");
+            ImageData::<Rgba8>::new(w, h, vec![0u8; len]).expect("image data")
+        };
+        let over = |result: Result<_, ResourceError>| match result {
+            Err(ResourceError::OverBudget {
+                width,
+                height,
+                available,
+                limits: rejected,
+            }) => {
+                assert_eq!(rejected, limits);
+                (width, height, available)
+            }
+            other => panic!("an image past the budget was admitted: {other:?}"),
+        };
+
+        let a = engine.image(image(4, 2)).expect("a");
+        let b = engine.image(image(4, 2)).expect("b");
+        // Each fits alone; the budget is spent.
+        assert_eq!(over(engine.image(image(1, 1)).map(drop)), (1, 1, 0));
+        // A shrinking replacement returns texels at once.
+        a.replace(image(4, 1)).expect("shrink");
+        let c = engine.image(image(2, 2)).expect("c");
+        // A growing replacement is admitted in place of its own pixels:
+        // 12 texels beside a and c's 8 do not fit.
+        assert_eq!(over(b.replace(image(4, 3))), (4, 3, 8));
+        // A clone holds nothing of its own: dropping it returns nothing.
+        drop(a.clone());
+        assert_eq!(over(b.replace(image(4, 3))), (4, 3, 8));
+        // The last handle's drop does.
+        drop(a);
+        b.replace(image(4, 3)).expect("grow");
+
+        // Only the admitted operations reached the render thread.
+        let _ = engine.memory();
+        let events: Vec<Event> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|event| !matches!(event, Event::RemoveImage(_)))
+            .collect();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    Event::AddImage(_),
+                    Event::AddImage(_),
+                    Event::ReplaceImage(_, (4, 1)),
+                    Event::AddImage(_),
+                    Event::ReplaceImage(_, (4, 3)),
+                ]
+            ),
+            "{events:?}"
+        );
+        drop((b, c));
+    }
+
     fn frames(rx: &std::sync::mpsc::Receiver<Event>) -> Vec<FrameRecord> {
         let mut out = Vec::new();
         while let Ok(event) = rx.try_recv() {

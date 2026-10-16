@@ -257,13 +257,8 @@ pub struct GpuImage {
 impl GpuImage {
     /// The texture's bytes: f16 RGBA, eight a texel.
     pub fn bytes(&self) -> u64 {
-        image_bytes((self.width, self.height))
+        u64::from(self.width) * u64::from(self.height) * 8
     }
-}
-
-/// The bytes of a [`GpuImage`] of `size`: f16 RGBA, eight a texel.
-fn image_bytes((width, height): (u32, u32)) -> u64 {
-    u64::from(width) * u64::from(height) * 8
 }
 
 pub struct GpuBitmap {
@@ -3494,14 +3489,15 @@ impl Renderer for GpuRenderer {
     fn image_limits(&self) -> cherenkov::ImageLimits {
         cherenkov::ImageLimits {
             max_dimension: self.max_texture,
-            // The upload lands as f16 RGBA: eight bytes a texel.
+            // The image budget: every registered image together holds at
+            // most the GPU budget, uploaded as f16 RGBA at eight bytes a
+            // texel. The engine admits registrations against it.
             max_texels: self.config.budget.gpu.0 / 8,
         }
     }
 
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
         let size = (image.width, image.height);
-        self.admit_image(size, 0)?;
         let data = image_texels_f16(&image)?;
         let image = upload_image(&self.device, &self.queue, size, &data)?;
         self.images.insert(id.raw(), image);
@@ -3528,7 +3524,6 @@ impl Renderer for GpuRenderer {
             self.image_replacements += 1;
             return Ok(());
         }
-        self.admit_image(size, current.bytes())?;
         let replacement = upload_image(&self.device, &self.queue, size, &data)?;
         self.image_replacements += 1;
         let old = self
@@ -5612,29 +5607,6 @@ impl GpuRenderer {
             .gpu
             .0
             .saturating_sub(self.resident_bytes())
-    }
-
-    /// Admits a registered image of `size` against the GPU budget. A
-    /// registered image stays resident until it is released, so it must
-    /// fit beside every other resident resource; the local images give
-    /// way to it. `replaced` is the bytes of the image a resize frees.
-    ///
-    /// # Errors
-    /// [`ResourceError::Image`] when the image does not fit.
-    fn admit_image(&self, (width, height): (u32, u32), replaced: u64) -> Result<(), ResourceError> {
-        let required = image_bytes((width, height));
-        let available = self
-            .config
-            .budget
-            .gpu
-            .0
-            .saturating_sub(self.resident_bytes() - replaced);
-        if required > available {
-            return Err(ResourceError::Image(format!(
-                "{width}x{height} needs {required} bytes; the GPU budget has {available} left"
-            )));
-        }
-        Ok(())
     }
 
     /// What surface `sf`'s lowering needs to plan and reuse local images.
