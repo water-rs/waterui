@@ -198,11 +198,7 @@ mod linux {
             .expect("WPE smoke readback buffer must be mapped after a successful wait")
             .to_vec();
         buffer.unmap();
-        let image = OffscreenImage {
-            width: WIDTH,
-            height: HEIGHT,
-            rgba8,
-        };
+        let image = OffscreenImage::new(WIDTH, HEIGHT, rgba8);
         image
             .save_png(output_path)
             .unwrap_or_else(|error| panic!("WPE smoke snapshot write failed: {error}"));
@@ -303,6 +299,7 @@ mod linux {
         await_bridge_smoke(&page, deadline);
         tracing::info!("RUN navigation-barrier checks");
         super::bridge_smoke::run(&runtime, &executor, deadline);
+        let raw_runtime = runtime.clone();
         tracing::info!("RUN mirrored-state admission conformance");
         page.block_on(
             async move {
@@ -318,6 +315,23 @@ mod linux {
             "the mirrored-state admission conformance case",
         );
         tracing::info!("PASS mirrored-state admission conformance");
+        tracing::info!("RUN raw evaluation conformance");
+        page.block_on(
+            async move {
+                let controller = waterui_webview::WebViewController::new(
+                    waterui_browser_wpe::WpeController::new(raw_runtime),
+                );
+                let webview = controller.open();
+                let handle = webview.handle().clone();
+                waterui_webview::conformance::raw_evaluation_answers_json(async |script| {
+                    handle.run_javascript(script).await
+                })
+                .await;
+            },
+            deadline,
+            "the raw evaluation conformance case",
+        );
+        tracing::info!("PASS raw evaluation conformance");
         tracing::info!("RUN frame import and snapshot");
         let frame = await_rendered_frame(&page, &frame_ready, deadline);
         let gpu_runtime = pollster::block_on(GpuRuntime::new())

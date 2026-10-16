@@ -28,7 +28,17 @@
 # The shard measures the release package, never a debug `water run`: the
 # packaged artifact is what users ship, so size, startup, memory, and pixel
 # parity all describe the production binary.
+#
+# Requires bash >= 4.2, asserted below (#2683): the shard keeps background
+# children alive by design — the marker/reference log streams and `water
+# package` — and a builtin write that races a child's exit fails with EINTR
+# under /bin/bash 3.2, whose SIGCHLD handler lacks SA_RESTART.
 set -euo pipefail
+
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  echo "::error::run-e2e-shard.sh needs bash >= 4.2 (found ${BASH_VERSION}); /bin/bash 3.2 lets SIGCHLD interrupt writes with EINTR (#2683)" >&2
+  exit 1
+fi
 
 platform="${PLATFORM:-${1:-}}"
 shard_index="${SHARD_INDEX:-${2:-}}"
@@ -83,14 +93,23 @@ if [[ "${record}" == "1" ]]; then
   mkdir -p "${record_dir}/${platform}"
 fi
 
+# A command substitution, not process substitution: it keeps discovery's exit
+# status (a captured `::error` line would otherwise become an example name),
+# and the shell waits the child out instead of printing while it runs.
+if ! discovered="$("${workspace}/.github/scripts/discover-examples.sh" "${waterui_dir}")"; then
+  printf '%s\n' "${discovered}"
+  exit 1
+fi
+
 all_examples=()
 while IFS= read -r example; do
+  [[ -n "${example}" ]] || continue
   all_examples+=("${example}")
-done < <("${workspace}/.github/scripts/discover-examples.sh" "${waterui_dir}")
+done <<< "${discovered}"
 declare -a shard_examples=()
 
-# The `${arr[@]+...}` form: under the system bash 3.2 an empty array expands to
-# an unbound-variable error, and shards legitimately assign no examples.
+# The `${arr[@]+...}` form: under bash < 4.4 an empty array expands to an
+# unbound-variable error, and shards legitimately assign no examples.
 if [[ -n "${EXAMPLES:-}" ]]; then
   # An explicit list selects exactly those examples; a name that discovery did
   # not find is a typo, not an empty shard, so it fails the run fast.
@@ -421,9 +440,12 @@ terminate_pid() {
 # from Twins.swift so a new twin joins the sweep automatically.
 twin_names=()
 if [[ -f "${reference_dir}/Sources/Twins.swift" ]]; then
+  # A command substitution for the same reason as discovery above.
+  twins="$(sed -n 's/.*case "\([^"]*\)":.*/\1/p' "${reference_dir}/Sources/Twins.swift" | sort -u)"
   while IFS= read -r twin; do
+    [[ -n "${twin}" ]] || continue
     twin_names+=("${twin}")
-  done < <(sed -n 's/.*case "\([^"]*\)":.*/\1/p' "${reference_dir}/Sources/Twins.swift" | sort -u)
+  done <<< "${twins}"
 fi
 
 has_twin() {

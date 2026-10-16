@@ -5,7 +5,7 @@ use waterui::Identifiable;
 use waterui::prelude::*;
 
 /// Glue: the `Row` type reactivity.md's collection snippets refer to.
-#[derive(Clone, Identifiable)]
+#[derive(Clone, PartialEq, Identifiable)]
 pub struct Row {
     #[id]
     pub id: u64,
@@ -365,7 +365,7 @@ pub mod reactivity_block_10 {
         pub rows: ReactiveList<Row>,
     }
 
-    fn delete_row(ListDelete(index): ListDelete, state: Editor) {
+    fn delete_row(ListDelete(index): ListDelete, mut state: Editor) {
         let _ = state.rows.remove(index);
     }
 
@@ -485,7 +485,7 @@ pub fn reactivity_block_14() {
     use waterui::component::lazy::Lazy;
     use waterui::reactive::collection::List as ReactiveList;
 
-    let rows = ReactiveList::from(seed_vec); // bulk-seed in one move — not a push loop
+    let mut rows = ReactiveList::from(seed_vec); // bulk-seed in one move — not a push loop
     rows.push(Row {
         id: 9,
         title: "Last".into(),
@@ -499,7 +499,7 @@ pub fn reactivity_block_14() {
     ); // positional splice, id-diffed
     let _ = rows.remove(0); // #[must_use] — bind the removed value
     let snapshot = rows.snapshot(); // Vec<Row>, for read-only work
-    let _ = rows.replace(new_vec); // wholesale swap, still diffed by id
+    let _ = rows.replace(new_vec); // wholesale swap, diffed by id: moves and changed rows
 
     let _ = {
         Lazy::for_each(rows.clone(), row_view) // == Lazy::vstack(ForEach::new(..))
@@ -526,7 +526,7 @@ pub fn reactivity_stack_for_each_prose() {
 // reactivity.md § "## Reactive collections" — rust block 15/20
 // ---------------------------------------------------------------------------
 pub fn reactivity_block_15() {
-    #[derive(Clone, Identifiable)]
+    #[derive(Clone, PartialEq, Identifiable)]
     struct Message {
         #[id]
         id: u64,

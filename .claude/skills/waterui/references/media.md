@@ -28,6 +28,7 @@ Photo::new("https://waterui.dev/logo.png")   // impl IntoComputed<Url>; Url: Fro
     .on_event(|event| match event {          // inherent on Photo — attach it BEFORE filters,
         PhotoEvent::Loaded => (),            // which wrap the view in a Filtered<..> type
         PhotoEvent::Error(_msg) => (),
+        _ => (),                             // the event enum is #[non_exhaustive]
     })
     .blur(radius.clone())
     .saturation(sat.clone())
@@ -103,6 +104,7 @@ WebView::open("https://waterui.dev")
         WebViewEvent::Loaded => (),
         WebViewEvent::Redirect { from: _, to: _ } => (),
         WebViewEvent::Error(_) => (),
+        _ => (),                                        // the event enum is #[non_exhaustive]
     })
 ```
 
@@ -141,13 +143,17 @@ struct PageApi { address: Binding<Str>, greetings: Binding<u32> }
 impl PageApi {
     // async fn  ->  page calls `await waterui.invoke("greet", {name})`
     async fn greet(&self, name: String) -> Json<Greeting> { Json(Greeting::for_name(name)) }
-    // fn returning a signal  ->  mirrored state: `waterui.state.address`, `waterui.watch("address", cb)`
+    // fn returning a signal  ->  mirrored state: after `await waterui.ready`, `waterui.state.address`, `waterui.watch("address", cb)`
     fn address(&self) -> Binding<Str> { self.address.clone() }        // Binding: JS writes flow back
     fn greetings(&self) -> Computed<u32> { self.greetings.clone().computed() }   // read-only mirror
 }
 
 WebView::open(url).serve(PageApi { address, greetings })
 ```
+
+A page receives mirrored values with the reply to its own first request, never in the
+script injected into it: `waterui.ready` resolves once they have arrived, and reading or
+assigning `waterui.state.<key>` before that throws. Await it before the first read.
 
 A typed `Json<T>` payload requires `T: Serialize`/`Deserialize`, so the app needs `serde`
 (with the `derive` feature) as a direct dependency.

@@ -56,6 +56,7 @@ pub mod context_menu {
     ///     );
     /// ```
     #[derive(Debug)]
+    #[non_exhaustive]
     pub struct ContextMenu {
         /// The menu items to display in the context menu.
         pub items: Computed<Vec<MenuItem>>,
@@ -151,6 +152,10 @@ pub mod context_menu {
     /// Resolved context menu metadata consumed by the native backends.
     #[doc(hidden)]
     #[derive(Debug)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "backends destructure the whole resolved context menu, so a new field must fail their build instead of being ignored"
+    )]
     pub struct ResolvedContextMenu {
         /// The resolved menu items for the current environment.
         pub items: Computed<Vec<ResolvedMenuItem>>,
@@ -171,6 +176,7 @@ pub mod context_menu {
     /// View wrapper that resolves a context menu against the environment.
     #[doc(hidden)]
     #[derive(Debug)]
+    #[non_exhaustive]
     pub struct ContextMenuView<Content> {
         /// The wrapped content view.
         pub content: Content,
@@ -292,6 +298,10 @@ pub mod anchored_overlay {
     /// );
     /// ```
     #[derive(Debug)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "backends destructure the whole anchored overlay, so a new field must fail their build instead of being ignored"
+    )]
     pub struct AnchoredOverlay {
         /// Builds a fresh view for each presentation next to the anchor.
         pub content: AnyViewBuilder,
@@ -416,13 +426,12 @@ pub mod anchored_overlay {
     ///
     /// // A tooltip placement: above the anchor, centered, a small gap, and
     /// // kept two points inside the window.
-    /// let placement = AnchorPlacement {
-    ///     edge: AnchorEdge::Top,
-    ///     alignment: EdgeAlignment::Center,
-    ///     gap: 4.0,
-    ///     flip: true,
-    ///     clamp: Clamp::Window { margin: 2.0 },
-    /// };
+    /// let placement = AnchorPlacement::default()
+    ///     .edge(AnchorEdge::Top)
+    ///     .alignment(EdgeAlignment::Center)
+    ///     .gap(4.0)
+    ///     .flip(true)
+    ///     .clamp(Clamp::Window { margin: 2.0 });
     /// assert_eq!(placement.edge, AnchorEdge::Top);
     /// ```
     ///
@@ -440,6 +449,7 @@ pub mod anchored_overlay {
     /// assert_eq!(default.clamp, Clamp::Window { margin: 0.0 });
     /// ```
     #[derive(Debug, Clone, Copy, PartialEq)]
+    #[non_exhaustive]
     pub struct AnchorPlacement {
         /// The edge of the anchor the overlay is placed against.
         pub edge: AnchorEdge,
@@ -466,6 +476,44 @@ pub mod anchored_overlay {
         }
     }
 
+    impl AnchorPlacement {
+        /// Places the overlay against `edge` of the anchor.
+        #[must_use]
+        pub const fn edge(mut self, edge: AnchorEdge) -> Self {
+            self.edge = edge;
+            self
+        }
+
+        /// Lines the overlay up with the anchor by `alignment` along its edge.
+        #[must_use]
+        pub const fn alignment(mut self, alignment: EdgeAlignment) -> Self {
+            self.alignment = alignment;
+            self
+        }
+
+        /// Leaves `gap` points between the anchor and the overlay.
+        #[must_use]
+        pub const fn gap(mut self, gap: f32) -> Self {
+            self.gap = gap;
+            self
+        }
+
+        /// Whether the overlay moves to the opposite edge when the preferred
+        /// edge has no room for it.
+        #[must_use]
+        pub const fn flip(mut self, flip: bool) -> Self {
+            self.flip = flip;
+            self
+        }
+
+        /// Keeps the overlay inside the window by `clamp`.
+        #[must_use]
+        pub const fn clamp(mut self, clamp: Clamp) -> Self {
+            self.clamp = clamp;
+            self
+        }
+    }
+
     /// An edge of the anchor. `Leading` and `Trailing` follow the layout
     /// direction.
     ///
@@ -482,6 +530,10 @@ pub mod anchored_overlay {
     /// In a right-to-left layout `Leading` is the anchor's right edge and
     /// `Trailing` its left; `Top` and `Bottom` never swap.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[expect(
+        clippy::exhaustive_enums,
+        reason = "closed set of the four logical anchor edges, which the overlay placement resolves variant by variant"
+    )]
     pub enum AnchorEdge {
         /// Above the anchor.
         Top,
@@ -525,6 +577,10 @@ pub mod anchored_overlay {
     /// );
     /// ```
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[expect(
+        clippy::exhaustive_enums,
+        reason = "closed: an overlay lines up with the start, the center, or the end of its anchor edge"
+    )]
     pub enum EdgeAlignment {
         /// The overlay's start side lines up with the anchor's start side.
         Start,
@@ -554,6 +610,10 @@ pub mod anchored_overlay {
     /// An overlay larger than the window minus the margins is pinned to the
     /// leading/top margin instead of overflowing on both ends.
     #[derive(Debug, Clone, Copy, PartialEq)]
+    #[expect(
+        clippy::exhaustive_enums,
+        reason = "the overlay placement realizes each clamping policy variant by variant; a new policy must fail its build instead of falling into a wildcard arm"
+    )]
     pub enum Clamp {
         /// The overlay may extend past the window's edges.
         Off,
@@ -587,6 +647,7 @@ pub mod anchored_overlay {
     /// touch down outside the overlay writes `false` to its binding; the same
     /// event still reaches its target.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    #[non_exhaustive]
     pub enum Dismissal {
         /// Only setting the binding to `false` closes the overlay.
         Manual,
@@ -664,6 +725,10 @@ pub mod secure {
     ///
     /// User would be forbidden to take a screenshot of the view that has this metadata.
     #[derive(Debug)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "field-less metadata marker inserted by name"
+    )]
     pub struct Secure;
 
     impl MetadataKey for Secure {}
@@ -688,6 +753,7 @@ pub mod secure {
     /// [`StandardDynamicRange`] / [`HighDynamicRange`] metadata. Use
     /// [`crate::view::ViewExt::color_space`] to apply it.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    #[non_exhaustive]
     pub enum ColorSpace {
         /// Standard dynamic range. Use for content that should not exceed
         /// `1.0` per channel — avatars, screenshots, UI chrome.
@@ -707,6 +773,10 @@ pub mod secure {
     /// However, in some cases, you may want to apply standard dynamic range color for certain views,
     /// for instance, user avatar.
     #[derive(Debug)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "field-less metadata marker inserted by name"
+    )]
     pub struct StandardDynamicRange;
     impl MetadataKey for StandardDynamicRange {}
 
@@ -730,6 +800,10 @@ pub mod secure {
     ///
     /// But if your parent view applied `StandardDynamicRange` metadata, you would use this metadata to override it.
     #[derive(Debug)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "field-less metadata marker inserted by name"
+    )]
     pub struct HighDynamicRange;
     impl MetadataKey for HighDynamicRange {}
 

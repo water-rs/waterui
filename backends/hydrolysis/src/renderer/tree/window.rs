@@ -130,11 +130,15 @@ impl RenderNode {
         // the renderer.
         match self {
             Self::Dynamic(node) => {
-                if node.apply_pending(renderer) {
+                // Apply the swap first (detaching an outgoing instance into
+                // its ghost and starting an incoming instance's clock), then
+                // advance every clock this host owns.
+                let changed = if node.apply_pending(renderer) {
                     true
                 } else {
                     node.child.borrow_mut().patch(renderer)
-                }
+                };
+                node.advance_transitions(renderer) | changed
             }
             Self::Container(container) => {
                 let mut changed = false;

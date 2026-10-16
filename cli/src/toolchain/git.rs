@@ -19,6 +19,10 @@ use crate::{
 
 /// Toolchain for `git`.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct Git;
 
 impl Toolchain for Git {
@@ -65,6 +69,7 @@ impl Toolchain for Git {
 
 /// Installation plan for `git` — the strategy `check` selected for this host.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum GitInstallation {
     /// `brew install git`.
     Brew,
@@ -76,6 +81,7 @@ pub enum GitInstallation {
 
 /// Errors that can occur during `git` installation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallGit {
     /// Homebrew not found error.
     #[error("Homebrew not found. Please install Homebrew to proceed.")]

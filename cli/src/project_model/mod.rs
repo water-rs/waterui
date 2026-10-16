@@ -3,6 +3,7 @@
 
 pub mod app_mode;
 pub mod assets;
+pub mod facts;
 pub mod framework;
 pub mod gradle_wrapper;
 pub mod patch_tables;

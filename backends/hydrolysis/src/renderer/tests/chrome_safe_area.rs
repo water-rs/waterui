@@ -719,12 +719,9 @@ impl waterui_navigation::NavigationTransition for SlideUpTransition {
         _progress: f32,
         _direction: waterui_navigation::NavigationTransitionDirection,
     ) -> waterui_navigation::NavigationTransitionFrame {
-        waterui_navigation::NavigationTransitionFrame {
-            outgoing: waterui_navigation::NavigationTransitionLayer::IDENTITY,
-            incoming: waterui_navigation::NavigationTransitionLayer {
-                offset_y: 1.0,
-                ..waterui_navigation::NavigationTransitionLayer::IDENTITY
-            },
-        }
+        waterui_navigation::NavigationTransitionFrame::new(
+            waterui_navigation::NavigationTransitionLayer::IDENTITY,
+            waterui_navigation::NavigationTransitionLayer::new(0.0, 1.0, 1.0, 1.0),
+        )
     }
 }

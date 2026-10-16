@@ -189,6 +189,26 @@ pub fn parse_async_result(payload: &str) -> Result<AsyncResult, serde_json::Erro
     serde_json::from_str(payload)
 }
 
+/// The answer of a `run_javascript` call from the reply `evaluateJavascript`
+/// delivered for it.
+///
+/// `evaluateJavascript` spells the value a script evaluated to as JSON, so the
+/// string `waterui_webview::raw_evaluation` always produces arrives as a JSON
+/// string literal; unquoting it is reading the engine's spelling, not encoding
+/// anything. The engine reports neither an exception nor a parse failure — the
+/// script then has no value, and the reply is `null` — so a reply that is not a
+/// string literal is the failure, with no detail to give.
+pub fn raw_reply(reply: &str) -> Result<Str, Str> {
+    serde_json::from_str::<String>(reply)
+        .map(Str::from)
+        .map_err(|_| {
+            Str::from(format!(
+                "the script did not evaluate to the string it must answer (evaluateJavascript \
+                 answered `{reply}`): it threw or did not parse, and Android reports no detail"
+            ))
+        })
+}
+
 /// Parses the cookie request-header form `name=value; name2=value2` that
 /// `CookieManager.getCookie` returns — already split into lines by Kotlin,
 /// one `name=value` per line.
@@ -216,8 +236,9 @@ pub fn parse_cookie_header(header: &str) -> Vec<Cookie<'static>> {
 /// JNI- and executor-free: the Android side wraps a `oneshot::Sender`, the
 /// tests collect what they are handed.
 pub enum PendingCall {
-    /// `run_javascript`: the synchronous `evaluateJavascript` reply is the
-    /// script's JSON answer.
+    /// `run_javascript`: the program is `waterui_webview::raw_evaluation`,
+    /// whose value is a string, and `evaluateJavascript` delivers a string
+    /// JSON-quoted — see [`raw_reply`].
     JavaScript(Box<dyn FnOnce(Result<Str, Str>)>),
     /// `call_async_javascript`: a reply of [`ASYNC_CALL_STARTED`] means the
     /// promise was posted and the real result comes through
@@ -347,7 +368,7 @@ impl PendingCalls {
         };
         match call {
             PendingCall::JavaScript(settle) => settle(if ok {
-                Ok(Str::from(value.to_string()))
+                raw_reply(value)
             } else {
                 Err(Str::from(value.to_string()))
             }),
@@ -1128,6 +1149,26 @@ mod tests {
         format!(
             r#"{{"id":{id},"generation":{generation},"token":"{token}","ok":{ok},"value":"{value}"}}"#
         )
+    }
+
+    #[test]
+    fn pending_calls_a_raw_reply_is_the_string_the_page_encoded() {
+        let mut pending = PendingCalls::default();
+        let (results, settle) = collect();
+        assert!(pending.begin(1, PendingCall::JavaScript(Box::new(settle))));
+        // The page's `JSON.stringify` made `"title"`; `evaluateJavascript`
+        // quotes that string once more.
+        pending.settle(1, true, r#""\"title\"""#);
+        // A script that threw or did not parse has no value: `null`.
+        let (failures, settle) = collect();
+        assert!(pending.begin(2, PendingCall::JavaScript(Box::new(settle))));
+        pending.settle(2, true, "null");
+        assert_eq!(results.borrow().as_slice(), &[Ok(r#""title""#.to_owned())]);
+        assert!(
+            matches!(failures.borrow().as_slice(), [Err(message)] if message.contains("`null`")),
+            "{:?}",
+            failures.borrow()
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ use crate::{
 
 /// The compression format of a [`ManagedTool`]'s release archive.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub enum ArchiveKind {
     /// A `.zip` archive.
     Zip,
@@ -34,6 +35,7 @@ pub enum ArchiveKind {
 
 /// A pinned release archive that unpacks under `~/.water/tools/<name>/<version>/`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ManagedTool {
     /// Directory name under `~/.water/tools`.
     pub name: &'static str,
@@ -418,6 +420,7 @@ async fn remove_directory_if_exists(path: &Path) -> Result<(), ManagedToolError>
 
 /// Errors from managed-tool installs.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ManagedToolError {
     /// The asset could not be downloaded or written.
     #[error(transparent)]

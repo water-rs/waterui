@@ -3,7 +3,7 @@
 
 For Lavapipe, export
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-XDG_RUNTIME_DIR=/tmp/runtime-ubuntu RUST_LOG=error before running this
+XDG_RUNTIME_DIR=/tmp/runtime-$USER RUST_LOG=error before running this
 script. It passes the caller's environment through unchanged.
 """
 
@@ -651,7 +651,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", type=int, default=30)
     parser.add_argument("--out", type=Path, help="report output directory")
     parser.add_argument(
-        "--work", type=Path, default=Path("/home/ubuntu/memory-gate")
+        "--work",
+        type=Path,
+        help="directory for the gate's worktrees; "
+        "defaults to a fresh temporary directory",
     )
     return parser.parse_args()
 
@@ -680,7 +683,29 @@ def main() -> int:
 
     repo = Path(__file__).resolve().parents[2]
     repo = Path(git_output(repo, "rev-parse", "--show-toplevel")).resolve()
-    work_root = args.work.expanduser().resolve()
+    if args.work is None:
+        with tempfile.TemporaryDirectory(prefix="cherenkov-memory-gate-") as work:
+            work_root = Path(work).resolve()
+            try:
+                return run(args, repo, work_root, engines)
+            finally:
+                # The temporary directory removes the checkouts; drop
+                # their git worktree registrations first so the caller's
+                # repository keeps no stale entries.
+                for path in sorted(work_root.iterdir()):
+                    if (path / WORKTREE_MARKER).is_file():
+                        command(
+                            [
+                                "git", "-C", str(repo), "worktree", "remove",
+                                "--force", str(path),
+                            ]
+                        )
+    return run(args, repo, args.work.expanduser().resolve(), engines)
+
+
+def run(
+    args: argparse.Namespace, repo: Path, work_root: Path, engines: tuple[str, ...]
+) -> int:
     out = args.out.expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     ensure_work_root(work_root, repo)
@@ -698,11 +723,16 @@ def main() -> int:
     generate_scenes(base, out, "base", fonts_only=True)
     generate_scenes(head, out, "head", fonts_only=False)
     scene_root = head / ENGINE_PATH
-    if not all(
-        (scene_root / "scenes" / "perf" / scene / "scene.json").is_file()
+    missing = [
+        scene
         for scene in SCENES
-    ):
-        raise GateError(f"head worktree {head} is missing one or more perf scenes")
+        if not (scene_root / "scenes" / "perf" / scene / "scene.json").is_file()
+    ]
+    if missing:
+        raise GateError(
+            f"head worktree {head} is missing perf scenes "
+            f"{', '.join(missing)}; scenes/tools/generate.py did not produce them"
+        )
 
     base_binary = build(base, out, "base")
     base_readings = measure_side(

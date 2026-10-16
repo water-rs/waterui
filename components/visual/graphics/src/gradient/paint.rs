@@ -23,6 +23,7 @@ use waterui_core::layout::StretchAxis;
 /// The family of a gradient, for backends that map it onto a platform type.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GradientType {
     /// Colours run along a line.
     #[default]

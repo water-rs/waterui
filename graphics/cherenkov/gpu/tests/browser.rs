@@ -378,7 +378,13 @@ async fn browser_incremental_matches_full_lowering() {
     let (mut renderer, _) = Gpu::init(GpuConfig::default())
         .await
         .expect("WebGPU adapter required");
-    cherenkov::testing::incremental::equivalence(&mut renderer).await;
+    let font = cherenkov::FontData {
+        data: include_bytes!("../../scenes/fonts/NotoSans.ttf")
+            .as_slice()
+            .into(),
+        index: 0,
+    };
+    cherenkov::testing::incremental::equivalence(&mut renderer, font).await;
 }
 
 // ---- Foreign GPUTexture external frames (#167) --------------------------

@@ -68,6 +68,10 @@ pub struct ScrollHandle {
 
 /// Snapshot of one scroll view's offsets and extents, in f64 logical pixels.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "scroll snapshot every backend fills field by field from its native scroll view; a new field must fail their build rather than be left unset"
+)]
 pub struct ScrollMetrics {
     /// Current horizontal offset, clamped to `0.0..=max_x`.
     pub offset_x: f64,
@@ -112,6 +116,10 @@ pub struct ScrollRun {
 
 /// How a [`ScrollRun`] ended — or whether it still drives the offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each scroll run outcome variant by variant; a new scroll run outcome must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ScrollRunOutcome {
     /// The run is still animating.
     Running,

@@ -671,6 +671,19 @@ impl Host {
         &self,
         command: &MetadataCommand,
     ) -> Result<Metadata, cargo_metadata::Error> {
+        let json = self.cargo_metadata_json(command).await?;
+        unblock(move || MetadataCommand::parse(json)).await
+    }
+
+    /// The JSON document [`Host::cargo_metadata`] parses — the first stdout
+    /// line of the run that opens a JSON object.
+    ///
+    /// # Errors
+    /// Every error [`MetadataCommand::exec`] reports before parsing.
+    pub async fn cargo_metadata_json(
+        &self,
+        command: &MetadataCommand,
+    ) -> Result<String, cargo_metadata::Error> {
         let invocation = command.cargo_command();
         let mut cargo = self.command("cargo");
         cargo.args(invocation.get_args()).kill_on_drop(true);
@@ -683,20 +696,18 @@ impl Host {
                 None => cargo.env_remove(key),
             };
         }
+        tracing::debug!(args = ?invocation.get_args().collect::<Vec<_>>(), "spawning cargo metadata");
         let output = cargo.output().await?;
-        unblock(move || {
-            if !output.status.success() {
-                return Err(cargo_metadata::Error::CargoMetadata {
-                    stderr: String::from_utf8(output.stderr)?,
-                });
-            }
-            let json = std::str::from_utf8(&output.stdout)?
-                .lines()
-                .find(|line| line.starts_with('{'))
-                .ok_or(cargo_metadata::Error::NoJson)?;
-            MetadataCommand::parse(json)
-        })
-        .await
+        if !output.status.success() {
+            return Err(cargo_metadata::Error::CargoMetadata {
+                stderr: String::from_utf8(output.stderr)?,
+            });
+        }
+        let json = std::str::from_utf8(&output.stdout)?
+            .lines()
+            .find(|line| line.starts_with('{'))
+            .ok_or(cargo_metadata::Error::NoJson)?;
+        Ok(json.to_owned())
     }
 
     /// Run `program` to completion with nothing of this process in its hands:

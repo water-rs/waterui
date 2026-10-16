@@ -26,7 +26,7 @@ use crate::HeadlessRuntime;
 
 /// An item whose id stays stable while a baked field changes: `get_id` resolves
 /// the same identity, so id reconciliation alone cannot see the content change.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Shade {
     id: u64,
     level: u8,
@@ -70,7 +70,8 @@ fn collection_overlay(list: &List<Shade>) -> AnyView {
 /// re-materialize the retained row's node instead of reusing the stale subtree.
 #[test]
 fn collection_same_id_item_update_rematerializes_row() {
-    let list: List<Shade> = List::from(vec![Shade { id: 0, level: 0 }, Shade { id: 1, level: 1 }]);
+    let mut list: List<Shade> =
+        List::from(vec![Shade { id: 0, level: 0 }, Shade { id: 1, level: 1 }]);
     let mut runtime = {
         let list = list.clone();
         runtime(move || collection_overlay(&list))
@@ -98,7 +99,8 @@ fn collection_same_id_item_update_rematerializes_row() {
 /// virtualized `LazyStackNode` path backed by `VisibleSubviewCache`.
 #[test]
 fn lazy_stack_same_id_item_update_rematerializes_row() {
-    let list: List<Shade> = List::from(vec![Shade { id: 0, level: 0 }, Shade { id: 1, level: 1 }]);
+    let mut list: List<Shade> =
+        List::from(vec![Shade { id: 0, level: 0 }, Shade { id: 1, level: 1 }]);
     let mut runtime = {
         let list = list.clone();
         runtime(move || {
@@ -139,7 +141,7 @@ fn lazy_stack_same_id_item_update_rematerializes_row() {
 #[test]
 fn collection_set_rebuilds_only_the_touched_row() {
     let builds = Rc::new(Cell::new(0usize));
-    let list: List<Shade> = List::from(
+    let mut list: List<Shade> = List::from(
         (0..1000u64)
             .map(|id| Shade { id, level: 0 })
             .collect::<Vec<_>>(),
@@ -183,7 +185,7 @@ fn collection_set_rebuilds_only_the_touched_row() {
 #[test]
 fn collection_push_rebuilds_no_existing_row() {
     let builds = Rc::new(Cell::new(0usize));
-    let list: List<Shade> = List::from(
+    let mut list: List<Shade> = List::from(
         (0..4u64)
             .map(|id| Shade { id, level: 0 })
             .collect::<Vec<_>>(),

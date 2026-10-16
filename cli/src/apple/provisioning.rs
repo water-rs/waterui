@@ -39,6 +39,7 @@ fn profile_directories(home: &Path) -> Vec<PathBuf> {
 /// What the app being signed requires from a development provisioning
 /// profile.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct SigningRequest<'a> {
     /// The development team the build signs under.
     pub team: &'a str,
@@ -64,6 +65,7 @@ pub struct SigningRequest<'a> {
 /// The identity and prefix are part of the selection so the signer can
 /// never pair the profile with a different — or unusable — certificate.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ProfileSelection {
     /// Location of the profile on disk.
     pub path: PathBuf,
@@ -79,6 +81,7 @@ pub struct ProfileSelection {
 
 /// Why one installed `.mobileprovision` was rejected for a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProfileRejection {
     /// `TeamIdentifier` does not contain the requested team.
     WrongTeam {
@@ -520,6 +523,7 @@ fn evaluate_candidate(
 
 /// Why [`select_development_profile`] could not return a selection.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SelectError {
     /// Every candidate was rejected — or none are installed. Provisioning
     /// may produce a valid one.
@@ -794,6 +798,7 @@ pub fn signing_entitlements(
 /// A provisioning failure reported by `xcodebuild`, mapped to the action the
 /// user takes next. Each variant is one failure class Xcode reports.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProvisionError {
     /// Xcode has no Apple ID signed in.
     #[error(

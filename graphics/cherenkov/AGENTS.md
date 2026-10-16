@@ -54,10 +54,14 @@ belong to water-rs/waterui.
 - **Frames** target 120fps: 8.33 ms at p99. 60fps is accepted only where no
   renderer can fit the budget in theory.
 - **CPU-side changes are accepted on deterministic Callgrind instruction
-  counts:** Ir for `lower` and `encode` at the second steady frame of the five
+  counts:** Ir for `lower` and `encode` at the second steady frame of the
   perf scenes, sampled by frame index (`bench/scripts/ir_gate.py`, which runs
-  `measure --pause-at`). The gated Ir excludes the allocator (calls into the
-  Rust allocator shims and the libc malloc family) and the libc memory
+  `measure --pause-at`). CI runs it on every pull request that touches
+  `graphics/cherenkov/`, measured as merged into dev, and by dispatch of
+  `cherenkov-ir.yml` for any revision against its merge base with dev
+  (`-f head=refs/pull/<number>/merge` for a pull request). The gated Ir
+  excludes the allocator (calls into the Rust allocator shims and the libc
+  malloc family) and the libc memory
   primitives (memcpy, memmove, memset, memcmp, bcmp), whose Ir depends on
   buffer addresses: at most +1% per scene against dev, and alloc, realloc,
   dealloc and memory-primitive calls per frame must not rise.
@@ -67,6 +71,11 @@ belong to water-rs/waterui.
   interleaved A/B rounds with per-round results: the Apple M1, the iPad Pro M4
   (Metal) and the Pixel 9 Pro (Vulkan). The iPad's GPU clock is bimodal with
   device state.
+- **Pixel cost comparisons hold the GPU and the measuring CPU at one clock**
+  and check every run's clock residency (`bench/scripts/pixel_compare.py`):
+  the GPU governor's per-process clock moves identical builds by the clock
+  ratio. A scene is decided only when the change's bootstrap interval is no
+  wider than the limit; frame-budget checks run under the default governor.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five

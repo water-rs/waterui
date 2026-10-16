@@ -12,6 +12,7 @@ use waterui_core::impl_debug;
 
 /// A raw CDP event emitted by Chromium.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CdpEvent {
     /// Fully qualified protocol method, such as `Page.loadEventFired`.
     pub method: Cow<'static, str>,
@@ -19,8 +20,20 @@ pub struct CdpEvent {
     pub params: Value,
 }
 
+impl CdpEvent {
+    /// The event `method` carrying `params`.
+    #[must_use]
+    pub fn new(method: impl Into<Cow<'static, str>>, params: Value) -> Self {
+        Self {
+            method: method.into(),
+            params,
+        }
+    }
+}
+
 /// Errors returned by CDP commands and event decoding.
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CdpError {
     /// Chromium rejected a protocol command.
     #[error("CDP command `{method}` failed ({code}): {message}")]

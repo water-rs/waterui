@@ -40,6 +40,10 @@ use waterui_core::Str;
 /// not delivered rather than being reported as a button a view would
 /// misinterpret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every embedded surface host maps each W3C button variant by variant; a new button must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SurfacePointerButton {
     /// The primary button — the left button on a right-handed mouse, a tap.
     Primary,
@@ -60,6 +64,10 @@ pub enum SurfacePointerButton {
 /// and want the view's own line height applied, pixels are already the
 /// distance the content should move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every embedded surface host converts each scroll unit variant by variant; a new unit must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ScrollUnit {
     /// Deltas count lines of text — a discrete mouse wheel.
     Line,
@@ -76,6 +84,10 @@ pub enum ScrollUnit {
 /// Positions are logical and surface-local (see the [module
 /// docs](self)).
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every embedded surface host forwards each input event variant by variant; a new event must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SurfaceInputEvent {
     /// Keyboard focus entered (`true`) or left (`false`) this surface.
     ///

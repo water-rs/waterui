@@ -10,6 +10,7 @@ use crate::tree::NumberKind;
 
 /// Why an encoded schema payload could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// The payload is empty, so it does not even carry a version byte.
     #[error("the schema payload is empty")]

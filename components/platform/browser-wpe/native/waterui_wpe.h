@@ -167,15 +167,16 @@ void water_wpe_page_get_cookies(
     WaterWpePage *page,
     WaterWpeResultCallback callback,
     void *user_data);
-/* Evaluates `script` as a program and reports its result. A promise comes back
- * as a promise: this is the raw path, so nothing is awaited. */
+/* Evaluates `script` as a program and reports the string it evaluates to; a
+ * value of any other kind is reported as a failure. A promise is not awaited:
+ * this is the raw path. */
 void water_wpe_page_run_javascript(
     WaterWpePage *page,
     const char *script,
     WaterWpeResultCallback callback,
     void *user_data);
-/* Runs `body` as the body of an async function and reports the value its promise
- * resolves with. Every typed evaluation takes this path, because the shared
+/* Runs `body` as the body of an async function and reports the string its
+ * promise resolves with; a value of any other kind is reported as a failure. Every typed evaluation takes this path, because the shared
  * `__wateruiEval` wrapper is async and `webkit_web_view_evaluate_javascript`
  * would hand back the unresolved promise instead of the envelope. */
 void water_wpe_page_call_async_javascript(

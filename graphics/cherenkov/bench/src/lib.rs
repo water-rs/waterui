@@ -27,6 +27,11 @@
 //! pipelined frame rate. Where no timestamp source exists the field is
 //! `null` — it is never estimated. The Cherenkov GPU adapter instead collects
 //! timestamps from completed earlier submissions without draining each frame.
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 pub mod affinity;
 #[cfg(feature = "cherenkov")]
@@ -44,6 +49,7 @@ pub mod energy;
 #[cfg(feature = "cherenkov")]
 pub mod external_cost;
 pub mod gamut_sweep;
+pub mod gpu_clock;
 pub mod memory;
 #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
 pub mod motion;

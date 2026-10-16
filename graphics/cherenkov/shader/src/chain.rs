@@ -49,12 +49,24 @@ impl<'s> Stage<'s> {
 
 /// What to compose for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct ComposeOptions {
     /// The precision of the colour values segments take and return. Each
     /// stage uses its variant of this precision when declared.
     pub precision: Precision,
     /// Use the subgroup variant of each stage that declares one.
     pub subgroups: bool,
+}
+
+impl ComposeOptions {
+    /// Compose for `precision`, using subgroup variants when `subgroups`.
+    #[must_use]
+    pub const fn new(precision: Precision, subgroups: bool) -> Self {
+        Self {
+            precision,
+            subgroups,
+        }
+    }
 }
 
 impl Default for ComposeOptions {
@@ -68,6 +80,10 @@ impl Default for ComposeOptions {
 
 /// One argument of a segment function, in order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "executors bind each segment argument variant by variant; a new argument must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SegmentArg {
     /// The colour, `vec4` at the composition's precision.
     Color,
@@ -89,6 +105,7 @@ pub enum SegmentArg {
 
 /// One dynamic parameter in a segment's uniform block.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct UniformMember {
     /// The stage index in the chain.
     pub stage: usize,
@@ -102,6 +119,7 @@ pub struct UniformMember {
 
 /// The uniform block of a segment, laid out by WGSL uniform rules.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct UniformLayout {
     /// Spatial segments only: the byte offset of the `size` member, the
     /// `vec2<f32>` carrying the segment's input extent in pixels. It is
@@ -115,6 +133,7 @@ pub struct UniformLayout {
 
 /// One generated function.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Segment {
     /// The function's name in the module.
     pub function: String,
@@ -128,8 +147,30 @@ pub struct Segment {
     pub uniform: UniformLayout,
 }
 
+impl Segment {
+    /// The function `function` applying `stages`, with the variant each stage
+    /// used, its arguments in order, and its uniform block.
+    #[must_use]
+    pub const fn new(
+        function: String,
+        stages: Range<usize>,
+        variants: Vec<Variant>,
+        args: Vec<SegmentArg>,
+        uniform: UniformLayout,
+    ) -> Self {
+        Self {
+            function,
+            stages,
+            variants,
+            args,
+            uniform,
+        }
+    }
+}
+
 /// The cost parameters of folding a colour prefix into a spatial stage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct FoldCost {
     /// Computed expressions in the prefix, applied once per sample.
     pub prefix_ops: u32,
@@ -139,6 +180,7 @@ pub struct FoldCost {
 
 /// A spatial segment with the preceding colour piece folded into its samples.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Folded {
     /// The folded function. It replaces the preceding colour piece and the
     /// plain spatial segment.
@@ -155,6 +197,10 @@ pub struct Folded {
 /// One piece of a composed chain. Boundaries between pieces are the possible
 /// materialization points.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "executors plan each piece kind variant by variant; a new kind must fail their build instead of falling into a wildcard arm"
+)]
 pub enum Piece {
     /// Consecutive colour stages.
     Color(Segment),

@@ -21,6 +21,7 @@ use crate::{
 /// build cache; a local runtime checkout is discovered at
 /// `waterui_path/backends/apple`, never declared.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AppleBackend {
     /// Path to the generated Apple project below the managed backends root.
     pub project_path: PathBuf,
@@ -126,10 +127,10 @@ impl AppleBackend {
             .collect();
         // The generated project names the launch assets the catalog will
         // hold, so the two are decided from the same resolution.
-        let launch = crate::assets::project_launch_assets(project)?;
+        let launch = crate::assets::project_launch_plan(project)?;
         let launch_entry = templates::LaunchTemplateEntry {
-            has_background: launch.plan().background(ColorScheme::Light).is_some(),
-            has_image: launch.has_artwork(),
+            has_background: launch.background(ColorScheme::Light).is_some(),
+            has_image: launch.image().is_some(),
         };
         Ok(TemplateContext::for_project_manifest(
             project.host(),

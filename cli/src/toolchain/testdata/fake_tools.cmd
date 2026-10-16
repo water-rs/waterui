@@ -304,6 +304,8 @@ if "%1"=="-vV" (
     )
     call :respond RUSTC_VERBOSE & exit /b !errorlevel!
 )
+rem `rustc --print <what>` answers the staged `RUSTC_PRINT_<what>` file.
+if "%1"=="--print" (call :respond_file RUSTC_PRINT_%2 & exit /b !errorlevel!)
 exit /b 2
 
 :cargo

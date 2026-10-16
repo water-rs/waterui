@@ -60,6 +60,7 @@ impl OffscreenSize {
 
 /// Why an offscreen render did not produce pixels.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum OffscreenError {
     /// No GPU engine could be created.
     #[error(transparent)]
@@ -74,6 +75,7 @@ pub enum OffscreenError {
 
 /// The pixels of an offscreen render: straight-alpha sRGB8, row-major.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OffscreenImage {
     /// Width in pixels.
     pub width: u32,
@@ -84,6 +86,17 @@ pub struct OffscreenImage {
 }
 
 impl OffscreenImage {
+    /// A `width` by `height` image over `rgba8`, which holds
+    /// `width * height * 4` bytes of straight-alpha sRGB8 in row-major order.
+    #[must_use]
+    pub const fn new(width: u32, height: u32, rgba8: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            rgba8,
+        }
+    }
+
     /// Encodes the readback's premultiplied linear P3 as straight sRGB8,
     /// mapping P3 primaries to sRGB through XYZ and clipping what falls
     /// outside the sRGB gamut.
@@ -102,11 +115,7 @@ impl OffscreenImage {
                 [encode(r), encode(g), encode(b), encode_alpha(a)]
             })
             .collect();
-        Self {
-            width: readback.width,
-            height: readback.height,
-            rgba8,
-        }
+        Self::new(readback.width, readback.height, rgba8)
     }
 
     /// The image as premultiplied sRGB8: each channel is its straight value
