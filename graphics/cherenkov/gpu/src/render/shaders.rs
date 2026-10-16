@@ -129,11 +129,18 @@ const ENGINE_WGSL3: &str = include_str!(concat!(env!("OUT_DIR"), "/engine3.wgsl"
 /// The `VARIANT = 4` specialization (long gradient): the long spans
 /// kept, union spans stripped — composed by `build.rs`.
 const ENGINE_WGSL4: &str = include_str!(concat!(env!("OUT_DIR"), "/engine4.wgsl"));
+/// The `VARIANT = 5` specialization (cell): every span but the union's,
+/// including the `// cell-buffer` reads of a GPU-routed path's partial
+/// cells from the frame's cell-texel buffer (issue #2543). Only
+/// GPU-routed ranges draw with it (`DrawRange::module`); variants 0–2
+/// and 4 carry none of the cell-buffer code.
+const ENGINE_WGSL5: &str = include_str!(concat!(env!("OUT_DIR"), "/engine5.wgsl"));
 
 /// The effect-module text for a user `backdrop_effect` source.
 ///
-/// The full engine module — `ENGINE_WGSL2`, or `ENGINE_WGSL3` when
-/// `union` marks a member of a union group — with the stub
+/// The full engine module with the cell-buffer reads — `ENGINE_WGSL5`,
+/// or `ENGINE_WGSL3` when `union` marks a member of a union group, since
+/// one effect pipeline serves whatever route its draws take — with the stub
 /// `backdrop_effect` removed and the user source appended. The stub sits
 /// between two `// backdrop-effect-stub` marker lines, so removal is a
 /// plain string split.
@@ -144,7 +151,7 @@ const ENGINE_WGSL4: &str = include_str!(concat!(env!("OUT_DIR"), "/engine4.wgsl"
 #[must_use]
 pub fn backdrop_effect_text(user: &str, union: bool) -> Cow<'static, str> {
     const MARK: &str = "// backdrop-effect-stub";
-    let module = if union { ENGINE_WGSL3 } else { ENGINE_WGSL2 };
+    let module = if union { ENGINE_WGSL3 } else { ENGINE_WGSL5 };
     let (head, rest) = module
         .split_once(MARK)
         .expect("the backdrop-effect stub marker is part of shader.wgsl");
@@ -187,14 +194,15 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
 /// exactly those targets, so the condition lives in one place (issue #241).
 #[cfg(cherenkov_spirv)]
 pub mod spirv {
-    /// naga SPIR-V for the five `VARIANT` specializations of
+    /// naga SPIR-V for the six `VARIANT` specializations of
     /// `shader.wgsl`.
-    pub const ENGINE: [&[u8]; 5] = [
+    pub const ENGINE: [&[u8]; 6] = [
         include_bytes!(concat!(env!("OUT_DIR"), "/engine0.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine1.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine2.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine3.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine4.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine5.spv")),
     ];
     /// `present.wgsl`.
     pub const PRESENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.spv"));
@@ -210,6 +218,8 @@ pub mod spirv {
     pub const REDUCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.spv"));
     /// `shadow.wgsl`, the silhouette convolution module.
     pub const SHADOW: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.spv"));
+    /// `coverage.wgsl`.
+    pub const COVERAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coverage.spv"));
     /// `external_native.spv` — the Vulkan native module: `vs_main`,
     /// `fs_external` and `fs_external_format`, with the external-format
     /// pair merged into a combined sampled image by the build's
@@ -244,15 +254,16 @@ pub mod spirv {
 // produce them otherwise, and a Metal backend cannot appear on a
 // non-Apple build), so the empty slices are unreachable.
 #[cfg(target_vendor = "apple")]
-const ENGINE_METALLIB: [&[u8]; 5] = [
+const ENGINE_METALLIB: [&[u8]; 6] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/engine0.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine1.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine2.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine3.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine4.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine5.metallib")),
 ];
 #[cfg(not(target_vendor = "apple"))]
-const ENGINE_METALLIB: [&[u8]; 5] = [&[], &[], &[], &[], &[]];
+const ENGINE_METALLIB: [&[u8]; 6] = [&[], &[], &[], &[], &[], &[]];
 #[cfg(target_vendor = "apple")]
 const PRESENT_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.metallib"));
 #[cfg(not(target_vendor = "apple"))]
@@ -281,10 +292,14 @@ const REDUCE_METALLIB: &[u8] = &[];
 const SHADOW_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.metallib"));
 #[cfg(not(target_vendor = "apple"))]
 const SHADOW_METALLIB: &[u8] = &[];
+#[cfg(target_vendor = "apple")]
+const COVERAGE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coverage.metallib"));
+#[cfg(not(target_vendor = "apple"))]
+const COVERAGE_METALLIB: &[u8] = &[];
 
-/// The five `VARIANT` specializations of `shader.wgsl`, indexed by
+/// The six `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
-const ENGINE: [Fixed; 5] = [
+const ENGINE: [Fixed; 6] = [
     Fixed {
         wgsl: ENGINE_WGSL0,
         #[cfg(cherenkov_spirv)]
@@ -318,6 +333,13 @@ const ENGINE: [Fixed; 5] = [
         #[cfg(cherenkov_spirv)]
         spirv: spirv::ENGINE[4],
         metallib: ENGINE_METALLIB[4],
+        entries: ENGINE_ENTRIES,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL5,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[5],
+        metallib: ENGINE_METALLIB[5],
         entries: ENGINE_ENTRIES,
     },
 ];
@@ -390,6 +412,71 @@ const SHADOW: Fixed = Fixed {
     spirv: spirv::SHADOW,
     metallib: SHADOW_METALLIB,
     entries: SHADOW_ENTRIES,
+};
+
+const COVERAGE: Fixed = Fixed {
+    wgsl: include_str!("coverage.wgsl"),
+    #[cfg(cherenkov_spirv)]
+    spirv: spirv::COVERAGE,
+    metallib: COVERAGE_METALLIB,
+    entries: &[
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("initialize"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("radix_count"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("radix_scan_blocks"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("radix_prefix"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("radix_scatter"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("flatten"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("bin"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("link_groups"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("prefix"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("fragment_bins"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("integrate"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("classify"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("fill_cells"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("emit_args"),
+            workgroup_size: (64, 1, 1),
+        },
+    ],
 };
 
 /// How the fixed engine modules reach the device — a property of the
@@ -497,6 +584,12 @@ impl ShaderDelivery {
     #[must_use]
     pub fn shadow_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
         self.module(device, "cherenkov silhouette convolution", &SHADOW)
+    }
+
+    /// The GPU coverage compute module (issue #2543).
+    #[must_use]
+    pub fn coverage_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
+        self.module(device, "gpu coverage", &COVERAGE)
     }
 
     fn module(
