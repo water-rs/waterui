@@ -19,13 +19,16 @@ ROOT = '_RNvCs1_5bench4root'
 MARKER = '_RNvXs5_NtCs1_15cherenkov_bench16cherenkov_cpu_adNtB5_9CherenkovNtB7_6Engine6submit'
 RENDER = '_RINvNtNtCs1_9cherenkov6engine6thread13apply_messageNtCs1_13cherenkov_cpu6RasterECs1_15cherenkov_bench'
 WAITER = '_RNvMs8_NtCs1_10rayon_core8registryNtB5_12WorkerThread15wait_until_cold'
+# The caller Callgrind reports for a job at opt-level 3: the `Sleep::sleep`
+# instantiation for `wait_until_cold`'s closure.
+SLEEPER = '_RINvMNtCs1_10rayon_core5sleepNtB3_5Sleep5sleepNCNvMs8_NtB5_8registryNtB10_12WorkerThread15wait_until_cold0EB5_'
 JOB = '_RNvXs2_NtCs1_10rayon_core3jobINtB5_8StackJobNtB5_4BandE0ENtB5_3Job7executeB3l_'
 RUN = '_RINvNtNtCs1_9cherenkov6engine6thread3runNtCs1_13cherenkov_cpu6RasterE'
 LATCH = '_RNvXs4_NtCs1_10rayon_core5latchNtB5_9LockLatchNtB5_5Latch3set'
 WAIT = '_RNvMs3_NtCs1_10rayon_core5latchNtB5_9LockLatch14wait_and_reset'
 ALLOC = '_RNvCs1_7___rustc12___rust_alloc'
 FUTEX = '_RNvMNtNtNtNtCs1_3std3sys4sync5mutex5futexNtB2_5Mutex'
-ROOTS = ir_gate.CpuRoots(marker=MARKER, render=RENDER, waiter=WAITER, jobs=(JOB,))
+ROOTS = ir_gate.CpuRoots(marker=MARKER, render=RENDER, jobs=(JOB,))
 
 
 def write_dump(directory, number, trigger, edges):
@@ -291,6 +294,17 @@ class Sampling(unittest.TestCase):
         self.assertIn(f'--separate-callers{ir_gate.CALLERS}=__memset_*', options)
 
 
+class Roots(unittest.TestCase):
+    def test_run_transaction_is_the_instantiation_encode_opens(self):
+        record = '_RINvMs1_NtCs1_16cherenkov_record7surfaceINtB6_6SharedNtCs1_13cherenkov_gpu3GpuE15run_transactionNCNvXs7_NtCs1_15cherenkov_bench12cherenkov_adNtB1Y_9CherenkovNtB20_6Engine{}EB20_'
+        encode, prepare = record.format('6encodes_0'), record.format('7prepares4_0')
+        suffix, parts = ir_gate.ROOTS['run_transaction']
+        for symbols in ([encode], [prepare, encode]):
+            self.assertEqual(ir_gate.one_symbol(symbols, suffix, parts, 't', 'run_transaction'), encode)
+        with self.assertRaisesRegex(RuntimeError, 'expected one run_transaction symbol'):
+            ir_gate.one_symbol([prepare], suffix, parts, 't', 'run_transaction')
+
+
 class CpuFrames(unittest.TestCase):
     def samples(self, run):
         with tempfile.TemporaryDirectory() as root:
@@ -328,6 +342,12 @@ class CpuFrames(unittest.TestCase):
         run[12] = (('after', MARKER), [(RUN, RENDER, 0, 30), (WAITER, JOB, 0, 300)])
         with self.assertRaisesRegex(AssertionError, 'still running at the last dump'):
             self.samples(run)
+
+    def test_a_job_counts_whichever_pool_function_dispatches_it(self):
+        run = {n: (trigger, [(SLEEPER if caller == WAITER else caller, callee, calls, cost)
+                             for caller, callee, calls, cost in edges])
+               for n, (trigger, edges) in CPU_RUN.items()}
+        self.assertEqual(self.samples(run), self.samples(CPU_RUN))
 
     def test_a_nested_job_fails(self):
         run = dict(CPU_RUN)
