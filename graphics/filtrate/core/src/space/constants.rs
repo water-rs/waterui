@@ -11,7 +11,9 @@
 //! The matrices are derived here rather than written out: each colour
 //! space's RGB → XYZ matrix follows from its primaries and white point
 //! (SMPTE RP 177), computed in `f64` at compile time and rounded once to
-//! `f32`.
+//! `f32`, row by row so that each row's sum, one, survives the rounding:
+//! both spaces share D65, so white converts to exactly white and the
+//! rounding leaves neutrals no direction to drift in.
 
 /// A CIE 1931 xy chromaticity.
 type Xy = [f64; 2];
@@ -119,23 +121,69 @@ const fn rgb_to_xyz(primaries: &[Xy; 3], white: Xy) -> Mat3 {
     out
 }
 
-/// `m`, each entry rounded to the nearest `f32`.
+/// The `f32` spacing in the binade of `value`, a normal non-zero `f64`
+/// inside the `f32` range: `2^(e - 23)` for `value = ±m·2^e`, `1 <= m < 2`.
+const fn f32_spacing(value: f64) -> f64 {
+    let biased_exponent = (value.to_bits() >> 52) & 0x7ff;
+    f64::from_bits((biased_exponent - 23) << 52)
+}
+
+/// Whether `value` is exactly the `f64` widening of `narrow`.
+const fn widens_to(narrow: f32, value: f64) -> bool {
+    (narrow as f64).to_bits() == value.to_bits()
+}
+
+/// One row whose entries sum to one, rounded to `f32` so that the sum
+/// stays exactly one. Rounding each entry to its nearest `f32` would not:
+/// the sum of a P3 ↔ sRGB row then misses one by up to half an `f32` step,
+/// which shifts every neutral by that much in one direction, and a target
+/// that stores toward zero turns the shift into a whole step of its own
+/// format. The largest entry absorbs the rounding: the others are rounded
+/// to its `f32` spacing, and it is one minus their sum, which is then
+/// exact.
 #[allow(
     clippy::cast_possible_truncation,
     reason = "rounding the f64 derivation to f32 once is the point"
 )]
-const fn narrow(m: &Mat3) -> [[f32; 3]; 3] {
-    let mut out = [[0.0; 3]; 3];
-    let mut row = 0;
-    while row < 3 {
-        let mut column = 0;
-        while column < 3 {
-            out[row][column] = m[row][column] as f32;
-            column += 1;
+const fn narrow_unit_row(row: [f64; 3]) -> [f32; 3] {
+    let mut pivot = 0;
+    let mut column = 1;
+    while column < 3 {
+        if row[column].abs() > row[pivot].abs() {
+            pivot = column;
         }
-        row += 1;
+        column += 1;
     }
+    let spacing = f32_spacing(row[pivot]);
+    let mut out = [0.0; 3];
+    let mut rest = 0.0;
+    column = 0;
+    while column < 3 {
+        if column != pivot {
+            let rounded = (row[column] / spacing).round() * spacing;
+            out[column] = rounded as f32;
+            assert!(widens_to(out[column], rounded), "an entry is not an f32");
+            rest += rounded;
+        }
+        column += 1;
+    }
+    let absorbed = 1.0 - rest;
+    out[pivot] = absorbed as f32;
+    assert!(
+        widens_to(out[pivot], absorbed),
+        "the absorbing entry is not an f32"
+    );
     out
+}
+
+/// A matrix whose rows each sum to one (it keeps D65 white white), rounded
+/// row by row with [`narrow_unit_row`].
+const fn narrow_white_preserving(m: &Mat3) -> [[f32; 3]; 3] {
+    [
+        narrow_unit_row(m[0]),
+        narrow_unit_row(m[1]),
+        narrow_unit_row(m[2]),
+    ]
 }
 
 /// Linear Display P3 → XYZ (D65).
@@ -145,14 +193,16 @@ const DISPLAY_P3_TO_XYZ: Mat3 = rgb_to_xyz(&DISPLAY_P3_PRIMARIES, D65);
 const SRGB_TO_XYZ: Mat3 = rgb_to_xyz(&SRGB_PRIMARIES, D65);
 
 /// Linear Display P3 to linear sRGB (both D65), rows first.
-pub const P3_TO_SRGB: [[f32; 3]; 3] = narrow(&product(&inverse(&SRGB_TO_XYZ), &DISPLAY_P3_TO_XYZ));
+pub const P3_TO_SRGB: [[f32; 3]; 3] =
+    narrow_white_preserving(&product(&inverse(&SRGB_TO_XYZ), &DISPLAY_P3_TO_XYZ));
 
 /// Linear sRGB to linear Display P3 (both D65), rows first.
-pub const SRGB_TO_P3: [[f32; 3]; 3] = narrow(&product(&inverse(&DISPLAY_P3_TO_XYZ), &SRGB_TO_XYZ));
+pub const SRGB_TO_P3: [[f32; 3]; 3] =
+    narrow_white_preserving(&product(&inverse(&DISPLAY_P3_TO_XYZ), &SRGB_TO_XYZ));
 
 /// The luma coefficients of linear Display P3: the Y row of its RGB → XYZ
-/// matrix.
-pub const P3_LUMA: [f32; 3] = narrow(&DISPLAY_P3_TO_XYZ)[1];
+/// matrix, which sums to one (white has luminance one).
+pub const P3_LUMA: [f32; 3] = narrow_unit_row(DISPLAY_P3_TO_XYZ[1]);
 
 /// The sRGB transfer's exponent `γ`, before rounding.
 const GAMMA: f64 = 2.4;
@@ -212,8 +262,8 @@ mod tests {
         })
     }
 
-    /// The derived matrices are each other's inverse and keep D65 white
-    /// white, to the precision of their `f32` rounding.
+    /// The derived matrices are each other's inverse to the precision of
+    /// their `f32` rounding, and keep D65 white exactly white.
     #[test]
     fn derived_matrices_are_inverse_and_keep_white() {
         for product in [
@@ -227,13 +277,10 @@ mod tests {
                 }
             }
         }
-        for matrix in [P3_TO_SRGB, SRGB_TO_P3] {
-            for row in matrix {
-                let white: f64 = row.iter().copied().map(f64::from).sum();
-                assert!((white - 1.0).abs() < 1.0e-6, "{matrix:?}");
-            }
+        for row in P3_TO_SRGB.iter().chain(&SRGB_TO_P3).chain([&P3_LUMA]) {
+            let sum: f64 = row.iter().copied().map(f64::from).sum();
+            assert_eq!(sum, 1.0, "{row:?}");
+            assert_eq!(row[0] + row[1] + row[2], 1.0, "{row:?}");
         }
-        let luminance: f64 = P3_LUMA.iter().copied().map(f64::from).sum();
-        assert!((luminance - 1.0).abs() < 1.0e-6, "{P3_LUMA:?}");
     }
 }
