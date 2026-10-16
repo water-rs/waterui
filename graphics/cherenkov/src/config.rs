@@ -66,4 +66,8 @@ pub struct MemoryUsage {
     /// Texture format of the backdrop captures (`"rgba16float"` normally),
     /// `None` while none is allocated.
     pub backdrop_capture_format: Option<&'static str>,
+    /// Registered filter chains' targets — the per-size input/output pairs
+    /// plus each chain's own retained intermediates — in bytes; included
+    /// in `gpu`.
+    pub filter_targets: Bytes,
 }

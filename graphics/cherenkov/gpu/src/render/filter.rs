@@ -105,6 +105,10 @@ where
             &self.0.param_bounds(),
         ))
     }
+
+    fn target_bytes(&self) -> u64 {
+        Effect::target_bytes(&self.0)
+    }
 }
 
 /// A registered filter's identity: a layer filter or a backdrop group's
@@ -145,6 +149,10 @@ pub trait Runnable {
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<bool, filtrate::EffectRenderError>;
     fn set_redraw(&mut self, callback: filtrate::EffectRedrawCallback);
+    /// Device-resident bytes of the targets the effect itself retains —
+    /// a chain's intermediates. The registry's per-size input/output
+    /// targets are the registry's, not the effect's, and count elsewhere.
+    fn target_bytes(&self) -> u64;
 }
 
 impl<E: Effect> Runnable for E {
@@ -172,6 +180,9 @@ impl<E: Effect> Runnable for E {
     }
     fn set_redraw(&mut self, callback: filtrate::EffectRedrawCallback) {
         self.set_redraw_callback(callback);
+    }
+    fn target_bytes(&self) -> u64 {
+        Effect::target_bytes(self)
     }
 }
 
@@ -353,23 +364,25 @@ impl Registry {
         );
     }
 
-    /// Removes an entry; returns the GPU bytes its retired
-    /// input/output targets held (for the allocation diagnostic).
+    /// Removes an entry; returns the GPU bytes its retired targets held —
+    /// the input/output pairs and the effect's own (for the allocation
+    /// diagnostic).
     pub fn remove(&mut self, id: FilterKey) -> u64 {
         let Some(entry) = self.entries.remove(&id) else {
             return 0;
         };
         entry.wakes.clear();
-        entry
-            .io
-            .iter()
-            .flat_map(|(_, targets)| [&targets.input.0, &targets.output.0])
-            .map(|texture| {
-                u64::from(texture.width())
-                    * u64::from(texture.height())
-                    * super::texel_bytes(texture.format())
-            })
-            .sum()
+        entry.effect.target_bytes()
+            + entry
+                .io
+                .iter()
+                .flat_map(|(_, targets)| [&targets.input.0, &targets.output.0])
+                .map(|texture| {
+                    u64::from(texture.width())
+                        * u64::from(texture.height())
+                        * super::texel_bytes(texture.format())
+                })
+                .sum::<u64>()
     }
 
     /// Sets each filter's wakes to the surfaces whose frames run it; a
@@ -406,19 +419,24 @@ impl Registry {
         bytes
     }
 
+    /// Device-resident bytes of every registered chain's targets: the
+    /// registry's per-size input/output pairs plus each effect's own
+    /// retained targets (a multi-pass chain's intermediates).
     pub fn gpu_bytes(&self) -> u64 {
         self.entries
             .values()
-            .flat_map(|entry| entry.io.iter())
-            .flat_map(|(_, targets)| [&targets.input.0, &targets.output.0])
-            .map(|texture| {
-                u64::from(texture.width())
-                    * u64::from(texture.height())
-                    * if texture.format() == wgpu::TextureFormat::Rgba16Float {
-                        8
-                    } else {
-                        4
-                    }
+            .map(|entry| {
+                entry.effect.target_bytes()
+                    + entry
+                        .io
+                        .iter()
+                        .flat_map(|(_, targets)| [&targets.input.0, &targets.output.0])
+                        .map(|texture| {
+                            u64::from(texture.width())
+                                * u64::from(texture.height())
+                                * super::texel_bytes(texture.format())
+                        })
+                        .sum::<u64>()
             })
             .sum()
     }
