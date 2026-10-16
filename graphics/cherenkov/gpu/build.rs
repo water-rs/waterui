@@ -179,7 +179,11 @@ fn main() {
     let shared = format!("{space}\n{shared}");
     let present = format!("{space}\n{present}");
     let color = format!("{space}\n{}", read("color"));
-    for (name, text) in [("shared", &shared), ("present", &present), ("color", &color)] {
+    for (name, text) in [
+        ("shared", &shared),
+        ("present", &present),
+        ("color", &color),
+    ] {
         std::fs::write(out_dir.join(format!("{name}.wgsl")), text).unwrap();
     }
 

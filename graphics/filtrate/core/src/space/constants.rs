@@ -50,9 +50,8 @@ const fn product(a: &Mat3, b: &Mat3) -> Mat3 {
     while row < 3 {
         let mut column = 0;
         while column < 3 {
-            out[row][column] = a[row][0] * b[0][column]
-                + a[row][1] * b[1][column]
-                + a[row][2] * b[2][column];
+            out[row][column] =
+                a[row][0] * b[0][column] + a[row][1] * b[1][column] + a[row][2] * b[2][column];
             column += 1;
         }
         row += 1;
@@ -69,9 +68,21 @@ const fn minor(m: &Mat3, r0: usize, r1: usize, c0: usize, c1: usize) -> f64 {
 /// colour-space bases, never singular.
 const fn inverse(m: &Mat3) -> Mat3 {
     let adjugate = [
-        [minor(m, 1, 2, 1, 2), -minor(m, 0, 2, 1, 2), minor(m, 0, 1, 1, 2)],
-        [-minor(m, 1, 2, 0, 2), minor(m, 0, 2, 0, 2), -minor(m, 0, 1, 0, 2)],
-        [minor(m, 1, 2, 0, 1), -minor(m, 0, 2, 0, 1), minor(m, 0, 1, 0, 1)],
+        [
+            minor(m, 1, 2, 1, 2),
+            -minor(m, 0, 2, 1, 2),
+            minor(m, 0, 1, 1, 2),
+        ],
+        [
+            -minor(m, 1, 2, 0, 2),
+            minor(m, 0, 2, 0, 2),
+            -minor(m, 0, 1, 0, 2),
+        ],
+        [
+            minor(m, 1, 2, 0, 1),
+            -minor(m, 0, 2, 0, 1),
+            minor(m, 0, 1, 0, 1),
+        ],
     ];
     let determinant =
         m[0][0] * adjugate[0][0] + m[0][1] * adjugate[1][0] + m[0][2] * adjugate[2][0];
@@ -205,7 +216,10 @@ mod tests {
     /// white, to the precision of their `f32` rounding.
     #[test]
     fn derived_matrices_are_inverse_and_keep_white() {
-        for product in [times(&P3_TO_SRGB, &SRGB_TO_P3), times(&SRGB_TO_P3, &P3_TO_SRGB)] {
+        for product in [
+            times(&P3_TO_SRGB, &SRGB_TO_P3),
+            times(&SRGB_TO_P3, &P3_TO_SRGB),
+        ] {
             for (row, values) in product.iter().enumerate() {
                 for (column, value) in values.iter().enumerate() {
                     let identity = if row == column { 1.0 } else { 0.0 };

@@ -342,7 +342,10 @@ const PRESENT: Fixed = Fixed {
 
 /// `shared.wgsl` plus `external.wgsl`, the external-frame module.
 const EXTERNAL: Fixed = Fixed {
-    wgsl: concat!(include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")), include_str!("external.wgsl")),
+    wgsl: concat!(
+        include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
+        include_str!("external.wgsl")
+    ),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::EXTERNAL,
     metallib: EXTERNAL_METALLIB,

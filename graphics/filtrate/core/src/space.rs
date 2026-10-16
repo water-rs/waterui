@@ -141,9 +141,11 @@ pub fn srgb_decode(encoded: f32) -> f32 {
     curve.copysign(encoded)
 }
 
-/// Applies `map` to each pixel's straight-alpha colour: the colour is
-/// unpremultiplied by `max(alpha, 1e-6)` and premultiplied again by alpha,
-/// the unpremultiply of the colour stages that floor alpha (`LumaCurve`).
+/// Applies `map` to each pixel's straight-alpha colour.
+///
+/// The colour is unpremultiplied by `max(alpha, 1e-6)` and premultiplied
+/// again by alpha: the unpremultiply of the colour stages that floor alpha
+/// (`LumaCurve`).
 pub fn convert(pixels: &mut [[f32; 4]], map: impl Fn([f32; 3]) -> [f32; 3]) {
     for pixel in pixels {
         let alpha = pixel[3];

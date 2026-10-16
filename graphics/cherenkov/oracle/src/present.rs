@@ -9,8 +9,8 @@
 use crate::Image;
 use crate::color::{
     hlg_encode_channel, hlg_inverse_ootf, linear_bt2020_to_linear_p3, linear_p3_to_linear_srgb,
-    linear_srgb_to_linear_p3,
-    mat3_mul, pq_encode, srgb_decode, srgb_decode_extended, srgb_encode, srgb_encode_extended,
+    linear_srgb_to_linear_p3, mat3_mul, pq_encode, srgb_decode, srgb_decode_extended, srgb_encode,
+    srgb_encode_extended,
 };
 
 /// SDR white in nits — the BT.2408 reference white the absolute and
@@ -382,8 +382,8 @@ fn present_srgb_pixel([r, g, b, a]: [f64; 4], target: f64) -> [f64; 4] {
     } else {
         [0.0; 3]
     };
-    let srgb = crate::gamut::gamut_map_srgb_analytic(linear_p3_to_linear_srgb(straight))
-        .map(srgb_encode);
+    let srgb =
+        crate::gamut::gamut_map_srgb_analytic(linear_p3_to_linear_srgb(straight)).map(srgb_encode);
     [srgb[0] * a, srgb[1] * a, srgb[2] * a, a]
 }
 
