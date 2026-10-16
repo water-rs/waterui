@@ -200,6 +200,9 @@ pub fn encode(
                 // A union member is `PAINT_BACKDROP` sampling its
                 // group's capture: a neighbourhood read that
                 // `ExecutionPlan::epoch` never admits into an epoch.
+                // `Cell` is a draw module (`DrawRange::module`), never a
+                // range's lowered variant.
+                ShaderVariant::Cell => unreachable!("no range is lowered with the cell module"),
                 ShaderVariant::Union => {
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }

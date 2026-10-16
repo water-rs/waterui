@@ -143,6 +143,35 @@ fn apply(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
     );
 }
 
+// cell-buffer
+@group(0) @binding(4) var<storage, read> cell_texels: array<u32>;
+// cell-buffer
+
+// Buffer cells carry local pixel coordinates, keeping large word offsets
+// out of interpolated f32 values; CPU atlas cells carry atlas coordinates.
+fn cell_texel_origin(origin: vec2<f32>, packed: u32) -> vec2<f32> {
+    // cell-buffer
+    if (packed & 0x80000000u) != 0u { return vec2<f32>(0.0); }
+    // cell-buffer
+    return origin;
+}
+
+// Decode the cell coordinate convention shared by the raster entry points.
+fn path_cell_coverage(texel: vec2<i32>, origin: vec2<f32>, interior: vec2<f32>, packed: u32) -> f32 {
+    // cell-buffer
+    if (packed & 0x80000000u) != 0u {
+        let local = vec2<u32>(texel);
+        if local.x >= u32(interior.x) && local.x < u32(interior.y) { return 1.0; }
+        let omitted = u32(interior.y - interior.x);
+        let column = local.x - select(0u, omitted, local.x >= u32(interior.y));
+        let pixel = local.y * (u32(origin.y) - omitted) + column;
+        let word = cell_texels[u32(origin.x) + pixel / 4u];
+        return f32((word >> ((pixel % 4u) * 8u)) & 255u) / 255.0;
+    }
+    // cell-buffer
+    return textureLoad(atlas, texel, 0).r;
+}
+
 fn apply_inverse(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
     let a = m[0].x;
     let b = m[0].y;
