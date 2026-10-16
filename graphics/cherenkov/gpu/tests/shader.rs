@@ -22,8 +22,13 @@ const PROJECTIVE: &str = include_str!("../src/render/projective.wgsl");
 const MIP: &str = include_str!("../src/render/mip.wgsl");
 const RESOLVE: &str = include_str!("../src/render/resolve.wgsl");
 
+/// The Metal language version `build.rs` precompiles the engine modules
+/// at: 2.3, the first to take `-ftexture-write-rounding-mode` (#2773).
+const ENGINE_MSL_VERSION: (u8, u8) = (2, 3);
+
 /// The oldest Metal language version wgpu selects on a supported macOS
-/// (10.13 → 2.0), which is where `instance_id` and friends became legal.
+/// (10.13 → 2.0) for the modules it compiles at run time, such as backdrop
+/// effects, which is where `instance_id` and friends became legal.
 const MSL_VERSION: (u8, u8) = (2, 0);
 
 fn composed(variant: usize) -> (Module, naga::valid::ModuleInfo) {
@@ -40,7 +45,7 @@ fn every_variant_emits_msl() {
     for variant in 0..ENGINE_SOURCES.len() {
         let (module, info) = composed(variant);
         let options = msl::Options {
-            lang_version: MSL_VERSION,
+            lang_version: ENGINE_MSL_VERSION,
             ..msl::Options::default()
         };
         msl::write_string(&module, &info, &options, &msl::PipelineOptions::default())
