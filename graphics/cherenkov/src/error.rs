@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 pub use cherenkov_record::ResourceError;
 
-use crate::frame::OffscreenFormat;
-use cherenkov_record::{Extend, ResourceId};
+use crate::frame::{Next, OffscreenFormat};
+use cherenkov_record::{Extend, ResourceId, SurfaceId};
 
 /// Engine initialization or engine-wide failure.
 #[derive(Debug, thiserror::Error)]
@@ -144,16 +144,38 @@ pub enum RenderError {
         /// The rule it fails.
         reason: String,
     },
-    /// A draw names a resource the backend rejected after its handle was
-    /// returned: its registration, or an image's latest replacement.
-    /// Every render that draws the resource fails this way until the
-    /// resource is replaced successfully, or its last handle has dropped
-    /// and no installed content draws it any more.
-    #[error("{resource} was rejected by the backend: {reason}")]
+    /// Surfaces whose content draws a resource the backend rejected after
+    /// its handle was returned — its registration, or an image's latest
+    /// replacement — were left out of the frame. Every other visible
+    /// surface rendered and presented as on success, and `next` is what
+    /// `Ok` would have returned.
+    ///
+    /// A rejected surface is neither drawn nor presented and keeps its
+    /// previous pixels; its changes stay pending. Every render reports it
+    /// this way until the resource is replaced successfully or the
+    /// surface's content stops drawing it.
+    #[error(
+        "{} surface(s) left out of the frame; {}",
+        .surfaces.len(),
+        .surfaces[0]
+    )]
     Rejected {
-        /// The rejected resource.
-        resource: ResourceId,
-        /// The backend's reason.
-        reason: Arc<ResourceError>,
+        /// Each surface left out, never empty.
+        surfaces: Vec<SurfaceRejection>,
+        /// The frame's schedule for the surfaces that rendered.
+        next: Next,
     },
+}
+
+/// A surface left out of a frame because its content draws a resource the
+/// backend rejected: [`RenderError::Rejected`].
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("surface {} draws {resource}, which the backend rejected: {reason}", .surface.raw())]
+pub struct SurfaceRejection {
+    /// The surface.
+    pub surface: SurfaceId,
+    /// A rejected resource its content draws.
+    pub resource: ResourceId,
+    /// The backend's reason.
+    pub reason: Arc<ResourceError>,
 }

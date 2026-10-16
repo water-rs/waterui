@@ -139,6 +139,10 @@ impl Effect for CopyTextureEffect {
         );
         Ok(false)
     }
+
+    fn target_bytes(&self) -> u64 {
+        0
+    }
 }
 
 #[derive(Clone)]

@@ -1,5 +1,7 @@
 // Native stage interfaces around the build-time naga fragment bodies.
-#include "engine_tile.metal"
+// The family's generated module (engine_tile.metal,
+// engine_tile_long.metal or engine_tile_image.metal) arrives through
+// the compiler's -include flag, not an #include.
 
 struct TileInput {
     metal::float2 local [[user(loc0), center_perspective]];
@@ -34,16 +36,26 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
     return result;
 }
 
+// The image-source family's `fs_full` also takes the transfer decode
+// table; the build defines TILE_IMAGE_SOURCE for that family only.
+#ifdef TILE_IMAGE_SOURCE
+#define TILE_IMAGE_DECODE_PARAM , device ImageDecode const& image_decode [[buffer(3)]]
+#define TILE_IMAGE_DECODE_ARG image_decode,
+#else
+#define TILE_IMAGE_DECODE_PARAM
+#define TILE_IMAGE_DECODE_ARG
+#endif
+
 #define TILE_RESOURCES \
     TileInput v [[stage_in]], metal::float4 position [[position]], \
     constant Globals& globals [[buffer(0)]], \
     device InstanceBuffer const& instances [[buffer(1)]], \
     device StopBuffer const& stops [[buffer(2)]], \
-    device ImageDecode const& image_decode [[buffer(3)]], \
     metal::texture2d<float> atlas [[texture(0)]], \
     metal::texture2d<float> source [[texture(1)]], \
     metal::texture2d<float> image_tex [[texture(3)]], \
-    metal::texture2d<float> mask_tex [[texture(4)]]
+    metal::texture2d<float> mask_tex [[texture(4)]] \
+    TILE_IMAGE_DECODE_PARAM
 
 #define TILE_SHADE \
     metal::float2 backdrop_origin = {}, backdrop_size = {}; \
@@ -53,7 +65,7 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
     metal::float4 source_pixel = metal::float4(src); \
     metal::float4 destination_pixel = metal::float4(dst); \
     return { fs_full(tile_input(v, position, globals), globals, instances, stops, \
-        atlas, mask_tex, source, image_tex, image_decode, backdrop_origin, backdrop_size, \
+        atlas, mask_tex, source, image_tex, TILE_IMAGE_DECODE_ARG backdrop_origin, backdrop_size, \
         backdrop_scale, backdrop_levels, backdrop_member, source_pixel, destination_pixel) };
 
 #define TILE_OUTPUT(D) \

@@ -197,14 +197,15 @@ pub fn encode(
             let variant = match range.variant {
                 ShaderVariant::Simple => 0,
                 ShaderVariant::Shadow => 1,
-                // The tile module is the image variant's superset of Full.
-                ShaderVariant::Full | ShaderVariant::Image => 2,
+                ShaderVariant::Full => 2,
                 // A union member is `PAINT_BACKDROP` sampling its
                 // group's capture: a neighbourhood read that
                 // `ExecutionPlan::epoch` never admits into an epoch.
                 ShaderVariant::Union => {
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }
+                ShaderVariant::LongGradient => 4,
+                ShaderVariant::Image => 5,
             };
             draws.push(Draw {
                 key: PipeKey {
@@ -681,7 +682,7 @@ fn note(
             variant: match key.variant {
                 0 => report::Variant::Simple,
                 1 => report::Variant::Shadow,
-                2 => report::Variant::Source,
+                2 | 4 => report::Variant::Source,
                 3 => report::Variant::Clear,
                 _ => unreachable!("closed tile shader set"),
             },

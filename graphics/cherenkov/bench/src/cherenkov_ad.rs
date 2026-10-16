@@ -2010,6 +2010,7 @@ impl Engine for Cherenkov {
         counters.memory_cpu_bytes = Some(memory.cpu.0);
         counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
         counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
+        counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
         counters
     }
 
@@ -2041,6 +2042,7 @@ impl Engine for Cherenkov {
                 cpu_bytes: usage.cpu.0,
                 gpu_bytes: usage.gpu.0,
                 backdrop_capture_bytes: usage.backdrop_captures.0,
+                filter_target_bytes: usage.filter_targets.0,
             }),
             wgpu_allocator: wgpu_allocator(&self.shared_device.device, adapter_info.backend),
             skia_budgeted: Reading::unavailable("not a Skia adapter"),

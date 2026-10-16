@@ -9,6 +9,8 @@
 mod authored;
 #[path = "generate_corpus/compressed.rs"]
 mod compressed;
+#[path = "generate_corpus/gradient_search.rs"]
+mod gradient_search;
 #[path = "generate_corpus/text_layout.rs"]
 mod text_layout;
 
@@ -3081,6 +3083,8 @@ fn run() -> Result<(), SceneError> {
 
     // ---- Gradients ---------------------------------------------------------
 
+    gradient_search::add_corpus(&mut corpus);
+
     let gradient_rect = Shape::rect(8.0, 8.0, 112.0, 112.0);
     for extends in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
         let ename = match extends {
@@ -5546,6 +5550,7 @@ fn run() -> Result<(), SceneError> {
 
     let (pw, ph) = (1024u32, 2216u32);
     let mut perf = Corpus::new();
+    gradient_search::add_perf(&mut perf);
 
     // Scrolling UI list: 30 rows, each a shadowed rounded card with an
     // avatar, two text runs and a chevron icon path.

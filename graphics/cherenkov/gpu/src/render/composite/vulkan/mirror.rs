@@ -64,6 +64,7 @@ use ash::vk;
 use rustc_hash::FxHashMap;
 
 use super::Eligible;
+use crate::render::shaders::spirv;
 
 use crate::render::bindings::{
     ENGINE_GROUP0, ENGINE_GROUP1, TILE_INPUT_BINDINGS, TILE_INPUT_GROUP, vulkan_slot,
@@ -234,7 +235,7 @@ pub struct PipeKey {
     /// The slot the draw samples; equal to `target` for a self-sourced
     /// draw, which takes the second module.
     pub source: u8,
-    /// `0` simple, `1` shadow, `2` full, `3` clear.
+    /// `0` simple, `1` shadow, `2` full, `3` clear, `4` long gradient.
     pub variant: u8,
     /// Replace rather than source-over.
     pub replace: bool,
@@ -265,10 +266,12 @@ pub struct Mirror {
     /// The eligibility the mirror was built on, which carries the
     /// device's lazily allocated memory types.
     eligible: Eligible,
-    /// `engine_tile.spv`, for a draw sourcing another slot.
-    module: vk::ShaderModule,
-    /// `engine_tile_self.spv`, for a draw sourcing its own slot.
-    module_self: vk::ShaderModule,
+    /// The tile modules, `[family][self]` with families short, long
+    /// gradient and image source (see [`family`]):
+    /// `engine_tile{,_long,_image}.spv` for a draw sourcing another slot,
+    /// `engine_tile{,_long,_image}_self.spv` for a draw sourcing its own
+    /// slot.
+    modules: [[vk::ShaderModule; 2]; 3],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -360,8 +363,7 @@ impl Mirror {
             rendering,
             local_read,
             eligible,
-            module: built.module,
-            module_self: built.module_self,
+            modules: built.modules,
             set_layouts: built.set_layouts,
             layout: built.layout,
             cache: built.cache,
@@ -985,15 +987,11 @@ impl Mirror {
     /// source-over (or replaces) and writes all channels, and every
     /// other slot writes none.
     fn create_pipeline(&self, key: PipeKey) -> Result<vk::Pipeline, MirrorError> {
-        let module = if key.source == key.target {
-            self.module_self
-        } else {
-            self.module
-        };
+        let module = self.modules[family(key.variant)][usize::from(key.source == key.target)];
         let fragment_entry = match key.variant {
             0 => c"tile_simple",
             1 => c"tile_shadow",
-            2 => c"tile_full",
+            2 | 4 | 5 => c"tile_full",
             3 => c"tile_clear",
             _ => unreachable!("closed tile shader set"),
         };
@@ -1187,8 +1185,9 @@ impl Mirror {
             for layout in self.set_layouts {
                 self.device.destroy_descriptor_set_layout(layout, None);
             }
-            self.device.destroy_shader_module(self.module_self, None);
-            self.device.destroy_shader_module(self.module, None);
+            for module in self.modules.iter().flatten() {
+                self.device.destroy_shader_module(*module, None);
+            }
         }
     }
 }
@@ -1256,6 +1255,17 @@ fn raw(buffer: vk::Buffer) -> u64 {
     ash::vk::Handle::as_raw(buffer)
 }
 
+/// The tile module family a pipeline key's engine variant draws through:
+/// 0 for the short module (variants 0–3), 1 for long gradients (4), 2 for
+/// image sources (5).
+const fn family(variant: u8) -> usize {
+    match variant {
+        4 => 1,
+        5 => 2,
+        _ => 0,
+    }
+}
+
 /// A view handle as the integer the set key stores.
 fn raw_view(view: vk::ImageView) -> u64 {
     ash::vk::Handle::as_raw(view)
@@ -1265,8 +1275,8 @@ fn raw_view(view: vk::ImageView) -> u64 {
 /// failure part way through can destroy exactly what was made.
 #[derive(Default)]
 struct Built {
-    module: vk::ShaderModule,
-    module_self: vk::ShaderModule,
+    /// `[family][self]` — see [`Mirror::modules`].
+    modules: [[vk::ShaderModule; 2]; 3],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -1285,8 +1295,17 @@ impl Built {
             }
             .map_err(|e| MirrorError::Vulkan("vkCreateShaderModule", e))
         };
-        self.module = create_module(crate::render::shaders::spirv::TILE)?;
-        self.module_self = create_module(crate::render::shaders::spirv::TILE_SELF)?;
+        let blobs = [
+            spirv::TILE,
+            spirv::TILE_SELF,
+            spirv::TILE_LONG,
+            spirv::TILE_LONG_SELF,
+            spirv::TILE_IMAGE,
+            spirv::TILE_IMAGE_SELF,
+        ];
+        for (slot, bytes) in self.modules.iter_mut().flatten().zip(blobs) {
+            *slot = create_module(bytes)?;
+        }
 
         let fragment = vk::ShaderStageFlags::FRAGMENT;
         let both = vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT;
@@ -1402,8 +1421,9 @@ impl Built {
             for layout in self.set_layouts {
                 device.destroy_descriptor_set_layout(layout, None);
             }
-            device.destroy_shader_module(self.module_self, None);
-            device.destroy_shader_module(self.module, None);
+            for module in self.modules.iter().flatten() {
+                device.destroy_shader_module(*module, None);
+            }
         }
     }
 }

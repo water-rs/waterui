@@ -23,7 +23,7 @@ use waterui_layout::stack::vstack;
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
-use crate::platform::{InputEvent, PointerButton, PointerKind};
+use crate::platform::{InputEvent, PointerButton, PointerKind, TouchScrollConfig};
 
 const WINDOW_SIZE: f32 = 160.0;
 
@@ -521,13 +521,17 @@ fn primary_move(kind: PointerKind, x: f32, y: f32) -> InputEvent {
 }
 
 fn menu_runtime(activations: &Binding<u32>) -> HeadlessRuntime {
-    HeadlessRuntime::new_for_tests(
+    let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         menu_host_view(activations),
         crate::num_cast::f32_as_u32(WINDOW_SIZE),
         crate::num_cast::f32_as_u32(WINDOW_SIZE),
         MinimalTestTheme::default(),
-    )
+    );
+    // The host reports the touch-gesture parameters a real touch
+    // platform publishes — a touch press without them panics.
+    runtime.set_touch_scroll_config(TouchScrollConfig::android_default());
+    runtime
 }
 
 /// A touch press held past the threshold mounts the region's menu as a popup

@@ -405,6 +405,11 @@ impl Effect for FillEffect {
         }));
         Ok(false)
     }
+
+    // Fills the host's output directly; it keeps no targets of its own.
+    fn target_bytes(&self) -> u64 {
+        0
+    }
 }
 
 /// A custom `Effect` over a view.

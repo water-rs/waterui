@@ -230,6 +230,22 @@ pub struct NativeResolution {
     pub scale: f64,
 }
 
+/// Time the GPU spent powered at each clock over a measured window.
+#[derive(Clone, Debug, Serialize)]
+pub struct GpuClockReport {
+    /// One entry per clock the driver lists, in its order.
+    pub residency: Vec<ClockResidency>,
+}
+
+/// Time at one GPU clock.
+#[derive(Clone, Copy, Debug, Serialize)]
+pub struct ClockResidency {
+    /// The clock in kHz.
+    pub khz: u64,
+    /// Powered milliseconds at this clock within the window.
+    pub milliseconds: u64,
+}
+
 /// `measure` output.
 #[derive(Debug, Serialize)]
 pub struct MeasureReport {
@@ -266,6 +282,10 @@ pub struct MeasureReport {
     /// Conditions that contextualise the numbers — thermal status,
     /// screen state and brightness, alongside [`Placement`].
     pub conditions: Conditions,
+    /// The GPU's clock residency over the measured window
+    /// ([`crate::gpu_clock`]); `null` where the platform keeps no
+    /// residency table.
+    pub gpu_clock: Option<GpuClockReport>,
     /// What the adapter issued per frame.
     pub counters: Counters,
     /// Idle, steady-state and peak memory readings for this scene.

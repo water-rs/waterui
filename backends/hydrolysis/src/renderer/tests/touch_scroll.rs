@@ -453,6 +453,27 @@ fn a_fling_whose_scroll_view_is_hidden_by_a_tab_switch_mid_fling_ends_with_it() 
     );
 }
 
+/// water-rs/waterui#2794 — a host that reports no touch-scroll
+/// parameters cannot receive a touch press: the renderer panics and
+/// names the requirement instead of silently dropping the gesture.
+#[test]
+#[should_panic(
+    expected = "hydrolysis: a touch press arrived but the platform window reported no touch_scroll_config"
+)]
+fn a_touch_press_without_a_touch_scroll_config_panics() {
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        AnyViewBuilder::<AnyView>::new(tall_stack),
+        WINDOW_WIDTH,
+        WINDOW_HEIGHT,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    runtime.push_input_event(touch_down(200.0, 300.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+}
+
 /// A touch press waits out the touch delay before it begins; a target
 /// removed inside that window drops the pending press with it, so the
 /// release never begins a press on a node that no longer exists.
