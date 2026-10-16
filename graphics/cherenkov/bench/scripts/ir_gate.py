@@ -255,6 +255,8 @@ def layer_env(layer_dir):
 
 def profile(binary, tag, scene, repo, out, pause_at, warmup):
     binary = pathlib.Path(binary).resolve(); out = pathlib.Path(out).resolve(); out.mkdir(parents=True, exist_ok=True)
+    scene_dir = (pathlib.Path(repo) / 'scenes' / 'perf' / scene).resolve()
+    assert scene_dir.is_dir(), f'no perf scene at {scene_dir}; generate it with scenes/tools/generate.py'
     prefix = out / f'{tag}-{scene}'
     assert not [p for p in out.glob(prefix.name + '.*') if not p.name.endswith('.progress.log')], f'existing run: {prefix}'
     symbols = subprocess.run(['nm', '--defined-only', str(binary)], capture_output=True, text=True, check=True).stdout.splitlines()
@@ -274,13 +276,15 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup):
     layer_dir = out / 'vk_layer'
     layer_dir.mkdir(exist_ok=True)
     install_layer(layer_dir)
+    runtime_dir = out / 'xdg-runtime'
+    runtime_dir.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(runtime_dir, 0o700)
     env = os.environ.copy()
-    env.update(layer_env(layer_dir), XDG_RUNTIME_DIR='/tmp/runtime-ubuntu', RUST_LOG='error')
-    os.makedirs(env['XDG_RUNTIME_DIR'], exist_ok=True)
+    env.update(layer_env(layer_dir), XDG_RUNTIME_DIR=str(runtime_dir), RUST_LOG='error')
     command = ['valgrind', '--tool=callgrind', '--demangle=no', '--instr-atstart=no', '--separate-threads=no',
                *function_options(roots.values()),
                f'--callgrind-out-file={prefix}', str(binary), 'measure', '--engine', 'cherenkov',
-               '--scene', f'scenes/perf/{scene}', '--frames', '100000', '--warmup', str(warmup),
+               '--scene', str(scene_dir), '--frames', '100000', '--warmup', str(warmup),
                '--pause-at', str(pause_at), '--out', str(prefix) + '.unused-timing.json']
     after = {phase: [] for phase in roots}
     monitor = selectors.DefaultSelector(); fds = []
@@ -437,7 +441,7 @@ def main():
     for name in ('profile', 'batch'):
         p = sub.add_parser(name)
         p.add_argument('--binary', required=True); p.add_argument('--tag', required=True)
-        p.add_argument('--repo', required=True, help='checkout holding scenes/perf')
+        p.add_argument('--repo', required=True, help='checkout directory holding scenes/perf (the cherenkov tree)')
         p.add_argument('--out', required=True); p.add_argument('--pause-at', type=int, default=8); p.add_argument('--warmup', type=int, default=30)
         if name == 'profile':
             p.add_argument('--scene', required=True, choices=SCENES)
