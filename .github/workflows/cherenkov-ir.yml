@@ -60,18 +60,21 @@ jobs:
         with:
           gpu: ${{ matrix.leg == 'gpu' }}
           extra-packages: valgrind
-      # The harness tests cover both legs; the layer's test needs the
-      # Vulkan headers only the GPU leg installs.
-      - name: Test the gate and its Vulkan layer
+      # Every measurement script's unit suite: the gate's cover both legs,
+      # and the layer's test needs the Vulkan headers only the GPU leg
+      # installs.
+      - name: Test the measurement scripts and the gate's Vulkan layer
         if: matrix.leg == 'gpu'
-        run: python3 -m unittest discover -s graphics/cherenkov/bench/scripts -p 'test_ir*.py'
+        run: python3 -m unittest discover -s graphics/cherenkov/bench/scripts -p 'test_*.py'
       - uses: ./.github/actions/generate-scene-assets
         with:
           mode: full
       - name: Build, profile and compare
         timeout-minutes: 45
         env:
-          IR_BASE: ${{ inputs.base || github.event.pull_request.base.sha }}
+          # A pull request's merge commit is measured against its first
+          # parent, the dev commit it merges into.
+          IR_BASE: ${{ inputs.base || format('{0}^1', github.sha) }}
           IR_HEAD: ${{ inputs.head || github.sha }}
         run: >-
           python3 graphics/cherenkov/bench/scripts/ir_gate.py ab --leg ${{ matrix.leg }}
