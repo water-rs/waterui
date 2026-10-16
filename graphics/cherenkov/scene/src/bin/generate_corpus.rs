@@ -5749,6 +5749,27 @@ fn run() -> Result<(), SceneError> {
         });
     }
 
+    // A long thin diagonal stroke spanning a 2048x2048 frame: the path's
+    // bounding box covers the whole surface while its coverage hugs the
+    // diagonal, so the rasterizer's working set scales with the box's
+    // width rather than its area.
+    {
+        let mut diag = BezPath::new();
+        diag.move_to((32.0, 32.0));
+        diag.line_to((2016.0, 2016.0));
+        perf.scene("sparse-bbox", 2048, 2048, srgb(0.93, 0.95, 0.90), |l| {
+            winding_pan(l, |pan| {
+                pan.stroke(
+                    Shape::Path { path: diag },
+                    StrokeStyle {
+                        width: 8.0,
+                        ..StrokeStyle::default()
+                    },
+                    solid(srgb(0.35, 0.38, 0.40)),
+                );
+            });
+        });
+    }
     // The map under a smooth pan: a fractional offset per frame for 4 s,
     // then at rest at identity (= the map scene itself). Exercises the
     // path cache's behaviour when the translation's fraction changes

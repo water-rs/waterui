@@ -345,6 +345,9 @@ struct SurfaceState {
     /// Backdrop groups registered on this surface by raw id.
     backdrop_groups: FxHashMap<u64, BackdropGroupState>,
     anchor_scratch: lower::AnchorScratch,
+    /// Path emission buffers, lent to each lowering so their capacity
+    /// carries across frames; released by a critical trim.
+    raster_scratch: path::EmitScratch,
     layers: FxHashMap<LayerId, ContentData>,
     /// GPU producer bindings by layer (`cherenkov::GpuContent`): a layer
     /// binds one producer, a producer serves bindings on any surface,
@@ -3159,6 +3162,7 @@ impl Renderer for GpuRenderer {
                 staging_bind: [None, None],
                 backdrop_groups: FxHashMap::default(),
                 anchor_scratch: lower::AnchorScratch::default(),
+                raster_scratch: path::EmitScratch::new(),
                 layers: FxHashMap::default(),
                 bindings: FxHashMap::default(),
                 hosted: FxHashMap::default(),
@@ -3727,6 +3731,7 @@ impl Renderer for GpuRenderer {
             surf.frame.instances.shrink_to_fit();
             surf.frame.stops.shrink_to_fit();
             surf.frame.passes.shrink_to_fit();
+            surf.raster_scratch = path::EmitScratch::new();
         }
         self.uploads = upload::Uploads::default();
         diag::grow(
@@ -3843,7 +3848,9 @@ impl Renderer for GpuRenderer {
             + self
                 .surfaces
                 .values()
-                .map(|surface| surface.anchor_scratch.heap_bytes())
+                .map(|surface| {
+                    surface.anchor_scratch.heap_bytes() + surface.raster_scratch.heap_bytes()
+                })
                 .sum::<u64>()
             + self
                 .surfaces
@@ -6507,7 +6514,12 @@ impl GpuRenderer {
                 bitmaps: resources.bitmaps,
                 content: &surf.bindings,
             };
-            let mut lowering = Lowering::new(&mut surf.frame, surf.size, &mut surf.anchor_scratch);
+            let mut lowering = Lowering::new(
+                &mut surf.frame,
+                surf.size,
+                &mut surf.anchor_scratch,
+                &mut surf.raster_scratch,
+            );
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)

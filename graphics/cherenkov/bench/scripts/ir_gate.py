@@ -86,7 +86,8 @@ ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6enco
 EVERY_FRAME = ('lower', 'encode', 'run_transaction')
 RECORDED_ONCE = ('lower', 'encode')
 SCENES = {'map': EVERY_FRAME, 'chart': EVERY_FRAME, 'text-page': EVERY_FRAME, 'ui-list': EVERY_FRAME,
-          'effects': EVERY_FRAME, 'road-network': RECORDED_ONCE, 'brick-grid': RECORDED_ONCE}
+          'effects': EVERY_FRAME, 'road-network': RECORDED_ONCE, 'brick-grid': RECORDED_ONCE,
+          'sparse-bbox': RECORDED_ONCE}
 FRAME_ROOT = 'encode'
 # Frames after which every declared root must have returned the four times a
 # profile needs (the call in flight, then three samples).

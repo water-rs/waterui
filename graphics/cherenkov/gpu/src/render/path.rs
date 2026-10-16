@@ -8,7 +8,9 @@ use cherenkov::{FillRule, ShapeData};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Vec2};
 
 use crate::render::glyph::{CellTexels, PathCell, PathEmit};
+#[cfg(test)]
 use crate::render::raster::Raster;
+use crate::render::raster::{Band, BandRaster};
 use cherenkov::RenderError;
 
 /// Coverage strip height in device rows.
@@ -178,33 +180,176 @@ pub struct Coverage {
 
 /// Rasterizes flattened device-space `segments` spanning `bbox` under
 /// `rule`, over `bbox` inflated by 1 px and clipped to the surface rect.
-/// `None` when the path misses the surface entirely.
-///
-/// [`route`] picks which route does it; every route returns the same
-/// [`Coverage`] grid, to within section 4.3 threshold 4 of the coverage
-/// specification.
+/// `None` when the path misses the surface entirely. `scratch` lends its
+/// band rasterizer.
 pub fn rasterize(
     segments: &[(f32, f32, f32, f32)],
     bbox: Rect,
     surface: (f64, f64),
     rule: FillRule,
+    scratch: &mut EmitScratch,
 ) -> Option<Coverage> {
     match route() {
-        CoverageRoute::Sweep => sweep(segments, bbox, surface, rule),
+        CoverageRoute::Sweep => sweep(segments, bbox, surface, rule, &mut scratch.raster),
     }
 }
 
-/// The CPU sweep route: `resolve_winding` turns self-intersections into a
-/// non-zero cover and the scanline raster accumulates signed area.
-#[expect(clippy::cast_possible_truncation)]
-#[expect(clippy::cast_sign_loss)]
-#[expect(clippy::cast_precision_loss)]
 fn sweep(
     segments: &[(f32, f32, f32, f32)],
     bbox: Rect,
     surface: (f64, f64),
     rule: FillRule,
+    scratch: &mut BandRaster,
 ) -> Option<Coverage> {
+    let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
+    let (segments, rule) = resolve(segments, rule);
+    let mut data = Vec::with_capacity(w * h);
+    queue(scratch, &segments, (x0, y0, w, h), rule);
+    scratch.finish_choose(&mut |band, _| match band {
+        Band::Dense(coverage) => data.extend_from_slice(coverage),
+        Band::Sparse(runs, ends) => {
+            let mut start = 0;
+            for &end in ends {
+                let row_start = data.len();
+                for &(column, coverage) in &runs[start..end] {
+                    data.resize(row_start + column as usize, coverage);
+                }
+                start = end;
+            }
+        }
+    });
+    Some(Coverage {
+        x: x0,
+        y: y0,
+        w,
+        h,
+        clipped,
+        data,
+    })
+}
+
+/// Reusable path-emission buffers: the band rasterizer and the per-band
+/// column classification. The owner keeps one across paths and frames so
+/// emission allocates only for growth.
+#[derive(Debug, Default)]
+pub struct EmitScratch {
+    raster: BandRaster,
+    /// `strip_class`'s per-column classes for a dense band.
+    class: Vec<u8>,
+    /// `strip_class_sparse`'s `(end, class)` intervals for a sparse band.
+    intervals: Vec<(u32, u8)>,
+}
+
+impl EmitScratch {
+    /// Empty buffers; the first emissions size them.
+    pub const fn new() -> Self {
+        Self {
+            raster: BandRaster::new(),
+            class: Vec::new(),
+            intervals: Vec::new(),
+        }
+    }
+
+    /// Heap bytes the buffers hold between emissions.
+    pub const fn heap_bytes(&self) -> u64 {
+        self.raster.heap_bytes()
+            + (self.class.capacity() + self.intervals.capacity() * size_of::<(u32, u8)>()) as u64
+    }
+}
+
+/// Rasterizes and emits in one pass: each sealed `STRIP_H`-row coverage
+/// band is classified and emitted directly, so the `w × h` coverage grid
+/// never materializes. Cell texels append to `arena`; the bool is
+/// `Coverage::clipped`.
+#[expect(clippy::cast_precision_loss)]
+#[expect(clippy::type_complexity)]
+pub fn rasterize_emit(
+    segments: &[(f32, f32, f32, f32)],
+    bbox: Rect,
+    surface: (f64, f64),
+    rule: FillRule,
+    scratch: &mut EmitScratch,
+    arena: &mut Vec<u8>,
+) -> Option<Result<(PathEmit, Vec<CellTexels>, bool), RenderError>> {
+    match route() {
+        CoverageRoute::Sweep => {}
+    }
+    let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
+    let (segments, rule) = resolve(segments, rule);
+    let EmitScratch {
+        raster,
+        class,
+        intervals,
+    } = scratch;
+    if (w as f64) <= SMALL_BBOX && (h as f64) <= SMALL_BBOX {
+        // One whole-bbox cell needs the texels: collect the (small)
+        // coverage and emit it like `emit` does.
+        let mut data = Vec::with_capacity(w * h);
+        queue(raster, &segments, (x0, y0, w, h), rule);
+        raster.finish(&mut |band: &[f32]| data.extend_from_slice(band));
+        let coverage = Coverage {
+            x: x0,
+            y: y0,
+            w,
+            h,
+            clipped,
+            data,
+        };
+        return Some(emit(&coverage, arena).map(|(p, r)| (p, r, clipped)));
+    }
+    let mut out = PathEmit::default();
+    let mut rasters = Vec::new();
+    // The grid's area bounds every texel this emission can produce; it
+    // is reserved at the first cell, so the arena grows at most once per
+    // emitted path and an empty emission never touches it.
+    let mut reserve = w * h;
+    let mut err = None;
+    let mut sink = |band: Band<'_>, sy: usize| {
+        if err.is_some() {
+            return;
+        }
+        let r = match band {
+            Band::Dense(strip) => emit_strip(
+                strip,
+                w,
+                x0,
+                y0,
+                sy,
+                strip.len() / w,
+                class,
+                &mut out,
+                &mut rasters,
+                arena,
+                &mut reserve,
+            ),
+            Band::Sparse(runs, ends) => emit_strip_sparse(
+                runs,
+                ends,
+                w,
+                x0,
+                y0,
+                sy,
+                intervals,
+                &mut out,
+                &mut rasters,
+                arena,
+                &mut reserve,
+            ),
+        };
+        if let Err(e) = r {
+            err = Some(e);
+        }
+    };
+    queue(raster, &segments, (x0, y0, w, h), rule);
+    raster.finish_choose(&mut sink);
+    Some(err.map_or(Ok((out, rasters, clipped)), Err))
+}
+
+/// The integer raster grid for `bbox` inflated by 1 px and clipped to
+/// the surface rect: origin, size, and whether clipping happened.
+#[expect(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_sign_loss)]
+fn grid(bbox: Rect, surface: (f64, f64)) -> Option<(f64, f64, usize, usize, bool)> {
     let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
     let inflated = bbox.inflate(1.0, 1.0);
     let r = inflated.intersect(clip);
@@ -213,21 +358,46 @@ fn sweep(
     let y0 = r.y0.floor();
     let w = (r.x1.ceil() - x0).max(0.0) as usize;
     let h = (r.y1.ceil() - y0).max(0.0) as usize;
-    if w == 0 || h == 0 {
-        return None;
-    }
-    let (ox, oy) = (x0 as f32, y0 as f32);
+    (w > 0 && h > 0).then_some((x0, y0, w, h, clipped))
+}
+
+/// The segments `resolve_winding` settles on, borrowed when it leaves the
+/// input unchanged.
+type Segments<'a> = std::borrow::Cow<'a, [(f32, f32, f32, f32)]>;
+
+/// `resolve_winding`'s output plus the rule it leaves: resolved input
+/// rasterizes as `NonZero`.
+fn resolve(segments: &[(f32, f32, f32, f32)], rule: FillRule) -> (Segments<'_>, FillRule) {
     let resolved = cherenkov::lowering::resolve_winding(segments, rule);
-    let segments = resolved.as_deref().unwrap_or(segments);
     let rule = if resolved.is_some() {
         FillRule::NonZero
     } else {
         rule
     };
-    let mut raster = Raster::new(w, h);
+    (
+        resolved.map_or(
+            std::borrow::Cow::Borrowed(segments),
+            std::borrow::Cow::Owned,
+        ),
+        rule,
+    )
+}
+
+/// Queues clipped segments while preserving their input order.
+#[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn queue(
+    scratch: &mut BandRaster,
+    segments: &[(f32, f32, f32, f32)],
+    grid: (f64, f64, usize, usize),
+    rule: FillRule,
+) {
+    let (x0, y0, w, h) = grid;
+    scratch.reset(w, h, rule);
+    scratch.reserve_edges(segments.len());
+    let (ox, oy) = (x0 as f32, y0 as f32);
     for &(sx0, sy0, sx1, sy1) in segments {
         clip_x(
-            &mut raster,
+            &mut |a, b, c, d| scratch.draw(a, b, c, d),
             sx0 - ox,
             sy0 - oy,
             sx1 - ox,
@@ -235,14 +405,6 @@ fn sweep(
             w as f32,
         );
     }
-    Some(Coverage {
-        x: x0,
-        y: y0,
-        w,
-        h,
-        clipped,
-        data: raster.coverage_rule(rule),
-    })
 }
 
 /// Clips a segment to `0 <= x <= w` in raster space and draws it into
@@ -253,7 +415,7 @@ fn sweep(
 /// into column 0. Segments at `x > w` are dropped outright — their
 /// deposits land in the unread trailing column or beyond. Row clipping is
 /// `Raster`'s job: `y` is left untouched.
-fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
+fn clip_x(draw: &mut impl FnMut(f32, f32, f32, f32), x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
         return;
     }
@@ -262,7 +424,7 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     if dx.abs() <= f32::EPSILON {
         if x0 <= w {
             let x = x0.max(0.0);
-            raster.draw_line(x, y0, x, y1);
+            draw(x, y0, x, y1);
         }
         return;
     }
@@ -270,9 +432,9 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     // enters through the left edge at `tz`, `dx < 0` exits through it.
     let tz = -x0 / dx;
     if dx > 0.0 && x0 < 0.0 {
-        raster.draw_line(0.0, y0, 0.0, dy.mul_add(tz.min(1.0), y0));
+        draw(0.0, y0, 0.0, dy.mul_add(tz.min(1.0), y0));
     } else if dx < 0.0 && x1 < 0.0 {
-        raster.draw_line(0.0, dy.mul_add(tz.max(0.0), y0), 0.0, y1);
+        draw(0.0, dy.mul_add(tz.max(0.0), y0), 0.0, y1);
     }
     let (enter, exit) = if dx > 0.0 { (0.0, w) } else { (w, 0.0) };
     let t0 = ((enter - x0) / dx).max(0.0);
@@ -280,7 +442,7 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     if t0 >= t1 {
         return;
     }
-    raster.draw_line(
+    draw(
         dx.mul_add(t0, x0).clamp(0.0, w),
         dy.mul_add(t0, y0),
         dx.mul_add(t1, x0).clamp(0.0, w),
@@ -300,126 +462,373 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
 /// upload has consumed them.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_precision_loss)]
-#[expect(clippy::cast_sign_loss)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one emission walk: small-cell fast path, strip loop"
-)]
 pub fn emit(
     coverage: &Coverage,
     arena: &mut Vec<u8>,
 ) -> Result<(PathEmit, Vec<CellTexels>), RenderError> {
     let mut out = PathEmit::default();
-    let mut rasters: Vec<CellTexels> = Vec::new();
-    let make_cell = |cells: &mut Vec<PathCell>,
-                     rasters: &mut Vec<CellTexels>,
-                     arena: &mut Vec<u8>,
-                     x: usize,
-                     y: usize,
-                     w: usize,
-                     h: usize,
-                     interior: std::ops::Range<usize>|
-     -> Result<(), RenderError> {
-        let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
-            return Err(RenderError::AtlasFull);
-        };
-        // Reserve the coverage's area on an emission's first cell so the
-        // arena never regrows mid-emit; empty emissions stay allocation-free.
-        if rasters.is_empty() {
-            arena.reserve(coverage.data.len());
-        }
-        let start = arena.len();
-        for row in 0..h {
-            arena.extend(
-                coverage.data[(y + row) * coverage.w + x..][..w]
-                    .iter()
-                    .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8),
-            );
-        }
-        rasters.push((w32, h32, start..arena.len()));
-        cells.push(PathCell {
-            rect: [
-                (coverage.x + x as f64) as f32,
-                (coverage.y + y as f64) as f32,
-                (coverage.x + (x + w) as f64) as f32,
-                (coverage.y + (y + h) as f64) as f32,
-            ],
-            x: 0,
-            y: 0,
-            // Filled by `Atlas::place_path` on the render thread.
-            slot: 0,
-            interior: u32::from(u16::try_from(interior.start).map_err(|_| RenderError::AtlasFull)?)
-                | (u32::from(u16::try_from(interior.end).map_err(|_| RenderError::AtlasFull)?)
-                    << 16),
-        });
-        Ok(())
-    };
+    let mut rasters = Vec::new();
+    let mut reserve = coverage.data.len();
     if coverage.w as f64 <= SMALL_BBOX && coverage.h as f64 <= SMALL_BBOX {
         make_cell(
-            &mut out.cells,
-            &mut rasters,
-            arena,
+            &mut |r, columns, arena| {
+                append_dense_row(&coverage.data[r * coverage.w..][columns], arena);
+            },
             0,
-            0,
+            [
+                coverage.x as f32,
+                coverage.y as f32,
+                (coverage.x + coverage.w as f64) as f32,
+                (coverage.y + coverage.h as f64) as f32,
+            ],
             coverage.w,
             coverage.h,
             0..0,
+            &mut out.cells,
+            &mut rasters,
+            arena,
+            &mut reserve,
         )?;
-        return Ok((out, rasters));
-    }
-    let mut class = Vec::new();
-    for sy in (0..coverage.h).step_by(STRIP_H) {
-        let sh = STRIP_H.min(coverage.h - sy);
-        strip_class(coverage, sy, sh, &mut class);
-        // Emit runs: all-full runs become spans, the rest cells.
-        let mut x = 0;
-        while x < coverage.w {
-            if class[x] == 0 {
-                x += 1;
-                continue;
-            }
-            let start = x;
-            if class[x] == 1 {
-                while x < coverage.w && class[x] == 1 {
-                    x += 1;
-                }
-                out.spans.push([
-                    (coverage.x + start as f64) as f32,
-                    (coverage.y + sy as f64) as f32,
-                    (coverage.x + x as f64) as f32,
-                    (coverage.y + (sy + sh) as f64) as f32,
-                ]);
-            } else {
-                while x < coverage.w && class[x] == 2 {
-                    x += 1;
-                }
-                let full_start = x;
-                while x < coverage.w && class[x] == 1 {
-                    x += 1;
-                }
-                let full_end = x;
-                while x < coverage.w && class[x] == 2 {
-                    x += 1;
-                }
-                let interior = if full_start == full_end {
-                    0..0
-                } else {
-                    full_start - start..full_end - start
-                };
-                make_cell(
-                    &mut out.cells,
-                    &mut rasters,
-                    arena,
-                    start,
-                    sy,
-                    x - start,
-                    sh,
-                    interior,
-                )?;
-            }
+    } else {
+        let mut class = Vec::new();
+        for sy in (0..coverage.h).step_by(STRIP_H) {
+            let sh = STRIP_H.min(coverage.h - sy);
+            emit_strip(
+                &coverage.data[sy * coverage.w..(sy + sh) * coverage.w],
+                coverage.w,
+                coverage.x,
+                coverage.y,
+                sy,
+                sh,
+                &mut class,
+                &mut out,
+                &mut rasters,
+                arena,
+                &mut reserve,
+            )?;
         }
     }
     Ok((out, rasters))
+}
+
+/// One cell's `w` × `h` coverage rect streamed a row at a time into
+/// `R8` texels appended to `arena`, plus its [`PathCell`] record
+/// with `rect` in device space. `reserve` is the emission's pending
+/// reservation: its grid area before the first cell, zero after.
+#[expect(clippy::too_many_arguments)]
+fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
+    append_row: &mut F,
+    x: usize,
+    rect: [f32; 4],
+    w: usize,
+    h: usize,
+    interior: std::ops::Range<usize>,
+    cells: &mut Vec<PathCell>,
+    rasters: &mut Vec<CellTexels>,
+    arena: &mut Vec<u8>,
+    reserve: &mut usize,
+) -> Result<(), RenderError> {
+    let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
+        return Err(RenderError::AtlasFull);
+    };
+    // The emission's first cell reserves its whole grid area, which bounds
+    // every later cell of the emission: one growth per emitted path.
+    // Reserving each cell instead grows the arena by doubling and makes
+    // more reallocations than one per path.
+    arena.reserve(std::mem::take(reserve));
+    let start = arena.len();
+    for row in 0..h {
+        append_row(row, x..x + w, arena);
+    }
+    rasters.push((w32, h32, start..arena.len()));
+    cells.push(PathCell {
+        rect,
+        x: 0,
+        y: 0,
+        // Filled by `Atlas::place_path` on the render thread.
+        slot: 0,
+        interior: u32::from(u16::try_from(interior.start).map_err(|_| RenderError::AtlasFull)?)
+            | (u32::from(u16::try_from(interior.end).map_err(|_| RenderError::AtlasFull)?) << 16),
+    });
+    Ok(())
+}
+
+/// Emits one band's runs: all-full runs become spans, partial runs
+/// become cells cut out of `strip` — `sh * w` coverage values for the
+/// `sy`-anchored band of a grid at `cov_x, cov_y`. `class` and `arena`
+/// are the emission's classification and texel scratch, `reserve` its
+/// pending reservation (see [`make_cell`]).
+#[expect(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_precision_loss)]
+#[expect(clippy::too_many_arguments)]
+fn emit_strip(
+    strip: &[f32],
+    w: usize,
+    cov_x: f64,
+    cov_y: f64,
+    sy: usize,
+    sh: usize,
+    class: &mut Vec<u8>,
+    out: &mut PathEmit,
+    rasters: &mut Vec<CellTexels>,
+    arena: &mut Vec<u8>,
+    reserve: &mut usize,
+) -> Result<(), RenderError> {
+    strip_class(strip, w, sh, class);
+    // Emit runs: all-full runs become spans, the rest cells.
+    let mut x = 0;
+    while x < w {
+        if class[x] == 0 {
+            x += 1;
+            continue;
+        }
+        let start = x;
+        if class[x] == 1 {
+            while x < w && class[x] == 1 {
+                x += 1;
+            }
+            out.spans.push([
+                (cov_x + start as f64) as f32,
+                (cov_y + sy as f64) as f32,
+                (cov_x + x as f64) as f32,
+                (cov_y + (sy + sh) as f64) as f32,
+            ]);
+        } else {
+            while x < w && class[x] == 2 {
+                x += 1;
+            }
+            let full_start = x;
+            while x < w && class[x] == 1 {
+                x += 1;
+            }
+            let full_end = x;
+            while x < w && class[x] == 2 {
+                x += 1;
+            }
+            let interior = if full_start == full_end {
+                0..0
+            } else {
+                full_start - start..full_end - start
+            };
+            make_cell(
+                &mut |r, columns, arena| append_dense_row(&strip[r * w..][columns], arena),
+                start,
+                [
+                    (cov_x + start as f64) as f32,
+                    (cov_y + sy as f64) as f32,
+                    (cov_x + x as f64) as f32,
+                    (cov_y + (sy + sh) as f64) as f32,
+                ],
+                x - start,
+                sh,
+                interior,
+                &mut out.cells,
+                rasters,
+                arena,
+                reserve,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Quantize once, identically for dense cells and sparse coverage runs.
+#[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn quantize(coverage: f32) -> u8 {
+    (coverage.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+fn append_dense_row(row: &[f32], arena: &mut Vec<u8>) {
+    arena.extend(row.iter().copied().map(quantize));
+}
+
+/// `strip_class`'s sparse twin: the strip arrives as `(end_column,
+/// coverage)` runs per row, so boundary columns merge into `(end,
+/// class)` column intervals — every column in an interval shares its
+/// class — and the same run rules apply to interval widths.
+#[expect(clippy::cast_possible_truncation)]
+#[expect(
+    clippy::float_cmp,
+    reason = "a column is 'full' exactly when coverage clamped to 1.0"
+)]
+fn strip_class_sparse(
+    runs: &[(u32, f32)],
+    ends: &[usize],
+    w: usize,
+    intervals: &mut Vec<(u32, u8)>,
+) {
+    intervals.clear();
+    // `ends[r]` bounds row `r`'s runs; the cursors index the flat
+    // buffer absolutely and a row's runs always end at column `w`, so
+    // no cursor can read past its row.
+    let mut cursors = [0usize; STRIP_H];
+    let mut base = 0usize;
+    for (c, &end) in cursors.iter_mut().zip(ends.iter()) {
+        *c = base;
+        base = end;
+    }
+    let n = ends.len();
+    let mut pos = 0u32;
+    while pos < w as u32 {
+        let mut next = w as u32;
+        let mut all_zero = true;
+        let mut all_one = true;
+        for &c in &cursors[..n] {
+            let (end, cov) = runs[c];
+            next = next.min(end);
+            all_zero &= cov == 0.0;
+            all_one &= cov == 1.0;
+        }
+        let class = if all_zero {
+            0
+        } else if all_one {
+            1
+        } else {
+            2
+        };
+        if intervals.last().is_some_and(|&(_, c)| c == class) {
+            if let Some(last) = intervals.last_mut() {
+                last.0 = next;
+            }
+        } else {
+            intervals.push((next, class));
+        }
+        pos = next;
+        for c in &mut cursors[..n] {
+            if runs[*c].0 == next {
+                *c += 1;
+            }
+        }
+    }
+    // Full runs under `FULL_RUN_MIN` demote to partial, then empty gaps
+    // up to `PARTIAL_GAP_MAX` between partials join them.
+    for i in 0..intervals.len() {
+        let start = if i == 0 { 0 } else { intervals[i - 1].0 };
+        let (end, class) = intervals[i];
+        if class == 1 && end - start < FULL_RUN_MIN as u32 {
+            intervals[i].1 = 2;
+        }
+    }
+    for i in 1..intervals.len() - 1 {
+        if intervals[i].1 == 0
+            && intervals[i - 1].1 == 2
+            && intervals[i + 1].1 == 2
+            && intervals[i].0 - intervals[i - 1].0 <= PARTIAL_GAP_MAX as u32
+        {
+            intervals[i].1 = 2;
+        }
+    }
+    // Demotion and gap absorption create adjacent partial intervals.
+    // Coalesce once, in place: repeatedly draining a gap would shift the
+    // remaining intervals on every merge and make the pass quadratic.
+    let mut written = 0;
+    for read in 0..intervals.len() {
+        let interval = intervals[read];
+        if written > 0 && intervals[written - 1].1 == interval.1 {
+            intervals[written - 1].0 = interval.0;
+        } else {
+            intervals[written] = interval;
+            written += 1;
+        }
+    }
+    intervals.truncate(written);
+}
+
+/// `emit_strip`'s sparse twin: `(end, class)` intervals replace the
+/// per-column class array; only partial cells materialize R8 texels.
+#[expect(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_precision_loss)]
+#[expect(clippy::too_many_arguments)]
+fn emit_strip_sparse(
+    runs: &[(u32, f32)],
+    ends: &[usize],
+    w: usize,
+    cov_x: f64,
+    cov_y: f64,
+    sy: usize,
+    intervals: &mut Vec<(u32, u8)>,
+    out: &mut PathEmit,
+    rasters: &mut Vec<CellTexels>,
+    arena: &mut Vec<u8>,
+    reserve: &mut usize,
+) -> Result<(), RenderError> {
+    let sh = ends.len();
+    strip_class_sparse(runs, ends, w, intervals);
+    let mut prev = 0u32;
+    let mut i = 0;
+    while i < intervals.len() {
+        let start = prev;
+        let (end, class) = intervals[i];
+        prev = end;
+        i += 1;
+        if class == 0 {
+            continue;
+        }
+        if class == 1 {
+            out.spans.push([
+                (cov_x + f64::from(start)) as f32,
+                (cov_y + sy as f64) as f32,
+                (cov_x + f64::from(end)) as f32,
+                (cov_y + (sy + sh) as f64) as f32,
+            ]);
+            continue;
+        }
+        let cell_start = start;
+        let mut cell_end = end;
+        while i < intervals.len() && intervals[i].1 == 2 {
+            cell_end = intervals[i].0;
+            prev = cell_end;
+            i += 1;
+        }
+        let mut full = cell_end..cell_end;
+        if i < intervals.len() && intervals[i].1 == 1 {
+            full = prev..intervals[i].0;
+            cell_end = intervals[i].0;
+            prev = cell_end;
+            i += 1;
+            while i < intervals.len() && intervals[i].1 == 2 {
+                cell_end = intervals[i].0;
+                prev = cell_end;
+                i += 1;
+            }
+        }
+        let interior = if full.is_empty() {
+            0..0
+        } else {
+            usize::try_from(full.start - cell_start).expect("interior start fits usize")
+                ..usize::try_from(full.end - cell_start).expect("interior end fits usize")
+        };
+        make_cell(
+            &mut |r, columns, arena| {
+                let row = &runs[if r == 0 { 0 } else { ends[r - 1] }..ends[r]];
+                let first = row.partition_point(|&(end, _)| end as usize <= columns.start);
+                let mut x = columns.start;
+                for &(end, coverage) in &row[first..] {
+                    let end = (end as usize).min(columns.end);
+                    arena.resize(arena.len() + end - x, quantize(coverage));
+                    x = end;
+                    if x == columns.end {
+                        break;
+                    }
+                }
+            },
+            usize::try_from(cell_start).expect("cell start fits usize"),
+            [
+                (cov_x + f64::from(cell_start)) as f32,
+                (cov_y + sy as f64) as f32,
+                (cov_x + f64::from(cell_end)) as f32,
+                (cov_y + (sy + sh) as f64) as f32,
+            ],
+            usize::try_from(cell_end - cell_start).expect("cell width fits usize"),
+            sh,
+            interior,
+            &mut out.cells,
+            rasters,
+            arena,
+            reserve,
+        )?;
+    }
+    Ok(())
 }
 
 /// Classifies one strip's columns as 0 empty, 1 full (1.0 in every row),
@@ -432,14 +841,14 @@ pub fn emit(
     clippy::float_cmp,
     reason = "a column is 'full' exactly when coverage clamped to 1.0"
 )]
-fn strip_class(coverage: &Coverage, sy: usize, sh: usize, class: &mut Vec<u8>) {
+fn strip_class(strip: &[f32], w: usize, sh: usize, class: &mut Vec<u8>) {
     class.clear();
-    class.resize(coverage.w, 0);
+    class.resize(w, 0);
     for (x, c) in class.iter_mut().enumerate() {
         let mut empty = true;
         let mut full = true;
         for row in 0..sh {
-            let v = coverage.data[(sy + row) * coverage.w + x];
+            let v = strip[row * w + x];
             empty &= v == 0.0;
             full &= v == 1.0;
         }
@@ -452,11 +861,9 @@ fn strip_class(coverage: &Coverage, sy: usize, sh: usize, class: &mut Vec<u8>) {
         };
     }
     let mut x = 0;
-    while x < coverage.w {
+    while x < w {
         if class[x] == 1 {
-            let end = (x + 1..coverage.w)
-                .find(|&i| class[i] != 1)
-                .unwrap_or(coverage.w);
+            let end = (x + 1..w).find(|&i| class[i] != 1).unwrap_or(w);
             if end - x < FULL_RUN_MIN {
                 class[x..end].fill(2);
             }
@@ -466,13 +873,11 @@ fn strip_class(coverage: &Coverage, sy: usize, sh: usize, class: &mut Vec<u8>) {
         }
     }
     let mut x = 0;
-    while x < coverage.w {
+    while x < w {
         if class[x] == 0 {
-            let end = (x + 1..coverage.w)
-                .find(|&i| class[i] != 0)
-                .unwrap_or(coverage.w);
+            let end = (x + 1..w).find(|&i| class[i] != 0).unwrap_or(w);
             if x > 0
-                && end < coverage.w
+                && end < w
                 && class[x - 1] == 2
                 && class[end] == 2
                 && end - x <= PARTIAL_GAP_MAX
@@ -742,6 +1147,7 @@ mod tests {
             Rect::new(-20.0, 1.0, 6.0, 9.0),
             (10.0, 10.0),
             FillRule::NonZero,
+            &mut EmitScratch::new(),
         )
         .expect("the rect intersects the surface");
         assert!(coverage.clipped, "the bbox hangs off the left edge");
@@ -775,6 +1181,7 @@ mod tests {
             Rect::new(-20.0, 2.0, 6.0, 8.0),
             (10.0, 10.0),
             FillRule::NonZero,
+            &mut EmitScratch::new(),
         )
         .expect("the triangle intersects the surface");
         #[expect(
@@ -896,3 +1303,231 @@ mod hash_identity;
 
 #[cfg(test)]
 mod route_diff;
+
+#[cfg(test)]
+mod emit_eq {
+    use super::*;
+
+    #[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    fn dense_emit(
+        segments: &[(f32, f32, f32, f32)],
+        bbox: Rect,
+        surface: (f64, f64),
+        rule: FillRule,
+    ) -> (PathEmit, Vec<CellTexels>, Vec<u8>, bool) {
+        let (x0, y0, w, h, clipped) = grid(bbox, surface).unwrap();
+        let (segments, rule) = resolve(segments, rule);
+        let (ox, oy) = (x0 as f32, y0 as f32);
+        let mut raster = Raster::new(w, h);
+        for &(sx0, sy0, sx1, sy1) in segments.iter() {
+            clip_x(
+                &mut |a, b, c, d| raster.draw_line(a, b, c, d),
+                sx0 - ox,
+                sy0 - oy,
+                sx1 - ox,
+                sy1 - oy,
+                w as f32,
+            );
+        }
+        let mut arena = Vec::new();
+        let (p, r) = emit(
+            &Coverage {
+                x: x0,
+                y: y0,
+                w,
+                h,
+                clipped,
+                data: raster.coverage_rule(rule),
+            },
+            &mut arena,
+        )
+        .unwrap();
+        (p, r, arena, clipped)
+    }
+
+    fn check(
+        name: &str,
+        segments: &[(f32, f32, f32, f32)],
+        bbox: Rect,
+        surface: (f64, f64),
+        rule: FillRule,
+    ) {
+        let (dp, dr, darena, dc) = dense_emit(segments, bbox, surface, rule);
+        let mut scratch = EmitScratch::new();
+        let mut barena = Vec::new();
+        let (bp, br, bc) = rasterize_emit(segments, bbox, surface, rule, &mut scratch, &mut barena)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dc, bc, "{name}: clipped");
+        assert_eq!(dp.spans.len(), bp.spans.len(), "{name}: span count");
+        assert_eq!(dp.spans, bp.spans, "{name}: spans");
+        assert_eq!(dp.cells.len(), bp.cells.len(), "{name}: cell count");
+        for (i, (a, b)) in dp.cells.iter().zip(bp.cells.iter()).enumerate() {
+            assert_eq!(a.rect, b.rect, "{name}: cell {i} rect");
+            assert_eq!(a.interior, b.interior, "{name}: cell {i} interior");
+        }
+        assert_eq!(dr.len(), br.len(), "{name}: raster count");
+        for (i, (a, b)) in dr.iter().zip(br.iter()).enumerate() {
+            assert_eq!((a.0, a.1), (b.0, b.1), "{name}: texel {i} dims");
+            assert_eq!(a.2, b.2, "{name}: texel {i} range");
+        }
+        assert_eq!(darena, barena, "{name}: arena bytes");
+    }
+
+    #[test]
+    fn demoted_full_intervals_preserve_one_interior_cell() {
+        // The short full interval becomes partial. All three partial
+        // intervals must join before consuming the retained full interval.
+        let runs = [(1, 0.5), (4, 1.0), (5, 0.5), (13, 1.0), (14, 0.5)];
+        let mut intervals = Vec::new();
+        let mut emit = PathEmit::default();
+        let mut rasters = Vec::new();
+        let mut arena = Vec::new();
+        emit_strip_sparse(
+            &runs,
+            &[runs.len()],
+            14,
+            0.0,
+            0.0,
+            0,
+            &mut intervals,
+            &mut emit,
+            &mut rasters,
+            &mut arena,
+            &mut 0,
+        )
+        .unwrap();
+        assert_eq!(emit.spans, [] as [[f32; 4]; 0]);
+        assert_eq!(emit.cells.len(), 1);
+        assert_eq!(emit.cells[0].rect, [0.0, 0.0, 14.0, 1.0]);
+        assert_eq!(emit.cells[0].interior, 5 | (13 << 16));
+    }
+
+    #[test]
+    fn sparse_classification_matches_dense_columns() {
+        let mut seed = 11u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            usize::try_from(seed >> 32).unwrap()
+        };
+        for _ in 0..2_000 {
+            let w = next() % 128 + 1;
+            let sh = next() % STRIP_H + 1;
+            let mut strip = vec![0.0; w * sh];
+            let mut runs = Vec::new();
+            let mut ends = Vec::new();
+            for row in strip.chunks_mut(w) {
+                let mut x = 0;
+                while x < w {
+                    let end = (x + next() % 16 + 1).min(w);
+                    let coverage = [0.0, 1.0, 0.25][next() % 3];
+                    row[x..end].fill(coverage);
+                    runs.push((u32::try_from(end).unwrap(), coverage));
+                    x = end;
+                }
+                ends.push(runs.len());
+            }
+            let mut dense = Vec::new();
+            let mut sparse = Vec::new();
+            strip_class(&strip, w, sh, &mut dense);
+            strip_class_sparse(&runs, &ends, w, &mut sparse);
+            let mut expanded = Vec::new();
+            for &(end, class) in &sparse {
+                expanded.resize(end as usize, class);
+            }
+            assert_eq!(dense, expanded);
+            let (mut dp, mut sp) = (PathEmit::default(), PathEmit::default());
+            let (mut dr, mut sr, mut da, mut sa) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            emit_strip(
+                &strip, w, 0.0, 0.0, 0, sh, &mut dense, &mut dp, &mut dr, &mut da, &mut 0,
+            )
+            .unwrap();
+            emit_strip_sparse(
+                &runs,
+                &ends,
+                w,
+                0.0,
+                0.0,
+                0,
+                &mut sparse,
+                &mut sp,
+                &mut sr,
+                &mut sa,
+                &mut 0,
+            )
+            .unwrap();
+            assert_eq!(dp.spans, sp.spans);
+            assert_eq!(dp.cells.len(), sp.cells.len());
+            for (a, b) in dp.cells.iter().zip(&sp.cells) {
+                assert_eq!(a.rect, b.rect);
+                assert_eq!(a.interior, b.interior);
+            }
+            assert_eq!(dr, sr);
+            assert_eq!(da, sa);
+        }
+    }
+
+    #[expect(clippy::suboptimal_flops)]
+    #[expect(clippy::cast_precision_loss)]
+    #[test]
+    fn banded_emit_matches_dense_emit() {
+        let surface = (4096.0, 4096.0);
+        // Long thin diagonal stroke spanning many bands (the sparse-bbox shape).
+        for (name, slope, off) in [
+            ("diag-45", 1.0f32, 10.0f32),
+            ("diag-shallow", 0.031, 100.0),
+            ("diag-steep", 9.7, 5.5),
+            ("diag-neg", -0.13, 400.0),
+        ] {
+            let x0 = 100.0f32;
+            let y0 = off;
+            let x1 = 3900.0f32;
+            let y1 = off + slope * (x1 - x0);
+            let t = 1.5f32; // half-stroke-width for a ~3px stroke
+            let segs = [
+                (x0, y0 - t, x1, y1 - t),
+                (x1, y1 - t, x1, y1 + t),
+                (x1, y1 + t, x0, y0 + t),
+                (x0, y0 + t, x0, y0 - t),
+            ];
+            let bbox = Rect::new(
+                f64::from(x0),
+                f64::from(y0.min(y1)) - 4.0,
+                f64::from(x1),
+                f64::from(y0.max(y1)) + 4.0,
+            );
+            for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                check(name, &segs, bbox, surface, rule);
+            }
+        }
+        // A zigzag path crossing many band boundaries with both rules.
+        let mut zig = Vec::new();
+        let (mut x, mut y) = (40.0f32, 40.0f32);
+        for i in 0..40 {
+            let (nx, ny) = (x + 173.0, y + if i % 2 == 0 { 61.0 } else { -23.0 });
+            zig.push((x, y, nx, ny));
+            (x, y) = (nx, ny.max(5.0));
+        }
+        let bbox = Rect::new(0.0, 0.0, 4096.0, 4096.0);
+        check("zigzag", &zig, bbox, surface, FillRule::NonZero);
+        // Self-intersecting star under EvenOdd.
+        let mut star = Vec::new();
+        for i in 0..10 {
+            let a0 = i as f32 * 0.628_318_55;
+            let a1 = (i as f32 + 4.0) * 0.628_318_55;
+            star.push((
+                500.0 + 480.0 * a0.cos(),
+                500.0 + 480.0 * a0.sin(),
+                500.0 + 480.0 * a1.cos(),
+                500.0 + 480.0 * a1.sin(),
+            ));
+        }
+        check(
+            "star-eo",
+            &star,
+            Rect::new(0.0, 0.0, 1000.0, 1000.0),
+            surface,
+            FillRule::EvenOdd,
+        );
+    }
+}
