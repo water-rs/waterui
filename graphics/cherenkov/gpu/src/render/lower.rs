@@ -23,9 +23,10 @@ use crate::render::glyph::{self, Atlas, FontData, MaskCell, PathEmit, PendingRas
 use crate::render::instance::{
     ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
     FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
-    KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
-    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE, PAINT_RADIAL, PAINT_SOLID,
-    PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
+    KIND_CELL, KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN,
+    KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE,
+    PAINT_RADIAL, PAINT_SOLID, PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
+    cell_uv,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -746,79 +747,32 @@ impl InstanceTemplate {
     }
 }
 
-/// Bits of [`RetainedInstance`]'s packed word that hold the kind.
-const KIND_BITS: u32 = 4;
-
-/// A path cell's middle, `start | end << 16` ([`PathCell::interior`]), as
-/// the `[start, end]` columns the shader reads from `Instance::affine[6..8]`.
-///
-/// [`PathCell::interior`]: crate::render::glyph::PathCell::interior
-#[expect(clippy::cast_possible_truncation, reason = "each half is a u16 column")]
-fn middle_columns(packed: u32) -> [f32; 2] {
-    [f32::from(packed as u16), f32::from((packed >> 16) as u16)]
-}
-
 /// Fields that vary within one realized leaf. Shape, placement and paint are
 /// shared by all its quads, including a box's interior/border split.
 #[derive(Clone, Copy)]
 pub struct RetainedInstance {
     bounds: [f32; 4],
     pub(crate) uv: [f32; 2],
-    /// `kind | first_stop << KIND_BITS`, the stop relative to the leaf's.
-    kind_stop: u32,
-    /// A path cell's middle as [`middle_columns`] reads it; zero for
-    /// every other quad.
-    middle: u32,
+    pub(crate) kind: u32,
+    /// The quad's first stop, relative to the leaf's.
+    first_stop: u32,
 }
 
 impl RetainedInstance {
-    /// `inst`'s varying fields, its stop rebased below `stop_base`.
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a middle's columns are whole u16 values"
-    )]
-    fn new(inst: &Instance, stop_base: u32) -> Self {
-        let first_stop = inst.meta[2].saturating_sub(stop_base);
-        assert!(inst.meta[0] < 1 << KIND_BITS, "every kind fits KIND_BITS");
-        assert!(
-            first_stop < 1 << (32 - KIND_BITS),
-            "a leaf's stops fit {} bits",
-            32 - KIND_BITS
-        );
-        Self {
-            bounds: inst.bounds,
-            uv: [inst.uv[0], inst.uv[1]],
-            kind_stop: inst.meta[0] | first_stop << KIND_BITS,
-            middle: inst.affine[6] as u32 | (inst.affine[7] as u32) << 16,
-        }
-    }
-
-    /// The instance kind.
-    pub(crate) const fn kind(self) -> u32 {
-        self.kind_stop & ((1 << KIND_BITS) - 1)
-    }
-
-    /// The first stop, relative to the leaf's.
-    const fn first_stop(self) -> u32 {
-        self.kind_stop >> KIND_BITS
-    }
-
     /// The instance `template` and this quad's fields describe; every
     /// field the template does not keep takes `Instance::new`'s value.
     /// Built as one literal from whole arrays: this runs once per retained
     /// quad per frame, and a slice-range copy here costs an outlined
     /// bounds-checked call plus a `memcpy` whenever the optimizer declines
     /// to inline the range indexing.
-    fn restore(self, template: &InstanceTemplate, stop_base: u32) -> Instance {
+    const fn restore(self, template: &InstanceTemplate, stop_base: u32) -> Instance {
         const BLANK: Instance = Instance::new(0);
         let [a0, a1, a2, a3, a4, a5] = template.affine;
-        let [m0, m1] = middle_columns(self.middle);
         let [u0, u1] = self.uv;
         let [p0, p1] = template.params;
-        let first_stop = self.first_stop() + stop_base;
+        let first_stop = self.first_stop + stop_base;
         Instance {
-            affine: [a0, a1, a2, a3, a4, a5, m0, m1],
+            affine: [a0, a1, a2, a3, a4, a5, BLANK.affine[6], BLANK.affine[7]],
             bounds: self.bounds,
             shape: template.shape,
             inner: template.inner,
@@ -827,7 +781,7 @@ impl RetainedInstance {
             grad2: template.grad2,
             uv: [u0, u1, BLANK.uv[2], BLANK.uv[3]],
             params: [p0, p1, BLANK.params[2], BLANK.params[3]],
-            meta: [self.kind(), template.paint, first_stop, template.packed],
+            meta: [self.kind, template.paint, first_stop, template.packed],
             ..BLANK
         }
     }
@@ -4100,12 +4054,17 @@ impl<'a> Lowering<'a> {
         storage
             .instances
             .extend(self.frame.instances[first_instance..].iter().map(|inst| {
-                let retained = RetainedInstance::new(inst, stop_base);
+                let retained = RetainedInstance {
+                    bounds: inst.bounds,
+                    uv: [inst.uv[0], inst.uv[1]],
+                    kind: inst.meta[0],
+                    first_stop: inst.meta[2].saturating_sub(stop_base),
+                };
                 // Keep this invariant checked as new leaf emitters are added. Stop
                 // indices without gradients are unused but preserve their input too.
                 let restored = retained.restore(
                     &storage.templates[template],
-                    inst.meta[2] - retained.first_stop(),
+                    inst.meta[2] - retained.first_stop,
                 );
                 debug_assert_eq!(bytemuck::bytes_of(&restored), bytemuck::bytes_of(inst));
                 retained
@@ -4173,9 +4132,8 @@ impl<'a> Lowering<'a> {
             for (inst, source) in self.frame.instances[first..].iter_mut().zip(retained) {
                 inst.bounds = source.bounds;
                 inst.uv[..2].copy_from_slice(&source.uv);
-                [inst.affine[6], inst.affine[7]] = middle_columns(source.middle);
-                inst.meta[0] = source.kind();
-                inst.meta[2] = source.first_stop() + offset;
+                inst.meta[0] = source.kind;
+                inst.meta[2] = source.first_stop + offset;
                 debug_assert_eq!(variant_of(inst), variant_of(&template));
             }
             if let Some(pending) = self.mask_pending {
@@ -4861,7 +4819,7 @@ impl<'a> Lowering<'a> {
             emit.cells.iter().map(|cell| {
                 (
                     cell.rect,
-                    [f32::from(cell.x), f32::from(cell.y)],
+                    cell_uv(cell.x, cell.y, cell.interior),
                     cell.interior,
                 )
             }),
@@ -4904,13 +4862,14 @@ impl<'a> Lowering<'a> {
             ];
             inst.uv[..2].copy_from_slice(&uv);
             if interior != 0 {
-                // The shader reads the cell's stored-less middle as full
-                // coverage for every paint; a solid paint also draws it
-                // in the opaque pass.
-                [inst.affine[6], inst.affine[7]] = middle_columns(interior);
-                if inst.meta[1] == PAINT_SOLID {
-                    inst.meta[0] = KIND_REGION;
-                }
+                // `uv` packs the cell's origin and its stored-less middle,
+                // which the shader reads as full coverage for every paint;
+                // a solid paint also draws the middle in the opaque pass.
+                inst.meta[0] = if inst.meta[1] == PAINT_SOLID {
+                    KIND_REGION
+                } else {
+                    KIND_CELL
+                };
             }
         }
         if let Some(pending) = self.mask_pending {
@@ -5488,7 +5447,10 @@ pub const fn globals(size: [f32; 2], origin: [f32; 2], space: cherenkov::BlendSp
     reason = "a..f are the conventional affine coefficient names"
 )]
 fn device_bbox(inst: &Instance) -> [f32; 4] {
-    if matches!(inst.meta[0], KIND_GLYPH | KIND_SPAN | KIND_REGION) {
+    if matches!(
+        inst.meta[0],
+        KIND_GLYPH | KIND_SPAN | KIND_REGION | KIND_CELL
+    ) {
         return inst.bounds;
     }
     let [a, b, c, d, e, f, _, _] = inst.affine;

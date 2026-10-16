@@ -747,8 +747,9 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     var promoted = false;
     if inst.meta_.x == KIND_REGION {
         let x = inst.bounds.x;
-        inst.bounds.x = x + inst.affine[1].z;
-        inst.bounds.z = x + inst.affine[1].w;
+        let middle = cell_middle(inst);
+        inst.bounds.x = x + middle.x;
+        inst.bounds.z = x + middle.y;
     }
     if inst.meta_.x == KIND_POLYGON {
         // An appended interior tier: grad.x bitcast holds the painter
@@ -853,7 +854,7 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     let inst = instances[in.instance];
     var data: VsOut;
     data.local = in.local;
-    data.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
+    data.meta_.x = select(inst.meta_.x, KIND_GLYPH, packs_cell(inst.meta_.x));
     data.color = inst.color;
     data.params.y = inst.params.y;
     if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {

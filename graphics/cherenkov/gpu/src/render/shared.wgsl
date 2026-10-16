@@ -12,8 +12,9 @@ const KIND_STROKE_DIST: u32 = 2u;   // coverage(d - hw) - coverage(d + hw)
 const KIND_SHADOW: u32 = 3u;        // Gaussian-blurred rounded box
 const KIND_GLYPH: u32 = 4u;         // coverage from the glyph atlas
 const KIND_SPAN: u32 = 5u;          // a full-coverage device-space run
-const KIND_REGION: u32 = 6u;        // atlas cell with a retained full interval
+const KIND_REGION: u32 = 6u;        // solid atlas cell with a full-coverage middle
 const KIND_POLYGON: u32 = 7u;       // appended opaque interior tier (opaque phase only)
+const KIND_CELL: u32 = 8u;          // atlas cell with a full-coverage middle
 
 const PAINT_SOLID: u32 = 0u;
 const PAINT_LINEAR: u32 = 1u;
@@ -183,9 +184,8 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     // Hoist the constants every fragment reads into flat varyings so the
     // fragment shader only touches `instances` for kind-specific fields.
     out.meta_ = inst.meta_;
-    // Region metadata belongs to the opaque vertex stage. Sampled coverage
-    // uses the original atlas-cell fragment path for both cell kinds.
-    out.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
+    // A cell with a middle samples coverage like any other atlas cell.
+    out.meta_.x = select(inst.meta_.x, KIND_GLYPH, packs_cell(inst.meta_.x));
     out.color = inst.color;
     out.params = inst.params;
     out.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
@@ -193,7 +193,28 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     out.affine0 = inst.affine[0];
     out.affine1 = inst.affine[1];
     out.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
+    if packs_cell(inst.meta_.x) {
+        out.affine1 = vec4<f32>(inst.affine[1].xy, cell_middle(inst));
+        out.cell = vec4<f32>(inst.bounds.xy, unpack_columns(inst.uv.x));
+    }
     return out;
+}
+
+// Whether `kind`'s `uv.xy` packs a cell's atlas origin and middle as bits
+// (`instance::packs_cell_uv`) instead of holding the origin as floats.
+fn packs_cell(kind: u32) -> bool {
+    return kind == KIND_REGION || kind == KIND_CELL;
+}
+
+// Two u16 halves `lo | hi << 16` stored as the bits of `v`.
+fn unpack_columns(v: f32) -> vec2<f32> {
+    let bits = bitcast<u32>(v);
+    return vec2<f32>(f32(bits & 0xffffu), f32(bits >> 16u));
+}
+
+// A packed cell's full-coverage middle, in columns from its left edge.
+fn cell_middle(inst: Instance) -> vec2<f32> {
+    return unpack_columns(inst.uv.y);
 }
 
 // Coverage of a glyph or path cell at atlas texel `t`. `middle` is the

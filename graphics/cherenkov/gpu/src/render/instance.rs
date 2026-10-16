@@ -15,8 +15,8 @@ pub const KIND_SHADOW: u32 = 3;
 pub const KIND_GLYPH: u32 = 4;
 /// A device-space run of fully covered columns from a path strip.
 pub const KIND_SPAN: u32 = 5;
-/// A solid-paint atlas cell with a full-coverage middle
-/// (`affine[6..8]`), which the opaque phase also draws.
+/// A solid-paint path cell with a full-coverage middle, which the opaque
+/// phase also draws. Its `uv` packs like [`KIND_CELL`]'s.
 pub const KIND_REGION: u32 = 6;
 /// An opaque ellipse interior appended after a coverage-order pass's
 /// painter ranges and drawn only by the opaque phase at the tier's
@@ -204,15 +204,65 @@ impl From<RoundedBox> for Shape {
     }
 }
 
+/// A path cell with a full-coverage middle that stores no atlas texels,
+/// for a paint other than solid. `uv.xy` carries bit patterns, unpacked by
+/// the vertex stage: `uv.x` the atlas origin `x | y << 16`, `uv.y` the
+/// middle `start | end << 16` in columns from the cell's left edge.
+pub const KIND_CELL: u32 = 8;
+
+/// Whether `kind`'s `uv.xy` packs a cell origin and middle
+/// ([`KIND_CELL`]) rather than holding the origin as `f32`s.
+#[must_use]
+pub const fn packs_cell_uv(kind: u32) -> bool {
+    matches!(kind, KIND_REGION | KIND_CELL)
+}
+
+/// The `uv.xy` of a path cell at atlas origin `(x, y)` with middle
+/// `start | end << 16` (`0` for none): a cell without a middle holds its
+/// origin as `f32`s like a glyph, a cell with one packs as [`KIND_CELL`].
+#[must_use]
+pub fn cell_uv(x: u16, y: u16, middle: u32) -> [f32; 2] {
+    if middle == 0 {
+        [f32::from(x), f32::from(y)]
+    } else {
+        [
+            f32::from_bits(u32::from(x) | u32::from(y) << 16),
+            f32::from_bits(middle),
+        ]
+    }
+}
+
+/// Stores atlas origin `(x, y)` in the `uv` of an instance of `kind`,
+/// keeping a packed cell's middle.
+pub fn set_cell_origin(kind: u32, uv: &mut [f32], x: u16, y: u16) {
+    if packs_cell_uv(kind) {
+        uv[0] = f32::from_bits(u32::from(x) | u32::from(y) << 16);
+    } else {
+        uv[..2].copy_from_slice(&[f32::from(x), f32::from(y)]);
+    }
+}
+
+/// The atlas origin an instance of `kind` samples, from its `uv`.
+#[must_use]
+pub fn cell_origin(kind: u32, uv: [f32; 2]) -> [f32; 2] {
+    if packs_cell_uv(kind) {
+        let [x0, x1, y0, y1] = uv[0].to_bits().to_le_bytes();
+        [
+            f32::from(u16::from_le_bytes([x0, x1])),
+            f32::from(u16::from_le_bytes([y0, y1])),
+        ]
+    } else {
+        uv
+    }
+}
+
 /// One instanced quad, mirroring the WGSL `Instance`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub struct Instance {
-    /// Local-to-device affine: `[a, b, c, d, e, f, m0, m1]`. A
+    /// Local-to-device affine: `[a, b, c, d, e, f, 0, 0]`. A
     /// `PAINT_BACKDROP` span's bounds are device space; its affine is the
-    /// member layer's transform. `m0..m1` is a path cell's full-coverage
-    /// middle in columns from its left edge, which stores no atlas texels;
-    /// zero for every other quad.
+    /// member layer's transform.
     pub affine: [f32; 8],
     /// Quad rectangle `(x0, y0, x1, y1)`, local space except `KIND_GLYPH`
     /// `KIND_SPAN` and `KIND_REGION`, where it is a device-space rectangle.
