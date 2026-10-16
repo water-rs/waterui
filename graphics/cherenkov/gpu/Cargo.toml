@@ -95,6 +95,9 @@ js-sys = "0.3"
 half = "2"
 
 [build-dependencies]
+# The working-space ↔ sRGB WGSL fragment the colour-converting modules are
+# composed with (`filtrate_core::space::WGSL`).
+filtrate-core = { path = "../../filtrate/core" }
 # The WGSL engine shaders are compiled once at build time (issue #57), at
 # the naga version wgpu 30 links.
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }

@@ -93,8 +93,9 @@ struct AppleTarget {
 /// Removes every `// <marker>`-bracketed span from `source` — the mirror
 /// of the marker convention in `shaders.rs`: marker lines pair up, and
 /// the text between an opening and closing marker is a specialization's
-/// optional block (the union field, the long-gradient branch), dropped
-/// wholesale by variants that do not carry it.
+/// optional block (the union field, the long-gradient branch, the GPU
+/// coverage cell buffer), dropped wholesale by variants that do not
+/// carry it.
 ///
 /// Only a whole trimmed line equal to the marker toggles the span — a
 /// marker inside other text is not a marker. An unpaired marker is a
@@ -121,6 +122,16 @@ fn assert_no_union(source: &str, product: &str) {
     assert!(
         !source.contains("union_field") && !source.contains("member_field"),
         "`union-stub` stripping left union code in {product}"
+    );
+}
+
+/// The invariant of every cell-stripped product: no `cell_texels` text
+/// survives, so a drifted `// cell-buffer` span fails here instead of
+/// shipping the GPU coverage cell reads in a CPU-route module.
+fn assert_no_cell(source: &str, product: &str) {
+    assert!(
+        !source.contains("cell_texels"),
+        "`cell-buffer` stripping left cell-buffer code in {product}"
     );
 }
 
@@ -157,6 +168,7 @@ fn main() {
         resolve,
         reduce,
         shadow,
+        coverage,
         native,
         tile,
     ] = [
@@ -171,10 +183,27 @@ fn main() {
         "resolve",
         "reduce",
         "shadow",
+        "coverage",
         "external_native",
         "composite/tile",
     ]
     .map(read);
+
+    // The working-space ↔ sRGB conversion every colour-converting module
+    // shares: filtrate-core's `space::WGSL`, rendered from the same
+    // constants as the CPU conversion. It precedes `shared.wgsl` (and so
+    // every module built on it), `present.wgsl` and the `color.wgsl`
+    // producer prelude. Every module spec lands in `OUT_DIR` below; the
+    // `shared` prelude and the `color` prelude, which the runtime and the
+    // tests compose with their own sources, land there too, so nothing can
+    // drift from what this script compiles.
+    let space = filtrate_core::space::WGSL;
+    let shared = format!("{space}\n{shared}");
+    let present = format!("{space}\n{present}");
+    let color = format!("{space}\n{}", read("color"));
+    for (name, text) in [("shared", &shared), ("color", &color)] {
+        std::fs::write(out_dir.join(format!("{name}.wgsl")), text).unwrap();
+    }
 
     // The union member cap the WGSL fold is compiled against:
     // `union_cap::UNION_MAX_MEMBERS` prepended like `VARIANT`, so the
@@ -187,14 +216,22 @@ fn main() {
         union_cap::UNION_MAX_MEMBERS
     );
     std::fs::write(out_dir.join("union_max_members.wgsl"), &union_max).unwrap();
-    // Three stripped products: `shader_no_long` feeds the union module,
-    // `shader_no_union` the plain variants, `shader_long_no_union` the
-    // long-gradient variant.
+    // The stripped products: `shader_no_long` feeds the union module and
+    // `shader_long_no_union` the cell module (variant 5); the plain and
+    // long-gradient variants additionally drop every `// cell-buffer`
+    // span, from `shared.wgsl` too, so only GPU-routed draws carry the
+    // cell-texel reads (issue #2543).
     let shader_no_long = drop_marked(&shader, "long-gradient-stub");
     let shader_no_union = drop_marked(&shader_no_long, "union-stub");
     let shader_long_no_union = drop_marked(&shader, "union-stub");
     assert_no_union(&shader_no_union, "shader_no_union.wgsl");
     assert_no_union(&shader_long_no_union, "shader_long_no_union.wgsl");
+    let shader_plain = drop_marked(&shader_no_union, "cell-buffer");
+    let shader_long_plain = drop_marked(&shader_long_no_union, "cell-buffer");
+    let shared_plain = drop_marked(&shared, "cell-buffer");
+    assert_no_cell(&shader_plain, "the plain engine shader");
+    assert_no_cell(&shader_long_plain, "the long-gradient engine shader");
+    assert_no_cell(&shared_plain, "the plain shared prelude");
     std::fs::write(out_dir.join("shader_no_long.wgsl"), &shader_no_long).unwrap();
     std::fs::write(out_dir.join("shader_no_union.wgsl"), &shader_no_union).unwrap();
     std::fs::write(
@@ -204,9 +241,11 @@ fn main() {
     .unwrap();
     let specs = module_specs(&Modules {
         shared: &shared,
-        shader_no_union: &shader_no_union,
+        shared_plain: &shared_plain,
+        shader_plain: &shader_plain,
         shader_no_long: &shader_no_long,
         shader_long_no_union: &shader_long_no_union,
+        shader_long_plain: &shader_long_plain,
         union: &union,
         union_max: &union_max,
         blend: &blend,
@@ -218,6 +257,7 @@ fn main() {
         resolve: &resolve,
         reduce: &reduce,
         shadow: &shadow,
+        coverage: &coverage,
         tile: &tile,
     });
 
@@ -227,13 +267,17 @@ fn main() {
 /// The WGSL module sources `module_specs` splices into `Spec`s.
 struct Modules<'a> {
     shared: &'a str,
-    /// `shader` minus its `// union-stub` and `// long-gradient-stub`
-    /// spans.
-    shader_no_union: &'a str,
+    /// `shared` minus its `// cell-buffer` spans.
+    shared_plain: &'a str,
+    /// `shader` minus its `// union-stub`, `// long-gradient-stub` and
+    /// `// cell-buffer` spans.
+    shader_plain: &'a str,
     /// `shader` minus its `// long-gradient-stub` spans.
     shader_no_long: &'a str,
     /// `shader` minus its `// union-stub` spans only.
     shader_long_no_union: &'a str,
+    /// `shader` minus its `// union-stub` and `// cell-buffer` spans.
+    shader_long_plain: &'a str,
     union: &'a str,
     /// The `UNION_MAX_MEMBERS` const fragment.
     union_max: &'a str,
@@ -246,6 +290,7 @@ struct Modules<'a> {
     resolve: &'a str,
     reduce: &'a str,
     shadow: &'a str,
+    coverage: &'a str,
     /// The Vulkan tile stage interfaces around the fragment bodies.
     tile: &'a str,
 }
@@ -256,7 +301,7 @@ struct Modules<'a> {
 /// Vulkan `specs` entries and the Apple metallib loop alike.
 const TILE_FAMILIES: [(&str, usize); 2] = [("engine_tile", 2), ("engine_tile_long", 4)];
 
-/// The fixed module set `render` creates: five VARIANT specializations
+/// The fixed module set `render` creates: six VARIANT specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
 /// `projective`, `mip`, `resolve`, `reduce` and `shadow`. The engine, external
 /// and projective modules share the `shared.wgsl` prelude; the engine
@@ -265,20 +310,24 @@ const TILE_FAMILIES: [(&str, usize); 2] = [("engine_tile", 2), ("engine_tile_lon
 /// `union.wgsl` over `shader_no_long`; variant 4 (`LongGradient`) keeps the
 /// `// long-gradient-stub` spans without union; the plain variants drop
 /// both marker families, so their modules carry neither the union fold
-/// and member-cap arrays nor the binary stop search.
+/// and member-cap arrays nor the binary stop search. Variant 5 (`Cell`),
+/// which only GPU-routed draws use, keeps every span but the union's;
+/// all other variants but the union's also drop the `// cell-buffer`
+/// spans of `shared.wgsl` and `shader.wgsl`, the cell-texel reads.
 fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
-    let mut specs: Vec<Spec> = (0..5u32)
+    let mut specs: Vec<Spec> = (0..6u32)
         .map(|variant| {
-            let (cap, shader, union) = match variant {
-                3 => (m.union_max, m.shader_no_long, m.union),
-                4 => ("", m.shader_long_no_union, ""),
-                _ => ("", m.shader_no_union, ""),
+            let (cap, shared, shader, union) = match variant {
+                3 => (m.union_max, m.shared, m.shader_no_long, m.union),
+                4 => ("", m.shared_plain, m.shader_long_plain, ""),
+                5 => ("", m.shared, m.shader_long_no_union, ""),
+                _ => ("", m.shared_plain, m.shader_plain, ""),
             };
             Spec {
                 name: format!("engine{variant}"),
                 source: format!(
-                    "const VARIANT: u32 = {variant}u;\n{cap}{}\n{shader}\n{union}{}",
-                    m.shared, m.blend
+                    "const VARIANT: u32 = {variant}u;\n{cap}{shared}\n{shader}\n{union}{}",
+                    m.blend
                 ),
                 groups: bindings::ENGINE_GROUPS,
                 metal: true,
@@ -328,6 +377,7 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         ("resolve", m.resolve, bindings::RESOLVE_GROUPS),
         ("reduce", m.reduce, bindings::REDUCE_GROUPS),
         ("shadow", m.shadow, bindings::SHADOW_GROUPS),
+        ("coverage", m.coverage, bindings::COVERAGE_GROUPS),
     ] {
         specs.push(Spec {
             name: name.into(),
@@ -873,9 +923,11 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
         .validate(&module)
         .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     let options = msl::Options {
-        // The floor Metal language version wgpu selects on supported
-        // hardware; the shader test covers the same value.
-        lang_version: if spec.attachment { (3, 0) } else { (2, 0) },
+        // Metal 2.3 is the first language version that takes
+        // `-ftexture-write-rounding-mode` (see `compile_metal`); every
+        // supported deployment target (macOS and iOS 26) runs it. The
+        // shader test covers the same value.
+        lang_version: if spec.attachment { (3, 0) } else { (2, 3) },
         per_entry_point_map: resource_map(spec, &module),
         inline_samplers: Vec::new(),
         spirv_cross_compatibility: false,
@@ -976,6 +1028,11 @@ fn compile_metal(
         // the build SDK's newest version, which older supported
         // operating systems cannot load.
         .arg(format!("-std={dialect}{}.{}", version.0, version.1))
+        // Apple GPUs store float pixels toward zero by default, which
+        // biases every Rgba16Float store one step low and compounds
+        // across a pixel's stores; round to nearest even, as the CPU
+        // backend and other GPUs do (#2773). Metal 2.3 and later.
+        .arg("-ftexture-write-rounding-mode=rte")
         .arg("-target")
         .arg(&apple.metal_target)
         .arg("-I")

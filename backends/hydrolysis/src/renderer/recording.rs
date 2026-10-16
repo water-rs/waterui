@@ -8,22 +8,26 @@
 //!
 //! Ops name peniko types because that is the currency the call sites already
 //! produce; conversion into engine resources — fonts and images — happens at
-//! lower time through [`SceneResources`], which keeps the handles alive and
-//! deduplicates registrations across frames.
+//! lower time through [`SceneResources`], which deduplicates registrations
+//! across frames while the recordings that name them hold them.
 
+use core::cell::RefCell;
 use core::fmt;
+use core::hash::Hash;
 use kurbo::{Affine, Rect, Shape, Vec2};
 use peniko::{BlendMode, Fill, FontData};
 use rustc_hash::FxHashMap;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
 use waterui_graphics::draw::{
-    BlendSpace, ColorStop, Content, Draw, EvenOdd, Extend, Glyph as EngineGlyph, GlyphStyle, Group,
-    ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient, Paint, RadialGradient,
-    Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
+    BlendSpace, ColorStop, Content, Draw, EvenOdd, Extend, FontId, Glyph as EngineGlyph,
+    GlyphStyle, Group, ImageId, ImagePattern, Interpolation, LayoutSize, LinearGradient, Paint,
+    RadialGradient, Recorder, Sampling, Shadow, ShapeData, SweepGradient, WorkingColor,
 };
 use waterui_graphics::{
-    FontSource, HeldResources, ImageColorSpace, ImageData, RecordingResources, Rgba8,
+    FontSource, HeldResources, ImageColorSpace, ImageData, PlainId, RecordingResources, Registered,
+    ResourceError, Rgba8,
 };
 
 /// One positioned glyph in a shaped run — the currency text shaping hands
@@ -172,10 +176,10 @@ pub fn assert_well_formed_image(image: &peniko::ImageData) {
 
 /// `image`'s RGBA8 bytes fitted to `limits`: an admitted source passes
 /// through with its own pixels; a larger one — a decoded photo past the
-/// device's texture limit or its per-image budget — is Lanczos3-resampled
-/// to the largest admitted size at the same aspect ratio, so the
-/// registration below still holds the engine's contract rather than
-/// panicking on it. Returns `(width, height, bytes)`.
+/// device's texture limit or the whole image budget — is
+/// Lanczos3-resampled to the largest admitted size at the same aspect
+/// ratio, so the registration below still holds the engine's contract
+/// rather than panicking on it. Returns `(width, height, bytes)`.
 fn fit_image_to_limits(
     image: &peniko::ImageData,
     limits: waterui_graphics::draw::ImageLimits,
@@ -204,25 +208,134 @@ fn fit_image_to_limits(
 ///
 /// Registration itself goes through the one `SceneResources` table
 /// (`waterui_graphics::resources::SceneResources`, the #1324 contract) the
-/// host built over its `Engine`; the handles live here for as long as a frame
-/// can show the recording that names them. The table alone already dedups by
-/// content hash — the identity key here keeps that hash, and the engine
-/// upload behind a cache miss, out of the per-frame lowering path.
+/// host built over its `Engine`. The table alone already dedups by content
+/// hash — the identity key here keeps that hash, the copy of a peniko blob
+/// into the table's source bytes, and the engine upload behind a cache miss,
+/// out of the per-frame lowering path.
+///
+/// The caches own nothing: like the table, they list each entry weakly, and
+/// the recordings that name an entry hold it through their
+/// [`LoweredResources`]. An entry therefore lives exactly as long as some
+/// recording that names it may still be drawn; when the last such set drops,
+/// the entry leaves its cache and lets go of its registration.
 pub struct SceneResources {
     /// The `SceneContent::build_scene` resource table, shared with every scene
     /// view this engine draws.
     inner: waterui_graphics::SceneResources,
-    fonts: std::cell::RefCell<
-        FxHashMap<FontKey, waterui_graphics::Registered<waterui_graphics::draw::FontId>>,
-    >,
-    images: std::cell::RefCell<
-        FxHashMap<ImageKey, waterui_graphics::Registered<waterui_graphics::draw::ImageId>>,
-    >,
+    fonts: IdentityCache<FontKey, FontId>,
+    images: IdentityCache<ImageKey, ImageId>,
     /// Fresh engine registrations since the last
     /// [`Self::take_registration_stats`] — the frame-work counters' evidence
     /// that fonts and images are not re-registered per frame.
     font_registrations: std::cell::Cell<u64>,
     image_registrations: std::cell::Cell<u64>,
+}
+
+/// What identifies a peniko resource in an identity cache.
+trait CacheKey: Copy + Eq + Hash {}
+
+impl<K: Copy + Eq + Hash> CacheKey for K {}
+
+/// The live entries of one identity cache, each listed weakly so that the
+/// listing never keeps an entry alive.
+type Listing<K, I> = RefCell<FxHashMap<K, Weak<Cached<K, I>>>>;
+
+/// One identity cache: a peniko resource's identity to the registration it
+/// lowered to, for as long as some recording names it.
+struct IdentityCache<K: CacheKey, I: PlainId> {
+    listing: Rc<Listing<K, I>>,
+}
+
+impl<K: CacheKey, I: PlainId> IdentityCache<K, I> {
+    fn new() -> Self {
+        Self {
+            listing: Rc::new(RefCell::new(FxHashMap::default())),
+        }
+    }
+
+    /// The live entry for `key`, if a recording still names it.
+    fn get(&self, key: K) -> Option<Rc<Cached<K, I>>> {
+        self.listing.borrow().get(&key).and_then(Weak::upgrade)
+    }
+
+    /// Lists `registered` under `key`, returning the entry the naming
+    /// recording holds.
+    fn insert(&self, key: K, registered: Registered<I>) -> Rc<Cached<K, I>> {
+        let entry = Rc::new(Cached {
+            registered,
+            key,
+            listing: Rc::downgrade(&self.listing),
+        });
+        self.listing.borrow_mut().insert(key, Rc::downgrade(&entry));
+        entry
+    }
+
+    /// How many entries are listed.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.listing.borrow().len()
+    }
+}
+
+/// A cached registration. The recordings that name it hold it; when the
+/// last of them lets go it leaves its cache and drops its share of the
+/// registration, which the table then releases once nothing else holds it.
+struct Cached<K: CacheKey, I: PlainId> {
+    registered: Registered<I>,
+    key: K,
+    listing: Weak<Listing<K, I>>,
+}
+
+impl<K: CacheKey, I: PlainId> Drop for Cached<K, I> {
+    fn drop(&mut self) {
+        // The listing's weak entry stops upgrading the moment the last
+        // strong reference goes, and this runs in that same moment, so the
+        // entry under `key` is this one: no newer entry can have replaced it.
+        if let Some(listing) = self.listing.upgrade() {
+            listing.borrow_mut().remove(&self.key);
+        }
+    }
+}
+
+/// The resource side of one recording as Hydrolysis lowers it: the shared
+/// table's naming, plus the identity-cache entries the recording names.
+pub struct LoweringNames<'a> {
+    table: RecordingResources<'a>,
+    fonts: FxHashMap<FontKey, Rc<Cached<FontKey, FontId>>>,
+    images: FxHashMap<ImageKey, Rc<Cached<ImageKey, ImageId>>>,
+}
+
+impl LoweringNames<'_> {
+    /// The resources this recording names, for the mount to keep beside it.
+    fn finish(self) -> LoweredResources {
+        LoweredResources {
+            held: self.table.finish(),
+            fonts: self.fonts.into_values().collect(),
+            images: self.images.into_values().collect(),
+        }
+    }
+}
+
+/// Everything one lowered recording names: its registrations in the shared
+/// table and its entries in Hydrolysis's identity caches.
+///
+/// The mount keeps it for as long as the recording is installed and lets it
+/// go only once a recording that replaces it has been installed — the
+/// [`HeldResources`] contract, which this extends to the identity caches.
+pub struct LoweredResources {
+    held: HeldResources,
+    fonts: Box<[Rc<Cached<FontKey, FontId>>]>,
+    images: Box<[Rc<Cached<ImageKey, ImageId>>]>,
+}
+
+impl fmt::Debug for LoweredResources {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LoweredResources")
+            .field("held", &self.held)
+            .field("fonts", &self.fonts.len())
+            .field("images", &self.images.len())
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -243,22 +356,46 @@ struct ImageKey {
 impl fmt::Debug for SceneResources {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SceneResources")
-            .field("fonts", &self.fonts.borrow().len())
-            .field("images", &self.images.borrow().len())
+            .field("fonts", &self.fonts.listing.borrow().len())
+            .field("images", &self.images.listing.borrow().len())
             .finish_non_exhaustive()
     }
 }
 
 impl SceneResources {
     /// Creates caches served by `engine`.
-    pub(crate) fn new(engine: &std::rc::Rc<crate::engine::GpuEngine>) -> Self {
+    pub(crate) fn new(engine: &Rc<crate::engine::GpuEngine>) -> Self {
+        Self::over(waterui_graphics::SceneResources::with_shaders(
+            engine.clone(),
+            engine.clone(),
+        ))
+    }
+
+    /// Creates caches over the registration table `inner`.
+    fn over(inner: waterui_graphics::SceneResources) -> Self {
         Self {
-            inner: waterui_graphics::SceneResources::with_shaders(engine.clone(), engine.clone()),
-            fonts: std::cell::RefCell::new(FxHashMap::default()),
-            images: std::cell::RefCell::new(FxHashMap::default()),
+            inner,
+            fonts: IdentityCache::new(),
+            images: IdentityCache::new(),
             font_registrations: std::cell::Cell::new(0),
             image_registrations: std::cell::Cell::new(0),
         }
+    }
+
+    /// Begins the resource side of one lowered recording.
+    fn recording(&self) -> LoweringNames<'_> {
+        LoweringNames {
+            table: self.inner.recording(),
+            fonts: FxHashMap::default(),
+            images: FxHashMap::default(),
+        }
+    }
+
+    /// How many (fonts, images) the identity caches list — each one named
+    /// by a recording that may still be drawn.
+    #[cfg(test)]
+    pub(crate) fn cached(&self) -> (usize, usize) {
+        (self.fonts.len(), self.images.len())
     }
 
     /// (fonts, images) registered since the last call, drained per frame
@@ -280,37 +417,43 @@ impl SceneResources {
 
     /// The registered font id for `font`, uploading the face on first use and
     /// holding the registration for `names`' recording.
-    pub(crate) fn font(
-        &self,
-        names: &mut RecordingResources<'_>,
-        font: &FontData,
-    ) -> waterui_graphics::draw::FontId {
+    pub(crate) fn font(&self, names: &mut LoweringNames<'_>, font: &FontData) -> FontId {
         let key = FontKey {
             blob: font.data.id(),
             index: font.index,
         };
-        if let Some(registered) = self.fonts.borrow().get(&key) {
-            return names.name(registered);
+        if let Some(cached) = names.fonts.get(&key) {
+            return names.table.name(&cached.registered);
         }
-        let source = FontSource::bytes(Arc::<[u8]>::from(font.data.data())).with_index(font.index);
-        let registered = self
-            .inner
-            .font(source)
-            .expect("hydrolysis renderer: engine rejected a font source it must accept");
-        let id = names.name(&registered);
-        self.fonts.borrow_mut().insert(key, registered);
-        self.font_registrations
-            .set(self.font_registrations.get() + 1);
+        let cached = self.fonts.get(key).unwrap_or_else(|| {
+            let source =
+                FontSource::bytes(Arc::<[u8]>::from(font.data.data())).with_index(font.index);
+            let registered = self
+                .inner
+                .font(source)
+                .expect("hydrolysis renderer: engine rejected a font source it must accept");
+            self.font_registrations
+                .set(self.font_registrations.get() + 1);
+            self.fonts.insert(key, registered)
+        });
+        let id = names.table.name(&cached.registered);
+        names.fonts.insert(key, cached);
         id
     }
 
     /// The registered image id for `image`, uploading the pixels on first use
     /// and holding the registration for `names`' recording.
+    ///
+    /// # Errors
+    ///
+    /// The engine's [`ResourceError`] when it does not register the image —
+    /// [`ResourceError::OverBudget`] when the image does not fit the image
+    /// budget beside the images already registered.
     pub(crate) fn image(
         &self,
-        names: &mut RecordingResources<'_>,
+        names: &mut LoweringNames<'_>,
         image: &peniko::ImageData,
-    ) -> ImageId {
+    ) -> Result<ImageId, ResourceError> {
         let key = ImageKey {
             blob: image.data.id(),
             width: image.width,
@@ -318,47 +461,60 @@ impl SceneResources {
             format: image.format as u8,
             alpha: image.alpha_type as u8,
         };
-        if let Some(registered) = self.images.borrow().get(&key) {
-            return names.name(registered);
+        if let Some(cached) = names.images.get(&key) {
+            return Ok(names.table.name(&cached.registered));
         }
-        assert_eq!(
-            image.format,
-            peniko::ImageFormat::Rgba8,
-            "hydrolysis renderer: unsupported image format {:?}; only Rgba8 uploads reach the engine",
-            image.format
-        );
-        assert_well_formed_image(image);
-        // A decoded image can exceed what the engine holds: resample to
-        // the limits' fit so the registration is the contract it asserts.
-        let (width, height, bytes) = fit_image_to_limits(image, self.inner.image_limits());
-        let data = ImageData::<Rgba8>::new(width, height, bytes)
-            .expect("hydrolysis renderer: well-formed Rgba8 image rejected")
-            .color_space(ImageColorSpace::Srgb);
-        let data = if image.alpha_type == peniko::ImageAlphaType::AlphaPremultiplied {
-            data.premultiplied()
+        let cached = if let Some(cached) = self.images.get(key) {
+            cached
         } else {
-            data
+            assert_eq!(
+                image.format,
+                peniko::ImageFormat::Rgba8,
+                "hydrolysis renderer: unsupported image format {:?}; only Rgba8 uploads reach the engine",
+                image.format
+            );
+            assert_well_formed_image(image);
+            // A decoded image can exceed what the engine holds: resample to
+            // the limits' fit so the registration is the contract it asserts.
+            let (width, height, bytes) = fit_image_to_limits(image, self.inner.image_limits());
+            let data = ImageData::<Rgba8>::new(width, height, bytes)
+                .expect("hydrolysis renderer: well-formed Rgba8 image rejected")
+                .color_space(ImageColorSpace::Srgb);
+            let data = if image.alpha_type == peniko::ImageAlphaType::AlphaPremultiplied {
+                data.premultiplied()
+            } else {
+                data
+            };
+            // A refused registration caches nothing: a later recording
+            // naming the image tries a registration of its own.
+            let registered = self.inner.image(data)?;
+            self.image_registrations
+                .set(self.image_registrations.get() + 1);
+            self.images.insert(key, registered)
         };
-        let registered = self
-            .inner
-            .image(data)
-            .expect("hydrolysis renderer: engine rejected an image it must accept");
-        let id = names.name(&registered);
-        self.images.borrow_mut().insert(key, registered);
-        self.image_registrations
-            .set(self.image_registrations.get() + 1);
-        id
+        let id = names.table.name(&cached.registered);
+        names.images.insert(key, cached);
+        Ok(id)
     }
 
     /// The engine paint for `brush`, registering any image it names and
     /// holding it for `names`' recording.
-    pub(crate) fn paint(&self, names: &mut RecordingResources<'_>, brush: &peniko::Brush) -> Paint {
-        match brush {
+    ///
+    /// # Errors
+    ///
+    /// The engine's [`ResourceError`] when it does not register the
+    /// brush's image; see [`image`](Self::image).
+    pub(crate) fn paint(
+        &self,
+        names: &mut LoweringNames<'_>,
+        brush: &peniko::Brush,
+    ) -> Result<Paint, ResourceError> {
+        Ok(match brush {
             peniko::Brush::Solid(color) => Paint::Solid(working_color(*color)),
             peniko::Brush::Gradient(gradient) => gradient_paint(gradient),
             peniko::Brush::Image(brush) => {
                 let pattern = ImagePattern {
-                    image: self.image(names, &brush.image),
+                    image: self.image(names, &brush.image)?,
                     transform: Affine::IDENTITY,
                     extend_x: extend(brush.sampler.x_extend),
                     extend_y: extend(brush.sampler.y_extend),
@@ -366,17 +522,22 @@ impl SceneResources {
                 };
                 Paint::Image(pattern)
             }
-        }
+        })
     }
 
     /// `brush` mapped through its own coordinate transform.
+    ///
+    /// # Errors
+    ///
+    /// The engine's [`ResourceError`] when it does not register the
+    /// brush's image; see [`image`](Self::image).
     pub(crate) fn transformed_paint(
         &self,
-        names: &mut RecordingResources<'_>,
+        names: &mut LoweringNames<'_>,
         brush: &peniko::Brush,
         brush_transform: Option<Affine>,
-    ) -> Paint {
-        transform_paint(self.paint(names, brush), brush_transform)
+    ) -> Result<Paint, ResourceError> {
+        Ok(transform_paint(self.paint(names, brush)?, brush_transform))
     }
 }
 
@@ -734,8 +895,8 @@ impl Recording {
     /// Lowers the recording into engine [`Content`] through `resources`,
     /// returning the set of registrations the content names beside it.
     ///
-    /// The caller keeps the [`HeldResources`] for as long as the content is
-    /// installed on a layer — the mounts own that lifetime, releasing a
+    /// The caller keeps the [`LoweredResources`] for as long as the content
+    /// is installed on a layer — the mounts own that lifetime, releasing a
     /// set only once the replacement content is installed.
     ///
     /// # Panics
@@ -745,8 +906,8 @@ impl Recording {
         &self,
         recorder: &mut Recorder,
         resources: &SceneResources,
-    ) -> HeldResources {
-        let mut names = resources.inner.recording();
+    ) -> LoweredResources {
+        let mut names = resources.recording();
         let mut index = 0;
         lower(&self.ops, &mut index, recorder, resources, &mut names);
         assert_eq!(
@@ -863,6 +1024,18 @@ pub fn axis_aligned(transform: Affine) -> bool {
     b == 0.0 && c == 0.0 && a > 0.0 && d > 0.0
 }
 
+/// The paint of an op, or `None` when the engine did not register the
+/// image its brush names: that op is not drawn, and the rejection is
+/// reported as a warning naming the engine's reason, instead of taking the
+/// window down. Nothing stands in for the image.
+fn drawable(paint: Result<Paint, ResourceError>) -> Option<Paint> {
+    paint
+        .inspect_err(|error| {
+            tracing::warn!(%error, "hydrolysis renderer: the engine did not register an image brush; the op that paints with it is not drawn");
+        })
+        .ok()
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
@@ -872,7 +1045,7 @@ fn lower(
     index: &mut usize,
     recorder: &mut Recorder,
     resources: &SceneResources,
-    names: &mut RecordingResources<'_>,
+    names: &mut LoweringNames<'_>,
 ) {
     while *index < ops.len() {
         let op = &ops[*index];
@@ -885,7 +1058,11 @@ fn lower(
                 shape,
                 ..
             } => {
-                let paint = resources.transformed_paint(names, brush, *brush_transform);
+                let Some(paint) =
+                    drawable(resources.transformed_paint(names, brush, *brush_transform))
+                else {
+                    continue;
+                };
                 recorder.transform(*transform, |r| r.fill(shape.clone(), paint));
             }
             Op::FillPaint {
@@ -916,7 +1093,9 @@ fn lower(
                 glyphs,
             } => {
                 let font = resources.font(names, font);
-                let mut paint = resources.paint(names, brush);
+                let Some(mut paint) = drawable(resources.paint(names, brush)) else {
+                    continue;
+                };
                 if *brush_alpha < 1.0 {
                     paint = alpha_scaled_paint(paint, *brush_alpha);
                 }
@@ -1262,6 +1441,228 @@ mod tests {
             MeshColorInterpolation::Smoothstep
         );
         assert_eq!(transformed.points()[0], Point::new(4.0, 2.0));
+    }
+
+    /// A host mounting Hydrolysis recordings on a `Null` engine's surface
+    /// root, keeping the installed recording's resources the way the layer
+    /// mount does: the set of the recording a frame replaces is let go only
+    /// once its replacement is installed.
+    struct NullMount {
+        engine: Rc<cherenkov::Engine<cherenkov::testing::Null>>,
+        probe: std::sync::mpsc::Receiver<cherenkov::testing::Event>,
+        surface: cherenkov::Surface<cherenkov::testing::Null>,
+        resources: SceneResources,
+        installed: Option<LoweredResources>,
+    }
+
+    impl NullMount {
+        fn new() -> Self {
+            let (events, probe) = std::sync::mpsc::channel();
+            let engine = Rc::new(
+                cherenkov::Engine::<cherenkov::testing::Null>::new(
+                    cherenkov::testing::NullConfig {
+                        events,
+                        reject: std::collections::HashSet::new(),
+                        image_limits: waterui_graphics::draw::ImageLimits::UNLIMITED,
+                    },
+                )
+                .expect("the null engine starts"),
+            );
+            let surface = engine
+                .surface(
+                    cherenkov::Offscreen::new((8, 8), cherenkov::OffscreenFormat::LinearF16),
+                    || {},
+                )
+                .expect("surface");
+            let resources =
+                SceneResources::over(waterui_graphics::SceneResources::new(Rc::clone(&engine)));
+            Self {
+                engine,
+                probe,
+                surface,
+                resources,
+                installed: None,
+            }
+        }
+
+        /// One host frame: lower `recording`, install it, let go of the
+        /// set it replaces, render. Returns the frame's render-thread
+        /// events.
+        fn frame(&mut self, recording: &Recording) -> Vec<cherenkov::testing::Event> {
+            let mut lowered = None;
+            let content = self.surface.record(|recorder| {
+                lowered = Some(recording.record_on(recorder, &self.resources));
+            });
+            self.surface.update(|tx| {
+                tx[self.surface.root()].content(content);
+            });
+            drop(std::mem::replace(&mut self.installed, lowered));
+            self.engine
+                .render(cherenkov::FrameTime::now())
+                .expect("render");
+            self.probe.try_iter().collect()
+        }
+    }
+
+    /// A recording of one text run in `font`, over a fill painted with
+    /// `photo` when there is one.
+    fn page(font: &FontData, photo: Option<&peniko::ImageData>) -> Recording {
+        let mut recording = Recording::new();
+        if let Some(photo) = photo {
+            recording.fill(
+                Fill::NonZero,
+                Affine::IDENTITY,
+                &peniko::Brush::Image(peniko::ImageBrush::new(photo.clone())),
+                None,
+                &Rect::new(0.0, 0.0, 4.0, 4.0),
+            );
+        }
+        recording.glyphs(&GlyphRun {
+            font,
+            font_size: 12.0,
+            normalized_coords: &[],
+            transform: Affine::IDENTITY,
+            brush: &peniko::Brush::Solid(peniko::color::palette::css::BLACK),
+            brush_alpha: 1.0,
+            style: peniko::StyleRef::Fill(Fill::NonZero),
+            glyphs: &[Glyph {
+                id: 1,
+                x: 0.0,
+                y: 10.0,
+            }],
+        });
+        recording
+    }
+
+    /// Every id of `kind` the events report, in order.
+    fn ids<T>(
+        events: &[cherenkov::testing::Event],
+        kind: impl Fn(&cherenkov::testing::Event) -> Option<T>,
+    ) -> Vec<T> {
+        events.iter().filter_map(kind).collect()
+    }
+
+    /// The identity caches hold a font or image registration exactly as long
+    /// as an installed recording names it (water-rs/waterui#2787): a photo
+    /// the next frame stops drawing is unregistered in that frame, the font
+    /// every frame draws stays registered and is never re-uploaded, and once
+    /// nothing names either the caches are empty and the engine holds
+    /// nothing. The `Null` backend panics on a render that draws a removed
+    /// resource, so a registration released while still drawn fails here too.
+    #[test]
+    fn a_cached_registration_lives_exactly_as_long_as_a_recording_names_it() {
+        use cherenkov::testing::Event;
+        let added_fonts = |e: &Event| matches!(e, Event::AddFont(_)).then_some(());
+        let removed_fonts = |e: &Event| matches!(e, Event::RemoveFont(_)).then_some(());
+        let added_images = |e: &Event| match e {
+            Event::AddImage(id) => Some(*id),
+            _ => None,
+        };
+        let removed_images = |e: &Event| match e {
+            Event::RemoveImage(id) => Some(*id),
+            _ => None,
+        };
+        let photo = |fill: u8| peniko::ImageData {
+            data: peniko::Blob::from(vec![fill; 4 * 4 * 4]),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: 4,
+            height: 4,
+        };
+        let font = FontData::new(peniko::Blob::from(vec![0u8; 64]), 0);
+        let (first, second) = (photo(1), photo(2));
+        let mut mount = NullMount::new();
+
+        let events = mount.frame(&page(&font, Some(&first)));
+        assert_eq!(ids(&events, added_fonts).len(), 1, "{events:?}");
+        let first_id = ids(&events, added_images);
+        assert_eq!(first_id.len(), 1, "{events:?}");
+        assert_eq!(mount.resources.cached(), (1, 1));
+        assert_eq!(mount.resources.take_registration_stats(), (1, 1));
+
+        // The same resources in a fresh recording: found by identity, not
+        // registered again, and not released while the replaced recording
+        // that also names them is let go.
+        let events = mount.frame(&page(&font, Some(&first)));
+        assert!(ids(&events, added_images).is_empty(), "{events:?}");
+        assert!(ids(&events, removed_images).is_empty(), "{events:?}");
+        assert!(ids(&events, removed_fonts).is_empty(), "{events:?}");
+        assert_eq!(mount.resources.take_registration_stats(), (0, 0));
+        assert_eq!(mount.resources.cached(), (1, 1));
+
+        // The next photo replaces the first: the first leaves the cache and
+        // the engine in the frame that stops drawing it; the font stays.
+        let events = mount.frame(&page(&font, Some(&second)));
+        assert_eq!(ids(&events, added_images).len(), 1, "{events:?}");
+        assert_eq!(ids(&events, removed_images), first_id, "{events:?}");
+        assert!(ids(&events, removed_fonts).is_empty(), "{events:?}");
+        assert_eq!(mount.resources.take_registration_stats(), (0, 1));
+        assert_eq!(mount.resources.cached(), (1, 1));
+
+        // Nothing named any more: nothing cached, nothing registered.
+        let events = mount.frame(&Recording::new());
+        assert_eq!(ids(&events, removed_images).len(), 1, "{events:?}");
+        assert_eq!(ids(&events, removed_fonts).len(), 1, "{events:?}");
+        assert_eq!(mount.resources.cached(), (0, 0));
+    }
+
+    /// An image the engine's limits admit alone, registered beside images
+    /// that leave less of the image budget than it needs, reports the
+    /// engine's `OverBudget` error instead of panicking the window or
+    /// standing in a resampled image (water-rs/waterui#2755), and an op
+    /// painting with it is not drawn.
+    #[test]
+    fn an_image_past_the_image_budget_reports_the_error() {
+        let (events, _events) = std::sync::mpsc::channel();
+        let limits = waterui_graphics::draw::ImageLimits {
+            max_dimension: 8,
+            max_texels: 64,
+        };
+        let engine = std::rc::Rc::new(
+            cherenkov::Engine::<cherenkov::testing::Null>::new(cherenkov::testing::NullConfig {
+                events,
+                reject: std::collections::HashSet::new(),
+                image_limits: limits,
+            })
+            .expect("engine"),
+        );
+        let resources = SceneResources::over(waterui_graphics::SceneResources::new(engine));
+        let mut names = resources.recording();
+        let square = |side: u32, fill: u8| peniko::ImageData {
+            data: peniko::Blob::from(vec![fill; 4 * side as usize * side as usize]),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: side,
+            height: side,
+        };
+
+        // 36 texels, then 36 more beside them: 28 are left.
+        resources
+            .image(&mut names, &square(6, 1))
+            .expect("the first image fits");
+        let rejected = square(6, 2);
+        match resources.image(&mut names, &rejected) {
+            Err(ResourceError::OverBudget {
+                width,
+                height,
+                available,
+                limits: reported,
+            }) => assert_eq!((width, height, available, reported), (6, 6, 28, limits)),
+            other => panic!("an image past the budget was registered: {other:?}"),
+        }
+
+        // A brush painting with it reports the same error, and the op that
+        // paints with it is not drawn.
+        let brush = peniko::Brush::Image(peniko::ImageBrush::new(rejected));
+        let paint = resources.paint(&mut names, &brush);
+        assert!(
+            matches!(paint, Err(ResourceError::OverBudget { .. })),
+            "{paint:?}"
+        );
+        assert!(drawable(paint).is_none());
+
+        // The refused image is not cached: only the first is listed.
+        assert_eq!(resources.cached(), (0, 1));
     }
 
     /// A decoded source the engine's limits admit keeps its own pixels;
