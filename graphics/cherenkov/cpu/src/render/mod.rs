@@ -114,8 +114,8 @@ pub struct RasterRenderer {
     glyph_cache: glyph::GlyphCache,
     /// Decoded colour-font bitmaps, bounded by `Budget::cpu`.
     bitmap_cache: bitmap::BitmapCache,
-    /// Swept fill and stroke geometry, one entry per retained draw that
-    /// still uses it.
+    /// Swept fill and stroke geometry offered by realizations dropped or
+    /// rebuilt this frame; empty between frames.
     geometry: geometry::GeometryCache,
     /// Bumped on every image replacement: the one change to what a
     /// current projective image read that arrives without a tree edit.
@@ -465,7 +465,10 @@ impl Renderer for RasterRenderer {
             Some(ContentOp::Replace(list)) => state
                 .layers
                 .insert(layer, ContentData::new(list))
-                .map(cherenkov::lowering::Content::into_picture),
+                .map(|previous| {
+                    lower::harvest(&mut self.geometry, &previous);
+                    previous.into_picture()
+                }),
             Some(ContentOp::Update(updates)) => {
                 state
                     .layers
@@ -477,7 +480,10 @@ impl Renderer for RasterRenderer {
             Some(ContentOp::Picture(picture)) => state
                 .layers
                 .insert(layer, ContentData::picture(picture))
-                .map(cherenkov::lowering::Content::into_picture),
+                .map(|previous| {
+                    lower::harvest(&mut self.geometry, &previous);
+                    previous.into_picture()
+                }),
             None => state
                 .layers
                 .remove(&layer)
@@ -671,7 +677,7 @@ impl RasterRenderer {
         }
         let (used, used_groups) = self.filter_uses();
         self.evict_projective();
-        self.geometry.evict();
+        self.geometry.finish_frame();
         self.filters.finish_frame(&used, &used_groups);
         self.update_filter_wakes();
         // Every visible surface whose filter or backdrop group still

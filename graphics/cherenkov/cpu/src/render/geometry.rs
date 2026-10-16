@@ -1,22 +1,24 @@
-//! Winding-resolved fill and stroke geometry, reused across lowerings.
+//! Winding-resolved fill and stroke geometry, carried from a realization
+//! that is about to be dropped or rebuilt to the lowering that replaces it.
 //!
-//! A path whose flattened segments overlap has to be swept
+//! A path whose flattened segments may overlap has to be swept
 //! ([`cherenkov::lowering::resolve_winding`]) before its signed area is
 //! accumulated, and the sweep is the dominant cost of lowering such a path.
 //! Its result depends only on the flattened content, which is a pure
-//! function of the shape, the stroke style and the device transform. The
-//! cache keys on exactly those, compared bit for bit, so content recorded
-//! again (or drawn twice) at the same placement reuses the swept edges. The
-//! key shares the recording's path allocation rather than holding a second
-//! copy of the flattened content.
+//! function of the shape, the stroke style and the device transform. A
+//! static scene records its content again every frame, which drops every
+//! realization; a placement whose clip changes rebuilds one. Before either
+//! happens, the swept edges of the realization are offered here under that
+//! key, and the lowering that follows takes them for a draw whose key
+//! matches bit for bit instead of sweeping again.
 //!
-//! Only swept geometry is kept: input the pre-sweep test proves disjoint
-//! costs about as much to flatten and test again as to look up.
+//! Only swept geometry is offered: input the pre-sweep test proves
+//! disjoint costs about as much to flatten and test again as to look up.
 //!
-//! The cache holds no geometry of its own: an entry lives while a retained
-//! realization still draws its edges, and [`GeometryCache::evict`] drops
-//! the rest after every frame, so its bound is one entry per live swept
-//! draw. Under critical memory pressure [`GeometryCache::clear`] empties it.
+//! The table lives for one frame: [`GeometryCache::finish_frame`] drops it
+//! after the frame's lowering, so it holds no memory between frames and its
+//! bound is the swept draws replaced or rebuilt in one frame. Under
+//! critical memory pressure [`GeometryCache::clear`] drops it at once.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -29,7 +31,7 @@ use rustc_hash::{FxHashMap, FxHasher};
 
 use super::raster::Edge;
 
-/// One cached draw: its key and its resolved edges.
+/// One offered draw: its key and its swept edges.
 struct Entry {
     shape: ShapeData,
     stroke: Option<kurbo::Stroke>,
@@ -38,70 +40,99 @@ struct Entry {
     rule: FillRule,
 }
 
-/// Swept draw geometry by content hash. A lookup compares the whole key;
-/// a different key with the same hash replaces the entry.
+/// Swept draw geometry offered for the current frame, by content hash. A
+/// lookup compares the whole key; a different key with the same hash
+/// replaces the entry.
 #[derive(Default)]
 pub struct GeometryCache {
     entries: FxHashMap<u64, Entry>,
 }
 
+/// Geometry produced for a draw: its device edges, the rule they fill under,
+/// and whether the winding sweep produced or confirmed them.
+pub struct Resolved {
+    pub edges: Arc<[Edge]>,
+    pub rule: FillRule,
+    pub swept: bool,
+}
+
 impl GeometryCache {
     /// The device edges of `shape` under `transform` — its outline stroked
-    /// by `stroke` when set — with the rule they fill under. `flatten`
-    /// produces the flattened edges and their rule on a miss; `None` means
-    /// the shape has no area. Edges proved disjoint are returned as
-    /// flattened and not kept.
+    /// by `stroke` when set. An offered entry with the same key is reused;
+    /// otherwise `flatten` produces the flattened edges and their rule, and
+    /// the winding is resolved. `None` means the shape has no area.
     pub fn resolve(
-        &mut self,
+        &self,
         shape: &ShapeData,
         stroke: Option<&kurbo::Stroke>,
         transform: Affine,
         flatten: impl FnOnce() -> Option<(Vec<Edge>, FillRule)>,
-    ) -> Option<(Arc<[Edge]>, FillRule)> {
-        let cacheable = !matches!(shape, ShapeData::Ellipse(_));
-        let transform = transform.as_coeffs().map(f64::to_bits);
-        let key = cacheable.then(|| key_hash(shape, stroke, &transform));
-        if let Some(key) = key
-            && let Some(entry) = self.entries.get_mut(&key)
-            && entry.matches(shape, stroke, &transform)
+    ) -> Option<Resolved> {
+        if !self.entries.is_empty()
+            && let Some(key) = Key::new(shape, stroke, transform)
         {
-            // Hold the newest recording's path, so an older recording's
-            // allocation is released with it.
-            entry.shape.clone_from(shape);
-            return Some((entry.edges.clone(), entry.rule));
+            let hash = key.digest();
+            if let Some(entry) = self.entries.get(&hash)
+                && entry.matches(&key)
+            {
+                return Some(Resolved {
+                    edges: entry.edges.clone(),
+                    rule: entry.rule,
+                    swept: true,
+                });
+            }
         }
         let (edges, rule) = flatten()?;
-        let (edges, rule, swept) = match cherenkov::lowering::resolve_winding(&edges, rule) {
-            Winding::Disjoint => (Arc::from(edges), rule, false),
-            Winding::Unchanged => (Arc::from(edges), rule, true),
-            Winding::Resolved(resolved) => (
-                resolved
+        Some(match cherenkov::lowering::resolve_winding(&edges, rule) {
+            Winding::Disjoint => Resolved {
+                edges: Arc::from(edges),
+                rule,
+                swept: false,
+            },
+            Winding::Unchanged => Resolved {
+                edges: Arc::from(edges),
+                rule,
+                swept: true,
+            },
+            Winding::Resolved(resolved) => Resolved {
+                edges: resolved
                     .into_iter()
                     .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
                     .collect(),
-                FillRule::NonZero,
-                true,
-            ),
-        };
-        if swept && let Some(key) = key {
+                rule: FillRule::NonZero,
+                swept: true,
+            },
+        })
+    }
+
+    /// Offers the swept edges of a draw of `shape` under `transform`
+    /// (stroked by `stroke` when set) whose realization is being dropped or
+    /// rebuilt, for the rest of the frame.
+    pub fn offer(
+        &mut self,
+        shape: &ShapeData,
+        stroke: Option<&kurbo::Stroke>,
+        transform: Affine,
+        edges: &Arc<[Edge]>,
+        rule: FillRule,
+    ) {
+        if let Some(key) = Key::new(shape, stroke, transform) {
             self.entries.insert(
-                key,
+                key.digest(),
                 Entry {
                     shape: shape.clone(),
                     stroke: stroke.cloned(),
-                    transform,
+                    transform: key.transform,
                     edges: edges.clone(),
                     rule,
                 },
             );
         }
-        Some((edges, rule))
     }
 
-    /// Drops every entry no retained realization draws any more.
-    pub fn evict(&mut self) {
-        self.entries
-            .retain(|_, entry| Arc::strong_count(&entry.edges) > 1);
+    /// Drops the frame's table: geometry not taken by now is not reused.
+    pub fn finish_frame(&mut self) {
+        self.entries = FxHashMap::default();
     }
 
     /// Drops every entry and the table itself.
@@ -109,9 +140,8 @@ impl GeometryCache {
         self.entries = FxHashMap::default();
     }
 
-    /// Heap bytes the cache holds beyond what retained realizations and
-    /// recordings already account for: the table, and any edges, path
-    /// elements or dash pattern only an entry still references.
+    /// Heap bytes the table holds, and any edges, path elements or dash
+    /// pattern only an entry still references. Zero between frames.
     pub fn bytes(&self) -> u64 {
         let table = self.entries.capacity() * (size_of::<(u64, Entry)>() + size_of::<u8>());
         let mut bytes = table as u64;
@@ -134,20 +164,41 @@ impl GeometryCache {
     }
 }
 
+/// A draw's geometry key, borrowed. Ellipses have none: kurbo keeps their
+/// affine private, so they cannot be compared bit for bit.
+struct Key<'a> {
+    shape: &'a ShapeData,
+    stroke: Option<&'a kurbo::Stroke>,
+    transform: [u64; 6],
+}
+
+impl<'a> Key<'a> {
+    fn new(
+        shape: &'a ShapeData,
+        stroke: Option<&'a kurbo::Stroke>,
+        transform: Affine,
+    ) -> Option<Self> {
+        (!matches!(shape, ShapeData::Ellipse(_))).then(|| Self {
+            shape,
+            stroke,
+            transform: transform.as_coeffs().map(f64::to_bits),
+        })
+    }
+
+    fn digest(&self) -> u64 {
+        key_hash(self.shape, self.stroke, &self.transform)
+    }
+}
+
 impl Entry {
-    fn matches(
-        &self,
-        shape: &ShapeData,
-        stroke: Option<&kurbo::Stroke>,
-        transform: &[u64; 6],
-    ) -> bool {
-        self.transform == *transform
-            && match (&self.stroke, stroke) {
+    fn matches(&self, key: &Key<'_>) -> bool {
+        self.transform == key.transform
+            && match (&self.stroke, key.stroke) {
                 (None, None) => true,
                 (Some(a), Some(b)) => stroke_words(a).eq(stroke_words(b)),
                 _ => false,
             }
-            && shape_eq(&self.shape, shape)
+            && shape_eq(&self.shape, key.shape)
     }
 }
 

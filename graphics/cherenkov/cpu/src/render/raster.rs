@@ -1510,6 +1510,7 @@ fn run(
                 rule,
                 paint,
                 clip,
+                swept: _,
             } => band.draw(acc, stack, edges, *bbox, *rule, paint, clip.as_ref()),
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
