@@ -672,20 +672,15 @@ wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a9
 wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
 wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
 
-# Split component repositories, pinned to commits on their `dev`. The five
-# that name nami directly (barcode, canvas, chart, map-gpu, math) follow their
-# `feat/nami-0.13` branch until those merge (water-rs/waterui#2633). image and
-# video-gpu follow their `feat/waterkit-0.2` branch, which moves their waterkit
-# requirements to 0.2, until those merge (water-rs/waterui#2769). The waterkit
-# family and suiteki follow their `dev` branch; `Cargo.lock` records the exact
-# commit.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "feat/nami-0.13" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "feat/nami-0.13" }
-waterui-chart = { git = "https://github.com/water-rs/chart", branch = "feat/nami-0.13" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "feat/nami-0.13" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "feat/waterkit-0.2" }
+# Split component repositories, the waterkit family and suiteki follow their
+# `dev` branch; `Cargo.lock` records the exact commit.
+waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "dev" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "dev" }
+waterui-chart = { git = "https://github.com/water-rs/chart", branch = "dev" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "dev" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "dev" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "bf663af85211d1f0bcce511b94ac435efad046a6" }
-waterui-image = { git = "https://github.com/water-rs/image", branch = "feat/waterkit-0.2" }
+waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
@@ -704,7 +699,7 @@ waterkit-video-container = { git = "https://github.com/water-rs/waterkit", branc
 waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-video-player = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterui-math = { git = "https://github.com/water-rs/math", branch = "feat/nami-0.13" }
+waterui-math = { git = "https://github.com/water-rs/math", branch = "dev" }
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki's
 # `dev` implements 0.5's (water-rs/suiteki#29). Drop once a release carries
 # it.
