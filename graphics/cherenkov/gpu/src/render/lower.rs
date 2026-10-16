@@ -503,13 +503,17 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
     if is_gradient(inst) && inst.meta[3] & 0xffff > GRADIENT_LINEAR_STOPS {
         return ShaderVariant::LongGradient;
     }
-    if inst.meta[1] == PAINT_IMAGE && (inst.meta[3] & super::image_storage::SOURCE) != 0 {
-        return ShaderVariant::Image;
-    }
     if (flags & (FLAG_HAS_CLIP | FLAG_HAS_MASK | FLAG_HAS_INNER)) != 0
         || inst.meta[1] != PAINT_SOLID
         || matches!(inst.meta[0], KIND_STROKE_OFFSET | KIND_STROKE_DIST)
     {
+        // An image paint is never solid, so every image instance reaches
+        // this branch; testing it here keeps the solid path free of it.
+        // `SOURCE` first: in that order the common path compiles to the
+        // same instructions as without the image variant.
+        if (inst.meta[3] & super::image_storage::SOURCE) != 0 && inst.meta[1] == PAINT_IMAGE {
+            return ShaderVariant::Image;
+        }
         return ShaderVariant::Full;
     }
     if inst.meta[0] == KIND_SHADOW {
