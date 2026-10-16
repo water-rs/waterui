@@ -29,26 +29,33 @@ hands to rayon (`ThreadPool::install`, and the global pool for plain `par_*`
 calls) runs on pool workers, one job per `Job::execute` a worker's
 `wait_until_cold` picks up. The leg runs with RAYON_NUM_THREADS=1, so every
 pool has one worker and the jobs run in one fixed order; a native run checks
-the backend reports one thread before every profile. Callgrind writes a call
-arc only once it has cost, and splits the cost of active calls at a dump only
-on thread 1 (the bench's main thread): a call on any other thread appears once,
-in the first dump after it returns, with its whole inclusive cost. So
+the backend reports one thread before every profile. At every dump Callgrind
+writes, on every thread, the Ir each call has run since the previous dump,
+returned or not, so a call's cost is spread over the dumps from its entry to
+its return; its call count rides on the first nonzero write after the entry,
+shared with any other call from the same call site, and pairs nothing. So
 `--dump-before` on each root cuts a dump at every entry, `--dump-after` on the
 adapter's `submit` (main thread) closes every bench frame, and a root call
-belongs to the frame whose span holds its entry dump; its cost is the first
-later return of that function (calls of one root function are sequential, so
-entries and returns pair in order). This holds when a job or the render reply
-returns after `submit` already has. A root call returning with no entry seen is
-the call in flight when instrumentation switched on, allowed only before that
-function's first entry. Sample k is the k-th frame after the pause; a profile
-runs one frame more so every sampled call has returned.
+belongs to the frame whose span holds its entry dump. Calls of one root
+function run one after another, so the Ir that function accrues in the dumps
+after one entry up to its next entry is that call's, whether it returns
+before or after `submit` does; the counts written are checked against the
+entries. Ir a root accrues before its first entry belongs to a call in flight
+when instrumentation switched on and is no sample. Sample k is the k-th frame
+after the pause; a profile runs one frame more so every sampled call is
+closed by a later entry.
 
-Every Callgrind option names a function at most once. Callgrind 3.18 keeps
-function options in a prefix trie whose insertion, once another name has split
-a node on the path, adds a second node for a name already present instead of
-reusing the first, and a lookup applies only the newest: of `--dump-before=S`
-and `--dump-after=S`, only the latter takes effect, so a `--dump-before` on a
-root never fires.
+Callgrind keeps function options in a prefix trie (clo.c) whose lookup
+follows only the first child whose text prefixes a name, while insertion
+files a pattern that continues past a whole node as a new child of it without
+merging it with an existing child of the same text, and reads a `*` right
+after such a node literally. So an option can match a function by its glob
+and never reach it: of `--dump-before=S` and `--dump-after=S` only the latter
+takes effect, and of two patterns sharing a module path only the one given
+last may apply. Every option names a function at most once, CallgrindPatterns
+ports the trie, and every profile fails unless each root receives exactly its
+dump trigger and every subtracted function its run executed is keyed by
+caller chain.
 
 Per sample it reports the root's inclusive Ir; the allocator's share of it
 (the inclusive cost of every call from other code into the Rust allocator
@@ -67,7 +74,9 @@ A share counts only calls made under the root, decided by calling context:
 above it on the calling thread's stack, so each call edge into one names its
 caller chain, and a call is the root's exactly when the root is in that chain.
 A chain shorter than N reached the bottom of the thread's stack, so a root
-missing from it is outside the root; a chain of full length without the root
+missing from it is outside the root, and a call with no chain at all was
+entered on an empty stack, before instrumentation switched on (a thread
+parked in a futex wait), outside every root; a chain of full length without the root
 is undecidable and fails the run. Neither the plain call graph nor per-thread
 dumps can decide it: the graph merges every caller of a shared function such
 as `RawVecInner::deallocate`, and `--separate-threads=yes` does not isolate
@@ -159,15 +168,16 @@ ALLOCATOR = ([(f'*___rust_{name}', kind) for name, kind in
 MEMORY = [pattern for name in ('memcpy', 'memmove', 'mempcpy', 'memset', 'memcmp', 'bcmp')
           for pattern in (name, f'{name}_*', f'__{name}', f'__{name}_*')]
 # The CPU leg's cross-thread synchronization, by module path: rayon handing a
-# job to a pool and waiting on its latch, a worker setting that latch, waking
-# and sleeping workers; the channels' wakers, blocking contexts and backoff
-# spins; std's condvar, futex mutex slow paths and channel backoff; the libc
-# entry std's futex calls go through.
-SYNC = ['*10rayon_core8registry*8Registry6inject*', '*10rayon_core5latch*14wait_and_reset*',
-        '*10rayon_core5latch*5Latch3set*', '*10rayon_core5sleep*5Sleep*',
+# job to a pool, its latches (waiting on one, setting it) and its sleeping and
+# waking workers; the channels' wakers, blocking contexts and backoff spins;
+# std's condvar and futex mutex and its channel's wakers, contexts and
+# backoff; the libc entries std's futex calls and rayon's yields go through.
+# One pattern per module where Callgrind's pattern trie would otherwise drop
+# one of two (CallgrindPatterns).
+SYNC = ['*10rayon_core8registry*8Registry6inject*', '*10rayon_core5latch*', '*10rayon_core5sleep*5Sleep*',
         '*17crossbeam_channel5waker*', '*17crossbeam_channel7context*', '*15crossbeam_utils7backoff*',
-        '*3std4sync4mpmc7context*', '*3std4sync4mpmc5utils*7Backoff*', '*3std4sync6poison7condvar*7Condvar*',
-        '*5mutex5futex*5Mutex14lock_contended*', '*5mutex5futex*5Mutex4wake*', '*16parking_lot_core8spinwait*',
+        '*3std4sync4mpmc7context*', '*3std4sync4mpmc5waker*', '*3std4sync4mpmc5utils*7Backoff*',
+        '*3std4sync6poison7condvar*7Condvar*', '*5mutex5futex*5Mutex*', '*16parking_lot_core8spinwait*',
         'syscall', 'sched_yield']
 KINDS = ('allocs', 'reallocs', 'deallocs')
 # Caller-chain depth of every allocator and memory-primitive function: deep
@@ -322,6 +332,167 @@ def function_options(roots, sync=(), before=(), marker=None):
     names = [name for _, name in named]
     assert len(set(names)) == len(names), ('Callgrind applies only the last option naming a function', names)
     return [f'{option}={name}' for option, name in named]
+
+
+# Callgrind's function-pattern trie (callgrind/clo.c), whose child lists are
+# hashed by first character modulo this degree.
+TRIE_DEGREE = 30
+
+
+class TrieNode:
+    """One `config_node` of Callgrind's function-pattern trie."""
+
+    def __init__(self, name):
+        self.name = name; self.flags = None; self.next = None; self.star = None; self.char = None
+        self.sub = [None] * TRIE_DEGREE
+
+
+def literal_end(name, start):
+    end = start
+    while end < len(name) and name[end] not in '*?':
+        end += 1
+    return end
+
+
+def bucket(name):
+    return ord(name[0]) % TRIE_DEGREE if name else 0
+
+
+class CallgrindPatterns:
+    """The function options of a Callgrind command line, matched the way Callgrind matches them.
+
+    A port of clo.c's `get_fnc2` (insertion, in command-line order) and
+    `update_fn_config2` (lookup). Its matcher descends into only the first
+    child whose text prefixes the name, while insertion files a pattern that
+    continues past a whole node as a new first child of that node without
+    merging it with a child of the same text, and reads a `*` right after such
+    a node as a literal character. So an option can match a name by its glob
+    and still never reach that function; `options_reaching` says which do.
+    """
+
+    def __init__(self, options):
+        self.root = TrieNode('')
+        for option in options:
+            flag, _, pattern = option.partition('=')
+            if flag.startswith('--separate-callers') or flag in ('--dump-before', '--dump-after'):
+                self.insert(self.root, pattern).add(flag)
+
+    def insert(self, node, name):
+        if not name:
+            if node.flags is None:
+                node.flags = set()
+            return node.flags
+        if name[0] in '*?':
+            if name[0] == '*':
+                while name[1:2] == '*':
+                    name = name[1:]
+                if node.star is None:
+                    node.star = TrieNode(name[0])
+                return self.insert(node.star, name[1:])
+            if node.char is None:
+                node.char = TrieNode(name[0])
+            return self.insert(node.char, name[1:])
+        previous = None; child = node.sub[bucket(name)]; common = 0
+        while child is not None:
+            common = len(os.path.commonprefix([name, child.name]))
+            if common:
+                break
+            previous = child; child = child.next
+        if child is None:
+            end = literal_end(name, 1)
+            return self.add_child(node, name, end)
+        if common < len(child.name):
+            # Split the child at the common text; clo.c leaves the moved
+            # child's sibling link as it was, so its old siblings stay
+            # reachable behind it.
+            split = TrieNode(child.name[:common])
+            if previous is None:
+                node.sub[bucket(child.name)] = split
+            else:
+                previous.next = split
+            split.next = child.next
+            split.sub[bucket(child.name[common:])] = child
+            child.name = child.name[common:]
+            name = name[common:]
+            return self.add_child(split, name, literal_end(name, 0))
+        name = name[len(child.name):]
+        if not name:
+            if child.flags is None:
+                child.flags = set()
+            return child.flags
+        return self.add_child(child, name, literal_end(name, 1))
+
+    def add_child(self, node, name, end):
+        child = TrieNode(name[:end]); child.next = node.sub[bucket(name)]; node.sub[bucket(name)] = child
+        if end == len(name):
+            child.flags = set()
+            return child.flags
+        return self.insert(child, name[end:])
+
+    def options_reaching(self, function):
+        """The option flags Callgrind applies to `function`."""
+        flags = set()
+        self.lookup(self.root, function, flags)
+        return flags
+
+    def lookup(self, node, name, flags):
+        if not name and node.flags is not None:
+            flags.update(node.flags)
+            return
+        child = node.sub[bucket(name)]
+        while child is not None and not name.startswith(child.name):
+            child = child.next
+        if child is not None:
+            self.lookup(child, name[len(child.name):], flags)
+        if node.char is not None and name:
+            self.lookup(node.char, name[1:], flags)
+        if node.star is not None:
+            for start in range(len(name) + 1):
+                self.lookup(node.star, name[start:], flags)
+
+
+def unseparated(command, functions, sync=()):
+    """The subtracted functions among `functions` that `command` does not key by caller chain in Callgrind."""
+    patterns = CallgrindPatterns(command)
+    flag = f'--separate-callers{CALLERS}'
+    return sorted(f for f in functions if subtracted(f, sync) is not None and flag not in patterns.options_reaching(f))
+
+
+def dump_functions(out, prefix):
+    """Every function a profile's dumps name, without its caller chain."""
+    functions = set()
+    for path in out.glob(f'{prefix}.*'):
+        if path.suffix[1:].isdigit():
+            with path.open() as dump:
+                for line in dump:
+                    if line.startswith(('fn=(', 'cfn=(')) and ') ' in line:
+                        functions.add(line.split(') ', 1)[1].rstrip('\n').split("'", 1)[0])
+    return functions
+
+
+def check_roots(command, roots, prefix):
+    """Fails unless Callgrind applies to each root exactly the dump option it maps to.
+
+    A root keyed by caller chain would lose its plain name, and one its
+    trigger misses would merge two calls' dumps.
+    """
+    patterns = CallgrindPatterns(command)
+    wrong = {root: sorted(patterns.options_reaching(root)) for root, flag in roots.items()
+             if patterns.options_reaching(root) != {flag}}
+    if wrong:
+        raise RuntimeError(f'{prefix}: Callgrind would apply other options than the dump trigger to roots: {wrong}')
+
+
+def check_separated(command, out, prefix, sync=()):
+    """Fails the run when Callgrind did not key a subtracted function it ran by caller chain.
+
+    Every share relies on it: a subtracted call without a caller chain is
+    taken to have been entered on an empty call stack, outside every root.
+    """
+    missing = unseparated(command, dump_functions(out, prefix), sync)
+    if missing:
+        raise RuntimeError(f'{prefix}: Callgrind did not separate {missing} by caller chain: '
+                           'its pattern trie never reaches them from the options; reshape the patterns')
 
 
 def call_samples(out, prefix, symbol, after):
@@ -656,12 +827,14 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
                f'--callgrind-out-file={prefix}', str(binary), 'measure', '--engine', 'cherenkov',
                '--scene', str(scene_dir), '--frames', '100000', '--warmup', str(warmup),
                '--pause-at', str(pause_at), '--out', str(prefix) + '.unused-timing.json']
+    check_roots(command, {symbol: '--dump-after' for symbol in roots.values()}, prefix.name)
 
     def after_of(triggers):
         return {phase: triggered(triggers, 'after', symbol) for phase, symbol in roots.items()}
     triggers = run_callgrind(command, env, repo, out, prefix, pause_at, f'{tag} {scene}',
                              lambda triggers: sampled(after_of(triggers), phases, f'{tag} {scene}'), deadline)
     after = after_of(triggers)
+    check_separated(command, out, prefix.name)
     result = {'tag': tag, 'scene': scene, 'leg': leg.name, 'binary': str(binary),
               'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'icd': str(icd), 'icd_sha256': hashlib.sha256(icd.read_bytes()).hexdigest(),
@@ -710,9 +883,12 @@ def profile_cpu(binary, tag, scene, repo, out, pause_at, warmup, deadline=1800):
                f'--callgrind-out-file={prefix}', str(binary), 'measure', '--engine', 'cherenkov-cpu',
                '--scene', str(scene_dir), '--frames', '100000', '--warmup', str(warmup),
                '--pause-at', str(pause_at), '--out', str(prefix) + '.unused-timing.json']
+    check_roots(command, {roots.marker: '--dump-after', roots.render: '--dump-before',
+                          **{job: '--dump-before' for job in roots.jobs}}, prefix.name)
     label = f'{tag} {scene}'
     triggers = run_callgrind(command, cpu_env(), repo, out, prefix, pause_at, label,
                              lambda triggers: len(triggered(triggers, 'after', roots.marker)) > CPU_SAMPLES, deadline)
+    check_separated(command, out, prefix.name, SYNC)
     samples = frame_samples(out, prefix.name, triggers, roots)
     second, third = samples[1], samples[2]
     result = {'tag': tag, 'scene': scene, 'leg': 'cpu', 'binary': str(binary),

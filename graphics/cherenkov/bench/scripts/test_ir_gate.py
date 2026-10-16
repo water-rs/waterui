@@ -24,6 +24,7 @@ RUN = '_RINvNtNtCs1_9cherenkov6engine6thread3runNtCs1_13cherenkov_cpu6RasterE'
 LATCH = '_RNvXs4_NtCs1_10rayon_core5latchNtB5_9LockLatchNtB5_5Latch3set'
 WAIT = '_RNvMs3_NtCs1_10rayon_core5latchNtB5_9LockLatch14wait_and_reset'
 ALLOC = '_RNvCs1_7___rustc12___rust_alloc'
+FUTEX = '_RNvMNtNtNtNtCs1_3std3sys4sync5mutex5futexNtB2_5Mutex'
 ROOTS = ir_gate.CpuRoots(marker=MARKER, render=RENDER, waiter=WAITER, jobs=(JOB,))
 
 
@@ -227,9 +228,53 @@ class Sampling(unittest.TestCase):
         self.assertEqual(ir_gate.subtracted(latch, ir_gate.SYNC), ('sync', None))
         self.assertIsNone(ir_gate.subtracted(JOB, ir_gate.SYNC))
         options = ir_gate.function_options([], ir_gate.SYNC, before=[RENDER, ir_gate.CPU_JOB], marker=MARKER)
-        self.assertIn(f'--separate-callers{ir_gate.CALLERS}=*10rayon_core5latch*5Latch3set*', options)
+        self.assertIn(f'--separate-callers{ir_gate.CALLERS}=*10rayon_core5latch*', options)
         self.assertIn(f'--dump-before={ir_gate.CPU_JOB}', options)
         self.assertIn(f'--dump-after={MARKER}', options)
+
+    def test_callgrind_trie_drops_patterns_a_glob_would_match(self):
+        # Callgrind follows only the first child whose text prefixes the
+        # name: the second `5latch` child, and a `*` read literally after a
+        # whole node, never reach their functions.
+        patterns = ir_gate.CallgrindPatterns(['--separate-callers9=*10rayon_core8registry*inject*',
+                                              '--separate-callers9=*10rayon_core5latch*wait_and_reset*',
+                                              '--separate-callers9=*10rayon_core5latch*Latch3set*',
+                                              '--separate-callers9=*5mutex5futex*lock_contended*',
+                                              '--separate-callers9=*5mutex5futex*wake*'])
+        self.assertEqual(patterns.options_reaching(LATCH), {'--separate-callers9'})
+        self.assertEqual(patterns.options_reaching(WAIT), set())
+        self.assertEqual(patterns.options_reaching(f'{FUTEX}14lock_contended'), {'--separate-callers9'})
+        self.assertEqual(patterns.options_reaching(f'{FUTEX}4wake'), set())
+
+    def test_the_legs_options_reach_what_they_name(self):
+        functions = [ALLOC, '_RNvCs1_7___rustc19___rust_alloc_zeroed', '_RNvCs1_7___rustc14___rust_realloc',
+                     '_RNvCs1_7___rustc14___rust_dealloc', '_RNvCs1_7___rustc11___rdl_alloc', 'malloc', 'realloc',
+                     'free', 'posix_memalign', 'memcpy', '__memcpy_avx_unaligned_erms', '__memset_avx2_unaligned_erms',
+                     'bcmp', '__memcmp_evex_movbe', LATCH, WAIT, f'{FUTEX}14lock_contended', f'{FUTEX}4wake',
+                     '_RNvMs4_NtCs1_10rayon_core8registryNtB5_8Registry6inject',
+                     '_RNvMNtCs1_10rayon_core5sleepNtB2_5Sleep16wake_any_threads',
+                     '_RNvMs0_NtCs1_17crossbeam_channel5wakerNtB5_9SyncWaker6notify',
+                     '_RNvMNtNtNtCs1_3std4sync4mpmc7contextNtB2_7Context10wait_until',
+                     '_RNvMs0_NtNtNtCs1_3std4sync4mpmc5wakerNtB5_9SyncWaker6notify',
+                     '_RINvMNtNtNtCs1_3std4sync6poison7condvarNtB3_7Condvar4waitbECs1_10rayon_core',
+                     'syscall', 'sched_yield']
+        command = ir_gate.function_options([], ir_gate.SYNC, before=[RENDER, ir_gate.CPU_JOB], marker=MARKER)
+        self.assertEqual(ir_gate.unseparated(command, functions, ir_gate.SYNC), [])
+        ir_gate.check_roots(command, {RENDER: '--dump-before', JOB: '--dump-before', MARKER: '--dump-after'}, 'cpu')
+        gpu = ir_gate.function_options([ROOT, '_RNvCs1_5bench6encode'])
+        self.assertEqual(ir_gate.unseparated(gpu, functions), [])
+        ir_gate.check_roots(gpu, {ROOT: '--dump-after'}, 'gpu')
+        with self.assertRaisesRegex(RuntimeError, 'other options'):
+            ir_gate.check_roots(command, {WAIT: '--dump-before'}, 'cpu')
+
+    def test_a_run_with_an_unseparated_function_fails(self):
+        command = ['--separate-callers9=*5mutex5futex*lock_contended*', '--separate-callers9=*5mutex5futex*wake*']
+        with tempfile.TemporaryDirectory() as root:
+            directory = pathlib.Path(root)
+            write_dump(directory, 1, ('after', MARKER), [(RENDER, f'{FUTEX}4wake', 1, 3),
+                                                         (RENDER, chain(f'{FUTEX}14lock_contended', RENDER), 1, 9)])
+            with self.assertRaisesRegex(RuntimeError, '4wake'):
+                ir_gate.check_separated(command, directory, 'cpu', ir_gate.SYNC)
 
     def test_one_table_classifies_and_separates(self):
         cases = {'_RNvCs1_7___rustc12___rust_alloc': ('alloc', 'allocs'),
