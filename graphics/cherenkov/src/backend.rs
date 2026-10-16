@@ -161,8 +161,9 @@ pub trait Renderer: 'static {
     /// queued.
     fn image_limits(&self) -> crate::ImageLimits;
 
-    /// Registers an image. A rejection fails every later render that
-    /// draws the image with [`RenderError::Rejected`].
+    /// Registers an image. A rejection leaves every surface whose content
+    /// draws the image out of later frames, reported as
+    /// [`RenderError::Rejected`].
     ///
     /// # Errors
     /// [`ResourceError`] when the upload cannot be used.
@@ -177,8 +178,9 @@ pub trait Renderer: 'static {
     ///
     /// # Errors
     /// [`ResourceError`] when the upload cannot be used; the image keeps
-    /// its previous pixels, and renders that draw it fail with
-    /// [`RenderError::Rejected`] until a replacement succeeds.
+    /// its previous pixels, and the surfaces that draw it are left out of
+    /// the frame, reported as [`RenderError::Rejected`], until a
+    /// replacement succeeds.
     fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError>;
 
     /// Whether any layer content on `surface`, with its slot updates

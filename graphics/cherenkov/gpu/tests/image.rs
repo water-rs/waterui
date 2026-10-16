@@ -385,8 +385,9 @@ split_test! {
 /// Registered images stay resident, so they count against the GPU
 /// budget beside everything else resident: an image the per-image limit
 /// admits but the rest of the budget cannot hold is rejected, and the
-/// renders that draw it fail naming it instead of allocating past the
-/// budget. Once another image is released, re-registering it succeeds.
+/// renders that draw it leave its surface out, naming the image, instead
+/// of allocating past the budget. Once another image is released,
+/// re-registering it succeeds.
 fn registered_images_count_against_the_gpu_budget() -> Result<(), Box<dyn std::error::Error>> {
     let budget = cherenkov::Bytes::mib(16);
     let engine = match wait!(Engine::<Gpu>::new(GpuConfig {
@@ -424,11 +425,16 @@ fn registered_images_count_against_the_gpu_budget() -> Result<(), Box<dyn std::e
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     draw(&second);
     match wait!(engine.render(cherenkov::FrameTime::now())) {
-        Err(cherenkov::RenderError::Rejected { resource, reason }) => {
-            assert_eq!(resource, cherenkov::ResourceId::Image(second.id()));
+        Err(cherenkov::RenderError::Rejected { surfaces, .. }) => {
+            let [rejection] = surfaces.as_slice() else {
+                panic!("only the surface drawing the image is left out: {surfaces:?}");
+            };
+            assert_eq!(rejection.surface, surface.id());
+            assert_eq!(rejection.resource, cherenkov::ResourceId::Image(second.id()));
             assert!(
-                matches!(*reason, cherenkov::ResourceError::Image(_)),
-                "the budget rejection names the image: {reason}"
+                matches!(*rejection.reason, cherenkov::ResourceError::Image(_)),
+                "the budget rejection names the image: {}",
+                rejection.reason
             );
         }
         other => panic!("an image past the GPU budget registered: {other:?}"),

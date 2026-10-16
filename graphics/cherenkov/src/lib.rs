@@ -76,7 +76,7 @@ pub use crate::display_list::{
 };
 pub use crate::engine::Engine;
 pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
-pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
+pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError, SurfaceRejection};
 pub use crate::frame::{
     DEFAULT_REFRESH, FrameId, FrameStats, FrameTime, FrameTiming, Next, Offscreen, OffscreenFormat,
     PassTiming, Phases, Readback,
