@@ -1469,6 +1469,14 @@ crate::engine::cfg_async_fn! {
                 panic!("hydrolysis surface acquisition failed validation")
             }
         };
+        if P::SAMPLES_TOP_EDGE {
+            let (width, _) = runtime.platform.content_size();
+            let width = f64::from(width) / runtime.platform.scale_factor();
+            let color = runtime
+                .renderer
+                .top_edge_color(width, crate::renderer::working_color(clear_color));
+            runtime.platform.set_top_edge_color(color);
+        }
         let acquire_duration = rendered.acquire;
         let render_duration = rendered.render;
         let present_duration = rendered.present;

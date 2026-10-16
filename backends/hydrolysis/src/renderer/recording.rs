@@ -756,6 +756,111 @@ impl Recording {
         );
         names.finish()
     }
+
+    /// The axis-aligned rectangles this recording fills with a single
+    /// colour, in paint order and in the recording's own space, each
+    /// already cut to the rectangular clips around it and carrying the
+    /// alpha of the opacity scopes it sits in.
+    ///
+    /// A fill counts only when what reaches the target is exactly that
+    /// colour over that rectangle: a solid paint, an axis-aligned
+    /// transform, a plain rectangle, and every enclosing scope a normal
+    /// blend under an axis-aligned rectangular clip. Everything else —
+    /// gradients, images, glyphs, strokes, shadows, pictures, rounded or
+    /// rotated shapes, and any fill inside a scope that fails the test —
+    /// is left out: the summary names the flat colour fields a recording
+    /// lays down, which is what a host matching its own chrome to the
+    /// content's edge needs ([`SolidRect`]).
+    pub(crate) fn solid_rects(&self) -> Box<[SolidRect]> {
+        /// An open scope: the clip it narrows to and its opacity, or
+        /// `None` when nothing inside it can be summarised.
+        type Scope = Option<(Rect, f32)>;
+        let mut scopes: Vec<Scope> = Vec::new();
+        let mut rects = Vec::new();
+        for op in &self.ops {
+            let (transform, color, shape) = match op {
+                Op::Fill {
+                    transform,
+                    brush: peniko::Brush::Solid(color),
+                    shape,
+                    ..
+                } => (transform, working_color(*color), shape),
+                Op::FillPaint {
+                    transform,
+                    paint: Paint::Solid(color),
+                    shape,
+                } => (transform, *color, shape),
+                Op::PushGroup {
+                    blend,
+                    opacity,
+                    transform,
+                    clip,
+                    ..
+                } => {
+                    let parent = scopes.last().copied().unwrap_or(Some((UNBOUNDED, 1.0)));
+                    let summarisable = *blend == BlendMode::default()
+                        && axis_aligned(*transform)
+                        && matches!(clip, ShapeData::Rect(_));
+                    scopes.push(match (parent, clip) {
+                        (Some((bounds, alpha)), ShapeData::Rect(clip)) if summarisable => Some((
+                            bounds.intersect(transform.transform_rect_bbox(*clip)),
+                            alpha * opacity,
+                        )),
+                        _ => None,
+                    });
+                    continue;
+                }
+                Op::PopLayer => {
+                    scopes.pop();
+                    continue;
+                }
+                _ => continue,
+            };
+            let ShapeData::Rect(rect) = shape else {
+                continue;
+            };
+            let Some((bounds, alpha)) = scopes.last().copied().unwrap_or(Some((UNBOUNDED, 1.0)))
+            else {
+                continue;
+            };
+            if !axis_aligned(*transform) {
+                continue;
+            }
+            let [r, g, b, a] = color.components;
+            rects.push(SolidRect {
+                rect: bounds.intersect(transform.transform_rect_bbox(*rect)),
+                color: WorkingColor::new([r, g, b, a * alpha]),
+            });
+        }
+        rects.into_boxed_slice()
+    }
+}
+
+/// A rectangle a recording fills with one colour: its bounds in the space
+/// the recording was made in, and the colour that reaches the target there,
+/// straight alpha folded with every enclosing opacity scope.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SolidRect {
+    /// The filled area, cut to the clips around the fill.
+    pub rect: Rect,
+    /// The colour painted over it.
+    pub color: WorkingColor,
+}
+
+/// The bounds of a fill no clip narrows.
+const UNBOUNDED: Rect = Rect::new(
+    f64::NEG_INFINITY,
+    f64::NEG_INFINITY,
+    f64::INFINITY,
+    f64::INFINITY,
+);
+
+/// Whether `transform` keeps an axis-aligned rectangle axis-aligned and
+/// unflipped — scale and translation only — so its bounding box is the
+/// exact image of the rectangle.
+pub fn axis_aligned(transform: Affine) -> bool {
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    b == 0.0 && c == 0.0 && a > 0.0 && d > 0.0
 }
 
 #[expect(

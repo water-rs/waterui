@@ -40,6 +40,7 @@ pub mod recording;
 mod render;
 
 mod signals;
+mod top_edge;
 #[cfg(test)]
 pub mod tests;
 mod tree;
