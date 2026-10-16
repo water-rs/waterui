@@ -248,6 +248,7 @@ pub(crate) const ANDROID_MAX_PAGE_SIZE_LINK_ARG: &str = "-Clink-arg=-Wl,-z,max-p
 
 /// Represents an Android platform for a specific architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum AndroidAbi {
     /// ARM64 (arm64-v8a) - modern Android devices
     Arm64V8a,

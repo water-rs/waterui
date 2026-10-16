@@ -21,6 +21,7 @@ use crate::{
 /// build cache; a local runtime checkout is discovered at
 /// `waterui_path/backends/apple`, never declared.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AppleBackend {
     /// Path to the generated Apple project below the managed backends root.
     pub project_path: PathBuf,

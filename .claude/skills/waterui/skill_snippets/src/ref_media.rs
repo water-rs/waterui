@@ -22,6 +22,7 @@ pub fn media_block_01() {
                 // inherent on Photo — attach it BEFORE filters,
                 PhotoEvent::Loaded => (), // which wrap the view in a Filtered<..> type
                 PhotoEvent::Error(_msg) => (),
+                _ => (), // the event enum is #[non_exhaustive]
             })
             .blur(radius.clone())
             .saturation(sat.clone())
@@ -156,6 +157,7 @@ pub fn media_block_05() -> impl View {
             WebViewEvent::Loaded => (),
             WebViewEvent::Redirect { from: _, to: _ } => (),
             WebViewEvent::Error(_) => (),
+            _ => (), // the event enum is #[non_exhaustive]
         })
 }
 

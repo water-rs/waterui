@@ -108,6 +108,7 @@ fn handle_webview_event(
         WebViewEvent::Error(err) => {
             status.set(Str::from(format!("Error: {err}")));
         }
+        _ => {}
     }
 }
 

@@ -20,6 +20,10 @@ const TARGET_DASHED: &str = "aarch64-pc-windows-msvc";
 /// This is required by native Rust dependencies that ship `.S` sources
 /// (for example `aws-lc-sys` and `rav1e`) when building on `aarch64-pc-windows-msvc`.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct WindowsArm64LlvmToolchain;
 
 impl WindowsArm64LlvmToolchain {
@@ -89,6 +93,7 @@ impl Toolchain for WindowsArm64LlvmToolchain {
 /// Installation plan for Windows ARM64 LLVM tooling — the strategy `check`
 /// selected for this host.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum WindowsArm64LlvmInstallation {
     /// `winget install LLVM.LLVM`.
     Winget,
@@ -100,6 +105,7 @@ pub enum WindowsArm64LlvmInstallation {
 
 /// Errors that can occur when installing Windows ARM64 LLVM tooling.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallWindowsArm64Llvm {
     /// winget is required for automatic installation.
     #[error(

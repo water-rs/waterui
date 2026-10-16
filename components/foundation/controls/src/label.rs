@@ -51,6 +51,10 @@ use waterui_text::{IntoText, Text, font::Font, styled::StyledStr};
 
 /// Position of the icon relative to the text.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: an icon sits before or after its text"
+)]
 pub enum IconPosition {
     /// Icon appears before the text (left in LTR).
     #[default]
@@ -83,6 +87,7 @@ nami::impl_constant!(IconPosition);
 /// # }
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LabelDisplayMode {
     /// Use the label's own preferred presentation.
     #[default]

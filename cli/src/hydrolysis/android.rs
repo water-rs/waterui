@@ -56,6 +56,7 @@ use crate::{
 /// at scaffold time, never a substitution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum HydrolysisAndroidPainter {
     /// The `SurfaceView`-backed GPU band. Its own minimum is API 26; the
     /// generated app uses the maximum of that and the framework floor.

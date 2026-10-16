@@ -729,11 +729,11 @@ impl GestureDetector for TapDetector {
                 }
 
                 self.streak = 0;
-                GestureDetection::recognized(GesturePayload::Tap(TapEvent {
-                    location: gesture_point(point),
-                    count: self.required_count,
+                GestureDetection::recognized(GesturePayload::Tap(TapEvent::new(
+                    gesture_point(point),
+                    self.required_count,
                     button,
-                }))
+                )))
             }
             GestureInput::PointerCancel { .. } => {
                 self.pressed = None;
@@ -806,11 +806,11 @@ impl GestureDetector for LongPressDetector {
                 }
                 self.fired = true;
                 let duration_ms = self.duration.as_secs_f32() * 1_000.0;
-                let payload = GesturePayload::LongPress(LongPressEvent {
-                    location: gesture_point(point),
-                    duration: duration_ms,
+                let payload = GesturePayload::LongPress(LongPressEvent::new(
+                    gesture_point(point),
+                    duration_ms,
                     button,
-                });
+                ));
                 self.reset();
                 GestureDetection::recognized(payload)
             }
@@ -831,11 +831,11 @@ impl GestureDetector for LongPressDetector {
                 }
                 self.fired = true;
                 let duration_ms = self.duration.as_secs_f32() * 1_000.0;
-                GestureDetection::recognized(GesturePayload::LongPress(LongPressEvent {
-                    location: gesture_point(started_point),
-                    duration: duration_ms,
+                GestureDetection::recognized(GesturePayload::LongPress(LongPressEvent::new(
+                    gesture_point(started_point),
+                    duration_ms,
                     button,
-                }))
+                )))
             }
             _ => GestureDetection::default(),
         }
@@ -884,13 +884,13 @@ impl DragDetector {
         translation: GesturePoint,
         velocity: GesturePoint,
     ) -> GesturePayload {
-        GesturePayload::Drag(DragEvent {
+        GesturePayload::Drag(DragEvent::new(
             phase,
-            location: gesture_point(point),
+            gesture_point(point),
             translation,
             velocity,
             button,
-        })
+        ))
     }
 
     fn velocity(
@@ -1048,12 +1048,9 @@ impl GestureDetector for MagnificationDetector {
                 self.scale = self.initial_scale;
                 self.active = true;
                 self.last_at = Some(at);
-                GestureDetection::recognized(GesturePayload::Magnification(MagnificationEvent {
-                    phase: mapped_phase,
-                    center: gesture_point(center),
-                    scale: self.scale,
-                    velocity: 0.0,
-                }))
+                GestureDetection::recognized(GesturePayload::Magnification(
+                    MagnificationEvent::new(mapped_phase, gesture_point(center), self.scale, 0.0),
+                ))
             }
             TouchPhase::Moved => {
                 if !self.active {
@@ -1067,21 +1064,18 @@ impl GestureDetector for MagnificationDetector {
                     .max(f32::EPSILON);
                 self.last_at = Some(at);
                 self.scale = (self.scale * (1.0 + delta)).max(0.01);
-                GestureDetection::recognized(GesturePayload::Magnification(MagnificationEvent {
-                    phase: mapped_phase,
-                    center: gesture_point(center),
-                    scale: self.scale,
-                    velocity: delta / dt,
-                }))
+                GestureDetection::recognized(GesturePayload::Magnification(
+                    MagnificationEvent::new(
+                        mapped_phase,
+                        gesture_point(center),
+                        self.scale,
+                        delta / dt,
+                    ),
+                ))
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 let payload = GestureDetection::recognized(GesturePayload::Magnification(
-                    MagnificationEvent {
-                        phase: mapped_phase,
-                        center: gesture_point(center),
-                        scale: self.scale,
-                        velocity: 0.0,
-                    },
+                    MagnificationEvent::new(mapped_phase, gesture_point(center), self.scale, 0.0),
                 ));
                 self.reset();
                 payload
@@ -1129,12 +1123,12 @@ impl GestureDetector for RotationDetector {
                 self.active = true;
                 self.angle = 0.0;
                 self.last_at = Some(at);
-                GestureDetection::recognized(GesturePayload::Rotation(RotationEvent {
-                    phase: mapped_phase,
-                    center: gesture_point(center),
-                    angle: self.angle,
-                    velocity: 0.0,
-                }))
+                GestureDetection::recognized(GesturePayload::Rotation(RotationEvent::new(
+                    mapped_phase,
+                    gesture_point(center),
+                    self.angle,
+                    0.0,
+                )))
             }
             TouchPhase::Moved => {
                 if !self.active {
@@ -1147,25 +1141,21 @@ impl GestureDetector for RotationDetector {
                     .max(f32::EPSILON);
                 self.last_at = Some(at);
                 self.angle += delta;
-                GestureDetection::recognized(GesturePayload::Rotation(RotationEvent {
-                    phase: mapped_phase,
-                    center: gesture_point(center),
-                    angle: self.angle,
-                    velocity: delta / dt,
-                }))
+                GestureDetection::recognized(GesturePayload::Rotation(RotationEvent::new(
+                    mapped_phase,
+                    gesture_point(center),
+                    self.angle,
+                    delta / dt,
+                )))
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 if !self.active {
                     return GestureDetection::default();
                 }
                 self.angle += delta;
-                let detection =
-                    GestureDetection::recognized(GesturePayload::Rotation(RotationEvent {
-                        phase: mapped_phase,
-                        center: gesture_point(center),
-                        angle: self.angle,
-                        velocity: 0.0,
-                    }));
+                let detection = GestureDetection::recognized(GesturePayload::Rotation(
+                    RotationEvent::new(mapped_phase, gesture_point(center), self.angle, 0.0),
+                ));
                 self.reset();
                 detection
             }

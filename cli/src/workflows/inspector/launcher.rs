@@ -32,6 +32,7 @@ struct InspectorRequirements {
 
 /// Target platform for launching Inspector app.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum InspectorPlatform {
     /// iOS Simulator.
     IosSimulator,
@@ -43,11 +44,21 @@ pub enum InspectorPlatform {
 
 /// Launch options for Inspector app.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct InspectorLaunchOptions {
     /// Runtime app endpoint address (`host:port`).
     pub target_addr: String,
     /// One-time token used by runtime endpoint and inspector app.
     pub token: String,
+}
+
+impl InspectorLaunchOptions {
+    /// Options pointing the launched app at the inspector on `target_addr`,
+    /// authenticating with `token`.
+    #[must_use]
+    pub const fn new(target_addr: String, token: String) -> Self {
+        Self { target_addr, token }
+    }
 }
 
 /// Inspector session state.

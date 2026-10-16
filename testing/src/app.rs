@@ -31,6 +31,10 @@ use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 /// point. A `UiBuilder<NoStyle>` mounts only the semantic runtime — geometry,
 /// pointer and capture belong to the styled builder.
 #[derive(Clone, Copy, Debug, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less builder state used by name"
+)]
 pub struct NoStyle;
 
 /// The style state of a [`UiBuilder`] that carries a `hydrolysis` [`Style`].
@@ -101,6 +105,7 @@ fn frame_points_as_u32(points: f32) -> u32 {
 
 /// Which Hydrolysis headless runtime backs a session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RuntimeFlavor {
     /// Software adapters permitted (the default for tests). Fonts resolve the
     /// application's way on every flavor — the system collection plus the
@@ -601,6 +606,7 @@ impl<S: Style> UiBuilder<Styled<S>> {
 
 /// Options controlling synthetic drag gestures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DragOptions {
     /// Number of intermediate pointer-move samples (at least 1).
     pub steps: u16,
@@ -624,6 +630,29 @@ impl Default for DragOptions {
             frame_per_step: false,
             pointer: PointerKind::Mouse,
         }
+    }
+}
+
+impl DragOptions {
+    /// Replaces the number of intermediate pointer-move samples.
+    #[must_use]
+    pub const fn with_steps(mut self, steps: u16) -> Self {
+        self.steps = steps;
+        self
+    }
+
+    /// Sets whether one virtual frame is pumped between samples.
+    #[must_use]
+    pub const fn with_frame_per_step(mut self, frame_per_step: bool) -> Self {
+        self.frame_per_step = frame_per_step;
+        self
+    }
+
+    /// Replaces the pointer kind the drag dispatches.
+    #[must_use]
+    pub const fn with_pointer(mut self, pointer: PointerKind) -> Self {
+        self.pointer = pointer;
+        self
     }
 }
 

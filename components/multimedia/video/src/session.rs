@@ -13,6 +13,7 @@ use crate::{
 
 /// High-level phase shared by views, controls, and platform media sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum PlaybackPhase {
     /// No source has begun preparation.
     #[default]
@@ -35,6 +36,7 @@ pub enum PlaybackPhase {
 
 /// Playlist repetition policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum RepeatMode {
     /// Stop at the end of the playlist.
     #[default]
@@ -101,6 +103,7 @@ impl Playlist {
 
 /// Typed failures returned by player-controller commands.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum PlaybackError {
     /// The requested media item is not present in the active playlist.
     #[error("media item {0:?} is not present in the active playlist")]

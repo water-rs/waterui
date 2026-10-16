@@ -23,6 +23,7 @@ use git_tree::FrameworkTree;
 /// A framework distribution channel, independent of the Rust toolchain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum FrameworkChannel {
     /// The integration branch, resolved to an exact compilation-checked
     /// commit; the Apple backend's `dev` HEAD resolves the same way.
@@ -177,6 +178,7 @@ impl fmt::Display for ResolvedFramework {
 /// registry release, so the manifest records the pin — git URL, commit and
 /// declared version — by name instead of emitting `scaffold` entries for it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ExperimentalPackage {
     /// The repository the framework pins the package to.
     pub git: String,

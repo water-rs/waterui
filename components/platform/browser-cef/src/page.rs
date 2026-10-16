@@ -61,6 +61,7 @@ const EVENTFLAG_COMMAND_DOWN: u32 = 1 << 7;
     clippy::struct_excessive_bools,
     reason = "CEF models keyboard and pointer modifier flags independently"
 )]
+#[non_exhaustive]
 pub struct CefInputModifiers {
     /// Shift key.
     pub shift: bool,
@@ -108,6 +109,7 @@ impl CefInputModifiers {
 
 /// Pointer buttons represented by CEF's OSR input ABI.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CefPointerButton {
     /// Primary button.
     Primary,
@@ -129,6 +131,7 @@ impl CefPointerButton {
 
 /// Native keyboard metadata sent to CEF.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CefKeyInput {
     /// Platform hardware keycode, or zero when unavailable.
     pub native_keycode: u32,
@@ -140,6 +143,10 @@ pub struct CefKeyInput {
 
 /// A half-open UTF-16 range used by CEF text editing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a half-open range: start and end are the whole value"
+)]
 pub struct CefTextRange {
     /// Inclusive UTF-16 start offset.
     pub start: u32,
@@ -186,6 +193,10 @@ pub trait AcceleratedFrameSink: 'static {
 
 /// CEF popup widget bounds in view coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a rectangle: origin and size are the whole value"
+)]
 pub struct CefPopupRect {
     /// Horizontal origin.
     pub x: i32,

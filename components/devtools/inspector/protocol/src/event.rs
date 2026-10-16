@@ -10,6 +10,10 @@ use crate::channel::Channel;
 
 /// One event from the target application.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum InspectorEvent {
     /// A rendered (or deliberately skipped) frame.
     Frame(FrameSample),
@@ -46,6 +50,10 @@ impl InspectorEvent {
 /// A renderer that skips work still reports the frame, because "we did nothing"
 /// is the answer to most performance questions.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct FrameSample {
     /// How much of the pipeline this frame ran.
     pub kind: FrameKind,
@@ -89,6 +97,10 @@ impl FrameSample {
 
 /// How much of the render pipeline a frame ran.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum FrameKind {
     /// Nothing to show; no work was done.
     Idle,
@@ -112,6 +124,10 @@ impl FrameKind {
 
 /// Stable identifier for an accessibility node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "identifier newtype over the node's `u64`"
+)]
 pub struct NodeId(pub u64);
 
 /// An incremental accessibility-tree update.
@@ -119,6 +135,10 @@ pub struct NodeId(pub u64);
 /// Updates carry only what changed. A client that connects mid-session receives
 /// a full update first, marked by `full`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct TreeUpdate {
     /// Monotonic revision of the tree this update produces.
     pub revision: u64,
@@ -136,6 +156,10 @@ pub struct TreeUpdate {
 
 /// One node of the accessibility tree.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct TreeNode {
     /// Stable identifier.
     pub id: NodeId,
@@ -155,6 +179,10 @@ pub struct TreeNode {
 
 /// Interaction state of a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct NodeState {
     /// Whether the node accepts interaction.
     pub enabled: bool,
@@ -170,6 +198,10 @@ pub struct NodeState {
 
 /// A rectangle in window coordinates.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a rectangle: origin and size are the whole value"
+)]
 pub struct Bounds {
     /// Distance from the window's left edge.
     pub x: f32,
@@ -188,6 +220,10 @@ pub struct Bounds {
 /// Aggregation happens in the target process. Reporting every poll individually
 /// costs more than the work being measured.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct TaskWindow {
     /// Length of the aggregation window.
     pub window_ms: u32,
@@ -201,6 +237,10 @@ pub struct TaskWindow {
 
 /// Totals for one task type within an aggregation window.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct TaskAggregate {
     /// Type name of the spawned future.
     pub task_type: String,
@@ -220,6 +260,10 @@ pub struct TaskAggregate {
 
 /// One poll that overran the frame budget badly enough to be worth a backtrace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct StallSample {
     /// Type name of the spawned future.
     pub task_type: String,
@@ -243,6 +287,10 @@ pub struct StallSample {
 
 /// One `tracing` record from the target application.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct LogRecord {
     /// Severity.
     pub level: LogLevel,
@@ -260,6 +308,10 @@ pub struct LogRecord {
 
 /// Severity of a log record.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum LogLevel {
     /// Verbose tracing.
     Trace,
@@ -291,6 +343,10 @@ impl LogLevel {
 
 /// Stable identifier for a reactive-graph node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "identifier newtype over the node's `u64`"
+)]
 pub struct SignalId(pub u64);
 
 /// A reactive-graph lifecycle or notification event.
@@ -299,6 +355,10 @@ pub struct SignalId(pub u64);
 /// and reference the node by id, so a busy graph does not re-send its own
 /// source locations thousands of times per second.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum SignalEvent {
     /// A state-owning node entered the graph.
     Created(SignalNodeInfo),
@@ -332,6 +392,10 @@ pub enum SignalEvent {
 
 /// Provenance of a reactive-graph node, sent once when it is created.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct SignalNodeInfo {
     /// Stable identifier used by every later event for this node.
     pub node: SignalId,

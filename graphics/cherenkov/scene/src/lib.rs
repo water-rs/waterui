@@ -11,6 +11,11 @@
 //! their BLAKE3 hash in lowercase hex. Every scene declares the [`Feature`]s
 //! it uses so that an adapter can report a scene as unsupported instead of
 //! silently emulating it.
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 mod backdrop;
 mod builder;

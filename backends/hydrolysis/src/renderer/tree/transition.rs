@@ -340,7 +340,7 @@ impl<'a> TransitionPaint<'a> {
         owner: &'a Rc<NodeCell>,
     ) -> Self {
         Self {
-            properties: state.properties(TransitionGeometry { size, direction }),
+            properties: state.properties(TransitionGeometry::new(size, direction)),
             hit,
             runtime,
             owner,
@@ -485,13 +485,11 @@ pub fn record_blurred(
 mod tests {
     use super::*;
     use std::time::Duration;
-    use waterui_core::transition::{AnyTransition, PropertyTransition};
+    use waterui_core::transition::PropertyTransition;
 
     fn removal_spec(milliseconds: u64) -> TransitionSpec {
-        TransitionSpec {
-            transition: AnyTransition::new(PropertyTransition::opacity()),
-            animation: Animation::linear(Duration::from_millis(milliseconds)),
-        }
+        TransitionSpec::new(PropertyTransition::opacity())
+            .with_animation(Animation::linear(Duration::from_millis(milliseconds)))
     }
 
     /// A fresh clock records its creation instant: sampling it then reports

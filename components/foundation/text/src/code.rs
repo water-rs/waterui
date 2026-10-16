@@ -148,6 +148,7 @@ impl Code {
 /// environment; a hook that does not recognise [`info`](Self::info) calls
 /// [`ViewConfiguration::render`] to get the ordinary code block back.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CodeConfig {
     /// The fence's info token as written (`mermaid`, `rust`, …), if it had one.
     pub info: Option<Str>,

@@ -214,6 +214,7 @@ list_content_tuples!(impl_tuple_list_content);
 
 /// Visual layout chosen for a [`Row`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RowLayout {
     /// `label …………… value` on one line. Default for [`row`].
     Inline,

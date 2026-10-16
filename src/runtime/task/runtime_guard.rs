@@ -104,6 +104,7 @@ const fn cpu_clock_elapsed(_start: CpuClockSample) -> Duration {
 
 /// Configuration for main-thread stall detection.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct MainThreadStallProbeConfig {
     /// Emit `info` once this ratio of frame budget is reached.
     pub info_ratio: f64,
@@ -128,6 +129,7 @@ impl Default for MainThreadStallProbeConfig {
 
 /// Per-poll runtime sample captured from a local task on the main thread.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct TaskPollSample {
     /// Type name of the spawned future.
     pub task_type: &'static str,

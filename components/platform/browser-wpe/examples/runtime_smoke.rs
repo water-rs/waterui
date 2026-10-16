@@ -198,11 +198,7 @@ mod linux {
             .expect("WPE smoke readback buffer must be mapped after a successful wait")
             .to_vec();
         buffer.unmap();
-        let image = OffscreenImage {
-            width: WIDTH,
-            height: HEIGHT,
-            rgba8,
-        };
+        let image = OffscreenImage::new(WIDTH, HEIGHT, rgba8);
         image
             .save_png(output_path)
             .unwrap_or_else(|error| panic!("WPE smoke snapshot write failed: {error}"));

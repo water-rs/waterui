@@ -5,6 +5,7 @@ use core::fmt;
 
 /// Errors that can occur during asset operations.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AssetError {
     /// Asset file not found.
     NotFound {

@@ -626,6 +626,7 @@ enum PullError {
 
 /// Why a write from the page could not be applied.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum StateWriteError {
     /// The page assigned to a key that is not exposed.
     #[error("unknown WaterUI state key `{0}`")]

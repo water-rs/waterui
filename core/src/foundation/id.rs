@@ -161,6 +161,10 @@ impl<T> IdentifiableExt for T {}
 ///
 /// This allows tracking and identification of views within a UI hierarchy.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a tagged view is exactly its tag plus its content; consumers destructure it"
+)]
 pub struct TaggedView<T, V> {
     /// The tag used to identify this view
     pub tag: T,

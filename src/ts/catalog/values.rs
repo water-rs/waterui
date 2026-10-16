@@ -37,6 +37,7 @@ use waterui_ts::{FromJs, IntoJs, expected};
 /// one catalog serves both. A number is the value itself — `<Text>{count()}</Text>`
 /// is `text!("{count}")`, a formatted value rather than a key.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TextContent {
     /// A string, looked up in the translation catalog for the current locale.
     /// A key the catalog does not carry reads as the key itself, which is what
@@ -112,6 +113,7 @@ fn translate(env: &waterui_core::Environment, locale: &Locale, key: &Str) -> Tex
 /// what makes `<VStack background={theme().surface}>` the ordinary way to
 /// paint with the theme.
 #[derive(Debug, Clone, Copy, PartialEq, TsType)]
+#[non_exhaustive]
 pub struct ColorValue {
     /// Red, in linear light. Outside 0–1 for a wide-gamut colour.
     pub red: f32,
@@ -176,6 +178,7 @@ pub fn color_of(value: &Computed<ColorValue>) -> Color {
 /// `gap` without the object being rebuilt — the same thing a Rust author
 /// composes by hand when one edge of a `Computed<EdgeInsets>` moves.
 #[derive(Debug, Clone, TsType)]
+#[non_exhaustive]
 pub struct EdgeValues {
     /// The top inset.
     pub top: Option<Computed<f32>>,
@@ -221,6 +224,7 @@ impl EdgeValues {
 /// schema is written here beside the conversion. Every numeric position is a
 /// reactive input, whether it is the one number or one edge of the object.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum PaddingValue {
     /// `padding` or `padding={true}`: the framework's default inset.
     Default,
@@ -285,6 +289,7 @@ impl IntoJs for PaddingValue {
 /// The distinction is made before materializing, because a view crosses once
 /// and a colour is a value that can keep changing.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum BackgroundValue {
     /// `background={{ red: 1, green: 0, blue: 0 }}`: a colour, which may be a
     /// signal.
@@ -328,6 +333,7 @@ impl IntoJs for BackgroundValue {
 ///
 /// [`Shadow`]: crate::appearance::style::Shadow
 #[derive(Debug, Clone, PartialEq, TsType)]
+#[non_exhaustive]
 pub struct ShadowValue {
     /// The shadow's colour; black when it is left out, as `Shadow::splat` uses.
     pub color: Option<ColorValue>,
@@ -348,6 +354,7 @@ pub struct ShadowValue {
 ///
 /// [`Border`]: crate::appearance::border::Border
 #[derive(Debug, Clone, PartialEq, TsType)]
+#[non_exhaustive]
 pub struct BorderValue {
     /// The border's colour.
     pub color: ColorValue,
@@ -360,6 +367,7 @@ pub struct BorderValue {
 
 /// A shape named by a string, for the shapes that carry no parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, TsType)]
+#[non_exhaustive]
 pub enum ShapeName {
     /// The view's own rectangle.
     Rectangle,
@@ -373,6 +381,7 @@ pub enum ShapeName {
 
 /// A rectangle with a uniform corner radius.
 #[derive(Debug, Clone, Copy, PartialEq, TsType)]
+#[non_exhaustive]
 pub struct RoundedShape {
     /// The corner radius, as a fraction of the shorter side: `0.5` is fully
     /// rounded, which is what [`ShapeName::Capsule`] says directly.
@@ -388,6 +397,7 @@ pub struct RoundedShape {
 /// carry nothing, an object for the one that carries a radius — and a shape an
 /// application defines is composed on the Rust side and slotted in as a view.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum ShapeValue {
     /// `clip="Rectangle"`.
     Rectangle,
@@ -444,6 +454,10 @@ impl IntoJs for ShapeValue {
 /// a `WaterUI` view could not fetch is a typed error naming it rather than a
 /// picture that silently never appears.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "newtype over the URL it crosses as"
+)]
 pub struct UrlValue(pub Url);
 
 impl TsType for UrlValue {
@@ -467,6 +481,7 @@ impl IntoJs for UrlValue {
 
 /// Which shape a `<Progress>` takes, mirroring Rust's `ProgressStyle`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, TsType)]
+#[non_exhaustive]
 pub enum ProgressStyleValue {
     /// A bar, which is what a determinate progress uses by default.
     #[default]
@@ -479,6 +494,10 @@ pub enum ProgressStyleValue {
 
 /// Where a vertical stack's children sit on the horizontal axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, TsType)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed alignment set mirroring the Rust horizontal alignment"
+)]
 pub enum HorizontalAlign {
     /// The leading edge, which follows the layout direction.
     Leading,
@@ -501,6 +520,10 @@ impl From<HorizontalAlign> for HorizontalAlignment {
 
 /// Where a horizontal stack's children sit on the vertical axis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, TsType)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed alignment set mirroring the Rust vertical alignment"
+)]
 pub enum VerticalAlign {
     /// The top edge.
     Top,
@@ -529,6 +552,10 @@ impl From<VerticalAlign> for VerticalAlignment {
 
 /// Where a depth stack's children sit in both axes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, TsType)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed alignment set mirroring the Rust two-axis alignment"
+)]
 pub enum StackAlign {
     /// The top leading corner.
     TopLeading,
@@ -569,6 +596,10 @@ impl From<StackAlign> for Alignment {
 
 /// Which way a scroll view scrolls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, TsType)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a scroll view scrolls vertically, horizontally, or both"
+)]
 pub enum ScrollAxis {
     /// Vertically, which is what a bare `<ScrollView>` does.
     #[default]
@@ -724,6 +755,7 @@ impl<Args> IntoJs for JsAction<Args> {
 
 /// One option of a `<Picker>`: the value it selects and the text it shows.
 #[derive(Debug, Clone, PartialEq, Eq, TsType)]
+#[non_exhaustive]
 pub struct PickerOption {
     /// The value written into the picker's `value` signal when this option is
     /// chosen.

@@ -28,6 +28,7 @@ Photo::new("https://waterui.dev/logo.png")   // impl IntoComputed<Url>; Url: Fro
     .on_event(|event| match event {          // inherent on Photo — attach it BEFORE filters,
         PhotoEvent::Loaded => (),            // which wrap the view in a Filtered<..> type
         PhotoEvent::Error(_msg) => (),
+        _ => (),                             // the event enum is #[non_exhaustive]
     })
     .blur(radius.clone())
     .saturation(sat.clone())
@@ -103,6 +104,7 @@ WebView::open("https://waterui.dev")
         WebViewEvent::Loaded => (),
         WebViewEvent::Redirect { from: _, to: _ } => (),
         WebViewEvent::Error(_) => (),
+        _ => (),                                        // the event enum is #[non_exhaustive]
     })
 ```
 

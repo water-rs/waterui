@@ -126,10 +126,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         &project_path,
         platform,
         android,
-        InspectorLaunchOptions {
-            target_addr: target.to_string(),
-            token: token.clone(),
-        },
+        InspectorLaunchOptions::new(target.to_string(), token.clone()),
         Some(shell.build_progress()),
     ))
     .await?;

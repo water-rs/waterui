@@ -1036,11 +1036,11 @@ impl WebViewHandle for MacSystemWebViewHandle {
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        self.inner.shared.scripts.borrow_mut().inject(UserScript {
-            key: Str::from(key.to_owned()),
-            source: Str::from(script.to_owned()),
-            time,
-        });
+        self.inner
+            .shared
+            .scripts
+            .borrow_mut()
+            .inject(UserScript::new(key.to_owned(), script.to_owned(), time));
         self.rebuild_user_scripts();
     }
 

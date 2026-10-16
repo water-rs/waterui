@@ -91,6 +91,7 @@ impl<I: Installation> Installation for Option<I> {
 
 /// An error indicating the state of the toolchain.
 #[derive(Debug, Clone, thiserror::Error)]
+#[non_exhaustive]
 pub enum ToolchainError<Install: Installation> {
     /// The toolchain cannot be fixed automatically.
     #[error("{0}")]

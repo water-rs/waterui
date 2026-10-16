@@ -50,6 +50,7 @@ pub struct TextFieldConfig {
 
 /// Native-resolved text field payload.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ResolvedTextFieldConfig {
     /// The label displayed for the text field.
     pub label: Label,
@@ -112,6 +113,10 @@ pub enum KeyboardType {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each content type variant by variant; a new content type must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ContentType {
     /// A username or account identifier.
     Username,

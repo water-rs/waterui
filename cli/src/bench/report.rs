@@ -64,6 +64,7 @@ pub fn bytes_label(value: u64) -> String {
 
 /// CPU, memory, GPU and scene-complexity aggregates over a measurement's frames.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct BenchResourceSummary {
     /// Mean CPU utilization across sampled frames.
     pub avg_cpu_percent: f64,

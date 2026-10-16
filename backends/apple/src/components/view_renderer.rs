@@ -54,11 +54,7 @@ impl CustomViewRenderer for AppleViewRenderer {
             self.mtm,
         )
         .await?;
-        Ok(RenderResult {
-            rgba_data: pixels,
-            width,
-            height,
-        })
+        Ok(RenderResult::new(pixels, width, height))
     }
 }
 

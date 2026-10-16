@@ -32,6 +32,7 @@ use crate::tether::Tethered;
 /// single reactive object, so a palette swap arrives as one change rather than
 /// fifteen.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Theme {
     /// The light or dark appearance the application is drawn in.
     pub color_scheme: ColorScheme,
@@ -45,6 +46,7 @@ pub struct Theme {
 
 /// The locale a mounted module formats in, in the shape `useLocale()` reads.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct HostLocale {
     /// The canonical BCP-47 tag, for example `"en-US"`.
     pub identifier: String,

@@ -7378,15 +7378,13 @@ mod webview {
     fn probed_view(origins: BridgeOrigins) -> (AnyWebViewHandle, Loads) {
         let initial: Url = "https://waterui.dev".parse().expect("parses");
         let webview = waterui_apple::native_test_support::webview::controller(mtm()).open_with(
-            WebViewConfig {
-                bridge_origins: OriginPolicy::new(origins, &initial),
-                scripts: vec![UserScript {
-                    key: "waterui:test-probe".into(),
-                    source: "globalThis.__wateruiProbe = true;".into(),
-                    time: ScriptInjectionTime::DocumentStart,
-                }],
-                ..WebViewConfig::default()
-            },
+            WebViewConfig::default()
+                .with_bridge_origins(OriginPolicy::new(origins, &initial))
+                .with_scripts(vec![UserScript::new(
+                    "waterui:test-probe",
+                    "globalThis.__wateruiProbe = true;",
+                    ScriptInjectionTime::DocumentStart,
+                )]),
         );
         let handle = webview.handle().clone();
         let loads = Loads::watch(&handle);

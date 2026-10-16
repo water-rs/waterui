@@ -754,11 +754,11 @@ impl WebViewHandle for AndroidSystemWebViewHandle {
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        self.inner.shared.scripts.borrow_mut().inject(UserScript {
-            key: Str::from(key.to_string()),
-            source: Str::from(script.to_string()),
-            time,
-        });
+        self.inner
+            .shared
+            .scripts
+            .borrow_mut()
+            .inject(UserScript::new(key.to_string(), script.to_string(), time));
         self.inner.push_document_start_scripts();
     }
 

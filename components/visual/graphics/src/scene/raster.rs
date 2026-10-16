@@ -58,6 +58,7 @@ impl RgbaBitmap {
 /// Rasterisation failure: engine or surface construction, render, or
 /// readback.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RasterizeError {
     /// The engine or the offscreen target could not be created.
     Surface(SurfaceError),

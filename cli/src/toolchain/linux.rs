@@ -7,6 +7,10 @@ use crate::{
 
 /// Linux system dependencies required by `waterui` desktop/media builds.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct LinuxSystemToolchain;
 
 /// Installation plan for missing Linux system packages.
@@ -72,6 +76,7 @@ impl LinuxSystemPackagesInstallation {
 
 /// Errors that can occur during Linux package installation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallLinuxSystemPackages {
     /// Non-Linux platforms are not supported by this installer.
     #[error("Automatic Linux package installation is only supported on Linux hosts.")]
@@ -86,6 +91,7 @@ pub enum FailToInstallLinuxSystemPackages {
 
 /// Errors from Linux package-manager operations.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LinuxPackageManagerError {
     /// No supported package manager was detected.
     #[error("No supported Linux package manager found (apt-get, dnf, pacman, zypper, apk).")]
@@ -189,6 +195,10 @@ impl Toolchain for LinuxSystemToolchain {
 /// probes must pass; the repair installs the distribution's compiler
 /// bundle, which always provides `cc` and `ld` on the supported managers.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct CToolchain;
 
 impl Toolchain for CToolchain {

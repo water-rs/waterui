@@ -38,6 +38,7 @@ pub use request::{
 /// Source used to produce a preview view — an existing `#[preview]` export
 /// or an inline `WaterUI` expression. Shared by every preview backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PreviewSource<'a> {
     /// Existing `#[preview]` export symbol.
     Symbol(&'a str),

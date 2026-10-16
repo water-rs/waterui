@@ -395,6 +395,10 @@ compile_error!(
 /// sccache is optional but significantly improves build times by caching
 /// compiled artifacts across builds and projects.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct Sccache;
 
 impl Sccache {
@@ -578,6 +582,7 @@ impl Toolchain for Sccache {
 /// Installation plan for `sccache` — the strategy `check` selected for this
 /// host.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum SccacheInstallation {
     /// `brew install sccache`.
     Brew,
@@ -592,6 +597,7 @@ pub enum SccacheInstallation {
 
 /// Errors that can occur during `sccache` installation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallSccache {
     /// Homebrew not found error.
     #[error("Homebrew not found. Please install Homebrew to proceed.")]

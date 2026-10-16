@@ -269,15 +269,15 @@ impl<'a> Page<'a> {
         // Exactly what `WebViewOpen::create` hands the engine: the admission
         // rules and the scripts arrive with the view, before it can load
         // anything.
-        let webview = engine.controller.open_with(WebViewConfig {
-            bridge_origins: OriginPolicy::new(BridgeOrigins::Initial, &engine.url("/")),
-            scripts: vec![UserScript {
-                key: "waterui:test-state-seed".into(),
-                source: STATE_SEED_JS.into(),
-                time: ScriptInjectionTime::DocumentStart,
-            }],
-            ..WebViewConfig::default()
-        });
+        let webview = engine.controller.open_with(
+            WebViewConfig::default()
+                .with_bridge_origins(OriginPolicy::new(BridgeOrigins::Initial, &engine.url("/")))
+                .with_scripts(vec![UserScript::new(
+                    "waterui:test-state-seed",
+                    STATE_SEED_JS,
+                    ScriptInjectionTime::DocumentStart,
+                )]),
+        );
         let handle = webview.handle();
 
         let events = Rc::new(RefCell::new(Vec::new()));

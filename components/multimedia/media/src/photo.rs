@@ -73,6 +73,7 @@ impl core::fmt::Debug for Photo {
 
 /// Events emitted by the Photo component.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Event {
     /// The image has finished loading.
     Loaded,
@@ -140,6 +141,8 @@ impl Photo {
     /// let photo = Photo::new(url.clone()).on_event(|event: Event| match event {
     ///     Event::Loaded => tracing::debug!("Image loaded!"),
     ///     Event::Error(msg) => tracing::debug!("Error: {msg}"),
+    ///     // `Event` is `#[non_exhaustive]`: later releases may add events.
+    ///     _ => {}
     /// });
     ///
     /// // Extractor-based callback — pulls a binding via `State<T>`.

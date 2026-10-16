@@ -235,6 +235,7 @@ fn view_name<V: 'static>() -> &'static str {
 /// One entry of the ledger: the view that owes content and what it is
 /// waiting for.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PendingContent {
     /// The owing view's type name, without its path.
     pub view: &'static str,
@@ -306,6 +307,7 @@ impl fmt::Debug for OwedContent {
 /// A load a view reported failed through [`OwedContent::fail`].
 #[derive(Debug, thiserror::Error)]
 #[error("{view} ({detail}) failed to load its content")]
+#[non_exhaustive]
 pub struct ContentFailure {
     /// The owing view's type name, without its path.
     pub view: &'static str,
@@ -349,6 +351,7 @@ impl fmt::Debug for Settled {
 
 /// Why [`ContentLedger::wait`] returned without the content in place.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ContentError {
     /// The deadline passed with content still owed.
     #[error("{} still owe{} content after {deadline:?}", DisplayList(outstanding), if outstanding.len() == 1 { "s" } else { "" })]

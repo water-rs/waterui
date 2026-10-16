@@ -95,6 +95,7 @@ pub const fn encode_mount<const N: usize>(
 
 /// One mount point, recovered from an artifact.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct MountPoint {
     /// The module id: the `.tsx` path relative to the crate's manifest
     /// directory, forward-slashed, extension kept.

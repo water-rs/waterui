@@ -136,6 +136,7 @@ fn media_view(media: Media) -> AnyView {
         Media::Image(url) => AnyView::new(image_view(url)),
         Media::Video(url) => AnyView::new(video_view(url)),
         Media::LivePhoto(source) => AnyView::new(live_photo_view(source)),
+        _ => AnyView::new(text("Unsupported media").body().muted()),
     }
 }
 

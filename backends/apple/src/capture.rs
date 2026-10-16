@@ -112,11 +112,11 @@ pub async fn capture_presented(
     cocoa_ui::view::cache_display(host, &rep);
     let image = rep.CGImage().ok_or(CaptureError::NoImage)?;
     cocoa_ui::bitmap::draw_image(&context, &image, bounds);
-    Ok(RenderResult {
-        rgba_data: pixels,
-        width: pixel_width as u32,
-        height: pixel_height as u32,
-    })
+    Ok(RenderResult::new(
+        pixels,
+        pixel_width as u32,
+        pixel_height as u32,
+    ))
 }
 
 /// The `UIKit` tail of every capture: `host` is already inside its
@@ -184,9 +184,9 @@ pub async fn capture_presented(
     });
     cocoa_ui::bitmap::end_layer_flip(&context);
     drop(context);
-    Ok(RenderResult {
-        rgba_data: pixels,
-        width: pixel_width as u32,
-        height: pixel_height as u32,
-    })
+    Ok(RenderResult::new(
+        pixels,
+        pixel_width as u32,
+        pixel_height as u32,
+    ))
 }
