@@ -25,6 +25,47 @@ impl Raster {
     }
 
     /// Accumulates the signed area of the segment `p0 -> p1`.
+    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        #[cfg(any(target_arch = "aarch64", target_feature = "fma"))]
+        self.accumulate::<Fused>(x0, y0, x1, y1);
+        #[cfg(all(
+            any(target_arch = "x86", target_arch = "x86_64"),
+            not(target_feature = "fma")
+        ))]
+        if std::arch::is_x86_feature_detected!("fma") {
+            // SAFETY: the running CPU implements FMA, checked just above.
+            unsafe { self.accumulate_fma(x0, y0, x1, y1) }
+        } else {
+            self.accumulate::<Widened>(x0, y0, x1, y1);
+        }
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            target_arch = "x86",
+            target_arch = "x86_64",
+            target_feature = "fma"
+        )))]
+        self.accumulate::<Widened>(x0, y0, x1, y1);
+    }
+
+    /// [`Self::accumulate`] compiled with FMA, for a CPU that has it on a
+    /// target that does not guarantee it.
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        not(target_feature = "fma")
+    ))]
+    #[target_feature(enable = "fma")]
+    fn accumulate_fma(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        self.accumulate::<Fused>(x0, y0, x1, y1);
+    }
+
+    /// The scanline area accounting of `p0 -> p1`, evaluating row
+    /// boundaries with `E`. Inlined into each caller so an FMA caller
+    /// compiles `E`'s arithmetic with the instruction.
+    #[inline(always)]
+    #[expect(
+        clippy::inline_always,
+        reason = "the FMA caller must compile this body with the instruction"
+    )]
     #[expect(
         clippy::similar_names,
         clippy::cast_possible_wrap,
@@ -34,7 +75,7 @@ impl Raster {
         clippy::suboptimal_flops,
         reason = "a direct port of font-rs's scanline area accounting"
     )]
-    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+    fn accumulate<E: OriginEval>(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
         if (y0 - y1).abs() <= f32::EPSILON {
             return;
         }
@@ -46,7 +87,7 @@ impl Raster {
         // Every row boundary is evaluated from the segment origin:
         // repeatedly adding to an absolute x accumulates rounding error
         // over tall edges.
-        let line = OriginLine::new((x1 - x0) / (y1 - y0), x0);
+        let line = E::new((x1 - x0) / (y1 - y0), x0);
         let mut x = if y0 < 0.0 { line.at(-y0) } else { x0 };
         let y_start = y0.max(0.0) as usize;
         let y_end = self.h.min((y1.ceil() as usize).min(self.h));
@@ -147,42 +188,62 @@ impl Raster {
     }
 }
 
-/// `x(t) = origin + slope * t`, rounded once to `f32` — the value
-/// `slope.mul_add(t, origin)` computes.
-///
-/// Where the target guarantees a fused multiply-add instruction, that
-/// instruction evaluates it. Elsewhere `f32::mul_add` lowers to a libm
-/// call per row, so the fused result is formed exactly in `f64` instead:
-/// the product of two `f32` significands (24 + 24 bits) is exact in `f64`,
-/// and the rounded `f64` sum rounds to the fused `f32` result unless it
-/// sits exactly on an `f32` rounding midpoint without being exact, which
-/// the sum's exact residual resolves.
-#[derive(Clone, Copy)]
-struct OriginLine {
-    #[cfg(any(target_arch = "aarch64", target_feature = "fma"))]
-    slope: f32,
-    #[cfg(any(target_arch = "aarch64", target_feature = "fma"))]
-    origin: f32,
-    #[cfg(not(any(target_arch = "aarch64", target_feature = "fma")))]
-    slope: f64,
-    #[cfg(not(any(target_arch = "aarch64", target_feature = "fma")))]
-    origin: f64,
+/// A segment's x as a function of the height `t` above its origin,
+/// `origin + slope * t` rounded once to `f32` — the value
+/// `slope.mul_add(t, origin)` computes. Evaluating every row from the
+/// origin keeps tall edges from accumulating rounding error.
+trait OriginEval: Copy {
+    fn new(slope: f32, origin: f32) -> Self;
+    fn at(self, t: f32) -> f32;
 }
 
-#[cfg(any(target_arch = "aarch64", target_feature = "fma"))]
-impl OriginLine {
-    const fn new(slope: f32, origin: f32) -> Self {
+/// The fused multiply-add instruction. Only instantiated where the
+/// instruction is available, at compile time or behind a runtime check.
+#[cfg(any(
+    test,
+    target_arch = "aarch64",
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_feature = "fma"
+))]
+#[derive(Clone, Copy)]
+struct Fused {
+    slope: f32,
+    origin: f32,
+}
+
+#[cfg(any(
+    test,
+    target_arch = "aarch64",
+    target_arch = "x86",
+    target_arch = "x86_64",
+    target_feature = "fma"
+))]
+impl OriginEval for Fused {
+    #[inline]
+    fn new(slope: f32, origin: f32) -> Self {
         Self { slope, origin }
     }
 
-    #[inline]
+    #[inline(always)]
+    #[expect(clippy::inline_always, reason = "evaluated once per raster row")]
     fn at(self, t: f32) -> f32 {
         self.slope.mul_add(t, self.origin)
     }
 }
 
-#[cfg(not(any(target_arch = "aarch64", target_feature = "fma")))]
-impl OriginLine {
+/// The fused result formed exactly in `f64`, for CPUs without the
+/// instruction, where `f32::mul_add` lowers to a libm call per row.
+#[cfg(any(test, not(any(target_arch = "aarch64", target_feature = "fma"))))]
+#[derive(Clone, Copy)]
+struct Widened {
+    slope: f64,
+    origin: f64,
+}
+
+#[cfg(any(test, not(any(target_arch = "aarch64", target_feature = "fma"))))]
+impl OriginEval for Widened {
+    #[inline]
     fn new(slope: f32, origin: f32) -> Self {
         Self {
             slope: f64::from(slope),
@@ -190,20 +251,27 @@ impl OriginLine {
         }
     }
 
-    #[inline]
+    #[inline(always)]
+    #[expect(clippy::inline_always, reason = "evaluated once per raster row")]
     fn at(self, t: f32) -> f32 {
         fused_via_f64(self.slope, self.origin, t)
     }
 }
 
 /// `slope * t + origin` rounded once to `f32`, for `slope` and `origin`
-/// widened from `f32`.
+/// widened from `f32`: the product of two `f32` significands (24 + 24
+/// bits) is exact in `f64`, and the rounded `f64` sum rounds to the fused
+/// `f32` result unless it sits exactly on an `f32` rounding midpoint
+/// without being exact, which the sum's exact residual resolves.
 #[cfg(any(test, not(any(target_arch = "aarch64", target_feature = "fma"))))]
-#[inline]
+#[inline(always)]
+#[expect(
+    clippy::inline_always,
+    reason = "evaluated once per raster row; its cold path stays out of line"
+)]
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::suboptimal_flops,
-    reason = "the exact f64 product and its rounded sum are the evaluation"
+    reason = "rounding the f64 sum to f32 is the evaluation"
 )]
 fn fused_via_f64(slope: f64, origin: f64, t: f32) -> f32 {
     let product = slope * f64::from(t);
@@ -237,7 +305,7 @@ fn fused_at_midpoint(product: f64, origin: f64, sum: f64) -> f32 {
     } else {
         rounded.next_down()
     };
-    if sum != 0.5 * (f64::from(rounded) + f64::from(other)) {
+    if sum != f64::midpoint(f64::from(rounded), f64::from(other)) {
         return rounded;
     }
     // Exact residual of the f64 sum (TwoSum): the exact value lies on the
@@ -266,6 +334,12 @@ mod tests {
     /// multiply-add): on f32 midpoints the rounded f64 sum hides the
     /// residual, on subnormal results, and on random row evaluations.
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        reason = "random bits shaped into f32 fields"
+    )]
     fn f64_evaluation_is_the_fused_multiply_add() {
         let up = 1.0 + f32::EPSILON;
         let down = 1.0 - f32::EPSILON;
@@ -292,9 +366,15 @@ mod tests {
             let bits = next();
             // Slopes and origins of every magnitude a raster edge can carry,
             // including the ones that put sums on midpoints.
-            let slope = f32::from_bits((bits as u32 & 0x807f_ffff) | ((112 + (bits >> 32) as u32 % 30) << 23));
-            let origin = f32::from_bits((next() as u32 & 0x807f_ffff) | ((120 + (bits >> 40) as u32 % 20) << 23));
-            let t = f32::from_bits((next() as u32 & 0x007f_ffff) | ((120 + (bits >> 48) as u32 % 20) << 23));
+            let slope = f32::from_bits(
+                (bits as u32 & 0x807f_ffff) | ((112 + (bits >> 32) as u32 % 30) << 23),
+            );
+            let origin = f32::from_bits(
+                (next() as u32 & 0x807f_ffff) | ((120 + (bits >> 40) as u32 % 20) << 23),
+            );
+            let t = f32::from_bits(
+                (next() as u32 & 0x007f_ffff) | ((120 + (bits >> 48) as u32 % 20) << 23),
+            );
             cases.push((slope, t, origin));
             // A product of half an ulp of `origin` minus m²·2⁻⁴⁶ of it: the
             // f64 sum rounds onto the f32 midpoint for every m < 362.
@@ -315,6 +395,40 @@ mod tests {
                 "{slope:e} * {t:e} + {origin:e}: {evaluated:e} versus {fused:e}"
             );
         }
+    }
+
+    /// Both row evaluations accumulate bit-identical areas, so coverage does
+    /// not depend on whether the CPU has a fused multiply-add.
+    #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "random bits shaped into coordinates"
+    )]
+    fn row_evaluations_accumulate_identical_areas() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        // Edges cross the top and bottom of the raster; columns stay inside
+        // it, as the path rasterizer's callers guarantee.
+        let mut coordinate = |low: f32, high: f32| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 40) as f32 / 16_777_216.0).mul_add(high - low, low)
+        };
+        let (mut fused, mut widened) = (Raster::new(257, 731), Raster::new(257, 731));
+        for _ in 0..20_000 {
+            let (x0, y0) = (coordinate(0.0, 256.0), coordinate(-4.0, 735.0));
+            let (x1, y1) = (coordinate(0.0, 256.0), coordinate(-4.0, 735.0));
+            fused.accumulate::<Fused>(x0, y0, x1, y1);
+            widened.accumulate::<Widened>(x0, y0, x1, y1);
+        }
+        assert!(
+            fused
+                .a
+                .iter()
+                .zip(&widened.a)
+                .all(|(f, w)| f.to_bits() == w.to_bits()),
+            "fused and widened row evaluations diverge"
+        );
     }
 
     #[test]
