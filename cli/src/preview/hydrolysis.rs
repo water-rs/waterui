@@ -29,6 +29,7 @@ pub use waterui_preview_protocol::run::{
 
 /// Theme package selected for Hydrolysis preview rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HydrolysisPreviewTheme {
     /// Material Design 3 package.
     Material3,
@@ -45,18 +46,19 @@ impl HydrolysisPreviewTheme {
 
     fn font_declarations(self) -> Vec<FontDeclaration> {
         match self {
-            Self::Material3 => vec![FontDeclaration {
-                name: "Roboto".to_string(),
-                source: FontSource::BuiltIn,
-                crate_name: "hydrolysis-m3".to_string(),
-                platforms: None,
-            }],
+            Self::Material3 => vec![FontDeclaration::new(
+                "Roboto".to_string(),
+                FontSource::BuiltIn,
+                "hydrolysis-m3".to_string(),
+                None,
+            )],
         }
     }
 }
 
 /// Interactive capture scenario for Hydrolysis preview.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct HydrolysisPreviewScenario {
     /// Capture timestamps in milliseconds from scenario start.
     pub captures_ms: Vec<u64>,
@@ -66,8 +68,29 @@ pub struct HydrolysisPreviewScenario {
     pub output_dir: PathBuf,
 }
 
+impl HydrolysisPreviewScenario {
+    /// A scenario replaying `events` and capturing at each of `captures_ms`
+    /// into `output_dir`.
+    #[must_use]
+    pub const fn new(
+        captures_ms: Vec<u64>,
+        events: Vec<HydrolysisPreviewScenarioEvent>,
+        output_dir: PathBuf,
+    ) -> Self {
+        Self {
+            captures_ms,
+            events,
+            output_dir,
+        }
+    }
+}
+
 /// Common inputs for driving the managed Hydrolysis preview backend.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the terminal fills every field of the preview request; a new field must fail its build instead of taking a default"
+)]
 pub struct HydrolysisPreviewRequest<'a> {
     /// The host the preview spawns on.
     pub host: &'a crate::toolchain::Host,

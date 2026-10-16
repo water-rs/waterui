@@ -685,10 +685,29 @@ fn derive_project_struct(
     }
     let (impl_generics_with_static, _, _) = generics_with_static.split_for_impl();
 
+    // The projection mirrors its source field for field, so it is exactly as
+    // visible and as exhaustive as the struct it projects.
+    let visibility = &input.vis;
+    let exhaustiveness = if input
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("non_exhaustive"))
+    {
+        quote! { #[non_exhaustive] }
+    } else {
+        quote! {
+            #[allow(
+                clippy::exhaustive_structs,
+                reason = "a projection has exactly its source struct's fields"
+            )]
+        }
+    };
+
     let expanded = quote! {
         /// Projected version of #struct_name with each field wrapped in a Binding.
         #[derive(Debug)]
-        pub struct #projected_struct_name #ty_generics #where_clause {
+        #exhaustiveness
+        #visibility struct #projected_struct_name #ty_generics #where_clause {
             #(#projected_fields,)*
         }
 
@@ -1636,15 +1655,14 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
     }
     builder = quote! { #builder.perf_config(__waterui_bench_config) };
 
-    let budget_fields = bench_args.budgets.iter().map(|(name, value)| {
-        let field = syn::Ident::new(name, Span::call_site());
-        value.as_ref().map_or_else(
-            || quote! { #field: ::core::option::Option::None },
-            |expr| quote! { #field: ::core::option::Option::Some(#expr) },
-        )
+    let budget_setters = bench_args.budgets.iter().filter_map(|(name, value)| {
+        let setter = syn::Ident::new(&format!("with_{name}"), Span::call_site());
+        value
+            .as_ref()
+            .map(|expr| quote! { .#setter(::core::option::Option::Some(#expr)) })
     });
     let budgets = quote! {
-        #testing_path::bench::BenchBudgets { #(#budget_fields),* }
+        #testing_path::bench::BenchBudgets::default() #(#budget_setters)*
     };
 
     let run_closure = bench_args.view.as_ref().map_or_else(

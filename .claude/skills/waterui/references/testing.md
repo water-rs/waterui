@@ -179,7 +179,7 @@ exist only on a rendered (`offscreen`) session's elements:
 
 ```rust
 .tap_at(nx, ny)   .hover()   .hover_at(nx, ny)
-.drag_by(dx, dy)   .drag_by_with(dx, dy, DragOptions { steps: 12, frame_per_step: true })
+.drag_by(dx, dy)   .drag_by_with(dx, dy, DragOptions::default().with_steps(12).with_frame_per_step(true))
 .drag_between(fx, fy, tx, ty)   .magnify(1.5)
 ```
 

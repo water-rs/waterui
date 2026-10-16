@@ -409,11 +409,11 @@ async fn load_hydrolysis_scenario(
         .map(parse_scenario_event)
         .collect::<Result<Vec<_>>>()?;
     events.sort_by_key(|event| event.at_ms);
-    Ok(Some(HydrolysisPreviewScenario {
-        captures_ms: scenario.captures_ms,
+    Ok(Some(HydrolysisPreviewScenario::new(
+        scenario.captures_ms,
         events,
         output_dir,
-    }))
+    )))
 }
 
 fn parse_scenario_event(event: &ScenarioEventFile) -> Result<HydrolysisPreviewScenarioEvent> {
@@ -463,16 +463,9 @@ fn parse_scenario_event(event: &ScenarioEventFile) -> Result<HydrolysisPreviewSc
     {
         bail!("Hydrolysis preview scroll event requires non-zero dx or dy");
     }
-    Ok(HydrolysisPreviewScenarioEvent {
-        at_ms: event.at_ms,
-        kind,
-        x,
-        y,
-        button,
-        dx,
-        dy,
-        is_line_delta: event.is_line_delta.unwrap_or(false),
-    })
+    Ok(HydrolysisPreviewScenarioEvent::new(event.at_ms, kind, x, y)
+        .with_button(button)
+        .with_scroll_delta(dx, dy, event.is_line_delta.unwrap_or(false)))
 }
 
 async fn resolve_test_targets(

@@ -137,6 +137,10 @@ impl View for CloseIcon {
 
 /// Theme tokens used by the snackbar overlay.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
 pub struct SnackbarTheme {
     /// Container fill color.
     pub container_color: Color,
@@ -287,6 +291,7 @@ impl Default for SnackbarTheme {
 
 /// Position for snackbar display.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SnackbarPosition {
     /// Bottom center of the screen (default, Material Design standard).
     #[default]

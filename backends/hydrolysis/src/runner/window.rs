@@ -496,6 +496,7 @@ pub(super) const fn schedule_animation_update<P: PlatformWindow>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A captured headless frame: raw pixels, the alpha convention the
 /// producing surface reports, plus dimensions.
+#[non_exhaustive]
 pub struct HeadlessSnapshot {
     /// Snapshot width in pixels.
     pub width: u32,
@@ -521,6 +522,7 @@ pub(super) struct RenderWindowResult {
 
 /// Phase timing for one Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FramePhases {
     /// Time spent draining local executor work before input dispatch.
     pub executor_before: Duration,
@@ -548,6 +550,7 @@ pub struct FramePhases {
 
 /// Counter snapshot for one Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrameCounters {
     /// Number of rebuild loop iterations in this frame.
     pub rebuild_iterations: u32,
@@ -588,6 +591,7 @@ pub struct FrameCounters {
 
 /// Detailed profile for one Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrameProfile {
     /// Total wall-clock duration for the frame pump.
     pub total: Duration,
@@ -1958,12 +1962,8 @@ where
                     false
                 } else {
                     let key_env = input_env(runtime, env);
-                    let press = KeyPress {
-                        key: logical_key.clone(),
-                        code: physical_code,
-                        modifiers: modifiers.into(),
-                        repeat,
-                    };
+                    let press =
+                        KeyPress::new(logical_key.clone(), physical_code, modifiers.into(), repeat);
                     let outcome = if runtime.renderer.handle_embedded_key(&KeyDelivery {
                         pressed: true,
                         logical: &logical_key,

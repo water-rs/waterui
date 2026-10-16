@@ -293,14 +293,13 @@ fn an_installed_realization_draws_the_webview_and_keeps_its_node(ui: UiBuilder) 
 #[test]
 fn inject_script_rejects_a_creation_time_key_before_the_backend() {
     let controller = TestController::new();
-    let webview = WebViewController::new(controller.clone()).open_with(WebViewConfig {
-        scripts: vec![UserScript {
-            key: Str::from_static("theme"),
-            source: Str::from_static("document.body.dataset.theme = 'dark';"),
-            time: ScriptInjectionTime::DocumentEnd,
-        }],
-        ..WebViewConfig::default()
-    });
+    let webview = WebViewController::new(controller.clone()).open_with(
+        WebViewConfig::default().with_scripts(vec![UserScript::new(
+            "theme",
+            "document.body.dataset.theme = 'dark';",
+            ScriptInjectionTime::DocumentEnd,
+        )]),
+    );
     let proxy = WebViewProxy::new(webview.handle().clone());
 
     let rejection = |inject: &dyn Fn()| {

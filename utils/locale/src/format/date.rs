@@ -30,6 +30,7 @@ static DATETIME_FALLBACK_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// Date formatting style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum DateStyle {
     /// Short date: "12/31/2023" or "31.12.2023"
     Short,
@@ -44,6 +45,7 @@ pub enum DateStyle {
 
 /// Time formatting style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum TimeStyle {
     /// Short time: "3:45 PM" or "15:45"
     #[default]
@@ -58,6 +60,10 @@ pub enum TimeStyle {
 
 /// A simple date structure for formatting.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a calendar date: year, month and day are the whole value"
+)]
 pub struct SimpleDate {
     /// Year (e.g., 2023)
     pub year: i32,
@@ -77,6 +83,10 @@ impl SimpleDate {
 
 /// A simple time structure for formatting.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a time of day: hour, minute and second are the whole value"
+)]
 pub struct SimpleTime {
     /// Hour (0-23)
     pub hour: u8,

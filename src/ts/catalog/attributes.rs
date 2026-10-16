@@ -36,6 +36,7 @@ use super::values::{
 
 /// `<VStack>`: children stacked top to bottom.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct VStackAttributes {
     /// The gap between children, in points.
     pub spacing: Option<Computed<f32>>,
@@ -45,6 +46,7 @@ pub struct VStackAttributes {
 
 /// `<HStack>`: children stacked leading to trailing.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct HStackAttributes {
     /// The gap between children, in points.
     pub spacing: Option<Computed<f32>>,
@@ -54,6 +56,7 @@ pub struct HStackAttributes {
 
 /// `<ZStack>`: children stacked front to back.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct ZStackAttributes {
     /// Where children sit in both axes.
     pub alignment: Option<StackAlign>,
@@ -61,6 +64,7 @@ pub struct ZStackAttributes {
 
 /// `<ScrollView>`: a scrollable surface around its children.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct ScrollViewAttributes {
     /// Which way the surface scrolls.
     pub axis: Option<ScrollAxis>,
@@ -68,6 +72,7 @@ pub struct ScrollViewAttributes {
 
 /// `<Spacer>`: a flexible gap.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct SpacerAttributes {
     /// The gap's minimum length, in points.
     #[ts(rename = "minLength")]
@@ -76,19 +81,23 @@ pub struct SpacerAttributes {
 
 /// `<Divider>`: a hairline across the stack's cross axis.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct DividerAttributes {}
 
 /// `<Text>`: semantic text.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct TextAttributes {}
 
 /// `<Label>`: text with an optional icon, and the explicit form of every
 /// control's label slot.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct LabelAttributes {}
 
 /// `<Button>`: a control that performs an action.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct ButtonAttributes {
     /// What the button does when it is activated — by a tap, by the keyboard,
     /// or by an assistive technology, which is why this is the button's own
@@ -101,6 +110,7 @@ pub struct ButtonAttributes {
 
 /// `<Toggle>`: a two-state switch.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct ToggleAttributes {
     /// The state the switch reads and writes.
     pub value: Binding<bool>,
@@ -110,6 +120,7 @@ pub struct ToggleAttributes {
 
 /// `<Slider>`: a control for a value in a range.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct SliderAttributes {
     /// The value the slider reads and writes.
     pub value: Binding<f64>,
@@ -119,6 +130,7 @@ pub struct SliderAttributes {
 
 /// `<Stepper>`: a control that increments and decrements a whole number.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct StepperAttributes {
     /// The value the stepper reads and writes.
     pub value: Binding<i32>,
@@ -130,6 +142,7 @@ pub struct StepperAttributes {
 
 /// `<TextField>`: a single-line text entry field.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct TextFieldAttributes {
     /// The text the field reads and writes.
     pub value: Binding<Str>,
@@ -141,6 +154,7 @@ pub struct TextFieldAttributes {
 
 /// `<Picker>`: a control that selects one of a set of options.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct PickerAttributes {
     /// The selected option's value.
     pub value: Binding<Str>,
@@ -152,6 +166,7 @@ pub struct PickerAttributes {
 
 /// `<List>`: a native list of rows.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct ListAttributes {
     /// Whether the list is in edit mode, which shows the controls for the
     /// handlers below: a row has a delete control when the list can delete,
@@ -170,6 +185,7 @@ pub struct ListAttributes {
 
 /// `<Progress>`: determinate or indeterminate progress.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct ProgressAttributes {
     /// How far along, `0` through `total`. Left out, the progress is
     /// indeterminate — what Rust spells `Progress::infinity()`.
@@ -182,6 +198,7 @@ pub struct ProgressAttributes {
 
 /// `<Link>`: a label that opens a URL.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct LinkAttributes {
     /// The URL the link opens.
     pub url: Computed<Str>,
@@ -189,6 +206,7 @@ pub struct LinkAttributes {
 
 /// `<Card>`: a titled surface around its content.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct CardAttributes {
     /// The card's title.
     pub title: Option<TextContent>,
@@ -198,6 +216,7 @@ pub struct CardAttributes {
 
 /// `<Badge>`: a count over another view.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct BadgeAttributes {
     /// The count the badge shows.
     pub value: Computed<i32>,
@@ -208,10 +227,12 @@ pub struct BadgeAttributes {
 
 /// `<Table>`: columns of text.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct TableAttributes {}
 
 /// `<Column>`: one column of a `<Table>`.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct ColumnAttributes {
     /// The column's heading.
     pub label: TextContent,
@@ -219,6 +240,7 @@ pub struct ColumnAttributes {
 
 /// `<Accordion>`: a header that expands to reveal its content.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct AccordionAttributes {
     /// The content revealed when the accordion is expanded. A builder, because
     /// the content is built when it is revealed and again after it is hidden.
@@ -234,6 +256,7 @@ pub struct AccordionAttributes {
 /// gate `<Image>` sits behind, for the same reason: a build without the
 /// media graph declares no attribute it cannot honour.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct AvatarAttributes {
     /// Who the avatar is of, which is also its accessibility label.
     pub name: TextContent,
@@ -244,6 +267,7 @@ pub struct AvatarAttributes {
 
 /// `<NavigationStack>`: a stack whose children are its root.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct NavigationStackAttributes {
     /// The root's navigation title.
     pub title: Option<TextContent>,
@@ -251,6 +275,7 @@ pub struct NavigationStackAttributes {
 
 /// `<NavigationLink>`: a label that pushes a destination.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct NavigationLinkAttributes {
     /// The destination, built afresh every time the link is followed.
     pub destination: JsViewBuilder,
@@ -260,6 +285,7 @@ pub struct NavigationLinkAttributes {
 
 /// `<Tabs>`: a native tab container.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct TabsAttributes {
     /// Which tab is showing.
     pub value: Binding<Str>,
@@ -267,6 +293,7 @@ pub struct TabsAttributes {
 
 /// `<Tab>`: one page of a `<Tabs>`, whose children are its label.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct TabAttributes {
     /// The value written into the container's `value` when this tab is chosen.
     pub value: Str,
@@ -279,6 +306,7 @@ pub struct TabAttributes {
 /// `<Image>`: a picture fetched from a URL.
 #[cfg(feature = "media")]
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct ImageAttributes {
     /// Where the picture comes from.
     pub src: Computed<UrlValue>,
@@ -297,6 +325,7 @@ pub struct ImageAttributes {
 /// order the attributes were written, because that order is the modifier chain
 /// and the host applies it exactly as Rust would.
 #[derive(Debug, TsType)]
+#[non_exhaustive]
 pub struct Modifiers {
     /// Insets the view: `true` for the default inset, a number for every edge,
     /// or an object per edge.

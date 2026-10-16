@@ -24,6 +24,7 @@ use crate::ui::content_ledger::{ContentError, DisplayList, PendingContent};
 /// fails with [`RenderError::ContentPending`] when `content_deadline` passes
 /// first.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct RenderRequest {
     /// The size proposed to the view, in points.
     pub size: Size,
@@ -45,6 +46,7 @@ impl RenderRequest {
 
 /// Result of rendering a view to RGBA pixels.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct RenderResult {
     /// RGBA pixel data (4 bytes per pixel, row-major order).
     pub rgba_data: Vec<u8>,
@@ -54,12 +56,26 @@ pub struct RenderResult {
     pub height: u32,
 }
 
+impl RenderResult {
+    /// `rgba_data` of a `width` by `height` pixel render, four bytes per
+    /// pixel in row-major order.
+    #[must_use]
+    pub const fn new(rgba_data: Vec<u8>, width: u32, height: u32) -> Self {
+        Self {
+            rgba_data,
+            width,
+            height,
+        }
+    }
+}
+
 /// Why a [`CustomViewRenderer`] produced no image.
 ///
 /// A failed capture is always an error, never an empty or partial
 /// [`RenderResult`]: callers read a successful result as the view's actual
 /// pixels. The boxed sources carry the backend's own typed error.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RenderError {
     /// The GPU work behind the capture failed: a render pass, a lost device,
     /// or the pixel readback.

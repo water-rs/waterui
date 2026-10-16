@@ -1272,6 +1272,7 @@ impl Project {
 
 /// Errors that can occur when opening a `WaterUI` project.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToOpenProject {
     /// Failed to open the Water.toml manifest.
     #[error("Failed to open project manifest: {0}")]
@@ -1319,6 +1320,7 @@ pub enum FailToOpenProject {
 
 /// Errors that can occur when creating a new `WaterUI` project.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToCreateProject {
     /// Failed to resolve a coherent framework distribution.
     #[error("Failed to resolve framework: {0}")]
@@ -1418,6 +1420,7 @@ fn bullet_list(errors: &[eyre::Report]) -> String {
 
 /// Options for creating a new `WaterUI` project.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct CreateOptions {
     /// Application display name (e.g., "Water Example").
     pub name: String,
@@ -1447,14 +1450,75 @@ pub struct CreateOptions {
     pub web: Option<WebScaffold>,
 }
 
+impl CreateOptions {
+    /// Options creating `name` under `bundle_identifier`, authored by
+    /// `author`, from the default framework source and without a web
+    /// frontend.
+    #[must_use]
+    pub const fn new(name: String, bundle_identifier: BundleIdentifier, author: String) -> Self {
+        Self {
+            name,
+            bundle_identifier,
+            waterui_path: None,
+            channel: None,
+            framework_manifest: None,
+            framework: None,
+            framework_lock: None,
+            author,
+            web: None,
+        }
+    }
+
+    /// Resolves the framework from a local `WaterUI` checkout.
+    #[must_use]
+    pub fn with_waterui_path(mut self, waterui_path: Option<PathBuf>) -> Self {
+        self.waterui_path = waterui_path;
+        self
+    }
+
+    /// Resolves the framework from a channel.
+    #[must_use]
+    pub const fn with_channel(mut self, channel: Option<FrameworkChannel>) -> Self {
+        self.channel = channel;
+        self
+    }
+
+    /// Resolves the framework from a certified `framework.json` on disk.
+    #[must_use]
+    pub fn with_framework_manifest(mut self, framework_manifest: Option<PathBuf>) -> Self {
+        self.framework_manifest = framework_manifest;
+        self
+    }
+
+    /// Declares the web frontend the scaffold wires in.
+    #[must_use]
+    pub fn with_web(mut self, web: Option<WebScaffold>) -> Self {
+        self.web = web;
+        self
+    }
+}
+
 /// How `create`/`init` wires a declared web frontend into the scaffold.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct WebScaffold {
     /// The package manager written to `[web] package_manager`.
     pub package_manager: web::PackageManager,
     /// The `include_web!` argument: `"web"` for the conventional layout, or a
     /// path relative to the project root for a frontend referenced in place.
     pub include_arg: String,
+}
+
+impl WebScaffold {
+    /// A frontend managed by `package_manager`, included through
+    /// `include_web!(include_arg)`.
+    #[must_use]
+    pub fn new(package_manager: web::PackageManager, include_arg: impl Into<String>) -> Self {
+        Self {
+            package_manager,
+            include_arg: include_arg.into(),
+        }
+    }
 }
 
 /// A project `water create` has written but not finished: its directory and
@@ -3343,6 +3407,7 @@ struct WateruiPatchesRecord<'a> {
 
 /// Configuration for a `WaterUI` project persisted to `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[non_exhaustive]
 pub struct Manifest {
     /// Package information.
     pub package: Package,
@@ -3409,6 +3474,7 @@ pub struct Manifest {
 /// secrets — passwords are read from the environment at package time.
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct SigningConfig {
     /// macOS Developer ID distribution signing (`[signing.macos]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3429,6 +3495,7 @@ impl SigningConfig {
 /// macOS Developer ID distribution signing (`[signing.macos]`).
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct MacosSigningConfig {
     /// The Apple Developer team the package signs for — matched against the
     /// Developer ID Application certificate's subject organizational unit.
@@ -3471,6 +3538,7 @@ impl PermissionEntry {
 
 /// Errors that can occur when opening a `Water.toml` manifest file.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToOpenManifest {
     /// Failed to read the manifest file from the filesystem.
     #[error("Failed to read manifest file: {0}")]
@@ -3490,6 +3558,7 @@ pub enum FailToOpenManifest {
 
 /// Errors that can occur when saving a `Water.toml` manifest file.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToSaveManifest {
     /// Failed to serialize the manifest to TOML.
     #[error("Failed to serialize manifest: {0}")]
@@ -3565,6 +3634,7 @@ impl Manifest {
 
 /// The engine that draws this application's standard `WebView`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ResolvedWebViewBackend {
     /// Platform-provided `WebView`.
     System,
@@ -3582,6 +3652,7 @@ impl std::fmt::Display for ResolvedWebViewBackend {
 
 /// Browser engines that must be staged for one resolved application graph.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BrowserRuntimePlan {
     /// Standard `WebView` engine, when `waterui-webview` is linked.
     pub webview: Option<ResolvedWebViewBackend>,
@@ -3684,6 +3755,7 @@ pub struct UnsupportedWebViewBackend {
 /// `[assets]` section in `Water.toml`: assets the project bundles beyond what
 /// dependency crates declare through `[package.metadata.waterui.assets]`.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[non_exhaustive]
 pub struct AssetsConfig {
     /// Font families to bundle, one `[[assets.font]]` table per family.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3698,6 +3770,7 @@ pub struct AssetsConfig {
 /// cache, since builds perform no network access. A declaration sets at most
 /// one source.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[non_exhaustive]
 pub struct FontConfig {
     /// Font family name.
     pub name: String,
@@ -3716,6 +3789,7 @@ pub struct FontConfig {
 
 /// App-specific configuration in `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[non_exhaustive]
 pub struct AppConfig {
     /// Optional crate name overrides.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3724,6 +3798,7 @@ pub struct AppConfig {
 
 /// Crate name overrides for the generated crates (`[app.crates]`).
 #[derive(Debug, Serialize, Clone, Default)]
+#[non_exhaustive]
 pub struct AppCrates {
     /// Optional override crate name for the generated Apple companion crate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3801,6 +3876,7 @@ mod removed_ffi_override_tests {
 
 /// `[package]` section in `Water.toml`.
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[non_exhaustive]
 pub struct Package {
     /// Human-readable name of the application (e.g., "Water Demo").
     pub name: String,
@@ -3823,6 +3899,22 @@ pub struct Package {
     /// app, and `water run`/`water package` refuse.
     #[serde(default, skip_serializing_if = "is_false")]
     pub embedded: bool,
+}
+
+impl Package {
+    /// The section of an app named `name` under `bundle_identifier`, with
+    /// assets in the default directory, owning its entry, and not an
+    /// accessory app.
+    #[must_use]
+    pub fn new(name: impl Into<String>, bundle_identifier: BundleIdentifier) -> Self {
+        Self {
+            name: name.into(),
+            bundle_identifier,
+            assets_path: default_assets_path(),
+            accessory: false,
+            embedded: false,
+        }
+    }
 }
 
 /// Reads the `package.name` of a project's `Cargo.toml` — the crate name the

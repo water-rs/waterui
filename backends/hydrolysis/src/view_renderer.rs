@@ -166,11 +166,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
             .map_err(gpu_failure)?;
         surface.present(frame);
 
-        Ok(RenderResult {
-            rgba_data,
-            width,
-            height,
-        })
+        Ok(RenderResult::new(rgba_data, width, height))
     }
 }
 

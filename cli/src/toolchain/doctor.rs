@@ -56,6 +56,10 @@ use serde::{Deserialize, Serialize};
 
 /// Status of a toolchain check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal renders each check status variant by variant"
+)]
 pub enum CheckStatus {
     /// Toolchain is available and working.
     Ok,
@@ -88,6 +92,7 @@ pub type BoxedInstallFn =
 /// before the optional ones in [`DoctorGroup::ORDER`], the order a new user
 /// needs them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum DoctorGroup {
     /// The rustup-managed Rust toolchain every backend builds with.
     Rust,
@@ -215,6 +220,7 @@ impl DoctorGroup {
 /// One heading of the rendered report: a group, whether it is optional for
 /// the current project or host, and its items in emission order.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct DoctorSection {
     /// The group the items belong to.
     pub group: DoctorGroup,
@@ -261,6 +267,7 @@ pub fn sections(items: Vec<DoctorItem>) -> Vec<DoctorSection> {
 }
 
 /// A single item in the doctor report.
+#[non_exhaustive]
 pub struct DoctorItem {
     /// Stable machine-readable identifier (e.g. `android-sdk`).
     pub id: &'static str,
@@ -307,6 +314,7 @@ impl std::fmt::Debug for DoctorItem {
 /// `Cow` so serialization borrows the static strings while deserialization
 /// (the `--json` smoke test) produces owned values.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DoctorItemRecord {
     /// Record discriminator, like the shell's other typed records.
     #[serde(rename = "type")]
@@ -344,30 +352,47 @@ impl From<&DoctorItem> for DoctorItemRecord {
 }
 
 impl DoctorItem {
-    fn ok(id: &'static str, name: &'static str) -> Self {
+    /// An in-scope item `id` named `name`, reported under `group` with
+    /// `status`, carrying no message and no automatic fix.
+    #[must_use]
+    pub const fn new(
+        id: &'static str,
+        name: &'static str,
+        group: DoctorGroup,
+        status: CheckStatus,
+    ) -> Self {
         Self {
             id,
             name,
-            group: DoctorGroup::of(id),
+            group,
             optional: false,
-            status: CheckStatus::Ok,
+            status,
             message: None,
             system_wide: false,
             install_fn: None,
         }
     }
 
+    /// Attaches the detail or suggestion shown to the user.
+    #[must_use]
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.message = Some(message.into());
+        self
+    }
+
+    /// Makes the item fixable by `install_fn`.
+    #[must_use]
+    pub fn with_install_fn(mut self, install_fn: BoxedInstallFn) -> Self {
+        self.install_fn = Some(install_fn);
+        self
+    }
+
+    fn ok(id: &'static str, name: &'static str) -> Self {
+        Self::new(id, name, DoctorGroup::of(id), CheckStatus::Ok)
+    }
+
     fn missing(id: &'static str, name: &'static str, message: impl Into<String>) -> Self {
-        Self {
-            id,
-            name,
-            group: DoctorGroup::of(id),
-            optional: false,
-            status: CheckStatus::Missing,
-            message: Some(message.into()),
-            system_wide: false,
-            install_fn: None,
-        }
+        Self::new(id, name, DoctorGroup::of(id), CheckStatus::Missing).with_message(message)
     }
 
     fn fixable<I: Installation + Send + 'static>(
@@ -394,16 +419,7 @@ impl DoctorItem {
     }
 
     fn skipped(id: &'static str, name: &'static str) -> Self {
-        Self {
-            id,
-            name,
-            group: DoctorGroup::of(id),
-            optional: false,
-            status: CheckStatus::Skipped,
-            message: None,
-            system_wide: false,
-            install_fn: None,
-        }
+        Self::new(id, name, DoctorGroup::of(id), CheckStatus::Skipped)
     }
 
     fn skipped_with_message(
@@ -411,16 +427,7 @@ impl DoctorItem {
         name: &'static str,
         message: impl Into<String>,
     ) -> Self {
-        Self {
-            id,
-            name,
-            group: DoctorGroup::of(id),
-            optional: false,
-            status: CheckStatus::Skipped,
-            message: Some(message.into()),
-            system_wide: false,
-            install_fn: None,
-        }
+        Self::skipped(id, name).with_message(message)
     }
 
     /// Returns `true` if the issue can be fixed automatically.
@@ -575,6 +582,7 @@ impl BackendScope {
 /// platform and is in scope
 /// wherever Android is targeted — which on a bare host is never.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DoctorScope {
     /// In scope when this backend is.
     Backend(TargetBackend),

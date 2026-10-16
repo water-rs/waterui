@@ -235,6 +235,7 @@ fn arguments(args: &[serde_json::Value]) -> String {
 /// from asking for the wrong Rust type. Collapsing them into one string, as the
 /// old `Result<Str, Str>` did, made all three look alike.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum JsError {
     /// The script threw.
     #[error("JavaScript threw: {message}")]

@@ -79,6 +79,7 @@ macro_rules! preview_info_plist {
 /// Why a preview run failed — the generated `main` propagates it for the
 /// process to report and exit non-zero.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum PreviewError {
     /// The run mode is not implemented by the Apple preview.
     #[error("apple preview supports image captures only; {0} runs are not implemented")]
@@ -519,11 +520,11 @@ impl Stage {
         self.window.displayIfNeeded();
         let scale = cocoa_ui::view::backing_scale_factor(&self.root);
         let result = crate::capture_image::capture_rgba(&self.root, env, scale, mtm).await?;
-        Ok(waterui_core::view_renderer::RenderResult {
-            rgba_data: result.pixels,
-            width: result.width,
-            height: result.height,
-        })
+        Ok(waterui_core::view_renderer::RenderResult::new(
+            result.pixels,
+            result.width,
+            result.height,
+        ))
     }
 
     /// The `gpu_surface`-free capture: every leaf rasterizes through the

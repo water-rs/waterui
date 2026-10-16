@@ -25,6 +25,7 @@ use crate::{android::toolchain::AndroidSdk, toolchain::Host, utils::CommandError
 
 /// Why no [`Adb`] could be produced.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum AdbError {
     /// No `adb` — neither under an Android SDK nor on `PATH`.
     #[error("adb not found — install Android SDK platform-tools or put `adb` on PATH")]

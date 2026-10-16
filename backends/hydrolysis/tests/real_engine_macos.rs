@@ -239,15 +239,15 @@ mod real {
         // Exactly what the renderer gets: a genuine WKWebView behind the
         // shared handle contract, created with its admission rules and
         // scripts.
-        let handle = MacSystemWebViewController.open(WebViewConfig {
-            bridge_origins: origins(&initial),
-            scripts: vec![UserScript {
-                key: "waterui:test-state-seed".into(),
-                source: STATE_SEED_JS.into(),
-                time: ScriptInjectionTime::DocumentStart,
-            }],
-            ..WebViewConfig::default()
-        });
+        let handle = MacSystemWebViewController.open(
+            WebViewConfig::default()
+                .with_bridge_origins(origins(&initial))
+                .with_scripts(vec![UserScript::new(
+                    "waterui:test-state-seed",
+                    STATE_SEED_JS,
+                    ScriptInjectionTime::DocumentStart,
+                )]),
+        );
 
         let events = Rc::new(RefCell::new(Vec::new()));
         let guard = handle.watch({

@@ -218,14 +218,14 @@ fn projected_names(fields: &syn::FieldsNamed) -> syn::Result<Vec<(&Ident, String
     Ok(projected)
 }
 
-/// `&[FieldSchema { .. }, ..]` for named fields.
+/// `&[FieldSchema::new(..), ..]` for named fields.
 fn named_fields(path: &TokenStream2, fields: &syn::FieldsNamed) -> syn::Result<TokenStream2> {
     let entries = projected_names(fields)?
         .into_iter()
         .zip(&fields.named)
         .map(|((_, name), field)| {
             let ty = type_schema(path, &field.ty);
-            quote!(#path::FieldSchema { name: #name, ty: #ty })
+            quote!(#path::FieldSchema::new(#name, #ty))
         })
         .collect::<Vec<_>>();
     Ok(quote!(&[#(#entries),*]))
@@ -256,10 +256,7 @@ fn struct_schema(
     let literal = name.unraw().to_string();
     let fields = named_fields(path, fields)?;
     Ok(quote! {
-        #path::TypeSchema::Struct(#path::StructSchema {
-            name: #literal,
-            fields: #fields,
-        })
+        #path::TypeSchema::Struct(#path::StructSchema::new(#literal, #fields))
     })
 }
 
@@ -305,16 +302,16 @@ fn enum_schema(
         .map(|variant| {
             let literal = variant.ident.unraw().to_string();
             let payload = variant_payload(path, variant)?;
-            Ok(quote!(#path::VariantSchema { name: #literal, payload: #payload }))
+            Ok(quote!(#path::VariantSchema::new(#literal, #payload)))
         })
         .collect::<syn::Result<Vec<_>>>()?;
     let literal = name.unraw().to_string();
     Ok(quote! {
-        #path::TypeSchema::Enum(#path::EnumSchema {
-            name: #literal,
-            representation: #representation,
-            variants: &[#(#variants),*],
-        })
+        #path::TypeSchema::Enum(#path::EnumSchema::new(
+            #literal,
+            #representation,
+            &[#(#variants),*],
+        ))
     })
 }
 

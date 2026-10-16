@@ -227,15 +227,15 @@ mod tests {
 
     fn bundle(origins: BridgeOrigins) -> RendererBundle {
         let initial: waterui_url::Url = "https://app.example".parse().unwrap();
-        RendererBundle::new(&WebViewConfig {
-            bridge_origins: OriginPolicy::new(origins, &initial),
-            scripts: vec![UserScript {
-                key: "app".into(),
-                source: "globalThis.app = 1;".into(),
-                time: waterui_webview::ScriptInjectionTime::DocumentEnd,
-            }],
-            ..WebViewConfig::default()
-        })
+        RendererBundle::new(
+            &WebViewConfig::default()
+                .with_bridge_origins(OriginPolicy::new(origins, &initial))
+                .with_scripts(vec![UserScript::new(
+                    "app",
+                    "globalThis.app = 1;",
+                    waterui_webview::ScriptInjectionTime::DocumentEnd,
+                )]),
+        )
     }
 
     #[test]

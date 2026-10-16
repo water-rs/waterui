@@ -27,6 +27,7 @@ pub const DEFAULT_FRAME: &str = "375x667";
 /// Target platform for preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum CliPreviewPlatform {
     /// iOS — with the Apple backend, the `UIKit` realization rendered on
     /// this Mac through Mac Catalyst.
@@ -57,6 +58,7 @@ impl CliPreviewPlatform {
 /// Rendering backend for preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum CliPreviewBackend {
     /// Apple native backend — `AppKit` on macOS, `UIKit` through Mac
     /// Catalyst on iOS.
@@ -77,6 +79,7 @@ pub enum CliPreviewBackend {
 /// target on the variant keeps call sites from re-deriving it from the CLI
 /// platform label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ResolvedPreviewBackend {
     /// Hydrolysis render for the given target — a desktop binary, or the
     /// Android preview host's instrumentation for `TargetPlatform::Android`.
@@ -91,6 +94,7 @@ pub enum ResolvedPreviewBackend {
 /// Theme package for Hydrolysis preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum CliHydrolysisPreviewTheme {
     /// Material Design 3 theme package.
     Material3,
@@ -107,6 +111,7 @@ impl From<CliHydrolysisPreviewTheme> for HydrolysisPreviewTheme {
 /// What a preview render draws: a `#[preview]` function exported from the
 /// project crate, or an inline `WaterUI` expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PreviewTarget {
     /// A `#[preview]` function: its crate-relative path and export symbol.
     Function {
@@ -145,6 +150,7 @@ impl PreviewTarget {
 /// A fully resolved preview render, ready to hand to the Hydrolysis or
 /// Apple execution path.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PreviewRequest {
     /// Resolved target platform.
     pub platform: CliPreviewPlatform,

@@ -41,6 +41,7 @@ pub const WEBKIT_TRANSPORT: &str = include_str!("js/webkit_transport.js");
 /// Every field is validated: this arrives from page script, which may be
 /// untrusted, so a malformed request is rejected rather than fatal.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Request {
     /// Correlates the reply with the pending promise in the page.
     pub id: u64,
@@ -64,6 +65,7 @@ struct RawRequest {
 
 /// Why a request from the page could not be understood.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RequestError {
     /// The envelope was not the JSON object the bridge produces.
     #[error("malformed WaterUI bridge envelope: {0}")]
@@ -99,6 +101,7 @@ impl Request {
 
 /// The result of a handler, ready to be delivered back to the page.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Reply {
     /// A serialized JSON value, delivered as JSON so the page's promise
     /// resolves with the value the handler returned.

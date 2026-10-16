@@ -15,6 +15,11 @@
 //! - [`Engine::render`] drains every surface's queued change set into one
 //!   commit per frame, samples the animations at the frame time and renders
 //!   on the render thread.
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 // The recording layer — and now the layer tree — is `cherenkov-record`;
 // these imports keep its modules at their old `crate::*` paths so engine

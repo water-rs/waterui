@@ -22,6 +22,10 @@ use super::NavigationView;
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each tab style variant by variant; a new tab style must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NativeTabStyle {
     /// Platform- and window-adaptive default.
     Automatic = 0,
@@ -44,6 +48,10 @@ pub mod tab_style {
 
     /// Platform- and window-adaptive tab style.
     #[derive(Debug, Clone, Copy, Default)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "field-less style marker used by name"
+    )]
     pub struct Automatic;
 
     impl TabStyle for Automatic {
@@ -54,6 +62,10 @@ pub mod tab_style {
 
     /// Native tab-bar style.
     #[derive(Debug, Clone, Copy, Default)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "field-less style marker used by name"
+    )]
     pub struct TabBar;
 
     impl TabStyle for TabBar {
@@ -64,6 +76,10 @@ pub mod tab_style {
 
     /// Native sidebar or navigation-rail style.
     #[derive(Debug, Clone, Copy, Default)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "field-less style marker used by name"
+    )]
     pub struct Sidebar;
 
     impl TabStyle for Sidebar {
@@ -98,6 +114,10 @@ pub mod tab_style {
 /// interchangeable: a platform that recognizes the symbol renders it at whatever
 /// size and weight its chrome calls for, while a view has to be rasterized at a
 /// chosen size.
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each tab icon source variant by variant; a new tab icon source must fail their build instead of falling into a wildcard arm"
+)]
 pub enum TabIcon {
     /// A symbol the platform knows by name.
     System(SystemIcon),

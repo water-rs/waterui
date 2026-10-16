@@ -138,6 +138,7 @@ impl RustToolchainInstallation {
 
 /// Errors that can occur during Rust toolchain installation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallRustToolchain {
     /// rustup was not found.
     #[error("rustup is required for automatic Rust toolchain fixes but is not on PATH.")]
@@ -733,6 +734,7 @@ impl RustTargetAdditions {
 
 /// Errors from `rustup target add`.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToAddRustTargets {
     /// rustup was not found.
     #[error("rustup is required to add Rust targets but is not on PATH.")]

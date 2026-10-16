@@ -210,6 +210,7 @@ impl HeadlessPlatformWindow {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 /// The outcome of one headless frame pump.
+#[non_exhaustive]
 pub struct HeadlessPumpResult {
     /// Whether the pump rebuilt the view tree.
     pub rebuilt: bool,

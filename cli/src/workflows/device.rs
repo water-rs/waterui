@@ -83,6 +83,7 @@ pub(crate) const PANIC_LOG_QUERY_DEADLINE: std::time::Duration = std::time::Dura
 
 /// Minimum log level for streaming device logs.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum LogLevel {
     /// Only errors
     Error,
@@ -337,6 +338,7 @@ pub struct Running {
 
 /// What a run's supervisor asks the device monitor to do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StopRequest {
     /// Send one termination signal, then wait for the monitor's grace bound.
     Terminate,
@@ -554,6 +556,7 @@ impl Drop for Running {
 
 /// Errors that can occur when running an application on a device
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToRun {
     /// Invalid artifact provided.
     #[error("Invalid artifact")]
@@ -624,6 +627,7 @@ impl ApplicationExit {
 
 /// Reason attached to a clean application exit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ApplicationExitReason {
     /// The launched process returned a successful exit status.
     Completed,
@@ -633,6 +637,10 @@ pub enum ApplicationExitReason {
 
 /// Events emitted by a running application on a device
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each device event variant by variant"
+)]
 pub enum DeviceEvent {
     /// Application has started
     Started,
@@ -681,6 +689,7 @@ impl DeviceEvent {
 
 /// An application crash observed by a device monitor.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Crash {
     /// What ended the application.
     pub cause: CrashCause,
@@ -693,6 +702,7 @@ pub struct Crash {
 
 /// How a process ended: the signal that killed it or the code it exited with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProcessEnd {
     /// The process was killed by a signal.
     Signal(i32),
@@ -766,6 +776,7 @@ impl std::fmt::Display for Crash {
 
 /// What ended a crashed application.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum CrashCause {
     /// A Rust panic captured from the app's output or logs.
     Panic(PanicInfo),
@@ -816,6 +827,7 @@ impl std::fmt::Display for CrashCause {
 
 /// A Rust panic reported by a running application.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PanicInfo {
     /// The panic message payload.
     pub payload: String,
@@ -825,6 +837,7 @@ pub struct PanicInfo {
 
 /// Represents the kind of device
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeviceKind {
     /// Simulator device
     Simulator,
@@ -834,6 +847,7 @@ pub enum DeviceKind {
 
 /// Represents the state of a device
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DeviceState {
     /// Device is booted and ready
     Booted,
@@ -1152,6 +1166,10 @@ async fn fetch_recent_panic_logs(
 ///
 /// The artifact type determines how it's executed.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit marker for the local machine with no fields to add"
+)]
 pub struct Local;
 
 impl Device for Local {

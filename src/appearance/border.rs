@@ -43,6 +43,7 @@ use waterui_layout::EdgeSet;
 ///     .edges(EdgeSet::BOTTOM);
 /// ```
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Border {
     /// The color of the border.
     pub color: Color,

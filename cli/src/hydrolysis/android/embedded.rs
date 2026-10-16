@@ -96,6 +96,7 @@ pub(crate) fn publish_modules(
 
 /// The embedded library's Gradle project, rendered and ready to assemble.
 #[derive(Debug, Clone, Serialize)]
+#[non_exhaustive]
 pub struct RenderedLibrary {
     /// The generated Gradle root the tasks run in.
     pub dir: PathBuf,
@@ -219,6 +220,7 @@ pub async fn render_library(
 /// The artifact `water build` produces for an embedded project, handed back
 /// to the terminal for its summary.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct EmbeddedArtifact {
     /// `target/package/<crate>-<version>-release.aar` inside the project.
     pub aar_path: PathBuf,

@@ -34,6 +34,10 @@ use crate::project::{Manifest, read_project_crate_name};
 /// `views::home`, or — with `expr` — an inline expression such as
 /// `text("hello")`.
 #[derive(Debug, Deserialize, JsonSchema)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the terminal fills every field of the preview arguments; a new field must fail its build instead of taking a default"
+)]
 pub struct PreviewArgs {
     /// Preview target: a `#[preview]` function path (e.g. `views::home`) or,
     /// with `expr`, a `WaterUI` expression returning `impl View`.

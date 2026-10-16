@@ -29,6 +29,7 @@ use crate::apple::provisioning;
 /// `Contents/Frameworks`); every other Apple platform uses the flat layout —
 /// executable, resources and `Frameworks/` all at the bundle root.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct AppleAppLayout {
     /// The `<name>.app` directory itself.
     pub app_path: PathBuf,
@@ -317,6 +318,7 @@ fn apply_mobile_plist_entries(
 /// The SDK an Apple artifact is built and signed for: which SDK plus the
 /// deployment target the produced binary may run on.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct AppleSdkSpec<'a> {
     /// SDK name (`iphoneos`, `iphonesimulator`, `macosx`, `xros`).
     pub sdk_name: &'a str,

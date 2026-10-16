@@ -106,6 +106,7 @@ fn photo_exposes_accessibility_image_after_load(ui: UiBuilder) {
                 PhotoEvent::Error(message) => {
                     last_event_for_event.set(format!("error:{message}"));
                 }
+                other => panic!("unexpected photo event {other:?}"),
             })
             .a11y_role(AccessibilityRole::Image)
             .a11y_label("Sample photo")

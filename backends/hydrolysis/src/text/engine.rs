@@ -178,6 +178,7 @@ pub trait TextEngine: Send + Sync + 'static {
 /// ([`crate::DeclaredFonts`]) is a missing declaration — the shape panics
 /// naming the family instead of silently measuring a substitute face.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FontFamilyResolution {
     /// An unresolved named family falls through to the next list entry.
     #[default]

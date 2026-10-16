@@ -11,6 +11,7 @@ use waterui_core::{IntoSignalF32, metadata::MetadataKey};
 /// This is not a GPU filter: it should avoid offscreen rendering and map to
 /// native alpha properties whenever the backend supports it.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Opacity {
     /// Opacity value where 0.0 is fully transparent and 1.0 is fully opaque.
     pub value: Computed<f32>,

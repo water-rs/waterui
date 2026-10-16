@@ -18,6 +18,7 @@ use target_lexicon::{
 /// This enum replaces the old `Platform` trait with a simpler, more explicit model.
 /// Each variant represents a specific target platform that `WaterUI` can build for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TargetPlatform {
     // Apple platforms
     /// macOS (ARM64)
@@ -65,6 +66,10 @@ pub enum TargetPlatform {
 /// Backend types available for building.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal dispatches each backend variant by variant"
+)]
 pub enum TargetBackend {
     /// Apple backend (Xcode, UIKit/AppKit)
     Apple,
@@ -683,6 +688,7 @@ pub fn ensure_desktop_platform_is_host(
 /// the developer's keychain, while a development package only has to run
 /// where it was built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum PackageAudience {
     /// A package for the developer's own machine: ad hoc signature on macOS,
     /// a direct-install artifact on Android.
@@ -748,6 +754,7 @@ pub struct PackageOptions {
 
 /// How a build for a physical device is code-signed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum DeviceSigning {
     /// Automatic signing with the developer team resolved on the host.
     #[default]
@@ -766,6 +773,7 @@ pub enum DeviceSigning {
 /// instead of the staged bundle. `water run` selects it in debug mode;
 /// packaging and `--release` runs never do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum WebFrontendMode {
     /// Build the frontend and stage its output into the bundle.
     #[default]
