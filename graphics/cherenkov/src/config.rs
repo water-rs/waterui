@@ -15,7 +15,10 @@ impl Bytes {
 /// The engine's memory budgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
-    /// Device-side memory (buffers, textures, the glyph atlas).
+    /// Device-side memory (buffers, textures, the glyph atlas). Registered
+    /// images count against it beside everything else resident: an image
+    /// registration or resize that would overrun it is rejected by the
+    /// backend.
     pub gpu: Bytes,
     /// CPU-side resident image and rasterized glyph cache budget.
     /// This bounds cache residency, not total process memory; surface framebuffers

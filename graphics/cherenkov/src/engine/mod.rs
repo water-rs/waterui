@@ -16,6 +16,7 @@ use std::rc::Weak;
 use std::sync::Arc;
 
 use crate::backend::{Backend, Visibility};
+use crate::error::{RenderError, SurfaceRejection};
 use crate::frame::{FrameTime, Next};
 use cherenkov_record::{ChangeSet, Shared, SurfaceId};
 
@@ -77,6 +78,19 @@ fn drain_visible<B: Backend>(
 /// deadline — and `Idle` when the frame carried nothing for it, so a
 /// hidden surface never reads another surface's demand. Lookup is the
 /// frame's keyed map, so publication is linear in the surface count.
+/// `render`'s answer for an applied frame: `next`, or
+/// [`RenderError::Rejected`] naming the surfaces the frame left out.
+fn rendered(next: Next, rejected: Vec<SurfaceRejection>) -> Result<Next, RenderError> {
+    if rejected.is_empty() {
+        Ok(next)
+    } else {
+        Err(RenderError::Rejected {
+            surfaces: rejected,
+            next,
+        })
+    }
+}
+
 fn publish_next<B: Backend>(
     surfaces: &Surfaces<B>,
     frame_next: &rustc_hash::FxHashMap<SurfaceId, Next>,

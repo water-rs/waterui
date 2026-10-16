@@ -262,8 +262,9 @@ impl<B: Backend> Engine<B> {
     /// registration instead of failing every render that draws it. The
     /// upload is queued in order with every render and does not wait for
     /// the backend. A rejection only the backend can detect (a residency
-    /// budget across every registered image) fails every render that
-    /// draws the image with [`RenderError::Rejected`].
+    /// budget across every registered image) leaves every surface whose
+    /// content draws the image out of the frame, reported as
+    /// [`RenderError::Rejected`].
     ///
     /// # Errors
     /// [`ResourceError::TooLarge`] when the image exceeds
@@ -357,8 +358,11 @@ impl<B: Backend> Engine<B> {
     ///
     /// # Errors
     /// [`RenderError::Hidden`] when every surface is hidden, before
-    /// anything is drained. Any other [`RenderError`] fails this call; a
-    /// surface that failed to render is left in its previous state.
+    /// anything is drained. [`RenderError::Rejected`] when the content of
+    /// some surfaces draws a resource the backend rejected: those surfaces
+    /// were left out of the frame, and every other surface rendered. Any
+    /// other [`RenderError`] fails this call; a surface that failed to
+    /// render is left in its previous state.
     pub fn render(&self, time: FrameTime) -> Result<Next, RenderError> {
         if super::all_hidden(&self.surfaces.borrow()) {
             return Err(RenderError::Hidden);
@@ -390,16 +394,17 @@ impl<B: Backend> Engine<B> {
         self.recycle_commits(&mut reply.commits);
         reply.commits.clear();
         *self.commits.borrow_mut() = reply.commits;
-        let (next, surface_next, stats, frame_commit) = reply.result?;
+        let frame = reply.result?;
         // The frame's main-thread work applies here, on the awaiting
         // caller's thread, before `render` returns: a window surface's
         // drawable presents land inside this call, ordered before the
-        // next frame's acquire. `RenderError` above drops the commit
-        // with its acquired drawables, which a later render re-acquires.
-        <B::Renderer as crate::backend::Renderer>::apply_frame_commit(frame_commit);
-        super::publish_next(&self.surfaces.borrow(), &surface_next);
-        *self.stats.borrow_mut() = stats;
-        Ok(next)
+        // next frame's acquire — a frame that left surfaces out included.
+        // `RenderError` above drops the commit with its acquired
+        // drawables, which a later render re-acquires.
+        <B::Renderer as crate::backend::Renderer>::apply_frame_commit(frame.commit);
+        super::publish_next(&self.surfaces.borrow(), &frame.surface_next);
+        *self.stats.borrow_mut() = frame.stats;
+        super::rendered(frame.next, frame.rejected)
     }
 
     fn recycle_commits(&self, commits: &mut [(SurfaceId, ChangeSet<B>)]) {
@@ -456,8 +461,8 @@ impl<B: ShaderPaint> Engine<B> {
     /// Registers a WGSL shader. The source is validated here, before
     /// anything is queued; pipeline creation is queued in order with every
     /// render and does not wait for the backend. A pipeline the backend
-    /// cannot create fails every render that draws the shader with
-    /// [`RenderError::Rejected`].
+    /// cannot create leaves every surface whose content draws the shader
+    /// out of the frame, reported as [`RenderError::Rejected`].
     ///
     /// # Errors
     /// [`ResourceError::Shader`] when the source fails validation,
@@ -481,8 +486,8 @@ impl<B: crate::BackdropShaders> Engine<B> {
     /// Registers a backdrop effect shader. The source is validated here,
     /// before anything is queued; pipeline creation is queued in order
     /// with every render and does not wait for the backend. A pipeline the
-    /// backend cannot create fails every render that samples the shader
-    /// with [`RenderError::Rejected`].
+    /// backend cannot create leaves every surface that samples the shader
+    /// out of the frame, reported as [`RenderError::Rejected`].
     ///
     /// # Errors
     /// [`ResourceError::Shader`] when the source fails validation or its
@@ -985,12 +990,13 @@ mod tests {
             waker.wake();
             reply
                 .send(RenderReply {
-                    result: Ok((
-                        Next::Idle,
-                        rustc_hash::FxHashMap::default(),
-                        FrameStats::default(),
-                        (),
-                    )),
+                    result: Ok(crate::message::RenderedFrame {
+                        next: Next::Idle,
+                        surface_next: rustc_hash::FxHashMap::default(),
+                        stats: FrameStats::default(),
+                        commit: (),
+                        rejected: Vec::new(),
+                    }),
                     commits,
                     sender: reply.clone(),
                 })
