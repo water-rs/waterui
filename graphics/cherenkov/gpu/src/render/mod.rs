@@ -7001,7 +7001,7 @@ impl GpuRenderer {
                         let retained = &mut content.storage.instances
                             [emission.instances.start + local as usize];
                         let (x, y) = cell_origin(p, c);
-                        instance::set_cell_origin(retained.kind, &mut retained.uv, x, y);
+                        retained.uv = instance::with_cell_origin(retained.kind, retained.uv, x, y);
                         if let PendingOrigin::Cells(_, bands) = &origins[p as usize] {
                             content.storage.refs.extend(
                                 bands
@@ -7042,7 +7042,9 @@ impl GpuRenderer {
         for (inst, p, c) in lowered.cell_patches.drain(..) {
             let (x, y) = cell_origin(p, c);
             let inst = &mut surf.frame.instances[inst as usize];
-            instance::set_cell_origin(inst.meta[0], &mut inst.uv, x, y);
+            let [u0, u1] = instance::with_cell_origin(inst.meta[0], [inst.uv[0], inst.uv[1]], x, y);
+            inst.uv[0] = u0;
+            inst.uv[1] = u1;
         }
         for (inst, p) in lowered.mask_patches.drain(..) {
             let PendingOrigin::Mask(origin) = &origins[p as usize] else {

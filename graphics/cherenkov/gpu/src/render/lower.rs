@@ -4131,7 +4131,7 @@ impl<'a> Lowering<'a> {
                 .resize(first + retained.len(), template);
             for (inst, source) in self.frame.instances[first..].iter_mut().zip(retained) {
                 inst.bounds = source.bounds;
-                inst.uv[..2].copy_from_slice(&source.uv);
+                [inst.uv[0], inst.uv[1]] = source.uv;
                 inst.meta[0] = source.kind;
                 inst.meta[2] = source.first_stop + offset;
                 debug_assert_eq!(variant_of(inst), variant_of(&template));
@@ -4824,15 +4824,17 @@ impl<'a> Lowering<'a> {
             offset,
         );
         if let Some(pending) = pending {
-            for i in 0..emit.cells.len() {
-                let patch = (
+            // Extending from the exact-size range grows each list at most
+            // once per path, where a push per cell can grow it several times.
+            let patches = (0..emit.cells.len()).map(|i| {
+                (
                     u32::try_from(first + i).expect("instance index fits u32"),
                     pending,
                     u32::try_from(i).expect("cell index fits u32"),
-                );
-                self.emission_patches.push(patch);
-                self.cell_patches.push(patch);
-            }
+                )
+            });
+            self.emission_patches.extend(patches.clone());
+            self.cell_patches.extend(patches);
         }
     }
 
@@ -4858,7 +4860,7 @@ impl<'a> Lowering<'a> {
                 f32_f64(f64::from(rect[2]) + offset.x),
                 f32_f64(f64::from(rect[3]) + offset.y),
             ];
-            inst.uv[..2].copy_from_slice(&uv);
+            [inst.uv[0], inst.uv[1]] = uv;
             if !middle.is_none() {
                 // `uv` packs the cell's origin and its stored-less middle,
                 // which the shader reads as its constant coverage for every

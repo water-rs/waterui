@@ -293,13 +293,14 @@ pub fn cell_uv(x: u16, y: u16, middle: Middle) -> [f32; 2] {
     }
 }
 
-/// Stores atlas origin `(x, y)` in the `uv` of an instance of `kind`,
-/// keeping a packed cell's middle.
-pub fn set_cell_origin(kind: u32, uv: &mut [f32], x: u16, y: u16) {
+/// The `uv.xy` of an instance of `kind` whose `uv.xy` is `uv`, moved to
+/// atlas origin `(x, y)`: a packed cell keeps its middle.
+#[must_use]
+pub fn with_cell_origin(kind: u32, [_, middle]: [f32; 2], x: u16, y: u16) -> [f32; 2] {
     if packs_cell_uv(kind) {
-        uv[0] = f32::from_bits(u32::from(x) | u32::from(y) << 16);
+        [f32::from_bits(u32::from(x) | u32::from(y) << 16), middle]
     } else {
-        uv[..2].copy_from_slice(&[f32::from(x), f32::from(y)]);
+        [f32::from(x), f32::from(y)]
     }
 }
 
