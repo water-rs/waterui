@@ -643,27 +643,31 @@ fn emit_runs<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
             bottom,
         ]
     };
-    let start_of = |k: usize| if k == 0 { 0 } else { runs[k - 1].end };
+    let start_of = |k: usize| if k == 0 { 0 } else { runs[k - 1].end() };
     let mut k = 0;
     while k < runs.len() {
-        let run = runs[k];
-        let last = match run.link() {
+        let start = start_of(k);
+        match runs[k].link() {
             Link::Skip => {
                 k += 1;
                 continue;
             }
             Link::Span => {
-                out.spans.push(rect(start_of(k), run.end));
+                out.spans.push(rect(start, runs[k].end()));
                 k += 1;
                 continue;
             }
-            Link::Head(last) => last as usize,
-            Link::Cell(_) => unreachable!("the backward pass marks every cell on its first run"),
-        };
-        let (start, end) = (start_of(k), runs[last].end);
+            Link::Head => {}
+            Link::Cell => unreachable!("a cell's runs follow its head"),
+        }
+        let last = k + runs[k + 1..]
+            .iter()
+            .take_while(|run| run.link() == Link::Cell)
+            .count();
+        let end = runs[last].end();
         let interior = (k..=last)
             .filter(|&i| runs[i].class() == Class::Full)
-            .map(|i| start_of(i)..runs[i].end)
+            .map(|i| start_of(i)..runs[i].end())
             .max_by_key(|run| (run.end - run.start, std::cmp::Reverse(run.start)))
             .map_or(0..0, |run| {
                 (run.start - start) as usize..(run.end - start) as usize
@@ -723,51 +727,53 @@ impl Class {
 /// What a run became in the band's cheapest emission. The forward pass
 /// of [`partition`] sets `Skip`, `Span` or `Cell` on each run as the end
 /// of the cheapest prefix; the backward pass then marks the first run of
-/// every chosen cell `Head`, and the emission walk only lands on runs
-/// that start a choice.
+/// every chosen cell `Head` and the rest of it `Cell`, so the emission
+/// walk reads each cell as a `Head` and the `Cell` runs after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Link {
     /// The run is empty and emits nothing.
-    Skip,
+    Skip = 0,
     /// The run is full and emits a span.
-    Span,
-    /// A cell spans from the run at the index through this run.
-    Cell(u32),
-    /// A cell spans from this run through the run at the index.
-    Head(u32),
+    Span = 1,
+    /// The run is part of a cell that starts at an earlier run.
+    Cell = 2,
+    /// The run starts a cell.
+    Head = 3,
 }
 
 /// A maximal run of equal-class columns in one band, ending at column
-/// `end`; it starts where the run before it ends, or at column 0. The
-/// emission keeps one per class change, so the record is one word of
-/// columns and one `mark`: the [`Class`] in bits 0–1, the [`Link`] kind
-/// in bits 2–3 and a link's run index above them. Columns and indices
-/// are `u32`: a band is at most a surface wide, far below their range.
+/// [`Run::end`]; it starts where the run before it ends, or at column 0.
+/// The emission keeps one per class change of its widest band, so the
+/// record is one word: the [`Class`] in bits 0–1, the [`Link`] in bits
+/// 2–3, the [`Run::OPENS`] flag in bit 4, and the end column above them.
 #[derive(Clone, Copy, Debug)]
-struct Run {
-    end: u32,
-    mark: u32,
-}
-
-// The emission scratch holds one `Run` per class change of its widest
-// band: two words, like an `(end, class)` interval.
-const _: () = assert!(size_of::<Run>() == 8);
+struct Run(u32);
 
 impl Run {
-    /// Bits of `mark` below a link's run index.
-    const INDEX_SHIFT: u32 = 4;
+    /// Bits below the end column.
+    const END_SHIFT: u32 = 5;
+    /// Set by [`partition`] on a run that became the cheapest cell start
+    /// so far: the cell that ends at any later run starts at the nearest
+    /// run carrying it.
+    const OPENS: u32 = 1 << 4;
 
-    /// A run of `class` ending at `end`, not yet partitioned.
-    const fn new(end: u32, class: Class) -> Self {
-        Self {
-            end,
-            mark: class as u32,
-        }
+    /// The record of a run of `class` ending at `end`.
+    fn new(end: u32, class: Class) -> Self {
+        assert!(
+            end < 1 << (u32::BITS - Self::END_SHIFT),
+            "a band's columns fit a run's end"
+        );
+        Self(end << Self::END_SHIFT | class as u32)
+    }
+
+    /// The column the run ends at.
+    const fn end(self) -> u32 {
+        self.0 >> Self::END_SHIFT
     }
 
     /// The run's class.
     const fn class(self) -> Class {
-        match self.mark & 0b11 {
+        match self.0 & 0b11 {
             0 => Class::Empty,
             1 => Class::Full,
             _ => Class::Partial,
@@ -776,28 +782,27 @@ impl Run {
 
     /// What the run became; `Skip` until [`partition`] sets it.
     const fn link(self) -> Link {
-        let index = self.mark >> Self::INDEX_SHIFT;
-        match self.mark >> 2 & 0b11 {
+        match self.0 >> 2 & 0b11 {
             0 => Link::Skip,
             1 => Link::Span,
-            2 => Link::Cell(index),
-            _ => Link::Head(index),
+            2 => Link::Cell,
+            _ => Link::Head,
         }
     }
 
-    /// Records what the run became, keeping its class.
-    fn set_link(&mut self, link: Link) {
-        let (kind, index) = match link {
-            Link::Skip => (0, 0),
-            Link::Span => (1, 0),
-            Link::Cell(index) => (2, index),
-            Link::Head(index) => (3, index),
-        };
-        assert!(
-            index < 1 << (u32::BITS - Self::INDEX_SHIFT),
-            "a band's run index fits its mark"
-        );
-        self.mark = self.mark & 0b11 | kind << 2 | index << Self::INDEX_SHIFT;
+    /// Records what the run became, keeping its end, class and flag.
+    const fn set_link(&mut self, link: Link) {
+        self.0 = self.0 & !0b1100 | (link as u32) << 2;
+    }
+
+    /// Whether the run carries [`Run::OPENS`].
+    const fn opens(self) -> bool {
+        self.0 & Self::OPENS != 0
+    }
+
+    /// Sets [`Run::OPENS`].
+    const fn mark_opens(&mut self) {
+        self.0 |= Self::OPENS;
     }
 }
 
@@ -805,7 +810,7 @@ impl Run {
 /// when it has the same class.
 fn push_run(runs: &mut Vec<Run>, end: u32, class: Class) {
     match runs.last_mut() {
-        Some(run) if run.class() == class => run.end = end,
+        Some(run) if run.class() == class => *run = Run::new(end, class),
         _ => runs.push(Run::new(end, class)),
     }
 }
@@ -885,51 +890,59 @@ const INSTANCE_BYTES: u32 = size_of::<Instance>() as u32 * INSTANCE_WEIGHT.0 / I
 /// A cell from run `j` through run `k` costs `before_j − sh · start_j +
 /// instance + sh · end_k`, so the cheapest cell ending at `k` starts at
 /// the running minimum of `before_j − sh · start_j` over non-empty runs,
-/// and one pass solves the band. The backward pass marks each emitted
-/// cell on its first run.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "runs never outnumber columns"
-)]
+/// and one pass solves the band. Each run that lowers the minimum
+/// carries [`Run::OPENS`], so a cell ending at `k` starts at the nearest
+/// such run at or before `k`; the backward pass marks each emitted cell
+/// from there.
 fn partition(runs: &mut [Run], sh: usize) {
     let sh = i64::from(u32::try_from(sh).expect("a band is at most STRIP_H rows"));
     let instance = i64::from(INSTANCE_BYTES);
     // The cheapest cell start so far, as `before_j − sh · start_j`.
-    let mut open: Option<(i64, usize)> = None;
+    let mut open: Option<i64> = None;
     // The least byte cost of emitting every run before run `k`, and the
     // column run `k` starts at.
     let (mut before, mut start) = (0, 0);
-    for (k, run) in runs.iter_mut().enumerate() {
+    for run in runs.iter_mut() {
         let (cost, link) = if run.class() == Class::Empty {
             // A cell never starts or ends on a gap.
             (before, Link::Skip)
         } else {
             let here = before - sh * i64::from(start);
-            if open.is_none_or(|(best, _)| here < best) {
-                open = Some((here, k));
-            }
-            let (best, from) = open.expect("a non-empty run opened a cell start");
-            let cell = best + instance + sh * i64::from(run.end);
+            let best = match open {
+                Some(best) if best <= here => best,
+                _ => {
+                    run.mark_opens();
+                    *open.insert(here)
+                }
+            };
+            let cell = best + instance + sh * i64::from(run.end());
             let span = before + instance;
             if run.class() == Class::Full && span <= cell {
                 (span, Link::Span)
             } else {
-                (cell, Link::Cell(from as u32))
+                (cell, Link::Cell)
             }
         };
         run.set_link(link);
-        (before, start) = (cost, run.end);
+        (before, start) = (cost, run.end());
     }
     let mut k = runs.len();
     while k > 0 {
         let last = k - 1;
         k = match runs[last].link() {
             Link::Skip | Link::Span => last,
-            Link::Cell(from) => {
-                runs[from as usize].set_link(Link::Head(last as u32));
-                from as usize
+            Link::Cell => {
+                let from = runs[..=last]
+                    .iter()
+                    .rposition(|run| run.opens())
+                    .expect("a cell ends at or after the run that opened it");
+                runs[from].set_link(Link::Head);
+                for run in &mut runs[from + 1..=last] {
+                    run.set_link(Link::Cell);
+                }
+                from
             }
-            Link::Head(_) => unreachable!("the forward pass marks no heads"),
+            Link::Head => unreachable!("the forward pass marks no heads"),
         };
     }
 }
@@ -1377,7 +1390,7 @@ mod tests {
         }
         let mut runs = Vec::new();
         dense_runs(&coverage.data, coverage.w, STRIP_H, &mut runs);
-        let classes: Vec<_> = runs.iter().map(|run| (run.end, run.class())).collect();
+        let classes: Vec<_> = runs.iter().map(|run| (run.end(), run.class())).collect();
         assert_eq!(
             classes,
             [(10, Class::Empty), (13, Class::Partial), (40, Class::Empty)]
@@ -1496,7 +1509,7 @@ mod emit_eq {
             dense_runs(&strip, w, sh, &mut dense);
             sparse_runs(&runs, &ends, w, &mut sparse);
             let classes = |runs: &[Run]| -> Vec<_> {
-                runs.iter().map(|run| (run.end, run.class())).collect()
+                runs.iter().map(|run| (run.end(), run.class())).collect()
             };
             assert_eq!(classes(&dense), classes(&sparse));
             let (mut dp, mut sp) = (PathEmit::default(), PathEmit::default());
