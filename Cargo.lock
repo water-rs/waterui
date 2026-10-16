@@ -12506,7 +12506,7 @@ dependencies = [
 [[package]]
 name = "waterui-barcode"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/barcode?branch=feat%2Fnami-0.13#2ca79e768cd4ba07edc1ed5e9d4f7484ce159b49"
+source = "git+https://github.com/water-rs/barcode?branch=dev#6a33701aedc1ca3533dc6bd7c4594a5ed1823f2a"
 dependencies = [
  "barcoders",
  "fast_qr",
@@ -12589,7 +12589,7 @@ dependencies = [
 [[package]]
 name = "waterui-canvas"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/canvas?branch=feat%2Fnami-0.13#b5eaaa419c6a92966b46d3e4b9f09e5999d4960f"
+source = "git+https://github.com/water-rs/canvas?branch=dev#60b0ac8165a13351b7abe888d7aa7aef35f993c4"
 dependencies = [
  "image",
  "kurbo 0.13.1",
@@ -12603,7 +12603,7 @@ dependencies = [
 [[package]]
 name = "waterui-chart"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/chart?branch=feat%2Fnami-0.13#0fea998095f7c79d31b6222c4cf3886ea592c45a"
+source = "git+https://github.com/water-rs/chart?branch=dev#38de01d41704e040dd01420b50de3884ca75677b"
 dependencies = [
  "bytemuck",
  "nami",
@@ -13080,7 +13080,7 @@ dependencies = [
 [[package]]
 name = "waterui-map-gpu"
 version = "0.3.0"
-source = "git+https://github.com/water-rs/map-gpu?branch=feat%2Fnami-0.13#c43bbd46834b81d24a07cb3928bbcafaea50823a"
+source = "git+https://github.com/water-rs/map-gpu?branch=dev#8f2b86fb65e4164a09cd5032d1502b533f99b8bc"
 dependencies = [
  "blocking",
  "executor-core",
@@ -13115,7 +13115,7 @@ dependencies = [
 [[package]]
 name = "waterui-math"
 version = "0.2.0"
-source = "git+https://github.com/water-rs/math?branch=feat%2Fnami-0.13#030506e9963a255b2b677f10db0855ae15acde81"
+source = "git+https://github.com/water-rs/math?branch=dev#7cf269a89f99bfe99f1ff51e9af5a603b7def353"
 dependencies = [
  "kurbo 0.13.1",
  "mathcat",
@@ -13426,7 +13426,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=feat%2Fnami-0.13#f3cbeeb96e7b1d8f4c341bada9f724c0dcd39acf"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#250fae5caedf0ed2c151b84f71245adcb101bda1"
 dependencies = [
  "async-channel",
  "executor-core",
