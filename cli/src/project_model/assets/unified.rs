@@ -224,18 +224,18 @@ fn with_bundled_fonts(
             );
         }
     }
-    staged.assets.extend(
-        planned
-            .into_iter()
-            .map(|(logical_path, source_path)| PlannedAsset {
-                mount: String::new(),
+    staged
+        .assets
+        .extend(planned.into_iter().map(|(logical_path, source_path)| {
+            PlannedAsset::new(
+                String::new(),
                 source_path,
-                relative_path: logical_path.clone(),
+                logical_path.clone(),
                 logical_path,
-                kind: AssetKind::Font,
-                role: AssetRole::Regular,
-            }),
-    );
+                AssetKind::Font,
+                AssetRole::Regular,
+            )
+        }));
     Ok(staged)
 }
 
@@ -560,12 +560,12 @@ pub fn scan_project_fonts(manifest: &BundleManifest) -> eyre::Result<Vec<super::
 /// Enough for the icon paths: `include_bundle!` mounts are sibling namespaces
 /// that can never claim the `AppIcon` role.
 fn build_main_manifest(project: &Project) -> eyre::Result<BundleManifest> {
-    Ok(BundleManifest {
-        crate_root: project.root().to_path_buf(),
-        assets_root: project.assets_dir(),
-        mounts: Vec::new(),
-        assets: plan_main_assets(project)?,
-    })
+    Ok(BundleManifest::new(
+        project.root().to_path_buf(),
+        project.assets_dir(),
+        Vec::new(),
+        plan_main_assets(project)?,
+    ))
 }
 
 fn plan_main_assets(project: &Project) -> eyre::Result<Vec<PlannedAsset>> {
@@ -634,19 +634,16 @@ pub async fn build_manifest(
             crate::web::build_frontend(project.host(), package_manager, &meta).await?;
         }
         assets.extend(plan_mount(&meta.path, &meta.mount)?);
-        mounts.push(BundleMount {
-            name: meta.mount,
-            root: meta.path,
-        });
+        mounts.push(BundleMount::new(meta.mount, meta.path));
     }
 
     assets.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
-    Ok(BundleManifest {
-        crate_root: project.root().to_path_buf(),
-        assets_root: project.assets_dir(),
+    Ok(BundleManifest::new(
+        project.root().to_path_buf(),
+        project.assets_dir(),
         mounts,
         assets,
-    })
+    ))
 }
 
 async fn copy_manifest_assets(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
@@ -1640,10 +1637,7 @@ mod tests {
 
     #[test]
     fn android_colors_derive_the_launcher_background_and_carry_the_launch_colors() {
-        let theme = ThemeConfig {
-            accent: Some(DEFAULT_ACCENT),
-            ..ThemeConfig::default()
-        };
+        let theme = ThemeConfig::default().with_accent(DEFAULT_ACCENT);
         let no_launch = LaunchAssets {
             plan: LaunchPlan::resolve(None, None, &empty_manifest()),
             artwork: None,
@@ -1672,10 +1666,10 @@ mod tests {
 
         let launch = LaunchAssets {
             plan: LaunchPlan::resolve(
-                Some(&LaunchConfig {
-                    background: Some(HexColor::from_rgb([0x0B, 0x1E, 0x3F])),
-                    background_dark: Some(HexColor::from_rgb([0, 0, 0])),
-                }),
+                Some(&LaunchConfig::new(
+                    Some(HexColor::from_rgb([0x0B, 0x1E, 0x3F])),
+                    Some(HexColor::from_rgb([0, 0, 0])),
+                )),
                 None,
                 &empty_manifest(),
             ),
@@ -1735,12 +1729,7 @@ mod tests {
     }
 
     fn empty_manifest() -> BundleManifest {
-        BundleManifest {
-            crate_root: PathBuf::new(),
-            assets_root: PathBuf::new(),
-            mounts: Vec::new(),
-            assets: Vec::new(),
-        }
+        BundleManifest::new(PathBuf::new(), PathBuf::new(), Vec::new(), Vec::new())
     }
 
     /// Re-staging an unchanged manifest must rewrite nothing: a full
@@ -1753,19 +1742,19 @@ mod tests {
             let tempdir = tempfile::tempdir().expect("tempdir");
             let source = tempdir.path().join("note.txt");
             std::fs::write(&source, b"asset bytes").expect("write source");
-            let manifest = BundleManifest {
-                crate_root: tempdir.path().to_path_buf(),
-                assets_root: tempdir.path().to_path_buf(),
-                mounts: Vec::new(),
-                assets: vec![PlannedAsset {
-                    mount: String::new(),
-                    source_path: source.clone(),
-                    relative_path: PathBuf::from("note.txt"),
-                    logical_path: PathBuf::from("note.txt"),
-                    kind: AssetKind::Data,
-                    role: AssetRole::Regular,
-                }],
-            };
+            let manifest = BundleManifest::new(
+                tempdir.path().to_path_buf(),
+                tempdir.path().to_path_buf(),
+                Vec::new(),
+                vec![PlannedAsset::new(
+                    String::new(),
+                    source.clone(),
+                    PathBuf::from("note.txt"),
+                    PathBuf::from("note.txt"),
+                    AssetKind::Data,
+                    AssetRole::Regular,
+                )],
+            );
             let bundle = tempdir.path().join("staged").join(ASSET_ROOT_DIR);
             write_library_resources(&manifest, &tempdir.path().join("staged"))
                 .await

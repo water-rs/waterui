@@ -377,10 +377,10 @@ impl waterui_chromium::CustomCdpSession for CefCdpSession {
         // `waterui_chromium` surface, which hands back only the receiver.
         self.watch_events(move |event| {
             if event.method == method {
-                let _ = sender.try_send(waterui_chromium::CdpEvent {
-                    method: event.method.clone().into(),
-                    params: event.params.clone(),
-                });
+                let _ = sender.try_send(waterui_chromium::CdpEvent::new(
+                    event.method.clone(),
+                    event.params.clone(),
+                ));
             }
         })
         .forget();

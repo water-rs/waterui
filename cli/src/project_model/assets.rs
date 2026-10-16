@@ -331,12 +331,12 @@ fn manifest_font_declarations(
         let platforms =
             font_platform_scope(font.platforms.clone(), &manifest.package.name, &font.name)
                 .wrap_err_with(|| format!("[[assets.font]] entry '{}' in Water.toml", font.name))?;
-        declarations.push(FontDeclaration {
-            name: font.name.clone(),
+        declarations.push(FontDeclaration::new(
+            font.name.clone(),
             source,
-            crate_name: manifest.package.name.clone(),
+            manifest.package.name.clone(),
             platforms,
-        });
+        ));
     }
     Ok(declarations)
 }
@@ -650,9 +650,9 @@ impl From<FontDeclaration> for RecordedFont {
 
 impl From<RecordedFont> for FontDeclaration {
     fn from(font: RecordedFont) -> Self {
-        Self {
-            name: font.name,
-            source: match font.source {
+        Self::new(
+            font.name,
+            match font.source {
                 RecordedFontSource::Local {
                     crate_root,
                     relative_path,
@@ -663,9 +663,9 @@ impl From<RecordedFont> for FontDeclaration {
                 RecordedFontSource::Remote { url } => FontSource::Remote { url },
                 RecordedFontSource::BuiltIn => FontSource::BuiltIn,
             },
-            crate_name: font.crate_name,
-            platforms: font.platforms,
-        }
+            font.crate_name,
+            font.platforms,
+        )
     }
 }
 
@@ -1528,6 +1528,10 @@ async fn cached_file_len(name: &str, cache_file: &Path) -> eyre::Result<Option<u
 /// `water fetch` and `water create` report these; a build never produces
 /// them because it never fetches — it turns the same states into errors.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each fetch outcome variant by variant"
+)]
 pub enum FetchOutcome {
     /// Already satisfied — a crate-local file that exists, or a cache entry
     /// — so nothing was downloaded.
@@ -1558,6 +1562,7 @@ pub enum FetchOutcome {
 
 /// Why seeding the font cache failed.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SeedFontCacheError {
     /// A generated crate whose manifest a build scans could not be scaffolded.
     #[error("{0:#}")]
@@ -2716,14 +2721,14 @@ mod tests {
 
         let outcomes = smol::block_on(fetch_fonts(
             &crate::toolchain::Host::current(),
-            vec![FontDeclaration {
-                name: "Inter".to_string(),
-                source: FontSource::Remote {
+            vec![FontDeclaration::new(
+                "Inter".to_string(),
+                FontSource::Remote {
                     url: url.to_string(),
                 },
-                crate_name: "some-theme".to_string(),
-                platforms: None,
-            }],
+                "some-theme".to_string(),
+                None,
+            )],
             cache_dir.path(),
             place_font,
         ))
@@ -2763,14 +2768,14 @@ mod tests {
 
         let outcomes = smol::block_on(fetch_fonts(
             &crate::toolchain::Host::current(),
-            vec![FontDeclaration {
-                name: "Inter".to_string(),
-                source: FontSource::Remote {
+            vec![FontDeclaration::new(
+                "Inter".to_string(),
+                FontSource::Remote {
                     url: url.to_string(),
                 },
-                crate_name: "some-theme".to_string(),
-                platforms: None,
-            }],
+                "some-theme".to_string(),
+                None,
+            )],
             cache_dir.path(),
             must_not_download,
         ))
@@ -2791,14 +2796,14 @@ mod tests {
 
         let error = smol::block_on(fetch_fonts(
             &crate::toolchain::Host::current(),
-            vec![FontDeclaration {
-                name: "Inter".to_string(),
-                source: FontSource::Remote {
+            vec![FontDeclaration::new(
+                "Inter".to_string(),
+                FontSource::Remote {
                     url: "https://example.com/inter.ttf".to_string(),
                 },
-                crate_name: "some-theme".to_string(),
-                platforms: None,
-            }],
+                "some-theme".to_string(),
+                None,
+            )],
             cache_dir.path(),
             fail_download,
         ))
@@ -2820,12 +2825,12 @@ mod tests {
 
         let error = smol::block_on(fetch_fonts(
             &crate::toolchain::Host::current(),
-            vec![FontDeclaration {
-                name: "Noto Color Emoji".to_string(),
-                source: FontSource::BuiltIn,
-                crate_name: "some-app".to_string(),
-                platforms: None,
-            }],
+            vec![FontDeclaration::new(
+                "Noto Color Emoji".to_string(),
+                FontSource::BuiltIn,
+                "some-app".to_string(),
+                None,
+            )],
             cache_dir.path(),
             place_unpinned_bytes,
         ))
@@ -2850,12 +2855,12 @@ mod tests {
 
         let outcomes = smol::block_on(fetch_fonts(
             &crate::toolchain::Host::current(),
-            vec![FontDeclaration {
-                name: "No Such Family".to_string(),
-                source: FontSource::BuiltIn,
-                crate_name: "some-theme".to_string(),
-                platforms: None,
-            }],
+            vec![FontDeclaration::new(
+                "No Such Family".to_string(),
+                FontSource::BuiltIn,
+                "some-theme".to_string(),
+                None,
+            )],
             cache_dir.path(),
             must_not_download,
         ))
@@ -2880,15 +2885,15 @@ mod tests {
 
         let outcomes = smol::block_on(fetch_fonts(
             &crate::toolchain::Host::current(),
-            vec![FontDeclaration {
-                name: "Roboto".to_string(),
-                source: FontSource::Local {
+            vec![FontDeclaration::new(
+                "Roboto".to_string(),
+                FontSource::Local {
                     crate_root: root.path().to_path_buf(),
                     relative_path: PathBuf::from("assets/fonts/Roboto-Variable.ttf"),
                 },
-                crate_name: "some-theme".to_string(),
-                platforms: None,
-            }],
+                "some-theme".to_string(),
+                None,
+            )],
             cache_dir.path(),
             must_not_download,
         ))
@@ -3043,15 +3048,15 @@ mod tests {
         let root = tempdir().expect("temp root");
         let error = smol::block_on(resolve_fonts(
             &crate::toolchain::Host::current(),
-            vec![FontDeclaration {
-                name: "Roboto".to_string(),
-                source: FontSource::Local {
+            vec![FontDeclaration::new(
+                "Roboto".to_string(),
+                FontSource::Local {
                     crate_root: root.path().to_path_buf(),
                     relative_path: PathBuf::from("assets/fonts/Roboto-Variable.ttf"),
                 },
-                crate_name: "some-theme".to_string(),
-                platforms: None,
-            }],
+                "some-theme".to_string(),
+                None,
+            )],
         ))
         .expect_err("a missing crate-local font must be an error");
 

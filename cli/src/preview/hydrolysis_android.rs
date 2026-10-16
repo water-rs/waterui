@@ -728,10 +728,12 @@ async fn pull_outputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use crate::toolchain::testing::TestMachine;
 
     /// The fake `adb` logs every invocation's argv to `WATERUI_FAKE_ADB_LOG`;
     /// canned replies come from response files.
+    #[cfg(unix)]
     fn adb_test_machine() -> (TestMachine, Host, PathBuf) {
         let machine = TestMachine::new();
         let sdk = machine.install_android_sdk();
@@ -746,6 +748,7 @@ mod tests {
 
     /// The logged adb argv — one invocation per line, none when adb never
     /// ran.
+    #[cfg(unix)]
     fn adb_argv(log: &Path) -> String {
         match std::fs::read_to_string(log) {
             Ok(argv) => argv,
@@ -757,6 +760,7 @@ mod tests {
     /// A staged payload: one library plus an asset bundle holding a nested
     /// image and the bundle's sync stamp, inside a preview cache under the
     /// scratch machine's root.
+    #[cfg(unix)]
     fn staged_payload(machine: &TestMachine) -> DevicePayload {
         let lib_dir = machine.dir("payload/lib");
         std::fs::write(lib_dir.join("libx.so"), b"\x7fELF-library").expect("lib");
@@ -775,21 +779,26 @@ mod tests {
     /// The staging path a scripted run works under — one of the names
     /// [`push_staging_dir`] produces, passed explicitly since the scripted
     /// tests drive one step at a time.
+    #[cfg(unix)]
     const STAGING_ONE: &str = "/data/local/tmp/waterui-preview-first";
 
     /// A second staging path, for a later run's preparation that must
     /// sweep what [`STAGING_ONE`] left.
+    #[cfg(unix)]
     const STAGING_TWO: &str = "/data/local/tmp/waterui-preview-second";
 
     /// The positional arguments that end a run preparation's argv.
+    #[cfg(unix)]
     const PREPARE_ARGS: &str = "sh files/waterui-preview preview-run.json payload lib.stamp \
                                 resources.stamp lib resources";
 
     /// The run config a test run ships.
+    #[cfg(unix)]
     const RUN_CONFIG: &[u8] = br#"{"width":320,"height":240}"#;
 
     /// The abstract-domain socket name the fake forward names — the same
     /// `localabstract:` spec `device_host` registers.
+    #[cfg(unix)]
     const HOST_SOCKET_SPEC: &str = "localabstract:dev.waterui.hydrolysis.preview";
 
     /// What the fake preview host does with each connection it accepts, in
@@ -892,6 +901,7 @@ mod tests {
     /// fake adb forwards to — plus the staged payload and host APK a run
     /// sends it. The run config the device receives lands in a file the
     /// test reads.
+    #[cfg(unix)]
     struct RenderingDevice {
         machine: TestMachine,
         host: Host,
@@ -903,6 +913,7 @@ mod tests {
         fake_host: FakeHost,
     }
 
+    #[cfg(unix)]
     impl RenderingDevice {
         /// A device with no live host: the probe's connection hangs up, and
         /// the host the run then starts serves normally.
@@ -1032,6 +1043,7 @@ mod tests {
     }
 
     /// The index of the one argv line containing `needle`.
+    #[cfg(unix)]
     fn line_of(lines: &[&str], needle: &str) -> usize {
         let found: Vec<usize> = lines
             .iter()
@@ -1046,6 +1058,7 @@ mod tests {
     /// The per-run staging directory a run's argv names: the first
     /// `/data/local/tmp/waterui-preview-<pid>-<nanos>` argument — every
     /// occurrence in one run is the same name.
+    #[cfg(unix)]
     fn staging_of(argv: &str) -> &str {
         const MARKER: &str = "/data/local/tmp/waterui-preview-";
         let start = argv.find(MARKER).expect("a per-run staging name");

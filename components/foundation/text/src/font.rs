@@ -93,6 +93,10 @@ pub struct ResolvedFont {
 /// Exhaustive on purpose: every backend maps each design to a face, so a new
 /// design is a change every backend has to answer, and the compiler says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each font design variant by variant; a new font design must fail their build instead of falling into a wildcard arm"
+)]
 pub enum FontDesign {
     /// The platform's default proportional face.
     #[default]
@@ -160,6 +164,10 @@ impl ResolvedFont {
 
 /// Font weight enumeration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the nine CSS weights from 100 to 900"
+)]
 pub enum FontWeight {
     /// Thin weight (100).
     Thin,
@@ -195,6 +203,7 @@ impl_constant!(Font, ResolvedFont, FontWeight, FontDesign);
 /// [`FontFamily::Inherited`]. `Binding<Option<Str>>` therefore passes
 /// straight to [`Font::family`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum FontFamily {
     /// Keep the family the font already resolves to.
     #[default]
@@ -401,6 +410,10 @@ macro_rules! impl_font {
     ($name:ident, $doc:expr, $size:expr, $weight:expr) => {
         #[doc = $doc]
         #[derive(Debug, Clone, Copy)]
+        #[expect(
+            clippy::exhaustive_structs,
+            reason = "field-less font slot resolved by type and used by name"
+        )]
         pub struct $name;
 
         impl FontSlot for $name {

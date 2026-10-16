@@ -80,6 +80,10 @@ impl Default for Color {
 
 /// A colour already in the working space: resolves to itself.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "newtype over a working-space color: the wrapped color is the whole value"
+)]
 pub struct Working(pub WorkingColor);
 
 impl Resolvable for Working {
@@ -195,6 +199,7 @@ impl<T> DerefMut for WithOpacity<T> {
 
 /// Errors that can occur when parsing hexadecimal color strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HexColorError {
     /// The provided string does not have the expected 6 hexadecimal digits.
     InvalidLength,
@@ -473,6 +478,10 @@ macro_rules! environment_color {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
         #[derive(Debug, Clone, Copy)]
+        #[expect(
+            clippy::exhaustive_structs,
+            reason = "field-less color token resolved by type and used by name"
+        )]
         pub struct $name;
 
         impl Resolvable for $name {
@@ -545,6 +554,10 @@ environment_color!(ScrimColor, "Scrim color key for environment queries.");
 /// a map style — resolve [`CurrentColorScheme`] so the choice follows a
 /// switch instead of being made once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the application draws in light or dark appearance"
+)]
 pub enum ColorScheme {
     /// Light appearance (light backgrounds, dark text).
     #[default]
@@ -557,6 +570,10 @@ impl_constant!(ColorScheme);
 
 /// Environment key that resolves to the installed [`ColorScheme`].
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less environment key used by name"
+)]
 pub struct CurrentColorScheme;
 
 impl Resolvable for CurrentColorScheme {
@@ -589,6 +606,7 @@ macro_rules! color_const {
         paste! {
             #[derive(Debug, Clone, Copy)]
             #[doc=$doc]
+            #[expect(clippy::exhaustive_structs, reason = "field-less color token resolved by type and used by name")]
             pub struct $name;
 
             impl $name {

@@ -237,6 +237,7 @@ use waterui_layout::stack::vstack;
 /// [`WebView::can_go_forward`], and it used to appear here as a `#[doc(hidden)]`
 /// variant every `match` still had to spell out.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum WebViewEvent {
     /// The web view is about to navigate to a new URL.
     WillNavigate {
@@ -273,6 +274,7 @@ impl From<WebViewEvent> for BackendEvent {
 /// [`WebView::can_go_back`] and [`WebView::can_go_forward`] read — so it travels
 /// here rather than in [`WebViewEvent`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum BackendEvent {
     /// Something worth telling the application about.
     Event(WebViewEvent),
@@ -288,6 +290,7 @@ pub enum BackendEvent {
 
 /// Errors that can occur in the `WebView` component.
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WebViewError {
     /// A network error occurred.
     #[error("Network error: {0}")]
@@ -901,11 +904,7 @@ impl WebViewOpen {
         script: impl Into<Str>,
         time: ScriptInjectionTime,
     ) -> Self {
-        let script = UserScript {
-            key: key.into(),
-            source: script.into(),
-            time,
-        };
+        let script = UserScript::new(key, script, time);
         match self
             .scripts
             .iter_mut()

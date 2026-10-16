@@ -59,6 +59,10 @@ pub use transition::{
 /// The `NavigationView` contains a navigation bar with a title and other
 /// configuration options, along with the actual content to display.
 #[must_use]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole navigation view, so a new field must fail their build instead of being ignored"
+)]
 pub struct NavigationView {
     /// The navigation bar for this view
     pub bar: Bar,
@@ -92,6 +96,7 @@ impl Debug for NavigationView {
 
 /// Reactive policy and lifecycle handlers attached to one destination.
 #[doc(hidden)]
+#[non_exhaustive]
 pub struct NavigationDestinationState {
     /// Whether a user or system initiated pop may begin.
     pub pop_enabled: Computed<bool>,
@@ -175,6 +180,10 @@ type PathPopHandler = Rc<dyn Fn(usize)>;
 /// A transaction always replaces a suffix: the first [`Self::retained_prefix`]
 /// entries stay untouched, the [`Self::removed`] entries above them are
 /// discarded, and [`Self::inserted`] is appended in their place.
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole navigation transaction, so a new field must fail their build instead of being ignored"
+)]
 pub struct NavigationTransaction {
     /// Stack-scoped identifier acknowledged by
     /// [`NavigationController::transition_completed`] or
@@ -683,6 +692,10 @@ impl View for NavigationView {
 /// `navigationBarTitleDisplayMode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each title display mode variant by variant; a new title display mode must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NavigationTitleDisplayMode {
     /// System decides based on context (large on root, inline when pushed).
     #[default]
@@ -701,6 +714,10 @@ pub enum NavigationTitleDisplayMode {
 /// Semantic placement for one native navigation toolbar item.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each toolbar placement variant by variant; a new toolbar placement must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NavigationToolbarPlacement {
     /// Principal title-area content.
     Principal = 0,
@@ -724,6 +741,7 @@ pub enum NavigationToolbarPlacement {
 
 /// One semantic native toolbar item.
 #[must_use]
+#[non_exhaustive]
 pub struct NavigationToolbarItem {
     /// Semantic placement resolved by each platform backend.
     pub placement: NavigationToolbarPlacement,
@@ -748,6 +766,10 @@ pub struct NavigationToolbarItem {
 /// The two forms are not interchangeable: a platform that recognizes the symbol
 /// draws it at whatever size and weight its chrome calls for, while a view has
 /// to be rendered into an image at a chosen size.
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each toolbar icon source variant by variant; a new toolbar icon source must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ToolbarItemIcon {
     /// A symbol the platform knows by name.
     System(SystemIcon),
@@ -818,6 +840,7 @@ impl NavigationToolbarItem {
 
 /// Native toolbar contents attached to one navigation destination.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct NavigationToolbar {
     /// Semantic toolbar items in declaration order.
     pub items: Vec<NavigationToolbarItem>,
@@ -843,6 +866,10 @@ impl NavigationToolbar {
 /// Represents the appearance and behavior of a navigation bar, including
 /// its title, color, and visibility.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole navigation bar configuration, so a new field must fail their build instead of being ignored"
+)]
 pub struct Bar {
     /// The title view displayed in the navigation bar
     pub title: AnyView,
@@ -884,6 +911,10 @@ impl Default for Bar {
 /// behavior, and a renderer with no such affordance (a Mac list, say) ignores
 /// it, which is why it wraps as [`IgnorableMetadata`].
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less metadata marker inserted by name"
+)]
 pub struct NavigationLinkHint;
 
 impl MetadataKey for NavigationLinkHint {}
@@ -895,6 +926,7 @@ impl MetadataKey for NavigationLinkHint {}
 /// both states in one value is what keeps "colored but unresolved" from being
 /// representable, which is the state backends used to have to panic on.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum BarColor {
     /// An author-specified color that has not been resolved yet.
     Unresolved(Computed<Color>),
@@ -933,6 +965,7 @@ impl BarColor {
 /// the destination view when the link is activated.
 #[must_use]
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NavigationLink<Label, Content> {
     /// The label view displayed for this link
     pub label: Label,
@@ -943,6 +976,7 @@ pub struct NavigationLink<Label, Content> {
 /// A typed navigation link that pushes a route value onto a path-backed stack.
 #[must_use]
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NavigationValueLink<Label, T> {
     /// The label view displayed for this link.
     pub label: Label,
@@ -1203,13 +1237,13 @@ fn subscribe_navigation_path<R: Clone + 'static>(
     same: impl Fn(&R, &R) -> bool + 'static,
     build: impl Fn(&R) -> AnyViewBuilder<NavigationView> + 'static,
 ) -> impl nami::watcher::WatcherGuard {
-    let current_path = Rc::new(RefCell::new(Vec::new()));
+    let current_path = RefCell::new(Vec::new());
     // A path write issued while a reconcile still runs lands here
     // re-entrantly; queue it and let the dispatch in flight drain it once the
     // current reconcile returns, keeping snapshots in order.
     let pending = SerialDispatch::new();
     let receiver = receiver.clone();
-    path.watch(move |next_path| {
+    let reconcile = Rc::new(move |next_path: Vec<R>| {
         pending.deliver(next_path, |next_path| {
             reconcile_navigation_path(
                 &receiver,
@@ -1219,7 +1253,11 @@ fn subscribe_navigation_path<R: Clone + 'static>(
                 &build,
             );
         });
-    })
+    });
+    // Subscribing delivers nothing: the path's current routes are the
+    // controller's starting stack.
+    reconcile(path.snapshot());
+    path.watch(move |next_path| reconcile(next_path))
 }
 
 /// Shared body of every path-backed stack: publish the `Navigator`, install the

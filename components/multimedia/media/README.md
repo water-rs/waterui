@@ -89,6 +89,8 @@ let photo = Photo::new(Url::new("https://assets.waterui.dev/images/logo.png"))
         match event {
             Event::Loaded => tracing::debug!("Image loaded successfully"),
             Event::Error(msg) => tracing::debug!("Failed to load: {}", msg),
+            // `Event` is `#[non_exhaustive]`: later releases may add events.
+            _ => {}
         }
     });
 ```
@@ -171,6 +173,8 @@ fn display_media(media: Media) -> impl View {
         Media::Image(_) => AnyView::new(text("Displaying Photo")),
         Media::Video(_) => AnyView::new(text("Displaying VideoPlayer")),
         Media::LivePhoto(_) => AnyView::new(text("Displaying LivePhoto")),
+        // `Media` is `#[non_exhaustive]`: later releases may add media kinds.
+        _ => AnyView::new(text("Unsupported media")),
     }
 }
 

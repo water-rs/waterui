@@ -26,6 +26,7 @@ pub struct Backends {
 /// The `[hydrolysis]` table: selections the project author declares for
 /// the Hydrolysis backend.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[non_exhaustive]
 pub struct HydrolysisConfig {
     /// The Android painter the generated app mounts on the shared Hydrolysis
     /// host. Absent means the GPU painter; an explicit painter the pinned
@@ -59,6 +60,7 @@ impl Backends {
 
 /// Error type for failing to initialize a backend.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInitBackend {
     /// I/O error while scaffolding templates.
     #[error("Failed to write template files: {0}")]

@@ -12,6 +12,7 @@ use thiserror::Error;
 
 /// An external command could not be executed or exited unsuccessfully.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CommandError {
     /// The command could not be spawned.
     #[error("failed to spawn `{program}`: {source}")]
@@ -208,6 +209,7 @@ pub fn parse_semver_version(input: &str) -> Result<Version, VersionParseError> {
 
 /// A version string `parse_semver_version` could not normalize.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum VersionParseError {
     /// The version string was empty.
     #[error("version is empty")]

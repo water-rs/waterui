@@ -25,6 +25,7 @@ use crate::{AssetServer, OriginPolicy, ScriptInjectionTime, StateDeclarations};
 /// is under the engine's own [asset origin](crate::WebViewController::asset_origin)
 /// — before the engine creates anything.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct WebViewConfig {
     #[cfg(not(target_arch = "wasm32"))]
     /// The server behind the engine's local asset origin, when the view was
@@ -73,6 +74,20 @@ impl std::fmt::Debug for WebViewConfig {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl WebViewConfig {
+    /// Admits the documents `bridge_origins` admits to the bridge.
+    #[must_use]
+    pub fn with_bridge_origins(mut self, bridge_origins: OriginPolicy) -> Self {
+        self.bridge_origins = bridge_origins;
+        self
+    }
+
+    /// Runs `scripts`, in order, in every admitted document.
+    #[must_use]
+    pub fn with_scripts(mut self, scripts: Vec<UserScript>) -> Self {
+        self.scripts = scripts;
+        self
+    }
+
     /// Every script an admitted document runs besides the bridge itself, in
     /// order: the mirrored-state seed, then the application's scripts.
     ///
@@ -151,6 +166,7 @@ impl DocumentScripts {
 #[cfg(not(target_arch = "wasm32"))]
 /// One script the application injects into its documents.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct UserScript {
     /// Names the script. Injecting again under the key replaces it.
     pub key: Str,
@@ -158,4 +174,17 @@ pub struct UserScript {
     pub source: Str,
     /// When in a document's load it runs.
     pub time: ScriptInjectionTime,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl UserScript {
+    /// The script `source`, named `key`, injected at `time`.
+    #[must_use]
+    pub fn new(key: impl Into<Str>, source: impl Into<Str>, time: ScriptInjectionTime) -> Self {
+        Self {
+            key: key.into(),
+            source: source.into(),
+            time,
+        }
+    }
 }

@@ -320,9 +320,9 @@ fn assemble_monitor(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Monitor
             crate::num_cast::f64_as_f32(height),
         ),
     );
-    Monitor {
+    Monitor::new(
         frame,
-        visible_frame: visible_frame.map_or(frame, |(vx, vy, vw, vh)| {
+        visible_frame.map_or(frame, |(vx, vy, vw, vh)| {
             Rect::new(
                 Point::new(
                     crate::num_cast::f64_as_f32(vx),
@@ -334,9 +334,9 @@ fn assemble_monitor(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Monitor
                 ),
             )
         }),
-        scale_factor: spec.handle.scale_factor(),
-        name: spec.handle.name().map(Str::from),
-    }
+        spec.handle.scale_factor(),
+        spec.handle.name().map(Str::from),
+    )
 }
 
 /// The monitor's work area in logical points, or `None` where the platform

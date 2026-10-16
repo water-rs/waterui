@@ -662,6 +662,9 @@ impl HydrolysisRenderer {
             }
             Event::HoverMove => {
                 let captured_env = env.clone();
+                // The dispatcher hands `point` in the registration's local
+                // space — the space `bounds` is in — so the view-relative
+                // location is the offset from the view's own origin.
                 renderer.register_hover_move_target(interaction_key, bounds, move |point, env| {
                     let hover_event = HoverEvent::new(waterui_core::layout::Point::new(
                         crate::num_cast::f64_as_f32(point.x)

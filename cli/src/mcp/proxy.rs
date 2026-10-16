@@ -323,11 +323,7 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
     stage_hydrolysis_shared_runtime(&project, &built, platform).await?;
     let binary_path = built.executable()?;
 
-    let run_config = McpRunConfig {
-        width: config.width,
-        height: config.height,
-        scale_factor: config.scale_factor,
-    };
+    let run_config = McpRunConfig::new(config.width, config.height, config.scale_factor);
     let config_path = write_run_config(&project, &run_config).await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
 

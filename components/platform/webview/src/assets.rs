@@ -42,6 +42,10 @@ pub const ASSET_HTTPS_ORIGIN: &str = "https://waterui.localhost";
 
 /// The only methods an asset origin answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the only methods an asset origin answers are GET and HEAD"
+)]
 pub enum AssetMethod {
     /// `GET`.
     Get,
@@ -51,6 +55,7 @@ pub enum AssetMethod {
 
 /// One request the engine intercepted on the asset origin.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct AssetRequest {
     /// The request method.
     pub method: AssetMethod,
@@ -63,6 +68,7 @@ pub struct AssetRequest {
 
 /// What the asset origin answers.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AssetResponse {
     /// The HTTP status code.
     pub status: u16,

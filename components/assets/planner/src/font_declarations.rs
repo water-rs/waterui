@@ -15,6 +15,7 @@ use thiserror::Error;
 /// A font declaration — from `[[assets.font]]` in `Water.toml` or a crate's
 /// `[package.metadata.waterui.assets.font]` Cargo.toml metadata.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FontDeclaration {
     /// Font family name (used as `font_family` in Text).
     pub name: String,
@@ -28,6 +29,23 @@ pub struct FontDeclaration {
 }
 
 impl FontDeclaration {
+    /// The family `name`, loaded from `source`, declared by `crate_name`, and
+    /// bundled on `platforms` (every platform when `None`).
+    #[must_use]
+    pub const fn new(
+        name: String,
+        source: FontSource,
+        crate_name: String,
+        platforms: Option<Vec<FontPlatform>>,
+    ) -> Self {
+        Self {
+            name,
+            source,
+            crate_name,
+            platforms,
+        }
+    }
+
     /// Whether a build for `platform` bundles this font.
     #[must_use]
     pub fn bundled_on(&self, platform: FontPlatform) -> bool {
@@ -43,6 +61,7 @@ impl FontDeclaration {
 /// instead of a font that silently never ships.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum FontPlatform {
     /// iPhone and iPad.
     Ios,
@@ -87,6 +106,10 @@ pub fn font_platform_scope(
 
 /// Source of a font file.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the CLI resolves each font source variant by variant; a new source must fail its build instead of falling into a wildcard arm"
+)]
 pub enum FontSource {
     /// Font bundled with the crate at a local path.
     Local {
@@ -159,6 +182,7 @@ impl FontSource {
 
 /// A package's font declarations that cannot be read.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum FontDeclarationError {
     /// The package's `[package.metadata.waterui]` table does not parse.
     #[error("crate {crate_name} declares malformed `[package.metadata.waterui]`: {source}")]
@@ -224,6 +248,7 @@ pub enum FontDeclarationError {
 /// The dependency closure [`dependency_font_declarations`] walks from the
 /// resolved graph's root package.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GraphScope {
     /// An application's graph: the root's normal dependencies transitively —
     /// the packages a build compiles. The `water` CLI resolves in this scope

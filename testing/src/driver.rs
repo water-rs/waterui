@@ -169,6 +169,7 @@ impl RuntimeDriver for HeadlessRuntime {
 
 /// Timing collected for one complete offscreen Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
 pub struct FrameTiming {
     /// Wall-clock duration spent advancing one offscreen Hydrolysis frame.
     pub total: std::time::Duration,

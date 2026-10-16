@@ -166,6 +166,10 @@ impl AndroidDevice {
 /// The Android target a command runs on when the user names none: a
 /// connected device, or an AVD to boot.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal launches each Android target kind variant by variant"
+)]
 pub enum AndroidTarget {
     /// A device `adb` already reports as connected.
     Device(AndroidDevice),
@@ -424,6 +428,7 @@ impl AndroidCandidate {
 
 /// What [`AndroidTarget::select`] decided for a command.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct AndroidSelection {
     /// A `remembered` id that named no candidate — it was dropped before
     /// the decision, and is reported for the caller to warn about; the
@@ -447,6 +452,10 @@ impl AndroidSelection {
 
 /// The decision an [`AndroidSelection`] carries.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal acts on each device decision variant by variant"
+)]
 pub enum AndroidDecision {
     /// One target — an explicit `--device`, a still-present remembered
     /// device, or the single candidate.

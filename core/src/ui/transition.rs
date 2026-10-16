@@ -17,6 +17,10 @@ use crate::{AnyView, Binding, Computed, Metadata, Signal, SignalExt, View};
 
 /// The structural event starting an independent transition instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a transition instance starts from an insertion or a removal"
+)]
 pub enum TransitionPhase {
     /// New semantic content, whose slot is allocated immediately.
     Insertion,
@@ -26,6 +30,10 @@ pub enum TransitionPhase {
 
 /// Logical edge used by movement and pixel sweep transitions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed set of the four logical edges"
+)]
 pub enum Edge {
     /// Upper edge.
     Top,
@@ -61,15 +69,28 @@ crate::impl_constant!(Edge);
 /// form. Platform hosts set this from the system accessibility preference;
 /// test harnesses set it directly in the environment.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "environment flag newtype over `bool`"
+)]
 pub struct ReduceMotion(pub bool);
 
 /// Geometry available when resolving native property transitions.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct TransitionGeometry {
     /// The untransformed layout slot, in logical pixels.
     pub size: Size,
     /// Resolves leading and trailing edges.
     pub direction: LayoutDirection,
+}
+
+impl TransitionGeometry {
+    /// A slot of `size` laid out in `direction`.
+    #[must_use]
+    pub const fn new(size: Size, direction: LayoutDirection) -> Self {
+        Self { size, direction }
+    }
 }
 
 /// Window-relative geometry a pixel transition needs to draw beyond its slot.
@@ -78,6 +99,7 @@ pub struct TransitionGeometry {
 /// so progress alone cannot describe it: the host updates this frame after
 /// every placement and before drawing through the window-level overlay.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub struct TransitionFrame {
     /// The retained slot in window logical coordinates.
     pub source: Rect,
@@ -98,6 +120,7 @@ crate::impl_constant!(TransitionFrame);
 /// These values compose with the view's ordinary properties rather than
 /// replacing them. No property changes the retained slot's dimensions.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct TransitionProperties {
     /// Multiplicative alpha.
     pub opacity: f32,
@@ -146,6 +169,7 @@ impl Default for TransitionProperties {
 
 /// Reactive input to a pixel transition's one-time view construction.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct TransitionContext {
     /// Event selecting the insertion or removal effect.
     pub phase: TransitionPhase,
@@ -451,6 +475,7 @@ impl<I: Transition, R: Transition> Transition for Asymmetric<I, R> {
 
 /// Strict metadata attached by [`View::transition`].
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct TransitionSpec {
     /// Reusable effect declaration.
     pub transition: AnyTransition,
@@ -467,6 +492,13 @@ impl TransitionSpec {
             transition: AnyTransition::new(transition),
             animation: Animation::default(),
         }
+    }
+
+    /// Replaces the timing shared by all combined effects.
+    #[must_use]
+    pub const fn with_animation(mut self, animation: Animation) -> Self {
+        self.animation = animation;
+        self
     }
 
     /// Starts a new clock, resolving Reduce Motion before constructing effects.
@@ -633,6 +665,10 @@ impl SubView for GhostSlot {
 /// with the container's animation. Re-insertion always constructs a new node;
 /// it never revives a ghost, even when the collection identity is reused.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole ghost, so a new field must fail their build instead of being ignored"
+)]
 pub struct Ghost<T> {
     /// Backend-owned non-interactive visual or frozen GPU capture.
     pub realization: T,

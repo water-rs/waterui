@@ -38,6 +38,10 @@ pub type ScriptMessageHandler = dyn Fn(&[u8]) -> HandlerFuture + 'static;
 #[cfg(not(target_arch = "wasm32"))]
 /// When to inject a user script into the web view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every web view backend schedules each injection time variant by variant; a new time must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ScriptInjectionTime {
     /// Inject at the start of document loading, before the DOM is constructed.
     ///

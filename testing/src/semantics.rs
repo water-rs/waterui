@@ -151,6 +151,10 @@ impl Role {
 
 /// Semantic checked state exposed by a checkable accessibility node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed tri-state (unchecked, checked, mixed) mirroring the accessibility checked state"
+)]
 pub enum CheckedState {
     /// The node is not checked.
     False,

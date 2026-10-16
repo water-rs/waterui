@@ -13,6 +13,7 @@ use crate::{
 
 /// High-level phase shared by views, controls, and platform media sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum PlaybackPhase {
     /// No source has begun preparation.
     #[default]
@@ -35,6 +36,7 @@ pub enum PlaybackPhase {
 
 /// Playlist repetition policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum RepeatMode {
     /// Stop at the end of the playlist.
     #[default]
@@ -89,7 +91,7 @@ impl Playlist {
     /// Returns the current number of items. The result is always non-zero.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.items.snapshot().len()
+        self.items.len()
     }
 
     /// Returns `false`; playlists preserve a non-empty invariant by construction.
@@ -101,6 +103,7 @@ impl Playlist {
 
 /// Typed failures returned by player-controller commands.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum PlaybackError {
     /// The requested media item is not present in the active playlist.
     #[error("media item {0:?} is not present in the active playlist")]
@@ -500,7 +503,8 @@ impl PlayerController {
     /// Appends one item to the active playlist.
     pub fn add_item(&self, item: impl Into<MediaItem>) {
         let state = self.state.borrow();
-        state.playlist.items.push(item.into());
+        // `List` handles share one list: mutate through a handle of our own.
+        state.playlist.items.clone().push(item.into());
         state.update_navigation();
     }
 
@@ -521,7 +525,7 @@ impl PlayerController {
             .position(|item| item.id == id)
             .ok_or(PlaybackError::ItemNotFound(id))?;
         let current_id = state.bindings.current_item_id.snapshot();
-        let removed = state.playlist.items.remove(removed_index);
+        let removed = state.playlist.items.clone().remove(removed_index);
         let remaining = state.snapshot();
         let selected = remaining
             .iter()
@@ -557,7 +561,7 @@ impl PlayerController {
         let item = items.remove(source);
         items.insert(destination, item);
         let current_id = state.bindings.current_item_id.snapshot();
-        let _ = state.playlist.items.replace(items.clone());
+        let _ = state.playlist.items.clone().replace(items.clone());
         let current = items
             .iter()
             .position(|item| item.id == current_id)

@@ -408,8 +408,13 @@ pub fn run(app: App, style: impl crate::Style) {
 /// Propagates panics from `web_runner::run`.
 pub fn run(app: App, style: impl crate::Style) {
     // The page has no stderr, so the default hook's report goes nowhere;
-    // this one sends the message and location to `console.error`.
-    console_error_panic_hook::set_once();
+    // this one sends the message and location to `console.error`, and shows
+    // it on the page: a panic traps the wasm instance, so the app is gone and
+    // the page says why instead of freezing on its last frame.
+    std::panic::set_hook(Box::new(|info| {
+        console_error_panic_hook::hook(info);
+        crate::platform::report_fatal_error(&info.to_string());
+    }));
     init_global_executor();
     web_runner::run(app, style);
 }

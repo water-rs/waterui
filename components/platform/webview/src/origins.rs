@@ -19,6 +19,7 @@ use waterui_url::Url;
 
 /// Which origins may reach the bridge.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum BridgeOrigins {
     /// Only the origin the web view was opened at. The default.
     #[default]
@@ -142,6 +143,7 @@ impl OriginPolicy {
 /// what made `file://*` — a valid `WebKit` injection rule — unmatchable against
 /// the `file://` origin every engine reports for a local document.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OriginRule {
     /// Every origin, including whatever the page navigates to next.
     Any,

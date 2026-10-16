@@ -15,6 +15,7 @@ pub const LOCAL_DEVICE_ID: &str = "local";
 
 /// Options for gesture execution with diff support.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct GestureOptions {
     /// Whether to capture before/after screenshots and compute diff.
     pub diff: bool,
@@ -23,6 +24,23 @@ pub struct GestureOptions {
     /// Delay in milliseconds after gesture before capturing "after" screenshot.
     /// Default is 500ms.
     pub delay_ms: Option<u32>,
+}
+
+impl GestureOptions {
+    /// Options writing a before/after diff when `diff`, to `diff_output`
+    /// when given, after waiting `delay_ms`.
+    #[must_use]
+    pub const fn new(
+        diff: bool,
+        diff_output: Option<std::path::PathBuf>,
+        delay_ms: Option<u32>,
+    ) -> Self {
+        Self {
+            diff,
+            diff_output,
+            delay_ms,
+        }
+    }
 }
 
 impl GestureOptions {
@@ -52,6 +70,7 @@ impl GestureOptions {
 
 /// Result of a gesture with diff information.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct GestureResult {
     /// The diff result if diff was enabled.
     pub diff: Option<DiffResult>,

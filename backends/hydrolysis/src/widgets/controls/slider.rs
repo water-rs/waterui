@@ -535,7 +535,12 @@ pub fn render_slider_parts(
     if disabled {
         return;
     }
-    let inverse_transform = ctx.renderer_mut().current_hit_transform().inverse();
+    // The drag's point lands in window space and the track is node-local:
+    // resolve the inverse through the region's live placement at invoke
+    // time. The registration outlives this record, so a transform captured
+    // here goes stale the moment an ancestor moves the slider without
+    // re-recording it (a scroll, a transition).
+    let placement = ctx.renderer_mut().current_placement();
     let value_epsilon = slider_value_epsilon(span, usable_track);
     let keyboard_value = value_binding.clone();
     let keyboard_step = span / 100.0;
@@ -543,7 +548,7 @@ pub fn render_slider_parts(
         hit_bounds,
         press_slot,
         move |_renderer, point, _env| {
-            let local_point = inverse_transform * point;
+            let local_point = placement.resolved_transform(true).inverse() * point;
             let x = local_point.x.clamp(track_left, track_right);
             let t = (x - track_left) / usable_track;
             let next = span.mul_add(t, range_start);

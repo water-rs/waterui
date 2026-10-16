@@ -31,18 +31,12 @@ fn create_rejects_the_published_stable_manifest_without_backend_members() {
     let result = smol::block_on(Project::create(
         &host,
         &project,
-        CreateOptions {
-            name: "Stable Probe".to_owned(),
-            bundle_identifier: BundleIdentifier::try_from("dev.waterui.stableProbe")
-                .expect("valid bundle identifier"),
-            waterui_path: None,
-            channel: None,
-            framework_manifest: Some(manifest),
-            framework: None,
-            framework_lock: None,
-            author: "waterui-test".to_owned(),
-            web: None,
-        },
+        CreateOptions::new(
+            "Stable Probe".to_owned(),
+            BundleIdentifier::try_from("dev.waterui.stableProbe").expect("valid bundle identifier"),
+            "waterui-test".to_owned(),
+        )
+        .with_framework_manifest(Some(manifest)),
     ));
 
     let Err(FailToCreateProject::Framework(error)) = result else {

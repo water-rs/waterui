@@ -35,16 +35,28 @@ pub struct JsRequest {
 
 /// Extracts the payload as JSON, deserialized into `T`.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "extractor newtype destructured in handler parameters"
+)]
 pub struct Json<T>(pub T);
 
 /// Extracts the payload as raw bytes.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "extractor newtype destructured in handler parameters"
+)]
 pub struct Bytes(pub Vec<u8>);
 
 /// Extracts the handler name that was called.
 ///
 /// Useful when one closure serves several names.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "extractor newtype destructured in handler parameters"
+)]
 pub struct HandlerName(pub Str);
 
 fn request(env: &Environment) -> Result<JsRequest, Error> {
@@ -114,6 +126,7 @@ impl Extractor for HandlerName {
 /// so it sent both as base64 and `await waterui.invoke(...)` resolved to a
 /// base64 string instead of to the value the handler returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JsReply {
     /// A serialized JSON value. The page receives the value itself.
     Json(Vec<u8>),

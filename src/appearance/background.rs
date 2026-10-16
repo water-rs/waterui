@@ -48,6 +48,10 @@ use waterui_shape::{Capsule, Shape, ShapeKind};
 /// let frosted = text!("Hello").background(Material::Regular);
 /// ```
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "metadata newtype; backends destructure the wrapped material"
+)]
 pub struct MaterialBackground(pub Material);
 
 impl MetadataKey for MaterialBackground {}
@@ -88,6 +92,10 @@ impl IntoBackground for Material {
 /// let pill = text!("Now Playing").padding().background(Glass::regular());
 /// ```
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "metadata newtype; backends destructure the wrapped glass"
+)]
 pub struct GlassBackground(pub Glass);
 
 impl MetadataKey for GlassBackground {}
@@ -120,6 +128,10 @@ impl IntoBackground for Glass {
 /// Use via [`material_group`](crate::ViewExt::material_group) rather than
 /// directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less metadata marker inserted by name"
+)]
 pub struct MaterialGroup;
 
 impl MetadataKey for MaterialGroup {}
@@ -139,6 +151,7 @@ impl<V: View> IntoBackground for V {
 /// [`background`](crate::ViewExt::background). It remains because renderers
 /// built against this crate still name it.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Background {
     /// A solid color background.
     Color(Computed<Color>),
@@ -211,6 +224,10 @@ pub enum Background {
 /// let overlay = text!("Overlay").background(Material::Thick);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each material variant by variant; a new material must fail their build instead of falling into a wildcard arm"
+)]
 pub enum Material {
     /// Ultra-thin blur, most transparent. Subtle frosted effect.
     UltraThin,
@@ -232,6 +249,10 @@ nami::impl_constant!(Material);
 /// Glass is not a position on the [`Material`] thickness scale: it has its own
 /// parameter set, so it is a separate type rather than a sixth material.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each glass style variant by variant; a new glass style must fail their build instead of falling into a wildcard arm"
+)]
 pub enum GlassStyle {
     /// The standard glass: lensing and highlights over a light diffusion of
     /// the content behind it, legible over anything.

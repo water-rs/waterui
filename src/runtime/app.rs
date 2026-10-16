@@ -61,6 +61,10 @@ pub struct App {
 /// - iOS and Android have no windowless foreground state: their runners
 ///   reject an application that declares no window, whatever its policy.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each last-window policy variant by variant; a new policy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum LastWindowPolicy {
     /// End the application once its last window closes, and at startup when
     /// it declares no window at all.
@@ -73,6 +77,10 @@ pub enum LastWindowPolicy {
 
 /// An [`App`] taken apart for a runner, see [`App::into_parts`].
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole application parts, so a new field must fail their build instead of being ignored"
+)]
 pub struct AppParts {
     /// The windows opened at startup, in declaration order; possibly none.
     pub windows: Vec<Window>,
@@ -332,6 +340,10 @@ impl App {
 /// An application's answer to "may I quit?", returned by
 /// [`App::on_quit_request`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed answer: the application quits or cancels the quit"
+)]
 pub enum QuitReply {
     /// Allow termination: `on_terminate` runs, then the process ends.
     Quit,

@@ -5488,7 +5488,7 @@ mod owner_lifetimes {
         // afterwards names a real retainer, not a pooled autorelease.
         let mut env = resolve::env();
         let track = binding(String::from("first"));
-        let items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
         // The theme `Foreground` slot backs every unstyled chunk — the
         // `label_leaf` default watcher this fix touches. Reinstall it
         // from a binding the test keeps, so a live update is reachable.
@@ -7378,15 +7378,13 @@ mod webview {
     fn probed_view(origins: BridgeOrigins) -> (AnyWebViewHandle, Loads) {
         let initial: Url = "https://waterui.dev".parse().expect("parses");
         let webview = waterui_apple::native_test_support::webview::controller(mtm()).open_with(
-            WebViewConfig {
-                bridge_origins: OriginPolicy::new(origins, &initial),
-                scripts: vec![UserScript {
-                    key: "waterui:test-probe".into(),
-                    source: "globalThis.__wateruiProbe = true;".into(),
-                    time: ScriptInjectionTime::DocumentStart,
-                }],
-                ..WebViewConfig::default()
-            },
+            WebViewConfig::default()
+                .with_bridge_origins(OriginPolicy::new(origins, &initial))
+                .with_scripts(vec![UserScript::new(
+                    "waterui:test-probe",
+                    "globalThis.__wateruiProbe = true;",
+                    ScriptInjectionTime::DocumentStart,
+                )]),
         );
         let handle = webview.handle().clone();
         let loads = Loads::watch(&handle);

@@ -254,6 +254,18 @@ pub struct GpuImage {
     pub height: u32,
 }
 
+impl GpuImage {
+    /// The texture's bytes: f16 RGBA, eight a texel.
+    pub fn bytes(&self) -> u64 {
+        image_bytes((self.width, self.height))
+    }
+}
+
+/// The bytes of a [`GpuImage`] of `size`: f16 RGBA, eight a texel.
+fn image_bytes((width, height): (u32, u32)) -> u64 {
+    u64::from(width) * u64::from(height) * 8
+}
+
 pub struct GpuBitmap {
     pub(super) image: GpuImage,
     pub(super) em: kurbo::Rect,
@@ -577,9 +589,7 @@ impl SurfaceState {
         let shader_bytes = self
             .shader_textures
             .values()
-            .map(|texture| {
-                u64::from(texture.image.width) * u64::from(texture.image.height) * 8 + 272
-            })
+            .map(|texture| texture.image.bytes() + 272)
             .sum::<u64>();
         surface_bytes * (1 + self.parts.len() as u64)
             + self
@@ -3472,13 +3482,10 @@ impl Renderer for GpuRenderer {
     }
 
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        let size = (image.width, image.height);
+        self.admit_image(size, 0)?;
         let data = image_texels_f16(&image)?;
-        let image = upload_image(
-            &self.device,
-            &self.queue,
-            (image.width, image.height),
-            &data,
-        );
+        let image = upload_image(&self.device, &self.queue, size, &data)?;
         self.images.insert(id.raw(), image);
         self.images_gen += 1;
         Ok(())
@@ -3492,18 +3499,20 @@ impl Renderer for GpuRenderer {
             .images
             .get(&id.raw())
             .expect("replace targets a registered image");
-        // Local images that sampled the previous pixels are no longer
-        // current, whichever path the upload takes.
-        self.image_replacements += 1;
         if (current.width, current.height) == size {
             // The copy is queued ahead of the next submission, after every
             // frame already submitted, so no frame samples a partly
             // written texture. The view is unchanged: bind groups and
             // lowered paints stay valid.
-            write_image(&self.device, &self.queue, &current.texture, size, &data);
+            write_image(&self.device, &self.queue, &current.texture, size, &data)?;
+            // Local images that sampled the previous pixels are no longer
+            // current.
+            self.image_replacements += 1;
             return Ok(());
         }
-        let replacement = upload_image(&self.device, &self.queue, size, &data);
+        self.admit_image(size, current.bytes())?;
+        let replacement = upload_image(&self.device, &self.queue, size, &data)?;
+        self.image_replacements += 1;
         let old = self
             .images
             .insert(id.raw(), replacement)
@@ -3514,7 +3523,7 @@ impl Renderer for GpuRenderer {
             diag::RetireArgs {
                 label: "image",
                 class: diag::Class::Image,
-                bytes: u64::from(old.width) * u64::from(old.height) * 8,
+                bytes: old.bytes(),
                 used_in_latest_submit: true,
                 reason: "replace_image",
             },
@@ -3559,7 +3568,7 @@ impl Renderer for GpuRenderer {
                 diag::RetireArgs {
                     label: "image",
                     class: diag::Class::Image,
-                    bytes: u64::from(image.width) * u64::from(image.height) * 8,
+                    bytes: image.bytes(),
                     used_in_latest_submit: true,
                     reason: "remove_image",
                 },
@@ -3699,6 +3708,10 @@ impl Renderer for GpuRenderer {
                 },
             );
         }
+        // The commit batch's reusable lists are the same kind of
+        // retained scratch: a trimmed engine keeps none of their peak
+        // capacity, and the next commit regrows them as needed (#2711).
+        self.commit_writes = glyph::CellWrites::default();
         if pressure != Pressure::Critical {
             return;
         }
@@ -3812,15 +3825,11 @@ impl Renderer for GpuRenderer {
                 .values()
                 .map(gpu_content::Producer::gpu_bytes)
                 .sum::<u64>()
-            + self
-                .images
-                .values()
-                .map(|i| u64::from(i.width) * u64::from(i.height) * 8)
-                .sum::<u64>()
+            + self.images.values().map(GpuImage::bytes).sum::<u64>()
             + self
                 .bitmaps
                 .values()
-                .map(|bitmap| u64::from(bitmap.image.width) * u64::from(bitmap.image.height) * 8)
+                .map(|bitmap| bitmap.image.bytes())
                 .sum::<u64>();
         let captures = self
             .surfaces
@@ -5569,11 +5578,43 @@ impl GpuRenderer {
             .sum()
     }
 
+    /// Every resident GPU byte except the local images, which are
+    /// evictable and give way to everything else.
+    fn resident_bytes(&self) -> u64 {
+        self.memory().gpu.0 - self.projective_bytes()
+    }
+
     /// The bytes local images may hold: the GPU budget less every other
     /// resident resource.
     fn projective_available(&self) -> u64 {
-        let others = self.memory().gpu.0 - self.projective_bytes();
-        self.config.budget.gpu.0.saturating_sub(others)
+        self.config
+            .budget
+            .gpu
+            .0
+            .saturating_sub(self.resident_bytes())
+    }
+
+    /// Admits a registered image of `size` against the GPU budget. A
+    /// registered image stays resident until it is released, so it must
+    /// fit beside every other resident resource; the local images give
+    /// way to it. `replaced` is the bytes of the image a resize frees.
+    ///
+    /// # Errors
+    /// [`ResourceError::Image`] when the image does not fit.
+    fn admit_image(&self, (width, height): (u32, u32), replaced: u64) -> Result<(), ResourceError> {
+        let required = image_bytes((width, height));
+        let available = self
+            .config
+            .budget
+            .gpu
+            .0
+            .saturating_sub(self.resident_bytes() - replaced);
+        if required > available {
+            return Err(ResourceError::Image(format!(
+                "{width}x{height} needs {required} bytes; the GPU budget has {available} left"
+            )));
+        }
+        Ok(())
     }
 
     /// What surface `sf`'s lowering needs to plan and reuse local images.
@@ -9956,36 +9997,95 @@ impl GpuRenderer {
 
 /// A registered image's texture of `size`, holding `data` (f16 texels
 /// from [`image_texels_f16`]).
+///
+/// # Errors
+/// [`ResourceError::Image`] when the device cannot back the texture or
+/// its upload.
 fn upload_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     (width, height): (u32, u32),
     data: &[u8],
-) -> GpuImage {
-    let (texture, view) = create_target(
-        device,
-        "image",
-        (width, height),
-        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        TARGET_FORMAT,
-    );
+) -> Result<GpuImage, ResourceError> {
+    let (texture, view) = out_of_memory(device, || {
+        create_target(
+            device,
+            "image",
+            (width, height),
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            TARGET_FORMAT,
+        )
+    })
+    .map_err(|error| {
+        ResourceError::Image(format!(
+            "{width}x{height} texture allocation failed: {error}"
+        ))
+    })?;
     diag::create(
         device,
         "image",
         u64::from(width) * u64::from(height) * texel_bytes(TARGET_FORMAT),
     );
-    write_image(device, queue, &texture, (width, height), data);
-    GpuImage {
+    write_image(device, queue, &texture, (width, height), data)?;
+    Ok(GpuImage {
         texture,
         view,
         width,
         height,
+    })
+}
+
+/// Runs `allocate` under an out-of-memory error scope, so an allocation
+/// the device cannot back is this call's error rather than a panic in
+/// wgpu's uncaptured-error handler. Only the allocation is scoped: a
+/// failed allocation is returned before anything uses its handle.
+///
+/// On the browser's WebGPU an error scope resolves only asynchronously
+/// and `Renderer::add_image` is synchronous, so there the allocation
+/// runs unscoped; an uncaptured error is reported to the page and does
+/// not panic.
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::unnecessary_wraps,
+        reason = "the browser's error scope resolves only asynchronously, so the synchronous browser path has no error to return"
+    )
+)]
+fn out_of_memory<T>(device: &wgpu::Device, allocate: impl FnOnce() -> T) -> Result<T, wgpu::Error> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let value = allocate();
+        pollster::block_on(scope.pop()).map_or(Ok(value), Err)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = device;
+        Ok(allocate())
     }
 }
 
 /// Writes `data` (f16 texels from [`image_texels_f16`]) over the whole of
 /// an image texture of `size`.
+///
+/// # Errors
+/// [`ResourceError::Image`] when the device cannot back the upload's
+/// staging memory; the texture keeps its previous texels.
 fn write_image(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    (width, height): (u32, u32),
+    data: &[u8],
+) -> Result<(), ResourceError> {
+    out_of_memory(device, || {
+        write_texels(device, queue, texture, (width, height), data);
+    })
+    .map_err(|error| ResourceError::Image(format!("{width}x{height} upload failed: {error}")))
+}
+
+/// [`write_image`]'s unscoped copy.
+fn write_texels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
@@ -10483,5 +10583,26 @@ mod tests {
     fn poll_errors_other_than_timeout_still_fail_fast() {
         let outcome = drive([Err(wgpu::PollError::WrongSubmissionIndex(9, 3))], [0]);
         assert!(matches!(outcome, Err(RenderError::DeviceLost)));
+    }
+
+    /// A commit's emptied `CellWrites` shell keeps its list capacities
+    /// for reuse; `trim` replaces the container so a pressured engine
+    /// retains none of them (#2711).
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn trim_releases_the_reused_commit_lists() {
+        let mut renderer = match init(GpuConfig::default()) {
+            Ok((renderer, _)) => renderer,
+            Err(EngineError::Backend(_)) => return,
+            Err(e) => panic!("engine init failed: {e}"),
+        };
+        renderer.commit_writes.push_arena(vec![0xAB; 64]);
+        assert!(renderer.commit_writes.heap_bytes() > 0);
+        renderer.trim(Pressure::Moderate);
+        assert_eq!(
+            renderer.commit_writes.heap_bytes(),
+            0,
+            "a trimmed engine retains no commit_writes capacity"
+        );
     }
 }

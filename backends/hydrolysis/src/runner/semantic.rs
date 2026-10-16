@@ -28,6 +28,7 @@ use std::sync::Arc;
 /// the phase timings, and the resulting accessibility tree update plus
 /// focused node when the `accessibility` feature is on.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct SemanticPumpResult {
     /// Whether the pump rebuilt the view tree.
     pub rebuilt: bool,
@@ -618,12 +619,7 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                     false
                 } else {
                     let key_env = env.extending(semantic_window_origin(window));
-                    let press = KeyPress {
-                        key: logical_key,
-                        code: physical_code,
-                        modifiers: modifiers.into(),
-                        repeat,
-                    };
+                    let press = KeyPress::new(logical_key, physical_code, modifiers.into(), repeat);
                     let outcome = window
                         .core
                         .handle_key_press(&key, modifiers, &key_env, &press);

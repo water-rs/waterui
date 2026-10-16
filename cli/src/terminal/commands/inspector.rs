@@ -121,17 +121,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         None
     };
 
-    let mut session = launch_inspector_session(
+    let mut session = Box::pin(launch_inspector_session(
         &host,
         &project_path,
         platform,
         android,
-        InspectorLaunchOptions {
-            target_addr: target.to_string(),
-            token: token.clone(),
-        },
+        InspectorLaunchOptions::new(target.to_string(), token.clone()),
         Some(shell.build_progress()),
-    )
+    ))
     .await?;
 
     // Keep the inspector app alive after CLI exits.

@@ -551,11 +551,8 @@ impl WebViewHandle for WkWebViewHandle {
     }
 
     fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
-        self.shared.inject_script(UserScript {
-            key: Str::from(key.to_string()),
-            source: Str::from(script.to_string()),
-            time,
-        });
+        self.shared
+            .inject_script(UserScript::new(key.to_string(), script.to_string(), time));
     }
 
     fn add_handler(&self, name: &str, handler: Box<ScriptMessageHandler>) {

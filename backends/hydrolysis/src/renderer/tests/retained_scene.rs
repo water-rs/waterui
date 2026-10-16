@@ -322,7 +322,7 @@ fn collection_runtime(list: &List<SelfId<u64>>) -> HeadlessRuntime {
 /// re-composited without any structural rebuild of the rest of the tree.
 #[test]
 fn collection_add_patches_without_rebuild() {
-    let list: List<SelfId<u64>> = List::new();
+    let mut list: List<SelfId<u64>> = List::new();
     let mut runtime = collection_runtime(&list);
     let start = Instant::now();
     let empty = runtime
@@ -356,7 +356,8 @@ fn collection_add_patches_without_rebuild() {
 /// evicted; survivors keep theirs).
 #[test]
 fn collection_remove_patches_without_rebuild() {
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
+    let mut list: List<SelfId<u64>> =
+        List::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
     let mut runtime = collection_runtime(&list);
     let start = Instant::now();
     let three = runtime
@@ -733,7 +734,8 @@ fn collection_membership_exit_animates_then_settles() {
         .expect("ground-truth frame must produce a snapshot");
 
     // Subject: rows 0, 1, 2; remove the middle row and watch it collapse out.
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
+    let mut list: List<SelfId<u64>> =
+        List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
@@ -799,7 +801,7 @@ fn collection_membership_enter_animates_then_settles() {
         .expect("ground-truth frame must produce a snapshot");
 
     // Subject: rows 0 and 2; insert row 1 between them and watch it grow in.
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
@@ -906,7 +908,8 @@ fn top_edge(snapshot: &crate::runner::HeadlessSnapshot, color: [u8; 4]) -> Optio
 /// instead of nudging it.
 #[test]
 fn collection_membership_exit_reinsertion_adds_an_independent_instance() {
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
+    let mut list: List<SelfId<u64>> =
+        List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
@@ -981,7 +984,7 @@ fn collection_membership_exit_reinsertion_adds_an_independent_instance() {
 /// holds it there for the full clock instead of releasing it early.
 #[test]
 fn collection_membership_enter_reversal_holds_the_allocated_slot() {
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
@@ -1159,7 +1162,8 @@ fn nested_applied_filters_capture_inner_before_outer() {
 /// tick into the fresh clock and pop the held slot early.
 #[test]
 fn collection_removal_after_idle_holds_the_sibling_slot() {
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
+    let mut list: List<SelfId<u64>> =
+        List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
@@ -1265,7 +1269,7 @@ fn collection_insertion_after_idle_starts_absent_then_grows() {
         .snapshot
         .expect("ground-truth frame must produce a snapshot");
 
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
@@ -1407,7 +1411,7 @@ impl waterui_core::transition::Transition for CaptureOnlyTransition {
 #[test]
 #[should_panic(expected = "pixel-capture transitions")]
 fn pixel_transition_on_a_collection_item_panics() {
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || {
@@ -1431,7 +1435,7 @@ fn pixel_transition_on_a_collection_item_panics() {
 /// property transition — opacity still animates and nothing panics.
 #[test]
 fn reduced_pixel_transition_runs_as_opacity() {
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || {
@@ -1506,7 +1510,7 @@ fn reduced_pixel_transition_runs_as_opacity() {
 /// exactly like any other.
 #[test]
 fn blur_transition_on_a_collection_item_blurs_the_ghost() {
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || {
@@ -1586,7 +1590,7 @@ fn transition_inside_an_erased_collection_row_is_owned_by_the_row() {
         .snapshot
         .expect("ground-truth frame must produce a snapshot");
 
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || erased_rows(&list))
@@ -1656,7 +1660,7 @@ fn absolute_collection_row_removal_fades_then_settles() {
         .snapshot
         .expect("ground-truth frame must produce a snapshot");
 
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || overlay_rows(&list))

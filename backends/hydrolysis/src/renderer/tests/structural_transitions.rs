@@ -690,7 +690,7 @@ fn a_list_row_removal_holds_its_slot_while_it_fades() {
     use waterui::component::list::{List, ListItem};
     use waterui_core::id::SelfId;
 
-    let rows: Membership<SelfId<u64>> =
+    let mut rows: Membership<SelfId<u64>> =
         Membership::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
     let rows_for_view = rows.clone();
     let mut runtime = runtime(move || {
@@ -753,19 +753,16 @@ impl waterui::navigation::NavigationTransition for EdgeSlide {
         use waterui::navigation::{
             NavigationTransitionDirection, NavigationTransitionFrame, NavigationTransitionLayer,
         };
-        let moving = |offset_x| NavigationTransitionLayer {
-            offset_x,
-            ..NavigationTransitionLayer::IDENTITY
-        };
+        let moving = |offset_x| NavigationTransitionLayer::new(offset_x, 0.0, 1.0, 1.0);
         match direction {
-            NavigationTransitionDirection::Push => NavigationTransitionFrame {
-                outgoing: NavigationTransitionLayer::IDENTITY,
-                incoming: moving(1.0 - progress),
-            },
-            NavigationTransitionDirection::Pop => NavigationTransitionFrame {
-                outgoing: moving(progress),
-                incoming: NavigationTransitionLayer::IDENTITY,
-            },
+            NavigationTransitionDirection::Push => NavigationTransitionFrame::new(
+                NavigationTransitionLayer::IDENTITY,
+                moving(1.0 - progress),
+            ),
+            NavigationTransitionDirection::Pop => NavigationTransitionFrame::new(
+                moving(progress),
+                NavigationTransitionLayer::IDENTITY,
+            ),
         }
     }
 }
