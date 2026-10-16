@@ -20,7 +20,9 @@ const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
 const VARIANT_UNION: u32 = 3u;
 const VARIANT_LONG_GRADIENT: u32 = 4u;
-const VARIANT_IMAGE: u32 = 5u;
+// Every span but the union's: GPU-routed path draws (#2543).
+const VARIANT_CELL: u32 = 5u;
+const VARIANT_IMAGE: u32 = 6u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
@@ -32,7 +34,7 @@ const VARIANT_IMAGE: u32 = 5u;
 struct ImageDecode {
     linear: array<f32, 256>,
 }
-@group(0) @binding(4) var<storage, read> image_decode: ImageDecode;
+@group(0) @binding(5) var<storage, read> image_decode: ImageDecode;
 // image-source
 
 // Abramowitz & Stegun 7.1.26, |error| < 1.5e-7.
@@ -125,12 +127,6 @@ fn shadow(s: Shape, p: vec2<f32>, sigma: f32) -> f32 {
     return clamp(acc, 0.0, 1.0);
 }
 
-fn srgb_encode(c: vec3<f32>) -> vec3<f32> {
-    let lo = c * 12.92;
-    let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
-    return select(hi, lo, c <= vec3<f32>(0.0031308));
-}
-
 // Returns false when EXTEND_NONE leaves t outside [0,1] — the caller
 // returns transparent. NaN fails the range test and is also rejected.
 fn extend_ok(t: f32, mode: u32) -> bool {
@@ -197,7 +193,7 @@ fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
     }
     var rgb = c.rgb;
     if interp == INTERP_SRGB {
-        rgb = SRGB_TO_P3 * srgb_decode(rgb);
+        rgb = SPACE_SRGB_TO_P3 * space_srgb_decode(rgb);
     }
     return vec4<f32>(rgb * c.a, c.a);
 }
@@ -744,9 +740,9 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
             if classified {
                 texel = vec2<i32>(floor(in.local));
             } else {
-                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
+                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
             }
-            cov = textureLoad(atlas, texel, 0).r;
+            cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
         }
         case KIND_SPAN: {
             cov = 1.0;
@@ -801,6 +797,10 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     var ellipse = false;
     var ellipse_half = vec2<f32>(0.0);
     var inst_index = ii;
+    // cell-buffer
+    // A GPU-routed path's emitted instances order by its anchor.
+    inst_index = select(ii, bitcast<u32>(inst.params.x), (inst.meta_.w & 0x80000000u) != 0u);
+    // cell-buffer
     var tier = 0u;
     var promoted = false;
     if inst.meta_.x == KIND_REGION {
@@ -879,7 +879,11 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
 @vertex
 fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PartialOut {
     var out = quad_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[vi], ii);
-    out.position.z = bitcast<f32>(0x3e000000u + ii * 8u);
+    var depth_index = ii;
+    // cell-buffer
+    depth_index = select(ii, bitcast<u32>(instances[ii].params.x), (instances[ii].meta_.w & 0x80000000u) != 0u);
+    // cell-buffer
+    out.position.z = bitcast<f32>(0x3e000000u + depth_index * 8u);
     let inst = instances[ii];
     let s = inst.shape;
     if inst.meta_.x == KIND_FILL && s.exponent == 2.0 && all(s.radii == vec4<f32>(s.half.x)) {
@@ -893,7 +897,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
     if opaque_span(instances[ii]) {
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    let local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
+    let local = select(out.local, out.device - out.cell.xy + cell_texel_origin(out.cell.zw, out.meta_.w), out.meta_.x == KIND_GLYPH);
     return PartialOut(out.position, local, ii, out.affine1.zw);
 }
 
@@ -907,6 +911,12 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     let inst = instances[in.instance];
     var data: VsOut;
     data.local = in.local;
+    // cell-buffer
+    // A buffer cell's origin, interior run and flag for `path_cell_coverage`.
+    data.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
+    data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
+    data.meta_.w = inst.meta_.w;
+    // cell-buffer
     data.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
     data.color = inst.color;
     data.params.y = inst.params.y;
@@ -970,8 +980,8 @@ fn fs_full(in: VsOut) -> vec4<f32> {
             }
         }
         case KIND_GLYPH: {
-            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
-            cov = textureLoad(atlas, texel, 0).r;
+            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
+            cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
         }
         case KIND_SPAN: {
             cov = 1.0;

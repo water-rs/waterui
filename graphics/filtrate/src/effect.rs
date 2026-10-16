@@ -335,6 +335,19 @@ impl fmt::Debug for EffectOutput<'_> {
     }
 }
 
+/// Device-resident bytes an effect retains between frames, reported by
+/// [`Effect::retained_memory`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RetainedMemory {
+    /// Render targets the effect retains between frames, such as a
+    /// chain's intermediates.
+    pub targets: u64,
+    /// Textures the effect uploaded itself from CPU-side images.
+    /// Textures bound from the host's own textures (`Image::Bound`) are
+    /// the host's and are excluded.
+    pub images: u64,
+}
+
 /// Trait for GPU effects.
 ///
 /// Implement this trait to create custom GPU filters that process captured
@@ -427,13 +440,16 @@ pub trait Effect: 'static {
         false
     }
 
-    /// Device-resident bytes of the render targets the effect itself
-    /// retains between frames, such as a multi-pass chain's intermediates.
+    /// Device-resident bytes the effect itself retains between frames:
+    /// the render targets it keeps, such as a multi-pass chain's
+    /// intermediates, and the textures it uploaded itself from CPU-side
+    /// images.
     ///
     /// Hosts add this to their memory accounting. The input and output
-    /// targets a host supplies are the host's to count, not the effect's.
-    /// There is no default: an effect that keeps no targets of its own
-    /// states `0`, and a wrapper forwards its inner effect's count, so no
-    /// retained target goes unreported.
-    fn target_bytes(&self) -> u64;
+    /// targets a host supplies are the host's to count, not the effect's,
+    /// and so is a texture bound from the host's own. There is no
+    /// default: an effect that retains nothing states
+    /// [`RetainedMemory::default()`], and a wrapper forwards its inner
+    /// effect's value, so no retained resource goes unreported.
+    fn retained_memory(&self) -> RetainedMemory;
 }

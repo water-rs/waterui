@@ -8,6 +8,6 @@ pub use crate::render::external::{Params as YuvFrameParams, YuvLayout, yuv_frame
 
 /// `shared.wgsl` followed by `external.wgsl`, the integer-plane decode.
 pub const DECODE_WGSL: &str = concat!(
-    include_str!("render/shared.wgsl"),
+    include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl")),
     include_str!("render/external.wgsl"),
 );

@@ -67,7 +67,8 @@ use super::Eligible;
 use crate::render::shaders::spirv;
 
 use crate::render::bindings::{
-    ENGINE_GROUP0, ENGINE_GROUP1, TILE_INPUT_BINDINGS, TILE_INPUT_GROUP, vulkan_slot,
+    ENGINE_GROUP0, ENGINE_GROUP1, IMAGE_DECODE_BINDING, TILE_INPUT_BINDINGS, TILE_INPUT_GROUP,
+    vulkan_slot,
 };
 
 /// Attachment slots this executor binds at once, slot zero — the
@@ -827,7 +828,7 @@ impl Mirror {
                         .image_info(&image),
                     vk::WriteDescriptorSet::default()
                         .dst_set(set)
-                        .dst_binding(4)
+                        .dst_binding(IMAGE_DECODE_BINDING)
                         .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                         .buffer_info(std::slice::from_ref(&buffers[3])),
                 ],
@@ -1257,11 +1258,11 @@ fn raw(buffer: vk::Buffer) -> u64 {
 
 /// The tile module family a pipeline key's engine variant draws through:
 /// 0 for the short module (variants 0–3), 1 for long gradients (4), 2 for
-/// image sources (5).
+/// image sources (6).
 const fn family(variant: u8) -> usize {
     match variant {
         4 => 1,
-        5 => 2,
+        6 => 2,
         _ => 0,
     }
 }
@@ -1319,7 +1320,10 @@ impl Built {
         // Group 0 mirrors `ENGINE_GROUP0`: the globals uniform window
         // the dynamic offset selects a pass's slot in, the instance and
         // stop storage buffers, the glyph atlas and the image transfer
-        // table.
+        // table. The GPU coverage cell buffer is left out: the tile
+        // families are built without the `// cell-buffer` spans, and a
+        // GPU-routed range ends the tile epoch at its materialization
+        // boundary.
         let group0 = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -1338,7 +1342,7 @@ impl Built {
                 .stage_flags(fragment),
             sampled(3),
             vk::DescriptorSetLayoutBinding::default()
-                .binding(4)
+                .binding(IMAGE_DECODE_BINDING)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(fragment),
@@ -1364,11 +1368,11 @@ impl Built {
         // and in order, so the layouts above can name the bindings
         // directly — but only while that holds, and a table edited out
         // of order must not silently misbind the mirror.
-        for (group, count) in [(ENGINE_GROUP0, group0.len()), (ENGINE_GROUP1, group1.len())] {
-            for ordinal in 0..u32::try_from(count).expect("a handful of bindings") {
+        for (group, layout) in [(ENGINE_GROUP0, &group0[..]), (ENGINE_GROUP1, &group1[..])] {
+            for binding in layout {
                 assert_eq!(
-                    vulkan_slot(group, ordinal),
-                    ordinal,
+                    vulkan_slot(group, binding.binding),
+                    binding.binding,
                     "the engine binding tables are no longer in ordinal order"
                 );
             }

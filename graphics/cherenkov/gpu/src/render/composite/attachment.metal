@@ -37,9 +37,10 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
 }
 
 // The image-source family's `fs_full` also takes the transfer decode
-// table; the build defines TILE_IMAGE_SOURCE for that family only.
+// table; the build defines TILE_IMAGE_SOURCE for that family only, with
+// TILE_IMAGE_DECODE_BUFFER the table's fragment buffer index.
 #ifdef TILE_IMAGE_SOURCE
-#define TILE_IMAGE_DECODE_PARAM , device ImageDecode const& image_decode [[buffer(3)]]
+#define TILE_IMAGE_DECODE_PARAM , device ImageDecode const& image_decode [[buffer(TILE_IMAGE_DECODE_BUFFER)]]
 #define TILE_IMAGE_DECODE_ARG image_decode,
 #else
 #define TILE_IMAGE_DECODE_PARAM

@@ -8,7 +8,7 @@
 //! [`OperatingSpace::Srgb`] runs on sRGB-encoded pixels; the generated
 //! `apply_cpu` brackets it in `filtrate_core`'s [`to_srgb`]/[`from_srgb`],
 //! the CPU twins of the executor's `to_srgb`/`from_srgb` conversion stages
-//! (`shaders/space/{to,from}_srgb.wgsl`).
+//! (`filtrate_core::space::{TO_SRGB_WGSL, FROM_SRGB_WGSL}`).
 
 use filtrate_core::{
     AuxData, AuxFormat, AuxImage, CpuFilter, CpuFilterError, CpuImage, FilterParam, OperatingSpace,

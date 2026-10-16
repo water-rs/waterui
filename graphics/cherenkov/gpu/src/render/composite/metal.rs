@@ -125,7 +125,7 @@ const TILE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine_ti
 /// `engine_tile_long.metallib` — the variant-4 tile module.
 const LONG_TILE_METALLIB: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_long.metallib"));
-/// `engine_tile_image.metallib` — the variant-5 (image source) tile module.
+/// `engine_tile_image.metallib` — the variant-6 (image source) tile module.
 const IMAGE_TILE_METALLIB: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_image.metallib"));
 
@@ -192,12 +192,12 @@ impl Executor {
         created: &mut bool,
     ) -> &wgpu::RenderPipeline {
         // The module is the family's, the entries are shared: variants 4
-        // and 5 draw through the full entry names in their own modules.
+        // and 6 draw through the full entry names in their own modules.
         let module = match key.variant {
             4 => self
                 .module_long
                 .get_or_insert_with(|| tile_module(device, LONG_TILE_METALLIB)),
-            5 => self
+            6 => self
                 .module_image
                 .get_or_insert_with(|| tile_module(device, IMAGE_TILE_METALLIB)),
             _ => self
@@ -275,7 +275,7 @@ fn note(
             variant: match key.variant {
                 0 => report::Variant::Simple,
                 1 => report::Variant::Shadow,
-                2 | 4 => report::Variant::Source,
+                2 | 4 | 6 => report::Variant::Source,
                 3 => report::Variant::Clear,
                 _ => unreachable!("closed tile shader set"),
             },
@@ -460,11 +460,14 @@ pub fn encode(
                 // A union member is `PAINT_BACKDROP` sampling its group's
                 // capture: a neighbourhood (or effect) read that
                 // `ExecutionPlan::epoch` never admits into a tile epoch.
+                // `Cell` is a draw module (`DrawRange::module`), never a
+                // range's lowered variant.
+                ShaderVariant::Cell => unreachable!("no range is lowered with the cell module"),
                 ShaderVariant::Union => {
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }
                 ShaderVariant::LongGradient => 4,
-                ShaderVariant::Image => 5,
+                ShaderVariant::Image => 6,
             };
             let key = Key {
                 target: op.target,
