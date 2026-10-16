@@ -37,8 +37,11 @@ impl WebAccessibilityBridge {
             .expect("web accessibility root is not an HtmlElement");
         root.set_id("waterui-accessibility");
         let style = root.style();
+        // Absolute, not fixed: Safari treats a viewport-sized fixed element
+        // as the page's fixed bar and tints its status-bar and toolbar bands
+        // from it, which paints them black over the GPU canvas.
         for (name, value) in [
-            ("position", "fixed"),
+            ("position", "absolute"),
             ("inset", "0"),
             ("pointer-events", "none"),
             ("overflow", "hidden"),

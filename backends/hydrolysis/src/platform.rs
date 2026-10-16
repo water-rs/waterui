@@ -1137,6 +1137,19 @@ pub trait GpuSurfaceWindow: PlatformWindow {
     fn set_blur_behind(&mut self, blur: bool) {
         let _ = blur;
     }
+
+    /// Whether the host matches chrome of its own to the colour the
+    /// content paints along the window's top edge. When it does, the
+    /// runner reports that colour for every presented frame through
+    /// [`Self::set_top_edge_color`]; otherwise it never computes it.
+    const SAMPLES_TOP_EDGE: bool = false;
+
+    /// The colour the presented frame shows along the window's top edge
+    /// ([`HydrolysisRenderer::top_edge_color`](crate::renderer::HydrolysisRenderer::top_edge_color)),
+    /// reported when [`Self::SAMPLES_TOP_EDGE`] is set.
+    fn set_top_edge_color(&mut self, color: waterui_graphics::draw::WorkingColor) {
+        let _ = color;
+    }
 }
 
 /// The adapter, device and queue an [`OffscreenSurface`] renders on.
