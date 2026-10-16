@@ -126,8 +126,11 @@ ranges, GPU and CPU residency, CPU placement — and a failed control stops the
 collection. `scripts/pixel_compare.py analyze OUT` reports, per scene, the
 median of each arm's per-invocation GPU p50, the change, and its 95% interval
 from a hierarchical bootstrap over invocations and their frames. A scene whose
-interval is no wider than the 2% limit fails above +2% and passes otherwise; a
-wider interval is `unresolved`, never a pass. Full-size scenes resolve in 120
+whole interval lies above +2% fails at any width. Any other scene is decided
+only when its interval is no wider than the 2% limit: it fails above +2% and
+passes otherwise. A wider interval is `unresolved`, never a pass; that holds
+for an interval wholly below −2% too, since the limit bounds a cost increase
+and a decrease is no failure. Full-size scenes resolve in 120
 frames per invocation. Scenes whose GPU time is a fraction of a millisecond
 are not judged on the Pixel (#2775). They vary per process by more than more
 frames remove, and their GPU time is not additive in GPU work: a fixed buffer

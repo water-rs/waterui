@@ -74,8 +74,9 @@ belong to water-rs/waterui.
 - **Pixel cost comparisons hold the GPU and the measuring CPU at one clock**
   and check every run's clock residency (`bench/scripts/pixel_compare.py`):
   the GPU governor's per-process clock moves identical builds by the clock
-  ratio. A scene is decided only when the change's bootstrap interval is no
-  wider than the limit; frame-budget checks run under the default governor.
+  ratio. A scene fails when the change's whole bootstrap interval lies above
+  the limit; otherwise it is decided only when that interval is no wider than
+  the limit. Frame-budget checks run under the default governor.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five
