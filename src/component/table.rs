@@ -153,6 +153,14 @@ impl Identifiable for TableColumn {
     }
 }
 
+/// A column never changes once built: clones share its identity and its
+/// content, so two columns are equal exactly when they are the same column.
+impl PartialEq for TableColumn {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.identity, &other.identity)
+    }
+}
+
 impl TableColumn {
     /// Creates a new table column with the given contents.
     ///
@@ -384,7 +392,7 @@ mod tests {
 
     #[test]
     fn row_count_signal_tracks_max_rows_across_columns() {
-        let col1_rows = List::from(vec![SelfId::new(0usize)]);
+        let mut col1_rows = List::from(vec![SelfId::new(0usize)]);
         let col2_rows = List::from(vec![SelfId::new(0usize), SelfId::new(1usize)]);
 
         let signal = TableRowCountSignal::new(Computed::constant(vec![
@@ -400,12 +408,8 @@ mod tests {
     }
 
     #[test]
-    #[allow(
-        clippy::manual_contains,
-        reason = "`.contains()` resolves to a different in-scope method for this element type; `.iter().any()` is the correct call"
-    )]
     fn row_count_signal_watches_column_len_updates() {
-        let col_rows = List::from(vec![SelfId::new(0usize)]);
+        let mut col_rows = List::from(vec![SelfId::new(0usize)]);
         let signal = TableRowCountSignal::new(Computed::constant(vec![TableColumn::new(
             "Only",
             rows_from(col_rows.clone()),
@@ -417,10 +421,10 @@ mod tests {
             seen_ref.borrow_mut().push(ctx.into_value());
         });
 
+        assert_eq!(signal.snapshot(), 1);
         col_rows.insert(1, SelfId::new(1usize));
 
-        let values = seen.borrow();
-        assert!(values.iter().any(|&value| value == 1));
-        assert!(values.iter().any(|&value| value == 2));
+        // Registering delivers nothing; the insertion delivers the new count.
+        assert_eq!(*seen.borrow(), [2]);
     }
 }

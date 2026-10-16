@@ -178,7 +178,7 @@ impl VisibleMonth {
     }
 }
 
-#[derive(Debug, Clone, Copy, waterui_macros::Identifiable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, waterui_macros::Identifiable)]
 pub(crate) struct DayCell {
     #[id]
     identity: (Date, bool),
