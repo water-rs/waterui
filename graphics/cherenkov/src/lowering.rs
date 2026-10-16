@@ -561,6 +561,7 @@ impl<O: Operation, E> Content<O, E> {
 const EPS: f64 = 1e-9;
 
 /// One non-horizontal segment normalized to run top-to-bottom in `f64`.
+#[derive(Clone, Copy)]
 struct Seg {
     /// X at the top endpoint.
     x0: f64,
@@ -2093,19 +2094,16 @@ pub fn resolve_winding<S: Copy + Into<(f32, f32, f32, f32)>>(
     reason = "one sweep per design; emitted coordinates fit f32; key equality mirrors the sort; the winding prefix is a sum of unit directions, so its boundary test is an exact comparison"
 )]
 fn sweep(prepared: disjoint::Prepared, rule: FillRule) -> Option<Vec<(f32, f32, f32, f32)>> {
-    let disjoint::Prepared { mut segs, scratch } = prepared;
-    if segs.is_empty() {
+    if prepared.segs.is_empty() {
         return None;
     }
+    // The segments in `y0` order, stable in input order, and the sorted,
+    // deduplicated endpoint ordinates (`f32` bits): merged from the
+    // pre-sweep test's ordered chain events rather than sorted again.
     // Endpoints came from f32 input; only calculated crossings need f64.
-    // The pre-sweep test's scratch holds at least `2 * segs.len()` words:
-    // reinterpreting it in place keeps the ordinates from allocating again.
-    let mut ys: Vec<f32> = scratch.into_iter().map(f32::from_bits).collect();
-    ys.clear();
-    ys.extend(segs.iter().flat_map(|s| [s.y0 as f32, s.y1 as f32]));
-    ys.sort_by(f32::total_cmp);
-    ys.dedup();
-    segs.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+    let (segs, scratch, at) = prepared.into_ordered();
+    let ys = &scratch[at..];
+    let y_at = |i: usize| ys.get(i).map(|&bits| f64::from(f32::from_bits(bits)));
 
     // Output endpoints are never read by the sweep. Narrow each write,
     // preserving the last writer's bits without retaining an f64 copy.
@@ -2162,7 +2160,7 @@ fn sweep(prepared: disjoint::Prepared, rule: FillRule) -> Option<Vec<(f32, f32, 
     // emitted band bottoms used by continuation matching.
     let mut pending = BinaryHeap::<Reverse<Split>>::new();
     let mut cursor = 1usize;
-    let mut ya = f64::from(ys[0]);
+    let mut ya = y_at(0).expect("a segment has ordinates");
     // A single operand-order bound for every pair event: the stored
     // heap ordinate sits within `xing_err` of the scan-order value for
     // any pair, so heads with ordinates beyond a target plus this bound
@@ -2173,12 +2171,12 @@ fn sweep(prepared: disjoint::Prepared, rule: FillRule) -> Option<Vec<(f32, f32, 
     loop {
         let (yb, from_pending) = match pending.peek() {
             Some(&Reverse(Split(yc)))
-                if ys.get(cursor).is_none_or(|&base| yc < f64::from(base)) =>
+                if y_at(cursor).is_none_or(|base| yc < base) =>
             {
                 (yc, true)
             }
-            _ => match ys.get(cursor) {
-                Some(&base) => (f64::from(base), false),
+            _ => match y_at(cursor) {
+                Some(base) => (base, false),
                 None => break,
             },
         };

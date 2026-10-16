@@ -1,7 +1,12 @@
-//! The exact pre-sweep test of [`resolve_winding`](super::resolve_winding):
-//! it proves, without the band sweep, that a path's flattened segments
-//! cannot form an overlapping region, so the sweep would return its input
-//! unchanged.
+//! The exact pre-sweep test of [`resolve_winding`](super::resolve_winding),
+//! and the ordered event stream it shares with the sweep.
+//!
+//! The test proves, without the band sweep, that a path's flattened
+//! segments cannot form an overlapping region, so the sweep would return
+//! its input unchanged. When it cannot, everything it built is handed to
+//! the sweep: the normalized segments, and the y-ordered chain events,
+//! which the sweep's segment order and band ordinates are merged from in
+//! place of its own sorts.
 //!
 //! # What the sweep decides
 //!
@@ -13,11 +18,21 @@
 //! takes both signs. Its band order is the order of each segment's
 //! `x_at` at the band's midpoint, ties broken by slope.
 //!
+//! # The event stream
+//!
+//! The segments are grouped into maximal y-monotone chains in input order:
+//! consecutive segments of one direction whose shared vertex is bitwise the
+//! same point. A chain's segments are consecutive input indices, and their
+//! tops strictly monotone. Each chain contributes a start event (its top
+//! ordinate) and an end event (its bottom ordinate), keyed by the
+//! ordinate's `total_cmp` order and then the chain id; the two lists are
+//! sorted once, on plain integer keys.
+//!
 //! # The test
 //!
-//! The segments are grouped into maximal connected y-monotone chains in
-//! input order and swept by chain events only — a chain's top inserts it,
-//! its bottom removes it — keeping the live chains in x order. After the
+//! The chains are swept by their events only — at each ordinate the
+//! chains ending there leave the live x order in one compaction, then the
+//! chains starting there are inserted at their positions. After the
 //! events of each ordinate, every pair of chains that became adjacent is
 //! walked over its whole remaining common y-span, and the directions are
 //! checked where the order changed. The test returns `true` only when:
@@ -35,6 +50,12 @@
 //!    `±1` steps stays in `{0, s}` exactly when it starts with `s` and
 //!    alternates. Only the chains whose neighbours changed at an ordinate
 //!    are checked there; every other adjacency was checked when it formed.
+//!
+//! The order in which the chains of one ordinate are inserted does not
+//! matter: each lands after every live chain left of its top vertex and
+//! after every chain at that vertex with a smaller or equal slope, so the
+//! live order is the same up to chains that coincide in vertex and slope,
+//! and an adjacent coinciding pair fails (2) in any order.
 //!
 //! # Why `true` means the sweep returns its input unchanged
 //!
@@ -66,6 +87,22 @@
 //! the input bounds the walks, the checks and the reordering of the live
 //! chains, so the test stays `O(n + k log k)` for `k` chains; exhausting
 //! it is a doubt too.
+//!
+//! # Why the handed-over order is the sweep's own
+//!
+//! The sweep visits the segments in `y0` order, stable in input order, and
+//! bands at the sorted, deduplicated endpoint ordinates. Both follow from
+//! the sorted chain events without another sort. A chain's segments enter
+//! in `y0` order from its top on, and chains enter in start-event order,
+//! which is `(y0, top index)` order because a lower chain id holds only
+//! lower indices; merging the entered chains on `(y0 key, index)` yields
+//! every segment exactly once in `(y0, index)` order — the stable sort's
+//! result. The endpoint ordinates are the segments' tops and the chains'
+//! bottoms, since an interior vertex is bitwise the top of the segment
+//! below it; merging the ordered tops with the ordered end events in
+//! `total_cmp` order and dropping each value equal to the previous one is
+//! the sort-and-deduplicate's result. The merge costs `O(n log w)` for at
+//! most `w` chains entered at once, against the sorts' `O(n log n)`.
 
 use super::{EPS, Seg};
 
@@ -92,29 +129,63 @@ const BUDGET_PER_SEGMENT: usize = 16;
 /// direction, bottom `x` (`f32` bits), cursor, verified right neighbour,
 /// position in the live order.
 const CHAIN_WORDS: usize = 7;
-/// The scratch words per chain besides its record: its start event, its
-/// end event, a live-order slot and three slots for the chains whose
-/// neighbours changed at one ordinate (an insertion changes one, a
-/// removal two).
-const EVENT_WORDS: usize = 6;
+/// The scratch words per chain of its two events, each `[key, chain]`.
+const EVENT_WORDS: usize = 4;
+/// The scratch words per chain the test's sweep adds: a live-order slot
+/// and three slots for the chains whose neighbours changed at one ordinate
+/// (an insertion changes one, a removal two).
+const LIVE_WORDS: usize = 4;
+/// The scratch words per chain of the merge's entries
+/// `[key, segment, chain]`.
+const MERGE_WORDS: usize = 3;
 /// No chain, or no position: an empty slot.
 const NONE: u32 = u32::MAX;
 
-/// Segments in input order, normalized like the sweep's, and a scratch
-/// buffer of at least `2 * segs.len()` words the sweep reuses for its
-/// ordinates.
+/// The key of `y` in `f32::total_cmp` order.
+const fn key(y: f32) -> u32 {
+    let bits = y.to_bits();
+    if bits >> 31 == 1 {
+        !bits
+    } else {
+        bits | 0x8000_0000
+    }
+}
+
+/// The `f32` whose [`key`] is `key`.
+const fn ordinate(key: u32) -> f32 {
+    f32::from_bits(if key >> 31 == 1 {
+        key & 0x7FFF_FFFF
+    } else {
+        !key
+    })
+}
+
+/// The [`key`] of a normalized ordinate, which holds an `f32` value.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "normalized ordinates are f32 input values widened exactly"
+)]
+const fn key_of(y: f64) -> u32 {
+    key(y as f32)
+}
+
+/// Segments in input order, normalized like the sweep's, with their
+/// chains and sorted chain events: `scratch` holds `k` chain records, then
+/// the start and end events, and has room for the merge.
 pub(super) struct Prepared {
     pub(super) segs: Vec<Seg>,
-    pub(super) scratch: Vec<u32>,
+    scratch: Vec<u32>,
+    chains: usize,
 }
 
 /// Normalizes `segments` exactly as the sweep does (non-finite and
-/// horizontal segments dropped, each oriented top to bottom) and reports
-/// whether they provably form no overlapping region. The prepared buffers
-/// go to the sweep when they do not.
+/// horizontal segments dropped, each oriented top to bottom), builds and
+/// orders their chain events, and reports whether they provably form no
+/// overlapping region. The prepared buffers go to the sweep when they do
+/// not.
 #[expect(
     clippy::float_cmp,
-    reason = "connectivity and the horizontal test compare exact f32 input values"
+    reason = "the horizontal test compares exact f32 input values"
 )]
 pub(super) fn prepare<S: Copy + Into<(f32, f32, f32, f32)>>(segments: &[S]) -> (bool, Prepared) {
     // Pass 1: count the sweep's segments and the chains, and check the
@@ -122,7 +193,7 @@ pub(super) fn prepare<S: Copy + Into<(f32, f32, f32, f32)>>(segments: &[S]) -> (
     let mut count = 0usize;
     let mut chains = 0usize;
     let mut applicable = true;
-    let mut last: Option<(f32, f32, bool)> = None;
+    let mut last: Option<(u32, u32, bool)> = None;
     for &s in segments {
         let (x0, y0, x1, y1) = s.into();
         if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
@@ -141,16 +212,19 @@ pub(super) fn prepare<S: Copy + Into<(f32, f32, f32, f32)>>(segments: &[S]) -> (
                 .iter()
                 .all(|y| *y == 0.0 || f64::from(*y).abs() >= Y_FLOOR);
         let down = y0 < y1;
-        if last != Some((x0, y0, down)) {
+        if last != Some((x0.to_bits(), y0.to_bits(), down)) {
             chains += 1;
         }
-        last = Some((x1, y1, down));
+        last = Some((x1.to_bits(), y1.to_bits(), down));
         count += 1;
     }
     let mut segs = Vec::with_capacity(count);
-    let words = chains * (CHAIN_WORDS + EVENT_WORDS);
-    let mut scratch = Vec::with_capacity(words.max(2 * count));
-    let mut last: Option<(f32, f32, bool)> = None;
+    // Room for the records and events, then the larger of the test's live
+    // order (`LIVE_WORDS` per chain) and the merge (`MERGE_WORDS` per chain
+    // and one word per segment), which also holds the ordinates.
+    let mut scratch =
+        Vec::with_capacity(chains * (CHAIN_WORDS + EVENT_WORDS + MERGE_WORDS) + count);
+    let mut last: Option<(u32, u32, bool)> = None;
     for &s in segments {
         let (x0, y0, x1, y1) = s.into();
         if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
@@ -163,54 +237,262 @@ pub(super) fn prepare<S: Copy + Into<(f32, f32, f32, f32)>>(segments: &[S]) -> (
         }
         let down = y0 < y1;
         let index = u32::try_from(segs.len()).expect("segment count fits u32");
-        if applicable {
-            if last == Some((x0, y0, down)) {
-                // Extend the open chain: its bottom moves down (a downward
-                // chain) or its top moves up (an upward one), and the
-                // cursor with it, since walks start from the top.
-                let open = scratch.len() - CHAIN_WORDS;
-                if down {
-                    scratch[open + 1] = index;
-                    scratch[open + 3] = x1.to_bits();
-                } else {
-                    scratch[open] = index;
-                    scratch[open + 4] = index;
-                }
+        if last == Some((x0.to_bits(), y0.to_bits(), down)) {
+            // Extend the open chain: its bottom moves down (a downward
+            // chain) or its top moves up (an upward one), and the cursor
+            // with it, since walks start from the top.
+            let open = scratch.len() - CHAIN_WORDS;
+            if down {
+                scratch[open + 1] = index;
+                scratch[open + 3] = x1.to_bits();
             } else {
-                let (bottom_x, step) = if down { (x1, 1) } else { (x0, -1i32) };
-                scratch.extend_from_slice(&[
-                    index,
-                    index,
-                    step.cast_unsigned(),
-                    bottom_x.to_bits(),
-                    index,
-                    NONE,
-                    NONE,
-                ]);
-            }
-        }
-        last = Some((x1, y1, down));
-        let (x0, y0, x1, y1) = (f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
-        segs.push(if down {
-            Seg {
-                x0,
-                y0,
-                y1,
-                slope: (x1 - x0) / (y1 - y0),
-                dir: 1.0,
+                scratch[open] = index;
+                scratch[open + 4] = index;
             }
         } else {
-            Seg {
-                x0: x1,
-                y0: y1,
-                y1: y0,
-                slope: (x0 - x1) / (y0 - y1),
-                dir: -1.0,
+            let (bottom_x, step) = if down { (x1, 1) } else { (x0, -1i32) };
+            // Word by word: a slice copy here is a memory-primitive call
+            // per chain.
+            for word in [
+                index,
+                index,
+                step.cast_unsigned(),
+                bottom_x.to_bits(),
+                index,
+                NONE,
+                NONE,
+            ] {
+                scratch.push(word);
             }
-        });
+        }
+        last = Some((x1.to_bits(), y1.to_bits(), down));
+        segs.push(normalized(x0, y0, x1, y1));
     }
-    let disjoint = applicable && Sweep::new(&segs, &mut scratch, chains).run();
-    (disjoint, Prepared { segs, scratch })
+    order_events(&segs, &mut scratch, chains);
+    let disjoint = applicable && {
+        // The live order and changed slots are written before they are
+        // read; extending by the chain ids sizes them without a fill.
+        let slots = u32::try_from(LIVE_WORDS * chains).expect("slot count fits u32");
+        scratch.extend(0..slots);
+        let disjoint = Sweep::new(&segs, &mut scratch, chains).run();
+        scratch.truncate(chains * (CHAIN_WORDS + EVENT_WORDS));
+        disjoint
+    };
+    (
+        disjoint,
+        Prepared {
+            segs,
+            scratch,
+            chains,
+        },
+    )
+}
+
+/// The segment `(x0, y0)`–`(x1, y1)`, not horizontal, oriented top to
+/// bottom in `f64`, as the sweep keeps it.
+fn normalized(x0: f32, y0: f32, x1: f32, y1: f32) -> Seg {
+    let (x0, y0, x1, y1) = (f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
+    if y0 < y1 {
+        Seg {
+            x0,
+            y0,
+            y1,
+            slope: (x1 - x0) / (y1 - y0),
+            dir: 1.0,
+        }
+    } else {
+        Seg {
+            x0: x1,
+            y0: y1,
+            y1: y0,
+            slope: (x0 - x1) / (y0 - y1),
+            dir: -1.0,
+        }
+    }
+}
+
+/// Appends each chain's start and end event, `[key, chain]`, after the
+/// chain records, and sorts the starts and the ends: by ordinate in
+/// `total_cmp` order, then by chain id.
+fn order_events(segs: &[Seg], scratch: &mut Vec<u32>, chains: usize) {
+    let ids = 0..u32::try_from(chains).expect("chain count fits u32");
+    for chain in ids.clone() {
+        let top = scratch[chain as usize * CHAIN_WORDS] as usize;
+        scratch.push(key_of(segs[top].y0));
+        scratch.push(chain);
+    }
+    for chain in ids {
+        let bottom = scratch[chain as usize * CHAIN_WORDS + 1] as usize;
+        scratch.push(key_of(segs[bottom].y1));
+        scratch.push(chain);
+    }
+    let events = &mut scratch[chains * CHAIN_WORDS..];
+    let (starts, ends) = events.split_at_mut(2 * chains);
+    starts.as_chunks_mut::<2>().0.sort_unstable();
+    ends.as_chunks_mut::<2>().0.sort_unstable();
+}
+
+impl Prepared {
+    /// The sweep's input: the segments in `(y0, input index)` order, and
+    /// the scratch with the sorted, deduplicated endpoint ordinates (`f32`
+    /// bits) from the returned offset on — merged from the chain events,
+    /// as the module documentation argues.
+    pub(super) fn into_ordered(self) -> (Vec<Seg>, Vec<u32>, usize) {
+        let Self {
+            mut segs,
+            mut scratch,
+            chains,
+        } = self;
+        let events_end = chains * (CHAIN_WORDS + EVENT_WORDS);
+        let slots =
+            u32::try_from(MERGE_WORDS * chains + segs.len()).expect("slot count fits u32");
+        scratch.extend(0..slots);
+        let (records, rest) = scratch.split_at_mut(chains * CHAIN_WORDS);
+        let (events, rest) = rest.split_at_mut(EVENT_WORDS * chains);
+        let (merge, order) = rest.split_at_mut(MERGE_WORDS * chains);
+        merge_chains(
+            records,
+            events[..2 * chains].as_chunks::<2>().0,
+            &segs,
+            merge.as_chunks_mut::<MERGE_WORDS>().0,
+            order,
+        );
+        permute(&mut segs, order);
+        scratch.truncate(events_end);
+        // The ordinates: segment tops (now in order) merged with chain
+        // bottoms (the sorted end events), equal values dropped.
+        let ends = chains * CHAIN_WORDS + 2 * chains;
+        let (mut top, mut end) = (0, 0);
+        let mut previous: Option<f32> = None;
+        loop {
+            let next_top = segs.get(top).map(|s| key_of(s.y0));
+            let next_end = (end < chains).then(|| scratch[ends + 2 * end]);
+            let key = match (next_top, next_end) {
+                (Some(t), Some(e)) if t <= e => {
+                    top += 1;
+                    t
+                }
+                (_, Some(e)) => {
+                    end += 1;
+                    e
+                }
+                (Some(t), None) => {
+                    top += 1;
+                    t
+                }
+                (None, None) => break,
+            };
+            let y = ordinate(key);
+            if previous != Some(y) {
+                scratch.push(y.to_bits());
+                previous = Some(y);
+            }
+        }
+        (segs, scratch, events_end)
+    }
+}
+
+/// Merges the chains' segments into `(y0 key, index)` order, writing each
+/// segment's input index to `order`. Chains enter in start-event order;
+/// `heap` is a binary min-heap of the entered chains' next segments.
+fn merge_chains(
+    records: &[u32],
+    starts: &[[u32; 2]],
+    segs: &[Seg],
+    heap: &mut [[u32; MERGE_WORDS]],
+    order: &mut [u32],
+) {
+    let record = |chain: u32| &records[chain as usize * CHAIN_WORDS..][..CHAIN_WORDS];
+    // The segment below `segment` in `chain`, if any.
+    let below = |chain: u32, segment: u32| {
+        let r = record(chain);
+        (segment != r[1]).then(|| segment.wrapping_add_signed(r[2].cast_signed()))
+    };
+    let mut len = 0usize;
+    let mut next_start = 0usize;
+    for slot in order.iter_mut() {
+        let start = starts.get(next_start).map(|&[key, chain]| [key, record(chain)[0], chain]);
+        let entered = match start {
+            Some(entry) if len == 0 || entry < heap[0] => {
+                next_start += 1;
+                Some(entry)
+            }
+            _ => None,
+        };
+        let [_, segment, chain] = entered.unwrap_or(heap[0]);
+        *slot = segment;
+        let next = below(chain, segment).map(|s| [key_of(segs[s as usize].y0), s, chain]);
+        match (entered, next) {
+            (Some(_), Some(entry)) => {
+                heap[len] = entry;
+                len += 1;
+                sift_up(&mut heap[..len]);
+            }
+            (Some(_), None) => {}
+            (None, Some(entry)) => {
+                heap[0] = entry;
+                sift_down(&mut heap[..len]);
+            }
+            (None, None) => {
+                len -= 1;
+                heap[0] = heap[len];
+                sift_down(&mut heap[..len]);
+            }
+        }
+    }
+}
+
+/// Restores the min-heap order after its last entry was added.
+fn sift_up(heap: &mut [[u32; MERGE_WORDS]]) {
+    let mut at = heap.len() - 1;
+    while at > 0 {
+        let parent = (at - 1) / 2;
+        if heap[at] >= heap[parent] {
+            break;
+        }
+        heap.swap(at, parent);
+        at = parent;
+    }
+}
+
+/// Restores the min-heap order after its first entry changed.
+fn sift_down(heap: &mut [[u32; MERGE_WORDS]]) {
+    let mut at = 0;
+    loop {
+        let left = 2 * at + 1;
+        if left >= heap.len() {
+            break;
+        }
+        let child = if left + 1 < heap.len() && heap[left + 1] < heap[left] {
+            left + 1
+        } else {
+            left
+        };
+        if heap[child] >= heap[at] {
+            break;
+        }
+        heap.swap(at, child);
+        at = child;
+    }
+}
+
+/// Moves `segs[order[r]]` to position `r` for every `r`, in place, by
+/// following each cycle of the permutation; `order` is consumed.
+fn permute(segs: &mut [Seg], order: &mut [u32]) {
+    for start in 0..order.len() {
+        let mut at = start;
+        let held = segs[start];
+        loop {
+            let from = order[at] as usize;
+            order[at] = u32::try_from(at).expect("segment count fits u32");
+            if from == start {
+                segs[at] = held;
+                break;
+            }
+            segs[at] = segs[from];
+            at = from;
+        }
+    }
 }
 
 /// The chain-level sweep over the prepared segments. Chain records live in
@@ -220,8 +502,8 @@ pub(super) fn prepare<S: Copy + Into<(f32, f32, f32, f32)>>(segments: &[S]) -> (
 struct Sweep<'a> {
     segs: &'a [Seg],
     chains: &'a mut [u32],
-    starts: &'a mut [u32],
-    ends: &'a mut [u32],
+    starts: &'a [[u32; 2]],
+    ends: &'a [[u32; 2]],
     live: &'a mut [u32],
     changed: &'a mut [u32],
     len: usize,
@@ -231,23 +513,16 @@ struct Sweep<'a> {
 }
 
 impl<'a> Sweep<'a> {
-    fn new(segs: &'a [Seg], scratch: &'a mut Vec<u32>, chains: usize) -> Self {
-        let records = chains * CHAIN_WORDS;
-        // Every event region starts as the chain ids; only the start and
-        // end events read them, the other regions are written before read.
-        let ids = 0..u32::try_from(chains).expect("chain count fits u32");
-        for _ in 0..EVENT_WORDS {
-            scratch.extend(ids.clone());
-        }
-        let (chain_words, rest) = scratch.split_at_mut(records);
-        let (starts, rest) = rest.split_at_mut(chains);
-        let (ends, rest) = rest.split_at_mut(chains);
+    const fn new(segs: &'a [Seg], scratch: &'a mut [u32], chains: usize) -> Self {
+        let (chain_words, rest) = scratch.split_at_mut(chains * CHAIN_WORDS);
+        let (events, rest) = rest.split_at_mut(EVENT_WORDS * chains);
+        let (starts, ends) = events.split_at(2 * chains);
         let (live, changed) = rest.split_at_mut(chains);
         Self {
             segs,
             chains: chain_words,
-            starts,
-            ends,
+            starts: starts.as_chunks::<2>().0,
+            ends: ends.as_chunks::<2>().0,
             live,
             changed,
             len: 0,
@@ -316,47 +591,28 @@ impl<'a> Sweep<'a> {
         segment
     }
 
+    /// Runs the events ordinate by ordinate: ends, then starts, then the
+    /// checks. `0` and `-0` are one ordinate, as in the sweep's `f64`
+    /// comparisons; their keys are adjacent, so they group.
     #[expect(clippy::float_cmp, reason = "events group at exactly equal ordinates")]
     fn run(mut self) -> bool {
-        let segs = self.segs;
-        self.starts.sort_unstable_by(|&a, &b| {
-            let (sa, sb) = (
-                &segs[self.chains[a as usize * CHAIN_WORDS] as usize],
-                &segs[self.chains[b as usize * CHAIN_WORDS] as usize],
-            );
-            sa.y0
-                .total_cmp(&sb.y0)
-                .then(sa.x0.total_cmp(&sb.x0))
-                .then(sa.slope.total_cmp(&sb.slope))
-        });
-        // Rightmost bottom first within an ordinate, so each removal moves
-        // as few live chains as possible.
-        self.ends.sort_unstable_by(|&a, &b| {
-            let bottom = |chain: u32| {
-                let record = chain as usize * CHAIN_WORDS;
-                (
-                    segs[self.chains[record + 1] as usize].y1,
-                    f32::from_bits(self.chains[record + 3]),
-                )
-            };
-            let ((ya, xa), (yb, xb)) = (bottom(a), bottom(b));
-            ya.total_cmp(&yb).then(xb.total_cmp(&xa))
-        });
+        let (starts, ends) = (self.starts, self.ends);
         let (mut next_start, mut next_end) = (0, 0);
-        while next_end < self.ends.len() {
-            let y_end = self.bottom(self.ends[next_end]).y1;
-            let y = match self.starts.get(next_start) {
-                Some(&s) => self.top(s).y0.min(y_end),
+        while next_end < ends.len() {
+            let y_end = self.bottom(ends[next_end][1]).y1;
+            let y = match starts.get(next_start) {
+                Some(&[_, chain]) => self.top(chain).y0.min(y_end),
                 None => y_end,
             };
-            while next_end < self.ends.len() && self.bottom(self.ends[next_end]).y1 == y {
-                if !self.remove(self.ends[next_end]) {
-                    return false;
-                }
+            let first = next_end;
+            while next_end < ends.len() && self.bottom(ends[next_end][1]).y1 == y {
                 next_end += 1;
             }
-            while next_start < self.starts.len() && self.top(self.starts[next_start]).y0 == y {
-                if !self.insert(self.starts[next_start], y) {
+            if !self.remove(&ends[first..next_end]) {
+                return false;
+            }
+            while next_start < starts.len() && self.top(starts[next_start][1]).y0 == y {
+                if !self.insert(starts[next_start][1], y) {
                     return false;
                 }
                 next_start += 1;
@@ -420,24 +676,34 @@ impl<'a> Sweep<'a> {
         true
     }
 
-    /// Removes `chain`, which ends at the current ordinate, from its
-    /// recorded position; its neighbours become adjacent.
-    fn remove(&mut self, chain: u32) -> bool {
-        let at = self.word(chain, 6) as usize;
-        if !self.spend(self.len - at) {
+    /// Removes the chains of `ending`, which end at the current ordinate,
+    /// in one compaction of the live order; each one's neighbours are
+    /// recorded, so the chains that become adjacent are checked.
+    fn remove(&mut self, ending: &[[u32; 2]]) -> bool {
+        let mut lowest = self.len;
+        for &[_, chain] in ending {
+            let at = self.word(chain, 6) as usize;
+            if at > 0 {
+                self.touch(self.live[at - 1]);
+            }
+            if at + 1 < self.len {
+                self.touch(self.live[at + 1]);
+            }
+            self.set(chain, 6, NONE);
+            lowest = lowest.min(at);
+        }
+        if !self.spend(self.len - lowest) {
             return false;
         }
-        if at > 0 {
-            self.touch(self.live[at - 1]);
+        let mut kept = lowest;
+        for at in lowest..self.len {
+            let chain = self.live[at];
+            if self.word(chain, 6) != NONE {
+                self.place(kept, chain);
+                kept += 1;
+            }
         }
-        if at + 1 < self.len {
-            self.touch(self.live[at + 1]);
-        }
-        for next in at + 1..self.len {
-            self.place(next - 1, self.live[next]);
-        }
-        self.set(chain, 6, NONE);
-        self.len -= 1;
+        self.len = kept;
         true
     }
 
@@ -631,6 +897,66 @@ mod tests {
                 .wrapping_mul(6_364_136_223_846_793_005)
                 .wrapping_add(1_442_695_040_888_963_407);
             ((self.0 >> 40) as f32 / (1u64 << 24) as f32) * scale
+        }
+    }
+
+    /// The handover's contract: the merged order and ordinates are the
+    /// ones the sweep's stable sort and sort-and-deduplicate produce, bit
+    /// for bit — on grids full of ties, signed zeros, horizontal and
+    /// non-finite segments, and chains broken and joined at every vertex.
+    #[test]
+    fn the_handed_over_order_is_the_sorted_order() {
+        let mut rng = Lcg(0x2811_0002);
+        let grid = [-2.0, -1.0, -0.0, 0.0, 1.0, 2.0, 3.5];
+        for case in 0..3000 {
+            let mut segments = Vec::new();
+            let mut at = (0.0f32, 0.0f32);
+            for _ in 0..=case % 40 {
+                #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let pick = |rng: &mut Lcg| grid[(rng.next(7.0) as usize).min(6)];
+                let to = if case % 3 == 0 {
+                    (rng.next(100.0), rng.next(100.0))
+                } else {
+                    (pick(&mut rng), pick(&mut rng))
+                };
+                // Mostly continue from the last vertex (chains), sometimes jump.
+                let from = if rng.next(1.0) < 0.8 {
+                    at
+                } else {
+                    (pick(&mut rng), pick(&mut rng))
+                };
+                let to = if rng.next(1.0) < 0.02 {
+                    (f32::NAN, to.1)
+                } else {
+                    to
+                };
+                segments.push((from.0, from.1, to.0, to.1));
+                at = to;
+            }
+            let prepared = prepare(&segments).1;
+            let mut sorted: Vec<Seg> = prepared.segs.clone();
+            sorted.sort_by(|a, b| a.y0.total_cmp(&b.y0));
+            #[expect(clippy::cast_possible_truncation)]
+            let mut ys: Vec<f32> = sorted
+                .iter()
+                .flat_map(|s| [s.y0 as f32, s.y1 as f32])
+                .collect();
+            ys.sort_by(f32::total_cmp);
+            ys.dedup();
+            let (merged, scratch, from) = prepared.into_ordered();
+            let bits = |s: &Seg| {
+                [s.x0, s.y0, s.y1, s.slope, s.dir].map(f64::to_bits)
+            };
+            assert_eq!(
+                merged.iter().map(bits).collect::<Vec<_>>(),
+                sorted.iter().map(bits).collect::<Vec<_>>(),
+                "case {case}: segment order differs: {segments:?}"
+            );
+            assert_eq!(
+                scratch[from..],
+                ys.iter().map(|y| y.to_bits()).collect::<Vec<_>>(),
+                "case {case}: ordinates differ: {segments:?}"
+            );
         }
     }
 
