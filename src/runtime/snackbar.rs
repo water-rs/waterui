@@ -644,7 +644,7 @@ impl SnackbarManager {
             snackbar,
         };
 
-        let active = self.state.borrow().active.clone();
+        let mut active = self.state.borrow().active.clone();
 
         // Evict the oldest live snackbar AT THIS PLACEMENT if its stack is
         // already full, so the new one slides in as the oldest fades out.
@@ -732,7 +732,7 @@ impl SnackbarManager {
     }
 
     fn finish_dismissal(&self, id: u64) {
-        let active = self.state.borrow().active.clone();
+        let mut active = self.state.borrow().active.clone();
         let index = active.snapshot().iter().position(|item| item.id == id);
         if let Some(index) = index {
             let _removed = active.remove(index);

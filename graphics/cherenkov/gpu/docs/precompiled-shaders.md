@@ -1,11 +1,18 @@
 # Precompiled engine shaders
 
-Issue #57. The engine's fixed WGSL modules — the three `VARIANT`
-specializations of `shader.wgsl` plus `present.wgsl` — are parsed, validated
-and translated by naga once in `cherenkov-gpu`'s `build.rs`, instead of wgpu
+Issue #57. The engine's fixed WGSL modules, including the five `VARIANT`
+specializations of `shader.wgsl` and the presentation and helper shaders, are
+parsed, validated and translated by naga once in `cherenkov-gpu`'s `build.rs`, instead of wgpu
 running naga per pipeline at device and pipeline creation. The runtime embeds
 the products with `include_bytes!` and loads them through
 `Device::create_shader_module_passthrough`.
+
+The ordinary modules retain the linear gradient-stop scan and exclude the
+binary-search block. Draw lowering selects the long-gradient module for
+linear, radial and sweep paints above eight stops. Both modules share the
+same endpoint handling and interpolation. Metal and Vulkan tile composition
+use corresponding short- and long-gradient modules with the same attachment
+interfaces; union members use their separate module.
 
 Delivery by backend (a property of the selected backend, never a runtime
 fallback):
@@ -92,7 +99,7 @@ rustup default stable
 
 # 1. Build for macOS — compiles .metal -> .air -> .metallib via xcrun.
 cargo build -p cherenkov-gpu
-ls target/debug/build/cherenkov-gpu-*/out/*.metallib   # 4 files expected
+ls target/debug/build/cherenkov-gpu-*/out/*.metallib   # engine, helper and tile libraries
 
 # 2. Lint + test on Metal hardware.
 cargo clippy --locked -p cherenkov-gpu --all-targets -- -D warnings
@@ -117,7 +124,8 @@ cargo build --locked --release -p cherenkov-bench --features cherenkov
     --scene graphics/cherenkov/scenes/perf/map --warmup 5 --frames 60 --out out/measure-metal.json
 ```
 
-Expected: build emits `engine{0,1,2}.metallib` + `present.metallib`; tests
+Expected: build emits `engine{0,1,2,3,4}.metallib`, the fixed helper libraries,
+and `engine_tile{,_long}.metallib`; tests
 pass; corpus renders byte-identical to dev; `wgpu::Backend::Metal` selects
 `ShaderDelivery::Metallib` (visible via `RUST_LOG=cherenkov_gpu=debug` or the
 `shader_delivery` return on a shared device).

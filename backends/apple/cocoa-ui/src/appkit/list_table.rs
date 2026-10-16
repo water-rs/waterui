@@ -816,9 +816,23 @@ fn index_set(indexes: &[usize]) -> Retained<NSIndexSet> {
 }
 
 impl TableView {
-    /// Applies `deletes` and `inserts` as one update block — `.effectFade`
-    /// when `animated`, no animation otherwise.
-    pub fn apply_row_updates(&self, deletes: &[usize], inserts: &[usize], animated: bool) {
+    /// Applies one update block — `.effectFade` when `animated`, no
+    /// animation otherwise. `AppKit` applies each edit against the rows the
+    /// previous one left, so the block runs in that order: `deletes` are
+    /// removed (indexes before the block), then each `(from, to)` of `moves`
+    /// moves a row within the remaining rows, then `inserts` go in at their
+    /// final positions (indexes after the block).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a move names a row index past `NSInteger::MAX`.
+    pub fn apply_row_updates(
+        &self,
+        deletes: &[usize],
+        moves: &[(usize, usize)],
+        inserts: &[usize],
+        animated: bool,
+    ) {
         let animation = if animated {
             NSTableViewAnimationOptions::EffectFade
         } else {
@@ -827,6 +841,13 @@ impl TableView {
         let table = self.table_view();
         table.beginUpdates();
         table.removeRowsAtIndexes_withAnimation(&index_set(deletes), animation);
+        for &(from, to) in moves {
+            table.moveRowAtIndex_toIndex(
+                from.try_into()
+                    .expect("a table row index fits in NSInteger"),
+                to.try_into().expect("a table row index fits in NSInteger"),
+            );
+        }
         table.insertRowsAtIndexes_withAnimation(&index_set(inserts), animation);
         table.endUpdates();
     }

@@ -9,7 +9,9 @@ use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Vec2};
 
 use crate::render::glyph::{CellTexels, PathCell, PathEmit};
 use crate::render::instance::Instance;
-use crate::render::raster::{self, Raster};
+#[cfg(test)]
+use crate::render::raster::Raster;
+use crate::render::raster::{self, Band, BandRaster};
 use cherenkov::RenderError;
 
 /// Coverage strip height in device rows.
@@ -110,6 +112,16 @@ pub enum CoverageRoute {
 // from inside the crate instead.
 #[cfg(test)]
 thread_local! {
+    // Android's emulated TLS expands even a `const { … }` initializer into a
+    // non-const init fn, which the lint inspects; native-TLS targets keep it
+    // const, so the expectation is Android-only.
+    #[cfg_attr(
+        target_os = "android",
+        expect(
+            clippy::missing_const_for_thread_local,
+            reason = "the initializer is already const; the lint misfires on std's emulated-TLS expansion (rust-lang/rust-clippy#13422)"
+        )
+    )]
     static FORCED_ROUTE: std::cell::Cell<Option<CoverageRoute>> =
         const { std::cell::Cell::new(None) };
 }
@@ -161,33 +173,168 @@ pub struct Coverage {
 
 /// Rasterizes flattened device-space `segments` spanning `bbox` under
 /// `rule`, over `bbox` inflated by 1 px and clipped to the surface rect.
-/// `None` when the path misses the surface entirely.
-///
-/// [`route`] picks which route does it; every route returns the same
-/// [`Coverage`] grid, to within section 4.3 threshold 4 of the coverage
-/// specification.
+/// `None` when the path misses the surface entirely. `scratch` lends its
+/// band rasterizer.
 pub fn rasterize(
     segments: &[(f32, f32, f32, f32)],
     bbox: Rect,
     surface: (f64, f64),
     rule: FillRule,
+    scratch: &mut EmitScratch,
 ) -> Option<Coverage> {
     match route() {
-        CoverageRoute::Sweep => sweep(segments, bbox, surface, rule),
+        CoverageRoute::Sweep => sweep(segments, bbox, surface, rule, &mut scratch.raster),
     }
 }
 
-/// The CPU sweep route: `resolve_winding` turns self-intersections into a
-/// non-zero cover and the scanline raster accumulates signed area.
-#[expect(clippy::cast_possible_truncation)]
-#[expect(clippy::cast_sign_loss)]
-#[expect(clippy::cast_precision_loss)]
 fn sweep(
     segments: &[(f32, f32, f32, f32)],
     bbox: Rect,
     surface: (f64, f64),
     rule: FillRule,
+    scratch: &mut BandRaster,
 ) -> Option<Coverage> {
+    let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
+    let (segments, rule) = resolve(segments, rule);
+    let mut data = Vec::with_capacity(w * h);
+    queue(scratch, &segments, (x0, y0, w, h), rule);
+    scratch.finish_choose(&mut |band, _| match band {
+        Band::Dense(coverage) => data.extend_from_slice(coverage),
+        Band::Sparse(runs, ends) => {
+            let mut start = 0;
+            for &end in ends {
+                let row_start = data.len();
+                for &(column, coverage) in &runs[start..end] {
+                    data.resize(row_start + column as usize, coverage);
+                }
+                start = end;
+            }
+        }
+    });
+    Some(Coverage {
+        x: x0,
+        y: y0,
+        w,
+        h,
+        clipped,
+        data,
+    })
+}
+
+/// Reusable path-emission buffers: the band rasterizer and the per-band
+/// class runs. The owner keeps one across paths and frames so emission
+/// allocates only for growth.
+#[derive(Debug, Default)]
+pub struct EmitScratch {
+    raster: BandRaster,
+    /// A band's class runs, which [`partition`] annotates.
+    runs: Vec<Run>,
+}
+
+impl EmitScratch {
+    /// Empty buffers; the first emissions size them.
+    pub const fn new() -> Self {
+        Self {
+            raster: BandRaster::new(),
+            runs: Vec::new(),
+        }
+    }
+
+    /// Heap bytes the buffers hold between emissions.
+    pub const fn heap_bytes(&self) -> u64 {
+        self.raster.heap_bytes() + (self.runs.capacity() * size_of::<Run>()) as u64
+    }
+}
+
+/// Rasterizes and emits in one pass: each sealed `STRIP_H`-row coverage
+/// band is classified and emitted directly, so the `w × h` coverage grid
+/// never materializes. Cell texels append to `arena`; the bool is
+/// `Coverage::clipped`.
+#[expect(clippy::cast_precision_loss)]
+#[expect(clippy::type_complexity)]
+pub fn rasterize_emit(
+    segments: &[(f32, f32, f32, f32)],
+    bbox: Rect,
+    surface: (f64, f64),
+    rule: FillRule,
+    scratch: &mut EmitScratch,
+    arena: &mut Vec<u8>,
+) -> Option<Result<(PathEmit, Vec<CellTexels>, bool), RenderError>> {
+    match route() {
+        CoverageRoute::Sweep => {}
+    }
+    let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
+    let (segments, rule) = resolve(segments, rule);
+    let EmitScratch { raster, runs } = scratch;
+    if (w as f64) <= SMALL_BBOX && (h as f64) <= SMALL_BBOX {
+        // One whole-bbox cell needs the texels: collect the (small)
+        // coverage and emit it like `emit` does.
+        let mut data = Vec::with_capacity(w * h);
+        queue(raster, &segments, (x0, y0, w, h), rule);
+        raster.finish(&mut |band: &[f32]| data.extend_from_slice(band));
+        let coverage = Coverage {
+            x: x0,
+            y: y0,
+            w,
+            h,
+            clipped,
+            data,
+        };
+        return Some(emit(&coverage, arena).map(|(p, r)| (p, r, clipped)));
+    }
+    let mut out = PathEmit::default();
+    let mut rasters = Vec::new();
+    // The grid's area bounds every texel this emission can produce; it
+    // is reserved at the first cell, so the arena grows at most once per
+    // emitted path and an empty emission never touches it.
+    let mut reserve = w * h;
+    let mut err = None;
+    let mut sink = |band: Band<'_>, sy: usize| {
+        if err.is_some() {
+            return;
+        }
+        let r = match band {
+            Band::Dense(strip) => emit_strip(
+                strip,
+                w,
+                x0,
+                y0,
+                sy,
+                strip.len() / w,
+                runs,
+                &mut out,
+                &mut rasters,
+                arena,
+                &mut reserve,
+            ),
+            Band::Sparse(coverage, ends) => emit_strip_sparse(
+                coverage,
+                ends,
+                w,
+                x0,
+                y0,
+                sy,
+                runs,
+                &mut out,
+                &mut rasters,
+                arena,
+                &mut reserve,
+            ),
+        };
+        if let Err(e) = r {
+            err = Some(e);
+        }
+    };
+    queue(raster, &segments, (x0, y0, w, h), rule);
+    raster.finish_choose(&mut sink);
+    Some(err.map_or(Ok((out, rasters, clipped)), Err))
+}
+
+/// The integer raster grid for `bbox` inflated by 1 px and clipped to
+/// the surface rect: origin, size, and whether clipping happened.
+#[expect(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_sign_loss)]
+fn grid(bbox: Rect, surface: (f64, f64)) -> Option<(f64, f64, usize, usize, bool)> {
     let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
     let inflated = bbox.inflate(1.0, 1.0);
     let r = inflated.intersect(clip);
@@ -196,21 +343,46 @@ fn sweep(
     let y0 = r.y0.floor();
     let w = (r.x1.ceil() - x0).max(0.0) as usize;
     let h = (r.y1.ceil() - y0).max(0.0) as usize;
-    if w == 0 || h == 0 {
-        return None;
-    }
-    let (ox, oy) = (x0 as f32, y0 as f32);
+    (w > 0 && h > 0).then_some((x0, y0, w, h, clipped))
+}
+
+/// The segments `resolve_winding` settles on, borrowed when it leaves the
+/// input unchanged.
+type Segments<'a> = std::borrow::Cow<'a, [(f32, f32, f32, f32)]>;
+
+/// `resolve_winding`'s output plus the rule it leaves: resolved input
+/// rasterizes as `NonZero`.
+fn resolve(segments: &[(f32, f32, f32, f32)], rule: FillRule) -> (Segments<'_>, FillRule) {
     let resolved = cherenkov::lowering::resolve_winding(segments, rule);
-    let segments = resolved.as_deref().unwrap_or(segments);
     let rule = if resolved.is_some() {
         FillRule::NonZero
     } else {
         rule
     };
-    let mut raster = Raster::new(w, h);
+    (
+        resolved.map_or(
+            std::borrow::Cow::Borrowed(segments),
+            std::borrow::Cow::Owned,
+        ),
+        rule,
+    )
+}
+
+/// Queues clipped segments while preserving their input order.
+#[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn queue(
+    scratch: &mut BandRaster,
+    segments: &[(f32, f32, f32, f32)],
+    grid: (f64, f64, usize, usize),
+    rule: FillRule,
+) {
+    let (x0, y0, w, h) = grid;
+    scratch.reset(w, h, rule);
+    scratch.reserve_edges(segments.len());
+    let (ox, oy) = (x0 as f32, y0 as f32);
     for &(sx0, sy0, sx1, sy1) in segments {
         clip_x(
-            &mut raster,
+            &mut |a, b, c, d| scratch.draw(a, b, c, d),
             sx0 - ox,
             sy0 - oy,
             sx1 - ox,
@@ -218,14 +390,6 @@ fn sweep(
             w as f32,
         );
     }
-    Some(Coverage {
-        x: x0,
-        y: y0,
-        w,
-        h,
-        clipped,
-        data: raster.coverage_rule(rule),
-    })
 }
 
 /// Clips a segment to `0 <= x <= w` in raster space and draws it into
@@ -236,7 +400,7 @@ fn sweep(
 /// into column 0. Segments at `x > w` are dropped outright — their
 /// deposits land in the unread trailing column or beyond. Row clipping is
 /// `Raster`'s job: `y` is left untouched.
-fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
+fn clip_x(draw: &mut impl FnMut(f32, f32, f32, f32), x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
         return;
     }
@@ -245,7 +409,7 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     if dx.abs() <= f32::EPSILON {
         if x0 <= w {
             let x = x0.max(0.0);
-            raster.draw_line(x, y0, x, y1);
+            draw(x, y0, x, y1);
         }
         return;
     }
@@ -253,9 +417,9 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     // enters through the left edge at `tz`, `dx < 0` exits through it.
     let tz = -x0 / dx;
     if dx > 0.0 && x0 < 0.0 {
-        raster.draw_line(0.0, y0, 0.0, dy.mul_add(tz.min(1.0), y0));
+        draw(0.0, y0, 0.0, dy.mul_add(tz.min(1.0), y0));
     } else if dx < 0.0 && x1 < 0.0 {
-        raster.draw_line(0.0, dy.mul_add(tz.max(0.0), y0), 0.0, y1);
+        draw(0.0, dy.mul_add(tz.max(0.0), y0), 0.0, y1);
     }
     let (enter, exit) = if dx > 0.0 { (0.0, w) } else { (w, 0.0) };
     let t0 = ((enter - x0) / dx).max(0.0);
@@ -263,7 +427,7 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
     if t0 >= t1 {
         return;
     }
-    raster.draw_line(
+    draw(
         dx.mul_add(t0, x0).clamp(0.0, w),
         dy.mul_add(t0, y0),
         dx.mul_add(t1, x0).clamp(0.0, w),
@@ -288,111 +452,234 @@ pub fn emit(
     arena: &mut Vec<u8>,
 ) -> Result<(PathEmit, Vec<CellTexels>), RenderError> {
     let mut out = PathEmit::default();
-    let mut rasters: Vec<CellTexels> = Vec::new();
-    let make_cell = |cells: &mut Vec<PathCell>,
-                     rasters: &mut Vec<CellTexels>,
-                     arena: &mut Vec<u8>,
-                     x: usize,
-                     y: usize,
-                     w: usize,
-                     h: usize,
-                     interior: std::ops::Range<usize>|
-     -> Result<(), RenderError> {
-        let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
-            return Err(RenderError::AtlasFull);
-        };
-        // Reserve the coverage's area on an emission's first cell so the
-        // arena never regrows mid-emit; empty emissions stay allocation-free.
-        if rasters.is_empty() {
-            arena.reserve(coverage.data.len());
-        }
-        let start = arena.len();
-        for row in 0..h {
-            arena.extend(
-                coverage.data[(y + row) * coverage.w + x..][..w]
-                    .iter()
-                    .copied()
-                    .map(raster::texel),
-            );
-        }
-        rasters.push((w32, h32, start..arena.len()));
-        cells.push(PathCell {
-            rect: [
-                (coverage.x + x as f64) as f32,
-                (coverage.y + y as f64) as f32,
-                (coverage.x + (x + w) as f64) as f32,
-                (coverage.y + (y + h) as f64) as f32,
-            ],
-            x: 0,
-            y: 0,
-            // Filled by `Atlas::place_path` on the render thread.
-            slot: 0,
-            interior: u32::from(u16::try_from(interior.start).map_err(|_| RenderError::AtlasFull)?)
-                | (u32::from(u16::try_from(interior.end).map_err(|_| RenderError::AtlasFull)?)
-                    << 16),
-        });
-        Ok(())
-    };
+    let mut rasters = Vec::new();
+    let mut reserve = coverage.data.len();
     if coverage.w as f64 <= SMALL_BBOX && coverage.h as f64 <= SMALL_BBOX {
         make_cell(
-            &mut out.cells,
-            &mut rasters,
-            arena,
+            &mut |r, columns, arena| {
+                arena.extend(
+                    coverage.data[r * coverage.w..][columns]
+                        .iter()
+                        .copied()
+                        .map(raster::texel),
+                );
+            },
             0,
-            0,
+            [
+                coverage.x as f32,
+                coverage.y as f32,
+                (coverage.x + coverage.w as f64) as f32,
+                (coverage.y + coverage.h as f64) as f32,
+            ],
             coverage.w,
             coverage.h,
             0..0,
+            &mut out.cells,
+            &mut rasters,
+            arena,
+            &mut reserve,
         )?;
-        return Ok((out, rasters));
-    }
-    // Runs never outnumber columns: one allocation serves every strip.
-    let mut runs = Vec::with_capacity(coverage.w);
-    for sy in (0..coverage.h).step_by(STRIP_H) {
-        let sh = STRIP_H.min(coverage.h - sy);
-        strip_runs(coverage, sy, sh, &mut runs);
-        partition(&mut runs, sh);
-        let mut k = 0;
-        while k < runs.len() {
-            let Some(segment) = runs[k].segment else {
-                k += 1;
-                continue;
-            };
-            let (start, end) = (runs[k].start, runs[segment.last].end);
-            if segment.span {
-                out.spans.push([
-                    (coverage.x + start as f64) as f32,
-                    (coverage.y + sy as f64) as f32,
-                    (coverage.x + end as f64) as f32,
-                    (coverage.y + (sy + sh) as f64) as f32,
-                ]);
-            } else {
-                // The widest full run inside the cell is its interior.
-                let interior = runs[k..=segment.last]
-                    .iter()
-                    .filter(|run| run.class == Class::Full)
-                    .max_by_key(|run| (run.end - run.start, std::cmp::Reverse(run.start)))
-                    .map_or(0..0, |run| run.start - start..run.end - start);
-                make_cell(
-                    &mut out.cells,
-                    &mut rasters,
-                    arena,
-                    start,
-                    sy,
-                    end - start,
-                    sh,
-                    interior,
-                )?;
-            }
-            k = segment.last + 1;
+    } else {
+        let mut runs = Vec::new();
+        for sy in (0..coverage.h).step_by(STRIP_H) {
+            let sh = STRIP_H.min(coverage.h - sy);
+            emit_strip(
+                &coverage.data[sy * coverage.w..(sy + sh) * coverage.w],
+                coverage.w,
+                coverage.x,
+                coverage.y,
+                sy,
+                sh,
+                &mut runs,
+                &mut out,
+                &mut rasters,
+                arena,
+                &mut reserve,
+            )?;
         }
     }
     Ok((out, rasters))
 }
 
-/// What the atlas stores for one strip column, judged on its texels
-/// ([`raster::texel`]): coverage the quantization rounds away, such as
-/// floating-point residue, never moves the partition.
+/// One cell's `w` × `h` coverage rect streamed a row at a time into
+/// `R8` texels appended to `arena`, plus its [`PathCell`] record
+/// with `rect` in device space. `reserve` is the emission's pending
+/// reservation: its grid area before the first cell, zero after.
+#[expect(clippy::too_many_arguments)]
+fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
+    append_row: &mut F,
+    x: usize,
+    rect: [f32; 4],
+    w: usize,
+    h: usize,
+    interior: std::ops::Range<usize>,
+    cells: &mut Vec<PathCell>,
+    rasters: &mut Vec<CellTexels>,
+    arena: &mut Vec<u8>,
+    reserve: &mut usize,
+) -> Result<(), RenderError> {
+    let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
+        return Err(RenderError::AtlasFull);
+    };
+    // The emission's first cell reserves its whole grid area, which bounds
+    // every later cell of the emission: one growth per emitted path.
+    // Reserving each cell instead grows the arena by doubling and makes
+    // more reallocations than one per path.
+    arena.reserve(std::mem::take(reserve));
+    let start = arena.len();
+    for row in 0..h {
+        append_row(row, x..x + w, arena);
+    }
+    rasters.push((w32, h32, start..arena.len()));
+    cells.push(PathCell {
+        rect,
+        x: 0,
+        y: 0,
+        // Filled by `Atlas::place_path` on the render thread.
+        slot: 0,
+        interior: u32::from(u16::try_from(interior.start).map_err(|_| RenderError::AtlasFull)?)
+            | (u32::from(u16::try_from(interior.end).map_err(|_| RenderError::AtlasFull)?) << 16),
+    });
+    Ok(())
+}
+
+/// Emits one dense band — `sh * w` coverage values for the `sy`-anchored
+/// band of a grid at `cov_x, cov_y` — through [`emit_runs`]. `runs` is
+/// the emission's classification scratch, `reserve` its pending
+/// reservation (see [`make_cell`]).
+#[expect(clippy::too_many_arguments)]
+fn emit_strip(
+    strip: &[f32],
+    w: usize,
+    cov_x: f64,
+    cov_y: f64,
+    sy: usize,
+    sh: usize,
+    runs: &mut Vec<Run>,
+    out: &mut PathEmit,
+    rasters: &mut Vec<CellTexels>,
+    arena: &mut Vec<u8>,
+    reserve: &mut usize,
+) -> Result<(), RenderError> {
+    dense_runs(strip, w, sh, runs);
+    emit_runs(
+        runs,
+        (cov_x, cov_y, sy, sh),
+        &mut |r, columns, arena| {
+            arena.extend(strip[r * w..][columns].iter().copied().map(raster::texel));
+        },
+        out,
+        rasters,
+        arena,
+        reserve,
+    )
+}
+
+/// `emit_strip`'s sparse twin: the band arrives as per-row `(end_column,
+/// coverage)` runs, and only cells materialize texels.
+#[expect(clippy::too_many_arguments)]
+fn emit_strip_sparse(
+    coverage: &[(u32, f32)],
+    ends: &[usize],
+    w: usize,
+    cov_x: f64,
+    cov_y: f64,
+    sy: usize,
+    runs: &mut Vec<Run>,
+    out: &mut PathEmit,
+    rasters: &mut Vec<CellTexels>,
+    arena: &mut Vec<u8>,
+    reserve: &mut usize,
+) -> Result<(), RenderError> {
+    sparse_runs(coverage, ends, w, runs);
+    emit_runs(
+        runs,
+        (cov_x, cov_y, sy, ends.len()),
+        &mut |r, columns, arena| {
+            let row = &coverage[if r == 0 { 0 } else { ends[r - 1] }..ends[r]];
+            let first = row.partition_point(|&(end, _)| end as usize <= columns.start);
+            let mut x = columns.start;
+            for &(end, coverage) in &row[first..] {
+                let end = (end as usize).min(columns.end);
+                arena.resize(arena.len() + end - x, raster::texel(coverage));
+                x = end;
+                if x == columns.end {
+                    break;
+                }
+            }
+        },
+        out,
+        rasters,
+        arena,
+        reserve,
+    )
+}
+
+/// Emits a band's class runs as [`partition`] splits them: a span for
+/// each full segment, a cell for every other, its rows streamed in by
+/// `append_row`. `band` is the grid origin, the band's first row and its
+/// height. A cell's interior is the widest full run it carries.
+#[expect(clippy::cast_possible_truncation)]
+#[expect(clippy::cast_precision_loss)]
+fn emit_runs<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
+    runs: &mut [Run],
+    band: (f64, f64, usize, usize),
+    append_row: &mut F,
+    out: &mut PathEmit,
+    rasters: &mut Vec<CellTexels>,
+    arena: &mut Vec<u8>,
+    reserve: &mut usize,
+) -> Result<(), RenderError> {
+    let (cov_x, cov_y, sy, sh) = band;
+    partition(runs, sh);
+    let top = (cov_y + sy as f64) as f32;
+    let bottom = (cov_y + (sy + sh) as f64) as f32;
+    let mut k = 0;
+    while k < runs.len() {
+        let Some(segment) = runs[k].segment else {
+            k += 1;
+            continue;
+        };
+        let last = segment.last as usize;
+        let (start, end) = (runs[k].start, runs[last].end);
+        let rect = [
+            (cov_x + f64::from(start)) as f32,
+            top,
+            (cov_x + f64::from(end)) as f32,
+            bottom,
+        ];
+        if segment.span {
+            out.spans.push(rect);
+        } else {
+            let interior = runs[k..=last]
+                .iter()
+                .filter(|run| run.class == Class::Full)
+                .max_by_key(|run| (run.end - run.start, std::cmp::Reverse(run.start)))
+                .map_or(0..0, |run| {
+                    (run.start - start) as usize..(run.end - start) as usize
+                });
+            make_cell(
+                append_row,
+                start as usize,
+                rect,
+                (end - start) as usize,
+                sh,
+                interior,
+                &mut out.cells,
+                rasters,
+                arena,
+                reserve,
+            )?;
+        }
+        k = last + 1;
+    }
+    Ok(())
+}
+
+/// What the atlas stores for one band column, judged by comparing its
+/// coverage against the quantization's steps ([`raster::TEXEL_NONZERO`],
+/// [`raster::TEXEL_FULL`]): coverage that [`raster::texel`] rounds away,
+/// such as floating-point residue, never moves the partition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Class {
     /// Every texel is 0.
@@ -403,15 +690,36 @@ enum Class {
     Partial,
 }
 
+impl Class {
+    /// The class of a column whose rows are all `empty`, or all `full`.
+    const fn new(empty: bool, full: bool) -> Self {
+        if empty {
+            Self::Empty
+        } else if full {
+            Self::Full
+        } else {
+            Self::Partial
+        }
+    }
+
+    /// Folds one coverage value into a column's `(empty, full)` state.
+    fn fold((empty, full): (bool, bool), v: f32) -> (bool, bool) {
+        (
+            empty && v < raster::TEXEL_NONZERO,
+            full && v >= raster::TEXEL_FULL,
+        )
+    }
+}
+
 /// The last run of an emitted segment that starts at this run, and
 /// whether it is a span (one full run) rather than a cell.
 #[derive(Clone, Copy, Debug)]
 struct Segment {
-    last: usize,
+    last: u32,
     span: bool,
 }
 
-/// How the cheapest emission of a strip's runs up to and including one
+/// How the cheapest emission of a band's runs up to and including one
 /// run ends.
 #[derive(Clone, Copy, Debug)]
 enum Choice {
@@ -419,88 +727,134 @@ enum Choice {
     Skip,
     /// The run is full and emits a span.
     Span,
-    /// A cell spans from this run back to the run at the index.
-    Cell(usize),
+    /// A cell spans from the run at the index through this run.
+    Cell(u32),
 }
 
-/// A maximal run of equal-class columns in one coverage strip.
+/// A maximal run of equal-class columns in one band. Columns, indices
+/// and byte costs are `u32`: a band is at most a surface wide, so they
+/// stay far below its range.
 #[derive(Clone, Copy, Debug)]
 struct Run {
-    start: usize,
-    end: usize,
+    start: u32,
+    end: u32,
     class: Class,
     /// Least byte cost of emitting every run before this one.
-    before: usize,
+    before: u32,
     choice: Choice,
     /// Set on the first run of each emitted segment.
     segment: Option<Segment>,
 }
 
-/// Splits one strip into runs of equal [`Class`], judging each column
-/// by comparing against the quantization's steps
-/// ([`raster::TEXEL_NONZERO`], [`raster::TEXEL_FULL`]).
-fn strip_runs(coverage: &Coverage, sy: usize, sh: usize, runs: &mut Vec<Run>) {
+/// Appends columns `start..end` of `class`, extending the last run when
+/// it has the same class.
+fn push_run(runs: &mut Vec<Run>, start: u32, end: u32, class: Class) {
+    match runs.last_mut() {
+        Some(run) if run.class == class => run.end = end,
+        _ => runs.push(Run {
+            start,
+            end,
+            class,
+            before: 0,
+            choice: Choice::Skip,
+            segment: None,
+        }),
+    }
+}
+
+/// Splits a dense band of `w` columns and `sh` rows into class runs.
+fn dense_runs(strip: &[f32], w: usize, sh: usize, runs: &mut Vec<Run>) {
     runs.clear();
-    for x in 0..coverage.w {
-        let mut empty = true;
-        let mut full = true;
+    let columns = u32::try_from(w).expect("a band is at most a surface wide");
+    for x in 0..columns {
+        let mut state = (true, true);
         for row in 0..sh {
-            let v = coverage.data[(sy + row) * coverage.w + x];
-            empty &= v < raster::TEXEL_NONZERO;
-            full &= v >= raster::TEXEL_FULL;
+            state = Class::fold(state, strip[row * w + x as usize]);
         }
-        let class = if empty {
-            Class::Empty
-        } else if full {
-            Class::Full
-        } else {
-            Class::Partial
-        };
-        match runs.last_mut() {
-            Some(run) if run.class == class => run.end = x + 1,
-            _ => runs.push(Run {
-                start: x,
-                end: x + 1,
-                class,
-                before: 0,
-                choice: Choice::Skip,
-                segment: None,
-            }),
+        push_run(runs, x, x + 1, Class::new(state.0, state.1));
+    }
+}
+
+/// Splits a sparse band into class runs. Each row's constant-coverage
+/// runs end at column `w`; the band's columns split wherever any row's
+/// run ends, and every column between two splits shares one class.
+fn sparse_runs(coverage: &[(u32, f32)], ends: &[usize], w: usize, runs: &mut Vec<Run>) {
+    runs.clear();
+    // `ends[r]` bounds row `r`'s runs; the cursors index the flat buffer
+    // absolutely and a row's runs always end at column `w`, so no cursor
+    // can read past its row.
+    let mut cursors = [0usize; STRIP_H];
+    let mut base = 0;
+    for (cursor, &end) in cursors.iter_mut().zip(ends) {
+        *cursor = base;
+        base = end;
+    }
+    let cursors = &mut cursors[..ends.len()];
+    let w = u32::try_from(w).expect("a band is at most a surface wide");
+    let mut pos = 0;
+    while pos < w {
+        let mut next = w;
+        let mut state = (true, true);
+        for &cursor in &*cursors {
+            let (end, v) = coverage[cursor];
+            next = next.min(end);
+            state = Class::fold(state, v);
+        }
+        push_run(runs, pos, next, Class::new(state.0, state.1));
+        pos = next;
+        for cursor in cursors.iter_mut() {
+            if coverage[*cursor].0 == next {
+                *cursor += 1;
+            }
         }
     }
 }
 
-/// Chooses the strip's emission with the least byte cost: every
-/// instance costs `size_of::<Instance>()`, the bytes it uploads each
-/// frame, and every texel a cell carries costs its byte in the atlas. An
-/// empty gap is bridged and a full run carried as texels exactly when
-/// that is cheaper than the instance a split would add. A cell's cost is
-/// linear in its width, so the cheapest cell ending at each run comes
-/// from a running minimum, and the whole strip is solved in one pass.
+/// Bytes one instance costs: it is uploaded every frame it draws.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "an instance is a few hundred bytes"
+)]
+const INSTANCE_BYTES: u32 = size_of::<Instance>() as u32;
+
+/// Chooses the band's emission with the least byte cost: every instance
+/// costs [`INSTANCE_BYTES`], and every texel a cell carries its byte in
+/// the atlas. An empty gap is bridged, and a full run carried as texels,
+/// exactly when that is cheaper than the instance a split would add. A
+/// cell's cost is linear in its width, so the cheapest cell ending at
+/// each run comes from a running minimum, and one pass solves the band.
 /// Marks each emitted segment on its first run.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "runs never outnumber columns"
+)]
 fn partition(runs: &mut [Run], sh: usize) {
-    let instance = size_of::<Instance>();
-    // The cell start j minimising `cost before j − sh · start of j`,
-    // compared as `before_j + sh · start_b < before_b + sh · start_j`.
+    let sh = u32::try_from(sh).expect("a band is at most STRIP_H rows");
+    // The cell start `j` minimising `before_j − sh · start_j`, compared
+    // as `before_j + sh · start_b < before_b + sh · start_j`.
     let mut cell_from: Option<usize> = None;
     for k in 0..runs.len() {
-        let before = runs[k].before;
-        if runs[k].class != Class::Empty
-            && cell_from
-                .is_none_or(|b| before + sh * runs[b].start < runs[b].before + sh * runs[k].start)
+        let Run {
+            start,
+            end,
+            class,
+            before,
+            ..
+        } = runs[k];
+        if class != Class::Empty
+            && cell_from.is_none_or(|b| before + sh * runs[b].start < runs[b].before + sh * start)
         {
             cell_from = Some(k);
         }
-        let (cost, choice) = match runs[k].class {
-            Class::Empty => (before, Choice::Skip),
-            class => {
-                let from = cell_from.expect("a non-empty run opened a cell start");
-                let cell = runs[from].before + instance + sh * (runs[k].end - runs[from].start);
-                if class == Class::Full && before + instance <= cell {
-                    (before + instance, Choice::Span)
-                } else {
-                    (cell, Choice::Cell(from))
-                }
+        let (cost, choice) = if class == Class::Empty {
+            (before, Choice::Skip)
+        } else {
+            let from = cell_from.expect("a non-empty run opened a cell start");
+            let cell = runs[from].before + INSTANCE_BYTES + sh * (end - runs[from].start);
+            if class == Class::Full && before + INSTANCE_BYTES <= cell {
+                (before + INSTANCE_BYTES, Choice::Span)
+            } else {
+                (cell, Choice::Cell(from as u32))
             }
         };
         runs[k].choice = choice;
@@ -514,12 +868,18 @@ fn partition(runs: &mut [Run], sh: usize) {
         k = match runs[last].choice {
             Choice::Skip => last,
             Choice::Span => {
-                runs[last].segment = Some(Segment { last, span: true });
+                runs[last].segment = Some(Segment {
+                    last: last as u32,
+                    span: true,
+                });
                 last
             }
             Choice::Cell(from) => {
-                runs[from].segment = Some(Segment { last, span: false });
-                from
+                runs[from as usize].segment = Some(Segment {
+                    last: last as u32,
+                    span: false,
+                });
+                from as usize
             }
         };
     }
@@ -781,6 +1141,7 @@ mod tests {
             Rect::new(-20.0, 1.0, 6.0, 9.0),
             (10.0, 10.0),
             FillRule::NonZero,
+            &mut EmitScratch::new(),
         )
         .expect("the rect intersects the surface");
         assert!(coverage.clipped, "the bbox hangs off the left edge");
@@ -814,6 +1175,7 @@ mod tests {
             Rect::new(-20.0, 2.0, 6.0, 8.0),
             (10.0, 10.0),
             FillRule::NonZero,
+            &mut EmitScratch::new(),
         )
         .expect("the triangle intersects the surface");
         #[expect(
@@ -961,7 +1323,7 @@ mod tests {
             row[9] = 6e-14;
         }
         let mut runs = Vec::new();
-        strip_runs(&coverage, 0, STRIP_H, &mut runs);
+        dense_runs(&coverage.data, coverage.w, STRIP_H, &mut runs);
         let classes: Vec<_> = runs
             .iter()
             .map(|run| (run.start, run.end, run.class))
@@ -986,3 +1348,205 @@ mod hash_identity;
 
 #[cfg(test)]
 mod route_diff;
+
+#[cfg(test)]
+mod emit_eq {
+    use super::*;
+
+    #[expect(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    fn dense_emit(
+        segments: &[(f32, f32, f32, f32)],
+        bbox: Rect,
+        surface: (f64, f64),
+        rule: FillRule,
+    ) -> (PathEmit, Vec<CellTexels>, Vec<u8>, bool) {
+        let (x0, y0, w, h, clipped) = grid(bbox, surface).unwrap();
+        let (segments, rule) = resolve(segments, rule);
+        let (ox, oy) = (x0 as f32, y0 as f32);
+        let mut raster = Raster::new(w, h);
+        for &(sx0, sy0, sx1, sy1) in segments.iter() {
+            clip_x(
+                &mut |a, b, c, d| raster.draw_line(a, b, c, d),
+                sx0 - ox,
+                sy0 - oy,
+                sx1 - ox,
+                sy1 - oy,
+                w as f32,
+            );
+        }
+        let mut arena = Vec::new();
+        let (p, r) = emit(
+            &Coverage {
+                x: x0,
+                y: y0,
+                w,
+                h,
+                clipped,
+                data: raster.coverage_rule(rule),
+            },
+            &mut arena,
+        )
+        .unwrap();
+        (p, r, arena, clipped)
+    }
+
+    fn check(
+        name: &str,
+        segments: &[(f32, f32, f32, f32)],
+        bbox: Rect,
+        surface: (f64, f64),
+        rule: FillRule,
+    ) {
+        let (dp, dr, darena, dc) = dense_emit(segments, bbox, surface, rule);
+        let mut scratch = EmitScratch::new();
+        let mut barena = Vec::new();
+        let (bp, br, bc) = rasterize_emit(segments, bbox, surface, rule, &mut scratch, &mut barena)
+            .unwrap()
+            .unwrap();
+        assert_eq!(dc, bc, "{name}: clipped");
+        assert_eq!(dp.spans.len(), bp.spans.len(), "{name}: span count");
+        assert_eq!(dp.spans, bp.spans, "{name}: spans");
+        assert_eq!(dp.cells.len(), bp.cells.len(), "{name}: cell count");
+        for (i, (a, b)) in dp.cells.iter().zip(bp.cells.iter()).enumerate() {
+            assert_eq!(a.rect, b.rect, "{name}: cell {i} rect");
+            assert_eq!(a.interior, b.interior, "{name}: cell {i} interior");
+        }
+        assert_eq!(dr.len(), br.len(), "{name}: raster count");
+        for (i, (a, b)) in dr.iter().zip(br.iter()).enumerate() {
+            assert_eq!((a.0, a.1), (b.0, b.1), "{name}: texel {i} dims");
+            assert_eq!(a.2, b.2, "{name}: texel {i} range");
+        }
+        assert_eq!(darena, barena, "{name}: arena bytes");
+    }
+
+    #[test]
+    fn sparse_classification_matches_dense_columns() {
+        let mut seed = 11u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            usize::try_from(seed >> 32).unwrap()
+        };
+        for _ in 0..2_000 {
+            let w = next() % 128 + 1;
+            let sh = next() % STRIP_H + 1;
+            let mut strip = vec![0.0; w * sh];
+            let mut runs = Vec::new();
+            let mut ends = Vec::new();
+            for row in strip.chunks_mut(w) {
+                let mut x = 0;
+                while x < w {
+                    let end = (x + next() % 16 + 1).min(w);
+                    // Residue and near-full coverage quantize to 0 and
+                    // `u8::MAX`, so they classify with 0.0 and 1.0.
+                    let coverage = [0.0, 1.0, 0.25, 6e-14, 0.999][next() % 5];
+                    row[x..end].fill(coverage);
+                    runs.push((u32::try_from(end).unwrap(), coverage));
+                    x = end;
+                }
+                ends.push(runs.len());
+            }
+            let mut dense = Vec::new();
+            let mut sparse = Vec::new();
+            dense_runs(&strip, w, sh, &mut dense);
+            sparse_runs(&runs, &ends, w, &mut sparse);
+            let classes = |runs: &[Run]| -> Vec<_> {
+                runs.iter()
+                    .map(|run| (run.start, run.end, run.class))
+                    .collect()
+            };
+            assert_eq!(classes(&dense), classes(&sparse));
+            let (mut dp, mut sp) = (PathEmit::default(), PathEmit::default());
+            let (mut dr, mut sr, mut da, mut sa) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            emit_strip(
+                &strip, w, 0.0, 0.0, 0, sh, &mut dense, &mut dp, &mut dr, &mut da, &mut 0,
+            )
+            .unwrap();
+            emit_strip_sparse(
+                &runs,
+                &ends,
+                w,
+                0.0,
+                0.0,
+                0,
+                &mut sparse,
+                &mut sp,
+                &mut sr,
+                &mut sa,
+                &mut 0,
+            )
+            .unwrap();
+            assert_eq!(dp.spans, sp.spans);
+            assert_eq!(dp.cells.len(), sp.cells.len());
+            for (a, b) in dp.cells.iter().zip(&sp.cells) {
+                assert_eq!(a.rect, b.rect);
+                assert_eq!(a.interior, b.interior);
+            }
+            assert_eq!(dr, sr);
+            assert_eq!(da, sa);
+        }
+    }
+
+    #[expect(clippy::suboptimal_flops)]
+    #[expect(clippy::cast_precision_loss)]
+    #[test]
+    fn banded_emit_matches_dense_emit() {
+        let surface = (4096.0, 4096.0);
+        // Long thin diagonal stroke spanning many bands (the sparse-bbox shape).
+        for (name, slope, off) in [
+            ("diag-45", 1.0f32, 10.0f32),
+            ("diag-shallow", 0.031, 100.0),
+            ("diag-steep", 9.7, 5.5),
+            ("diag-neg", -0.13, 400.0),
+        ] {
+            let x0 = 100.0f32;
+            let y0 = off;
+            let x1 = 3900.0f32;
+            let y1 = off + slope * (x1 - x0);
+            let t = 1.5f32; // half-stroke-width for a ~3px stroke
+            let segs = [
+                (x0, y0 - t, x1, y1 - t),
+                (x1, y1 - t, x1, y1 + t),
+                (x1, y1 + t, x0, y0 + t),
+                (x0, y0 + t, x0, y0 - t),
+            ];
+            let bbox = Rect::new(
+                f64::from(x0),
+                f64::from(y0.min(y1)) - 4.0,
+                f64::from(x1),
+                f64::from(y0.max(y1)) + 4.0,
+            );
+            for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                check(name, &segs, bbox, surface, rule);
+            }
+        }
+        // A zigzag path crossing many band boundaries with both rules.
+        let mut zig = Vec::new();
+        let (mut x, mut y) = (40.0f32, 40.0f32);
+        for i in 0..40 {
+            let (nx, ny) = (x + 173.0, y + if i % 2 == 0 { 61.0 } else { -23.0 });
+            zig.push((x, y, nx, ny));
+            (x, y) = (nx, ny.max(5.0));
+        }
+        let bbox = Rect::new(0.0, 0.0, 4096.0, 4096.0);
+        check("zigzag", &zig, bbox, surface, FillRule::NonZero);
+        // Self-intersecting star under EvenOdd.
+        let mut star = Vec::new();
+        for i in 0..10 {
+            let a0 = i as f32 * 0.628_318_55;
+            let a1 = (i as f32 + 4.0) * 0.628_318_55;
+            star.push((
+                500.0 + 480.0 * a0.cos(),
+                500.0 + 480.0 * a0.sin(),
+                500.0 + 480.0 * a1.cos(),
+                500.0 + 480.0 * a1.sin(),
+            ));
+        }
+        check(
+            "star-eo",
+            &star,
+            Rect::new(0.0, 0.0, 1000.0, 1000.0),
+            surface,
+            FillRule::EvenOdd,
+        );
+    }
+}

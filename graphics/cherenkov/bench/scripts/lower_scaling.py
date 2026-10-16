@@ -152,7 +152,7 @@ def main():
     p = sub.add_parser('measure')
     p.add_argument('--binary', required=True)
     p.add_argument('--tag', required=True)
-    p.add_argument('--repo', required=True, help='checkout holding scenes/perf')
+    p.add_argument('--repo', required=True, help='checkout directory holding scenes/perf (the cherenkov tree)')
     p.add_argument('--out', required=True)
     p.add_argument('--pause-at', type=int, default=8)
     p.add_argument('--warmup', type=int, default=30)

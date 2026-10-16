@@ -7,7 +7,13 @@ split_test! {
 fn randomized_incremental_matches_full_lowering() {
     let (mut renderer, _) = wait!(cherenkov_gpu::Gpu::init(cherenkov_gpu::GpuConfig::default()))
         .expect("GPU adapter required");
-    wait!(cherenkov::testing::incremental::equivalence(&mut renderer));
+    let font = cherenkov::FontData {
+        data: std::fs::read("../scenes/fonts/NotoSans.ttf")
+            .expect("scenes/fonts/NotoSans.ttf")
+            .into(),
+        index: 0,
+    };
+    wait!(cherenkov::testing::incremental::equivalence(&mut renderer, font));
 }
 }
 
