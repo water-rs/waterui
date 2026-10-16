@@ -117,7 +117,8 @@ fn build_matrices() -> (Mat3, Mat3, Mat3) {
 /// `f(-x) = -f(x)` (CSS Color 4, IEC 61966-2-2 nonlinear): negative
 /// (out-of-gamut) and above-one (HDR) components are transferred, never
 /// clamped. The backends' conversions use this same definition.
-pub(crate) fn srgb_decode(c: f64) -> f64 {
+#[must_use]
+pub fn srgb_decode(c: f64) -> f64 {
     let a = c.abs();
     let e = if a <= 0.04045 {
         a / 12.92

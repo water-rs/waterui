@@ -186,6 +186,9 @@ pub struct Counters {
     /// `Engine::memory()` filter-chain target bytes at the end of the run;
     /// `None` for other engines.
     pub memory_filter_target_bytes: Option<u64>,
+    /// `Engine::memory()` filter-chain uploaded image bytes at the end of
+    /// the run; `None` for other engines.
+    pub memory_filter_image_bytes: Option<u64>,
 }
 
 /// Device and thermal metadata captured at measure time.

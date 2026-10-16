@@ -1035,6 +1035,7 @@ fn memory_snapshot(
                 gpu_bytes: usage.gpu.0,
                 backdrop_capture_bytes: usage.backdrop_captures.0,
                 filter_target_bytes: usage.filter_targets.0,
+                filter_image_bytes: usage.filter_images.0,
             }),
             wgpu_allocator: wgpu_allocator(&shared.device, info.backend),
             skia_budgeted: Reading::unavailable("not a Skia adapter"),

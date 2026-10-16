@@ -26,6 +26,7 @@ mod reduce;
 mod resolve;
 pub mod shaders;
 mod shadow;
+mod space_convert;
 pub mod surface_control;
 mod upload;
 
@@ -947,6 +948,9 @@ pub struct GpuRenderer {
     /// The capture pyramid reduce pipelines — `None` until a frame
     /// reduces a levelled capture.
     reduce: Option<reduce::Pipelines>,
+    /// The filter space conversion pipelines — `None` until a frame
+    /// filters an sRGB-encoded scope.
+    space_convert: Option<space_convert::Pipelines>,
     last_frame: Option<Instant>,
     origin: Option<Instant>,
     device: wgpu::Device,
@@ -2621,6 +2625,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             shadow_blur: None,
             resolve: None,
             reduce: None,
+            space_convert: None,
             last_frame: None,
             origin: None,
             max_texture: device.limits().max_texture_dimension_2d,
@@ -2968,6 +2973,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         shadow_blur: None,
         resolve: None,
         reduce: None,
+        space_convert: None,
         last_frame: None,
         origin: None,
         max_texture: device.limits().max_texture_dimension_2d,
@@ -4000,7 +4006,8 @@ impl Renderer for GpuRenderer {
             .values()
             .map(SurfaceState::backdrop_bytes)
             .sum();
-        let filter_targets = self.filters.gpu_bytes();
+        let filter_targets = self.filters.target_bytes();
+        let filter_images = self.filters.image_bytes();
         let capture_format = self
             .surfaces
             .values()
@@ -4059,6 +4066,7 @@ impl Renderer for GpuRenderer {
         MemoryUsage {
             gpu: cherenkov::Bytes(
                 gpu + filter_targets
+                    + filter_images
                     + self.shadow_blur.as_ref().map_or(0, shadow::Blur::gpu_bytes)
                     + tile_committed.unwrap_or(0),
             ),
@@ -4068,6 +4076,7 @@ impl Renderer for GpuRenderer {
             backdrop_captures: cherenkov::Bytes(captures),
             backdrop_capture_format: capture_format,
             filter_targets: cherenkov::Bytes(filter_targets),
+            filter_images: cherenkov::Bytes(filter_images),
         }
     }
 
@@ -9636,6 +9645,14 @@ impl GpuRenderer {
                         )));
                     }
                 };
+                // A filter works in the linear working space: over an
+                // sRGB-encoded scope its input is decoded and its output
+                // encoded back.
+                let convert = (pass.space == cherenkov::BlendSpace::SrgbEncoded).then(|| {
+                    self.space_convert.get_or_insert_with(|| {
+                        space_convert::Pipelines::new(&self.device, self.shader_delivery)
+                    })
+                });
                 self.filters.apply(
                     *filter,
                     &filtrate::EffectContext {
@@ -9644,8 +9661,11 @@ impl GpuRenderer {
                         input_format: TARGET_FORMAT,
                         output_format: TARGET_FORMAT,
                     },
-                    capture,
-                    (pass.region[2], pass.region[3]),
+                    filter::Scope {
+                        target: capture,
+                        size: (pass.region[2], pass.region[3]),
+                        encoded: convert,
+                    },
                     timing,
                     &mut encoder,
                 )?;
@@ -10399,7 +10419,7 @@ async fn upload_image(
         device,
         "image",
         (width, height),
-        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        image_usage(device, (width, height)),
         TARGET_FORMAT,
     );
     if let Some(error) = scope.pop().await {
@@ -10445,7 +10465,7 @@ async fn write_image(
     data: &[u8],
 ) -> Result<(), ResourceError> {
     let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    write_texels(device, queue, texture, (width, height), data);
+    write_texels(device, queue, "image", texture, (width, height), data);
     scope.pop().await.map_or(Ok(()), |error| {
         Err(ResourceError::Image(format!(
             "{width}x{height} upload failed: {error}"
@@ -10453,39 +10473,109 @@ async fn write_image(
     })
 }
 
-/// [`write_image`]'s unscoped copy.
+/// [`write_image`]'s unscoped copy: the texture's whole `data` (f16
+/// texels from [`image_texels_f16`]) in the row bands
+/// [`upload_bands`] decides, so no `write_texture` exceeds the device's
+/// `max_buffer_size`. A browser stages a `writeTexture` through one
+/// internal buffer of the upload's size and rejects it above that
+/// limit, silently dropping the image (#2793); a texture under the
+/// limit uploads in the single band it is one of.
 fn write_texels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    label: &'static str,
     texture: &wgpu::Texture,
     (width, height): (u32, u32),
     data: &[u8],
 ) {
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        data,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 8),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
+    let texel = texel_bytes(TARGET_FORMAT);
+    let row = u64::from(width) * texel;
+    let pitch = u32::try_from(row).expect("a texture row's bytes fit u32");
+    for (first_row, rows) in upload_bands(width, height, texel, device.limits().max_buffer_size) {
+        let offset = usize::try_from(u64::from(first_row) * row).expect("band offset fits usize");
+        let bytes = usize::try_from(u64::from(rows) * row).expect("band bytes fit usize");
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: first_row,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &data[offset..offset + bytes],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(pitch),
+                rows_per_image: Some(rows),
+            },
+            wgpu::Extent3d {
+                width,
+                height: rows,
+                depth_or_array_layers: 1,
+            },
+        );
+        diag::upload(
+            device,
+            label,
+            u64::from(rows) * row,
+            Some((0, first_row, width, rows)),
+        );
+    }
+}
+
+/// The usage of an image texture of `size` that [`write_texels`] fills.
+///
+/// A texture that uploads in more than one band receives partial writes,
+/// and an implementation zero-initializes a texture before its first
+/// partial write. Without `RENDER_ATTACHMENT` the browser's
+/// implementation clears it through one staging buffer the size of the
+/// whole texture, which exceeds `max_buffer_size` exactly when banding is
+/// needed and fails every later write on the device (#2793); with it, the
+/// clear is a render pass.
+fn image_usage(device: &wgpu::Device, (width, height): (u32, u32)) -> wgpu::TextureUsages {
+    let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+    let bands = upload_bands(
+        width,
+        height,
+        texel_bytes(TARGET_FORMAT),
+        device.limits().max_buffer_size,
     );
-    diag::upload(
-        device,
-        "image",
-        data.len() as u64,
-        Some((0, 0, width, height)),
+    if bands.count() > 1 {
+        usage | wgpu::TextureUsages::RENDER_ATTACHMENT
+    } else {
+        usage
+    }
+}
+
+/// The `(first_row, rows)` bands a `width` × `height` texture upload of
+/// `texel`-byte texels splits into so that every band stays within
+/// `limit` staging bytes: each band is the largest whole number of rows
+/// that fits, and the last takes what remains.
+///
+/// # Panics
+/// When a single row exceeds `limit` — unreachable for an image
+/// [`cherenkov::ImageLimits`] admits, whose largest dimension times
+/// [`TARGET_FORMAT`]'s eight-byte texel (8192 × 8 = 64 KiB) is far
+/// under the smallest `max_buffer_size` a WebGPU device reports.
+fn upload_bands(
+    width: u32,
+    height: u32,
+    texel: u64,
+    limit: u64,
+) -> impl Iterator<Item = (u32, u32)> {
+    let row = u64::from(width) * texel;
+    assert!(
+        0 < row && row <= limit,
+        "a {width}-texel row ({row} bytes) exceeds the {limit}-byte staging limit"
     );
+    let band = u32::try_from(limit / row).unwrap_or(u32::MAX);
+    (0..height.div_ceil(band)).map(move |i| {
+        let first = i * band;
+        (first, band.min(height - first))
+    })
 }
 
 /// `Rgba8` or `Rgba16F` upload bytes -> premultiplied linear-P3 f16 texels,
@@ -10642,28 +10732,10 @@ fn create_gpu_image(
         device,
         label,
         (width, height),
-        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        image_usage(device, (width, height)),
         TARGET_FORMAT,
     );
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        texels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 8),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
+    write_texels(device, queue, label, &texture, (width, height), texels);
     GpuImage {
         texture,
         view,
@@ -10973,5 +11045,37 @@ mod tests {
             0,
             "a trimmed engine retains no commit_writes capacity"
         );
+    }
+
+    /// The browser stages a `writeTexture` through one buffer of the
+    /// upload's size, so [`upload_bands`] keeps every band within the
+    /// staging limit (#2793).
+    #[test]
+    fn upload_bands_stay_within_the_staging_limit() {
+        let mib = 1024 * 1024;
+        let limit = 256 * mib;
+        // An image under the limit is one band.
+        assert_eq!(
+            upload_bands(4096, 4096, 8, limit).collect::<Vec<_>>(),
+            [(0, 4096)]
+        );
+        // The issue's case: 8192×8192 f16 texels (512 MiB) at a 256 MiB
+        // limit is two bands of 4096 rows.
+        assert_eq!(
+            upload_bands(8192, 8192, 8, limit).collect::<Vec<_>>(),
+            [(0, 4096), (4096, 4096)]
+        );
+        // An odd height leaves a short last band.
+        assert_eq!(
+            upload_bands(8192, 4097, 8, limit).collect::<Vec<_>>(),
+            [(0, 4096), (4096, 1)]
+        );
+        // Bands cover every row exactly once.
+        let mut covered = 0;
+        for (first_row, rows) in upload_bands(4096, 20011, 8, mib) {
+            assert_eq!(first_row, covered);
+            covered += rows;
+        }
+        assert_eq!(covered, 20011);
     }
 }

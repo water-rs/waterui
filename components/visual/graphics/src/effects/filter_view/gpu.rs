@@ -8,7 +8,7 @@ use core::pin::Pin;
 use super::RenderTransfer;
 use filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
-    EffectSetupResult, Executor, Filter,
+    EffectSetupResult, Executor, Filter, RetainedMemory,
 };
 use waterui_core::{AnyView, View};
 
@@ -43,8 +43,10 @@ pub trait ErasedEffect {
     fn output_size(&self, input_width: u32, input_height: u32) -> (u32, u32);
     /// Whether the effect wants another frame (an animating parameter).
     fn redraw_hint(&self) -> bool;
-    /// Device-resident bytes of the effect's own retained targets.
-    fn target_bytes(&self) -> u64;
+    /// Device-resident bytes the effect itself retains between frames.
+    fn retained_memory(&self) -> RetainedMemory;
+    /// Drops the retained targets the effect's next encode can recreate.
+    fn trim(&mut self);
 }
 
 impl<E: Effect> ErasedEffect for E {
@@ -73,8 +75,12 @@ impl<E: Effect> ErasedEffect for E {
         Effect::redraw_hint(self)
     }
 
-    fn target_bytes(&self) -> u64 {
-        Effect::target_bytes(self)
+    fn retained_memory(&self) -> RetainedMemory {
+        Effect::retained_memory(self)
+    }
+
+    fn trim(&mut self) {
+        Effect::trim(self);
     }
 }
 
@@ -163,8 +169,12 @@ impl<E: Effect> Effect for OutputSizedEffect<E> {
         self.effect.redraw_hint()
     }
 
-    fn target_bytes(&self) -> u64 {
-        self.effect.target_bytes()
+    fn retained_memory(&self) -> RetainedMemory {
+        self.effect.retained_memory()
+    }
+
+    fn trim(&mut self) {
+        self.effect.trim();
     }
 }
 

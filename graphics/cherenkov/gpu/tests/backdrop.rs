@@ -3,7 +3,8 @@
 use cherenkov::kurbo::{Affine, Circle, Ellipse, Rect, RoundedRect};
 use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
 use cherenkov::{
-    BackdropOuter, Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor,
+    BackdropOuter, Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, Pressure,
+    WorkingColor,
 };
 use cherenkov_gpu::{Gpu, GpuConfig};
 
@@ -166,6 +167,55 @@ fn filtered_group_reports_its_chain_targets() -> Result<(), Box<dyn std::error::
     drop(group);
     wait!(engine.render(FrameTime::now()))?;
     assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+    Ok(())
+}
+}
+
+split_test! {
+/// Memory pressure frees the chain's retained intermediates together with
+/// the registry's io pair (#2765); the next frame recreates them.
+fn trim_drops_the_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(4.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&glass);
+        tx[&glass]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    // footprint = ceil(4 * 4) = 16 → region (8-16..56+16) ∩ 0..64 = 64×64.
+    // The io pair alone would be two targets; the blur's shared
+    // intermediate puts the chain above it.
+    let held = wait!(engine.memory()).filter_targets;
+    assert!(held > Bytes(2 * 64 * 64 * 8), "held {held:?}");
+    for (pressure, red) in [(Pressure::Critical, 0.5), (Pressure::Moderate, 1.0)] {
+        engine.trim(pressure);
+        assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+        // A frame with nothing to redraw does not run the chain; new
+        // backdrop content does, and the chain recreates its targets.
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 64.0, 64.0),
+                    WorkingColor::new([red, 0.0, 0.0, 1.0]),
+                );
+            }));
+        });
+        wait!(engine.render(FrameTime::now()))?;
+        assert_eq!(wait!(engine.memory()).filter_targets, held);
+    }
     Ok(())
 }
 }

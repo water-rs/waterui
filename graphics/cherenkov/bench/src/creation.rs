@@ -117,6 +117,7 @@ fn engine_bytes(engine: &Engine<Gpu>) -> Reading<EngineBytes> {
         gpu_bytes: usage.gpu.0,
         backdrop_capture_bytes: usage.backdrop_captures.0,
         filter_target_bytes: usage.filter_targets.0,
+        filter_image_bytes: usage.filter_images.0,
     })
 }
 

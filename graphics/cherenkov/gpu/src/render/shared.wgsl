@@ -674,63 +674,17 @@ fn clip_mask_coverage(in: VsOut) -> f32 {
     return cov;
 }
 
-fn srgb_decode(c: vec3<f32>) -> vec3<f32> {
-    let lo = c / 12.92;
-    let hi = pow((max(c, vec3<f32>(0.0)) + 0.055) / 1.055, vec3<f32>(2.4));
-    return select(hi, lo, c <= vec3<f32>(0.04045));
-}
-
-// The sRGB transfer pair preserving sign: a premultiplied pixel's
-// channel can sit below the encoded black level only by going negative,
-// so the byte-pipeline variants above clamp; the compositing converter
-// matches the CPU backend's `convert_pixel` and does not.
-fn srgb_encode_signed(c: vec3<f32>) -> vec3<f32> {
-    let a = abs(c);
-    let lo = a * 12.92;
-    let hi = 1.055 * pow(a, vec3<f32>(1.0 / 2.4)) - 0.055;
-    return sign(c) * select(hi, lo, a <= vec3<f32>(0.0031308));
-}
-
-fn srgb_decode_signed(c: vec3<f32>) -> vec3<f32> {
-    let a = abs(c);
-    let lo = a / 12.92;
-    let hi = pow((a + 0.055) / 1.055, vec3<f32>(2.4));
-    return sign(c) * select(hi, lo, a <= vec3<f32>(0.04045));
-}
-
-// Linear sRGB -> linear Display P3 (column-major constructor: columns).
-const SRGB_TO_P3 = mat3x3<f32>(
-    vec3<f32>(0.8224621, 0.0331941, 0.0170827),
-    vec3<f32>(0.1775380, 0.9668058, 0.0723974),
-    vec3<f32>(0.0, 0.0, 0.9105199),
-);
-
-// Linear Display-P3 -> linear sRGB primaries (column-major
-// constructor: columns), the transpose of the CPU backend's
-// row-major `P3_TO_SRGB`.
-const P3_TO_SRGB = mat3x3<f32>(
-    vec3<f32>(1.2249401, -0.0420569, -0.0196376),
-    vec3<f32>(-0.2249404, 1.0420571, -0.0786361),
-    vec3<f32>(0.0, 0.0, 1.0982735),
-);
-
-// One premultiplied pixel moved between spaces: unpremultiply,
-// convert the straight colour (P3->sRGB then transfer-encode when
-// going to sRGB, transfer-decode then sRGB->P3 back), repremultiply.
-// Alpha carries through; a transparent pixel stays a transparent pixel
-// so masks composite correctly.
+// One premultiplied pixel moved between spaces: the space fragment's
+// `space_to_srgb` / `space_from_srgb` (filtrate-core's `space::WGSL`,
+// which precedes this file in every build), the conversion the CPU
+// backend and the filter stages run too. Alpha carries through; a pixel
+// with zero alpha becomes transparent black.
 fn move_space(px: vec4<f32>, src: u32, dst: u32) -> vec4<f32> {
     if (src == dst) {
         return px;
     }
-    if (px.a <= 0.0) {
-        return vec4<f32>(0.0);
-    }
-    let straight = px.rgb / px.a;
     if (dst == SPACE_SRGB) {
-        let enc = srgb_encode_signed(P3_TO_SRGB * straight);
-        return vec4<f32>(enc * px.a, px.a);
+        return space_to_srgb(px);
     }
-    let dec = SRGB_TO_P3 * srgb_decode_signed(straight);
-    return vec4<f32>(dec * px.a, px.a);
+    return space_from_srgb(px);
 }

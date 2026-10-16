@@ -411,6 +411,20 @@ struct ContentRun {
     live: Vec<LiveRun>,
     /// Paint motions inside the run.
     motions: Vec<PaintMotion>,
+    /// The registrations of the run's group filters, kept alive while
+    /// the ops are drawn.
+    filters: Vec<cherenkov::Filter>,
+}
+
+impl ContentRun {
+    const fn new() -> Self {
+        Self {
+            ops: Vec::new(),
+            live: Vec::new(),
+            motions: Vec::new(),
+            filters: Vec::new(),
+        }
+    }
 }
 
 /// A prepared child item: a draw-item run wrapped in its own layer, or a
@@ -968,11 +982,7 @@ fn prep_layer(
             .as_deref()
             .map(|filter| register_filter(engine, filter, blobs))
             .transpose()?,
-        own: ContentRun {
-            ops: Vec::new(),
-            live: Vec::new(),
-            motions: Vec::new(),
-        },
+        own: ContentRun::new(),
         items: Vec::new(),
         // A `Motion::Paint` animates a content operand, not a layer
         // property — `paint_motion` binds it inside the content run.
@@ -1013,33 +1023,25 @@ fn prep_layer(
                 Item::Layer(l) => prep.items.push(PrepItem::Layer(Box::new(prep_layer(
                     l, engine, fonts, images, blobs,
                 )?))),
-                _ => prep_run_item(&mut prep.own, layer, index, item, fonts, images, blobs)?,
+                _ => prep_run_item(&mut prep.own, engine, layer, index, fonts, images, blobs)?,
             }
         }
     } else {
-        let mut run = ContentRun {
-            ops: Vec::new(),
-            live: Vec::new(),
-            motions: Vec::new(),
-        };
+        let mut run = ContentRun::new();
         for (index, item) in layer.items.iter().enumerate() {
             match item {
                 Item::Layer(l) => {
                     if !run.ops.is_empty() {
                         prep.items.push(PrepItem::Content(std::mem::replace(
                             &mut run,
-                            ContentRun {
-                                ops: Vec::new(),
-                                live: Vec::new(),
-                                motions: Vec::new(),
-                            },
+                            ContentRun::new(),
                         )));
                     }
                     prep.items.push(PrepItem::Layer(Box::new(prep_layer(
                         l, engine, fonts, images, blobs,
                     )?)));
                 }
-                _ => prep_run_item(&mut run, layer, index, item, fonts, images, blobs)?,
+                _ => prep_run_item(&mut run, engine, layer, index, fonts, images, blobs)?,
             }
         }
         if !run.ops.is_empty() {
@@ -1049,18 +1051,19 @@ fn prep_layer(
     Ok(prep)
 }
 
-/// Prepares a draw-or-group item of `layer` into `run`: pushes its op and
-/// records any live entry or paint motion that targets it.
+/// Prepares draw-or-group item `index` of `layer` into `run`: pushes its
+/// op, registers its group filters and records any live entry or paint
+/// motion that targets it.
 fn prep_run_item(
     run: &mut ContentRun,
+    engine: &CpuEngine<Raster>,
     layer: &SceneLayer,
     index: usize,
-    item: &Item,
     fonts: &HashMap<(ResourceHash, u32), cherenkov::Font>,
     images: &HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
     blobs: &Blobs,
 ) -> Result<(), BenchError> {
-    match item {
+    match &layer.items[index] {
         Item::Draw(d) => {
             run.ops.push(op(d, fonts, images, blobs, &FRONT)?);
             let position = run.ops.len() - 1;
@@ -1073,7 +1076,14 @@ fn prep_run_item(
             }
         }
         Item::Group(g) => {
-            run.ops.push(group_op(g, fonts, images, blobs, &FRONT)?);
+            let filters = &mut run.filters;
+            let op = group_op(g, fonts, images, blobs, &FRONT, &mut |filter| {
+                let filter = register_filter(engine, filter, blobs)?;
+                let id = filter.id();
+                filters.push(filter);
+                Ok(id)
+            })?;
+            run.ops.push(op);
         }
         Item::Layer(_) => unreachable!("layers are never run items"),
     }
@@ -1200,6 +1210,7 @@ fn build_layer(
     for item in prep.items {
         match item {
             PrepItem::Content(run) => {
+                filter_handles.extend(run.filters);
                 let child = surface.layer();
                 tx[layer].push(&child);
                 content_layers.push(ContentLayer {
@@ -1227,6 +1238,7 @@ fn build_layer(
     if let Some(filter) = prep.filter {
         filter_handles.push(filter);
     }
+    filter_handles.extend(prep.own.filters);
     content_layers.push(ContentLayer {
         layer: owned,
         id: prep.id,
@@ -1626,6 +1638,7 @@ impl Engine for Cherenkov {
         counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
         counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
         counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
+        counters.memory_filter_image_bytes = Some(memory.filter_images.0);
         counters
     }
 
@@ -1657,6 +1670,7 @@ impl Engine for Cherenkov {
                 gpu_bytes: usage.gpu.0,
                 backdrop_capture_bytes: usage.backdrop_captures.0,
                 filter_target_bytes: usage.filter_targets.0,
+                filter_image_bytes: usage.filter_images.0,
             }),
             wgpu_allocator: Reading::unavailable("cherenkov-cpu has no wgpu allocator"),
             skia_budgeted: Reading::unavailable("cherenkov-cpu has no Skia budget"),
