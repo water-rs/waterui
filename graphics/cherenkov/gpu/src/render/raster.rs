@@ -160,9 +160,27 @@ pub fn texel(c: f32) -> u8 {
     (c.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
+/// The least coverage [`texel`] stores as nonzero: every smaller value
+/// uploads as 0. Pinned to [`texel`] by a test at both sides of the step.
+pub const TEXEL_NONZERO: f32 = f32::from_bits(0x3b00_8081);
+
+/// The least coverage [`texel`] stores as `u8::MAX`. Pinned to [`texel`]
+/// by a test at both sides of the step.
+pub const TEXEL_FULL: f32 = f32::from_bits(0x3f7f_7f7f);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The classification bounds are exactly where the quantization steps:
+    /// `texel` is monotonic, so the two sides of each step decide it.
+    #[test]
+    fn the_texel_bounds_are_the_quantization_steps() {
+        assert_eq!(texel(TEXEL_NONZERO.next_down()), 0);
+        assert_eq!(texel(TEXEL_NONZERO), 1);
+        assert_eq!(texel(TEXEL_FULL.next_down()), u8::MAX - 1);
+        assert_eq!(texel(TEXEL_FULL), u8::MAX);
+    }
 
     #[test]
     fn a_half_pixel_square_has_exact_half_coverage() {

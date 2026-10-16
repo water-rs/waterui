@@ -8,19 +8,12 @@ use cherenkov::{FillRule, ShapeData};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Vec2};
 
 use crate::render::glyph::{CellTexels, PathCell, PathEmit};
+use crate::render::instance::Instance;
 use crate::render::raster::{self, Raster};
 use cherenkov::RenderError;
 
 /// Coverage strip height in device rows.
 pub const STRIP_H: usize = 4;
-
-/// A run of full columns shorter than this is emitted as a cell rather than
-/// splitting a partial run.
-const FULL_RUN_MIN: usize = 8;
-
-/// Empty-column gaps up to this width between two partial runs are carried as
-/// zero texels inside one cell rather than as a separate cell instance.
-const PARTIAL_GAP_MAX: usize = 8;
 
 /// A path whose raster bbox fits inside this edge length is emitted as one
 /// whole-bbox cell, skipping strips.
@@ -279,8 +272,8 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
 }
 
 /// Emits `coverage` as spans and atlas cells: one cell when the grid is
-/// small, otherwise strips of [`STRIP_H`] rows split into full-column span
-/// runs and partial-column cells.
+/// small, otherwise strips of [`STRIP_H`] rows, each split into full-column
+/// spans and cells by [`partition`]'s least byte cost.
 ///
 /// Pure CPU work: the emission and, per cell, its `(w, h, texels)` — the
 /// returned cells' `x`/`y` stay zero until the render thread stores them
@@ -290,10 +283,6 @@ fn clip_x(raster: &mut Raster, x0: f32, y0: f32, x1: f32, y1: f32, w: f32) {
 /// upload has consumed them.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_precision_loss)]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one emission walk: small-cell fast path, strip loop"
-)]
 pub fn emit(
     coverage: &Coverage,
     arena: &mut Vec<u8>,
@@ -357,120 +346,182 @@ pub fn emit(
         )?;
         return Ok((out, rasters));
     }
-    let mut class = Vec::new();
+    // Runs never outnumber columns: one allocation serves every strip.
+    let mut runs = Vec::with_capacity(coverage.w);
     for sy in (0..coverage.h).step_by(STRIP_H) {
         let sh = STRIP_H.min(coverage.h - sy);
-        strip_class(coverage, sy, sh, &mut class);
-        // Emit runs: all-full runs become spans, the rest cells.
-        let mut x = 0;
-        while x < coverage.w {
-            if class[x] == 0 {
-                x += 1;
+        strip_runs(coverage, sy, sh, &mut runs);
+        partition(&mut runs, sh);
+        let mut k = 0;
+        while k < runs.len() {
+            let Some(segment) = runs[k].segment else {
+                k += 1;
                 continue;
-            }
-            let start = x;
-            if class[x] == 1 {
-                while x < coverage.w && class[x] == 1 {
-                    x += 1;
-                }
+            };
+            let (start, end) = (runs[k].start, runs[segment.last].end);
+            if segment.span {
                 out.spans.push([
                     (coverage.x + start as f64) as f32,
                     (coverage.y + sy as f64) as f32,
-                    (coverage.x + x as f64) as f32,
+                    (coverage.x + end as f64) as f32,
                     (coverage.y + (sy + sh) as f64) as f32,
                 ]);
             } else {
-                while x < coverage.w && class[x] == 2 {
-                    x += 1;
-                }
-                let full_start = x;
-                while x < coverage.w && class[x] == 1 {
-                    x += 1;
-                }
-                let full_end = x;
-                while x < coverage.w && class[x] == 2 {
-                    x += 1;
-                }
-                let interior = if full_start == full_end {
-                    0..0
-                } else {
-                    full_start - start..full_end - start
-                };
+                // The widest full run inside the cell is its interior.
+                let interior = runs[k..=segment.last]
+                    .iter()
+                    .filter(|run| run.class == Class::Full)
+                    .max_by_key(|run| (run.end - run.start, std::cmp::Reverse(run.start)))
+                    .map_or(0..0, |run| run.start - start..run.end - start);
                 make_cell(
                     &mut out.cells,
                     &mut rasters,
                     arena,
                     start,
                     sy,
-                    x - start,
+                    end - start,
                     sh,
                     interior,
                 )?;
             }
+            k = segment.last + 1;
         }
     }
     Ok((out, rasters))
 }
 
-/// Classifies one strip's columns by the texels the atlas stores
-/// ([`raster::texel`]): 0 empty (every texel 0), 1 full (every texel
-/// `u8::MAX`), 2 partial. Coverage the quantization rounds away, such as
-/// floating-point residue, never decides where a cell starts. Full runs
-/// narrower than `FULL_RUN_MIN` are demoted to partial so a partial run
-/// is not fragmented by isolated full columns, and empty gaps up to
-/// `PARTIAL_GAP_MAX` between two partial runs are carried as zero texels
-/// inside one cell rather than as a separate cell instance.
-fn strip_class(coverage: &Coverage, sy: usize, sh: usize, class: &mut Vec<u8>) {
-    class.clear();
-    class.resize(coverage.w, 0);
-    for (x, c) in class.iter_mut().enumerate() {
+/// What the atlas stores for one strip column, judged on its texels
+/// ([`raster::texel`]): coverage the quantization rounds away, such as
+/// floating-point residue, never moves the partition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Class {
+    /// Every texel is 0.
+    Empty,
+    /// Every texel is `u8::MAX`.
+    Full,
+    /// Anything else.
+    Partial,
+}
+
+/// The last run of an emitted segment that starts at this run, and
+/// whether it is a span (one full run) rather than a cell.
+#[derive(Clone, Copy, Debug)]
+struct Segment {
+    last: usize,
+    span: bool,
+}
+
+/// How the cheapest emission of a strip's runs up to and including one
+/// run ends.
+#[derive(Clone, Copy, Debug)]
+enum Choice {
+    /// The run is empty and emits nothing.
+    Skip,
+    /// The run is full and emits a span.
+    Span,
+    /// A cell spans from this run back to the run at the index.
+    Cell(usize),
+}
+
+/// A maximal run of equal-class columns in one coverage strip.
+#[derive(Clone, Copy, Debug)]
+struct Run {
+    start: usize,
+    end: usize,
+    class: Class,
+    /// Least byte cost of emitting every run before this one.
+    before: usize,
+    choice: Choice,
+    /// Set on the first run of each emitted segment.
+    segment: Option<Segment>,
+}
+
+/// Splits one strip into runs of equal [`Class`], judging each column
+/// by comparing against the quantization's steps
+/// ([`raster::TEXEL_NONZERO`], [`raster::TEXEL_FULL`]).
+fn strip_runs(coverage: &Coverage, sy: usize, sh: usize, runs: &mut Vec<Run>) {
+    runs.clear();
+    for x in 0..coverage.w {
         let mut empty = true;
         let mut full = true;
         for row in 0..sh {
-            let t = raster::texel(coverage.data[(sy + row) * coverage.w + x]);
-            empty &= t == 0;
-            full &= t == u8::MAX;
+            let v = coverage.data[(sy + row) * coverage.w + x];
+            empty &= v < raster::TEXEL_NONZERO;
+            full &= v >= raster::TEXEL_FULL;
         }
-        *c = if empty {
-            0
+        let class = if empty {
+            Class::Empty
         } else if full {
-            1
+            Class::Full
         } else {
-            2
+            Class::Partial
         };
-    }
-    let mut x = 0;
-    while x < coverage.w {
-        if class[x] == 1 {
-            let end = (x + 1..coverage.w)
-                .find(|&i| class[i] != 1)
-                .unwrap_or(coverage.w);
-            if end - x < FULL_RUN_MIN {
-                class[x..end].fill(2);
-            }
-            x = end;
-        } else {
-            x += 1;
+        match runs.last_mut() {
+            Some(run) if run.class == class => run.end = x + 1,
+            _ => runs.push(Run {
+                start: x,
+                end: x + 1,
+                class,
+                before: 0,
+                choice: Choice::Skip,
+                segment: None,
+            }),
         }
     }
-    let mut x = 0;
-    while x < coverage.w {
-        if class[x] == 0 {
-            let end = (x + 1..coverage.w)
-                .find(|&i| class[i] != 0)
-                .unwrap_or(coverage.w);
-            if x > 0
-                && end < coverage.w
-                && class[x - 1] == 2
-                && class[end] == 2
-                && end - x <= PARTIAL_GAP_MAX
-            {
-                class[x..end].fill(2);
-            }
-            x = end;
-        } else {
-            x += 1;
+}
+
+/// Chooses the strip's emission with the least byte cost: every
+/// instance costs `size_of::<Instance>()`, the bytes it uploads each
+/// frame, and every texel a cell carries costs its byte in the atlas. An
+/// empty gap is bridged and a full run carried as texels exactly when
+/// that is cheaper than the instance a split would add. A cell's cost is
+/// linear in its width, so the cheapest cell ending at each run comes
+/// from a running minimum, and the whole strip is solved in one pass.
+/// Marks each emitted segment on its first run.
+fn partition(runs: &mut [Run], sh: usize) {
+    let instance = size_of::<Instance>();
+    // The cell start j minimising `cost before j − sh · start of j`,
+    // compared as `before_j + sh · start_b < before_b + sh · start_j`.
+    let mut cell_from: Option<usize> = None;
+    for k in 0..runs.len() {
+        let before = runs[k].before;
+        if runs[k].class != Class::Empty
+            && cell_from
+                .is_none_or(|b| before + sh * runs[b].start < runs[b].before + sh * runs[k].start)
+        {
+            cell_from = Some(k);
         }
+        let (cost, choice) = match runs[k].class {
+            Class::Empty => (before, Choice::Skip),
+            class => {
+                let from = cell_from.expect("a non-empty run opened a cell start");
+                let cell = runs[from].before + instance + sh * (runs[k].end - runs[from].start);
+                if class == Class::Full && before + instance <= cell {
+                    (before + instance, Choice::Span)
+                } else {
+                    (cell, Choice::Cell(from))
+                }
+            }
+        };
+        runs[k].choice = choice;
+        if let Some(next) = runs.get_mut(k + 1) {
+            next.before = cost;
+        }
+    }
+    let mut k = runs.len();
+    while k > 0 {
+        let last = k - 1;
+        k = match runs[last].choice {
+            Choice::Skip => last,
+            Choice::Span => {
+                runs[last].segment = Some(Segment { last, span: true });
+                last
+            }
+            Choice::Cell(from) => {
+                runs[from].segment = Some(Segment { last, span: false });
+                from
+            }
+        };
     }
 }
 
@@ -823,59 +874,81 @@ mod tests {
         assert!((eo[0] - 0.5).abs() < 1e-6, "edge: {}", eo[0]);
     }
 
-    /// Empty gaps up to `PARTIAL_GAP_MAX` between partial columns are
-    /// carried inside one cell; wider gaps, and gaps next to a full run,
-    /// still split.
-    #[test]
-    fn short_empty_gaps_merge_into_one_cell() {
-        let cov = |partial: &[(usize, usize)], full: &[(usize, usize)], w: usize, h: usize| {
-            let mut data = vec![0.0f32; w * h];
-            for row in 0..h {
-                for &(a, b) in partial {
-                    data[row * w + a..row * w + b].fill(0.5);
-                }
-                for &(a, b) in full {
-                    data[row * w + a..row * w + b].fill(1.0);
-                }
+    /// A 4-row strip `w` columns wide: `partial` ranges at coverage 0.5,
+    /// `full` ranges at 1.0, the rest 0.
+    fn strip(partial: &[(usize, usize)], full: &[(usize, usize)], w: usize) -> Coverage {
+        let mut data = vec![0.0f32; w * STRIP_H];
+        for row in data.chunks_exact_mut(w) {
+            for &(a, b) in partial {
+                row[a..b].fill(0.5);
             }
-            Coverage {
-                x: 0.0,
-                y: 0.0,
-                w,
-                h,
-                clipped: false,
-                data,
-            }
-        };
-        // Gap of `PARTIAL_GAP_MAX` between two partial runs: one cell.
-        let g = PARTIAL_GAP_MAX.max(1);
-        let mut arena = Vec::new();
-        let (emitted, rasters) =
-            emit(&cov(&[(0, 3), (3 + g, 6 + g)], &[], 40, 4), &mut arena).unwrap();
-        assert_eq!(emitted.cells.len(), 1);
-        assert_eq!(rasters[0].0 as usize, 6 + g);
-        // The carried gap's texels are zero coverage.
-        let cell = &arena[rasters[0].2.clone()];
-        for row in 0..4 {
-            for x in 3..3 + g {
-                assert_eq!(cell[row * (6 + g) + x], 0);
+            for &(a, b) in full {
+                row[a..b].fill(1.0);
             }
         }
-        // Gap of `PARTIAL_GAP_MAX + 1`: two separate cells.
-        let (emitted, _) = emit(&cov(&[(0, 3), (4 + g, 7 + g)], &[], 40, 4), &mut arena).unwrap();
-        assert_eq!(emitted.cells.len(), 2);
-        // A gap bounded by a full run (wider than `FULL_RUN_MIN`) is not
-        // filled: the partial run ends before it and the full run spans.
-        let (emitted, _) = emit(&cov(&[(0, 3)], &[(3 + g, 12 + g)], 40, 4), &mut arena).unwrap();
-        assert_eq!(emitted.cells.len(), 1);
-        assert_eq!(emitted.spans.len(), 1);
-        // Adjacent partial edges must not consume the full interior run.
+        Coverage {
+            x: 0.0,
+            y: 0.0,
+            w,
+            h: STRIP_H,
+            clipped: false,
+            data,
+        }
+    }
+
+    /// An empty gap between partial runs is carried as zero texels while
+    /// its texels cost no more bytes than the instance a second cell
+    /// would; one column wider, the cells split.
+    #[test]
+    fn a_gap_is_bridged_while_its_texels_cost_less_than_an_instance() {
+        let g = size_of::<Instance>() / STRIP_H;
+        let mut arena = Vec::new();
         let (emitted, rasters) =
-            emit(&cov(&[(0, 3), (20, 23)], &[(3, 20)], 40, 4), &mut arena).unwrap();
+            emit(&strip(&[(0, 3), (3 + g, 6 + g)], &[], 400), &mut arena).unwrap();
+        assert_eq!(emitted.cells.len(), 1);
+        assert_eq!(rasters[0].0 as usize, 6 + g);
+        let cell = &arena[rasters[0].2.clone()];
+        for row in cell.chunks_exact(6 + g) {
+            assert!(
+                row[3..3 + g].iter().all(|&t| t == 0),
+                "the carried gap is zero coverage"
+            );
+        }
+        let (emitted, _) = emit(&strip(&[(0, 3), (4 + g, 7 + g)], &[], 400), &mut arena).unwrap();
+        assert_eq!(emitted.cells.len(), 2);
+    }
+
+    /// A full run between partial runs stays inside the cell as its
+    /// interior while its texels cost less than the two instances a span
+    /// would add; wider, it becomes a span between two cells. A full run
+    /// with no partial neighbour is always a span.
+    #[test]
+    fn a_full_run_splits_a_cell_only_when_its_texels_cost_more() {
+        let limit = 2 * size_of::<Instance>() / STRIP_H;
+        let mut arena = Vec::new();
+        let f = limit - 6;
+        let (emitted, _) = emit(
+            &strip(&[(0, 3), (3 + f, 6 + f)], &[(3, 3 + f)], 400),
+            &mut arena,
+        )
+        .unwrap();
         assert_eq!(emitted.spans.len(), 0);
         assert_eq!(emitted.cells.len(), 1);
-        assert_eq!(emitted.cells[0].interior, 3 | (20 << 16));
-        assert_eq!(rasters[0].0, 23);
+        assert_eq!(
+            emitted.cells[0].interior,
+            3 | (u32::try_from(3 + f).unwrap() << 16)
+        );
+        let f = limit + 6;
+        let (emitted, _) = emit(
+            &strip(&[(0, 3), (3 + f, 6 + f)], &[(3, 3 + f)], 400),
+            &mut arena,
+        )
+        .unwrap();
+        assert_eq!(emitted.spans.len(), 1);
+        assert_eq!(emitted.cells.len(), 2);
+        let (emitted, _) = emit(&strip(&[], &[(10, 20)], 400), &mut arena).unwrap();
+        assert_eq!(emitted.spans.len(), 1);
+        assert_eq!(emitted.cells.len(), 0);
     }
 
     /// A column holding only floating-point residue uploads zero texels,
@@ -883,24 +956,24 @@ mod tests {
     /// atlas actually covers.
     #[test]
     fn a_residue_only_column_classifies_empty() {
-        let (w, h) = (40, STRIP_H);
-        let mut data = vec![0.0f32; w * h];
-        for row in data.chunks_exact_mut(w) {
+        let mut coverage = strip(&[(10, 13)], &[], 40);
+        for row in coverage.data.as_chunks_mut::<40>().0 {
             row[9] = 6e-14;
-            row[10..13].fill(0.5);
         }
-        let coverage = Coverage {
-            x: 0.0,
-            y: 0.0,
-            w,
-            h,
-            clipped: false,
-            data,
-        };
-        let mut class = Vec::new();
-        strip_class(&coverage, 0, h, &mut class);
-        assert_eq!(class[9], 0, "the residue column is empty");
-        assert_eq!(class[10..13], [2, 2, 2]);
+        let mut runs = Vec::new();
+        strip_runs(&coverage, 0, STRIP_H, &mut runs);
+        let classes: Vec<_> = runs
+            .iter()
+            .map(|run| (run.start, run.end, run.class))
+            .collect();
+        assert_eq!(
+            classes,
+            [
+                (0, 10, Class::Empty),
+                (10, 13, Class::Partial),
+                (13, 40, Class::Empty)
+            ]
+        );
         let mut arena = Vec::new();
         let (emitted, rasters) = emit(&coverage, &mut arena).unwrap();
         assert_eq!(emitted.cells.len(), 1);
