@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Callgrind Ir gate for `lower`, `encode` and `run_transaction` on the gated
-perf scenes.
+perf scenes, each scene sampling the roots it runs in steady state (SCENES).
 
 Each profile runs `cherenkov-bench measure --pause-at P` under Callgrind with
 instrumentation off. At the pause (a fixed frame index, not wall-clock time)
@@ -75,9 +75,22 @@ teardown crashes when another instance layer sits in front of it.
 """
 import argparse, collections, concurrent.futures, ctypes, fnmatch, hashlib, json, os, pathlib, platform, re, selectors, shutil, struct, subprocess, sys
 
-SCENES = ['map', 'chart', 'text-page', 'ui-list', 'effects', 'road-network', 'brick-grid']
 ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6encode', 'cherenkov_ad'),
          'run_transaction': ('15run_transaction', 'cherenkov_record')}
+# The roots each perf scene runs in steady state. `encode` runs once per frame
+# in every scene. A motion or live scene records its content on the first
+# frame only and later frames open no transaction (the bench's Cherenkov
+# adapter), so `run_transaction` is not one of its roots. Every root is a
+# dump trigger in every profile: a declared root that stops running, or an
+# undeclared one that starts, fails the profile.
+EVERY_FRAME = ('lower', 'encode', 'run_transaction')
+RECORDED_ONCE = ('lower', 'encode')
+SCENES = {'map': EVERY_FRAME, 'chart': EVERY_FRAME, 'text-page': EVERY_FRAME, 'ui-list': EVERY_FRAME,
+          'effects': EVERY_FRAME, 'road-network': RECORDED_ONCE, 'brick-grid': RECORDED_ONCE}
+FRAME_ROOT = 'encode'
+# Frames after which every declared root must have returned the four times a
+# profile needs (the call in flight, then three samples).
+STALL_FRAMES = 8
 PAUSE = 'cherenkov-bench: paused before frame {}'
 # The build every profiled binary comes from. The profile overrides apply to
 # any revision, so a baseline that predates the gate builds the same way.
@@ -299,7 +312,28 @@ def layer_env(layer_dir, icd):
                 VK_INSTANCE_LAYERS=LAYER_NAME, NODEVICE_SELECT='1')
 
 
-def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None):
+def sampled(after, phases, label):
+    """Whether every root in `phases` has returned four times: the call in
+    flight when instrumentation switched on, then three samples.
+
+    `after` holds every root's dump numbers. A root outside `phases` that
+    returns, or a declared root still short after STALL_FRAMES frames, fails.
+    """
+    if undeclared := [phase for phase, dumps in after.items() if dumps and phase not in phases]:
+        raise RuntimeError(f'{label}: {undeclared} run in steady state but are not among the scene\'s roots '
+                           f'{phases}; declare them in SCENES.')
+    done = all(len(after[phase]) > 3 for phase in phases)
+    if not done and len(after[FRAME_ROOT]) > STALL_FRAMES:
+        raise RuntimeError(f'{label}: after {len(after[FRAME_ROOT])} frames the roots returned '
+                           f'{ {phase: len(after[phase]) for phase in phases} } times; a declared root does not '
+                           'run every frame.')
+    return done
+
+
+def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=None, deadline=900):
+    """Profiles `scene` and samples each root in `phases` (the scene's declared roots by default)."""
+    phases = SCENES[scene] if phases is None else phases
+    assert FRAME_ROOT in phases, (scene, phases, f'{FRAME_ROOT} runs every frame')
     binary = pathlib.Path(binary).resolve(); out = pathlib.Path(out).resolve(); out.mkdir(parents=True, exist_ok=True)
     icd = lavapipe_icd(icd)
     prefix = out / f'{tag}-{scene}'
@@ -342,7 +376,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None):
         raise OSError(ctypes.get_errno(), 'inotify_init1')
     assert LIBC.inotify_add_watch(watch, os.fsencode(out), 0x8 | 0x80) >= 0
     fds.append(watch); monitor.register(watch, selectors.EVENT_READ, 'files')
-    deadline = timer(5400); fds.append(deadline); monitor.register(deadline, selectors.EVENT_READ, 'deadline')
+    expiry = timer(deadline); fds.append(expiry); monitor.register(expiry, selectors.EVENT_READ, 'deadline')
     seen = set()
     with open(str(prefix) + '.log', 'w') as log:
         process = subprocess.Popen(command, cwd=repo, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=log, start_new_session=True)
@@ -351,13 +385,8 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None):
         pending = b''
         print(tag, scene, 'pid', process.pid, 'running to frame', pause_at, flush=True)
 
-        # Three calls of every root, and the one in flight when
-        # instrumentation switched on. Callgrind writes its dumps one after
-        # another, so every dump up to a --dump-after is closed once it is.
-        def done():
-            return all(len(v) > 3 for v in after.values())
         try:
-            while not done():
+            while not sampled(after, phases, f'{tag} {scene}'):
                 for event, _ in monitor.select():
                     if event.data == 'stdout':
                         chunk = os.read(process.stdout.fileno(), 65536)
@@ -398,7 +427,8 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None):
     result = {'tag': tag, 'scene': scene, 'binary': str(binary), 'sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
               'icd': str(icd), 'icd_sha256': hashlib.sha256(icd.read_bytes()).hexdigest(),
               'pause_at': pause_at, 'command': command}
-    for phase, symbol in roots.items():
+    for phase in phases:
+        symbol = roots[phase]
         samples = call_samples(out, prefix.name, symbol, after[phase])
         assert len(samples) == 3, (tag, scene, phase, len(samples))
         second, third = samples[1], samples[2]
@@ -454,7 +484,7 @@ def batch(binary, tag, repo, out, pause_at, warmup, jobs, icd=None):
              '|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|']
     for scene in SCENES:
         d = load(out, tag, scene)
-        for phase in ROOTS:
+        for phase in SCENES[scene]:
             s, t = d[phase]['second'], d[phase]['third']
             lines.append(f"| {scene} | {phase} | {s['ir']:,} | {s['alloc_ir']:,} | {s['mem_ir']:,} | {s['rust_ir']:,} | {s['allocs']} | {s['reallocs']} | {s['deallocs']} | {s['mem_calls']} | "
                          f"{t['rust_ir']:,} ({d[phase]['third_delta_percent']:+.3f}%) |")
@@ -470,7 +500,7 @@ def compare(out, base, head):
     failed = False
     for scene in SCENES:
         a, b = load(out, base, scene), load(out, head, scene)
-        for phase in ROOTS:
+        for phase in SCENES[scene]:
             x, y = a[phase]['second'], b[phase]['second']
             delta = 100 * (y['rust_ir'] / x['rust_ir'] - 1)
             ok = delta <= 1 and all(y[k] <= x[k] for k in ('allocs', 'reallocs', 'deallocs', 'mem_calls'))
@@ -573,7 +603,7 @@ def same(args):
     for scene in SCENES:
         ds = [load(args.out, tag, scene) for tag in args.tags]
         assert len({d['sha256'] for d in ds}) == 1, (scene, 'different binaries')
-        for phase in ROOTS:
+        for phase in SCENES[scene]:
             second = [d[phase]['second'] for d in ds]
             rust = [s['rust_ir'] for s in second]
             count = [(s['allocs'], s['reallocs'], s['deallocs'], s['mem_calls']) for s in second]

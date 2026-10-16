@@ -100,7 +100,9 @@ def measure(args):
         if path.is_file():
             ir_gate.verify_reused_profile(json.loads(path.read_text()), args.binary, icd)
             return f'{args.tag} {scene} reused completed profile'
-        ir_gate.profile(args.binary, args.tag, scene, args.repo, args.out, args.pause_at, args.warmup, icd)
+        # Every size is the road-network scene, with its roots.
+        ir_gate.profile(args.binary, args.tag, scene, args.repo, args.out, args.pause_at, args.warmup, icd,
+                        ir_gate.SCENES['road-network'])
         return f'{args.tag} {scene} done'
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:

@@ -129,6 +129,15 @@ class Sampling(unittest.TestCase):
         with self.assertRaises(AssertionError):
             ir_gate.call_samples(DATA, 'first', ROOT, after=[1, 4])
 
+    def test_profile_stops_on_its_declared_roots(self):
+        every, once = ir_gate.EVERY_FRAME, ir_gate.RECORDED_ONCE
+        self.assertTrue(ir_gate.sampled({'lower': [2] * 4, 'encode': [1] * 4, 'run_transaction': []}, once, 's'))
+        self.assertFalse(ir_gate.sampled({'lower': [2] * 3, 'encode': [1] * 8, 'run_transaction': []}, once, 's'))
+        with self.assertRaisesRegex(RuntimeError, 'declare'):
+            ir_gate.sampled({'lower': [2], 'encode': [1], 'run_transaction': [3]}, once, 's')
+        with self.assertRaisesRegex(RuntimeError, 'does not run every frame'):
+            ir_gate.sampled({'lower': [2] * 9, 'encode': [1] * 9, 'run_transaction': []}, every, 's')
+
     def test_options_name_each_function_once(self):
         options = ir_gate.function_options(['_RNvCs1_5bench4root', '_RNvCs1_5bench6nested'])
         self.assertIn('--dump-after=_RNvCs1_5bench4root', options)
