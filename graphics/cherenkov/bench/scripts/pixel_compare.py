@@ -51,11 +51,16 @@ p50 over a finite frame count has a sampling error, and a fresh process can
 land at a different cost, so the change alone does not say whether the
 collection can tell a 2% change from none. `analyze` therefore puts a 95% interval
 around the change by a hierarchical bootstrap (invocations, then the frames
-of each) and decides only a scene whose interval is no wider than the limit
-(half-width at most half of `--limit-percent`): a true change of zero then
-reads above the limit with probability far below a percent. Such a scene
-`fails` above `--limit-percent` (2%) and passes otherwise; a wider interval
-is `unresolved`, never a pass. More `--frames` shrink the sampling error of
+of each). A scene whose whole interval lies above `--limit-percent` (2%)
+`fails` whatever the interval's width: the collection has shown the change
+exceeds the limit at that confidence. Any other scene is decided only when
+its interval is no wider than the limit (half-width at most half of
+`--limit-percent`), so a true change of zero reads above the limit with
+probability far below a percent; it then `fails` above the limit and passes
+otherwise. A wider interval is `unresolved`, never a pass. The limit bounds a
+cost increase, so an interval wholly below the negative limit — the head
+measurably cheaper — is no failure, and like any other it passes only at that
+width and is `unresolved` beyond it. More `--frames` shrink the sampling error of
 each p50 and more `--rounds` average over more processes; full-size scenes
 resolve at the defaults, while scenes of a fraction of a millisecond vary
 per process and stay unresolved (#2775). In governor mode `analyze` reports
@@ -428,6 +433,17 @@ def change_interval(arms: dict[str, list[list[float]]],
     return changes[tail], changes[-tail - 1]
 
 
+def decide(change: float, low: float, high: float, limit_percent: float) -> str:
+    """The pinned-mode verdict for a change and its 95% interval, all in
+    percent. An interval wholly above the limit fails at any width; any other
+    is decided only at a half-width of at most half the limit."""
+    if low > limit_percent:
+        return "fail"
+    if (high - low) / 2 > limit_percent / 2:
+        return "unresolved"
+    return "fail" if change > limit_percent else "pass"
+
+
 def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]:
     plan = json.loads((out / PLAN).read_text())
     control = json.loads((out / CONTROL).read_text())
@@ -465,10 +481,7 @@ def analyze(out: Path, limit_percent: float, budget_ms: float) -> dict[str, Any]
                       "interval_percent": [low, high],
                       "worst_p99_ms": {side: max(v["p99"]) for side, v in arms.items()}})
         if pinned:
-            if (high - low) / 2 > limit_percent / 2:
-                entry["verdict"] = "unresolved"
-            else:
-                entry["verdict"] = "fail" if change > limit_percent else "pass"
+            entry["verdict"] = decide(change, low, high, limit_percent)
         else:
             entry["verdict"] = "within budget" if entry["worst_p99_ms"]["head"] <= budget_ms \
                 else "over budget"
