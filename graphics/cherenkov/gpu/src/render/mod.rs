@@ -954,11 +954,12 @@ pub struct GpuRenderer {
     /// pipelines are built once (#170). A `None` cell is created at first
     /// use — preparation is measured on the frame that needs it (#170 B3).
     /// `[space][format][ShaderVariant]` — a fourth variant slot holds
-    /// the union-field pipelines for backdrop-union members. Slot 3 is
-    /// never built at init: the variant-3 module and pipeline are
-    /// created on the first union or outer-band member (on wasm, by
-    /// `prepare_lazy_pipelines` before the frame that needs them).
-    pipelines: [[[Option<wgpu::RenderPipeline>; 4]; 2]; 2],
+    /// the union-field pipelines for backdrop-union members; a fifth
+    /// holds the long-gradient pipelines. Slot 3 is never built at
+    /// init: the variant-3 module and pipeline are created on the first
+    /// union or outer-band member (on wasm, by `prepare_lazy_pipelines`
+    /// before the frame that needs them).
+    pipelines: [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
     /// `[opaque, partial]` coverage pipelines, same cell policy as the
     /// core set: built at init under `core_pipelines_eager()` (always,
     /// on wasm), else created at the first coverage pass (#170 B3, #49).
@@ -1363,7 +1364,8 @@ fn create_device(
             required |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         }
     }
-    if config.pipeline_cache.is_some() && supported.contains(wgpu::Features::PIPELINE_CACHE) {
+    // Share compilation within this engine even without a persistent cache.
+    if supported.contains(wgpu::Features::PIPELINE_CACHE) {
         required |= wgpu::Features::PIPELINE_CACHE;
     }
     let limits = wgpu::Limits::default().or_worse_values_from(&adapter.limits());
@@ -1872,8 +1874,16 @@ const fn variant_index(variant: ShaderVariant) -> usize {
         ShaderVariant::Shadow => 1,
         ShaderVariant::Full => 2,
         ShaderVariant::Union => 3,
+        ShaderVariant::LongGradient => 4,
     }
 }
+
+/// The core slots built at init — every variant but Union, which
+/// materializes lazily (native `core_pipeline` demand cells) or in
+/// `prepare_lazy_pipelines` (wasm). The list drives both the module
+/// creation and the pipeline fill, zipped so a slot never indexes the
+/// modules array.
+const EAGER_CORE_VARIANTS: [usize; 4] = [0, 1, 2, 4];
 
 /// #170's measured pipeline policy (`CoreEager`): the deduplicated core
 /// set is built at creation. The Pixel A/B rejected demand-mode creation:
@@ -1933,14 +1943,17 @@ fn create_pipeline_layout(
     })
 }
 
-/// The configured pipeline cache, opened once for the whole pipeline
-/// set — it was previously re-read and re-opened per pipeline (#170).
+/// One cache shared by the eager pipeline set. A configured path retains
+/// the existing persistent cache; otherwise native init drops the temporary
+/// compilation cache before returning the engine.
 fn open_pipeline_cache(device: &wgpu::Device, config: &GpuConfig) -> Option<wgpu::PipelineCache> {
-    let path = config.pipeline_cache.as_ref()?;
     if !device.features().contains(wgpu::Features::PIPELINE_CACHE) {
         return None;
     }
-    let data = std::fs::read(path).ok();
+    let data = config
+        .pipeline_cache
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok());
     // SAFETY: `data` is either a blob previously produced by wgpu or
     // absent; `fallback: true` keeps us off the unsafe fallback path.
     Some(unsafe {
@@ -2130,7 +2143,7 @@ impl PipelineFactory<'_> {
 /// created at first use so preparation lands inside the frame that needs
 /// it (#170).
 fn core_pipeline<'m>(
-    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 4]; 2]; 2],
+    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
     factory: &PipelineFactory<'_>,
     format: wgpu::TextureFormat,
     replace: bool,
@@ -2292,9 +2305,10 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             Some(&device),
         )?;
         let scratch_format = scratch_wgpu(config.scratch_format);
-        // Three specialised fragment shaders from one source file, compiled
+        // Specialised fragment shaders from one source file, compiled
         // at build time: the prepended `VARIANT` constant makes fs_main a
-        // constant-folded dispatch to fs_simple/fs_shadow/fs_full. On Vulkan
+        // constant-folded dispatch; the union module is not in this eager
+        // set (it materializes with the first union member). On Vulkan
         // and Metal these are the embedded passthrough binaries (#57).
         let shader_delivery = shaders::delivery(info.backend, &device)?;
         // What this device — the engine's own or a host's shared one —
@@ -2310,7 +2324,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             );
         }
         let modules = core_pipelines_eager()
-            .then(|| [0usize, 1, 2].map(|v| shader_delivery.engine_module(&device, v)));
+            .then(|| EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_module(&device, v)));
         fire_probe(
             &config,
             CreationPhase::ShaderModules,
@@ -2333,15 +2347,15 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             for format in [TARGET_FORMAT, scratch_format] {
                 let slot = usize::from(format != TARGET_FORMAT);
                 for replace in [false, true] {
-                    for variant in 0usize..3 {
-                        let cell = &mut pipelines[slot][usize::from(replace)][variant];
+                    for (variant, module) in EAGER_CORE_VARIANTS.iter().zip(modules) {
+                        let cell = &mut pipelines[slot][usize::from(replace)][*variant];
                         if cell.is_none() {
                             *cell = Some(create_pipeline(
                                 &device,
                                 &config,
                                 &pipeline_layout,
                                 pipeline_cache.as_ref(),
-                                &modules[variant],
+                                module,
                                 format,
                                 CoveragePass::Painter(replace),
                             )?);
@@ -2364,6 +2378,10 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 )?);
             }
         }
+        // The pipelines own their compiled programs. Drop only the temporary
+        // compilation cache here; configured disk caches keep their existing
+        // renderer lifetime and persistence behavior.
+        let pipeline_cache = config.pipeline_cache.as_ref().and(pipeline_cache);
         fire_probe(
             &config,
             CreationPhase::CorePipelines,
@@ -2652,12 +2670,12 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&device),
     )?;
     let scratch_format = scratch_wgpu(config.scratch_format);
-    // Three specialised fragment shaders from one source file: the
-    // prepended `VARIANT` constant makes fs_main a constant-folded
-    // dispatch to fs_simple/fs_shadow/fs_full. WebGPU keeps WGSL (#57).
+    // Specialised fragment shaders from one source file: the prepended
+    // `VARIANT` constant makes fs_main a constant-folded dispatch; the
+    // union module is not in this eager set. WebGPU keeps WGSL (#57).
     let shader_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let shader_delivery = shaders::delivery(info.backend, &device)?;
-    let modules = [0usize, 1, 2].map(|v| shader_delivery.engine_module(&device, v));
+    let modules = EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_module(&device, v));
     if let Some(error) = shader_scope.pop().await {
         return Err(EngineError::Backend(error.to_string()));
     }
@@ -2680,8 +2698,8 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     for format in [TARGET_FORMAT, scratch_format] {
         let slot = usize::from(format != TARGET_FORMAT);
         for replace in [false, true] {
-            for variant in 0usize..3 {
-                let cell = &mut pipelines[slot][usize::from(replace)][variant];
+            for (variant, module) in EAGER_CORE_VARIANTS.iter().zip(&modules) {
+                let cell = &mut pipelines[slot][usize::from(replace)][*variant];
                 if cell.is_none() {
                     *cell = Some(
                         create_pipeline(
@@ -2689,7 +2707,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
                             &config,
                             &pipeline_layout,
                             pipeline_cache.as_ref(),
-                            &modules[variant],
+                            module,
                             format,
                             CoveragePass::Painter(replace),
                         )

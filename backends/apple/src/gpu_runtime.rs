@@ -17,7 +17,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use waterui_backend_core::Environment;
 #[cfg(feature = "gpu_surface")]
-use waterui_graphics::cherenkov::{Engine, FrameScope, FrameTime};
+use waterui_graphics::cherenkov::{Engine, FrameScope, FrameTime, RenderError, SurfaceId};
 #[cfg(feature = "gpu_surface")]
 use waterui_graphics::cherenkov_gpu::Gpu;
 use waterui_graphics::gpu::GpuRuntime;
@@ -166,6 +166,10 @@ pub trait SceneParticipant {
     /// happened to drive `produce`. The participant forwards it to its
     /// owner; it is never stored here for a poll.
     fn note_failure(&self, failure: Arc<HostedLayerError>);
+    /// The engine surface this scene renders into: a frame that leaves
+    /// it out for drawing a rejected resource is this scene's failure
+    /// alone.
+    fn surface(&self) -> SurfaceId;
 }
 
 /// One engine generation bound to an exact [`SharedGpuContext`]
@@ -233,6 +237,19 @@ impl EngineGeneration {
             .push(Rc::downgrade(participant));
     }
 
+    /// Takes failed scenes out of the batch: each one's failure already
+    /// routed through its sink, and re-running its rejected contract every
+    /// later batch would only re-log it — it re-enters through `mount` on
+    /// a new generation or remount.
+    fn leave(&self, failed: &[Rc<dyn SceneParticipant>]) {
+        if !failed.is_empty() {
+            self.participants.borrow_mut().retain(|weak| {
+                weak.upgrade()
+                    .is_some_and(|live| !failed.iter().any(|gone| Rc::ptr_eq(&live, gone)))
+            });
+        }
+    }
+
     /// The live mounted scenes, dead hooks pruned.
     fn live(&self) -> Vec<Rc<dyn SceneParticipant>> {
         let mut participants = self.participants.borrow_mut();
@@ -286,8 +303,14 @@ impl EngineGeneration {
     /// resources. `produced` is not stamped, so no participant consumes
     /// the failed batch as rendered.
     ///
+    /// A frame that leaves scenes out because their content draws a
+    /// resource the backend rejected does not fail the batch: each such
+    /// scene gets its own [`RenderError::Rejected`] through `note_failure`
+    /// and leaves the batch like a failed `prepare`, and every other scene
+    /// is produced.
+    ///
     /// The error is also the requesting `requester`'s own `prepare`
-    /// failure — a scene's own rejected staged contract does not seal the
+    /// failure — or its scene's rejection — — a scene's own rejected staged contract does not seal the
     /// batch, but the caller that failed still gets `Err`: a requester
     /// never reports `Ok` for a frame its own scene never wrote. The batch
     /// still produces for every other participant, the routed copy
@@ -327,23 +350,48 @@ impl EngineGeneration {
                         requester_error = Some(error.clone());
                     }
                     failed_outcomes.push((Rc::downgrade(participant), error));
-                    // A failed participant leaves the batch: its own settle
-                    // is already enqueued through the sink, and re-running
-                    // its rejected contract every later batch would only
-                    // re-log a failure that already routed — it re-enters
-                    // through `mount` on a new generation or remount.
+                    // Its own settle is already enqueued through the sink.
                     failed.push(participant.clone());
                 }
             }
         }
-        if !failed.is_empty() {
-            self.participants.borrow_mut().retain(|weak| {
-                weak.upgrade()
-                    .is_some_and(|live| !failed.iter().any(|gone| Rc::ptr_eq(&live, gone)))
-            });
-        }
-        let outcome = match self.engine.render(time) {
-            Ok(_) => {
+        self.leave(&failed);
+        let rendered = match self.engine.render(time) {
+            Ok(_) => Ok(()),
+            // The frame left out only the scenes whose content draws a
+            // resource the backend rejected and rendered every other one:
+            // each rejection is its scene's own failure, routed like a
+            // failed `prepare`, and the batch stands for the rest.
+            Err(RenderError::Rejected { surfaces, next }) => {
+                let live = self.live();
+                let mut rejected = Vec::new();
+                for rejection in surfaces {
+                    // A scene that already left the batch was routed its
+                    // rejection the first frame that reported it.
+                    let Some(participant) = live
+                        .iter()
+                        .find(|participant| participant.surface() == rejection.surface)
+                    else {
+                        continue;
+                    };
+                    let failure = Arc::new(HostedLayerError::Render(RenderError::Rejected {
+                        surfaces: vec![rejection],
+                        next: next.clone(),
+                    }));
+                    participant.note_failure(failure.clone());
+                    if Rc::ptr_eq(participant, requester) {
+                        requester_error = Some(failure.clone());
+                    }
+                    failed_outcomes.push((Rc::downgrade(participant), failure));
+                    rejected.push(participant.clone());
+                }
+                self.leave(&rejected);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        };
+        let outcome = match rendered {
+            Ok(()) => {
                 self.produced.set(Some(time));
                 *self.produced_outcomes.borrow_mut() = failed_outcomes;
                 requester_error.map_or(Ok(()), Err)
@@ -534,6 +582,9 @@ mod tests {
         }
         fn note_failure(&self, failure: Arc<HostedLayerError>) {
             *self.failure.borrow_mut() = Some(failure);
+        }
+        fn surface(&self) -> SurfaceId {
+            self.surface.id()
         }
     }
 
