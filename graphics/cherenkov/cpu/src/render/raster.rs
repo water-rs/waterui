@@ -12,6 +12,7 @@
 //! difference this backend documents.
 
 use arrayvec::ArrayVec;
+use half::slice::HalfFloatSliceExt;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
 use std::ops::Range;
@@ -1402,9 +1403,7 @@ pub fn render_bands_f16(
                 has_backdrop,
             );
             if result.is_ok() {
-                for (dst, src) in out_slice.iter_mut().zip(band_px.iter()) {
-                    *dst = src.map(half::f16::from_f32);
-                }
+                store_f16(out_slice, &band_px);
             }
             scratch.buffers.give_color(band_px);
             result
@@ -1459,11 +1458,8 @@ pub fn render_bands_stream(
             }),
             OffscreenFormat::LinearF16 => {
                 emit.clear();
-                emit.extend(
-                    band_px[..w * bh]
-                        .iter()
-                        .map(|px| px.map(half::f16::from_f32)),
-                );
+                emit.resize(w * bh, [half::f16::ZERO; 4]);
+                store_f16(emit, &band_px[..w * bh]);
                 sink(BandOut {
                     y,
                     pixels: BandPixels::F16(emit.as_slice()),
@@ -1474,6 +1470,14 @@ pub fn render_bands_stream(
     }
     scratch.buffers.give_color(band_px);
     Ok(stats)
+}
+
+/// Converts `src` to `f16` over `dst` with one slice conversion: `half`'s
+/// arch dispatch vectorizes the store where the target has f16 conversion
+/// hardware, and each element rounds exactly as `f16::from_f32` does.
+fn store_f16(dst: &mut [[half::f16; 4]], src: &[[f32; 4]]) {
+    dst.as_flattened_mut()
+        .convert_from_f32_slice(src.as_flattened());
 }
 
 const fn slice_len(w: usize, bh: usize) -> usize {
@@ -2538,7 +2542,68 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::reduce_rows;
+    use super::{reduce_rows, store_f16};
+
+    /// `store_f16` must produce the same bits as the per-element
+    /// `f16::from_f32` it replaces: the corpus stays bit-identical only
+    /// if the slice conversion rounds identically in every boundary
+    /// class — round-half-to-even ties, subnormals and their rounding
+    /// points, the largest finite f16 and the first value that overflows
+    /// to infinity, signed zeros, infinities and NaN.
+    #[test]
+    fn store_f16_matches_per_element_from_f32() {
+        let src = [
+            // Ties at the f16 mantissa rounding point go to even.
+            [
+                f32::from_bits(0x3F80_1000), // 1 + 2^-11: tie -> 1.0
+                f32::from_bits(0x3F80_3000), // 1 + 3*2^-11: tie -> 1 + 2^-9
+                f32::from_bits(0x3F80_1001), // just above a tie -> up
+                f32::from_bits(0xBF80_1000), // -(1 + 2^-11): tie -> -1.0
+            ],
+            // Subnormal values and their rounding boundaries.
+            [
+                f32::from_bits(0x3380_0000), // 2^-24, smallest subnormal
+                f32::from_bits(0xB380_0000), // -2^-24
+                f32::from_bits(0x3420_0000), // 2.5*2^-24: tie -> 2*2^-24
+                f32::from_bits(0x3300_0000), // 2^-25: tie to even -> +0
+            ],
+            [
+                f32::from_bits(0x2F80_0000), // well below a subnormal -> +0
+                f32::from_bits(0x341F_FFFF), // just below the 2.5*2^-24 tie
+                f32::from_bits(0x3F80_0000), // 1.0
+                f32::from_bits(0xC020_0000), // -2.5
+            ],
+            // The largest finite f16 and the values around overflow.
+            [
+                f32::from_bits(0x477E_0000), // 65504, largest finite f16
+                f32::from_bits(0x477E_FFFF), // just below overflow -> 65504
+                f32::from_bits(0x477F_0000), // 65520 -> +inf
+                f32::from_bits(0xFF7F_0000), // -65520 -> -inf
+            ],
+            // Signed zeros, infinities and NaN.
+            [
+                f32::from_bits(0x0000_0000), // +0
+                f32::from_bits(0x8000_0000), // -0
+                f32::from_bits(0x7F80_0000), // +inf
+                f32::from_bits(0xFF80_0000), // -inf
+            ],
+            [
+                f32::from_bits(0x7FC0_0000), // quiet NaN
+                f32::from_bits(0x7F80_0001), // NaN with payload
+                f32::from_bits(0x3DCC_CCCD), // 0.1
+                f32::from_bits(0x0000_0001), // smallest f32 -> +0
+            ],
+        ];
+        let mut dst = [[half::f16::ZERO; 4]; 6];
+        store_f16(&mut dst, &src);
+        for (dst_px, src_px) in dst.iter().zip(&src) {
+            assert_eq!(
+                dst_px.map(half::f16::to_bits),
+                src_px.map(half::f16::from_f32).map(half::f16::to_bits),
+                "src {src_px:?}"
+            );
+        }
+    }
 
     /// Texel `(x, y)` of the source level: every channel varies, alpha
     /// included.
