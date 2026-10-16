@@ -2170,11 +2170,7 @@ fn sweep(prepared: disjoint::Prepared, rule: FillRule) -> Option<Vec<(f32, f32, 
         .fold(0.0f64, |m, s| m.max((s.slope * s.y0).abs()).max(s.x0.abs()));
     loop {
         let (yb, from_pending) = match pending.peek() {
-            Some(&Reverse(Split(yc)))
-                if y_at(cursor).is_none_or(|base| yc < base) =>
-            {
-                (yc, true)
-            }
+            Some(&Reverse(Split(yc))) if y_at(cursor).is_none_or(|base| yc < base) => (yc, true),
             _ => match y_at(cursor) {
                 Some(base) => (base, false),
                 None => break,
