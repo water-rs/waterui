@@ -123,7 +123,7 @@ for example in ${selected_examples[@]+"${selected_examples[@]}"}; do
   app_path=""
   fetch_failed=0
   : > "${run_log}"
-  if ! water fetch --path "${example_path}" >> "${run_log}" 2>&1; then
+  if ! water fetch --path "${example_path}" --backend apple >> "${run_log}" 2>&1; then
     fetch_failed=1
   elif water package --platform "${package_platform}" --backend apple --release \
       --path "${example_path}" >> "${run_log}" 2>&1; then
