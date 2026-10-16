@@ -3695,6 +3695,10 @@ impl Renderer for GpuRenderer {
                 },
             );
         }
+        // The commit batch's reusable lists are the same kind of
+        // retained scratch: a trimmed engine keeps none of their peak
+        // capacity, and the next commit regrows them as needed (#2711).
+        self.commit_writes = glyph::CellWrites::default();
         if pressure != Pressure::Critical {
             return;
         }
@@ -10471,5 +10475,26 @@ mod tests {
     fn poll_errors_other_than_timeout_still_fail_fast() {
         let outcome = drive([Err(wgpu::PollError::WrongSubmissionIndex(9, 3))], [0]);
         assert!(matches!(outcome, Err(RenderError::DeviceLost)));
+    }
+
+    /// A commit's emptied `CellWrites` shell keeps its list capacities
+    /// for reuse; `trim` replaces the container so a pressured engine
+    /// retains none of them (#2711).
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn trim_releases_the_reused_commit_lists() {
+        let mut renderer = match init(GpuConfig::default()) {
+            Ok((renderer, _)) => renderer,
+            Err(EngineError::Backend(_)) => return,
+            Err(e) => panic!("engine init failed: {e}"),
+        };
+        renderer.commit_writes.push_arena(vec![0xAB; 64]);
+        assert!(renderer.commit_writes.heap_bytes() > 0);
+        renderer.trim(Pressure::Moderate);
+        assert_eq!(
+            renderer.commit_writes.heap_bytes(),
+            0,
+            "a trimmed engine retains no commit_writes capacity"
+        );
     }
 }

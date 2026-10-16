@@ -2070,9 +2070,20 @@ impl CellWrites {
         self.arenas.clear();
     }
 
-    /// Heap bytes the staged arenas retain.
-    pub fn heap_bytes(&self) -> u64 {
+    /// Heap bytes the staged arena buffers alone retain — the ranges
+    /// the commit's writes index, without the list capacities below.
+    fn arena_heap_bytes(&self) -> u64 {
         self.arenas.iter().map(Vec::capacity).sum::<usize>() as u64
+    }
+
+    /// Heap bytes the container owns: the staged arenas plus the
+    /// `cells` and `arenas` list capacities an emptied container keeps
+    /// at their peak for the next commit to refill — retained for the
+    /// engine's life until a trim replaces the container (#2711).
+    pub fn heap_bytes(&self) -> u64 {
+        (self.cells.capacity() * size_of::<CellWrite>()
+            + self.arenas.capacity() * size_of::<Vec<u8>>()) as u64
+            + self.arena_heap_bytes()
     }
 
     /// The cell's `w` × `h` texel bytes.
@@ -3182,7 +3193,9 @@ mod tests {
                 writes.push_arena(vec![0xAB; 256]);
             }
             writes.clear();
-            assert_eq!(writes.heap_bytes(), 0);
+            // `clear` empties the staged arenas; the list capacities
+            // stay for reuse, so `heap_bytes` still counts them.
+            assert_eq!(writes.arena_heap_bytes(), 0);
         }
     }
 
@@ -3219,16 +3232,26 @@ mod tests {
         assert!(writes.heap_bytes() > 0);
         let writes = atlas.upload_committed(&device, &queue, writes);
         assert_eq!(
-            writes.heap_bytes(),
+            writes.arena_heap_bytes(),
             0,
             "no source-arena capacity outlives the upload"
         );
         assert!(writes.is_empty(), "the returned shell stages nothing");
+        // The emptied shell keeps its `cells`/`arenas` list capacities
+        // for the next commit — `heap_bytes` reports them (#2711).
+        assert!(
+            writes.heap_bytes() > 0,
+            "the reusable list capacity is retained by design"
+        );
 
         // An arena staged without a placed cell ends with the upload too.
         let mut writes = writes;
         writes.push_arena(vec![0xCD; 64]);
         let writes = atlas.upload_committed(&device, &queue, writes);
-        assert_eq!(writes.heap_bytes(), 0, "a cell-less arena is not retained");
+        assert_eq!(
+            writes.arena_heap_bytes(),
+            0,
+            "a cell-less arena is not retained"
+        );
     }
 }
