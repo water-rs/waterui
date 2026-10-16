@@ -293,6 +293,45 @@ fn an_f16_image_keeps_hdr_and_wide_gamut() -> Result<(), Box<dyn std::error::Err
 }
 
 split_test! {
+/// An sRGB-encoded `Rgba16F` upload decodes a negative component odd
+/// through zero (#2843): premultiplied [-0.125, 0.25, 0, 0.25]
+/// un-premultiplies to a -0.5 red — below the encoded knee — and the
+/// working texel is the oracle's, not the linear-segment decode.
+fn an_f16_srgb_image_decodes_negative_components_odd()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let image = engine.image(
+        ImageData::<cherenkov::Rgba16F>::new(1, 1, f16_px([-0.125, 0.25, 0.0, 0.25]))
+            .unwrap()
+            .color_space(ImageColorSpace::Srgb)
+            .premultiplied(),
+    )?;
+    let surface = wait!(engine.surface(Offscreen::new((4, 4), OffscreenFormat::LinearF16), || {}))?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.image(image.id(), Rect::new(0., 0., 4., 4.), Sampling::Nearest);
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let rb = wait!(surface.readback())?;
+    // Straight [-0.5, 1, 0] at alpha 0.25 through the oracle's decode.
+    // The dyadic texel is exact in f16, so the f64 oracle differs from
+    // the uploaded f16 texel only by rounding — close_px's 2e-2.
+    let want = cherenkov_oracle::color::to_working(&cherenkov_scene::Color::new(
+        cherenkov_scene::ColorSpace::Srgb,
+        [-0.5, 1.0, 0.0, 0.25],
+    ));
+    let px = rb.pixels[0];
+    for (g, w) in px.iter().zip(want) {
+        assert!((f64::from(*g) - w).abs() < 2e-2, "{px:?} vs {want:?}");
+    }
+    Ok(())
+}
+}
+
+split_test! {
 /// An image larger than the device's texture limit is rejected where it
 /// is registered: `Engine::image` returns `TooLarge` naming the limits
 /// the engine read off the device and budget, nothing is queued, and the

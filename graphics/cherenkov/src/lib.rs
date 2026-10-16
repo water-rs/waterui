@@ -84,7 +84,7 @@ pub use crate::frame::{
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 pub use crate::image::{
     Astc4x4, Bc7, Etc2Rgba, Format, ImageColorSpace, ImageData, ImageFormat, ImageUpload, Rgba8,
-    Rgba16F,
+    Rgba16F, srgb_decode,
 };
 pub use crate::message::{FontData, InstallOp, ProducerId};
 pub use crate::paint::{

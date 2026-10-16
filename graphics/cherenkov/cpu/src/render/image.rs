@@ -2,7 +2,7 @@
 //! of the same dimensions decodes over the pixels once the operands that
 //! shared them are discarded.
 
-use cherenkov::{ImageColorSpace, ImageFormat, ImageUpload, ResourceError};
+use cherenkov::{ImageColorSpace, ImageFormat, ImageUpload, ResourceError, srgb_decode};
 
 #[derive(Debug)]
 pub struct CpuImage {
@@ -92,10 +92,8 @@ fn convert(image: &ImageUpload, pixels: &mut [[f32; 4]]) {
                 || image.color_space == ImageColorSpace::LinearP3
             {
                 straight
-            } else if straight <= 0.04045 {
-                straight / 12.92
             } else {
-                ((straight + 0.055) / 1.055).powf(2.4)
+                srgb_decode(straight)
             }
         });
         let working = if image.color_space == ImageColorSpace::DisplayP3
