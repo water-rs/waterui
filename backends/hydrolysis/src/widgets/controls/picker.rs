@@ -953,6 +953,12 @@ pub fn render_segmented_picker(
     }
     let segment_width = row_bounds.width() / crate::num_cast::usize_as_f64(item_count);
 
+    // The container is recorded first so it sits beneath every segment, state
+    // layer and label.
+    ctx.draw_context(|draw| {
+        theme.draw_segmented_picker_container(&mut *draw, row_bounds, item_count);
+    });
+
     for (index, item) in items.into_iter().enumerate() {
         let x0 = segment_width.mul_add(crate::num_cast::usize_as_f64(index), row_bounds.x0);
         let segment_rect = kurbo::Rect::new(x0, row_bounds.y0, x0 + segment_width, row_bounds.y1);
@@ -1014,10 +1020,6 @@ pub fn render_segmented_picker(
                 }
             });
     }
-
-    ctx.draw_context(|draw| {
-        theme.draw_segmented_picker_container(&mut *draw, row_bounds, item_count);
-    });
 }
 
 fn segmented_label_rect(
