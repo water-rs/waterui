@@ -182,46 +182,37 @@ fn make_ahb_nv12(
         )
     };
     assert_eq!(rc, 0, "AHB lockPlanes");
-    // SAFETY: `lockPlanes` filled `planes`; each entry's `data`/`rowStride`/
-    // `pixelStride` names live mapped memory until `unlock`, and every
-    // write stays inside the plane's stride and dimensions.
-    unsafe {
-        let luma_plane = planes.planes[0];
-        let luma_base = luma_plane.data.cast::<u8>();
-        for row in 0..height as usize {
-            luma_base
-                .add(row * luma_plane.rowStride as usize)
-                .write_bytes(luma, width as usize);
-        }
-        if planes.planeCount >= 3 {
-            // Separate U/V planes: fill both.
-            let cb = planes.planes[1];
-            let cr = planes.planes[2];
-            for row in 0..(height as usize) / 2 {
-                cb.data
-                    .cast::<u8>()
-                    .add(row * cb.rowStride as usize)
-                    .write_bytes(chroma.0, (width as usize) / 2);
-                cr.data
-                    .cast::<u8>()
-                    .add(row * cr.rowStride as usize)
-                    .write_bytes(chroma.1, (width as usize) / 2);
-            }
-        } else {
-            // Interleaved UV: pairs of (U, V).
-            let uv = planes.planes[1];
-            let uv_base = uv.data.cast::<u8>();
-            for row in 0..(height as usize) / 2 {
-                for col in 0..(width as usize) / 2 {
-                    *uv_base.add(row * uv.rowStride as usize + col * uv.pixelStride as usize) =
-                        chroma.0;
-                    *uv_base.add(row * uv.rowStride as usize + col * uv.pixelStride as usize + 1) =
-                        chroma.1;
+    // A YCbCr 4:2:0 buffer always locks as three planes, Y, Cb and Cr;
+    // a semi-planar buffer reports Cb and Cr interleaved, as two planes
+    // one byte apart with a pixel stride of 2. Every sample is written at
+    // its plane's pixel stride, so planar and semi-planar layouts fill
+    // alike.
+    assert_eq!(planes.planeCount, 3, "YCbCr 4:2:0 lock plane count");
+    eprintln!(
+        "NV12 lock: pixel strides {:?}, row strides {:?}",
+        planes.planes.map(|p| p.pixelStride),
+        planes.planes.map(|p| p.rowStride),
+    );
+    let fill = |plane: ndk_sys::AHardwareBuffer_Plane, value: u8, w: usize, h: usize| {
+        let base = plane.data.cast::<u8>();
+        for row in 0..h {
+            for col in 0..w {
+                // SAFETY: `lockPlanes` mapped `plane` until `unlock`, and
+                // (`row`, `col`) stays inside the plane's dimensions at
+                // its own row and pixel strides.
+                unsafe {
+                    *base.add(row * plane.rowStride as usize + col * plane.pixelStride as usize) =
+                        value;
                 }
             }
         }
-        ndk_sys::AHardwareBuffer_unlock(buffer, std::ptr::null_mut());
-    }
+    };
+    let (w, h) = (width as usize, height as usize);
+    fill(planes.planes[0], luma, w, h);
+    fill(planes.planes[1], chroma.0, w / 2, h / 2);
+    fill(planes.planes[2], chroma.1, w / 2, h / 2);
+    // SAFETY: `buffer` is locked above and unlocked exactly once.
+    unsafe { ndk_sys::AHardwareBuffer_unlock(buffer, std::ptr::null_mut()) };
     buffer
 }
 
