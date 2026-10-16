@@ -858,18 +858,22 @@ fn sparse_runs(coverage: &[(u32, f32)], ends: &[usize], w: usize, runs: &mut Vec
     }
 }
 
-/// The copies of an instance that stay resident while it draws: one in
-/// the frame's instance list, one in the GPU instance buffer.
-const RESIDENT_INSTANCE_COPIES: u32 = 2;
+/// What the partition charges for one instance, as a multiple of
+/// `size_of::<Instance>()` (numerator, denominator), against one byte per
+/// stored texel. It trades two per-frame costs: every instance is
+/// replayed into the frame's instance list, and every stored texel —
+/// a bridged gap's zeros included — is a fragment the GPU shades. Too
+/// light, a band splits into more instances than replay can afford; too
+/// heavy, cells bridge gaps wide enough to cost GPU time. 3.5 is where
+/// both stay at or below the classification it replaces.
+const INSTANCE_WEIGHT: (u32, u32) = (7, 2);
 
-/// Bytes one instance keeps resident, every copy counted, against the one
-/// atlas byte a texel keeps: the partition weighs both in what they
-/// actually occupy.
+/// The byte cost the partition charges for one instance.
 #[expect(
     clippy::cast_possible_truncation,
     reason = "an instance is a few hundred bytes"
 )]
-const INSTANCE_BYTES: u32 = RESIDENT_INSTANCE_COPIES * size_of::<Instance>() as u32;
+const INSTANCE_BYTES: u32 = size_of::<Instance>() as u32 * INSTANCE_WEIGHT.0 / INSTANCE_WEIGHT.1;
 
 /// Chooses the band's emission with the least byte cost: every instance
 /// costs [`INSTANCE_BYTES`], and every texel a cell stores its byte in
