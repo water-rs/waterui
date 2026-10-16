@@ -264,9 +264,27 @@ def install_layer(layer_dir):
     return library
 
 
-def lavapipe_icd(requested=None, directory=pathlib.Path('/usr/share/vulkan/icd.d')):
-    """Select one registered Lavapipe driver without assuming an architecture suffix."""
-    candidates = [pathlib.Path(requested)] if requested is not None else sorted(directory.glob('*.json'))
+def icd_directories(environ=os.environ):
+    """The directories the Vulkan loader reads driver manifests from on Linux, in its order.
+
+    The XDG variables fall back to their specified defaults; the loader's
+    build-time system configuration directory is /etc on every distribution.
+    """
+    home = pathlib.Path(environ.get('HOME', '~')).expanduser()
+    config = [environ.get('XDG_CONFIG_HOME') or str(home / '.config'),
+              *(environ.get('XDG_CONFIG_DIRS') or '/etc/xdg').split(':'), '/etc']
+    data = [environ.get('XDG_DATA_HOME') or str(home / '.local' / 'share'),
+            *(environ.get('XDG_DATA_DIRS') or '/usr/local/share:/usr/share').split(':')]
+    return [pathlib.Path(root) / 'vulkan' / 'icd.d' for root in config + data if root]
+
+
+def lavapipe_icd(requested=None, directories=None):
+    """Select the one registered Lavapipe driver by its library, whatever the manifest is called."""
+    if requested is not None:
+        candidates = [pathlib.Path(requested)]
+    else:
+        candidates = sorted({path.resolve() for directory in (directories or icd_directories())
+                             for path in directory.glob('*.json')})
     matches = [path for path in candidates
                if pathlib.Path(json.loads(path.read_text())['ICD']['library_path']).name.startswith('libvulkan_lvp.so')]
     if len(matches) != 1:

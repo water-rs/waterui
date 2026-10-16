@@ -30,18 +30,26 @@ class Host(unittest.TestCase):
                 directory = pathlib.Path(root)
                 chosen = self.write_icd(directory, name)
                 self.write_icd(directory, 'intel.json', 'libvulkan_intel.so')
-                self.assertEqual(ir_gate.lavapipe_icd(directory=directory), chosen.resolve())
+                self.assertEqual(ir_gate.lavapipe_icd(directories=[directory]), chosen.resolve())
 
     def test_missing_or_ambiguous_driver_requires_explicit_selection(self):
         with tempfile.TemporaryDirectory() as root:
             directory = pathlib.Path(root)
             with self.assertRaisesRegex(RuntimeError, '--icd'):
-                ir_gate.lavapipe_icd(directory=directory)
+                ir_gate.lavapipe_icd(directories=[directory])
             chosen = self.write_icd(directory, 'one.json')
             self.write_icd(directory, 'two.json')
             with self.assertRaisesRegex(RuntimeError, '--icd'):
-                ir_gate.lavapipe_icd(directory=directory)
-            self.assertEqual(ir_gate.lavapipe_icd(chosen, directory), chosen.resolve())
+                ir_gate.lavapipe_icd(directories=[directory])
+            self.assertEqual(ir_gate.lavapipe_icd(chosen, [directory]), chosen.resolve())
+
+    def test_driver_search_follows_the_loader(self):
+        self.assertEqual(ir_gate.icd_directories({'HOME': '/home/u'}),
+                         [pathlib.Path(p) / 'vulkan' / 'icd.d' for p in
+                          ('/home/u/.config', '/etc/xdg', '/etc', '/home/u/.local/share', '/usr/local/share', '/usr/share')])
+        self.assertEqual(ir_gate.icd_directories({'HOME': '/h', 'XDG_DATA_DIRS': '/a:/b', 'XDG_CONFIG_DIRS': '/c'}),
+                         [pathlib.Path(p) / 'vulkan' / 'icd.d' for p in
+                          ('/h/.config', '/c', '/etc', '/h/.local/share', '/a', '/b')])
 
     def test_explicit_other_driver_is_rejected(self):
         with tempfile.TemporaryDirectory() as root:
