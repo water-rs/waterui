@@ -89,6 +89,7 @@ struct Pipes {
     flatten: wgpu::ComputePipeline,
     bin: wgpu::ComputePipeline,
     fragment_bins: wgpu::ComputePipeline,
+    link_groups: wgpu::ComputePipeline,
     prefix: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
     classify: wgpu::ComputePipeline,
@@ -577,6 +578,8 @@ impl GpuCoverage {
                 dispatch(&mut pass, self.fragment_total);
             }
             pass.set_bind_group(0, &bind, &[0]);
+            pass.set_pipeline(&pipes.link_groups);
+            dispatch(&mut pass, self.fragment_total);
             pass.set_pipeline(&pipes.prefix);
             dispatch(&mut pass, strip_total);
             pass.set_pipeline(&pipes.integrate);
@@ -634,6 +637,7 @@ impl GpuCoverage {
             flatten: make("flatten"),
             bin: make("bin"),
             fragment_bins: make("fragment_bins"),
+            link_groups: make("link_groups"),
             prefix: make("prefix"),
             integrate: make("integrate"),
             classify: make("classify"),
