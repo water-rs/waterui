@@ -609,6 +609,9 @@ impl Renderer for RasterRenderer {
             // CPU filters run on the band's transient windows, accounted
             // under `cpu`; no chain retains a target of its own.
             filter_targets: cherenkov::Bytes(0),
+            // CPU-side auxiliary image data is already in the chain and
+            // accounted under `cpu`; no filter uploads an image here.
+            filter_images: cherenkov::Bytes(0),
         }
     }
 

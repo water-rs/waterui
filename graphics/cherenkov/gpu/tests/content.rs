@@ -426,8 +426,8 @@ impl filtrate::Effect for ParkingEffect {
         unreachable!("the parking effect is never attached")
     }
 
-    fn target_bytes(&self) -> u64 {
-        0
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
     }
 }
 
@@ -467,8 +467,8 @@ impl filtrate::Effect for CallbackEffect {
         Ok(false)
     }
 
-    fn target_bytes(&self) -> u64 {
-        0
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
     }
 }
 

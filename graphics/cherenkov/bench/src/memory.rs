@@ -31,6 +31,9 @@ pub struct EngineBytes {
     pub backdrop_capture_bytes: u64,
     /// Bytes of registered filter chains' targets; included in `gpu_bytes`.
     pub filter_target_bytes: u64,
+    /// Bytes of images registered filter chains uploaded; included in
+    /// `gpu_bytes`.
+    pub filter_image_bytes: u64,
 }
 
 /// Wgpu allocator totals.
@@ -220,6 +223,7 @@ fn merge_engine<'a>(
     let mut gpu_bytes = None;
     let mut backdrop_capture_bytes = None;
     let mut filter_target_bytes = None;
+    let mut filter_image_bytes = None;
     let mut reasons = Vec::new();
     for reading in readings {
         match reading {
@@ -238,6 +242,11 @@ fn merge_engine<'a>(
                         n.max(value.filter_target_bytes)
                     }),
                 );
+                filter_image_bytes = Some(
+                    filter_image_bytes.map_or(value.filter_image_bytes, |n: u64| {
+                        n.max(value.filter_image_bytes)
+                    }),
+                );
             }
             Reading::Unavailable(reason) => reasons.push(reason.clone()),
         }
@@ -248,6 +257,7 @@ fn merge_engine<'a>(
             gpu_bytes,
             backdrop_capture_bytes: backdrop_capture_bytes.unwrap_or(0),
             filter_target_bytes: filter_target_bytes.unwrap_or(0),
+            filter_image_bytes: filter_image_bytes.unwrap_or(0),
         }),
         _ => Reading::Unavailable(
             reasons
@@ -855,6 +865,7 @@ mod tests {
                 gpu_bytes: 11,
                 backdrop_capture_bytes: 3,
                 filter_target_bytes: 5,
+                filter_image_bytes: 4,
             }),
             Reading::Measured(vec![VkHeap {
                 heap: 0,
@@ -869,6 +880,7 @@ mod tests {
                 gpu_bytes: 15,
                 backdrop_capture_bytes: 7,
                 filter_target_bytes: 2,
+                filter_image_bytes: 9,
             }),
             Reading::Measured(vec![VkHeap {
                 heap: 0,
@@ -904,6 +916,7 @@ mod tests {
                 gpu_bytes: 15,
                 backdrop_capture_bytes: 7,
                 filter_target_bytes: 5,
+                filter_image_bytes: 9,
             })
         );
         assert_eq!(

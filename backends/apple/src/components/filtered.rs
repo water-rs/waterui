@@ -2316,7 +2316,7 @@ pub mod native_test {
     use futures::channel::oneshot;
     use waterui_graphics::filtrate::{
         EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
-        EffectSetupResult,
+        EffectSetupResult, RetainedMemory,
     };
 
     use objc2_metal::{
@@ -2472,8 +2472,8 @@ pub mod native_test {
             false
         }
 
-        fn target_bytes(&self) -> u64 {
-            0
+        fn retained_memory(&self) -> RetainedMemory {
+            RetainedMemory::default()
         }
     }
 
