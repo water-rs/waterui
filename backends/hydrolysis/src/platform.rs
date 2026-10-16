@@ -403,9 +403,9 @@ pub struct TouchScrollConfig {
     /// The release speed a fling starts at at most, in logical units per
     /// second.
     pub max_fling_velocity: f32,
-    /// The deceleration model and the coefficients the platform defines for
-    /// it.
-    pub fling: FlingDeceleration,
+    /// The scroll physics family: how a fling decelerates and what an edge
+    /// does to a drag or fling that reaches it.
+    pub physics: ScrollPhysics,
 }
 
 impl TouchScrollConfig {
@@ -413,9 +413,9 @@ impl TouchScrollConfig {
     /// `ViewConfiguration`'s constants normalized to logical units, not
     /// the scaled values the Android host reports at runtime.
     ///
-    /// This is what hosts that publish no touch-scroll parameters of
-    /// their own — the browser window, the winit desktop windows,
-    /// offscreen surfaces — report through
+    /// This is what non-Apple hosts that publish no touch-scroll
+    /// parameters of their own — the browser window, the winit desktop
+    /// windows, offscreen surfaces — report through
     /// [`PlatformWindow::touch_scroll_config`], so a touch drag scrolls
     /// on every host. Tests drive it through the same seam.
     #[must_use]
@@ -424,15 +424,217 @@ impl TouchScrollConfig {
             touch_slop: 10.0,
             min_fling_velocity: 50.0,
             max_fling_velocity: 8_000.0,
-            fling: FlingDeceleration {
+            physics: ScrollPhysics::android(SplineDeceleration {
                 physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
                 friction: 0.015,
-            },
+            }),
+        }
+    }
+
+    /// The `UIScrollView` model: [`ScrollPhysics::uikit`]'s exponential
+    /// decay and rubber band.
+    ///
+    /// The gesture thresholds — slop and the fling velocity bounds — are
+    /// [`Self::android_default`]'s density-1 values: `UIKit` documents no
+    /// counterparts for its pan recognizer, so only the physics differ.
+    #[must_use]
+    pub fn uikit_default() -> Self {
+        Self {
+            physics: ScrollPhysics::uikit(),
+            ..Self::android_default()
+        }
+    }
+
+    /// The parameters for a host on `platform` that publishes none of its
+    /// own: Apple systems scroll as `UIScrollView` does, every other
+    /// system as Android's `OverScroller` does.
+    #[must_use]
+    pub fn for_platform(platform: ScrollPlatform) -> Self {
+        match platform {
+            ScrollPlatform::Apple => Self::uikit_default(),
+            ScrollPlatform::Other => Self::android_default(),
         }
     }
 }
 
-/// The fling's deceleration model: Android `OverScroller`'s spline.
+/// The system family whose scroll physics a host without parameters of its
+/// own reproduces — see [`TouchScrollConfig::for_platform`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the selection is binary by definition: Apple systems or not; a new family is a new physics, which must fail every match"
+)]
+pub enum ScrollPlatform {
+    /// iOS, iPadOS, macOS and the other Apple systems.
+    Apple,
+    /// Every other system.
+    Other,
+}
+
+impl ScrollPlatform {
+    /// The system native Hydrolysis is compiled for: Apple by its compile
+    /// target's vendor.
+    #[must_use]
+    pub const fn native() -> Self {
+        if cfg!(target_vendor = "apple") {
+            Self::Apple
+        } else {
+            Self::Other
+        }
+    }
+
+    /// The system a browser's `navigator.userAgent` names: Apple when it
+    /// names an iPhone, an iPad, or a Mac — iPadOS Safari reports itself as
+    /// `Macintosh` by default ("Request Desktop Website", on since iPadOS
+    /// 13), so `Macintosh` covers both.
+    #[must_use]
+    pub fn from_user_agent(user_agent: &str) -> Self {
+        if ["iPhone", "iPad", "Macintosh"]
+            .iter()
+            .any(|name| user_agent.contains(name))
+        {
+            Self::Apple
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// One scroll physics family, carried as a whole so a host selects it in
+/// one choice: the fling's deceleration and the edge's overscroll effect.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct ScrollPhysics {
+    /// How a released fling decelerates.
+    pub deceleration: FlingDeceleration,
+    /// What a drag or a fling that reaches a content edge does there.
+    pub overscroll: Overscroll,
+}
+
+impl ScrollPhysics {
+    /// Android's `OverScroller` spline with `coefficients`, and edges that
+    /// clamp.
+    #[must_use]
+    pub const fn android(coefficients: SplineDeceleration) -> Self {
+        Self {
+            deceleration: FlingDeceleration::OverScrollerSpline(coefficients),
+            overscroll: Overscroll::Clamped,
+        }
+    }
+
+    /// `UIScrollView`'s exponential decay at
+    /// `UIScrollView.DecelerationRate.normal` and its rubber-band edges.
+    #[must_use]
+    pub const fn uikit() -> Self {
+        Self {
+            deceleration: FlingDeceleration::ExponentialDecay(ExponentialDecay::NORMAL),
+            overscroll: Overscroll::RubberBand(RubberBand::UIKIT),
+        }
+    }
+}
+
+/// A fling's deceleration model.
+///
+/// The physics family is a `Copy` value every input dispatch carries across
+/// [`PlatformWindow::touch_scroll_config`], so the models are variants of a
+/// closed set rather than trait objects.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum FlingDeceleration {
+    /// Android `OverScroller`'s spline.
+    OverScrollerSpline(SplineDeceleration),
+    /// `UIScrollView`'s exponential velocity decay.
+    ExponentialDecay(ExponentialDecay),
+}
+
+/// `UIScrollView`'s deceleration: the velocity decays by a constant factor
+/// every millisecond — `v(t) = v0 · rate^t`, `t` in ms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct ExponentialDecay {
+    /// The velocity factor per millisecond.
+    pub rate_per_ms: f64,
+}
+
+impl ExponentialDecay {
+    /// `UIScrollView.DecelerationRate.normal` — Apple Developer
+    /// Documentation, `UIScrollView.DecelerationRate`: the default rate,
+    /// whose `rawValue` `UIKit` reports as 0.998. Its reading as the velocity
+    /// factor per millisecond, and the projection `v0/1000 · rate/(1 −
+    /// rate)` built on it, are WWDC 2018 session 803, "Designing Fluid
+    /// Interfaces".
+    pub const NORMAL: Self = Self { rate_per_ms: 0.998 };
+}
+
+/// What a drag or fling that reaches a content edge does there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum Overscroll {
+    /// The offset stops at the edge: a drag pushing past it moves nothing,
+    /// a fling ends on it.
+    Clamped,
+    /// `UIScrollView`'s rubber band: a drag past the edge moves with
+    /// resistance, and a release or a fling past it springs back.
+    RubberBand(RubberBand),
+}
+
+/// `UIScrollView`'s rubber band: the resistance a drag past an edge meets,
+/// and the spring a release past it returns on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct RubberBand {
+    /// The resistance `c` in `(1 − 1 / (x·c/d + 1)) · d` — the band's
+    /// slope at the edge.
+    pub coefficient: f64,
+    /// The spring a release or fling past the edge returns on.
+    pub spring: SpringBack,
+}
+
+impl RubberBand {
+    /// `UIScrollView`'s band. Neither the formula nor `c = 0.55` is Apple
+    /// documentation: both are reverse-engineered from `UIScrollView`'s
+    /// behaviour (Grant Paul's 2013 derivation, the form every UIKit-feel
+    /// reimplementation reproduces), with `d` the viewport's dimension
+    /// along the axis.
+    pub const UIKIT: Self = Self {
+        coefficient: 0.55,
+        spring: SpringBack::UIKIT,
+    };
+}
+
+/// A damped spring returning the offset onto an edge.
+///
+/// It is parameterised by response and damping ratio — `SwiftUI`'s
+/// `Spring(response:dampingRatio:)` parameterisation: natural angular
+/// frequency `ω0 = 2π / response`, damping ratio `ζ`. For a displacement
+/// `x0` from the edge and velocity `v0` at release (`t = 0`):
+///
+/// - `ζ = 1`: `x(t) = (x0 + (v0 + ω0·x0)·t) · e^(−ω0·t)`
+/// - `ζ > 1`: `x(t) = c1·e^(r1·t) + c2·e^(r2·t)`, with
+///   `r1,2 = −ω0·(ζ ∓ √(ζ² − 1))`, `c1 = (v0 − r2·x0) / (r1 − r2)`,
+///   `c2 = x0 − c1`
+/// - `ζ < 1`: `x(t) = e^(−ζ·ω0·t) · (x0·cos(ωd·t) + (v0 + ζ·ω0·x0)/ωd ·
+///   sin(ωd·t))`, with `ωd = ω0·√(1 − ζ²)`
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct SpringBack {
+    /// The undamped period, in seconds: `ω0 = 2π / response`.
+    pub response: f64,
+    /// The damping ratio `ζ`: 1 is critical, above 1 overdamped.
+    pub damping_ratio: f64,
+}
+
+impl SpringBack {
+    /// `UIScrollView`'s bounce: the response and damping ratio of `x(t)`
+    /// above. `UIKit` documents neither.
+    pub const UIKIT: Self = Self {
+        // Fitted from on-device UIScrollView contentOffset traces; see water-rs/waterui#2795.
+        response: 0.4,
+        damping_ratio: 1.0,
+    };
+}
+
+/// Android `OverScroller`'s spline coefficients.
 ///
 /// The spline's math is ported
 /// (`frameworks/base/core/java/android/widget/OverScroller.java`,
@@ -440,7 +642,7 @@ impl TouchScrollConfig {
 /// display and feel.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
-pub struct FlingDeceleration {
+pub struct SplineDeceleration {
     /// `SplineScroller`'s `mPhysicalCoeff` — the physical-pixel acceleration
     /// scale the spline's distance and duration derive from, in logical
     /// units per second².
@@ -1095,7 +1297,8 @@ pub trait PlatformWindow: 'static {
     ///
     /// Every host returns the values its touch input runs under; a host
     /// that publishes no parameters of its own reports
-    /// [`TouchScrollConfig::android_default`]. `None` is only the window
+    /// [`TouchScrollConfig::for_platform`] for the system it runs on.
+    /// `None` is only the window
     /// that genuinely cannot have them yet — the Android host before its
     /// first metrics push — and a `PointerKind::Touch` press arriving
     /// while it holds is a host bug the renderer panics on.
@@ -2394,9 +2597,9 @@ impl PlatformWindow for OffscreenWindow {
 
     /// An offscreen surface publishes no touch-gesture parameters of its
     /// own; its logical units are unscaled points — density 1 — so it
-    /// reports the Android `OverScroller` model at density 1.
+    /// reports the density-1 model of the system it is compiled for.
     fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
-        Some(TouchScrollConfig::android_default())
+        Some(TouchScrollConfig::for_platform(ScrollPlatform::native()))
     }
 
     /// Pushes the focused text input's state to the platform IME.
@@ -4597,11 +4800,13 @@ mod winit_impl {
         }
 
         /// winit publishes no touch-gesture parameters, and its logical
-        /// points are density-1 units, so the window reports the Android
-        /// `OverScroller` model at density 1 — a touch drag scrolls here
-        /// the way it does on a host with values of its own.
+        /// points are density-1 units, so the window reports the density-1
+        /// model of the system it is compiled for — `UIScrollView`'s on
+        /// Apple targets, Android's `OverScroller` elsewhere.
         fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
-            Some(TouchScrollConfig::android_default())
+            Some(TouchScrollConfig::for_platform(
+                crate::platform::ScrollPlatform::native(),
+            ))
         }
 
         /// Pushes the focused text input's state to the platform IME.

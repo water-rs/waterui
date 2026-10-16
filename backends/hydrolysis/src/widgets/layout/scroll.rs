@@ -158,7 +158,9 @@ fn indicator_geometry(
     let min_thumb = track.min(12.0);
     let thumb_extent = (track * (viewport_extent / content_extent)).clamp(min_thumb, track);
     let travel = track - thumb_extent;
-    let progress = offset / max_offset;
+    // A touch gesture can hold the offset past an edge while it rubber-
+    // bands; the thumb stays pinned to the end of its track meanwhile.
+    let progress = (offset / max_offset).clamp(0.0, 1.0);
     Some(IndicatorGeometry {
         thumb_offset: travel * progress,
         thumb_extent,
