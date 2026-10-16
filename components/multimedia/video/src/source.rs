@@ -438,6 +438,15 @@ impl MediaItem {
     }
 }
 
+/// A playlist aligns its items by [`MediaItem::id`].
+impl nami::Identifiable for MediaItem {
+    type Id = MediaItemId;
+
+    fn id(&self) -> MediaItemId {
+        self.id
+    }
+}
+
 /// Stable identity of one media item across playlist mutations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MediaItemId(Uuid);
