@@ -747,6 +747,8 @@ impl Effect for ShaderEffect {
     fn retained_memory(&self) -> RetainedMemory {
         RetainedMemory::default()
     }
+
+    fn trim(&mut self) {}
 }
 
 #[cfg(test)]

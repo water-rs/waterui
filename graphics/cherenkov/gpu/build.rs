@@ -232,6 +232,7 @@ fn main() {
         coverage,
         native,
         tile,
+        space_convert,
     ] = [
         "shared",
         "shader",
@@ -247,20 +248,22 @@ fn main() {
         "coverage",
         "external_native",
         "composite/tile",
+        "space_convert",
     ]
     .map(read);
 
     // The working-space ↔ sRGB conversion every colour-converting module
     // shares: filtrate-core's `space::WGSL`, rendered from the same
     // constants as the CPU conversion. It precedes `shared.wgsl` (and so
-    // every module built on it), `present.wgsl` and the `color.wgsl`
-    // producer prelude. Every module spec lands in `OUT_DIR` below; the
-    // `shared` prelude and the `color` prelude, which the runtime and the
-    // tests compose with their own sources, land there too, so nothing can
-    // drift from what this script compiles.
+    // every module built on it), `present.wgsl`, `space_convert.wgsl` and
+    // the `color.wgsl` producer prelude. Every module spec lands in
+    // `OUT_DIR` below; the `shared` prelude and the `color` prelude, which
+    // the runtime and the tests compose with their own sources, land there
+    // too, so nothing can drift from what this script compiles.
     let space = filtrate_core::space::WGSL;
     let shared = format!("{space}\n{shared}");
     let present = format!("{space}\n{present}");
+    let space_convert = format!("{space}\n{space_convert}");
     let color = format!("{space}\n{}", read("color"));
     for (name, text) in [("shared", &shared), ("color", &color)] {
         std::fs::write(out_dir.join(format!("{name}.wgsl")), text).unwrap();
@@ -298,6 +301,7 @@ fn main() {
         resolve: &resolve,
         reduce: &reduce,
         shadow: &shadow,
+        space_convert: &space_convert,
         coverage: &coverage,
         tile: &tile,
     });
@@ -334,6 +338,8 @@ struct Modules<'a> {
     resolve: &'a str,
     reduce: &'a str,
     shadow: &'a str,
+    /// `space_convert.wgsl` behind the space fragment.
+    space_convert: &'a str,
     coverage: &'a str,
     /// The Vulkan tile stage interfaces around the fragment bodies.
     tile: &'a str,
@@ -351,9 +357,11 @@ const TILE_FAMILIES: [(&str, usize); 3] = [
 
 /// The fixed module set `render` creates: seven VARIANT specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
-/// `projective`, `mip`, `resolve`, `reduce` and `shadow`. The engine, external
-/// and projective modules share the `shared.wgsl` prelude; the engine
-/// and projective tails share the `blend.wgsl` compositing helpers.
+/// `projective`, `mip`, `resolve`, `reduce`, `shadow`, `coverage` and
+/// `space_convert`.
+/// The engine, external and projective modules share the `shared.wgsl`
+/// prelude; the engine and projective tails share the `blend.wgsl`
+/// compositing helpers.
 /// Variant 3 (Union) additionally prepends `UNION_MAX_MEMBERS` and links
 /// `union.wgsl` over `shader_no_long`; variant 4 (`LongGradient`) keeps the
 /// `// long-gradient-stub` spans and variant 6 (`Image`) the
@@ -428,6 +436,11 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         ("resolve", m.resolve, bindings::RESOLVE_GROUPS),
         ("reduce", m.reduce, bindings::REDUCE_GROUPS),
         ("shadow", m.shadow, bindings::SHADOW_GROUPS),
+        (
+            "space_convert",
+            m.space_convert,
+            bindings::SPACE_CONVERT_GROUPS,
+        ),
         ("coverage", m.coverage, bindings::COVERAGE_GROUPS),
     ] {
         specs.push(Spec {

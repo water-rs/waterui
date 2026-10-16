@@ -174,6 +174,12 @@ impl Effect for EngineEffect {
             .as_ref()
             .map_or_else(RetainedMemory::default, |built| built.retained_memory())
     }
+
+    fn trim(&mut self) {
+        if let Some(built) = &mut self.built {
+            built.trim();
+        }
+    }
 }
 
 /// UI-side state of one mounted `FilteredView`: owns the effect source until

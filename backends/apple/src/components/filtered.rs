@@ -2475,6 +2475,8 @@ pub mod native_test {
         fn retained_memory(&self) -> RetainedMemory {
             RetainedMemory::default()
         }
+
+        fn trim(&mut self) {}
     }
 
     /// Holds a nested [`FillEffect`]'s setup until [`Self::release`].

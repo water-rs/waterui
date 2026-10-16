@@ -227,6 +227,10 @@ pub const REDUCE_GROUP0: &[Entry] = &[
     Entry::texture(1),
 ];
 
+/// The space conversion pipeline's single group (`space_convert.wgsl`):
+/// the texture it converts.
+pub const SPACE_CONVERT_GROUP0: &[Entry] = &[Entry::texture(0)];
+
 /// The engine pipelines' two groups, in declaration order.
 ///
 /// Used by `build.rs`; the crate addresses the groups directly.
@@ -311,6 +315,12 @@ pub const RESOLVE_GROUPS: &[&[Entry]] = &[RESOLVE_GROUP0];
 /// Used by `build.rs`; the crate addresses the group directly.
 #[allow(dead_code)]
 pub const REDUCE_GROUPS: &[&[Entry]] = &[REDUCE_GROUP0];
+
+/// The space conversion pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const SPACE_CONVERT_GROUPS: &[&[Entry]] = &[SPACE_CONVERT_GROUP0];
 
 /// Silhouette convolution: unfilterable source and the uploaded kernel.
 pub const SHADOW_GROUP0: &[Entry] = &[

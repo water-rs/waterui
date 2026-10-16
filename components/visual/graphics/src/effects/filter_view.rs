@@ -2173,6 +2173,8 @@ mod tests {
         fn retained_memory(&self) -> filtrate::RetainedMemory {
             filtrate::RetainedMemory::default()
         }
+
+        fn trim(&mut self) {}
     }
 
     #[cfg(feature = "gpu")]

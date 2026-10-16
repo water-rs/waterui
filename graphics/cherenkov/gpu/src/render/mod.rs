@@ -27,6 +27,7 @@ mod reduce;
 mod resolve;
 pub mod shaders;
 mod shadow;
+mod space_convert;
 pub mod surface_control;
 mod upload;
 
@@ -951,6 +952,9 @@ pub struct GpuRenderer {
     /// The capture pyramid reduce pipelines — `None` until a frame
     /// reduces a levelled capture.
     reduce: Option<reduce::Pipelines>,
+    /// The filter space conversion pipelines — `None` until a frame
+    /// filters an sRGB-encoded scope.
+    space_convert: Option<space_convert::Pipelines>,
     last_frame: Option<Instant>,
     origin: Option<Instant>,
     device: wgpu::Device,
@@ -2665,6 +2669,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             shadow_blur: None,
             resolve: None,
             reduce: None,
+            space_convert: None,
             last_frame: None,
             origin: None,
             max_texture: device.limits().max_texture_dimension_2d,
@@ -3018,6 +3023,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         shadow_blur: None,
         resolve: None,
         reduce: None,
+        space_convert: None,
         last_frame: None,
         origin: None,
         max_texture: device.limits().max_texture_dimension_2d,
@@ -9711,6 +9717,14 @@ impl GpuRenderer {
                         )));
                     }
                 };
+                // A filter works in the linear working space: over an
+                // sRGB-encoded scope its input is decoded and its output
+                // encoded back.
+                let convert = (pass.space == cherenkov::BlendSpace::SrgbEncoded).then(|| {
+                    self.space_convert.get_or_insert_with(|| {
+                        space_convert::Pipelines::new(&self.device, self.shader_delivery)
+                    })
+                });
                 self.filters.apply(
                     *filter,
                     &filtrate::EffectContext {
@@ -9719,8 +9733,11 @@ impl GpuRenderer {
                         input_format: TARGET_FORMAT,
                         output_format: TARGET_FORMAT,
                     },
-                    capture,
-                    (pass.region[2], pass.region[3]),
+                    filter::Scope {
+                        target: capture,
+                        size: (pass.region[2], pass.region[3]),
+                        encoded: convert,
+                    },
                     timing,
                     &mut encoder,
                 )?;

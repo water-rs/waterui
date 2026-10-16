@@ -3,6 +3,7 @@ name = "cherenkov-gpu"
 version = "0.0.0"
 description = "wgpu backend for the Cherenkov 2D rendering engine"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false

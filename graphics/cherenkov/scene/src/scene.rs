@@ -60,7 +60,7 @@ pub enum Feature {
     Animation,
     /// Group opacity below `1.0`.
     Opacity,
-    /// A layer filter.
+    /// A layer or group filter.
     Filter,
     /// `Shadow` draw commands.
     Shadow,
@@ -292,7 +292,7 @@ impl Scene {
             Ok(())
         }
         /// A group a synthetic bold isolates its glyph runs in: opaque,
-        /// normally blended, in linear space.
+        /// normally blended, unfiltered, in linear space.
         #[expect(
             clippy::float_cmp,
             reason = "only the exact default opacity leaves the group plain"
@@ -301,6 +301,7 @@ impl Scene {
             group.opacity == 1.0
                 && group.blend == crate::BlendMode::Normal
                 && group.blend_space == crate::BlendSpace::Linear
+                && group.filter.is_none()
                 && group
                     .items
                     .iter()
@@ -601,6 +602,9 @@ fn collect_draw_resource_refs(draw: &Draw, out: &mut Vec<ResourceHash>) {
 }
 
 fn collect_group_resource_refs(group: &crate::Group, out: &mut Vec<ResourceHash>) {
+    if let Some(crate::LayerFilter::BlendImage { image, .. }) = group.filter.as_deref() {
+        out.push(*image);
+    }
     for item in &group.items {
         match item {
             crate::GroupItem::Draw(d) => collect_draw_resource_refs(d, out),
@@ -837,6 +841,9 @@ fn collect_group_features(group: &crate::Group, f: &mut BTreeSet<Feature>) {
     }
     if group.blend_space != crate::BlendSpace::Linear {
         f.insert(Feature::BlendSpace(group.blend_space));
+    }
+    if group.filter.is_some() {
+        f.insert(Feature::Filter);
     }
     for item in &group.items {
         match item {

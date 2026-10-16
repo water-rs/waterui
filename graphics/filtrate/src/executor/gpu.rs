@@ -301,6 +301,14 @@ impl Gpu {
         RetainedMemory { targets, images }
     }
 
+    /// Drops every retained intermediate; the next encode recreates them
+    /// through the same path that allocates a new input size's slots.
+    /// `shared.images` stays: an uploaded auxiliary image cannot be
+    /// recreated without its source.
+    pub(super) fn trim(&mut self) {
+        self.intermediates.clear();
+    }
+
     /// The stage ranges each pass's segment covers — for tests asserting a
     /// folded segment was selected.
     #[cfg(test)]

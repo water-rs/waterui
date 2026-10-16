@@ -298,4 +298,10 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Effect for Executor<F, 
             .as_ref()
             .map_or_else(RetainedMemory::default, Gpu::retained_memory)
     }
+
+    fn trim(&mut self) {
+        if let Some(gpu) = &mut self.gpu {
+            gpu.trim();
+        }
+    }
 }
