@@ -26,6 +26,7 @@ pub use dependencies::brew;
 pub use platforming::{backend, macos_bundle, package_output, platform};
 pub use project_model::assets::{
     FetchOutcome, SeedFontCacheError, seed_font_cache, seed_font_cache_for_backend,
+    seed_mainline_font_cache,
 };
 pub(crate) use project_model::{assets, patch_tables, support_app, templates};
 pub use project_model::{framework, project, project_types, water_dir, web};
