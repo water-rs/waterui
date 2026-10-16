@@ -10731,19 +10731,6 @@ fn create_gpu_image(
     }
 }
 
-/// The sRGB transfer decode in f64, odd through zero (`f(-x) = -f(x)`),
-/// the definition the oracle, the CPU backend and the compositing
-/// converter share: an extended-range f16 source keeps its sign.
-fn srgb_decode_f64(v: f64) -> f64 {
-    let a = v.abs();
-    let e = if a <= 0.04045 {
-        a / 12.92
-    } else {
-        ((a + 0.055) / 1.055).powf(2.4)
-    };
-    e.copysign(v)
-}
-
 /// A browser completion with the same configured timeout as native waits.
 #[cfg(target_arch = "wasm32")]
 #[expect(

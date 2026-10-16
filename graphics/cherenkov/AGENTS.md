@@ -80,6 +80,9 @@ belong to water-rs/waterui.
   ratio. A scene fails when the change's whole bootstrap interval lies above
   the limit; otherwise it is decided only when that interval is no wider than
   the limit. Frame-budget checks run under the default governor.
+  Sub-millisecond scenes are compared by Mali shader-core active cycles
+  (`pixel_compare.py run --gpu-counters`), never by GPU time: their frames
+  are latency-bound, so added work does not add GPU time.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five

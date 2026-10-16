@@ -332,7 +332,8 @@ impl RenderNode {
     /// renderer to build on); the cloneable config drives the field +
     /// accessibility, and its `items`/`selection` signals are read through
     /// `read_signal` each frame so a membership or selection change schedules a
-    /// frame. Stretch is content-sized (read from the config).
+    /// frame. The node's stretch is the payload's own axis: `Horizontal` for a
+    /// segmented picker, content-sized otherwise.
     pub(super) fn build_picker(
         config: PickerConfig,
         env: &Environment,

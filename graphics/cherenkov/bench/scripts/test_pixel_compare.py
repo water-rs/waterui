@@ -64,27 +64,34 @@ class TheWidthRuleStands(unittest.TestCase):
         self.assertEqual(decide(-10.0, -10.5, -9.5), 'pass')
 
 
-def collection(out, scenes, rounds=4, frames=40):
+def collection(out, scenes, rounds=4, frames=40, cycles=None):
     """Writes a completed pinned collection. `scenes` maps a name to its
     per-invocation GPU milliseconds `(base, head)`, one pair per round; each
-    invocation's frames scatter ±1% around its value."""
+    invocation's frames scatter ±1% around its value. With `cycles`, a
+    `--gpu-counters` collection whose shader-core cycles per invocation
+    `cycles` gives the same way."""
     rng = random.Random(0)
     save = pixel_compare.save
     save(out / pixel_compare.PLAN, {
         'arms': {}, 'rounds': rounds, 'frames': frames, 'warmup': 10,
         'clocks': {'gpu_khz': 649000, 'cpu_khz': 2294000},
+        'metric': 'gpu-time' if cycles is None else 'shader-core-cycles',
         'scenes': [{'name': name} for name in scenes]})
     save(out / pixel_compare.CONTROL, {'completed': True})
     rows = []
     for name, pairs in scenes.items():
         assert len(pairs) == rounds
         for pair, values in enumerate(pairs):
-            for side, milliseconds in zip(('base', 'head'), values):
+            for arm, (side, milliseconds) in enumerate(zip(('base', 'head'), values)):
                 run_id = f'{name}-p{pair}-{side}'
                 report = out / f'{run_id}.json'
-                save(report, {'warmup_frames': 10, 'samples': [
-                    {'gpu_seconds': milliseconds * rng.uniform(0.99, 1.01) / 1000}
-                    for _ in range(frames)]})
+                samples = [{'gpu_seconds': milliseconds * rng.uniform(0.99, 1.01) / 1000}
+                           for _ in range(frames)]
+                if cycles is not None:
+                    for sample in samples:
+                        sample['gpu_counters'] = {'shader_core_active_cycles': round(
+                            cycles[name][pair][arm] * rng.uniform(0.99, 1.01))}
+                save(report, {'warmup_frames': 10, 'samples': samples})
                 rows.append({'scene': name, 'pair': pair, 'side': side, 'run_id': run_id,
                              'report_sha256': hashlib.sha256(report.read_bytes()).hexdigest(),
                              'failures': []})
@@ -92,10 +99,10 @@ def collection(out, scenes, rounds=4, frames=40):
 
 
 class Analyze(unittest.TestCase):
-    def analyze(self, scenes):
+    def analyze(self, scenes, cycles=None):
         with tempfile.TemporaryDirectory() as dir:
             out = pathlib.Path(dir)
-            collection(out, scenes)
+            collection(out, scenes, cycles=cycles)
             return pixel_compare.analyze(out, LIMIT, 1000 / pixel_compare.RATE_HZ)['scenes']
 
     def test_a_large_cost_on_a_scene_that_varies_per_process_fails(self):
@@ -118,6 +125,16 @@ class Analyze(unittest.TestCase):
     def test_identical_stable_arms_pass(self):
         entry = self.analyze({'full': [(4.0, 4.0)] * 4})['full']
         self.assertEqual(entry['verdict'], 'pass')
+
+    def test_a_counter_collection_is_judged_on_cycles_not_time(self):
+        # Added work that GPU time reads as a speed-up and the shader-core
+        # cycles read as a 5% cost (#2775).
+        time = {'tiny': [(0.100, 0.097)] * 4}
+        entry = self.analyze(time, cycles={'tiny': [(140_000, 147_000)] * 4})['tiny']
+        self.assertEqual((entry['metric'], entry['unit']), ('shader-core-cycles', 'cycles'))
+        self.assertAlmostEqual(entry['change_percent'], 5.0, delta=0.5)
+        self.assertEqual(entry['verdict'], 'fail')
+        self.assertEqual(self.analyze(time)['tiny']['verdict'], 'pass')
 
 
 if __name__ == '__main__':
