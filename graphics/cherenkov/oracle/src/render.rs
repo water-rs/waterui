@@ -69,7 +69,9 @@ use kurbo::{Affine, Point, Rect, Vec2};
 
 use crate::blend::{blend, src_over};
 use crate::clip::{Segment, intersect_edges};
-use crate::color::{linear_p3_to_linear_srgb, linear_srgb_to_linear_p3, to_working};
+use crate::color::{
+    linear_p3_to_linear_srgb, linear_srgb_to_linear_p3, srgb_decode, srgb_encode, to_working,
+};
 use crate::coverage::Coverage;
 use crate::glyphs;
 use crate::image::{F32Image, Image};
@@ -133,24 +135,6 @@ struct Canvas {
     height: usize,
 }
 
-/// `srgb_encode` preserving sign, like the backends' `convert_pixel`.
-fn srgb_encode_signed(c: f64) -> f64 {
-    if c.abs() <= 0.003_130_8 {
-        c * 12.92
-    } else {
-        (1.055f64.mul_add(c.abs().powf(1.0 / 2.4), -0.055)).copysign(c)
-    }
-}
-
-/// `srgb_decode` preserving sign, like the backends' `convert_pixel`.
-fn srgb_decode_signed(c: f64) -> f64 {
-    if c.abs() <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c.abs() + 0.055) / 1.055).powf(2.4).copysign(c)
-    }
-}
-
 /// Convert a premultiplied pixel between linear Display P3 and encoded
 /// sRGB: `cpu/src/render/paint.rs::convert_pixel` in `f64`.
 fn convert_pixel(pixel: [f64; 4], encode: bool) -> [f64; 4] {
@@ -160,9 +144,9 @@ fn convert_pixel(pixel: [f64; 4], encode: bool) -> [f64; 4] {
     }
     let straight = [pixel[0] / alpha, pixel[1] / alpha, pixel[2] / alpha];
     let converted = if encode {
-        linear_p3_to_linear_srgb(straight).map(srgb_encode_signed)
+        linear_p3_to_linear_srgb(straight).map(srgb_encode)
     } else {
-        linear_srgb_to_linear_p3(straight.map(srgb_decode_signed))
+        linear_srgb_to_linear_p3(straight.map(srgb_decode))
     };
     [
         converted[0] * alpha,

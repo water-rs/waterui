@@ -112,50 +112,34 @@ fn build_matrices() -> (Mat3, Mat3, Mat3) {
     )
 }
 
-/// sRGB companding: encoded -> linear.
+/// The sRGB EOTF (encoded -> linear), odd through the origin.
+///
+/// `f(-x) = -f(x)` (CSS Color 4, IEC 61966-2-2 nonlinear): negative
+/// (out-of-gamut) and above-one (HDR) components are transferred, never
+/// clamped. The backends' conversions use this same definition.
 pub(crate) fn srgb_decode(c: f64) -> f64 {
-    if c.abs() <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// sRGB companding: linear -> encoded.
-#[must_use]
-pub fn srgb_encode(c: f64) -> f64 {
-    if c.abs() <= 0.003_130_8 {
-        c * 12.92
-    } else {
-        1.055f64.mul_add(c.powf(1.0 / 2.4), -0.055)
-    }
-}
-
-/// The sRGB OETF continued beyond `[0, 1]` with odd symmetry through the
-/// origin — the wire format of the `ExtendedSrgb`/`ExtendedDisplayP3`
-/// surface colour spaces (#98).
-#[must_use]
-pub fn srgb_encode_extended(c: f64) -> f64 {
-    let a = c.abs();
-    let e = if a <= 0.003_130_8 {
-        a * 12.92
-    } else {
-        1.055f64.mul_add(a.powf(1.0 / 2.4), -0.055)
-    };
-    c.signum() * e
-}
-
-/// The inverse of [`srgb_encode_extended`] — lifts an encoded
-/// extended-range channel back to linear light.
-#[must_use]
-pub fn srgb_decode_extended(c: f64) -> f64 {
     let a = c.abs();
     let e = if a <= 0.04045 {
         a / 12.92
     } else {
         ((a + 0.055) / 1.055).powf(2.4)
     };
-    c.signum() * e
+    e.copysign(c)
+}
+
+/// The sRGB OETF (linear -> encoded), odd through the origin.
+///
+/// `f(-x) = -f(x)` — the inverse of [`srgb_decode`] and the wire format of
+/// the `ExtendedSrgb` / `ExtendedDisplayP3` surface colour spaces (#98).
+#[must_use]
+pub fn srgb_encode(c: f64) -> f64 {
+    let a = c.abs();
+    let e = if a <= 0.003_130_8 {
+        a * 12.92
+    } else {
+        1.055f64.mul_add(a.powf(1.0 / 2.4), -0.055)
+    };
+    e.copysign(c)
 }
 
 /// SMPTE ST 2084 (PQ) OETF: luminance normalized to 10 000 nits to the
@@ -289,4 +273,68 @@ pub fn linear_p3_to_linear_srgb(p3: [f64; 3]) -> [f64; 3] {
 pub fn linear_srgb_to_linear_p3(srgb: [f64; 3]) -> [f64; 3] {
     let (srgb_to_p3, _, _) = build_matrices();
     mat3_mul(&srgb_to_p3, srgb)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{srgb_decode, srgb_encode};
+
+    /// The two transfer functions at the knees and beyond the unit range,
+    /// as `(linear, encoded)` pairs: the linear segment, the power
+    /// segment, white, and an HDR value.
+    const PAIRS: [(f64, f64); 5] = [
+        (0.0, 0.0),
+        (0.002, 0.002 * 12.92),
+        (0.5, 0.735_356_983_052_449_5),
+        (1.0, 1.0),
+        (4.0, 1.824_796_295_276_115_9),
+    ];
+
+    #[test]
+    fn transfer_matches_the_reference_values_at_zero_and_above_one() {
+        for (linear, encoded) in PAIRS {
+            assert!((srgb_encode(linear) - encoded).abs() < 1e-12, "{linear}");
+            assert!((srgb_decode(encoded) - linear).abs() < 1e-12, "{encoded}");
+        }
+    }
+
+    #[test]
+    fn transfer_is_odd_through_the_origin() {
+        // Includes values on both sides of each knee (0.0031308 linear,
+        // 0.04045 encoded) and far below `-0.055`, where the unextended
+        // power segment produced NaN.
+        for x in [
+            0.001,
+            0.003_130_8,
+            0.004,
+            0.04,
+            0.04045,
+            0.05,
+            0.3,
+            1.0,
+            2.5,
+            17.0,
+        ] {
+            assert_eq!(srgb_encode(-x), -srgb_encode(x), "encode {x}");
+            assert_eq!(srgb_decode(-x), -srgb_decode(x), "decode {x}");
+            assert!(srgb_encode(-x).is_finite(), "encode {x}");
+            assert!(srgb_decode(-x).is_finite(), "decode {x}");
+            assert!(srgb_encode(-x) < 0.0 && srgb_decode(-x) < 0.0, "{x}");
+        }
+    }
+
+    #[test]
+    fn transfer_round_trips_negative_components() {
+        for x in [-9.0, -1.0, -0.2, -0.05, -0.004, -0.0001] {
+            assert!((srgb_decode(srgb_encode(x)) - x).abs() < 1e-12, "{x}");
+        }
+    }
+
+    #[test]
+    fn transfer_preserves_the_sign_of_zero() {
+        assert_eq!(srgb_encode(0.0).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(srgb_encode(-0.0).to_bits(), (-0.0_f64).to_bits());
+        assert_eq!(srgb_decode(0.0).to_bits(), 0.0_f64.to_bits());
+        assert_eq!(srgb_decode(-0.0).to_bits(), (-0.0_f64).to_bits());
+    }
 }
