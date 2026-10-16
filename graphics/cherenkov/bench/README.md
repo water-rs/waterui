@@ -131,8 +131,11 @@ only when its interval is no wider than the 2% limit: it fails above +2% and
 passes otherwise. A wider interval is `unresolved`, never a pass; that holds
 for an interval wholly below −2% too, since the limit bounds a cost increase
 and a decrease is no failure. Full-size scenes resolve in 120
-frames per invocation; scenes whose GPU time is a fraction of a millisecond
-vary per process by more than more frames remove and stay unresolved (#2775).
+frames per invocation. Scenes whose GPU time is a fraction of a millisecond
+are not judged on the Pixel (#2775). They vary per process by more than more
+frames remove, and their GPU time is not additive in GPU work: a fixed buffer
+clear added just before the pass moved continuous-s50 by −2.5% at
+`--frames 1200 --rounds 16`.
 `--governor` leaves the clocks to the governors, for the 8.33 ms p99 budget
 check:
 

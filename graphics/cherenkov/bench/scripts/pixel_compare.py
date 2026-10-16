@@ -62,8 +62,9 @@ cost increase, so an interval wholly below the negative limit — the head
 measurably cheaper — is no failure, and like any other it passes only at that
 width and is `unresolved` beyond it. More `--frames` shrink the sampling error of
 each p50 and more `--rounds` average over more processes; full-size scenes
-resolve at the defaults, while scenes of a fraction of a millisecond vary
-per process and stay unresolved (#2775). In governor mode `analyze` reports
+resolve at the defaults, while scenes of a fraction of a millisecond are
+not judged on the Pixel: they vary per process, and their GPU time is not
+additive in GPU work (#2775). In governor mode `analyze` reports
 each arm's worst invocation GPU p99 against `--budget-ms` and makes no cost
 decision.
 """
