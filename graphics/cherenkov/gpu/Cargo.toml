@@ -85,6 +85,7 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3", features = [
     "CssStyleDeclaration",
     "Document",
+    "HtmlCanvasElement",
     "HtmlIFrameElement",
     "NodeList",
     "Window",
