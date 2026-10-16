@@ -213,7 +213,7 @@ Handler parameters are extractors. Besides `State<T>`:
   `ListMove`, `SnackbarManager`, `WebViewProxy`.
 
 ```rust
-fn delete_row(ListDelete(index): ListDelete, state: Editor) {
+fn delete_row(ListDelete(index): ListDelete, mut state: Editor) {
     let _ = state.rows.remove(index);
 }
 ```
@@ -273,12 +273,12 @@ rather than a whole-collection invalidation.
 use waterui::component::lazy::Lazy;
 use waterui::reactive::collection::List as ReactiveList;
 
-let rows = ReactiveList::from(seed_vec);   // bulk-seed in one move — not a push loop
+let mut rows = ReactiveList::from(seed_vec);   // bulk-seed in one move — not a push loop
 rows.push(Row { id: 9, title: "Last".into() });
 rows.insert(0, Row { id: 0, title: "First".into() });   // positional splice, id-diffed
 let _ = rows.remove(0);              // #[must_use] — bind the removed value
 let snapshot = rows.snapshot();      // Vec<Row>, for read-only work
-let _ = rows.replace(new_vec);       // wholesale swap, still diffed by id
+let _ = rows.replace(new_vec);       // wholesale swap, diffed by id: moves and changed rows
 
 Lazy::for_each(rows.clone(), row_view)          // == Lazy::vstack(ForEach::new(..))
 Lazy::hstack(ForEach::new(rows.clone(), row_view))
@@ -292,11 +292,14 @@ per-row `.transition(PropertyTransition::opacity())` membership animation).
 
 Items must derive `Identifiable` (`use waterui::Identifiable;` — the derive is not in the
 prelude) with an `#[id]` field that is stable across updates of the same logical row.
+The mutators take `&mut self`; clones share one list, so a handler mutates its own clone.
+`replace` additionally needs `PartialEq` items: a surviving id whose item compares
+unequal is reported as an updated row.
 
 A **derived** row set — filtered, sorted, or joined from other state — is wrapped in
-`SignalCollection`, which adapts any `Signal<Output = Vec<T>>` into a diffable
-collection. This is the answer to "filter a list as the user types"; without it the only
-road is `watch` over a `Vec`, which rule 4 forbids:
+`SignalCollection`, which adapts any `Signal<Output = Vec<T>>` of `Identifiable +
+PartialEq` items into a diffable collection. This is the answer to "filter a list as the
+user types"; without it the only road is `watch` over a `Vec`, which rule 4 forbids:
 
 ```rust
 use waterui::reactive::collection::SignalCollection;
@@ -309,8 +312,10 @@ let visible = SignalCollection::new(
 List::for_each(visible, message_row)
 ```
 
-A *fixed* set of items does not need any of this: an array or `Vec` works directly with
-`List::for_each` and `ForEach::new`.
+A *fixed* set of items does not need any of this: an array (`[T; N]`), `&'static [T]`,
+`Rc<[T]>` or `Box<[T]>` works directly with `List::for_each` and `ForEach::new`, and its
+rows are identified by index. A `Vec<T>` is identified by its items' ids, so it needs
+`Identifiable` items.
 
 ## Conditionals
 
