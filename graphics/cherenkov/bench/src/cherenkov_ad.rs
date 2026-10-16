@@ -1988,16 +1988,10 @@ impl Engine for Cherenkov {
                 pixels: rb.pixels,
             })
         };
-        let phases = stats.phases;
         Ok(Submit {
             image,
             gpu: Vec::new(),
-            phases: Some(crate::Phases {
-                lower: phases.lower_seconds,
-                encode: phases.encode_seconds,
-                stamp: phases.stamp_seconds,
-                wait: phases.wait_seconds,
-            }),
+            phases: phase_samples(&stats.phases),
             composition: self
                 .composition_diag
                 .as_ref()
@@ -2150,4 +2144,14 @@ fn record_op(c: &mut cherenkov::Recorder, op: &Op) {
         }),
         Op::Text { layout, origin } => cherenkov::draw_text(c, layout, *origin),
     }
+}
+
+/// The GPU engine's render-thread phases of one frame.
+pub(crate) fn phase_samples(phases: &cherenkov::Phases) -> Vec<crate::PhaseSample> {
+    crate::PhaseSample::list(&[
+        ("lower", phases.lower_seconds),
+        ("encode", phases.encode_seconds),
+        ("stamp", phases.stamp_seconds),
+        ("wait", phases.wait_seconds),
+    ])
 }
