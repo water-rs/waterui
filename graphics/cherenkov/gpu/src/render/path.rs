@@ -859,25 +859,34 @@ impl Run {
 }
 
 /// One record per run, `At` its index.
+#[expect(
+    clippy::inline_always,
+    reason = "a call per run step is most of the partition's cost; the steps must fold into the walk"
+)]
 impl Runs for [Run] {
     type At = usize;
 
+    #[inline(always)]
     fn first(&self) -> Option<usize> {
         (!self.is_empty()).then_some(0)
     }
 
+    #[inline(always)]
     fn last(&self) -> Option<usize> {
         self.len().checked_sub(1)
     }
 
+    #[inline(always)]
     fn next(&self, at: usize) -> Option<usize> {
         (at + 1 < self.len()).then_some(at + 1)
     }
 
+    #[inline(always)]
     fn prev(&self, at: usize) -> Option<usize> {
         at.checked_sub(1)
     }
 
+    #[inline(always)]
     fn columns(&self, at: usize) -> (u32, u32) {
         (
             at.checked_sub(1).map_or(0, |prev| self[prev].end()),
@@ -885,10 +894,12 @@ impl Runs for [Run] {
         )
     }
 
+    #[inline(always)]
     fn mark(&self, at: usize) -> Mark {
         self[at].mark()
     }
 
+    #[inline(always)]
     fn set_mark(&mut self, at: usize, mark: Mark) {
         self[at] = Run::new(self[at].end(), mark);
     }
@@ -904,6 +915,10 @@ impl Runs for [Run] {
 /// reads a length, so the runs cost one byte per column and no scan.
 struct Columns<'a>(&'a mut [u8]);
 
+#[expect(
+    clippy::inline_always,
+    reason = "a call per run step is most of the partition's cost; the steps must fold into the walk"
+)]
 impl Columns<'_> {
     /// The bits below a run's length code.
     const CODE_SHIFT: u32 = Mark::BITS;
@@ -911,6 +926,7 @@ impl Columns<'_> {
     const LONG: u32 = 1 << (u8::BITS - Self::CODE_SHIFT);
 
     /// Records a run of `class` over columns `start..end`.
+    #[inline(always)]
     fn tag(&mut self, start: u32, end: u32, class: Class) {
         let (s, e) = (start as usize, end as usize);
         let len = end - start;
@@ -918,9 +934,8 @@ impl Columns<'_> {
             u8::try_from(len).expect("a short run's length fits its code") << Self::CODE_SHIFT
         } else {
             assert!(len < 1 << 24, "a dense band is narrower than 2^24 columns");
-            let bytes = &len.to_le_bytes()[..3];
-            self.0[s + 1..s + 4].copy_from_slice(bytes);
-            self.0[e - 4..e - 1].copy_from_slice(bytes);
+            self.store(s + 1, len);
+            self.store(e - 4, len);
             0
         };
         self.0[e - 1] = code;
@@ -928,16 +943,28 @@ impl Columns<'_> {
     }
 
     /// The length code at column `x`.
+    #[inline(always)]
     fn code(&self, x: usize) -> u32 {
         u32::from(self.0[x] >> Self::CODE_SHIFT)
     }
 
+    /// Stores the 24-bit `len` from column `x`.
+    #[inline(always)]
+    const fn store(&mut self, x: usize, len: u32) {
+        let [a, b, c, _] = len.to_le_bytes();
+        self.0[x] = a;
+        self.0[x + 1] = b;
+        self.0[x + 2] = c;
+    }
+
     /// The 24-bit length stored from column `x`.
+    #[inline(always)]
     const fn stored(&self, x: usize) -> u32 {
         u32::from_le_bytes([self.0[x], self.0[x + 1], self.0[x + 2], 0])
     }
 
     /// The end of the run starting at column `start`.
+    #[inline(always)]
     fn end_of(&self, start: u32) -> u32 {
         let s = start as usize;
         start
@@ -948,6 +975,7 @@ impl Columns<'_> {
     }
 
     /// The start of the run ending at column `end`.
+    #[inline(always)]
     fn start_of(&self, end: u32) -> u32 {
         let last = end as usize - 1;
         end - match self.code(last) {
@@ -957,13 +985,19 @@ impl Columns<'_> {
     }
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "a call per run step is most of the partition's cost; the steps must fold into the walk"
+)]
 impl Runs for Columns<'_> {
     type At = (u32, u32);
 
+    #[inline(always)]
     fn first(&self) -> Option<(u32, u32)> {
         (!self.0.is_empty()).then(|| (0, self.end_of(0)))
     }
 
+    #[inline(always)]
     #[expect(
         clippy::cast_possible_truncation,
         reason = "a band is at most a surface wide"
@@ -973,22 +1007,27 @@ impl Runs for Columns<'_> {
         (end > 0).then(|| (self.start_of(end), end))
     }
 
+    #[inline(always)]
     fn next(&self, (_, end): (u32, u32)) -> Option<(u32, u32)> {
         ((end as usize) < self.0.len()).then(|| (end, self.end_of(end)))
     }
 
+    #[inline(always)]
     fn prev(&self, (start, _): (u32, u32)) -> Option<(u32, u32)> {
         (start > 0).then(|| (self.start_of(start), start))
     }
 
+    #[inline(always)]
     fn columns(&self, at: (u32, u32)) -> (u32, u32) {
         at
     }
 
+    #[inline(always)]
     fn mark(&self, (start, _): (u32, u32)) -> Mark {
         Mark(self.0[start as usize] & Mark::MASK)
     }
 
+    #[inline(always)]
     fn set_mark(&mut self, (start, _): (u32, u32), mark: Mark) {
         let byte = &mut self.0[start as usize];
         *byte = *byte & !Mark::MASK | mark.0;
@@ -1141,14 +1180,18 @@ fn partition<R: Runs + ?Sized>(runs: &mut R, sh: usize) {
             Link::Cell => {
                 let mut from = last;
                 while !runs.mark(from).opens() {
-                    from = runs
-                        .prev(from)
-                        .expect("a cell ends at or after the run that opened it");
+                    let Some(prev) = runs.prev(from) else {
+                        unreachable!("a cell ends at or after the run that opened it")
+                    };
+                    from = prev;
                 }
                 runs.set_mark(from, runs.mark(from).with_link(Link::Head));
                 let mut run = from;
                 while run != last {
-                    run = runs.next(run).expect("a cell's runs reach its last");
+                    let Some(next) = runs.next(run) else {
+                        unreachable!("a cell's runs reach its last")
+                    };
+                    run = next;
                     runs.set_mark(run, runs.mark(run).with_link(Link::Cell));
                 }
                 runs.prev(from)
