@@ -344,8 +344,7 @@ impl Prepared {
             chains,
         } = self;
         let events_end = chains * (CHAIN_WORDS + EVENT_WORDS);
-        let slots =
-            u32::try_from(MERGE_WORDS * chains + segs.len()).expect("slot count fits u32");
+        let slots = u32::try_from(MERGE_WORDS * chains + segs.len()).expect("slot count fits u32");
         scratch.extend(0..slots);
         let (records, rest) = scratch.split_at_mut(chains * CHAIN_WORDS);
         let (events, rest) = rest.split_at_mut(EVENT_WORDS * chains);
@@ -411,7 +410,9 @@ fn merge_chains(
     let mut len = 0usize;
     let mut next_start = 0usize;
     for slot in order.iter_mut() {
-        let start = starts.get(next_start).map(|&[key, chain]| [key, record(chain)[0], chain]);
+        let start = starts
+            .get(next_start)
+            .map(|&[key, chain]| [key, record(chain)[0], chain]);
         let entered = match start {
             Some(entry) if len == 0 || entry < heap[0] => {
                 next_start += 1;
@@ -944,9 +945,7 @@ mod tests {
             ys.sort_by(f32::total_cmp);
             ys.dedup();
             let (merged, scratch, from) = prepared.into_ordered();
-            let bits = |s: &Seg| {
-                [s.x0, s.y0, s.y1, s.slope, s.dir].map(f64::to_bits)
-            };
+            let bits = |s: &Seg| [s.x0, s.y0, s.y1, s.slope, s.dir].map(f64::to_bits);
             assert_eq!(
                 merged.iter().map(bits).collect::<Vec<_>>(),
                 sorted.iter().map(bits).collect::<Vec<_>>(),
