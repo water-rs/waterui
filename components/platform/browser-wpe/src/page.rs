@@ -106,6 +106,7 @@ impl Drop for PageInner {
 
 /// Pointer button understood by `WPEPlatform`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PointerButton {
     /// Primary or left button.
     Primary = 1,
