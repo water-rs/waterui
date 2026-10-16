@@ -10492,7 +10492,7 @@ async fn upload_image(
         device,
         "image",
         (width.div_ceil(bw) * bw, height.div_ceil(bh) * bh),
-        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        image_usage(device, data.format, (width, height)),
         data.format,
     );
     if let Some(error) = scope.pop().await {
@@ -10535,7 +10535,15 @@ async fn write_image(
     data: &image_storage::Upload<'_>,
 ) -> Result<(), ResourceError> {
     let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-    write_texels(device, queue, texture, (width, height), data);
+    write_texels(
+        device,
+        queue,
+        "image",
+        texture,
+        data.format,
+        (width, height),
+        &data.bytes,
+    );
     scope.pop().await.map_or(Ok(()), |error| {
         Err(ResourceError::Image(format!(
             "{width}x{height} upload failed: {error}"
@@ -10543,38 +10551,132 @@ async fn write_image(
     })
 }
 
-/// [`write_image`]'s unscoped copy.
+/// [`write_image`]'s unscoped copy: the texture's whole `bytes`, an
+/// image of `size` in the storage `format`, in the block-row bands
+/// [`upload_bands`] decides, so no `write_texture` exceeds the device's
+/// `max_buffer_size`. A browser stages a `writeTexture` through one
+/// internal buffer of the upload's size and rejects it above that
+/// limit, silently dropping the image (#2793); a texture under the
+/// limit uploads in the single band it is one of.
 fn write_texels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    label: &'static str,
     texture: &wgpu::Texture,
+    format: wgpu::TextureFormat,
     (width, height): (u32, u32),
-    data: &image_storage::Upload<'_>,
+    bytes: &[u8],
 ) {
-    let (bw, bh) = data.format.block_dimensions();
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &data.bytes,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(
-                width.div_ceil(bw) * data.format.block_copy_size(None).expect("colour format"),
-            ),
-            rows_per_image: Some(height.div_ceil(bh)),
-        },
-        texture.size(),
+    let (bw, bh) = format.block_dimensions();
+    let row = block_row_bytes(format, width);
+    let pitch = u32::try_from(row).expect("a texture row's bytes fit u32");
+    let block_rows = height.div_ceil(bh);
+    for (first, rows) in upload_bands(row, block_rows, device.limits().max_buffer_size) {
+        let offset = usize::try_from(u64::from(first) * row).expect("band offset fits usize");
+        let len = usize::try_from(u64::from(rows) * row).expect("band bytes fit usize");
+        let y = first * bh;
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &bytes[offset..offset + len],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(pitch),
+                rows_per_image: Some(rows),
+            },
+            // A block format's texture is allocated in whole blocks, so
+            // the band covers its blocks' full extent.
+            wgpu::Extent3d {
+                width: width.div_ceil(bw) * bw,
+                height: rows * bh,
+                depth_or_array_layers: 1,
+            },
+        );
+        diag::upload(
+            device,
+            label,
+            len as u64,
+            Some((0, y, width, (rows * bh).min(height - y))),
+        );
+    }
+}
+
+/// The bytes of one row of `format`'s blocks across `width` texels.
+fn block_row_bytes(format: wgpu::TextureFormat, width: u32) -> u64 {
+    let (bw, _) = format.block_dimensions();
+    u64::from(width.div_ceil(bw))
+        * u64::from(
+            format
+                .block_copy_size(None)
+                .expect("an image format is a colour format"),
+        )
+}
+
+/// The usage of an image texture of `size` in `format` that
+/// [`write_texels`] fills.
+///
+/// A texture that uploads in more than one band receives partial writes,
+/// and an implementation zero-initializes a texture before its first
+/// partial write. Without `RENDER_ATTACHMENT` the browser's
+/// implementation clears it through one staging buffer the size of the
+/// whole texture, which exceeds `max_buffer_size` exactly when banding is
+/// needed and fails every later write on the device (#2793); with it, the
+/// clear is a render pass.
+///
+/// # Panics
+/// When a block-compressed image needs more than one band: such a format
+/// cannot be a render attachment, so the browser could not clear it. It
+/// stores one byte a texel, so one band holds any image whose texel count
+/// fits `max_buffer_size` — every 16384 × 16384 image at WebGPU's default
+/// 256 MiB.
+fn image_usage(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    (width, height): (u32, u32),
+) -> wgpu::TextureUsages {
+    let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+    let bands = upload_bands(
+        block_row_bytes(format, width),
+        height.div_ceil(format.block_dimensions().1),
+        device.limits().max_buffer_size,
     );
-    diag::upload(
-        device,
-        "image",
-        data.bytes.len() as u64,
-        Some((0, 0, width, height)),
+    if bands.count() > 1 {
+        assert!(
+            !format.is_compressed(),
+            "a {width}x{height} {format:?} image needs a banded upload, which a \
+             block-compressed texture cannot be cleared for"
+        );
+        usage | wgpu::TextureUsages::RENDER_ATTACHMENT
+    } else {
+        usage
+    }
+}
+
+/// The `(first_row, rows)` bands an upload of `rows` rows of `row` bytes
+/// each splits into so that every band stays within `limit` staging
+/// bytes: each band is the largest whole number of rows that fits, and
+/// the last takes what remains. A row is a row of blocks for a
+/// block-compressed format.
+///
+/// # Panics
+/// When a single row exceeds `limit` — unreachable for an image
+/// [`cherenkov::ImageLimits`] admits, whose widest row is its largest
+/// dimension in eight-byte texels (128 KiB at 16384), far under the
+/// smallest `max_buffer_size` a WebGPU device reports.
+fn upload_bands(row: u64, rows: u32, limit: u64) -> impl Iterator<Item = (u32, u32)> {
+    assert!(
+        0 < row && row <= limit,
+        "a {row}-byte row exceeds the {limit}-byte staging limit"
     );
+    let band = u32::try_from(limit / row).unwrap_or(u32::MAX);
+    (0..rows.div_ceil(band)).map(move |i| {
+        let first = i * band;
+        (first, band.min(rows - first))
+    })
 }
 
 fn image_texels(
@@ -10608,27 +10710,17 @@ fn create_gpu_image(
         device,
         label,
         (width, height),
-        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        image_usage(device, TARGET_FORMAT, (width, height)),
         TARGET_FORMAT,
     );
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
+    write_texels(
+        device,
+        queue,
+        label,
+        &texture,
+        TARGET_FORMAT,
+        (width, height),
         texels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 8),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
     );
     GpuImage {
         sampling_flags: 0,
@@ -10968,5 +11060,37 @@ mod tests {
             0,
             "a trimmed engine retains no commit_writes capacity"
         );
+    }
+
+    /// The browser stages a `writeTexture` through one buffer of the
+    /// upload's size, so [`upload_bands`] keeps every band within the
+    /// staging limit (#2793).
+    #[test]
+    fn upload_bands_stay_within_the_staging_limit() {
+        let mib = 1024 * 1024;
+        let limit = 256 * mib;
+        // An image under the limit is one band.
+        assert_eq!(
+            upload_bands(4096 * 8, 4096, limit).collect::<Vec<_>>(),
+            [(0, 4096)]
+        );
+        // The issue's case: 8192×8192 f16 texels (512 MiB) at a 256 MiB
+        // limit is two bands of 4096 rows.
+        assert_eq!(
+            upload_bands(8192 * 8, 8192, limit).collect::<Vec<_>>(),
+            [(0, 4096), (4096, 4096)]
+        );
+        // An odd height leaves a short last band.
+        assert_eq!(
+            upload_bands(8192 * 8, 4097, limit).collect::<Vec<_>>(),
+            [(0, 4096), (4096, 1)]
+        );
+        // Bands cover every row exactly once.
+        let mut covered = 0;
+        for (first_row, rows) in upload_bands(4096 * 8, 20011, mib) {
+            assert_eq!(first_row, covered);
+            covered += rows;
+        }
+        assert_eq!(covered, 20011);
     }
 }

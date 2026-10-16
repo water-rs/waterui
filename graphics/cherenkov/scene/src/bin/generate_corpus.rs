@@ -4119,6 +4119,31 @@ fn run() -> Result<(), SceneError> {
         });
     }
 
+    // A wide-gamut stop interpolated in sRGB: Display P3 (0, 0.85, 0.05)
+    // has a negative sRGB red component, so the interpolated encoded value
+    // goes below zero and its decode must stay sign-preserving (#2825).
+    corpus.scene("grad-linear-srgb-negative", 128, 128, white, |l| {
+        l.fill(
+            gradient_rect.clone(),
+            Paint::Linear(LinearGradient {
+                start: Point::new(16.0, 64.0),
+                end: Point::new(112.0, 64.0),
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::new(ColorSpace::DisplayP3, [0.0, 0.85, 0.05, 1.0]),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::new(ColorSpace::DisplayP3, [0.9, 0.2, 1.0, 1.0]),
+                    },
+                ],
+                extend: Extend::Pad,
+                interpolation: ColorSpace::Srgb,
+            }),
+        );
+    });
+
     // Images in wide-gamut and half-float encodings. The P3 PNG carries
     // Display-P3-encoded bytes; the f16 blobs are linear P3 straight alpha
     // with a radial ramp to 16.0 and some alpha < 1 texels.

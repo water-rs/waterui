@@ -4,7 +4,7 @@
 use cherenkov::kurbo::Rect;
 use cherenkov::{
     Draw, Engine, FontSource, FrameTime, Glyph, GlyphRun, GlyphStyle, ImageData, Next, Offscreen,
-    OffscreenFormat, Rgba8, Sampling, ShaderPaint, ShaderSource, WorkingColor,
+    OffscreenFormat, Rgba8, Rgba16F, Sampling, ShaderPaint, ShaderSource, WorkingColor,
 };
 use cherenkov_gpu::{
     Gpu, GpuConfig,
@@ -286,6 +286,78 @@ async fn resources_registered_while_recording_draw_in_the_same_frame() {
         (at(40, 8)[3] - 1.).abs() < 0.001,
         "opaque shader {:?}",
         at(40, 8)
+    );
+}
+
+/// An image whose f16 texels exceed the device's `max_buffer_size`
+/// (256 MiB at the default limits) uploads in row bands (#2793): the
+/// last band carries the image's final row, whose colour must reach
+/// the texture.
+#[wasm_bindgen_test(async)]
+#[expect(
+    clippy::future_not_send,
+    reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+)]
+async fn image_larger_than_max_buffer_size_uploads_in_bands() {
+    let engine = Engine::<Gpu>::new(GpuConfig::default())
+        .await
+        .expect("engine");
+    // 8192×4097 f16 texels is 256 MiB plus one row — inside
+    // `ImageLimits` (8192 max dimension, a 512 MiB texel budget), so
+    // the registration is admitted and must upload. The marker colour
+    // sits in the last row: the second band's only row.
+    let (width, height) = (8192_u32, 4097_u32);
+    let mut data = vec![0_u8; width as usize * height as usize * 8];
+    let texel = |channels: [f32; 4]| -> Vec<u8> {
+        channels
+            .into_iter()
+            .flat_map(|v| half::f16::from_f32(v).to_le_bytes())
+            .collect()
+    };
+    // The first row is red and the last green, so a row mix-up fails
+    // instead of passing on the wrong row's colour.
+    let first_row = texel([1.0, 0.0, 0.0, 1.0]);
+    let last_row = texel([0.0, 1.0, 0.0, 1.0]);
+    for (row, colour) in [(0_usize, &first_row), (height as usize - 1, &last_row)] {
+        let start = row * width as usize * 8;
+        for px in data[start..start + width as usize * 8]
+            .as_chunks_mut::<8>()
+            .0
+        {
+            px.copy_from_slice(colour);
+        }
+    }
+    let image = engine
+        .image(
+            ImageData::<Rgba16F>::new(width, height, data)
+                .expect("image data")
+                .color_space(cherenkov::ImageColorSpace::LinearP3)
+                .premultiplied(),
+        )
+        .expect("image within ImageLimits");
+    let surface = engine
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
+        .await
+        .expect("surface");
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            // The rect's bottom row lands on the surface's first pixel
+            // row, so only the image's last row is drawn.
+            r.image(
+                image.id(),
+                Rect::new(0., -f64::from(height - 1), f64::from(width), 1.),
+                Sampling::Nearest,
+            );
+        }));
+    });
+    assert_eq!(
+        engine.render(FrameTime::now()).await.expect("render"),
+        Next::Idle
+    );
+    let px = pixels(&surface).await[0];
+    assert!(
+        px[0].abs() < 0.02 && (px[1] - 1.).abs() < 0.02 && px[2].abs() < 0.02 && px[3] > 0.99,
+        "the image's last row arrived: {px:?}"
     );
 }
 
