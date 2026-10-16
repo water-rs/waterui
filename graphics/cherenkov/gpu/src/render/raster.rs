@@ -43,21 +43,18 @@ impl Raster {
         } else {
             (-1.0, x1, y1, x0, y0)
         };
-        let dxdy = (x1 - x0) / (y1 - y0);
-        let mut x = if y0 < 0.0 {
-            dxdy.mul_add(-y0, x0)
-        } else {
-            x0
-        };
+        // Every row boundary is evaluated from the segment origin:
+        // repeatedly adding to an absolute x accumulates rounding error
+        // over tall edges.
+        let line = OriginLine::new((x1 - x0) / (y1 - y0), x0);
+        let mut x = if y0 < 0.0 { line.at(-y0) } else { x0 };
         let y_start = y0.max(0.0) as usize;
         let y_end = self.h.min((y1.ceil() as usize).min(self.h));
         for y in y_start..y_end {
             let row = y * (self.w + 1);
             let bottom = ((y + 1) as f32).min(y1);
             let dy = bottom - (y as f32).max(y0);
-            // Evaluate from the segment origin: repeatedly adding to an
-            // absolute x accumulates rounding error over tall edges.
-            let xnext = dxdy.mul_add(bottom - y0, x0);
+            let xnext = line.at(bottom - y0);
             let d = dy * dir;
             let (xa, xb) = if x < xnext { (x, xnext) } else { (xnext, x) };
             let xa_floor = xa.floor();
@@ -150,9 +147,175 @@ impl Raster {
     }
 }
 
+/// `x(t) = origin + slope * t`, rounded once to `f32` — the value
+/// `slope.mul_add(t, origin)` computes.
+///
+/// Where the target guarantees a fused multiply-add instruction, that
+/// instruction evaluates it. Elsewhere `f32::mul_add` lowers to a libm
+/// call per row, so the fused result is formed exactly in `f64` instead:
+/// the product of two `f32` significands (24 + 24 bits) is exact in `f64`,
+/// and the rounded `f64` sum rounds to the fused `f32` result unless it
+/// sits exactly on an `f32` rounding midpoint without being exact, which
+/// the sum's exact residual resolves.
+#[derive(Clone, Copy)]
+struct OriginLine {
+    #[cfg(any(target_arch = "aarch64", target_feature = "fma"))]
+    slope: f32,
+    #[cfg(any(target_arch = "aarch64", target_feature = "fma"))]
+    origin: f32,
+    #[cfg(not(any(target_arch = "aarch64", target_feature = "fma")))]
+    slope: f64,
+    #[cfg(not(any(target_arch = "aarch64", target_feature = "fma")))]
+    origin: f64,
+}
+
+#[cfg(any(target_arch = "aarch64", target_feature = "fma"))]
+impl OriginLine {
+    const fn new(slope: f32, origin: f32) -> Self {
+        Self { slope, origin }
+    }
+
+    #[inline]
+    fn at(self, t: f32) -> f32 {
+        self.slope.mul_add(t, self.origin)
+    }
+}
+
+#[cfg(not(any(target_arch = "aarch64", target_feature = "fma")))]
+impl OriginLine {
+    fn new(slope: f32, origin: f32) -> Self {
+        Self {
+            slope: f64::from(slope),
+            origin: f64::from(origin),
+        }
+    }
+
+    #[inline]
+    fn at(self, t: f32) -> f32 {
+        fused_via_f64(self.slope, self.origin, t)
+    }
+}
+
+/// `slope * t + origin` rounded once to `f32`, for `slope` and `origin`
+/// widened from `f32`.
+#[cfg(any(test, not(any(target_arch = "aarch64", target_feature = "fma"))))]
+#[inline]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::suboptimal_flops,
+    reason = "the exact f64 product and its rounded sum are the evaluation"
+)]
+fn fused_via_f64(slope: f64, origin: f64, t: f32) -> f32 {
+    let product = slope * f64::from(t);
+    let sum = product + origin;
+    // Rounding a normal f32 drops the low 29 of f64's 52 fraction bits;
+    // they read exactly 1 followed by zeros only at a rounding midpoint.
+    // Subnormal f32 results drop more bits and take the exact path.
+    if sum.to_bits() & 0x1fff_ffff != 0x1000_0000 && sum.abs() >= f64::from(f32::MIN_POSITIVE) {
+        return sum as f32;
+    }
+    fused_at_midpoint(product, origin, sum)
+}
+
+/// The once-rounded `f32` of `product + origin` from its rounded `f64` sum
+/// `sum`, for a `sum` that may sit on an `f32` rounding midpoint.
+#[cfg(any(test, not(any(target_arch = "aarch64", target_feature = "fma"))))]
+#[cold]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::float_cmp,
+    reason = "exact float comparisons decide the rounding"
+)]
+fn fused_at_midpoint(product: f64, origin: f64, sum: f64) -> f32 {
+    let rounded = sum as f32;
+    if f64::from(rounded) == sum || !sum.is_finite() {
+        return rounded;
+    }
+    // The other f32 neighbour of `sum`; their midpoint is exact in f64.
+    let other = if f64::from(rounded) < sum {
+        rounded.next_up()
+    } else {
+        rounded.next_down()
+    };
+    if sum != 0.5 * (f64::from(rounded) + f64::from(other)) {
+        return rounded;
+    }
+    // Exact residual of the f64 sum (TwoSum): the exact value lies on the
+    // residual's side of the midpoint, or on it when the residual is zero.
+    let b = sum - product;
+    let residual = (product - (sum - b)) + (origin - b);
+    let (low, high) = if rounded < other {
+        (rounded, other)
+    } else {
+        (other, rounded)
+    };
+    if residual > 0.0 {
+        high
+    } else if residual < 0.0 {
+        low
+    } else {
+        rounded
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `fused_via_f64` against `f32::mul_add` (a hardware or libm fused
+    /// multiply-add): on f32 midpoints the rounded f64 sum hides the
+    /// residual, on subnormal results, and on random row evaluations.
+    #[test]
+    fn f64_evaluation_is_the_fused_multiply_add() {
+        let up = 1.0 + f32::EPSILON;
+        let down = 1.0 - f32::EPSILON;
+        let mut cases = vec![
+            // 2^24 + 3 is an f32 midpoint; the exact value is 2^-46 below it.
+            (up, down, 16_777_218.0_f32),
+            (up, down, -16_777_218.0),
+            (-up, down, 16_777_218.0),
+            (up, up, 16_777_218.0),
+            (down, down, 16_777_216.0),
+            (f32::MIN_POSITIVE, 0.75, f32::MIN_POSITIVE * 0.25),
+            (f32::MIN_POSITIVE, -0.5, f32::MIN_POSITIVE),
+            (1.5, 2.0, -3.0),
+            (-0.0, 1.0, 0.0),
+        ];
+        let mut state = 0x9e37_79b9_7f4a_7c15_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for _ in 0..200_000 {
+            let bits = next();
+            // Slopes and origins of every magnitude a raster edge can carry,
+            // including the ones that put sums on midpoints.
+            let slope = f32::from_bits((bits as u32 & 0x807f_ffff) | ((112 + (bits >> 32) as u32 % 30) << 23));
+            let origin = f32::from_bits((next() as u32 & 0x807f_ffff) | ((120 + (bits >> 40) as u32 % 20) << 23));
+            let t = f32::from_bits((next() as u32 & 0x007f_ffff) | ((120 + (bits >> 48) as u32 % 20) << 23));
+            cases.push((slope, t, origin));
+            // A product of half an ulp of `origin` minus m²·2⁻⁴⁶ of it: the
+            // f64 sum rounds onto the f32 midpoint for every m < 362.
+            let m = 1 + (bits >> 20) as u32 % 300;
+            let scale = (origin.to_bits() >> 23 & 0xff) as i32 - 127 - 24;
+            let half_ulp = 2.0_f32.powi(scale);
+            let skew = m as f32 * f32::EPSILON;
+            for (a, b) in [(1.0 + skew, 1.0 - skew), (-(1.0 + skew), 1.0 - skew)] {
+                cases.push((a * half_ulp, b, origin));
+            }
+        }
+        for (slope, t, origin) in cases {
+            let fused = slope.mul_add(t, origin);
+            let evaluated = fused_via_f64(f64::from(slope), f64::from(origin), t);
+            assert_eq!(
+                evaluated.to_bits(),
+                fused.to_bits(),
+                "{slope:e} * {t:e} + {origin:e}: {evaluated:e} versus {fused:e}"
+            );
+        }
+    }
 
     #[test]
     fn tall_edges_agree_with_independent_pixel_area() {
