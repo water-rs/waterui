@@ -3,6 +3,7 @@ name = "cherenkov-gpu"
 version = "0.0.0"
 description = "wgpu backend for the Cherenkov 2D rendering engine"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
@@ -85,6 +86,7 @@ wasm-bindgen-test = "0.3"
 web-sys = { version = "0.3", features = [
     "CssStyleDeclaration",
     "Document",
+    "HtmlCanvasElement",
     "HtmlIFrameElement",
     "NodeList",
     "Window",
@@ -94,6 +96,9 @@ js-sys = "0.3"
 half = "2"
 
 [build-dependencies]
+# The working-space ↔ sRGB WGSL fragment the colour-converting modules are
+# composed with (`filtrate_core::space::WGSL`).
+filtrate-core = { path = "../../filtrate/core" }
 # The WGSL engine shaders are compiled once at build time (issue #57), at
 # the naga version wgpu 30 links.
 naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out"] }
@@ -125,7 +130,7 @@ naga = { version = "30.0.1", features = ["wgsl-in", "spv-out", "msl-out", "hlsl-
 cherenkov-scene = { path = "../scene" }
 
 cherenkov = { path = "..", features = ["testing"] }
-nami = { version = "0.12", default-features = false, features = ["std", "kurbo"] }
+nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
 # `tests/planes.rs` runs its cases on the process main thread.
 libtest-mimic = "0.8.2"
 

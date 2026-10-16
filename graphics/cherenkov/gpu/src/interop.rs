@@ -229,8 +229,8 @@ impl SharedDevice {
 /// with into [`SharedDevice`].
 ///
 /// # Errors
-/// [`EngineError`] when `adapter` is not a Vulkan adapter, or when the
-/// device cannot be created.
+/// [`EngineError`](crate::EngineError) when `adapter` is not a Vulkan
+/// adapter, or when the device cannot be created.
 #[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
 pub fn open_vulkan_device(
     adapter: &wgpu::Adapter,
@@ -305,7 +305,11 @@ pub fn shader_module(device: &wgpu::Device, label: &str, source: &str) -> wgpu::
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(
-            format!("{}\n{source}", include_str!("render/color.wgsl")).into(),
+            format!(
+                "{}\n{source}",
+                include_str!(concat!(env!("OUT_DIR"), "/color.wgsl"))
+            )
+            .into(),
         ),
     })
 }

@@ -123,6 +123,12 @@ impl Effect for CopyEffect {
         );
         Ok(false)
     }
+
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
+    }
+
+    fn trim(&mut self) {}
 }
 
 fn producer() -> (

@@ -584,6 +584,12 @@ impl HeadlessRuntime {
             height,
             wgpu::TextureFormat::Rgba8Unorm,
         );
+        // The vended window's host reports the same touch-gesture
+        // parameters the main window's does: a `set_touch_scroll_config`
+        // call applies to every window the runtime owns.
+        platform
+            .touch_scroll_config
+            .set(self.runtime.platform.touch_scroll_config.get());
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&self.theme),
@@ -909,10 +915,15 @@ impl HeadlessRuntime {
 
     /// The touch-gesture parameters this runtime's host reports — a test's
     /// stand-in for the platform's `ViewConfiguration` push, applied by the
-    /// next input dispatch.
+    /// next input dispatch. Every window the host owns reports them:
+    /// already-mounted popups are set here, and popups it vends later are
+    /// seeded from the main window's platform.
     #[cfg(any(test, feature = "testing"))]
     pub fn set_touch_scroll_config(&mut self, config: crate::platform::TouchScrollConfig) {
         self.runtime.platform.set_touch_scroll_config(config);
+        for popup in &mut self.popup_windows {
+            popup.platform.set_touch_scroll_config(config);
+        }
     }
 
     /// The environment the runtime renders its windows in, for tests that

@@ -15,11 +15,20 @@ impl Bytes {
 /// The engine's memory budgets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
-    /// Device-side memory (buffers, textures, the glyph atlas).
+    /// Device-side memory (buffers, textures, the glyph atlas). Registered
+    /// images together hold at most this much on the GPU backend: the
+    /// engine admits every image registration and resize against it on
+    /// the calling thread, and fails one that would overrun it with
+    /// [`ResourceError::OverBudget`](crate::ResourceError::OverBudget).
+    /// Cached local images take what is left beside everything else
+    /// resident.
     pub gpu: Bytes,
     /// CPU-side resident image and rasterized glyph cache budget.
-    /// This bounds cache residency, not total process memory; surface framebuffers
-    /// and active retained frame data are not evictable caches.
+    /// Registered images together hold at most this much on the CPU
+    /// backend, admitted at registration as on the GPU, and the glyph
+    /// caches take what they leave. This bounds cache residency, not
+    /// total process memory; surface framebuffers and active retained
+    /// frame data are not evictable caches.
     pub cpu: Bytes,
 }
 
@@ -66,4 +75,15 @@ pub struct MemoryUsage {
     /// Texture format of the backdrop captures (`"rgba16float"` normally),
     /// `None` while none is allocated.
     pub backdrop_capture_format: Option<&'static str>,
+    /// Render targets held by registered filter chains, layer filters and
+    /// backdrop groups' capture chains alike: each chain's per-size
+    /// input/output pairs plus the intermediates the chain itself retains,
+    /// in bytes; included in `gpu`. Zero on a backend whose filters hold
+    /// no targets between frames.
+    pub filter_targets: Bytes,
+    /// Images uploaded by registered filter chains from CPU-side image
+    /// data, in bytes; included in `gpu`. Textures bound from the host's
+    /// own are the host's and count elsewhere. Zero on a backend whose
+    /// filters upload no images.
+    pub filter_images: Bytes,
 }

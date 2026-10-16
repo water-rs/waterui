@@ -33,7 +33,7 @@ use crate::effect::EffectSetupError;
 /// stage that operates in sRGB.
 const TO_SRGB: ColorStage = ColorStage {
     name: "to_srgb",
-    source: include_str!("../shaders/space/to_srgb.wgsl"),
+    source: filtrate_core::space::TO_SRGB_WGSL,
     params: &[],
     space: OperatingSpace::Working,
 };
@@ -41,7 +41,7 @@ const TO_SRGB: ColorStage = ColorStage {
 /// Converts back to premultiplied linear Display P3 after it.
 const FROM_SRGB: ColorStage = ColorStage {
     name: "from_srgb",
-    source: include_str!("../shaders/space/from_srgb.wgsl"),
+    source: filtrate_core::space::FROM_SRGB_WGSL,
     params: &[],
     space: OperatingSpace::Working,
 };

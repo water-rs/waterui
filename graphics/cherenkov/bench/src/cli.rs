@@ -244,6 +244,14 @@ enum Sub {
         /// frame, so a run that compares timings leaves it off.
         #[arg(long)]
         composition: bool,
+        /// Record each measured frame's Mali hardware counters — the
+        /// shader cores' active cycles first — from the kbase driver
+        /// (Android, root). After each frame the loop waits for the GPU
+        /// to go idle and samples, so each frame's counters hold exactly
+        /// its own GPU work; the wait changes what the timings measure, so
+        /// a run that compares timings leaves it off.
+        #[arg(long)]
+        gpu_counters: bool,
     },
     /// Record the #169 allocation-event diagnostic for one scene.
     ///
@@ -570,6 +578,7 @@ fn run(cli: Cli) -> Result<(), BenchError> {
             energy,
             native,
             composition,
+            gpu_counters,
         } => measure_cmd(
             &engine,
             MeasureOpts {
@@ -585,6 +594,7 @@ fn run(cli: Cli) -> Result<(), BenchError> {
                 energy,
                 native: native.as_deref(),
                 composition,
+                gpu_counters,
             },
         ),
         Sub::AllocDiag {
@@ -830,6 +840,7 @@ fn alloc_diag_cmd(
             window_hint,
             measure_energy: false,
         },
+        None,
     )?;
     engine.alloc_diag_teardown();
     drop(engine);
@@ -914,6 +925,7 @@ struct MeasureOpts<'a> {
     energy: bool,
     native: Option<&'a str>,
     composition: bool,
+    gpu_counters: bool,
 }
 
 /// Wall-clock seconds a `render` scene (or a whole pass) spent in each
@@ -1217,6 +1229,10 @@ fn measure_cmd(engine: &str, opts: MeasureOpts<'_>) -> Result<(), BenchError> {
         affinity::pin_current_thread(cpus)?;
     }
     let mut engine = measure_engine(engine, opts.composition)?;
+    let mut gpu_counters = opts
+        .gpu_counters
+        .then(crate::gpu_counters::Session::open)
+        .transpose()?;
     let idle_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
     for dir in scene_dirs(opts.scene, opts.corpus)? {
         let out_path = match (opts.out, opts.out_dir) {
@@ -1240,6 +1256,7 @@ fn measure_cmd(engine: &str, opts: MeasureOpts<'_>) -> Result<(), BenchError> {
                 measure_energy: opts.energy,
                 idle_memory: idle_memory.clone(),
                 native,
+                gpu_counters: gpu_counters.as_mut(),
             },
         ) {
             Ok(report) => {
@@ -1541,6 +1558,8 @@ struct Window {
     /// Warmup-frame captures only — measured frames sample nothing.
     memory_samples: Vec<MemorySnapshot>,
     meter: Option<energy::Meter>,
+    /// The GPU clock residency table as the window opened.
+    gpu_clock: Option<crate::gpu_clock::Snapshot>,
     start: Instant,
     missed_deadlines: u32,
 }
@@ -1566,12 +1585,17 @@ struct FrameLoopOptions {
 /// GPU-timing attribution and nothing else — on Android a capture
 /// walks `/proc/self/smaps_rollup` and a full snapshot spawns `dumpsys
 /// gpu --gpumem`, which would tax the pacing and energy it brackets (#162).
+///
+/// With `gpu_counters` the loop waits for the GPU to go idle and samples
+/// the hardware counters as the window opens and after every measured
+/// frame's submit, so each frame's sample holds exactly its own GPU work.
 fn run_frames(
     engine: &mut dyn Engine,
     input: &EncodeInput<'_>,
     frames: u32,
     warmup: u32,
     options: FrameLoopOptions,
+    mut gpu_counters: Option<&mut crate::gpu_counters::Session>,
 ) -> Result<Window, BenchError> {
     let FrameLoopOptions {
         pause_at,
@@ -1580,6 +1604,7 @@ fn run_frames(
         measure_energy,
     } = options;
     let mut meter = None;
+    let mut gpu_clock = None;
     let mut start = Instant::now();
     let mut missed_deadlines = 0u32;
     let mut samples = Vec::with_capacity(frames as usize);
@@ -1587,11 +1612,18 @@ fn run_frames(
     let mut memory_samples = Vec::with_capacity(warmup as usize);
     for frame in 0..total_frames {
         if frame == warmup {
+            // The counters' accumulation restarts from an idle GPU, so
+            // the first measured frame's sample holds that frame alone.
+            if let Some(counters) = gpu_counters.as_deref_mut() {
+                engine.wait_idle()?;
+                counters.sample()?;
+            }
             // The energy window and the pacing clock both open
             // immediately before the first measured frame.
             if measure_energy {
                 meter = Some(energy::Meter::begin(window_hint)?);
             }
+            gpu_clock = crate::gpu_clock::Snapshot::read()?;
             start = Instant::now();
         }
         if frame >= warmup
@@ -1622,6 +1654,13 @@ fn run_frames(
         let submit = engine.submit(u64::from(frame), false)?;
         let t2 = Instant::now();
         let cpu_end = affinity::current_cpu();
+        let frame_counters = match gpu_counters.as_deref_mut() {
+            Some(counters) if frame >= warmup => {
+                engine.wait_idle()?;
+                Some(counters.sample()?)
+            }
+            _ => None,
+        };
         if frame < warmup {
             memory_samples.push(MemorySnapshot::capture(
                 engine.memory(),
@@ -1639,6 +1678,7 @@ fn run_frames(
                 passes: Vec::new(),
                 phases: submit.phases.map(phase_samples).unwrap_or_default(),
                 composition: submit.composition.clone(),
+                gpu_counters: frame_counters,
             });
         }
         attribute_gpu(&mut samples, warmup, submit.gpu);
@@ -1648,6 +1688,7 @@ fn run_frames(
         samples,
         memory_samples,
         meter,
+        gpu_clock,
         start,
         missed_deadlines,
     })
@@ -1734,6 +1775,7 @@ struct MeasureSceneOptions<'a> {
     measure_energy: bool,
     idle_memory: MemorySnapshot,
     native: Option<(u32, u32)>,
+    gpu_counters: Option<&'a mut crate::gpu_counters::Session>,
 }
 
 /// Loads `dir`'s scene, retargeted to `native` when given. Returns the
@@ -1791,6 +1833,7 @@ fn measure_scene(
         measure_energy,
         idle_memory,
         native,
+        mut gpu_counters,
     } = options;
     let (scene, native) = load_scene(dir, native)?;
     let blobs = convert::load_blobs(&scene, dir)?;
@@ -1825,8 +1868,10 @@ fn measure_scene(
             window_hint,
             measure_energy,
         },
+        gpu_counters.as_deref_mut(),
     )?;
     let window_end = Instant::now();
+    let gpu_clock = window_gpu_clock(window.gpu_clock.as_ref())?;
     let window_seconds = window_end.duration_since(window.start).as_secs_f64();
     let energy_outcome = window
         .meter
@@ -1871,10 +1916,25 @@ fn measure_scene(
         pacing,
         energy: energy_outcome.map(|o| o.report),
         conditions,
+        gpu_clock,
+        gpu_counters: gpu_counters.map(|session| session.info()),
         counters,
         memory: MemoryReport::new(idle_memory, &memory_samples, Some(post_retire_memory)),
         device: engine.device(),
     })
+}
+
+/// The GPU clock residency from the window's opening read to now.
+fn window_gpu_clock(
+    start: Option<&crate::gpu_clock::Snapshot>,
+) -> Result<Option<crate::report::GpuClockReport>, BenchError> {
+    match (start, crate::gpu_clock::Snapshot::read()?) {
+        (Some(start), Some(end)) => Ok(Some(start.until(&end)?)),
+        (None, None) => Ok(None),
+        _ => Err(BenchError::Engine(
+            "gpu clock: the residency table appeared or vanished during the window".into(),
+        )),
+    }
 }
 
 /// The sample list a report's peak folds over: prepare, the warmup
@@ -2088,6 +2148,7 @@ fn probe_once(
             window_hint: Duration::ZERO,
             measure_energy: false,
         },
+        None,
     )?;
     let steady_memory = MemorySnapshot::capture(engine.memory(), SampleDetail::Full);
     let memory = memory_samples(prepare_memory, &window.memory_samples, steady_memory);

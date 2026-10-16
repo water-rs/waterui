@@ -661,7 +661,11 @@ const fn initial(target: Target) -> Materialization {
 }
 
 pub fn materialization_boundary(frame: &Frame, index: usize) -> bool {
-    frame.filters.iter().any(|(i, _)| *i == index)
+    frame.passes[index]
+        .ranges
+        .iter()
+        .any(|range| range.gpu.is_some())
+        || frame.filters.iter().any(|(i, _)| *i == index)
         || frame.shadows.iter().any(|(i, _)| *i == index)
         || frame.mips.iter().any(|(i, _)| *i == index)
 }

@@ -690,7 +690,7 @@ fn a_list_row_removal_holds_its_slot_while_it_fades() {
     use waterui::component::list::{List, ListItem};
     use waterui_core::id::SelfId;
 
-    let rows: Membership<SelfId<u64>> =
+    let mut rows: Membership<SelfId<u64>> =
         Membership::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
     let rows_for_view = rows.clone();
     let mut runtime = runtime(move || {

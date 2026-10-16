@@ -420,7 +420,7 @@ struct FlowUpdate {
     typewriter: Option<TypewriterRun>,
 }
 
-#[derive(Clone, crate::Identifiable)]
+#[derive(Clone, PartialEq, crate::Identifiable)]
 struct FlowBlockSlot {
     #[id]
     identity: u64,
@@ -454,6 +454,15 @@ struct FlowBlockContentState {
     current: FlowBlockRender,
     subscribers: HashMap<u64, DynamicHandler>,
     next_subscriber_identity: u64,
+}
+
+/// Identity equality: a slot's content is a live handle whose renders reach
+/// its subscribers directly, so the slot list only changes when a block
+/// gains or loses its handle.
+impl PartialEq for FlowBlockContent {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl FlowBlockContent {
@@ -1888,17 +1897,12 @@ mod tests {
             updates: SerialDispatch::new(),
         });
 
-        // `List::watch` invokes the watcher once with the current contents
-        // before it is registered; only post-registration changes dispatch the
+        // Registering delivers nothing; the first change dispatches the
         // nested update.
-        let initial_call = Cell::new(true);
         let nested = Cell::new(false);
         let _guard = slots.watch(.., {
             let runtime = Rc::clone(&runtime);
             move |_, _| {
-                if initial_call.replace(false) {
-                    return;
-                }
                 if !nested.replace(true) {
                     runtime.dispatch(FlowMarkdownUpdate::Source(
                         Str::from("# nested"),
