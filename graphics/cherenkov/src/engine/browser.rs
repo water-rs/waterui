@@ -265,8 +265,9 @@ impl<B: Backend> Engine<B> {
     /// it. The image holds its share of the budget until its last handle
     /// drops. The upload is queued in order with every render and does
     /// not wait for the backend. A rejection only the backend can detect
-    /// (an allocation the device cannot back) fails every render that
-    /// draws the image with [`RenderError::Rejected`].
+    /// (an allocation the device cannot back) leaves every surface whose
+    /// content draws the image out of the frame, reported as
+    /// [`RenderError::Rejected`].
     ///
     /// # Errors
     /// [`ResourceError::TooLarge`] when the image exceeds
@@ -385,8 +386,11 @@ impl<B: Backend> Engine<B> {
     ///
     /// # Errors
     /// [`RenderError::Hidden`] when every surface is hidden, before
-    /// anything is drained. Any other [`RenderError`] fails this call; a
-    /// surface that failed to render is left in its previous state.
+    /// anything is drained. [`RenderError::Rejected`] when the content of
+    /// some surfaces draws a resource the backend rejected: those surfaces
+    /// were left out of the frame, and every other surface rendered. Any
+    /// other [`RenderError`] fails this call; a surface that failed to
+    /// render is left in its previous state.
     #[expect(
         clippy::future_not_send,
         reason = "the browser engine is single-threaded and its futures run on the page's event loop"
@@ -413,10 +417,10 @@ impl<B: Backend> Engine<B> {
         self.recycle_commits(&mut reply.commits);
         reply.commits.clear();
         *self.commits.borrow_mut() = reply.commits;
-        let (next, surface_next, stats, _frame_commit) = reply.result?;
-        super::publish_next(&self.surfaces.borrow(), &surface_next);
-        *self.stats.borrow_mut() = stats;
-        Ok(next)
+        let frame = reply.result?;
+        super::publish_next(&self.surfaces.borrow(), &frame.surface_next);
+        *self.stats.borrow_mut() = frame.stats;
+        super::rendered(frame.next, frame.rejected)
     }
 
     /// Queues a registration the backend may reject; the executor records
@@ -473,8 +477,8 @@ impl<B: ShaderPaint> Engine<B> {
     /// Registers a WGSL shader. The source is validated here, before
     /// anything is queued; pipeline creation is queued in order with every
     /// render and does not wait for the browser. A pipeline the browser
-    /// cannot create fails every render that draws the shader with
-    /// [`RenderError::Rejected`].
+    /// cannot create leaves every surface whose content draws the shader
+    /// out of the frame, reported as [`RenderError::Rejected`].
     ///
     /// # Errors
     /// [`ResourceError::Shader`] when the source fails validation,
@@ -498,8 +502,8 @@ impl<B: crate::BackdropShaders> Engine<B> {
     /// Registers a backdrop effect shader. The source is validated here,
     /// before anything is queued; pipeline creation is queued in order
     /// with every render and does not wait for the browser. A pipeline the
-    /// browser cannot create fails every render that samples the shader
-    /// with [`RenderError::Rejected`].
+    /// browser cannot create leaves every surface that samples the shader
+    /// out of the frame, reported as [`RenderError::Rejected`].
     ///
     /// # Errors
     /// [`ResourceError::Shader`] when the source fails validation or its

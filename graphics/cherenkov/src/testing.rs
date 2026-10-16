@@ -2596,9 +2596,10 @@ mod tests {
         balance::assert_balanced(&rx);
     }
 
-    /// An upload the backend rejects after its handle was returned fails
-    /// every render that draws it, naming the resource and the backend's
-    /// reason; renders that do not draw it succeed.
+    /// An upload the backend rejects after its handle was returned leaves
+    /// the surface that draws it out of every render, naming the surface,
+    /// the resource and the backend's reason; renders that do not draw it
+    /// succeed.
     #[test]
     fn a_backend_rejected_upload_fails_the_render_that_draws_it() {
         use crate::{Draw as _, RenderError, ResourceId, Sampling, ShaderPaint};
@@ -2621,12 +2622,13 @@ mod tests {
 
         let assert_rejected =
             |expected: ResourceId, reason: &str| match engine.render(FrameTime::now()) {
-                Err(RenderError::Rejected {
-                    resource,
-                    reason: actual,
-                }) => {
-                    assert_eq!(resource, expected);
-                    assert_eq!(actual.to_string(), reason);
+                Err(RenderError::Rejected { surfaces, .. }) => {
+                    let [rejection] = surfaces.as_slice() else {
+                        panic!("one surface draws {expected}: {surfaces:?}");
+                    };
+                    assert_eq!(rejection.surface, surface.id());
+                    assert_eq!(rejection.resource, expected);
+                    assert_eq!(rejection.reason.to_string(), reason);
                 }
                 other => panic!("{expected} drawn: {other:?}"),
             };
@@ -2664,6 +2666,70 @@ mod tests {
         engine
             .render(FrameTime::now())
             .expect("content that no longer draws a rejected resource renders");
+    }
+
+    /// A rejection is scoped to the surfaces that draw the resource: the
+    /// frame leaves them out, keeping their changes pending, and draws
+    /// every other surface; `render` names only the surfaces left out, and
+    /// once the content stops drawing the resource the surface draws again.
+    #[test]
+    fn a_rejected_resource_leaves_out_only_the_surfaces_that_draw_it() {
+        use crate::{Draw as _, RenderError, ResourceId, Sampling};
+
+        let (engine, rx) = engine_rejecting(HashSet::from([NullReject::Image]));
+        let image = engine
+            .image(ImageData::<Rgba8>::new(1, 1, vec![0u8; 4]).expect("image data"))
+            .expect("the image is queued");
+        let offscreen = || Offscreen::new((8, 8), OffscreenFormat::LinearF16);
+        let rejected = engine.surface(offscreen(), || {}).expect("surface");
+        let unrelated = engine.surface(offscreen(), || {}).expect("surface");
+        let rect = kurbo::Rect::new(0., 0., 8., 8.);
+        let fill = |surface: &crate::Surface<Null>| {
+            surface.update(|tx| {
+                tx[surface.root()].record(|c| c.fill(rect, crate::WorkingColor::WHITE));
+            });
+        };
+        let drawn = || -> Vec<SurfaceId> {
+            rx.try_iter()
+                .filter_map(|event| match event {
+                    Event::Frame(record) if record.changed => Some(record.surface),
+                    _ => None,
+                })
+                .collect()
+        };
+        engine.render(FrameTime::now()).expect("first frame");
+        let _ = drawn();
+
+        rejected.update(|tx| {
+            tx[rejected.root()].record(|c| c.image(image.id(), rect, Sampling::Nearest));
+        });
+        fill(&unrelated);
+        for _ in 0..2 {
+            match engine.render(FrameTime::now()) {
+                Err(RenderError::Rejected { surfaces, .. }) => {
+                    let [rejection] = surfaces.as_slice() else {
+                        panic!("only the surface drawing the image is left out: {surfaces:?}");
+                    };
+                    assert_eq!(rejection.surface, rejected.id());
+                    assert_eq!(rejection.resource, ResourceId::Image(image.id()));
+                }
+                other => panic!("rejected image drawn: {other:?}"),
+            }
+            assert!(
+                !drawn().contains(&rejected.id()),
+                "the surface drawing the rejected image is left out"
+            );
+            // The unrelated surface keeps rendering its changes.
+            fill(&unrelated);
+        }
+        assert_eq!(rejected.next_frame(), crate::Next::Idle);
+
+        fill(&rejected);
+        engine
+            .render(FrameTime::now())
+            .expect("content that no longer draws the image renders");
+        let frames = drawn();
+        assert!(frames.contains(&rejected.id()) && frames.contains(&unrelated.id()));
     }
 
     /// The position of the first event matching `f`.
@@ -3517,9 +3583,10 @@ mod wasm_tests {
         balance::assert_balanced(&rx);
     }
 
-    /// An upload the backend rejects after its handle was returned fails
-    /// the render that draws it, naming the resource and the backend's
-    /// reason. Registration and recording happen with no await between.
+    /// An upload the backend rejects after its handle was returned leaves
+    /// the surface that draws it out of the render, naming the surface,
+    /// the resource and the backend's reason. Registration and recording
+    /// happen with no await between.
     #[wasm_bindgen_test]
     #[expect(
         clippy::future_not_send,
@@ -3540,9 +3607,13 @@ mod wasm_tests {
             tx[surface.root()].record(|c| c.image(image.id(), rect, Sampling::Nearest));
         });
         match engine.render(FrameTime::now()).await {
-            Err(RenderError::Rejected { resource, reason }) => {
-                assert_eq!(resource, ResourceId::Image(image.id()));
-                assert_eq!(reason.to_string(), "image: injected rejection");
+            Err(RenderError::Rejected { surfaces, .. }) => {
+                let [rejection] = surfaces.as_slice() else {
+                    panic!("one surface draws the image: {surfaces:?}");
+                };
+                assert_eq!(rejection.surface, surface.id());
+                assert_eq!(rejection.resource, ResourceId::Image(image.id()));
+                assert_eq!(rejection.reason.to_string(), "image: injected rejection");
             }
             other => panic!("rejected image drawn: {other:?}"),
         }
@@ -3561,9 +3632,13 @@ mod wasm_tests {
             });
         });
         match engine.render(FrameTime::now()).await {
-            Err(RenderError::Rejected { resource, reason }) => {
-                assert_eq!(resource, ResourceId::Shader(shader.id()));
-                assert_eq!(reason.to_string(), "shader: injected rejection");
+            Err(RenderError::Rejected { surfaces, .. }) => {
+                let [rejection] = surfaces.as_slice() else {
+                    panic!("one surface draws the shader: {surfaces:?}");
+                };
+                assert_eq!(rejection.surface, surface.id());
+                assert_eq!(rejection.resource, ResourceId::Shader(shader.id()));
+                assert_eq!(rejection.reason.to_string(), "shader: injected rejection");
             }
             other => panic!("rejected shader drawn: {other:?}"),
         }
