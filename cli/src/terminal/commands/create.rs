@@ -93,14 +93,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     {
         return Err(draft.discard(error).await);
     }
-    let spinner = shell.spinner("Scaffolding generated crates and fetching declared fonts...");
-    let fetched = draft.finish().await;
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
-    }
-    for (name, path) in fetched? {
-        success!(shell, "Fetched font '{name}' to {}", path.display());
-    }
+    let _project = draft.finish();
     print_create_summary(shell, &plan);
     Ok(())
 }

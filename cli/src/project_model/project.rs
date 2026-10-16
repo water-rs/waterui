@@ -1379,22 +1379,6 @@ pub enum FailToCreateProject {
     /// Failed to check git repository status.
     #[error("Failed to check git repository status: {0}")]
     GitStatus(std::io::Error),
-    /// A generated crate a build compiles could not be scaffolded.
-    #[error("Failed to scaffold the project's generated crates: {0:#}")]
-    ScaffoldGeneratedCrates(eyre::Report),
-    /// The project's declared fonts could not be read or fetched.
-    #[error("Failed to fetch the project's declared fonts: {0:#}")]
-    FetchFonts(eyre::Report),
-    /// Declared fonts could not be satisfied by fetching.
-    #[error(
-        "{} declared font(s) cannot be satisfied by fetching — the build reports them the same way:{}",
-        .0.len(),
-        bullet_list(.0)
-    )]
-    UnsatisfiableFonts(
-        /// Reports for every declaration that cannot be satisfied.
-        Vec<eyre::Report>,
-    ),
     /// Creation failed and its partial output could not be removed.
     #[error(
         "{error:#}; removing the partially created project at {} also failed: {cleanup:#}",
@@ -1408,14 +1392,6 @@ pub enum FailToCreateProject {
         /// The error encountered while removing partial output.
         cleanup: eyre::Report,
     },
-}
-
-fn bullet_list(errors: &[eyre::Report]) -> String {
-    let mut bullets = String::new();
-    for error in errors {
-        write!(bullets, "\n  - {error:#}").expect("writing to a string cannot fail");
-    }
-    bullets
 }
 
 /// Options for creating a new `WaterUI` project.
@@ -1552,43 +1528,14 @@ impl ProjectDraft {
         &self.project
     }
 
-    /// Scaffold the generated crates the mainline backends compile and seed
-    /// their declared fonts. An experimental backend's crate is scaffolded and
-    /// scanned when that backend is built or fetched for, so a broken
-    /// experimental pin never fails project creation.
+    /// Finish the draft — the created project.
     ///
-    /// # Errors
-    /// Returns an error if generated-crate scaffolding, font declaration
-    /// scanning, font fetching, or cleanup fails. A failure removes the
-    /// project and its managed build-cache container.
-    pub async fn finish(self) -> Result<Vec<(String, PathBuf)>, FailToCreateProject> {
-        let outcomes = match crate::seed_mainline_font_cache(&self.project).await {
-            Ok(outcomes) => outcomes,
-            Err(crate::SeedFontCacheError::Scaffold(error)) => {
-                return Err(self
-                    .fail(FailToCreateProject::ScaffoldGeneratedCrates(error))
-                    .await);
-            }
-            Err(crate::SeedFontCacheError::Fonts(error)) => {
-                return Err(self.fail(FailToCreateProject::FetchFonts(error)).await);
-            }
-        };
-
-        let mut fetched = Vec::new();
-        let mut unsatisfiable = Vec::new();
-        for outcome in outcomes {
-            match outcome {
-                crate::FetchOutcome::Satisfied { .. } => {}
-                crate::FetchOutcome::Fetched { name, path } => fetched.push((name, path)),
-                crate::FetchOutcome::Unsatisfiable { error, .. } => unsatisfiable.push(error),
-            }
-        }
-        if !unsatisfiable.is_empty() {
-            return Err(self
-                .fail(FailToCreateProject::UnsatisfiableFonts(unsatisfiable))
-                .await);
-        }
-        Ok(fetched)
+    /// Creation ends here: generated backend crates and the fonts they
+    /// declare are produced by the build that needs them, so finishing only
+    /// ends the draft's rollback window.
+    #[must_use]
+    pub fn finish(self) -> Project {
+        self.project
     }
 
     /// Remove this draft after a failure outside it and return that error.
@@ -1608,10 +1555,6 @@ impl ProjectDraft {
         }
     }
 
-    async fn fail(self, error: FailToCreateProject) -> FailToCreateProject {
-        let root = self.project.root.clone();
-        roll_back(&self.project.host, root, error).await
-    }
 }
 
 async fn remove_project_and_cache(host: &Host, root: &Path) -> eyre::Result<()> {
@@ -2167,9 +2110,9 @@ impl Project {
 
     /// Open a project for building, running, or packaging.
     ///
-    /// Validates the project's own font declarations before invoking Cargo or
-    /// initializing backends. Dependency fonts still need post-build validation.
-    /// Use [`Self::open`] for operations such as fetching missing fonts.
+    /// Resolves the project's own font declarations before invoking Cargo or
+    /// initializing backends — fetching what the font cache misses unless the
+    /// host is offline, where a missing declared font fails.
     ///
     /// # Errors
     /// Returns [`FailToOpenProject::Fonts`] for unavailable declared fonts, or
@@ -4647,12 +4590,16 @@ mod target_graph_tests {
         root
     }
 
+    /// An online open would fetch the font instead of failing, so the strict
+    /// rejection is exercised the way a command's `--offline` binds it.
     #[test]
-    fn build_open_rejects_missing_manifest_fonts_before_any_cargo_invocation() {
+    fn offline_build_open_rejects_missing_manifest_fonts_before_any_cargo_invocation() {
         let machine = TestMachine::new();
         let root = fixture(&machine);
         let log = machine.file("invocations.log", "");
-        let host = machine.host([("WATERUI_FAKE_LOG", log.as_os_str())]);
+        let host = machine
+            .host([("WATERUI_FAKE_LOG", log.as_os_str())])
+            .with_offline(true);
         let cache = host.cache_dir().unwrap().join("waterui/fonts");
         std::fs::create_dir_all(&cache).unwrap();
         smol::block_on(async {
@@ -5896,60 +5843,6 @@ mod local_patch_tests {
         let checkout = machine.root().join("waterui");
         write_local_checkout(&checkout);
         checkout
-    }
-
-    #[test]
-    fn a_failing_companion_scaffold_fails_create_and_leaves_nothing_behind() {
-        let machine = TestMachine::new();
-        machine.install("cargo");
-        machine.install("git");
-        let host = machine.host::<&str, &str>([]);
-        let checkout = local_checkout(&machine);
-        let root = machine.root().join("water-example");
-
-        let draft = smol::block_on(ProjectDraft::create(
-            &host,
-            &root,
-            local_create_options(checkout),
-        ))
-        .expect("the initial project scaffold succeeds");
-        assert!(root.join("Water.toml").is_file());
-        let cache = crate::water_dir::build_cache_container_for_on(&host, &root)
-            .expect("cache container path");
-        assert!(
-            cache.starts_with(machine.home()),
-            "managed cache must use the test host's home: {}",
-            cache.display()
-        );
-
-        let error = smol::block_on(draft.finish()).expect_err("the companion scaffold must fail");
-        assert!(
-            matches!(error, FailToCreateProject::ScaffoldGeneratedCrates(_)),
-            "{error}"
-        );
-        let message = error.to_string();
-        assert!(
-            message.contains("Failed to scaffold the project's generated crates"),
-            "{message}"
-        );
-        assert!(
-            message.contains("could not scaffold the Apple companion crate"),
-            "{message}"
-        );
-        assert!(
-            message.contains("`cargo metadata` exited with an error"),
-            "{message}"
-        );
-        assert!(
-            !root.exists(),
-            "failed project root remains: {}",
-            root.display()
-        );
-        assert!(
-            !cache.exists(),
-            "failed project cache remains: {}",
-            cache.display()
-        );
     }
 
     #[test]

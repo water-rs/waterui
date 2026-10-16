@@ -655,7 +655,6 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   app_path=""
   runner_pid=""
   stuck=0
-  fetch_failed=0
   if [[ -n "${prebuilt_dir}" ]]; then
     # The build job packaged this example already; its package log stands in
     # as the run log so the artifacts look as they did when the shard built
@@ -670,12 +669,9 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       -name '*.app' -type d -print -quit 2>/dev/null || true)"
   else
     : > "${run_log}"
-    # Builds never touch the network: a declared remote font must already be
-    # in the font cache, so it is fetched before packaging (#2638). A fetch
-    # failure fails the example the same way a package failure does below.
-    if ! water fetch --path "${example_path}" >> "${run_log}" 2>&1; then
-      fetch_failed=1
-    else
+    # The package is backgrounded so the wait loop can bound a hung build by
+    # silence rather than duration.
+    {
       water package --platform "${package_platform}" --backend apple --release \
         --path "${example_path}" >> "${run_log}" 2>&1 &
       runner_pid=$!
@@ -712,7 +708,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       if (( built == 1 )); then
         app_path="$(find_packaged_app "${run_log}")"
       fi
-    fi
+    }
   fi
 
   if [[ -n "${app_path}" ]]; then
@@ -744,11 +740,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       fi
       kill "${runner_pid}" 2>/dev/null || true
     else
-      if (( fetch_failed )); then
-        echo "::error::water fetch failed for ${example} (${platform})."
-        failures+=("${example}: fetch")
-        report+=("| \`${example}\` | fetch failed | — | — | — | ${mem_cell} |")
-      elif grep -qi "unsupported for" "${run_log}"; then
+      if grep -qi "unsupported for" "${run_log}"; then
         # The CLI refused a platform-impossible configuration (e.g. a CEF
         # WebView on iOS) — by-design, not a defect (#154). Skipped, not failed.
         echo "::notice::${example} is unsupported on ${platform}; skipping."

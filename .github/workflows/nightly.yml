@@ -537,12 +537,6 @@ jobs:
               fail "doctor --fix reported failed installs in the Android project"
             fi
           fi
-          # Builds never touch the network: declared remote fonts must be in
-          # the font cache already, so fetch them before building (#2638).
-          phase "water fetch e2eapp"
-          water fetch --path e2eapp 2>&1 | tee e2e-logs/fetch-app.log \
-            || fail "water fetch failed"
-
           phase "water build e2eapp"
           (cd e2eapp && water build --platform "$E2E_PLATFORM" --backend "$E2E_BACKEND" --yes \
             2>&1 | tee ../e2e-logs/build-app.log) || fail "water build failed"
@@ -665,12 +659,6 @@ jobs:
           water create e2eapp --waterui-path $wateruiSrc 2>&1 |
             Tee-Object "$logs\create-app.log"
           if ($LASTEXITCODE -or -not (Test-Path "e2eapp\Water.toml")) { Fail "water create failed" }
-
-          # Builds never touch the network: declared remote fonts must be in
-          # the font cache already, so fetch them before building (#2638).
-          Phase "water fetch e2eapp"
-          water fetch --path e2eapp 2>&1 | Tee-Object "$logs\fetch-app.log"
-          if ($LASTEXITCODE) { Fail "water fetch failed" }
 
           Push-Location e2eapp
           Phase "water build e2eapp"

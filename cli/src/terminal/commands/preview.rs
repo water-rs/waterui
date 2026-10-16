@@ -25,20 +25,21 @@ use waterui_cli::preview::{
 use waterui_cli::project::{Manifest, read_project_crate_name};
 
 async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
+    let host = waterui_cli::toolchain::Host::current().with_offline(args.offline);
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let manifest = Manifest::open(project_path.join("Water.toml")).await?;
     let platform = request::resolve_preview_platform(args.platform)?;
     let target_platform = request::resolve_hydrolysis_test_platform(&manifest, platform)?;
     request::check_toolchain_for_backend(
-        &waterui_cli::toolchain::Host::current(),
+        &host,
         ResolvedPreviewBackend::Hydrolysis(target_platform),
     )
     .await?;
     let (width, height) = request::parse_frame(&args.frame)?;
     let crate_name = read_project_crate_name(&project_path).await?;
-    let sccache_path =
-        super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
+    let sccache_path = super::detect_sccache_path(shell, &host).await;
     let targets = resolve_test_targets(
+        &host,
         &project_path,
         &crate_name,
         &args,
@@ -59,7 +60,7 @@ async fn run_preview_test(shell: &Shell, args: PreviewTestArgs) -> Result<()> {
         let spinner = shell.spinner("Building and testing with hydrolysis...");
         let output = Box::pin(test_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
-                host: &waterui_cli::toolchain::Host::current(),
+                host: &host,
                 project_path: &project_path,
                 source: target.source(),
                 theme: args.theme.into(),
@@ -146,6 +147,13 @@ pub struct Args {
     #[arg(short, long)]
     device: Option<String>,
 
+    /// Preview without accessing the network — the same switch as
+    /// `cargo build --offline`, and `CARGO_NET_OFFLINE` is honoured the same
+    /// way. A declared font missing from the font cache then fails the
+    /// preview instead of being fetched.
+    #[arg(long)]
+    offline: bool,
+
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
@@ -216,6 +224,13 @@ struct PreviewTestArgs {
     #[arg(long)]
     code_file: Option<PathBuf>,
 
+    /// Test without accessing the network — the same switch as
+    /// `cargo build --offline`, and `CARGO_NET_OFFLINE` is honoured the same
+    /// way. A declared font missing from the font cache then fails the
+    /// preview instead of being fetched.
+    #[arg(long)]
+    offline: bool,
+
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
@@ -244,6 +259,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     };
 
     // Canonicalize project path
+    let host = waterui_cli::toolchain::Host::current().with_offline(args.offline);
     let project_path = crate::project_path::canonicalize(&args.path)?;
 
     let crate_name = read_project_crate_name(&project_path).await?;
@@ -260,22 +276,18 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     }
     header!(shell, "Preview: {}", request.target.display_name());
 
-    let kotlin_toolchain = request::check_toolchain_for_backend(
-        &waterui_cli::toolchain::Host::current(),
-        request.backend,
-    )
-    .await?;
+    let kotlin_toolchain =
+        request::check_toolchain_for_backend(&host, request.backend).await?;
 
     // Detect sccache for compilation caching
-    let sccache_path =
-        super::detect_sccache_path(shell, &waterui_cli::toolchain::Host::current()).await;
+    let sccache_path = super::detect_sccache_path(shell, &host).await;
 
     if let ResolvedPreviewBackend::Hydrolysis(platform) = request.backend {
         let android = if platform == waterui_cli::platform::TargetPlatform::Android {
             let spinner = shell.spinner("Scanning for devices...");
             let target = super::select_android_target(
                 shell,
-                &waterui_cli::toolchain::Host::current(),
+                &host,
                 waterui_cli::water_dir::device_memory_key(
                     waterui_cli::platform::TargetBackend::Hydrolysis,
                     waterui_cli::platform::TargetPlatform::Android,
@@ -295,7 +307,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         let spinner = shell.spinner("Building and rendering with hydrolysis...");
         Box::pin(render_preview_with_hydrolysis(
             HydrolysisPreviewRequest {
-                host: &waterui_cli::toolchain::Host::current(),
+                host: &host,
                 project_path: &project_path,
                 source: request.target.source(),
                 theme: request
@@ -337,7 +349,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         let spinner = shell.spinner("Building and rendering with the Apple backend...");
         render_preview_with_apple(
             ApplePreviewRequest {
-                host: &waterui_cli::toolchain::Host::current(),
+                host: &host,
                 project_path: &project_path,
                 platform,
                 source: request.target.source(),
@@ -469,6 +481,7 @@ fn parse_scenario_event(event: &ScenarioEventFile) -> Result<HydrolysisPreviewSc
 }
 
 async fn resolve_test_targets(
+    host: &waterui_cli::toolchain::Host,
     project_path: &Path,
     crate_name: &str,
     args: &PreviewTestArgs,
@@ -485,6 +498,7 @@ async fn resolve_test_targets(
         }
         (true, None) => {
             discover_preview_targets(
+                host,
                 project_path,
                 crate_name,
                 args.theme.into(),
@@ -516,6 +530,7 @@ async fn resolve_test_targets(
 /// probe shares its Cargo profile with the per-target builds `run_preview_test`
 /// then performs, so discovery costs one warm build.
 async fn discover_preview_targets(
+    host: &waterui_cli::toolchain::Host,
     project_path: &Path,
     crate_name: &str,
     theme: HydrolysisPreviewTheme,
@@ -524,7 +539,7 @@ async fn discover_preview_targets(
     progress: Option<&BuildProgress>,
 ) -> Result<Vec<PreviewTarget>> {
     let exports = discover_hydrolysis_preview_exports(
-        &waterui_cli::toolchain::Host::current(),
+        host,
         project_path,
         theme,
         target_platform,
