@@ -4,7 +4,7 @@ use std::{
     rc::Rc,
 };
 
-use accesskit::{Action, ActionRequest, Node, NodeId, Role, Toggled, TreeId, TreeUpdate};
+use accesskit::{Action, ActionRequest, Node, NodeId, Point, Role, Toggled, TreeId, TreeUpdate};
 use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{Event, HtmlElement};
 
@@ -75,6 +75,13 @@ impl WebAccessibilityBridge {
                 false
             }
         });
+        let accesskit_nodes: HashMap<_, _> =
+            update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+        let parents: HashMap<_, _> = update
+            .nodes
+            .iter()
+            .flat_map(|(id, node)| node.children().iter().map(move |child| (*child, *id)))
+            .collect();
         for (id, node) in &update.nodes {
             self.ensure_node(*id);
             let element = self
@@ -83,10 +90,12 @@ impl WebAccessibilityBridge {
                 .expect("new DOM accessibility node missing")
                 .element
                 .clone();
-            apply_node(&element, node);
+            apply_node(
+                &element,
+                node,
+                positioned_ancestor_origin(*id, &parents, &accesskit_nodes),
+            );
         }
-        let accesskit_nodes: HashMap<_, _> =
-            update.nodes.iter().map(|(id, node)| (*id, node)).collect();
         for (id, node) in &update.nodes {
             let parent = self
                 .nodes
@@ -214,7 +223,28 @@ fn set_optional_attribute(element: &HtmlElement, name: &str, value: Option<&str>
     }
 }
 
-fn apply_node(element: &HtmlElement, node: &Node) {
+/// Window position of the nearest ancestor that carries bounds.
+///
+/// AccessKit bounds are window coordinates, while each mirror node is
+/// positioned inside its parent's element; an ancestor without bounds sits at
+/// its own parent's origin, so the offset comes from the nearest one with
+/// bounds.
+fn positioned_ancestor_origin(
+    id: NodeId,
+    parents: &HashMap<NodeId, NodeId>,
+    nodes: &HashMap<NodeId, &Node>,
+) -> Point {
+    let mut current = id;
+    while let Some(parent) = parents.get(&current) {
+        if let Some(bounds) = nodes[parent].bounds() {
+            return bounds.origin();
+        }
+        current = *parent;
+    }
+    Point::ZERO
+}
+
+fn apply_node(element: &HtmlElement, node: &Node, origin: Point) {
     let is_text = matches!(node.role(), Role::TextRun | Role::Label | Role::Paragraph);
     element.set_text_content(is_text.then(|| node.label()).flatten());
     set_optional_attribute(element, "role", aria_role(node.role()));
@@ -294,8 +324,8 @@ fn apply_node(element: &HtmlElement, node: &Node) {
     if let Some(bounds) = node.bounds() {
         let style = element.style();
         for (name, value) in [
-            ("left", format!("{}px", bounds.x0)),
-            ("top", format!("{}px", bounds.y0)),
+            ("left", format!("{}px", bounds.x0 - origin.x)),
+            ("top", format!("{}px", bounds.y0 - origin.y)),
             ("width", format!("{}px", bounds.width().max(0.0))),
             ("height", format!("{}px", bounds.height().max(0.0))),
         ] {
