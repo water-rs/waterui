@@ -45,7 +45,7 @@ macro_rules! impl_widget_behavior {
                 state: &mut HydroState,
                 proposal: ProposalSize,
                 env: &Environment,
-                theme: &Rc<dyn crate::engine::WidgetTheme>,
+                theme: &Rc<dyn crate::theme::WidgetTheme>,
             ) -> ViewDimensions {
                 ($measure)(&self.borrow(), proposal, state, env, theme)
             }

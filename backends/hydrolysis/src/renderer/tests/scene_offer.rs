@@ -31,9 +31,9 @@ use waterui_layout::stack::hstack;
 use waterui_layout::{Divider, ProposalSize, Rect, Size, SubView};
 
 use super::{test_environment, test_renderer};
-use crate::engine::WidgetTheme;
 use crate::renderer::HydroState;
 use crate::renderer::tree::RenderNode;
+use crate::theme::WidgetTheme;
 
 const WINDOW_WIDTH: f32 = 800.0;
 const WINDOW_HEIGHT: f32 = 600.0;

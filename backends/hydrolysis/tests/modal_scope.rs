@@ -7,12 +7,12 @@
 
 mod support;
 
+use hydrolysis::theme::ModalInteraction;
 use support::{mount_rendered, mount_semantic};
 use waterui::Binding;
 use waterui::Signal as _;
 use waterui::ViewExt as _;
 use waterui::component::{text, vstack};
-use waterui_backend_core::widget::ModalInteraction;
 use waterui_controls::button;
 use waterui_core::Environment;
 use waterui_core::handler::SharedAction;

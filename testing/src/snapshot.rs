@@ -1,9 +1,10 @@
 use std::path::Path;
 use std::rc::Rc;
 
+use hydrolysis::theme::WidgetTheme;
 use hydrolysis::{
     FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style,
-    WidgetTheme, readback_texture_rgba8,
+    readback_texture_rgba8,
 };
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::WorkingColor;

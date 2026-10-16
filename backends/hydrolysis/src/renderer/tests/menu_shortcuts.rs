@@ -25,8 +25,8 @@ use waterui_layout::stack::vstack;
 use super::popup_windows::find_by_label;
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
-use crate::engine::WidgetTheme;
 use crate::platform::{InputEvent, KeyCode, KeyState, Modifiers, PointerButton, PointerKind};
+use crate::theme::WidgetTheme;
 
 const WINDOW: (u32, u32) = (320, 240);
 

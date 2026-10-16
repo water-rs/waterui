@@ -120,8 +120,8 @@ use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
 use waterui_navigation::tab::{Tab, TabsLayout};
 
-use crate::engine::WidgetTheme;
-use waterui_backend_core::widget::{
+use crate::theme::WidgetTheme;
+use crate::theme::{
     BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding,
     InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
     PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
@@ -2282,8 +2282,8 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
     reason = "the local-space mapping must carry the wave's progress and opacity through untouched, so the values stay bit-identical"
 )]
 fn interaction_press_origin_is_converted_to_widget_local_space() {
-    let mut press_waves = waterui_backend_core::widget::PressWaves::EMPTY;
-    press_waves.push(waterui_backend_core::widget::PressWave {
+    let mut press_waves = crate::theme::PressWaves::EMPTY;
+    press_waves.push(crate::theme::PressWave {
         origin: Some(Point::new(125.0, 84.0)),
         progress: 0.5,
         opacity: 0.12,

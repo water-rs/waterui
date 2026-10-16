@@ -27,7 +27,7 @@ impl HydroNativeView for Native<ScrollView> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_view_intrinsic(view.as_inner().content(), state, env, theme)
     }
@@ -36,7 +36,7 @@ impl HydroNativeView for Native<ScrollView> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> waterui_core::layout::ViewDimensions {
         // A scroll fills the offered extent on bounded axes — answering the

@@ -4661,7 +4661,6 @@ name = "hydrolysis-android-test-app"
 version = "0.0.0"
 dependencies = [
  "hydrolysis",
- "hydrolysis-m3",
  "jni 0.21.1",
  "waterui",
  "waterui-core",
@@ -4670,13 +4669,12 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#7c9ed56b1ac49dd9e1317313f62ddfc12596e644"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#0add1da1efe14f4b42349de93c687df033ec258e"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
  "num-traits",
  "waterui",
- "waterui-backend-core",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
@@ -12682,12 +12680,8 @@ dependencies = [
  "num-traits",
  "tracing",
  "waterui",
- "waterui-controls",
  "waterui-core",
- "waterui-form",
- "waterui-graphics",
  "waterui-layout",
- "waterui-text",
  "web-time",
 ]
 
@@ -13482,7 +13476,6 @@ dependencies = [
  "sysinfo",
  "waterui",
  "waterui-assets-planner",
- "waterui-backend-core",
  "waterui-canvas",
  "waterui-core",
  "waterui-preview-protocol",

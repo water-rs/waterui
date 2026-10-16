@@ -11,7 +11,7 @@ impl HydroNativeView for Native<TextConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         let content = state.measure_signal(&view.as_inner().content);
         let alignment = state.measure_signal(&view.as_inner().paragraph_alignment);
@@ -30,7 +30,7 @@ impl HydroNativeView for Native<TextConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let content = state.measure_signal(&view.as_inner().content);

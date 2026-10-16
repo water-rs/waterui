@@ -27,15 +27,15 @@ use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::local_interaction_state;
+use crate::theme::PickerMetrics;
 use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
-use waterui_backend_core::widget::PickerMetrics;
 
 impl HydroNativeView for Native<PickerConfig> {
     fn intrinsic(
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_picker_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -98,7 +98,7 @@ pub fn menu_picker_label_view(label: &Label) -> AnyView {
 pub fn picker_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
-    theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
     state: &Rc<RefCell<PickerRenderState>>,
     env: &Environment,
 ) {
@@ -474,7 +474,7 @@ pub fn measure_picker_node(
     proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_size = state.label_view.measure_built(hydro, env, theme);
     let intrinsic =
@@ -1077,8 +1077,8 @@ pub fn emit_picker_accessibility(
 #[cfg(test)]
 mod tests {
     use super::{menu_picker_content_rects, radio_group_label_area, segmented_label_area};
+    use crate::theme::PickerMetrics;
     use kurbo::Rect;
-    use waterui_backend_core::widget::PickerMetrics;
 
     fn metrics() -> PickerMetrics {
         PickerMetrics {
