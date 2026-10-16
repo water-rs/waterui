@@ -134,7 +134,7 @@ pub struct PaintData {
     /// First stop, relative to the resolved paint's stop buffer.
     pub first_stop: u32,
     /// `count | interp << 16 | extend << 20`; for `PAINT_IMAGE`,
-    /// `extend_x | extend_y << 4 | sampling << 8`.
+    /// `extend_x | extend_y << 4 | sampling << 8 | image.sampling_flags`.
     pub packed: u32,
     /// A registered image ID. Shader identities belong to the emitted range,
     /// keeping ordinary paint fields trivially copyable.
@@ -280,7 +280,8 @@ fn paint_data(
             };
             data.packed = extend_code(pattern.extend_x)
                 | (extend_code(pattern.extend_y) << 4)
-                | (sampling << 8);
+                | (sampling << 8)
+                | img.sampling_flags;
             data.image = Some(pattern.image.raw());
         }
         Paint::Shader(_) => return Err(RenderError::Unsupported(names::SHADER)),

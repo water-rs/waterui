@@ -134,10 +134,11 @@ impl Entry {
 }
 
 /// Group 0 of the engine pipelines (`shader.wgsl`): the per-pass globals
-/// window, the instance and gradient-stop buffers and the glyph atlas.
-/// Backdrop union member records ride in the stops buffer. The last
-/// entry — the GPU coverage cell buffer of issue #2543 — is fragment
-/// storage like the stops, so no new device capability is needed.
+/// window, the instance and gradient-stop buffers, the glyph atlas, the
+/// GPU coverage cell buffer of issue #2543 and the image transfer table.
+/// Backdrop union member records ride in the stops buffer. The cell buffer
+/// and the table are fragment storage like the stops, so neither needs a
+/// new device capability.
 pub const ENGINE_GROUP0: &[Entry] = &[
     // One 32-byte Globals window; the dynamic offset selects the pass's slot.
     Entry::uniform(0, VERTEX | FRAGMENT, true, 32),
@@ -148,7 +149,13 @@ pub const ENGINE_GROUP0: &[Entry] = &[
     // buffer the fragment stage reads instead of the atlas for
     // FLAG_CELL_BUFFER instances.
     Entry::storage_read(4, FRAGMENT),
+    // The sRGB transfer decode table of natively stored 8-bit images.
+    Entry::storage_read(IMAGE_DECODE_BINDING, FRAGMENT),
 ];
+
+/// The `ENGINE_GROUP0` binding of the image transfer decode table
+/// (`image_decode` in `shader.wgsl`).
+pub const IMAGE_DECODE_BINDING: u32 = 5;
 
 /// Group 1 of the engine pipelines: the textures a composite or paint
 /// samples — composite source, blend backdrop, image paint, clip mask.

@@ -506,6 +506,7 @@ impl Ring {
             u64::from(size.0) * u64::from(size.1) * super::texel_bytes(super::TARGET_FORMAT),
         );
         super::GpuImage {
+            sampling_flags: 0,
             texture,
             view,
             width: size.0,

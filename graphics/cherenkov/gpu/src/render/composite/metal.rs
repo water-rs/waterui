@@ -125,6 +125,9 @@ const TILE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine_ti
 /// `engine_tile_long.metallib` — the variant-4 tile module.
 const LONG_TILE_METALLIB: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_long.metallib"));
+/// `engine_tile_image.metallib` — the variant-6 (image source) tile module.
+const IMAGE_TILE_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_image.metallib"));
 
 /// The passthrough module for one tile family: the declared entries are
 /// identical across families — the attachment interfaces wrap whichever
@@ -170,6 +173,9 @@ pub struct Executor {
     /// The long-gradient tile module, created on its family's first
     /// pipeline.
     module_long: Option<wgpu::ShaderModule>,
+    /// The image-source tile module, created on its family's first
+    /// pipeline.
+    module_image: Option<wgpu::ShaderModule>,
     pipelines: FxHashMap<Key, wgpu::RenderPipeline>,
 }
 
@@ -185,21 +191,25 @@ impl Executor {
         key: Key,
         created: &mut bool,
     ) -> &wgpu::RenderPipeline {
-        // The module is the family's, the entries are shared: variant 4
-        // draws through the full entry names in the long module.
-        let module = if key.variant == 4 {
-            self.module_long
-                .get_or_insert_with(|| tile_module(device, LONG_TILE_METALLIB))
-        } else {
-            self.module
-                .get_or_insert_with(|| tile_module(device, TILE_METALLIB))
+        // The module is the family's, the entries are shared: variants 4
+        // and 6 draw through the full entry names in their own modules.
+        let module = match key.variant {
+            4 => self
+                .module_long
+                .get_or_insert_with(|| tile_module(device, LONG_TILE_METALLIB)),
+            6 => self
+                .module_image
+                .get_or_insert_with(|| tile_module(device, IMAGE_TILE_METALLIB)),
+            _ => self
+                .module
+                .get_or_insert_with(|| tile_module(device, TILE_METALLIB)),
         };
         self.pipelines.entry(key).or_insert_with(|| {
             *created = true;
             let entry = match key.variant {
                 0 => format!("tile_{}_simple", key.target),
                 1 => format!("tile_{}_shadow", key.target),
-                2 | 4 => format!("tile_{}_{}", key.target, key.source),
+                2 | 4 | 5 => format!("tile_{}_{}", key.target, key.source),
                 3 => format!("tile_{}_clear", key.target),
                 _ => unreachable!("closed tile shader set"),
             };
@@ -265,7 +275,7 @@ fn note(
             variant: match key.variant {
                 0 => report::Variant::Simple,
                 1 => report::Variant::Shadow,
-                2 | 4 => report::Variant::Source,
+                2 | 4 | 6 => report::Variant::Source,
                 3 => report::Variant::Clear,
                 _ => unreachable!("closed tile shader set"),
             },
@@ -457,6 +467,7 @@ pub fn encode(
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }
                 ShaderVariant::LongGradient => 4,
+                ShaderVariant::Image => 6,
             };
             let key = Key {
                 target: op.target,

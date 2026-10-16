@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use cherenkov::{
     Draw as _, Engine as GpuEngine, Fixed, ImageData, Layer as GpuLayer, LayerEdit, Offscreen,
-    OffscreenFormat, RenderError, ResourceError, Rgba8, Rgba16F, Surface, Transaction,
+    OffscreenFormat, RenderError, ResourceError, Surface, Transaction,
 };
 use cherenkov_gpu::interop::{
     OutputAlpha, OutputColor, Presenter, SharedDevice, TextureOutput, TextureTarget,
@@ -861,6 +861,9 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::ImageColorSpace(ImageColorSpace::LinearP3),
         Feature::ImageColorSpace(ImageColorSpace::LinearSrgb),
         Feature::ImageF16,
+        Feature::ImageCompressed(cherenkov_scene::ImageCompression::Astc4x4),
+        Feature::ImageCompressed(cherenkov_scene::ImageCompression::Bc7),
+        Feature::ImageCompressed(cherenkov_scene::ImageCompression::Etc2Rgba),
         Feature::Backdrop,
         Feature::BackdropBlur,
         Feature::BackdropColorMatrix,
@@ -1015,12 +1018,35 @@ fn register_group_fonts(
     Ok(())
 }
 
-/// Keeps a registered image alive until the engine's surface drops —
-/// `Image<F>` is format-typed, so the two encodings box separately.
+/// Format-typed handles keep each registered resource alive until its surface drops.
 #[expect(dead_code, reason = "the handles exist to keep uploads alive")]
 enum ImageHandle {
     Rgba8(cherenkov::Image<cherenkov::Rgba8>),
     Rgba16F(cherenkov::Image<cherenkov::Rgba16F>),
+    Astc4x4(cherenkov::Image<cherenkov::Astc4x4>),
+    Bc7(cherenkov::Image<cherenkov::Bc7>),
+    Etc2Rgba(cherenkov::Image<cherenkov::Etc2Rgba>),
+}
+
+fn upload_image<F: cherenkov::Format>(
+    engine: &GpuEngine<Gpu>,
+    size: (u32, u32),
+    bytes: impl Into<std::sync::Arc<[u8]>>,
+    color_space: cherenkov::ImageColorSpace,
+    premultiplied: bool,
+    wrap: fn(cherenkov::Image<F>) -> ImageHandle,
+) -> Result<(cherenkov::ImageId, ImageHandle), BenchError>
+where
+    Gpu: cherenkov::Uploads<F>,
+{
+    let mut data = ImageData::<F>::new(size.0, size.1, bytes)
+        .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?
+        .color_space(color_space);
+    data.premultiplied = premultiplied;
+    let image = engine
+        .image(data)
+        .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?;
+    Ok((image.id(), wrap(image)))
 }
 
 /// Registers one scene image resource, once per (hash, encoding).
@@ -1028,7 +1054,7 @@ enum ImageHandle {
 /// PNGs carry encoded sRGB or Display P3 data;
 /// [`cherenkov_oracle::image::decode_png_rgba8`] is the shared decoder the
 /// oracle and every adapter use, and the engine converts to the working
-/// space at upload; `Rgba16F` blobs go through `Uploads<Rgba16F>` —
+/// space before interpolation; `Rgba16F` blobs go through `Uploads<Rgba16F>` —
 /// straight-alpha, already linear-light in the declared primaries.
 fn register_image(
     images: &mut HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
@@ -1038,6 +1064,7 @@ fn register_image(
     encoding: ImageEncoding,
     blobs: &Blobs,
 ) -> Result<(), BenchError> {
+    encoding.validate()?;
     let key = (*hash, encoding);
     if images.contains_key(&key) {
         return Ok(());
@@ -1045,64 +1072,72 @@ fn register_image(
     let blob = blobs
         .get(hash)
         .ok_or(cherenkov_scene::SceneError::MissingResource(*hash))?;
-    let (width, height, rgba, color_space) = match encoding {
+    let space = |space| match space {
+        ImageColorSpace::Srgb => cherenkov::ImageColorSpace::Srgb,
+        ImageColorSpace::DisplayP3 => cherenkov::ImageColorSpace::DisplayP3,
+        ImageColorSpace::LinearSrgb => cherenkov::ImageColorSpace::LinearSrgb,
+        ImageColorSpace::LinearP3 => cherenkov::ImageColorSpace::LinearP3,
+    };
+    let (id, handle) = match encoding {
         ImageEncoding::Png { color_space } => {
             let (width, height, rgba) = cherenkov_oracle::image::decode_png_rgba8(blob)
                 .map_err(|e| BenchError::Engine(format!("cherenkov image decode: {e}")))?;
-            let space = match color_space {
-                ImageColorSpace::Srgb => cherenkov::ImageColorSpace::Srgb,
-                ImageColorSpace::DisplayP3 => cherenkov::ImageColorSpace::DisplayP3,
-                _ => {
-                    return Err(BenchError::Engine(format!(
-                        "PNG images are sRGB-encoded, not {color_space:?}"
-                    )));
-                }
-            };
-            (width, height, rgba, space)
+            upload_image(
+                engine,
+                (width, height),
+                rgba,
+                space(color_space),
+                false,
+                ImageHandle::Rgba8,
+            )
         }
+        ImageEncoding::BlockCompressed {
+            format,
+            width,
+            height,
+            color_space,
+            premultiplied,
+        } => match format {
+            cherenkov_scene::ImageCompression::Astc4x4 => upload_image(
+                engine,
+                (width, height),
+                blob.clone(),
+                space(color_space),
+                premultiplied,
+                ImageHandle::Astc4x4,
+            ),
+            cherenkov_scene::ImageCompression::Bc7 => upload_image(
+                engine,
+                (width, height),
+                blob.clone(),
+                space(color_space),
+                premultiplied,
+                ImageHandle::Bc7,
+            ),
+            cherenkov_scene::ImageCompression::Etc2Rgba => upload_image(
+                engine,
+                (width, height),
+                blob.clone(),
+                space(color_space),
+                premultiplied,
+                ImageHandle::Etc2Rgba,
+            ),
+        },
         ImageEncoding::Rgba16F {
             width,
             height,
             color_space,
-        } => {
-            let expected = usize::try_from(width * height * 8)
-                .map_err(|e| BenchError::Engine(format!("f16 image: {e}")))?;
-            if blob.len() != expected {
-                return Err(BenchError::Engine(format!(
-                    "f16 image: {} bytes for {width}x{height}, expected {expected}",
-                    blob.len()
-                )));
-            }
-            let space = match color_space {
-                ImageColorSpace::LinearSrgb => cherenkov::ImageColorSpace::LinearSrgb,
-                ImageColorSpace::LinearP3 => cherenkov::ImageColorSpace::LinearP3,
-                _ => {
-                    return Err(BenchError::Engine(format!(
-                        "f16 images are linear-light, not {color_space:?}"
-                    )));
-                }
-            };
-            let image = engine
-                .image(
-                    ImageData::<Rgba16F>::new(width, height, blob.clone())
-                        .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?
-                        .color_space(space),
-                )
-                .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?;
-            images.insert(key, image.id());
-            handles.push(ImageHandle::Rgba16F(image));
-            return Ok(());
-        }
-    };
-    let image = engine
-        .image(
-            ImageData::<Rgba8>::new(width, height, rgba)
-                .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?
-                .color_space(color_space),
-        )
-        .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?;
-    images.insert(key, image.id());
-    handles.push(ImageHandle::Rgba8(image));
+        } => upload_image(
+            engine,
+            (width, height),
+            blob.clone(),
+            space(color_space),
+            false,
+            ImageHandle::Rgba16F,
+        ),
+    }?;
+    images.insert(key, id);
+    handles.push(handle);
     Ok(())
 }
 

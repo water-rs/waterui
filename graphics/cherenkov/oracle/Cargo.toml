@@ -20,3 +20,4 @@ read-fonts = "0.41"
 png = "0.18"
 rayon = "1"
 serde = { version = "1", features = ["derive"] }
+texture2ddecoder = "0.1.2"

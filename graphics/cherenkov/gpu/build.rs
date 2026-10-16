@@ -93,9 +93,9 @@ struct AppleTarget {
 /// Removes every `// <marker>`-bracketed span from `source` — the mirror
 /// of the marker convention in `shaders.rs`: marker lines pair up, and
 /// the text between an opening and closing marker is a specialization's
-/// optional block (the union field, the long-gradient branch, the GPU
-/// coverage cell buffer), dropped wholesale by variants that do not
-/// carry it.
+/// optional block (the union field, the long-gradient branch, the image
+/// source conversion, the GPU coverage cell buffer), dropped wholesale by
+/// variants that do not carry it.
 ///
 /// Only a whole trimmed line equal to the marker toggles the span — a
 /// marker inside other text is not a marker. An unpaired marker is a
@@ -115,24 +115,85 @@ fn drop_marked(source: &str, marker: &str) -> String {
     out
 }
 
-/// The invariant of every union-stripped product: no `union_field` or
-/// `member_field` text survives — a marker span that drifted fails loudly
-/// here rather than leaving dead union code in a shipped module.
-fn assert_no_union(source: &str, product: &str) {
-    assert!(
-        !source.contains("union_field") && !source.contains("member_field"),
-        "`union-stub` stripping left union code in {product}"
-    );
+/// What the `// union-stub` spans carry.
+const UNION_NAMES: &[&str] = &["union_field", "member_field"];
+/// What the `// image-source` spans carry.
+const IMAGE_SOURCE_NAMES: &[&str] = &["image_decode", "image_source_texel"];
+/// What the `// cell-buffer` spans carry: the GPU coverage cell reads.
+const CELL_NAMES: &[&str] = &["cell_texels"];
+
+/// The invariant of every stripped product: none of `names` survives — a
+/// marker span that drifted fails loudly here rather than leaving dead code
+/// in a shipped module.
+fn assert_absent(source: &str, product: &str, names: &[&str]) {
+    for name in names {
+        assert!(
+            !source.contains(name),
+            "stripping left `{name}` in {product}"
+        );
+    }
 }
 
-/// The invariant of every cell-stripped product: no `cell_texels` text
-/// survives, so a drifted `// cell-buffer` span fails here instead of
-/// shipping the GPU coverage cell reads in a CPU-route module.
-fn assert_no_cell(source: &str, product: &str) {
-    assert!(
-        !source.contains("cell_texels"),
-        "`cell-buffer` stripping left cell-buffer code in {product}"
-    );
+/// The marker-stripped products of `shader.wgsl` and `shared.wgsl` the
+/// engine variants are composed from.
+struct Stripped {
+    shared_plain: String,
+    shader_no_long: String,
+    shader_cell: String,
+    shader_long: String,
+    shader_image: String,
+    shader_plain: String,
+}
+
+impl Stripped {
+    fn new(shader: &str, shared: &str) -> Self {
+        // The stripped products. `shader_no_long` feeds the union module
+        // (variant 3) and `shader_cell` the cell module (variant 5); both keep
+        // the `// image-source` spans, since a union member or a GPU-routed
+        // draw may be an image paint with source flags. `shader_long` (variant
+        // 4), `shader_image` (variant 6) and `shader_plain` (variants 0–2)
+        // additionally drop every `// cell-buffer` span, from `shared.wgsl`
+        // too, so only GPU-routed draws carry the cell-texel reads (issue
+        // #2543); `shader_long` and `shader_plain` drop the source conversion
+        // and `shader_image` and `shader_plain` the long-gradient branch.
+        let shader_no_long = drop_marked(shader, "long-gradient-stub");
+        let shader_cell = drop_marked(shader, "union-stub");
+        let shader_no_cell = drop_marked(&shader_cell, "cell-buffer");
+        let shader_long = drop_marked(&shader_no_cell, "image-source");
+        let shader_image = drop_marked(&shader_no_cell, "long-gradient-stub");
+        let shader_plain = drop_marked(&shader_image, "image-source");
+        let shared_plain = drop_marked(shared, "cell-buffer");
+        for (product, source) in [
+            ("shader_cell", &shader_cell),
+            ("shader_long", &shader_long),
+            ("shader_image", &shader_image),
+            ("shader_plain", &shader_plain),
+        ] {
+            assert_absent(source, product, UNION_NAMES);
+        }
+        for (product, source) in [
+            ("shader_long", &shader_long),
+            ("shader_image", &shader_image),
+            ("shader_plain", &shader_plain),
+            ("shared_plain", &shared_plain),
+        ] {
+            assert_absent(source, product, CELL_NAMES);
+        }
+        for (product, source) in [
+            ("shader_long", &shader_long),
+            ("shader_plain", &shader_plain),
+        ] {
+            assert_absent(source, product, IMAGE_SOURCE_NAMES);
+        }
+        Self {
+            shared_plain,
+            shader_no_long,
+            shader_cell,
+            shader_long,
+            shader_image,
+            shader_plain,
+        }
+    }
 }
 
 /// Passthrough shaders carry no naga runtime checks: the source is
@@ -211,44 +272,24 @@ fn main() {
     // The union member cap the WGSL fold is compiled against:
     // `union_cap::UNION_MAX_MEMBERS` prepended like `VARIANT`, so the
     // Rust constant stays the single definition. The runtime assembles
-    // the union module from this fragment and the non-union variants
-    // from `shader_no_union.wgsl` — `shader.wgsl` minus every
-    // `// union-stub`-bracketed span.
+    // the union module from this fragment and `shader.wgsl`, the image
+    // variant from `shader_image.wgsl` — `shader.wgsl` minus every
+    // `// union-stub`-bracketed span — and the plain variants from
+    // `shader_plain.wgsl`, which also drops every `// image-source` span.
     let union_max = format!(
         "const UNION_MAX_MEMBERS: u32 = {}u;\n",
         union_cap::UNION_MAX_MEMBERS
     );
     std::fs::write(out_dir.join("union_max_members.wgsl"), &union_max).unwrap();
-    // The stripped products: `shader_no_long` feeds the union module and
-    // `shader_long_no_union` the cell module (variant 5); the plain and
-    // long-gradient variants additionally drop every `// cell-buffer`
-    // span, from `shared.wgsl` too, so only GPU-routed draws carry the
-    // cell-texel reads (issue #2543).
-    let shader_no_long = drop_marked(&shader, "long-gradient-stub");
-    let shader_no_union = drop_marked(&shader_no_long, "union-stub");
-    let shader_long_no_union = drop_marked(&shader, "union-stub");
-    assert_no_union(&shader_no_union, "shader_no_union.wgsl");
-    assert_no_union(&shader_long_no_union, "shader_long_no_union.wgsl");
-    let shader_plain = drop_marked(&shader_no_union, "cell-buffer");
-    let shader_long_plain = drop_marked(&shader_long_no_union, "cell-buffer");
-    let shared_plain = drop_marked(&shared, "cell-buffer");
-    assert_no_cell(&shader_plain, "the plain engine shader");
-    assert_no_cell(&shader_long_plain, "the long-gradient engine shader");
-    assert_no_cell(&shared_plain, "the plain shared prelude");
-    std::fs::write(out_dir.join("shader_no_long.wgsl"), &shader_no_long).unwrap();
-    std::fs::write(out_dir.join("shader_no_union.wgsl"), &shader_no_union).unwrap();
-    std::fs::write(
-        out_dir.join("shader_long_no_union.wgsl"),
-        &shader_long_no_union,
-    )
-    .unwrap();
+    let stripped = Stripped::new(&shader, &shared);
     let specs = module_specs(&Modules {
         shared: &shared,
-        shared_plain: &shared_plain,
-        shader_plain: &shader_plain,
-        shader_no_long: &shader_no_long,
-        shader_long_no_union: &shader_long_no_union,
-        shader_long_plain: &shader_long_plain,
+        shared_plain: &stripped.shared_plain,
+        shader_no_long: &stripped.shader_no_long,
+        shader_cell: &stripped.shader_cell,
+        shader_long: &stripped.shader_long,
+        shader_image: &stripped.shader_image,
+        shader_plain: &stripped.shader_plain,
         union: &union,
         union_max: &union_max,
         blend: &blend,
@@ -273,15 +314,18 @@ struct Modules<'a> {
     shared: &'a str,
     /// `shared` minus its `// cell-buffer` spans.
     shared_plain: &'a str,
-    /// `shader` minus its `// union-stub`, `// long-gradient-stub` and
-    /// `// cell-buffer` spans.
-    shader_plain: &'a str,
     /// `shader` minus its `// long-gradient-stub` spans.
     shader_no_long: &'a str,
     /// `shader` minus its `// union-stub` spans only.
-    shader_long_no_union: &'a str,
-    /// `shader` minus its `// union-stub` and `// cell-buffer` spans.
-    shader_long_plain: &'a str,
+    shader_cell: &'a str,
+    /// `shader` minus its `// union-stub`, `// cell-buffer` and
+    /// `// image-source` spans.
+    shader_long: &'a str,
+    /// `shader` minus its `// union-stub`, `// cell-buffer` and
+    /// `// long-gradient-stub` spans.
+    shader_image: &'a str,
+    /// `shader` minus all four marker families.
+    shader_plain: &'a str,
     union: &'a str,
     /// The `UNION_MAX_MEMBERS` const fragment.
     union_max: &'a str,
@@ -305,9 +349,13 @@ struct Modules<'a> {
 /// both executors' modules share the attachment interfaces and differ
 /// only in the engine spec source they are generated from. Used by the
 /// Vulkan `specs` entries and the Apple metallib loop alike.
-const TILE_FAMILIES: [(&str, usize); 2] = [("engine_tile", 2), ("engine_tile_long", 4)];
+const TILE_FAMILIES: [(&str, usize); 3] = [
+    ("engine_tile", 2),
+    ("engine_tile_long", 4),
+    ("engine_tile_image", 6),
+];
 
-/// The fixed module set `render` creates: six VARIANT specializations
+/// The fixed module set `render` creates: seven VARIANT specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
 /// `projective`, `mip`, `resolve`, `reduce`, `shadow`, `coverage` and
 /// `space_convert`.
@@ -316,19 +364,22 @@ const TILE_FAMILIES: [(&str, usize); 2] = [("engine_tile", 2), ("engine_tile_lon
 /// compositing helpers.
 /// Variant 3 (Union) additionally prepends `UNION_MAX_MEMBERS` and links
 /// `union.wgsl` over `shader_no_long`; variant 4 (`LongGradient`) keeps the
-/// `// long-gradient-stub` spans without union; the plain variants drop
-/// both marker families, so their modules carry neither the union fold
-/// and member-cap arrays nor the binary stop search. Variant 5 (`Cell`),
-/// which only GPU-routed draws use, keeps every span but the union's;
-/// all other variants but the union's also drop the `// cell-buffer`
-/// spans of `shared.wgsl` and `shader.wgsl`, the cell-texel reads.
+/// `// long-gradient-stub` spans and variant 6 (`Image`) the
+/// `// image-source` spans, the per-tap source texel conversion, each
+/// without union; the plain variants drop every marker family, so their
+/// modules carry neither the union fold and member-cap arrays, the binary
+/// stop search nor the source conversion. Variant 5 (`Cell`), which only
+/// GPU-routed draws use, keeps every span but the union's; every variant
+/// but the union's and the cell's also drops the `// cell-buffer` spans of
+/// `shared.wgsl` and `shader.wgsl`, the cell-texel reads.
 fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
-    let mut specs: Vec<Spec> = (0..6u32)
+    let mut specs: Vec<Spec> = (0..7u32)
         .map(|variant| {
             let (cap, shared, shader, union) = match variant {
                 3 => (m.union_max, m.shared, m.shader_no_long, m.union),
-                4 => ("", m.shared_plain, m.shader_long_plain, ""),
-                5 => ("", m.shared, m.shader_long_no_union, ""),
+                4 => ("", m.shared_plain, m.shader_long, ""),
+                5 => ("", m.shared, m.shader_cell, ""),
+                6 => ("", m.shared_plain, m.shader_image, ""),
                 _ => ("", m.shared_plain, m.shader_plain, ""),
             };
             Spec {
@@ -402,10 +453,10 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         });
     }
     // The Vulkan tile executor's composition modules (issue #2191): the
-    // stripped no-union variants 2 and 4, like the Apple `engine_tile`
-    // and `engine_tile_long` metallibs, plus the tile stage interfaces.
-    // A union member samples its group's capture, a read
-    // `ExecutionPlan::epoch` never admits into a tile epoch.
+    // no-union variants 2, 4 and 6, like the Apple `engine_tile*`
+    // metallibs, plus the tile stage interfaces. A union member samples
+    // its group's capture, a read `ExecutionPlan::epoch` never admits
+    // into a tile epoch.
     for (name, index) in TILE_FAMILIES {
         specs.push(Spec {
             name: name.into(),
@@ -465,7 +516,15 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
             format_args!("cargo::rerun-if-changed={}\n", fixture.display()),
         )
         .unwrap();
-        compile_metal(out_dir, "attachment_read", &fixture, apple, (3, 0), None);
+        compile_metal(
+            out_dir,
+            "attachment_read",
+            &fixture,
+            apple,
+            (3, 0),
+            None,
+            &[],
+        );
     }
 }
 
@@ -500,9 +559,12 @@ fn compile(out_dir: &Path, spec: &Spec, apple: Option<&AppleTarget>, wasm: bool,
     if spec.attachment {
         tile::attachment_inputs(&mut module);
     }
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     if wasm {
         return;
     }
@@ -932,9 +994,12 @@ fn merge_sampled_pair(words: &mut Vec<u32>, binding_tex: u32, binding_smp: u32, 
 
 fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option<&AppleTarget>) {
     let module = pin_runtime_arrays(module);
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     let options = msl::Options {
         // Metal 2.3 is the first language version that takes
         // `-ftexture-write-rounding-mode` (see `compile_metal`); every
@@ -999,6 +1064,27 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
         } else {
             (metal, None)
         };
+        // Only a family whose module keeps the `// image-source` spans has
+        // the decode table among its `fs_full` parameters; the scaffold
+        // declares and forwards it under this define, at the fragment
+        // buffer index the binding plan gives the table.
+        let defines = if spec.attachment && spec.source.contains(IMAGE_SOURCE_NAMES[0]) {
+            let plan = bindings::metal_plan(spec.groups, bindings::FRAGMENT);
+            let buffer = plan
+                .targets
+                .iter()
+                .find(|&&(group, binding, _)| {
+                    group == 0 && binding == bindings::IMAGE_DECODE_BINDING
+                })
+                .and_then(|&(_, _, target)| target.buffer)
+                .unwrap_or_else(|| panic!("{}: the image decode table has no buffer", spec.name));
+            vec![
+                "TILE_IMAGE_SOURCE".to_owned(),
+                format!("TILE_IMAGE_DECODE_BUFFER={buffer}"),
+            ]
+        } else {
+            Vec::new()
+        };
         compile_metal(
             out_dir,
             &spec.name,
@@ -1006,6 +1092,7 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
             apple,
             options.lang_version,
             preinclude.as_deref(),
+            &defines,
         );
     }
 }
@@ -1013,7 +1100,8 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
 /// Compiles one `.metal` into `<name>.metallib`. `preinclude` names a
 /// generated source the compiler merges ahead of `input` with
 /// `-include` — the tile scaffold takes the family's `fs_*` bodies this
-/// way instead of naming one module in its own `#include`.
+/// way instead of naming one module in its own `#include`. Each of
+/// `defines` is passed as a preprocessor `-D` definition.
 fn compile_metal(
     out_dir: &Path,
     name: &str,
@@ -1021,6 +1109,7 @@ fn compile_metal(
     apple: &AppleTarget,
     version: (u8, u8),
     preinclude: Option<&Path>,
+    defines: &[String],
 ) {
     let sdk = apple.sdk;
     let air = out_dir.join(format!("{name}.air"));
@@ -1052,6 +1141,9 @@ fn compile_metal(
         .arg(out_dir);
     if let Some(preinclude) = preinclude {
         metal.arg("-include").arg(preinclude);
+    }
+    for define in defines {
+        metal.arg(format!("-D{define}"));
     }
     run(
         metal.arg(input),
