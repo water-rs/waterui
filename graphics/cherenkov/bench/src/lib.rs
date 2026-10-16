@@ -520,7 +520,7 @@ pub fn engine_names() -> Vec<&'static str> {
 pub fn create_engine(name: &str) -> Result<Box<dyn Engine>, BenchError> {
     match name {
         #[cfg(feature = "vello-cpu")]
-        vello_cpu_ad::VelloCpu::NAME => Ok(Box::new(vello_cpu_ad::VelloCpu::new())),
+        vello_cpu_ad::VelloCpu::NAME => Ok(Box::new(vello_cpu_ad::VelloCpu::new()?)),
         #[cfg(feature = "vello-classic")]
         vello_classic_ad::VelloClassic::NAME => {
             vello_classic_ad::VelloClassic::new().map(|e| Box::new(e) as Box<dyn Engine>)
