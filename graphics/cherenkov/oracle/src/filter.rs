@@ -41,19 +41,24 @@ pub fn apply(
             color_matrix(first, pixels);
             color_matrix(second, pixels);
         }
-        LayerFilter::GaussianBlur { sigma } => {
-            for channel in 0..4 {
-                let plane: Vec<f64> = pixels.iter().map(|p| p[channel]).collect();
-                let blurred = gaussian_blur(&plane, width, height, *sigma);
-                for (p, v) in pixels.iter_mut().zip(blurred) {
-                    p[channel] = v;
-                }
-            }
-        }
+        LayerFilter::GaussianBlur { sigma } => gaussian_blur_rgba(*sigma, pixels, width, height),
         LayerFilter::BoxBlur { radius } => box_blur(*radius, pixels, width, height),
         LayerFilter::BlendImage { amount, mode, .. } => {
             let image = image.expect("a blend-image filter carries its image");
             blend_image(image, amount.clamp(0.0, 1.0), *mode, pixels, width, height);
+        }
+    }
+}
+
+/// The oracle's true Gaussian ([`gaussian_blur`]) of standard deviation
+/// `sigma` over the `width`×`height` premultiplied `pixels`, per channel,
+/// edge-clamped: the one Gaussian blur every oracle filter path runs.
+pub fn gaussian_blur_rgba(sigma: f64, pixels: &mut [[f64; 4]], width: usize, height: usize) {
+    for channel in 0..4 {
+        let plane: Vec<f64> = pixels.iter().map(|p| p[channel]).collect();
+        let blurred = gaussian_blur(&plane, width, height, sigma);
+        for (p, v) in pixels.iter_mut().zip(blurred) {
+            p[channel] = v;
         }
     }
 }

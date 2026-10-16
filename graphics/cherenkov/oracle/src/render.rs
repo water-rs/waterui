@@ -40,9 +40,9 @@
 //! whole result when that ancestor composites, so a fading material
 //! panel fades rather than disappearing. A member that
 //! is itself isolated sees the parent canvas, since the capture happens
-//! before its own isolation begins. The group's filters then run over the copy: `GaussianBlur` is a
-//! separable true Gaussian `w(o) = exp(-o² / 2σ²)` normalized over
-//! `⌈3σ⌉` taps, clamp-to-edge; `ColorMatrix` applies its three rows to
+//! before its own isolation begins. The group's filters then run over the copy: `GaussianBlur` is the
+//! oracle's true Gaussian, the one layer filters run
+//! (`filter::gaussian_blur_rgba`), clamp-to-edge; `ColorMatrix` applies its three rows to
 //! the premultiplied `[r, g, b, a]` pixel, alpha untouched. Every member
 //! composites the filtered capture under its own clip's exact coverage,
 //! source-over, as its bottom-most content; its items and children draw
@@ -1873,7 +1873,12 @@ fn box_weights(len: usize, texels: usize, scale: f64) -> Vec<Vec<(usize, f64)>> 
 fn apply_backdrop_filter(canvas: &mut Canvas, filter: &BackdropFilter) {
     match filter {
         BackdropFilter::GaussianBlur { sigma } => {
-            canvas.pixels = backdrop_blur(&canvas.pixels, canvas.width, canvas.height, *sigma);
+            crate::filter::gaussian_blur_rgba(
+                *sigma,
+                &mut canvas.pixels,
+                canvas.width,
+                canvas.height,
+            );
         }
         BackdropFilter::ColorMatrix { matrix } => {
             for px in &mut canvas.pixels {
@@ -1896,62 +1901,6 @@ fn apply_backdrop_filter(canvas: &mut Canvas, filter: &BackdropFilter) {
             }
         }
     }
-}
-
-/// Separable true-Gaussian blur of premultiplied pixels in `f64`:
-/// `w(o) = exp(-o² / 2σ²)` normalized over `⌈3σ⌉` taps each side,
-/// clamp-to-edge at the canvas boundary.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    reason = "kernel radius and pixel indices are small non-negative values"
-)]
-fn backdrop_blur(src: &[[f64; 4]], width: usize, height: usize, sigma: f64) -> Vec<[f64; 4]> {
-    if sigma <= 1e-9 || src.is_empty() {
-        return src.to_vec();
-    }
-    let radius = (3.0 * sigma).ceil() as usize;
-    let mut kernel: Vec<f64> = (0..=2 * radius)
-        .map(|i| {
-            let d = i as f64 - radius as f64;
-            (-d * d / (2.0 * sigma * sigma)).exp()
-        })
-        .collect();
-    let sum: f64 = kernel.iter().sum();
-    for w in &mut kernel {
-        *w /= sum;
-    }
-    let mut tmp = vec![[0.0; 4]; src.len()];
-    for y in 0..height {
-        for x in 0..width {
-            let mut acc = [0.0; 4];
-            for (i, &w) in kernel.iter().enumerate() {
-                let xx = (x as i64 + i as i64 - radius as i64).clamp(0, width as i64 - 1) as usize;
-                let s = src[y * width + xx];
-                for (a, &c) in acc.iter_mut().zip(&s) {
-                    *a = w.mul_add(c, *a);
-                }
-            }
-            tmp[y * width + x] = acc;
-        }
-    }
-    let mut out = vec![[0.0; 4]; src.len()];
-    for y in 0..height {
-        for x in 0..width {
-            let mut acc = [0.0; 4];
-            for (i, &w) in kernel.iter().enumerate() {
-                let yy = (y as i64 + i as i64 - radius as i64).clamp(0, height as i64 - 1) as usize;
-                let s = tmp[yy * width + x];
-                for (a, &c) in acc.iter_mut().zip(&s) {
-                    *a = w.mul_add(c, *a);
-                }
-            }
-            out[y * width + x] = acc;
-        }
-    }
-    out
 }
 
 /// Edges of `shape` under `tf` (used for clip boundaries), flattened in
