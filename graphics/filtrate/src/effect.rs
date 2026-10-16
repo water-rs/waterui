@@ -427,11 +427,13 @@ pub trait Effect: 'static {
         false
     }
 
-    /// Device-resident bytes of the effect's own render targets —
-    /// intermediates it retains between frames. The input and output
-    /// targets the host supplies are the host's to count. An effect that
-    /// keeps no targets of its own reports `0`.
-    fn target_bytes(&self) -> u64 {
-        0
-    }
+    /// Device-resident bytes of the render targets the effect itself
+    /// retains between frames, such as a multi-pass chain's intermediates.
+    ///
+    /// Hosts add this to their memory accounting. The input and output
+    /// targets a host supplies are the host's to count, not the effect's.
+    /// There is no default: an effect that keeps no targets of its own
+    /// states `0`, and a wrapper forwards its inner effect's count, so no
+    /// retained target goes unreported.
+    fn target_bytes(&self) -> u64;
 }
