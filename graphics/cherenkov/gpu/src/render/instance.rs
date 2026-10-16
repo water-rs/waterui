@@ -205,8 +205,10 @@ impl From<RoundedBox> for Shape {
 }
 
 /// A path cell with a [`Middle`] that is not a solid paint's full one.
-/// `uv.xy` carries bit patterns, unpacked by the vertex stage: `uv.x` the
-/// atlas origin `x | y << 16`, `uv.y` the middle's [`Middle::bits`].
+/// `uv.xy` carries bit patterns: `uv.x` the atlas origin `x | y << 16`,
+/// `uv.y` the middle's [`Middle::bits`]. Only the packed-cell fragment arm
+/// (`packed_cell_coverage`) unpacks them, so glyphs and cells without a
+/// middle keep their single atlas read.
 pub const KIND_CELL: u32 = 8;
 
 /// A path cell's constant middle: the columns `start..end` from the cell's
@@ -263,7 +265,7 @@ impl Middle {
         (self.0 >> 16 & Self::COLUMN) - (self.0 & Self::COLUMN)
     }
 
-    /// The packed form the vertex stage reads from a cell's `uv.y`:
+    /// The packed form `packed_cell_coverage` reads from a cell's `uv.y`:
     /// `start | end << 16`, with bit 31 set for an empty middle.
     #[must_use]
     pub const fn bits(self) -> u32 {

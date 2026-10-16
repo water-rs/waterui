@@ -63,8 +63,10 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
     }; \
     fragment TileOutput##D tile_##D##_simple( \
         TileInput v [[stage_in]], metal::float4 position [[position]], \
-        constant Globals& globals [[buffer(0)]], metal::texture2d<float> atlas [[texture(0)]]) { \
-        return { fs_simple(tile_input(v, position, globals), false, globals, atlas) }; \
+        constant Globals& globals [[buffer(0)]], \
+        device InstanceBuffer const& instances [[buffer(1)]], \
+        metal::texture2d<float> atlas [[texture(0)]]) { \
+        return { fs_simple(tile_input(v, position, globals), false, globals, instances, atlas) }; \
     } \
     fragment TileOutput##D tile_##D##_shadow( \
         TileInput v [[stage_in]], metal::float4 position [[position]], \

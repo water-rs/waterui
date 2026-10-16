@@ -682,13 +682,16 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
     var cov: f32;
     switch in.meta_.x {
         case KIND_GLYPH: {
-            // Classified: `local` is the atlas texel and `affine1.zw` the
-            // middle in atlas columns, both resolved by `vs_partial`.
+            var texel: vec2<i32>;
             if classified {
-                cov = cell_coverage(vec2<i32>(floor(in.local)), vec2<i32>(in.affine1.zw));
+                texel = vec2<i32>(floor(in.local));
             } else {
-                cov = glyph_coverage(in);
+                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
             }
+            cov = textureLoad(atlas, texel, 0).r;
+        }
+        case KIND_REGION, KIND_CELL: {
+            cov = packed_cell_coverage(in.device - in.cell.xy, instances[in.instance].uv.xy);
         }
         case KIND_SPAN: {
             cov = 1.0;
@@ -747,7 +750,8 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     var promoted = false;
     if inst.meta_.x == KIND_REGION {
         let x = inst.bounds.x;
-        let middle = cell_middle(inst);
+        // A region's middle is full: `uv.y` holds its columns, no flag.
+        let middle = unpack_columns(bitcast<u32>(inst.uv.y));
         inst.bounds.x = x + middle.x;
         inst.bounds.z = x + middle.y;
     }
@@ -836,12 +840,8 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
     if opaque_span(instances[ii]) {
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    // A cell samples in atlas space: its texel, and its middle shifted to
-    // atlas columns.
-    let cell = out.meta_.x == KIND_GLYPH;
-    let local = select(out.local, out.device - out.cell.xy + out.cell.zw, cell);
-    let coverage = select(out.affine1.zw, out.affine1.zw + out.cell.zz, cell);
-    return PartialOut(out.position, local, ii, coverage);
+    let local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
+    return PartialOut(out.position, local, ii, out.affine1.zw);
 }
 
 @fragment
@@ -854,10 +854,15 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     let inst = instances[in.instance];
     var data: VsOut;
     data.local = in.local;
-    data.meta_.x = select(inst.meta_.x, KIND_GLYPH, packs_cell(inst.meta_.x));
+    data.meta_.x = inst.meta_.x;
     data.color = inst.color;
     data.params.y = inst.params.y;
     if data.meta_.x != KIND_GLYPH && data.meta_.x != KIND_SPAN {
+        // A packed cell samples from its device offset like the
+        // unclassified path; `vs_partial` resolves only glyph texels.
+        data.device = in.position.xy + globals.origin;
+        data.cell = vec4<f32>(inst.bounds.xy, 0.0, 0.0);
+        data.instance = in.instance;
         data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
         data.shape_radii = inst.shape.radii;
         data.affine0 = inst.affine[0];
@@ -917,7 +922,11 @@ fn fs_full(in: VsOut) -> vec4<f32> {
             }
         }
         case KIND_GLYPH: {
-            cov = glyph_coverage(in);
+            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
+            cov = textureLoad(atlas, texel, 0).r;
+        }
+        case KIND_REGION, KIND_CELL: {
+            cov = packed_cell_coverage(in.device - in.cell.xy, instances[in.instance].uv.xy);
         }
         case KIND_SPAN: {
             cov = 1.0;
