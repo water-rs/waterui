@@ -121,6 +121,9 @@ alias StopBuffer = array<Stop>;
 @group(1) @binding(3) var mask_tex: texture_2d<f32>;
 struct VsOut {
     @builtin(position) position: vec4<f32>,
+    // The local point of a local-space quad. A device-space quad
+    // (`kind >= KIND_GLYPH`) has none: a fragment that paints it derives it
+    // from the pixel (`device_quad_pixel`).
     @location(0) local: vec2<f32>,
     @location(1) device: vec2<f32>,
     @location(2) @interpolate(flat) instance: u32,
@@ -201,7 +204,7 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     var out: VsOut;
     if inst.meta_.x >= KIND_GLYPH {
         out.device = p;
-        out.local = apply_inverse(inst.affine, p);
+        out.local = vec2<f32>(0.0);
     } else {
         out.local = p;
         out.device = apply(inst.affine, p);
@@ -222,6 +225,25 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     out.affine0 = inst.affine[0];
     out.affine1 = inst.affine[1];
     out.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
+    return out;
+}
+
+// A device-space quad's fragment (`kind >= KIND_GLYPH`: glyph and path
+// cells, regions, spans) shades the pixel whose centre is its position in
+// the attachment grid, offset by that grid's device-space origin — every
+// pass's viewport maps device space onto the grid at
+// `globals.attachment_origin`. Interpolating the device or local point
+// across the quad instead would round by where the quad's corners lie, so
+// the same pixel would paint differently whenever emission cut a path
+// into other cells. The device point and the local point (`apply_inverse`
+// of it) are therefore functions of the pixel alone. Local-space quads
+// keep their interpolated points: their corners are the shape's own.
+fn device_quad_pixel(in: VsOut) -> VsOut {
+    var out = in;
+    if in.meta_.x >= KIND_GLYPH {
+        out.device = in.position.xy + globals.attachment_origin;
+        out.local = apply_inverse(array<vec4<f32>, 2>(in.affine0, in.affine1), out.device);
+    }
     return out;
 }
 
