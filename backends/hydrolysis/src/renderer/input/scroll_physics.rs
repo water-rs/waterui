@@ -1,13 +1,15 @@
 //! The `UIScrollView` physics family's math: the exponential deceleration,
-//! the rubber band a drag past an edge meets, and the damped spring a
-//! release or fling past an edge returns on — each in closed form over the
-//! time since its run began, so a run is a pure function of the clock.
+//! the rubber band a drag past an edge meets, the return a release past an
+//! edge makes and the bounce a fling into one makes — each in closed form
+//! over the time since its run began, so a run is a pure function of the
+//! clock.
 //!
 //! The constants the formulas run on are the family's own fields
-//! ([`ExponentialDecay`], [`RubberBand`], [`SpringBack`] in
-//! `crate::platform`), each with its source cited there.
+//! ([`ExponentialDecay`], [`RubberBand`], [`ReleaseReturn`], [`EdgeBounce`]
+//! and [`SpringBack`] in `crate::platform`), each with its source cited
+//! there.
 
-use crate::platform::{ExponentialDecay, RubberBand, SpringBack};
+use crate::platform::{EdgeBounce, ExponentialDecay, ReleaseReturn, RubberBand, SpringBack};
 use crate::time::Instant;
 
 /// The displacement under which a run counts as at rest, in logical units:
@@ -111,12 +113,53 @@ impl RubberBand {
     }
 }
 
-impl SpringBack {
-    /// The spring's displacement from its target and its velocity `t`
-    /// seconds after it starts at displacement `x0` with velocity `v0` —
-    /// the closed forms [`SpringBack`] documents, with `ω0 = 2π /
+/// A motion that carries an offset back onto an edge: its displacement
+/// from the edge and its velocity `t` seconds after it starts at
+/// displacement `x0` with velocity `v0`.
+pub(super) trait EdgeReturn: Copy + core::fmt::Debug {
+    fn sample(self, x0: f64, v0: f64, t: f64) -> (f64, f64);
+}
+
+/// Where a release moving toward the content hands over to a fling inside
+/// it: `seconds` after the release, on the edge, at `velocity` — in
+/// logical units per second.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Handover {
+    pub(super) seconds: f64,
+    pub(super) velocity: f64,
+}
+
+impl ReleaseReturn {
+    /// The handover of a release `x0` past the edge at `v0`: at `t_c = −x0
+    /// / v0`, at `v0 · e^(−ω_h·t_c)` — `None` unless the release moves
+    /// toward the content.
+    pub(super) fn handover(self, x0: f64, v0: f64) -> Option<Handover> {
+        (x0 * v0 < 0.0).then(|| {
+            let seconds = -x0 / v0;
+            let omega = core::f64::consts::TAU / self.handover_response;
+            Handover {
+                seconds,
+                velocity: v0 * (-omega * seconds).exp(),
+            }
+        })
+    }
+}
+
+impl EdgeReturn for ReleaseReturn {
+    /// `(x0 + v0·t) · e^(−ω·t)` and its derivative, `(v0 − ω·(x0 + v0·t))
+    /// · e^(−ω·t)` — the closed form [`ReleaseReturn`] documents.
+    fn sample(self, x0: f64, v0: f64, t: f64) -> (f64, f64) {
+        let omega = core::f64::consts::TAU / self.response;
+        let decay = (-omega * t).exp();
+        let x = v0.mul_add(t, x0);
+        (x * decay, omega.mul_add(-x, v0) * decay)
+    }
+}
+
+impl EdgeReturn for SpringBack {
+    /// The closed forms [`SpringBack`] documents, with `ω0 = 2π /
     /// response`.
-    pub(crate) fn sample(self, x0: f64, v0: f64, t: f64) -> (f64, f64) {
+    fn sample(self, x0: f64, v0: f64, t: f64) -> (f64, f64) {
         let omega = core::f64::consts::TAU / self.response;
         let zeta = self.damping_ratio;
         if (zeta - 1.0).abs() < f64::EPSILON {
@@ -149,35 +192,35 @@ impl SpringBack {
     }
 }
 
-/// A spring returning an axis's offset onto an edge: from a release past
-/// it, or from a fling that crossed it.
+/// An axis's offset returning onto an edge: from a release past it, or
+/// from a fling that crossed it.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct SpringRun {
-    /// The edge the spring returns to.
+pub(super) struct SpringRun<R> {
+    /// The edge the run returns to.
     target: f64,
     /// The displacement from the edge it starts at.
     x0: f64,
     /// The offset's velocity it starts with, in logical units per second.
     v0: f64,
-    spring: SpringBack,
+    motion: R,
 }
 
-impl SpringRun {
-    pub(super) const fn new(target: f64, x0: f64, v0: f64, spring: SpringBack) -> Self {
+impl<R: EdgeReturn> SpringRun<R> {
+    pub(super) const fn new(target: f64, x0: f64, v0: f64, motion: R) -> Self {
         Self {
             target,
             x0,
             v0,
-            spring,
+            motion,
         }
     }
 
     /// The offset `seconds` into the run and whether it still moves. The
     /// run ends exactly on the edge once it is at rest there — or the
-    /// moment it would cross it: a spring-back never carries the offset
-    /// past the edge into the content.
+    /// moment it would cross it: a return never carries the offset past
+    /// the edge into the content.
     pub(super) fn at(&self, seconds: f64) -> (f64, bool) {
-        let (x, v) = self.spring.sample(self.x0, self.v0, seconds);
+        let (x, v) = self.motion.sample(self.x0, self.v0, seconds);
         // The side of the edge the run lives on: where it starts, or — for
         // a bounce starting on the edge — where its velocity carries it.
         let side = if self.x0.abs() > 0.0 {
@@ -215,8 +258,8 @@ enum DecayEnd {
     /// It reached `edge` and stops there.
     Edge(f64),
     /// It reached an edge and bounces: the spring starts on the edge with
-    /// the decay's velocity there.
-    Bounce(SpringRun),
+    /// the bounce's share of the decay's velocity there.
+    Bounce(SpringRun<SpringBack>),
 }
 
 impl DecayFling {
@@ -229,7 +272,7 @@ impl DecayFling {
         velocity: f64,
         start: f64,
         extent: f64,
-        bounce: Option<SpringBack>,
+        bounce: Option<EdgeBounce>,
         at: Instant,
     ) -> Option<Self> {
         let rest = decay.rest_time(velocity);
@@ -240,13 +283,13 @@ impl DecayFling {
         let (duration, end) = match (crossing, bounce) {
             (None, _) => (rest, DecayEnd::Rest),
             (Some(crossing), None) => (crossing, DecayEnd::Edge(edge)),
-            (Some(crossing), Some(spring)) => (
+            (Some(crossing), Some(bounce)) => (
                 crossing,
                 DecayEnd::Bounce(SpringRun::new(
                     edge,
                     0.0,
-                    decay.velocity(velocity, crossing),
-                    spring,
+                    bounce.entry_velocity_scale * decay.velocity(velocity, crossing),
+                    bounce.spring,
                 )),
             ),
         };
@@ -285,29 +328,30 @@ impl DecayFling {
     }
 }
 
-/// One axis released past an edge: the spring back onto it.
+/// One axis released past an edge: the return onto it.
 #[derive(Debug)]
 pub(super) struct SpringFling {
     started_at: Instant,
-    run: SpringRun,
+    run: SpringRun<ReleaseReturn>,
 }
 
 impl SpringFling {
-    /// A release of the offset `overscroll` past `edge` at `velocity`.
+    /// A release of the offset `overscroll` past `edge` with the offset
+    /// moving at `velocity`.
     pub(super) const fn new(
         edge: f64,
         overscroll: f64,
         velocity: f64,
-        spring: SpringBack,
+        release: ReleaseReturn,
         at: Instant,
     ) -> Self {
         Self {
             started_at: at,
-            run: SpringRun::new(edge, overscroll, velocity, spring),
+            run: SpringRun::new(edge, overscroll, velocity, release),
         }
     }
 
-    /// The offset at `now` and whether the spring still moves.
+    /// The offset at `now` and whether the return still moves.
     pub(super) fn position(&self, now: Instant) -> (f64, bool) {
         self.run
             .at(now.saturating_duration_since(self.started_at).as_secs_f64())
@@ -339,6 +383,18 @@ mod tests {
 
     fn band() -> RubberBand {
         RubberBand::UIKIT
+    }
+
+    /// Edge bounces on each of [`non_oscillating_springs`], entering at the
+    /// crossing velocity itself.
+    fn bounces() -> Vec<EdgeBounce> {
+        non_oscillating_springs()
+            .into_iter()
+            .map(|spring| EdgeBounce {
+                spring,
+                entry_velocity_scale: 1.0,
+            })
+            .collect()
     }
 
     #[test]
@@ -404,7 +460,8 @@ mod tests {
         assert!((slope - 0.55).abs() < 1e-6, "slope at the edge {slope}");
         // The inverse recovers the drag.
         for x in [0.5, 40.0, 900.0] {
-            assert!((band().unband(band().band(x, dimension), dimension) - x).abs() < 1e-9);
+            let banded = band().band(x, dimension);
+            assert!((band().unband(banded, dimension) - x).abs() < 1e-9);
         }
     }
 
@@ -439,20 +496,24 @@ mod tests {
     }
 
     #[test]
-    fn a_release_past_an_edge_springs_back_monotonically_and_settles_on_it() {
-        for spring in non_oscillating_springs() {
+    fn a_release_past_an_edge_returns_monotonically_and_settles_on_it() {
+        for response in [0.3, ReleaseReturn::UIKIT.response, 1.0] {
+            let release = ReleaseReturn {
+                response,
+                ..ReleaseReturn::UIKIT
+            };
             // Released 80pt past the top edge, still, moving further out,
             // and moving back in.
             for v0 in [0.0, -400.0, 300.0] {
-                let run = SpringRun::new(0.0, -80.0, v0, spring);
+                let run = SpringRun::new(0.0, -80.0, v0, release);
                 let (offsets, end) = trace(|t| run.at(t));
                 assert!(
                     end.abs() < f64::EPSILON,
-                    "{spring:?} {v0}: settles exactly on the edge"
+                    "{release:?} {v0}: settles exactly on the edge"
                 );
                 assert!(
                     offsets.iter().all(|&offset| offset <= 0.0),
-                    "{spring:?} {v0}: never past the edge into the content"
+                    "{release:?} {v0}: never past the edge into the content"
                 );
                 // Once heading back, it never turns away from the edge.
                 let turn = offsets
@@ -461,11 +522,15 @@ mod tests {
                     .unwrap_or(0);
                 assert!(
                     offsets[turn..].windows(2).all(|pair| pair[1] >= pair[0]),
-                    "{spring:?} {v0}: monotonic return"
+                    "{release:?} {v0}: monotonic return"
                 );
             }
+            // A still release leaves at once: (x0 + v·t)·e^(−ω·t) starts at
+            // velocity −ω·x0, not 0.
+            let (_, v) = release.sample(-80.0, 0.0, 0.0);
+            assert!((core::f64::consts::TAU / response).mul_add(-80.0, v).abs() < 1e-9);
             // Past the bottom edge of a 500pt extent.
-            let run = SpringRun::new(500.0, 40.0, 0.0, spring);
+            let run = SpringRun::new(500.0, 40.0, 0.0, release);
             let (offsets, end) = trace(|t| run.at(t));
             assert!((end - 500.0).abs() < f64::EPSILON);
             assert!(offsets.windows(2).all(|pair| pair[1] <= pair[0]));
@@ -473,22 +538,145 @@ mod tests {
         }
     }
 
+    /// The family's constants reproduce the `UIScrollView` traces they were
+    /// fitted to (iPad Pro 13-inch (M4), iPadOS 26.5): the displacement
+    /// past the top edge, in points, at milliseconds after the start.
+    #[test]
+    fn the_uikit_return_and_bounce_follow_the_measured_traces() {
+        // A release 329pt past the edge with the offset at −123 pt/s.
+        let release = SpringRun::new(0.0, -329.0, -123.0, ReleaseReturn::UIKIT);
+        for (ms, measured) in [
+            (25, -258.5),
+            (50, -202.5),
+            (100, -124.5),
+            (200, -47.0),
+            (400, -7.0),
+        ] {
+            let (offset, _) = release.at(f64::from(ms) / 1000.0);
+            assert!(
+                (offset - measured).abs() < 1.0,
+                "release at {ms} ms: {offset} vs {measured}"
+            );
+        }
+        // A fling crossing the edge at −2470 pt/s.
+        let bounce = EdgeBounce::UIKIT;
+        let run = SpringRun::new(
+            0.0,
+            0.0,
+            -2470.0 * bounce.entry_velocity_scale,
+            bounce.spring,
+        );
+        for (ms, measured) in [
+            (25, -45.1),
+            (50, -68.7),
+            (90, -79.5),
+            (200, -52.9),
+            (400, -11.8),
+        ] {
+            let (offset, _) = run.at(f64::from(ms) / 1000.0);
+            assert!(
+                (offset - measured).abs() < 1.0,
+                "bounce at {ms} ms: {offset} vs {measured}"
+            );
+        }
+    }
+
+    /// A release past the top edge moving toward the content, composed as
+    /// the touch fling composes it: the return until the handover, then the
+    /// decay from the edge. Its offset at `seconds` and whether it moves.
+    fn toward_content(x0: f64, v0: f64) -> impl Fn(f64) -> (f64, bool) {
+        let release = ReleaseReturn::UIKIT;
+        let run = SpringRun::new(0.0, x0, v0, release);
+        let at = Instant::now();
+        let then = release.handover(x0, v0).and_then(|handover| {
+            DecayFling::new(
+                DECAY,
+                handover.velocity,
+                0.0,
+                100_000.0,
+                Some(EdgeBounce::UIKIT),
+                at + Duration::from_secs_f64(handover.seconds),
+            )
+            .map(|fling| (handover.seconds, fling))
+        });
+        move |seconds| match &then {
+            Some((from, fling)) if seconds >= *from => {
+                fling.position(at + Duration::from_secs_f64(seconds))
+            }
+            _ => run.at(seconds),
+        }
+    }
+
+    /// Releases past the top edge while the finger moves back toward the
+    /// content (the same device, `scrollViewWillEndDragging` velocity,
+    /// offsets in points after the release): a fast one carries into the
+    /// content and decelerates there, a slow one stops on the edge.
+    #[test]
+    fn a_uikit_release_toward_the_content_follows_the_measured_traces() {
+        for (x0, v0, points, rest) in [
+            (
+                -44.5,
+                2139.2,
+                &[(200, 248.5), (400, 429.0), (1000, 685.5)][..],
+                791.0,
+            ),
+            (
+                -183.5,
+                1530.0,
+                &[(200, 16.5), (400, 57.0), (1000, 115.0)][..],
+                135.0,
+            ),
+            (
+                -183.5,
+                336.0,
+                &[(100, -56.0), (200, -17.0), (400, -1.5)][..],
+                0.0,
+            ),
+        ] {
+            let run = toward_content(x0, v0);
+            for &(ms, measured) in points {
+                let (offset, _) = run(f64::from(ms) / 1000.0);
+                assert!(
+                    (offset - measured).abs() < 10.0,
+                    "{x0} at {v0}: {offset} vs {measured} at {ms} ms"
+                );
+            }
+            let (_, end) = trace(&run);
+            assert!(
+                (end - rest).abs() < 10.0,
+                "{x0} at {v0}: rests at {end} vs {rest}"
+            );
+            if rest == 0.0 {
+                assert!(end.abs() < f64::EPSILON, "{x0} at {v0}: stops on the edge");
+            }
+        }
+        // A release moving deeper hands over to nothing.
+        assert!(ReleaseReturn::UIKIT.handover(-80.0, -300.0).is_none());
+        assert!(ReleaseReturn::UIKIT.handover(-80.0, 0.0).is_none());
+        // Past the bottom edge the handover heads back up into the content.
+        let handover = ReleaseReturn::UIKIT
+            .handover(60.0, -900.0)
+            .expect("moving toward the content");
+        assert!(handover.velocity < 0.0 && handover.velocity > -900.0);
+        assert!((handover.seconds - 60.0 / 900.0).abs() < 1e-12);
+    }
+
     #[test]
     fn a_fling_into_an_edge_bounces_out_and_back_onto_it() {
         let at = Instant::now();
-        for spring in non_oscillating_springs() {
+        for bounce in bounces() {
             // 100pt from the bottom of a 400pt extent, flung down hard.
-            let fling = DecayFling::new(DECAY, 3_000.0, 300.0, 400.0, Some(spring), at)
+            let fling = DecayFling::new(DECAY, 3_000.0, 300.0, 400.0, Some(bounce), at)
                 .expect("the fling moves");
             let (offsets, end) = trace(|t| fling.position(at + Duration::from_secs_f64(t)));
             assert!(
                 (end - 400.0).abs() < f64::EPSILON,
-                "{spring:?}: back on the edge"
+                "{bounce:?}: back on the edge"
             );
             let peak = offsets.iter().copied().fold(f64::MIN, f64::max);
             assert!(
                 peak > 400.0 + REST_DISTANCE,
-                "{spring:?}: it bounced past the edge"
+                "{bounce:?}: it bounced past the edge"
             );
             assert!(
                 offsets
@@ -502,7 +690,7 @@ mod tests {
     #[test]
     fn a_fling_short_of_the_edge_rests_at_its_projection() {
         let at = Instant::now();
-        let fling = DecayFling::new(DECAY, 800.0, 100.0, 5_000.0, Some(SpringBack::UIKIT), at)
+        let fling = DecayFling::new(DECAY, 800.0, 100.0, 5_000.0, Some(EdgeBounce::UIKIT), at)
             .expect("the fling moves");
         let (_, end) = trace(|t| fling.position(at + Duration::from_secs_f64(t)));
         assert!((end - (100.0 + DECAY.projection(800.0))).abs() <= REST_DISTANCE);

@@ -563,6 +563,10 @@ impl ExponentialDecay {
     /// factor per millisecond, and the projection `v0/1000 · rate/(1 −
     /// rate)` built on it, are WWDC 2018 session 803, "Designing Fluid
     /// Interfaces".
+    /// Measured on an iPad Pro 13-inch (M4) under iPadOS 26.5: 20 flings of
+    /// a `UIScrollView` released at 0.34 to 3.9 pt/ms decay at 0.998006
+    /// ± 0.000004 per millisecond, fitted to their `contentOffset` per
+    /// frame.
     pub const NORMAL: Self = Self { rate_per_ms: 0.998 };
 }
 
@@ -579,15 +583,21 @@ pub enum Overscroll {
 }
 
 /// `UIScrollView`'s rubber band: the resistance a drag past an edge meets,
-/// and the spring a release past it returns on.
+/// the return a release past it makes, and the bounce a fling that reaches
+/// it makes.
+///
+/// The return and the bounce are different motions, measured separately:
+/// see [`ReleaseReturn`] and [`EdgeBounce`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[non_exhaustive]
 pub struct RubberBand {
     /// The resistance `c` in `(1 − 1 / (x·c/d + 1)) · d` — the band's
     /// slope at the edge.
     pub coefficient: f64,
-    /// The spring a release or fling past the edge returns on.
-    pub spring: SpringBack,
+    /// How a release past the edge returns onto it.
+    pub release: ReleaseReturn,
+    /// How a fling that reaches the edge bounces past it and back.
+    pub bounce: EdgeBounce,
 }
 
 impl RubberBand {
@@ -595,10 +605,91 @@ impl RubberBand {
     /// documentation: both are reverse-engineered from `UIScrollView`'s
     /// behaviour (Grant Paul's 2013 derivation, the form every UIKit-feel
     /// reimplementation reproduces), with `d` the viewport's dimension
-    /// along the axis.
+    /// along the axis. Measured on an iPad Pro 13-inch (M4) under iPadOS
+    /// 26.5, from the `contentOffset` of `UIScrollView` drags held past the
+    /// top edge, the form fits with `c` = 0.5495 and `d` the viewport's
+    /// height within 0.14 pt rms.
     pub const UIKIT: Self = Self {
         coefficient: 0.55,
-        spring: SpringBack::UIKIT,
+        release: ReleaseReturn::UIKIT,
+        bounce: EdgeBounce::UIKIT,
+    };
+}
+
+/// The return onto an edge from a release past it.
+///
+/// For a release `x0` past the edge at velocity `v` — the release velocity
+/// `scrollViewWillEndDragging` reports, which is the finger's, not the
+/// banded offset's — the displacement from the edge `t` seconds later is
+/// `x(t) = (x0 + v·t) · e^(−ω·t)`, with `ω = 2π / response`: a critically
+/// damped spring whose initial velocity is `v − ω·x0` rather than `v`, so
+/// even a still release leaves at speed.
+///
+/// A release moving toward the content reaches the edge at `t_c = −x0 /
+/// v`, where `x0 + v·t` vanishes, and does not stop there: from the edge
+/// the offset decelerates into the content as a fling does, starting at
+/// `v · e^(−ω_h·t_c)`, with `ω_h = 2π / handover_response`. A slow release
+/// reaches the edge with no speed left and rests on it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct ReleaseReturn {
+    /// The period `2π / ω` of the decay rate `ω`, in seconds.
+    pub response: f64,
+    /// The period `2π / ω_h` of the rate `ω_h` that sets the velocity a
+    /// release moving toward the content crosses the edge with, in seconds.
+    pub handover_response: f64,
+}
+
+impl ReleaseReturn {
+    /// `UIScrollView`'s return. `UIKit` documents none of it. Measured on
+    /// an iPad Pro 13-inch (M4) under iPadOS 26.5, at 120 Hz: 25 releases
+    /// 46 to 329 pt past the top edge of a `UIScrollView`, each fitted
+    /// from its `contentOffset` per frame and its `scrollViewWillEndDragging`
+    /// velocity with no other free parameter. `ω` = 10.12 rad/s fits them
+    /// within 0.34 pt rms and predicts held-out releases within 0.37 pt
+    /// rms; a spring that starts at the release velocity instead misses
+    /// them by 9.6 pt rms. On the same device, 36 releases 42 to 184 pt
+    /// past the top edge while the finger moved back toward the content,
+    /// at release velocities of 60 to 2140 pt/s — matching the finger's
+    /// speed, not the band's slope of it: the 19 that come to rest on the
+    /// edge follow the same `ω` within 0.92 pt rms, and the 17 that cross
+    /// it decelerate inside at 0.99800 per ms, the fling's rate, from
+    /// `v · e^(−ω_h·t_c)`. `ω_h` = 14.04 rad/s fits all 36 within 6.7 pt
+    /// rms over runs of up to 800 pt; one `ω` for the whole run misses the
+    /// releases that stop on the edge by 7.8 pt rms.
+    pub const UIKIT: Self = Self {
+        response: 0.621,
+        handover_response: 0.4476,
+    };
+}
+
+/// The bounce of a fling that reaches an edge: the spring starts on the
+/// edge at [`Self::entry_velocity_scale`] times the deceleration's velocity
+/// there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct EdgeBounce {
+    /// The spring that carries the offset past the edge and back onto it.
+    pub spring: SpringBack,
+    /// The share of the fling's velocity at the edge that the spring
+    /// starts with.
+    pub entry_velocity_scale: f64,
+}
+
+impl EdgeBounce {
+    /// `UIScrollView`'s bounce. `UIKit` documents none of it. Measured on
+    /// an iPad Pro 13-inch (M4) under iPadOS 26.5, at 120 Hz: 10 flings
+    /// that reach the top edge of a `UIScrollView` at 358 to 2470 pt/s,
+    /// their `contentOffset` per frame past the edge fitted from the
+    /// moment the decay crosses it. A critically damped spring with `ω` =
+    /// 10.98 rad/s, started at 0.9645 of the crossing velocity, fits them
+    /// within 0.23 pt rms; with the damping ratio free the fit gives 1.005.
+    pub const UIKIT: Self = Self {
+        spring: SpringBack {
+            response: 0.572,
+            damping_ratio: 1.0,
+        },
+        entry_velocity_scale: 0.9645,
     };
 }
 
@@ -607,7 +698,7 @@ impl RubberBand {
 /// It is parameterised by response and damping ratio — `SwiftUI`'s
 /// `Spring(response:dampingRatio:)` parameterisation: natural angular
 /// frequency `ω0 = 2π / response`, damping ratio `ζ`. For a displacement
-/// `x0` from the edge and velocity `v0` at release (`t = 0`):
+/// `x0` from the edge and velocity `v0` at its start (`t = 0`):
 ///
 /// - `ζ = 1`: `x(t) = (x0 + (v0 + ω0·x0)·t) · e^(−ω0·t)`
 /// - `ζ > 1`: `x(t) = c1·e^(r1·t) + c2·e^(r2·t)`, with
@@ -622,16 +713,6 @@ pub struct SpringBack {
     pub response: f64,
     /// The damping ratio `ζ`: 1 is critical, above 1 overdamped.
     pub damping_ratio: f64,
-}
-
-impl SpringBack {
-    /// `UIScrollView`'s bounce: the response and damping ratio of `x(t)`
-    /// above. `UIKit` documents neither.
-    pub const UIKIT: Self = Self {
-        // Fitted from on-device UIScrollView contentOffset traces; see water-rs/waterui#2795.
-        response: 0.4,
-        damping_ratio: 1.0,
-    };
 }
 
 /// Android `OverScroller`'s spline coefficients.

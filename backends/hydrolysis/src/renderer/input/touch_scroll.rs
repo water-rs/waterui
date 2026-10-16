@@ -203,8 +203,13 @@ enum AxisFling {
     Spline(SplineFling),
     /// `UIScrollView`'s decay, with its bounce at an edge it reaches.
     Decay(DecayFling),
-    /// The spring back from a release past an edge.
-    Spring(SpringFling),
+    /// The return from a release past an edge, and — for a release moving
+    /// toward the content — the fling it hands over to on the edge, from
+    /// the moment it starts.
+    Release {
+        spring: SpringFling,
+        then: Option<(Instant, Box<Self>)>,
+    },
 }
 
 impl AxisFling {
@@ -213,7 +218,10 @@ impl AxisFling {
         match self {
             Self::Spline(fling) => fling.position(now),
             Self::Decay(fling) => fling.position(now),
-            Self::Spring(fling) => fling.position(now),
+            Self::Release { spring, then } => match then {
+                Some((from, fling)) if now >= *from => fling.position(now),
+                _ => spring.position(now),
+            },
         }
     }
 }
@@ -223,8 +231,10 @@ impl TouchFling {
     /// logical units per second, on the released drag's `claim`: the
     /// offset's velocity is the finger's negated, clamped to the host's
     /// maximum. Under rubber-band edges an axis released past an edge
-    /// springs back onto it whatever its speed; otherwise an axis under the
-    /// minimum — or already at the edge it heads toward, under clamped
+    /// returns onto it whatever its speed, starting at that velocity — the
+    /// finger's, as `UIScrollView` reports it — and, moving toward the
+    /// content, flings on into it from the edge; otherwise an axis under
+    /// the minimum — or already at the edge it heads toward, under clamped
     /// edges — does not fling. `None` when no axis moves or a newer claim
     /// already owns the offset.
     pub(crate) fn start(
@@ -242,45 +252,56 @@ impl TouchFling {
             // The content offset moves opposite the finger: a finger flung
             // up pushes the offset down into the content.
             let offset_velocity = (-velocity).clamp(-max, max);
-            let bounce = match physics.overscroll {
-                Overscroll::RubberBand(band) => {
-                    if !(0.0..=extent).contains(&start) {
-                        let edge = start.clamp(0.0, extent);
-                        return Some(AxisFling::Spring(SpringFling::new(
-                            edge,
-                            start - edge,
-                            offset_velocity,
-                            band.spring,
-                            at,
-                        )));
-                    }
+            // A fling inside the extents from `start` at `velocity`, from
+            // `from`.
+            let inside = |velocity: f64, start: f64, from: Instant| {
+                let bounce = match physics.overscroll {
                     // An axis with nothing to scroll does not bounce — the
                     // band's `drag` documents why.
-                    (extent > 0.0).then_some(band.spring)
+                    Overscroll::RubberBand(band) => (extent > 0.0).then_some(band.bounce),
+                    Overscroll::Clamped => None,
+                };
+                match physics.deceleration {
+                    FlingDeceleration::OverScrollerSpline(spline) => Some(SplineFling::new(
+                        velocity,
+                        start,
+                        extent,
+                        spline.physical_coeff,
+                        spline.friction,
+                        from,
+                    ))
+                    // A run whose clamped destination is already the offset —
+                    // released at the edge it headed toward — is no fling.
+                    .filter(|fling| (fling.final_offset - fling.start).abs() > SCROLL_END_EPSILON)
+                    .map(AxisFling::Spline),
+                    FlingDeceleration::ExponentialDecay(decay) => {
+                        DecayFling::new(decay, velocity, start, extent, bounce, from)
+                            .map(AxisFling::Decay)
+                    }
                 }
-                Overscroll::Clamped => None,
             };
+            if let Overscroll::RubberBand(band) = physics.overscroll
+                && !(0.0..=extent).contains(&start)
+            {
+                let edge = start.clamp(0.0, extent);
+                let overscroll = start - edge;
+                let then =
+                    band.release
+                        .handover(overscroll, offset_velocity)
+                        .and_then(|handover| {
+                            let from = at + Duration::from_secs_f64(handover.seconds);
+                            inside(handover.velocity, edge, from)
+                                .map(|fling| (from, Box::new(fling)))
+                        });
+                return Some(AxisFling::Release {
+                    spring: SpringFling::new(edge, overscroll, offset_velocity, band.release, at),
+                    then,
+                });
+            }
             if offset_velocity.abs() < min {
                 return None;
             }
-            match physics.deceleration {
-                FlingDeceleration::OverScrollerSpline(spline) => Some(SplineFling::new(
-                    offset_velocity,
-                    start,
-                    extent,
-                    spline.physical_coeff,
-                    spline.friction,
-                    at,
-                ))
-                // A run whose clamped destination is already the offset —
-                // released at the edge it headed toward — is no fling.
-                .filter(|fling| (fling.final_offset - fling.start).abs() > SCROLL_END_EPSILON)
-                .map(AxisFling::Spline),
-                FlingDeceleration::ExponentialDecay(decay) => {
-                    DecayFling::new(decay, offset_velocity, start, extent, bounce, at)
-                        .map(AxisFling::Decay)
-                }
-            }
+            inside(offset_velocity, start, at)
         };
         let x = matches!(handle.axis(), Axis::Horizontal | Axis::All)
             .then(|| axis_fling(finger_velocity.x, metrics.offset_x, metrics.max_x))
