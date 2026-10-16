@@ -2440,6 +2440,9 @@ fn touch_press_delays_ripple_and_move_cancels_click() {
         true
     });
     let started = renderer.frame_instant();
+    // The host reports the touch-gesture parameters a real touch
+    // platform publishes — a touch press without them panics.
+    renderer.set_touch_scroll_config(Some(crate::platform::TouchScrollConfig::android_default()));
 
     assert!(!renderer.handle_pointer_down_with_source(
         7,

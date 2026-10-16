@@ -179,6 +179,33 @@ struct PartCanvas {
     surface: WindowSurface,
 }
 
+#[wasm_bindgen::prelude::wasm_bindgen]
+extern "C" {
+    /// The canvas's `GPUCanvasContext`, which wgpu configures and never
+    /// exposes.
+    #[wasm_bindgen(js_name = GPUCanvasContext)]
+    type CanvasContext;
+
+    #[wasm_bindgen(method)]
+    fn unconfigure(this: &CanvasContext);
+}
+
+impl Drop for PartCanvas {
+    /// Unconfigures the canvas's context, then detaches the canvas. A
+    /// configured context holds its device and its current texture until
+    /// the garbage collector finds the canvas, and dropping wgpu's surface
+    /// does not unconfigure it on the web.
+    fn drop(&mut self) {
+        let context = self
+            .canvas
+            .get_context("webgpu")
+            .expect("a part canvas has a WebGPU context")
+            .expect("a part canvas keeps its WebGPU context");
+        context.unchecked_into::<CanvasContext>().unconfigure();
+        self.canvas.remove();
+    }
+}
+
 /// A hosted element the root holds, and what its style last showed, so a
 /// frame that moves nothing writes nothing.
 struct HostedNode {
@@ -302,8 +329,7 @@ impl DomPlanes {
     /// missing ones on top and removing the surplus.
     fn ensure_parts(&mut self, count: usize) -> Result<(), SurfaceError> {
         while self.parts.len() > count {
-            let part = self.parts.pop().expect("a surplus part exists");
-            part.canvas.remove();
+            self.parts.pop().expect("a surplus part exists");
         }
         while self.parts.len() < count {
             let index = self.parts.len();
@@ -774,6 +800,9 @@ impl SystemPlanes for DomPlanes {
 
 impl Drop for DomPlanes {
     fn drop(&mut self) {
+        // Each part unconfigures its context while its canvas is still in
+        // the document.
+        self.parts.clear();
         for (_, node) in self.hosted.drain() {
             release(node);
         }

@@ -3901,6 +3901,7 @@ impl Renderer for GpuRenderer {
             .values()
             .map(SurfaceState::backdrop_bytes)
             .sum();
+        let filter_targets = self.filters.gpu_bytes();
         let capture_format = self
             .surfaces
             .values()
@@ -3957,7 +3958,7 @@ impl Renderer for GpuRenderer {
         let (tile_reserved, tile_committed) = (0, None);
         MemoryUsage {
             gpu: cherenkov::Bytes(
-                gpu + self.filters.gpu_bytes()
+                gpu + filter_targets
                     + self.shadow_blur.as_ref().map_or(0, shadow::Blur::gpu_bytes)
                     + tile_committed.unwrap_or(0),
             ),
@@ -3966,6 +3967,7 @@ impl Renderer for GpuRenderer {
             tile_committed: tile_committed.map(cherenkov::Bytes),
             backdrop_captures: cherenkov::Bytes(captures),
             backdrop_capture_format: capture_format,
+            filter_targets: cherenkov::Bytes(filter_targets),
         }
     }
 

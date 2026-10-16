@@ -2169,6 +2169,10 @@ mod tests {
         ) -> filtrate::EffectRenderResult {
             Ok(false)
         }
+
+        fn target_bytes(&self) -> u64 {
+            0
+        }
     }
 
     #[cfg(feature = "gpu")]

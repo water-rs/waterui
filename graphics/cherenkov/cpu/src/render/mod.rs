@@ -606,6 +606,9 @@ impl Renderer for RasterRenderer {
             tile_committed: None,
             backdrop_captures: cherenkov::Bytes(backdrop_captures),
             backdrop_capture_format: (backdrop_captures > 0).then_some("linear-f32"),
+            // CPU filters run on the band's transient windows, accounted
+            // under `cpu`; no chain retains a target of its own.
+            filter_targets: cherenkov::Bytes(0),
         }
     }
 

@@ -24,7 +24,7 @@ use waterui_layout::stack::vstack;
 
 use super::popup_windows::find_by_label;
 use super::{MinimalTestTheme, test_environment};
-use crate::platform::{InputEvent, PointerButton, PointerKind};
+use crate::platform::{InputEvent, PointerButton, PointerKind, TouchScrollConfig};
 use crate::{HeadlessRuntime, HeadlessSnapshot};
 
 const WINDOW: (u32, u32) = (320, 240);
@@ -110,13 +110,17 @@ fn runtime_sized(
     window: (u32, u32),
     menu: impl Fn() -> ContextMenu + 'static,
 ) -> HeadlessRuntime {
-    HeadlessRuntime::new_for_tests(
+    let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         host_view_with_spacer(spacer, menu),
         window.0,
         window.1,
         MinimalTestTheme::default(),
-    )
+    );
+    // The host reports the touch-gesture parameters a real touch
+    // platform publishes — a touch press without them panics.
+    runtime.set_touch_scroll_config(TouchScrollConfig::android_default());
+    runtime
 }
 
 /// Pumps until the runtime settles (with a cap), then returns the merged

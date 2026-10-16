@@ -75,4 +75,10 @@ pub struct MemoryUsage {
     /// Texture format of the backdrop captures (`"rgba16float"` normally),
     /// `None` while none is allocated.
     pub backdrop_capture_format: Option<&'static str>,
+    /// Render targets held by registered filter chains, layer filters and
+    /// backdrop groups' capture chains alike: each chain's per-size
+    /// input/output pairs plus the intermediates the chain itself retains,
+    /// in bytes; included in `gpu`. Zero on a backend whose filters hold
+    /// no targets between frames.
+    pub filter_targets: Bytes,
 }
