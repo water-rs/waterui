@@ -60,7 +60,10 @@ jobs:
         with:
           gpu: ${{ matrix.leg == 'gpu' }}
           extra-packages: valgrind
+      # The harness tests cover both legs; the layer's test needs the
+      # Vulkan headers only the GPU leg installs.
       - name: Test the gate and its Vulkan layer
+        if: matrix.leg == 'gpu'
         run: python3 -m unittest discover -s graphics/cherenkov/bench/scripts -p 'test_ir*.py'
       - uses: ./.github/actions/generate-scene-assets
         with:
