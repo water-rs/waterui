@@ -170,15 +170,17 @@ pub struct Coverage {
 
 /// Rasterizes flattened device-space `segments` spanning `bbox` under
 /// `rule`, over `bbox` inflated by 1 px and clipped to the surface rect.
-/// `None` when the path misses the surface entirely.
+/// `None` when the path misses the surface entirely. `scratch` lends its
+/// band rasterizer.
 pub fn rasterize(
     segments: &[(f32, f32, f32, f32)],
     bbox: Rect,
     surface: (f64, f64),
     rule: FillRule,
+    scratch: &mut EmitScratch,
 ) -> Option<Coverage> {
     match route() {
-        CoverageRoute::Sweep => sweep(segments, bbox, surface, rule, &mut BandRaster::new()),
+        CoverageRoute::Sweep => sweep(segments, bbox, surface, rule, &mut scratch.raster),
     }
 }
 
@@ -216,6 +218,35 @@ fn sweep(
     })
 }
 
+/// Reusable path-emission buffers: the band rasterizer and the per-band
+/// column classification. The owner keeps one across paths and frames so
+/// emission allocates only for growth.
+#[derive(Debug, Default)]
+pub struct EmitScratch {
+    raster: BandRaster,
+    /// `strip_class`'s per-column classes for a dense band.
+    class: Vec<u8>,
+    /// `strip_class_sparse`'s `(end, class)` intervals for a sparse band.
+    intervals: Vec<(u32, u8)>,
+}
+
+impl EmitScratch {
+    /// Empty buffers; the first emissions size them.
+    pub const fn new() -> Self {
+        Self {
+            raster: BandRaster::new(),
+            class: Vec::new(),
+            intervals: Vec::new(),
+        }
+    }
+
+    /// Heap bytes the buffers hold between emissions.
+    pub const fn heap_bytes(&self) -> u64 {
+        self.raster.heap_bytes()
+            + (self.class.capacity() + self.intervals.capacity() * size_of::<(u32, u8)>()) as u64
+    }
+}
+
 /// Rasterizes and emits in one pass: each sealed `STRIP_H`-row coverage
 /// band is classified and emitted directly, so the `w × h` coverage grid
 /// never materializes. Cell texels append to `arena`; the bool is
@@ -227,7 +258,7 @@ pub fn rasterize_emit(
     bbox: Rect,
     surface: (f64, f64),
     rule: FillRule,
-    scratch: &mut BandRaster,
+    scratch: &mut EmitScratch,
     arena: &mut Vec<u8>,
 ) -> Option<Result<(PathEmit, Vec<CellTexels>, bool), RenderError>> {
     match route() {
@@ -235,12 +266,17 @@ pub fn rasterize_emit(
     }
     let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
     let (segments, rule) = resolve(segments, rule);
+    let EmitScratch {
+        raster,
+        class,
+        intervals,
+    } = scratch;
     if (w as f64) <= SMALL_BBOX && (h as f64) <= SMALL_BBOX {
         // One whole-bbox cell needs the texels: collect the (small)
         // coverage and emit it like `emit` does.
         let mut data = Vec::with_capacity(w * h);
-        queue(scratch, &segments, (x0, y0, w, h), rule);
-        scratch.finish(&mut |band: &[f32]| data.extend_from_slice(band));
+        queue(raster, &segments, (x0, y0, w, h), rule);
+        raster.finish(&mut |band: &[f32]| data.extend_from_slice(band));
         let coverage = Coverage {
             x: x0,
             y: y0,
@@ -253,8 +289,10 @@ pub fn rasterize_emit(
     }
     let mut out = PathEmit::default();
     let mut rasters = Vec::new();
-    let mut class = Vec::new();
-    let mut intervals = Vec::new();
+    // The grid's area bounds every texel this emission can produce; it
+    // is reserved at the first cell, so the arena grows at most once per
+    // emitted path and an empty emission never touches it.
+    let mut reserve = w * h;
     let mut err = None;
     let mut sink = |band: Band<'_>, sy: usize| {
         if err.is_some() {
@@ -268,10 +306,11 @@ pub fn rasterize_emit(
                 y0,
                 sy,
                 strip.len() / w,
-                &mut class,
+                class,
                 &mut out,
                 &mut rasters,
                 arena,
+                &mut reserve,
             ),
             Band::Sparse(runs, ends) => emit_strip_sparse(
                 runs,
@@ -280,18 +319,19 @@ pub fn rasterize_emit(
                 x0,
                 y0,
                 sy,
-                &mut intervals,
+                intervals,
                 &mut out,
                 &mut rasters,
                 arena,
+                &mut reserve,
             ),
         };
         if let Err(e) = r {
             err = Some(e);
         }
     };
-    queue(scratch, &segments, (x0, y0, w, h), rule);
-    scratch.finish_choose(&mut sink);
+    queue(raster, &segments, (x0, y0, w, h), rule);
+    raster.finish_choose(&mut sink);
     Some(err.map_or(Ok((out, rasters, clipped)), Err))
 }
 
@@ -418,6 +458,7 @@ pub fn emit(
 ) -> Result<(PathEmit, Vec<CellTexels>), RenderError> {
     let mut out = PathEmit::default();
     let mut rasters = Vec::new();
+    let mut reserve = coverage.data.len();
     if coverage.w as f64 <= SMALL_BBOX && coverage.h as f64 <= SMALL_BBOX {
         make_cell(
             &mut |r, columns, arena| {
@@ -436,6 +477,7 @@ pub fn emit(
             &mut out.cells,
             &mut rasters,
             arena,
+            &mut reserve,
         )?;
     } else {
         let mut class = Vec::new();
@@ -452,6 +494,7 @@ pub fn emit(
                 &mut out,
                 &mut rasters,
                 arena,
+                &mut reserve,
             )?;
         }
     }
@@ -460,7 +503,8 @@ pub fn emit(
 
 /// One cell's `w` × `h` coverage rect streamed a row at a time into
 /// `R8` texels appended to `arena`, plus its [`PathCell`] record
-/// with `rect` in device space.
+/// with `rect` in device space. `reserve` is the emission's pending
+/// reservation: its grid area before the first cell, zero after.
 #[expect(clippy::too_many_arguments)]
 fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
     append_row: &mut F,
@@ -472,13 +516,16 @@ fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
     cells: &mut Vec<PathCell>,
     rasters: &mut Vec<CellTexels>,
     arena: &mut Vec<u8>,
+    reserve: &mut usize,
 ) -> Result<(), RenderError> {
     let (Ok(w32), Ok(h32)) = (u32::try_from(w), u32::try_from(h)) else {
         return Err(RenderError::AtlasFull);
     };
-    // Only emitted texels need storage; a sparse path must not reserve
-    // its whole bounding-box area merely because it has one partial cell.
-    arena.reserve(w * h);
+    // The emission's first cell reserves its whole grid area, which bounds
+    // every later cell of the emission: one growth per emitted path.
+    // Reserving each cell instead grows the arena by doubling and makes
+    // more reallocations than one per path.
+    arena.reserve(std::mem::take(reserve));
     let start = arena.len();
     for row in 0..h {
         append_row(row, x..x + w, arena);
@@ -499,7 +546,8 @@ fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
 /// Emits one band's runs: all-full runs become spans, partial runs
 /// become cells cut out of `strip` — `sh * w` coverage values for the
 /// `sy`-anchored band of a grid at `cov_x, cov_y`. `class` and `arena`
-/// are the emission's classification and texel scratch.
+/// are the emission's classification and texel scratch, `reserve` its
+/// pending reservation (see [`make_cell`]).
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_precision_loss)]
 #[expect(clippy::too_many_arguments)]
@@ -514,6 +562,7 @@ fn emit_strip(
     out: &mut PathEmit,
     rasters: &mut Vec<CellTexels>,
     arena: &mut Vec<u8>,
+    reserve: &mut usize,
 ) -> Result<(), RenderError> {
     strip_class(strip, w, sh, class);
     // Emit runs: all-full runs become spans, the rest cells.
@@ -566,6 +615,7 @@ fn emit_strip(
                 &mut out.cells,
                 rasters,
                 arena,
+                reserve,
             )?;
         }
     }
@@ -690,6 +740,7 @@ fn emit_strip_sparse(
     out: &mut PathEmit,
     rasters: &mut Vec<CellTexels>,
     arena: &mut Vec<u8>,
+    reserve: &mut usize,
 ) -> Result<(), RenderError> {
     let sh = ends.len();
     strip_class_sparse(runs, ends, w, intervals);
@@ -764,6 +815,7 @@ fn emit_strip_sparse(
             &mut out.cells,
             rasters,
             arena,
+            reserve,
         )?;
     }
     Ok(())
@@ -1085,6 +1137,7 @@ mod tests {
             Rect::new(-20.0, 1.0, 6.0, 9.0),
             (10.0, 10.0),
             FillRule::NonZero,
+            &mut EmitScratch::new(),
         )
         .expect("the rect intersects the surface");
         assert!(coverage.clipped, "the bbox hangs off the left edge");
@@ -1118,6 +1171,7 @@ mod tests {
             Rect::new(-20.0, 2.0, 6.0, 8.0),
             (10.0, 10.0),
             FillRule::NonZero,
+            &mut EmitScratch::new(),
         )
         .expect("the triangle intersects the surface");
         #[expect(
@@ -1289,7 +1343,7 @@ mod emit_eq {
         rule: FillRule,
     ) {
         let (dp, dr, darena, dc) = dense_emit(segments, bbox, surface, rule);
-        let mut scratch = BandRaster::new();
+        let mut scratch = EmitScratch::new();
         let mut barena = Vec::new();
         let (bp, br, bc) = rasterize_emit(segments, bbox, surface, rule, &mut scratch, &mut barena)
             .unwrap()
@@ -1330,6 +1384,7 @@ mod emit_eq {
             &mut emit,
             &mut rasters,
             &mut arena,
+            &mut 0,
         )
         .unwrap();
         assert_eq!(emit.spans, [] as [[f32; 4]; 0]);
@@ -1374,7 +1429,7 @@ mod emit_eq {
             let (mut dp, mut sp) = (PathEmit::default(), PathEmit::default());
             let (mut dr, mut sr, mut da, mut sa) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
             emit_strip(
-                &strip, w, 0.0, 0.0, 0, sh, &mut dense, &mut dp, &mut dr, &mut da,
+                &strip, w, 0.0, 0.0, 0, sh, &mut dense, &mut dp, &mut dr, &mut da, &mut 0,
             )
             .unwrap();
             emit_strip_sparse(
@@ -1388,6 +1443,7 @@ mod emit_eq {
                 &mut sp,
                 &mut sr,
                 &mut sa,
+                &mut 0,
             )
             .unwrap();
             assert_eq!(dp.spans, sp.spans);

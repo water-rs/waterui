@@ -662,7 +662,6 @@ impl BandRaster {
     }
 
     /// Heap bytes the reusable buffers hold between rasterizations.
-    #[cfg(test)]
     pub const fn heap_bytes(&self) -> u64 {
         (self.acc.capacity() * size_of::<f32>()
             + self.cov.capacity() * size_of::<f32>()
