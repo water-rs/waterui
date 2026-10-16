@@ -761,6 +761,8 @@ struct Mark(u8);
 impl Mark {
     /// The bits a mark uses.
     const BITS: u32 = 5;
+    /// The mask of those bits.
+    const MASK: u8 = (1 << Self::BITS) - 1;
     /// Set by [`partition`] on a run that became the cheapest cell start
     /// so far: the cell that ends at any later run starts at the nearest
     /// run carrying it.
@@ -852,7 +854,7 @@ impl Run {
     /// The run's mark.
     #[expect(clippy::cast_possible_truncation, reason = "the mark is the low bits")]
     const fn mark(self) -> Mark {
-        Mark(self.0 as u8 & ((1 << Mark::BITS) - 1))
+        Mark(self.0 as u8 & Mark::MASK)
     }
 }
 
@@ -892,44 +894,66 @@ impl Runs for [Run] {
     }
 }
 
-/// A dense band's columns, one byte each: every column holds its class,
-/// and a run's first column holds the run's [`Mark`]. `At` is the run's
-/// `(start, end)` columns, and stepping scans to the next class change.
-/// A dense band already pays a byte per column to classify, so its runs
-/// cost no more than the columns themselves.
+/// A dense band's runs kept in its column bytes: a run of `L` columns
+/// owns its `L` bytes. Its first byte holds the run's [`Mark`] in bits
+/// 0–4 and a length code in bits 5–7, `L` when it is below 8 and 0
+/// otherwise; its last byte holds the same code. A run of 8 or more
+/// columns stores `L` as a 24-bit little-endian value in its second to
+/// fourth bytes and again in the three bytes before its last, which
+/// never overlap. `At` is the run's `(start, end)` columns, and stepping
+/// reads a length, so the runs cost one byte per column and no scan.
 struct Columns<'a>(&'a mut [u8]);
 
 impl Columns<'_> {
-    /// The class of column `x`.
-    const fn class(&self, x: usize) -> u8 {
-        self.0[x] & 0b11
+    /// The bits below a run's length code.
+    const CODE_SHIFT: u32 = Mark::BITS;
+    /// Runs at least this long store their length in their bytes.
+    const LONG: u32 = 1 << (u8::BITS - Self::CODE_SHIFT);
+
+    /// Records a run of `class` over columns `start..end`.
+    fn tag(&mut self, start: u32, end: u32, class: Class) {
+        let (s, e) = (start as usize, end as usize);
+        let len = end - start;
+        let code = if len < Self::LONG {
+            u8::try_from(len).expect("a short run's length fits its code") << Self::CODE_SHIFT
+        } else {
+            assert!(len < 1 << 24, "a dense band is narrower than 2^24 columns");
+            let bytes = &len.to_le_bytes()[..3];
+            self.0[s + 1..s + 4].copy_from_slice(bytes);
+            self.0[e - 4..e - 1].copy_from_slice(bytes);
+            0
+        };
+        self.0[e - 1] = code;
+        self.0[s] = code | Mark::new(class).0;
+    }
+
+    /// The length code at column `x`.
+    fn code(&self, x: usize) -> u32 {
+        u32::from(self.0[x] >> Self::CODE_SHIFT)
+    }
+
+    /// The 24-bit length stored from column `x`.
+    const fn stored(&self, x: usize) -> u32 {
+        u32::from_le_bytes([self.0[x], self.0[x + 1], self.0[x + 2], 0])
     }
 
     /// The end of the run starting at column `start`.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "a band is at most a surface wide"
-    )]
     fn end_of(&self, start: u32) -> u32 {
-        let class = self.class(start as usize);
-        let rest = &self.0[start as usize + 1..];
-        start + 1 + rest.iter().take_while(|&&c| c & 0b11 == class).count() as u32
+        let s = start as usize;
+        start
+            + match self.code(s) {
+                0 => self.stored(s + 1),
+                len => len,
+            }
     }
 
     /// The start of the run ending at column `end`.
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "a band is at most a surface wide"
-    )]
     fn start_of(&self, end: u32) -> u32 {
-        let class = self.class(end as usize - 1);
-        let before = &self.0[..end as usize - 1];
-        end - 1
-            - before
-                .iter()
-                .rev()
-                .take_while(|&&c| c & 0b11 == class)
-                .count() as u32
+        let last = end as usize - 1;
+        end - match self.code(last) {
+            0 => self.stored(last - 3),
+            len => len,
+        }
     }
 }
 
@@ -962,11 +986,12 @@ impl Runs for Columns<'_> {
     }
 
     fn mark(&self, (start, _): (u32, u32)) -> Mark {
-        Mark(self.0[start as usize])
+        Mark(self.0[start as usize] & Mark::MASK)
     }
 
     fn set_mark(&mut self, (start, _): (u32, u32), mark: Mark) {
-        self.0[start as usize] = mark.0;
+        let byte = &mut self.0[start as usize];
+        *byte = *byte & !Mark::MASK | mark.0;
     }
 }
 
@@ -979,17 +1004,31 @@ fn push_run(runs: &mut Vec<Run>, end: u32, class: Class) {
     }
 }
 
-/// Classifies each column of a dense band of `w` columns and `sh` rows
-/// into `columns`.
+/// Splits a dense band of `w` columns and `sh` rows into class runs,
+/// kept in `columns` as [`Columns`] describes.
 fn dense_columns(strip: &[f32], w: usize, sh: usize, columns: &mut Vec<u8>) {
     columns.clear();
     columns.resize(w, 0);
-    for (x, column) in columns.iter_mut().enumerate() {
+    let mut columns = Columns(columns);
+    let width = u32::try_from(w).expect("a band is at most a surface wide");
+    let mut run = None;
+    for x in 0..width {
         let mut state = (true, true);
         for row in 0..sh {
-            state = Class::fold(state, strip[row * w + x]);
+            state = Class::fold(state, strip[row * w + x as usize]);
         }
-        *column = Mark::new(Class::new(state.0, state.1)).0;
+        let class = Class::new(state.0, state.1);
+        match run {
+            Some((_, current)) if current == class => {}
+            Some((start, current)) => {
+                columns.tag(start, x, current);
+                run = Some((x, class));
+            }
+            None => run = Some((x, class)),
+        }
+    }
+    if let Some((start, class)) = run {
+        columns.tag(start, width, class);
     }
 }
 
