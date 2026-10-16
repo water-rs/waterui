@@ -141,14 +141,17 @@ struct CaptureRows {
     levels: [(usize, usize); cherenkov::CaptureLevels::MAX as usize],
 }
 
-/// The rows capture `item` covers for the surface band `band` of a
-/// surface `w × h`, `None` when the band samples none of it.
+/// The rows capture `item` covers when its members' samples are read
+/// over the device rows `need` of a surface `w × h`, `None` when those
+/// rows sample none of it.
 ///
-/// The device rows are the union's rows within the capture's reach of
-/// the band. The item list's last capture, when its members displace
-/// their reads, keeps only the rows its members' taps reach
-/// ([`sample_rows`]); earlier captures keep every device row, because
-/// later captures read the rows their members draw. A 1:1 capture keeps
+/// `need` is the surface band, widened for a top-level capture by every
+/// later top-level capture's window this band runs ([`top_captures`]):
+/// those captures read the rows this group's members draw. The device
+/// rows are the union's rows within the capture's reach of `need`. The
+/// item list's last capture, when its members displace their reads,
+/// keeps only the rows its members' taps reach ([`sample_rows`]); any
+/// other capture keeps every device row. A 1:1 capture keeps
 /// exactly the sampled device rows, and its window is them `± apron`. A reduced capture keeps the texel rows the
 /// sampled rows' bilinear taps at `(y + ½)·s − ½` reach, plus
 /// [`SAMPLE_MARGIN`], within the region; its window is the device rows
@@ -162,10 +165,10 @@ struct CaptureRows {
 fn capture_rows(
     item: &CaptureItem,
     items: &[Item],
-    band: (usize, usize),
+    need: (usize, usize),
     (width, h): (usize, usize),
 ) -> Option<CaptureRows> {
-    let (mut k0, mut k1) = kept_rows(&item.union, item.reach, band, h);
+    let (mut k0, mut k1) = kept_rows(&item.union, item.reach, need, h);
     let device = (k0, k1);
     if item.displaced
         && items.iter().rev().find_map(|item| match item {
@@ -173,7 +176,7 @@ fn capture_rows(
             _ => None,
         }) == Some(item.group)
     {
-        let sampled = sample_rows(items, 0..items.len(), item.group, band, (width, h));
+        let sampled = sample_rows(items, 0..items.len(), item.group, need, (width, h));
         k0 = k0.max(sampled.0);
         k1 = k1.min(sampled.1);
     }
@@ -330,6 +333,10 @@ fn sample_rows(
 /// This band's captures by backdrop group id.
 type Captures = FxHashMap<u64, Capture>;
 
+/// The rows of each top-level capture item this band serves, by item
+/// index, in item order (see [`top_captures`]).
+type TopCaptures = Vec<(usize, Option<CaptureRows>)>;
+
 /// Per-band state shared across the recursive `run` calls.
 struct FrameCtx<'a> {
     /// The surface band rows `[y0, y1)` this run derives from.
@@ -338,6 +345,9 @@ struct FrameCtx<'a> {
     h: usize,
     /// The band's captured backdrops.
     captures: &'a mut Captures,
+    /// The band's top-level capture rows; captures inside filter scopes
+    /// are planned against the surface band by the scope's own run.
+    top: &'a [(usize, Option<CaptureRows>)],
 }
 
 impl Meter {
@@ -1107,31 +1117,23 @@ fn shade(
     scratch.buffers.meter.reset();
     slice.fill(clear);
     let surface = (y0, y0 + bh);
-    // The top-level captures this band serves (captures inside filter
-    // scopes are handled by the scope's own windowed run). A surface that
-    // used no backdrop group cannot contain a `Capture`, so the scan is
-    // skipped outright.
-    let mut last_capture = None;
-    let mut window = surface;
-    if has_backdrop {
-        let mut i = 0;
-        while i < items.len() {
-            match &items[i] {
-                Item::PushFilter { end, .. } => {
-                    i = usize::try_from(*end).unwrap_or(items.len());
-                    continue;
-                }
-                Item::Capture(capture) => {
-                    if let Some(rows) = capture_rows(capture, items, surface, (w, h)) {
-                        last_capture = Some(i);
-                        window = (window.0.min(rows.window.0), window.1.max(rows.window.1));
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-    }
+    // A surface that used no backdrop group cannot contain a `Capture`,
+    // so the scan is skipped outright.
+    let top = if has_backdrop {
+        top_captures(items, surface, (w, h))
+    } else {
+        TopCaptures::new()
+    };
+    let window = top
+        .iter()
+        .filter_map(|(_, rows)| rows.as_ref())
+        .fold(surface, |window, rows| {
+            (window.0.min(rows.window.0), window.1.max(rows.window.1))
+        });
+    let last_capture = top
+        .iter()
+        .rev()
+        .find_map(|(i, rows)| rows.as_ref().map(|_| *i));
     let coverage = std::mem::take(&mut scratch.coverage);
     let result = if let Some(last) = last_capture {
         shade_windowed(
@@ -1143,10 +1145,10 @@ fn shade(
             h,
             (window, last),
             coverage,
-            scratch,
+            (scratch, &top),
         )
     } else {
-        shade_plain(items, slice, w, surface, h, coverage, scratch)
+        shade_plain(items, slice, w, surface, h, coverage, (scratch, &top))
     };
     for plane in scratch.stack.drain(..) {
         scratch.buffers.give_color(plane.buf);
@@ -1162,6 +1164,38 @@ fn shade(
     result
 }
 
+/// Plans the top-level captures (captures inside filter scopes are
+/// planned by the scope's own windowed run) for the surface band
+/// `surface`, last to first: a capture's members draw into the rows
+/// every later capture's window reads, so each capture covers the band
+/// plus the windows of the captures after it.
+fn top_captures(items: &[Item], surface: (usize, usize), size: (usize, usize)) -> TopCaptures {
+    let mut top = TopCaptures::new();
+    let mut i = 0;
+    while i < items.len() {
+        match &items[i] {
+            Item::PushFilter { end, .. } => {
+                i = usize::try_from(*end).unwrap_or(items.len());
+                continue;
+            }
+            Item::Capture(_) => top.push((i, None)),
+            _ => {}
+        }
+        i += 1;
+    }
+    let mut need = surface;
+    for (i, rows) in top.iter_mut().rev() {
+        let Item::Capture(capture) = &items[*i] else {
+            unreachable!("only capture items are planned");
+        };
+        *rows = capture_rows(capture, items, need, size);
+        if let Some(rows) = rows {
+            need = (need.0.min(rows.window.0), need.1.max(rows.window.1));
+        }
+    }
+    top
+}
+
 /// The band's pass with no capture: `run` over the caller's slice.
 fn shade_plain(
     items: &[Item],
@@ -1170,7 +1204,7 @@ fn shade_plain(
     surface: (usize, usize),
     h: usize,
     coverage: Vec<f32>,
-    scratch: &mut Scratch,
+    (scratch, top): (&mut Scratch, &[(usize, Option<CaptureRows>)]),
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, y1) = surface;
     let mut acc = Accum::with_buffer(w, y1 - y0, coverage);
@@ -1191,6 +1225,7 @@ fn shade_plain(
             surface,
             h,
             captures: &mut scratch.captures,
+            top,
         },
     );
     scratch.coverage = acc.into_buffer();
@@ -1218,7 +1253,7 @@ fn shade_windowed(
     h: usize,
     ((win0, win1), last): ((usize, usize), usize),
     coverage: Vec<f32>,
-    scratch: &mut Scratch,
+    (scratch, top): (&mut Scratch, &[(usize, Option<CaptureRows>)]),
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, y1) = surface;
     let bh = y1 - y0;
@@ -1244,6 +1279,7 @@ fn shade_windowed(
             surface,
             h,
             captures: &mut scratch.captures,
+            top,
         },
     );
     if first_pass.is_ok() {
@@ -1282,6 +1318,7 @@ fn shade_windowed(
             surface,
             h,
             captures: &mut scratch.captures,
+            top,
         },
     );
     scratch.coverage = acc.into_buffer();
@@ -1543,7 +1580,11 @@ fn run(
                 ));
             }
             Item::Capture(capture) => {
-                if let Some(rows) = capture_rows(capture, items, ctx.surface, (band.w, h)) {
+                let rows = match ctx.top.iter().find(|(j, _)| *j == i) {
+                    Some((_, rows)) => *rows,
+                    None => capture_rows(capture, items, ctx.surface, (band.w, h)),
+                };
+                if let Some(rows) = rows {
                     capture_band(band, stack.as_slice(), buffers, ctx, capture, rows)?;
                 }
             }
