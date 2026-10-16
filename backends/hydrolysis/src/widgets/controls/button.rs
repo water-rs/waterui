@@ -5,6 +5,7 @@ use crate::renderer::{
     WidgetRenderContext, interaction_focus_ring, local_interaction_state, measure_label_intrinsic,
     measure_view_intrinsic, popup_menu_nodes,
 };
+use crate::theme::{ButtonMetrics, InteractionStyle};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -15,7 +16,6 @@ use std::rc::Rc;
 use waterui::ViewExt as _;
 use waterui::floating::FloatingScope;
 use waterui::style::FloatingStyle;
-use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
 use waterui_controls::ControlSize;
 use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
@@ -119,7 +119,7 @@ impl HydroNativeView for Native<ButtonConfig> {
         state: &mut crate::renderer::HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_button_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -244,7 +244,7 @@ pub fn measure_button_node(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let metrics = button_metrics(
         theme,
@@ -371,7 +371,7 @@ impl HydroNativeView for Native<ResolvedMenu> {
         state: &mut crate::renderer::HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_menu_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -384,7 +384,7 @@ impl HydroNativeView for Native<ResolvedMenu> {
 pub fn menu_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
-    theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
     state: &Rc<RefCell<MenuRenderState>>,
     env: &Environment,
 ) {
@@ -475,7 +475,7 @@ pub fn measure_menu_node(
     proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let metrics = button_metrics(
         theme,
@@ -834,7 +834,7 @@ pub fn measure_button_intrinsic(
     button: &ButtonConfig,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let metrics = button_metrics(
         theme,
@@ -852,7 +852,7 @@ pub fn measure_menu_intrinsic(
     menu: &ResolvedMenu,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let icon_only = menu
         .label
@@ -888,7 +888,7 @@ fn button_label_view(color: Option<Color>, label: AnyView, icon_only: bool) -> A
         None => label,
     };
     if icon_only {
-        AnyView::new(label.install(crate::IconOnlyButtonLabel))
+        AnyView::new(label.install(crate::theme::IconOnlyButtonLabel))
     } else {
         label
     }
@@ -911,7 +911,7 @@ pub struct ListRowChrome;
 /// each frame and the theme's `label_color` [`StateValue`] resolves the
 /// matching override through [`StateValue::resolve`].
 pub fn state_aware_label_color(
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: ButtonStyle,
     state: &nami::Binding<InteractionState>,
     interaction_style: Option<&InteractionStyle>,
@@ -950,7 +950,7 @@ pub fn state_aware_label_color(
 }
 
 fn button_metrics(
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: ButtonStyle,
     size: ControlSize,
     icon_only: bool,
@@ -982,7 +982,7 @@ fn button_metrics(
 }
 
 pub fn button_label_color(
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: ButtonStyle,
     state: waterui_core::interaction::InteractionState,
     interaction_style: Option<&InteractionStyle>,
@@ -1010,7 +1010,7 @@ pub fn button_label_color(
 }
 
 fn measure_button_label_intrinsic(
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: ButtonStyle,
     label: &Label,
     state: &mut HydroState,
@@ -1051,7 +1051,7 @@ pub fn label_resolves_icon_only(label: &Label, env: &Environment) -> bool {
 
 fn styled_button_title(
     state: &mut HydroState,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: ButtonStyle,
     label: &Label,
     env: &Environment,
@@ -1095,7 +1095,7 @@ fn styled_with_default_foreground(styled: StyledStr, color: Color) -> StyledStr 
 /// label built from caller-supplied views carries its own typography, and
 /// `Label::font` rejects it outright.
 fn styled_button_label(
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: ButtonStyle,
     label: Label,
 ) -> Label {
@@ -1136,7 +1136,7 @@ pub fn emit_menu_accessibility(
 #[cfg(test)]
 mod tests {
     use super::{MENU_TRIGGER_STYLE, button_chrome_size};
-    use waterui_backend_core::widget::ButtonMetrics;
+    use crate::theme::ButtonMetrics;
     use waterui_controls::button::ButtonStyle;
     use waterui_core::layout::{ProposalSize, Size};
 

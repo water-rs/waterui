@@ -8,16 +8,23 @@
 //! press is cancelled, never completed — and every later move scrolls the
 //! view's [`ScrollHandle`] one to one. On release, a [`VelocityTracker`]
 //! fit over the last samples starts a [`TouchFling`] that decelerates with
-//! the platform's deceleration model and clamps at the content edges; a new
-//! touch down stops the fling where it is.
+//! the platform's deceleration model; a new touch down stops the fling
+//! where it is.
+//!
+//! What an edge does is the physics family's [`Overscroll`]: clamped
+//! edges stop the drag and the fling on them; rubber-band edges let a drag
+//! past them move with resistance and spring a release or a fling past them
+//! back onto them, the offset held unclamped meanwhile — rendered and
+//! reported where it is, as `UIScrollView`'s `contentOffset` is.
 //!
 //! The gesture's parameters are the host's [`TouchScrollConfig`], pushed
 //! into the renderer by value from `PlatformWindow::touch_scroll_config` —
 //! no platform values are invented here.
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+use super::scroll_physics::{DecayFling, SpringFling};
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::platform::TouchScrollConfig;
+use crate::platform::{FlingDeceleration, Overscroll, TouchScrollConfig};
 use std::collections::VecDeque;
 use waterui_layout::scroll::Axis;
 
@@ -50,6 +57,11 @@ pub struct TouchScrollPending {
     pub(crate) origin: kurbo::Point,
     /// The motion samples the release's fling is fit over.
     pub(crate) tracker: VelocityTracker,
+    /// The fling this touch down stopped, still holding its claim: a drag
+    /// of the same scroll view takes the offset from it where it stands —
+    /// a caught bounce included — and anything else lets it go again from
+    /// rest, so an offset it held past an edge springs back.
+    pub(crate) caught: Option<TouchFling>,
 }
 
 /// A scroll view's claimed drag, scrolled one to one by later moves.
@@ -69,6 +81,29 @@ pub struct TouchScrollDrag {
     pub(crate) last: kurbo::Point,
     /// The motion samples the release's fling is fit over.
     pub(crate) tracker: VelocityTracker,
+    /// What the claimed view's edges do to the drag, from the physics the
+    /// claim was taken under.
+    pub(crate) overscroll: Overscroll,
+}
+
+impl TouchScrollDrag {
+    /// Moves the claimed offset by `(dx, dy)` — the finger's travel,
+    /// negated — and returns whether it moved: clamped edges stop it,
+    /// rubber-band edges let it past with their resistance. Refused once a
+    /// newer claim owns the offset.
+    pub(crate) fn scroll_by(&self, dx: f64, dy: f64) -> bool {
+        match self.overscroll {
+            Overscroll::Clamped => self.handle.apply_gesture_delta(&self.claim, dx, dy),
+            Overscroll::RubberBand(band) => {
+                let metrics = self.handle.metrics();
+                self.handle.apply_gesture_offset(
+                    &self.claim,
+                    Some(band.drag(metrics.offset_x, dx, metrics.max_x, metrics.viewport_width)),
+                    Some(band.drag(metrics.offset_y, dy, metrics.max_y, metrics.viewport_height)),
+                )
+            }
+        }
+    }
 }
 
 /// The release velocity a fling starts from: a least-squares slope over
@@ -141,9 +176,10 @@ impl VelocityTracker {
     }
 }
 
-/// A fling running after the touch released: per-axis spline deceleration
-/// driving the claimed scroll view's handle until it settles — inside the
-/// content bounds — or a new touch down drops it.
+/// A fling running after the touch released: per-axis deceleration — and,
+/// under rubber-band edges, the spring back onto an edge — driving the
+/// claimed scroll view's handle until it comes to rest inside the content
+/// bounds or a new touch down stops it.
 #[derive(Debug)]
 pub struct TouchFling {
     handle: crate::scroll::ScrollHandle,
@@ -153,17 +189,54 @@ pub struct TouchFling {
     /// overwriting its successor. A `rebind` — shifted by a membership
     /// anchor or for rows measured mid-gesture — never touches it.
     claim: crate::scroll::GestureClaim,
-    x: Option<SplineFling>,
-    y: Option<SplineFling>,
+    /// What the edges do: clamped edges write through the clamping fling
+    /// path, rubber-band edges through the unclamped one.
+    overscroll: Overscroll,
+    x: Option<AxisFling>,
+    y: Option<AxisFling>,
+}
+
+/// One axis of a [`TouchFling`].
+#[derive(Debug)]
+enum AxisFling {
+    /// Android `OverScroller`'s spline.
+    Spline(SplineFling),
+    /// `UIScrollView`'s decay, with its bounce at an edge it reaches.
+    Decay(DecayFling),
+    /// The return from a release past an edge, and — for a release moving
+    /// toward the content — the fling it hands over to on the edge, from
+    /// the moment it starts.
+    Release {
+        spring: SpringFling,
+        then: Option<(Instant, Box<Self>)>,
+    },
+}
+
+impl AxisFling {
+    /// The axis's offset at `now` and whether it still moves.
+    fn position(&self, now: Instant) -> (f64, bool) {
+        match self {
+            Self::Spline(fling) => fling.position(now),
+            Self::Decay(fling) => fling.position(now),
+            Self::Release { spring, then } => match then {
+                Some((from, fling)) if now >= *from => fling.position(now),
+                _ => spring.position(now),
+            },
+        }
+    }
 }
 
 impl TouchFling {
     /// Starts a fling on `handle` from the fitted pointer velocity, in
     /// logical units per second, on the released drag's `claim`: the
     /// offset's velocity is the finger's negated, clamped to the host's
-    /// maximum, and an axis under the minimum — or already at the edge it
-    /// heads toward — does not fling. `None` when no axis earns a fling or
-    /// a newer claim already owns the offset.
+    /// maximum. Under rubber-band edges an axis released past an edge
+    /// returns onto it whatever its speed, starting at that velocity — the
+    /// finger's, as `UIScrollView` reports it — and, moving toward the
+    /// content, flings on into it from the edge; otherwise an axis under
+    /// the minimum — or already at the edge it heads toward, under clamped
+    /// edges — does not fling. `None` when no axis moves or a newer claim
+    /// already owns the offset.
     pub(crate) fn start(
         handle: crate::scroll::ScrollHandle,
         claim: crate::scroll::GestureClaim,
@@ -174,24 +247,61 @@ impl TouchFling {
         let metrics = handle.metrics();
         let max = f64::from(config.max_fling_velocity);
         let min = f64::from(config.min_fling_velocity);
+        let physics = config.physics;
         let axis_fling = |velocity: f64, start: f64, extent: f64| {
             // The content offset moves opposite the finger: a finger flung
             // up pushes the offset down into the content.
             let offset_velocity = (-velocity).clamp(-max, max);
-            (offset_velocity.abs() >= min)
-                .then(|| {
-                    SplineFling::new(
-                        offset_velocity,
+            // A fling inside the extents from `start` at `velocity`, from
+            // `from`.
+            let inside = |velocity: f64, start: f64, from: Instant| {
+                let bounce = match physics.overscroll {
+                    // An axis with nothing to scroll does not bounce — the
+                    // band's `drag` documents why.
+                    Overscroll::RubberBand(band) => (extent > 0.0).then_some(band.bounce),
+                    Overscroll::Clamped => None,
+                };
+                match physics.deceleration {
+                    FlingDeceleration::OverScrollerSpline(spline) => Some(SplineFling::new(
+                        velocity,
                         start,
                         extent,
-                        config.fling.physical_coeff,
-                        config.fling.friction,
-                        at,
-                    )
-                })
-                // A run whose clamped destination is already the offset —
-                // released at the edge it headed toward — is no fling.
-                .filter(|fling| (fling.final_offset - fling.start).abs() > SCROLL_END_EPSILON)
+                        spline.physical_coeff,
+                        spline.friction,
+                        from,
+                    ))
+                    // A run whose clamped destination is already the offset —
+                    // released at the edge it headed toward — is no fling.
+                    .filter(|fling| (fling.final_offset - fling.start).abs() > SCROLL_END_EPSILON)
+                    .map(AxisFling::Spline),
+                    FlingDeceleration::ExponentialDecay(decay) => {
+                        DecayFling::new(decay, velocity, start, extent, bounce, from)
+                            .map(AxisFling::Decay)
+                    }
+                }
+            };
+            if let Overscroll::RubberBand(band) = physics.overscroll
+                && !(0.0..=extent).contains(&start)
+            {
+                let edge = start.clamp(0.0, extent);
+                let overscroll = start - edge;
+                let then =
+                    band.release
+                        .handover(overscroll, offset_velocity)
+                        .and_then(|handover| {
+                            let from = at + Duration::from_secs_f64(handover.seconds);
+                            inside(handover.velocity, edge, from)
+                                .map(|fling| (from, Box::new(fling)))
+                        });
+                return Some(AxisFling::Release {
+                    spring: SpringFling::new(edge, overscroll, offset_velocity, band.release, at),
+                    then,
+                });
+            }
+            if offset_velocity.abs() < min {
+                return None;
+            }
+            inside(offset_velocity, start, at)
         };
         let x = matches!(handle.axis(), Axis::Horizontal | Axis::All)
             .then(|| axis_fling(finger_velocity.x, metrics.offset_x, metrics.max_x))
@@ -202,9 +312,35 @@ impl TouchFling {
         ((x.is_some() || y.is_some()) && handle.begin_fling(&claim)).then_some(Self {
             handle,
             claim,
+            overscroll: physics.overscroll,
             x,
             y,
         })
+    }
+
+    /// Releases the claim `handle` and `claim` name — a drag let go, or a
+    /// fling a touch caught and let go again: the fling the release earns
+    /// under `config`, or, when it earns none, the gesture's end, which
+    /// clamps an offset the claim held past an edge.
+    pub(crate) fn release(
+        handle: &crate::scroll::ScrollHandle,
+        claim: &crate::scroll::GestureClaim,
+        finger_velocity: kurbo::Vec2,
+        config: &TouchScrollConfig,
+        at: Instant,
+    ) -> TouchRelease {
+        Self::start(handle.clone(), claim.clone(), finger_velocity, config, at).map_or_else(
+            || TouchRelease::Ended {
+                moved: handle.end_gesture(claim),
+            },
+            |fling| TouchRelease::Fling(Box::new(fling)),
+        )
+    }
+
+    /// Lets this caught fling go again from rest at `at`: see
+    /// [`Self::release`].
+    pub(crate) fn let_go(&self, config: &TouchScrollConfig, at: Instant) -> TouchRelease {
+        Self::release(&self.handle, &self.claim, kurbo::Vec2::ZERO, config, at)
     }
 
     /// The claimed scroll view's offset handle — the pump needs it to
@@ -216,26 +352,55 @@ impl TouchFling {
     /// Advances the fling to `now` and applies its offset through the
     /// handle.
     pub(crate) fn tick(&self, now: Instant) -> TouchFlingTick {
-        // Only the axes with a spline are sampled: an axis without one keeps
+        // A programmatic request — jump or animated — or any user input
+        // claims the offset past this fling's claim: the fling ends on the
+        // spot instead of writing over whatever replaced it. Ownership is
+        // asked, never inferred from a write that moved nothing — the tick
+        // on the release's own frame samples the release offset itself.
+        if !self.handle.holds(&self.claim) {
+            return TouchFlingTick {
+                changed: false,
+                running: false,
+            };
+        }
+        // Only the axes with a run are sampled: an axis without one keeps
         // its offset, so a membership shift is never applied to it twice.
         let x = self.x.as_ref().map(|fling| fling.position(now));
         let y = self.y.as_ref().map(|fling| fling.position(now));
-        // A programmatic request — jump or animated — or any user input
-        // claims the offset past this fling's claim: the refused write
-        // ends the fling instead of writing over whatever replaced it.
-        let changed = self.handle.apply_fling_offset(
-            &self.claim,
-            x.map(|(offset, _)| offset),
-            y.map(|(offset, _)| offset),
-        );
+        let (offset_x, offset_y) = (x.map(|(offset, _)| offset), y.map(|(offset, _)| offset));
+        let changed = match self.overscroll {
+            Overscroll::Clamped => self
+                .handle
+                .apply_fling_offset(&self.claim, offset_x, offset_y),
+            Overscroll::RubberBand(_) => {
+                self.handle
+                    .apply_overscroll_fling_offset(&self.claim, offset_x, offset_y)
+            }
+        };
         let active = |axis: Option<(f64, bool)>| axis.is_some_and(|(_, active)| active);
+        let running = active(x) || active(y);
+        // A fling that ends ends its gesture: an offset it still holds past
+        // an edge — the content changed under a bounce — clamps into the
+        // extents live now.
+        let ended = !running && self.handle.end_gesture(&self.claim);
         TouchFlingTick {
-            changed,
-            // A refused write — a newer claim on the offset — ends the
-            // fling on the spot.
-            running: changed && (active(x) || active(y)),
+            changed: changed || ended,
+            running,
         }
     }
+}
+
+/// What a released touch claim turned into — [`TouchFling::release`].
+#[derive(Debug)]
+pub enum TouchRelease {
+    /// The release earned a fling, which now owns the offset.
+    Fling(Box<TouchFling>),
+    /// The release earned none and ended its gesture.
+    Ended {
+        /// The end clamped an offset held past an edge back into the
+        /// extents — a frame must show it.
+        moved: bool,
+    },
 }
 
 /// The outcome of one [`TouchFling::tick`].
@@ -251,8 +416,8 @@ pub struct TouchFlingTick {
 /// One axis of an [`OverScroller`]-model fling: the spline deceleration
 /// from AOSP `frameworks/base/core/java/android/widget/OverScroller.java`
 /// (`SplineScroller`, SPLINE state) — a cubic-Bézier distance curve over a
-/// fixed sample table, with the edge/overscroll states out of scope since
-/// offsets clamp at the content bounds.
+/// fixed sample table, with `OverScroller`'s own edge/overscroll states out
+/// of scope: the run ends on the clamped edge.
 #[derive(Debug)]
 struct SplineFling {
     started_at: Instant,

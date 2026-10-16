@@ -6,7 +6,7 @@ use cherenkov::Instant;
 use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
 use std::time::Duration;
 
-use cherenkov::kurbo::{BezPath, Point, Rect};
+use cherenkov::kurbo::{BezPath, Rect};
 use cherenkov::{
     Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, Pressure, WorkingColor,
 };
@@ -62,6 +62,32 @@ fn atlas_writes(events: &[AllocEvent]) -> Vec<(u32, u32, u32, u32)> {
             _ => None,
         })
         .collect()
+}
+
+/// The byte size of every glyph atlas storage the engine created.
+fn atlas_creates(events: &[AllocEvent]) -> Vec<u64> {
+    events
+        .iter()
+        .filter_map(|event| match event.kind {
+            EventKind::Create {
+                label: "glyph atlas",
+                bytes,
+                ..
+            } => Some(bytes),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Texels of every path cell committed into the glyph atlas.
+fn atlas_cell_texels(events: &[AllocEvent]) -> u64 {
+    events
+        .iter()
+        .filter_map(|event| match event.kind {
+            EventKind::AtlasCell { rect: (_, _, w, h) } => Some(u64::from(w) * u64::from(h)),
+            _ => None,
+        })
+        .sum()
 }
 
 /// A closed polygonal path, so the fills rasterize into atlas cells
@@ -125,48 +151,62 @@ fn multi_surface_frame_grows_instances_once() -> Result<(), Box<dyn std::error::
 }
 
 split_test! {
-/// Path cells exceeding the initial 1 MiB atlas take the transactional
-/// grow path: one `Grow` on the glyph atlas, then the committed batch
-/// uploads — the render does not abandon mid-frame.
+/// Path cells exceeding the live atlas take the transactional grow
+/// path: one `Grow` on the glyph atlas from its starting size, then the
+/// committed batch uploads — the render does not abandon mid-frame.
 fn atlas_growth_retries_and_commits() -> Result<(), Box<dyn std::error::Error>> {
+    // Each sliver spans this many whole columns.
+    const SLIVER: u32 = 480;
     let sink = Sink::new();
     let engine = wait!(diag_engine(&sink))?;
     let surface = wait!(engine.surface(Offscreen::new((512, 512), OffscreenFormat::LinearF16), || {}))?;
-    // 144 distinct stars with 34–48 px radii: each ~70–96² × 4 B of
-    // fresh path cells ≈ 2–3.5 MiB, over the 1 MiB starting atlas.
-    // Distinct geometry per star keeps the cells from deduplicating.
+    let ink = WorkingColor::new([0.8, 0.3, 0.1, 1.0]);
+    // One triangle commits the first cell, which allocates the atlas at
+    // its starting size and reports it.
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
-            for i in 0..144u32 {
-                let mut path = BezPath::new();
-                let cx = f64::from(i % 12).mul_add(42.0, 26.0);
-                let cy = f64::from(i / 12).mul_add(42.0, 26.0);
-                for point in 0..5u32 {
-                    let angle = f64::from(point)
-                        .mul_add(144.0 + f64::from(i), -90.0)
-                        .to_radians();
-                    let radius = f64::from(i % 8).mul_add(2.0, 34.0);
-                    let p = Point::new(
-                        angle.cos().mul_add(radius, cx),
-                        angle.sin().mul_add(radius, cy),
-                    );
-                    if point == 0 {
-                        path.move_to(p);
-                    } else {
-                        path.line_to(p);
-                    }
-                }
-                path.close_path();
-                r.fill(path, WorkingColor::new([0.8, 0.3, 0.1, 1.0]));
+            r.fill(polygon(&[(10.0, 10.0), (30.0, 10.0), (20.0, 28.0)]), ink);
+        }));
+    });
+    let _ = sink.take();
+    wait!(engine.render(FrameTime::now()))?;
+    let start = match atlas_creates(&sink.take())[..] {
+        [bytes] => bytes,
+        ref other => panic!("the first cell must allocate one atlas: {other:?}"),
+    };
+    // A sliver's top and bottom rows are half covered across all its
+    // columns, so no band holding either row has a full column: each
+    // sliver stores at least those two rows, `2 * SLIVER` texels, as
+    // atlas cells. One more sliver than the starting atlas holds at
+    // that floor overflows it; distinct positions keep the cells from
+    // deduplicating.
+    let count = u32::try_from(start.div_ceil(2 * u64::from(SLIVER)))? + 1;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            for i in 0..count {
+                let x = f64::from(8 + i / 120);
+                let y = f64::from(4 * (i % 120) + 8);
+                let right = x + f64::from(SLIVER);
+                r.fill(
+                    polygon(&[(x, y + 0.5), (right, y + 0.5), (right, y + 2.5), (x, y + 2.5)]),
+                    ink,
+                );
             }
         }));
     });
     let _ = sink.take();
     wait!(engine.render(FrameTime::now()))?;
-    let grown = grows(&sink.take(), "glyph atlas");
+    let events = sink.take();
+    // The atlas is R8: one byte per texel.
+    let texels = atlas_cell_texels(&events);
     assert!(
-        grown.iter().any(|new| *new > 1024 * 1024),
-        "a fresh path set bigger than the atlas must grow it: {grown:?}"
+        texels > start,
+        "the slivers' committed cells ({texels} texels) must exceed the {start}-byte starting atlas"
+    );
+    let grown = grows(&events, "glyph atlas");
+    assert!(
+        grown.iter().any(|new| *new > start),
+        "a fresh path set bigger than the atlas must grow it past {start} bytes: {grown:?}"
     );
     // The committed batch is stable: an identical second frame produces
     // no atlas uploads at all.

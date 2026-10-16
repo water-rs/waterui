@@ -177,6 +177,10 @@ fn base_trials() -> Vec<Trial> {
             resolve::stepper_leaves_follow_the_stretch_rule();
             Ok(())
         }),
+        Trial::test("resolve::picker_leaves_follow_the_stretch_rule", || {
+            resolve::picker_leaves_follow_the_stretch_rule();
+            Ok(())
+        }),
         Trial::test("resolve::toggle_rows_place_the_control_by_kind", || {
             resolve::toggle_rows_place_the_control_by_kind();
             Ok(())
@@ -725,7 +729,7 @@ mod leaf {
 mod resolve {
     use waterui::Str;
     use waterui::ViewExt as _;
-    use waterui::component::form::picker::{PickerItem, picker};
+    use waterui::component::form::picker::{PickerItem, PickerStyle, picker};
     use waterui::component::form::secure::{Secure, SecureField};
     use waterui::component::slider::slider;
     use waterui::component::stepper::stepper;
@@ -1026,6 +1030,61 @@ mod resolve {
                 offered.width.to_bits(),
                 expected.to_bits(),
                 "{name}: width under a 400 pt offer"
+            );
+            assert_eq!(
+                offered.height.to_bits(),
+                intrinsic.height.to_bits(),
+                "{name}: height stays intrinsic"
+            );
+        }
+    }
+
+    /// `docs/layout-spec.md` §3 and §6: a segmented picker is `Horizontal`
+    /// and answers the proposed width; every other style answers its
+    /// intrinsic size.
+    pub fn picker_leaves_follow_the_stretch_rule() {
+        let selection = binding(0_i32);
+        let items = || -> Vec<PickerItem<i32>> {
+            vec![
+                waterui::text!("One").tag(0),
+                waterui::text!("Two").tag(1),
+                waterui::text!("Three").tag(2),
+            ]
+        };
+        let cases = [
+            (
+                "segmented",
+                picker("Mode", items(), &selection).segmented(),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "menu",
+                picker("Mode", items(), &selection).style(PickerStyle::Menu),
+                StretchAxis::None,
+            ),
+        ];
+        for (name, picker, axis) in cases {
+            let leaf = render(picker);
+            assert_eq!(leaf.layout().stretch_axis(), axis, "{name}: stretch axis");
+            let intrinsic = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+            assert!(
+                intrinsic.width < 300.0,
+                "{name}: intrinsic width {} must be narrower than the offer",
+                intrinsic.width
+            );
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), None))
+                .size;
+            let expected = if axis == StretchAxis::Horizontal {
+                300.0_f32
+            } else {
+                intrinsic.width
+            };
+            assert_eq!(
+                offered.width.to_bits(),
+                expected.to_bits(),
+                "{name}: width under a 300 pt offer"
             );
             assert_eq!(
                 offered.height.to_bits(),

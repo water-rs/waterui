@@ -64,11 +64,7 @@ impl LazyStackAxisConfig {
 }
 
 impl LazyTableSlot {
-    pub(crate) fn prepare_columns(
-        &mut self,
-        len: usize,
-        metrics: waterui_backend_core::widget::TableMetrics,
-    ) {
+    pub(crate) fn prepare_columns(&mut self, len: usize, metrics: crate::theme::TableMetrics) {
         self.column_widths.resize(len, metrics.min_column_width);
     }
 }
@@ -368,7 +364,7 @@ pub fn resolve_table_visible_rows(
     offset_y: f64,
     viewport_height: f64,
     max_rows: usize,
-    metrics: waterui_backend_core::widget::TableMetrics,
+    metrics: crate::theme::TableMetrics,
 ) -> VisibleIndexWindow {
     let data_start = (offset_y - metrics.header_height).max(0.0);
     let data_end = (offset_y + viewport_height - metrics.header_height).max(0.0);
@@ -384,7 +380,7 @@ pub fn resolve_table_visible_rows(
 
 pub fn table_metrics_from_slot(
     slot: &LazyTableSlot,
-    metrics: waterui_backend_core::widget::TableMetrics,
+    metrics: crate::theme::TableMetrics,
 ) -> MeasuredTableMetrics {
     MeasuredTableMetrics {
         column_widths: slot.column_widths.clone(),

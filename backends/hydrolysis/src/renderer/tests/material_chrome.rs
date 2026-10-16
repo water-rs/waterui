@@ -13,6 +13,7 @@ use std::rc::Rc;
 
 use waterui_core::Binding;
 
+use crate::theme::{ButtonMetrics, InteractionStyle};
 use kurbo::{Affine, Rect, RoundedRect, Shape as _};
 use nami::SignalExt as _;
 use waterui::FilterViewExt as _;
@@ -20,7 +21,6 @@ use waterui::ViewExt as _;
 use waterui::gesture::TapGesture;
 use waterui::graphics::Color;
 use waterui::interaction::InteractionState;
-use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle};
 use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_graphics::draw::{

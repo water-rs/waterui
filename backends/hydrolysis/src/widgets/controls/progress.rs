@@ -2,6 +2,7 @@ use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, RetainedSubview, WidgetRenderContext,
     circle_arc_path, measure_progress_intrinsic,
 };
+use crate::theme::ProgressIndicatorStyle;
 #[cfg(feature = "accessibility")]
 use accesskit::{Node as AccessibilityNode, Role as AccessibilityNodeRole};
 use core::f64::consts::{FRAC_PI_2, TAU};
@@ -9,7 +10,6 @@ use nami::{Computed, Signal};
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::component::progress::{ProgressConfig, ProgressStyle};
-use waterui_backend_core::widget::ProgressIndicatorStyle;
 use waterui_core::Environment;
 use waterui_core::Native;
 use waterui_core::layout::Size as LayoutSize;
@@ -65,7 +65,7 @@ impl HydroNativeView for Native<ProgressConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_progress_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -117,7 +117,7 @@ pub fn measure_progress_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let size = match render_state.style {
         ProgressStyle::Linear => {

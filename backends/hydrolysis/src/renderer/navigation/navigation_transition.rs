@@ -1,9 +1,9 @@
+use crate::theme::NavigationMotion;
 use waterui::navigation::{
     AnyNavigationTransition, NavigationTransitionDirection,
     NavigationTransitionFrame as ResolvedNavigationTransitionFrame, NavigationTransitionLayer,
     RetainedNavigationTransition,
 };
-use waterui_backend_core::widget::NavigationMotion;
 
 /// How a transition presents its two pages this frame.
 pub enum NavigationPresentation {

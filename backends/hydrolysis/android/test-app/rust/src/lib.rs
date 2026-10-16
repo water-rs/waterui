@@ -37,8 +37,8 @@ fn app_view(
         vstack((
             text("Hydrolysis on Android").title(),
             "Cherenkov paints this UI through the Kotlin host's SurfaceView band.",
-            // Keeps the pump visibly pumping: the Material indeterminate
-            // indicator animates on the shared animation clock, so logcat
+            // Keeps the pump visibly pumping: the indeterminate indicator
+            // animates on the shared animation clock, so logcat
             // shows `frame presented` lines while the window is visible and
             // none while it is hidden.
             loading(),
@@ -109,7 +109,7 @@ pub extern "system" fn JNI_OnLoad(
     hydrolysis::android::register_app(|| {
         (
             build_app(),
-            Rc::new(hydrolysis_m3::Material3::defaults()) as Rc<dyn hydrolysis::Style>,
+            Rc::new(hydrolysis::testing::TestStyle::new()) as Rc<dyn hydrolysis::Style>,
         )
     });
     jni::sys::JNI_VERSION_1_6

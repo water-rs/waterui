@@ -188,7 +188,8 @@ fn ext_frame_yuv(px: vec2<f32>) -> vec4<f32> {
 }
 
 @fragment
-fn fs_external(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_external(fragment: VsOut) -> @location(0) vec4<f32> {
+    let in = device_quad_pixel(fragment);
     var cov: f32;
     switch in.meta_.x {
         case KIND_SPAN: {

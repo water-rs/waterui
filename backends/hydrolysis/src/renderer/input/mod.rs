@@ -9,6 +9,7 @@ mod hit_test;
 mod interaction;
 mod menu_shortcuts;
 mod popup_menu;
+mod scroll_physics;
 mod surface;
 pub mod text_editing;
 mod touch_scroll;

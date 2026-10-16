@@ -14,7 +14,7 @@ workspace = true
 default = []
 vello-classic = ["dep:vello", "dep:vello_common", "dep:wgpu29", "dep:pollster", "dep:ash"]
 vello-hybrid = ["dep:vello_hybrid", "dep:vello_common", "dep:wgpu29", "dep:pollster", "dep:glifo", "dep:ash"]
-vello-cpu = ["dep:vello_cpu", "dep:vello_common"]
+vello-cpu = ["dep:vello_cpu", "dep:vello_common", "vello_cpu/multithreading"]
 # `skia-safe` backend features stay in the feature lists, not on the
 # dependency: `skia-bindings` downloads a prebuilt Skia keyed on the whole
 # enabled set, and only the published combos (e.g. `metal,graphite`) have

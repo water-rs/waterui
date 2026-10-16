@@ -48,13 +48,13 @@ fn badge_content_size(
     state: &mut HydroState,
     badge: &Native<BadgeConfig>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let content = normalize_view_for_render(badge.as_inner().content.build(), env);
     measure_transient_view_intrinsic(&content, state, env, theme)
 }
 
-fn badge_large_label(value: i32, theme: &Rc<dyn crate::engine::WidgetTheme>) -> StyledStr {
+fn badge_large_label(value: i32, theme: &Rc<dyn crate::theme::WidgetTheme>) -> StyledStr {
     StyledStr::plain(value.to_string())
         .font(theme.badge_label_font())
         .foreground(theme.badge_label_color())
@@ -65,7 +65,7 @@ impl HydroNativeView for Native<BadgeConfig> {
         state: &mut HydroState,
         badge: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         badge_content_size(state, badge, env, theme)
     }
@@ -74,7 +74,7 @@ impl HydroNativeView for Native<BadgeConfig> {
         state: &mut HydroState,
         badge: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let content = normalize_view_for_render(badge.as_inner().content.build(), env);
@@ -89,7 +89,7 @@ pub fn measure_badge_node(
     _proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     ViewDimensions::new(state.content.measure_built(hydro, env, theme))
 }

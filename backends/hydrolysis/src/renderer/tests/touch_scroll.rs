@@ -29,7 +29,10 @@ use waterui_navigation::tab::{Tab, TabsLayout};
 
 use super::{MinimalTestTheme, test_environment};
 use crate::HeadlessRuntime;
-use crate::platform::{InputEvent, PointerButton, PointerKind, TouchScrollConfig};
+use crate::platform::{
+    InputEvent, Overscroll, PointerButton, PointerKind, RubberBand, ScrollPlatform,
+    TouchScrollConfig,
+};
 
 const WINDOW_WIDTH: u32 = 400;
 const WINDOW_HEIGHT: u32 = 640;
@@ -45,6 +48,10 @@ fn test_config() -> TouchScrollConfig {
 }
 
 fn runtime(view: AnyView) -> HeadlessRuntime {
+    runtime_with(view, test_config())
+}
+
+fn runtime_with(view: AnyView, config: TouchScrollConfig) -> HeadlessRuntime {
     let view = std::cell::RefCell::new(Some(view));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         view.borrow_mut()
@@ -58,7 +65,7 @@ fn runtime(view: AnyView) -> HeadlessRuntime {
         WINDOW_HEIGHT,
         MinimalTestTheme::default(),
     );
-    runtime.set_touch_scroll_config(test_config());
+    runtime.set_touch_scroll_config(config);
     runtime
 }
 
@@ -509,4 +516,244 @@ fn a_touch_press_whose_target_is_removed_before_release_is_dropped() {
         "the delayed press must end with its target"
     );
     assert!(!tapped.snapshot(), "a removed button must not activate");
+}
+
+// water-rs/waterui#2795 — the `UIScrollView` physics family: exponential
+// decay, and rubber-band edges a drag bands past and a release springs
+// back from. The model's own math is unit-tested in `scroll_physics`; these
+// drive it through the real input path.
+
+fn uikit_runtime(view: AnyView) -> HeadlessRuntime {
+    runtime_with(view, TouchScrollConfig::uikit_default())
+}
+
+fn uikit_band() -> RubberBand {
+    match TouchScrollConfig::uikit_default().physics.overscroll {
+        Overscroll::RubberBand(band) => band,
+        Overscroll::Clamped => panic!("the UIKit family rubber-bands"),
+    }
+}
+
+/// `ROWS` rows in a scroll view whose offset reports into `offset`.
+fn reporting_stack(rows: usize, offset: &Binding<waterui_core::layout::Point>) -> AnyView {
+    let rows = (0..rows).map(SelfId::new).collect::<Vec<_>>();
+    AnyView::new(
+        scroll(VStack::for_each(rows, |row| {
+            let index = row.into_inner();
+            vstack((text(format!("Row {index}")),)).size(360.0, ROW_HEIGHT)
+        }))
+        .report_offset(offset),
+    )
+}
+
+/// Pumps 16 ms frames from `from_ms` for `frames` frames and returns the
+/// offsets of the scroll view under (200, 300) after each.
+fn pump_offsets(
+    runtime: &mut HeadlessRuntime,
+    start: Instant,
+    from_ms: u64,
+    frames: u64,
+) -> Vec<f64> {
+    (1..=frames)
+        .map(|frame| {
+            let _ = runtime.pump_at(false, start + Duration::from_millis(from_ms + frame * 16));
+            offset_y_at(runtime, 200.0, 300.0).expect("the scroll view must keep its metrics")
+        })
+        .collect()
+}
+
+/// Drags from (200, 200) down by 15 — past the slop, claimed — then to
+/// (200, 310), and holds still long enough that the release carries no
+/// velocity: 100 units of finger travel past the top edge.
+fn drag_past_the_top(runtime: &mut HeadlessRuntime, start: Instant) {
+    runtime.push_input_event(touch_down(200.0, 200.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    runtime.push_input_event(touch_move(200.0, 215.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(32));
+    runtime.push_input_event(touch_move(200.0, 310.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(48));
+}
+
+#[test]
+fn a_uikit_drag_past_the_top_edge_rubber_bands_and_its_release_springs_back() {
+    let offset = Binding::container(waterui_core::layout::Point::zero());
+    let mut runtime = uikit_runtime(reporting_stack(ROWS, &offset));
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    let viewport = runtime
+        .renderer()
+        .scroll_metrics_at(200.0, 300.0)
+        .expect("the scroll view must publish its metrics")
+        .viewport_height;
+
+    // At the top edge, a drag toward it is still claimed, and it bands:
+    // 100 units past the edge (110 dragged − 10 slop) show as the band's.
+    drag_past_the_top(&mut runtime, start);
+    let banded = offset_y_at(&runtime, 200.0, 300.0).expect("the scroll view's metrics");
+    let expected = -uikit_band().band(100.0, viewport);
+    assert!(
+        (banded - expected).abs() < 1e-6,
+        "the drag bands past the edge: {banded}, expected {expected}"
+    );
+    assert!(banded > -100.0, "the band resists the finger");
+    assert!(
+        (f64::from(offset.snapshot().y) - banded).abs() < 1e-3,
+        "the reported offset goes past the edge with it, as contentOffset does"
+    );
+
+    // A still release springs back onto the edge, monotonically, never
+    // into the content.
+    runtime.push_input_event(touch_up(200.0, 310.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(400));
+    let offsets = pump_offsets(&mut runtime, start, 400, 150);
+    assert!(
+        offsets[0] < -1.0,
+        "the spring takes time to return, not a snap: {offsets:?}"
+    );
+    assert!(
+        offsets.windows(2).all(|pair| pair[1] >= pair[0]),
+        "the spring returns monotonically: {offsets:?}"
+    );
+    assert!(offsets.iter().all(|&offset| offset <= 0.0));
+    assert_eq!(
+        offsets.last().copied(),
+        Some(0.0),
+        "it settles exactly on the edge"
+    );
+    assert_eq!(offset.snapshot().y, 0.0);
+    assert!(!runtime.renderer().has_active_touch_fling());
+}
+
+#[test]
+fn a_uikit_fling_into_the_bottom_edge_bounces_back_onto_it() {
+    let offset = Binding::container(waterui_core::layout::Point::zero());
+    // 20 rows of 44 over the 640-high window: a 240-unit extent.
+    let mut runtime = uikit_runtime(reporting_stack(20, &offset));
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    let max = runtime
+        .renderer()
+        .scroll_metrics_at(200.0, 300.0)
+        .expect("the scroll view must publish its metrics")
+        .max_y;
+    assert!(max > 0.0, "the content must overflow the viewport");
+
+    runtime.push_input_event(touch_down(200.0, 400.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    for (frame_ms, y) in [(32_u64, 360.0_f32), (48, 320.0), (64, 280.0)] {
+        runtime.push_input_event(touch_move(200.0, y));
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame_ms));
+    }
+    runtime.push_input_event(touch_up(200.0, 280.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(80));
+    let offsets = pump_offsets(&mut runtime, start, 80, 300);
+
+    let peak = offsets.iter().copied().fold(f64::MIN, f64::max);
+    assert!(
+        peak > max + 1.0,
+        "the fling bounces past the edge (peak {peak}, max {max})"
+    );
+    assert_eq!(
+        offsets.last().copied(),
+        Some(max),
+        "it returns exactly onto the edge"
+    );
+    assert!(!runtime.renderer().has_active_touch_fling());
+}
+
+#[test]
+fn a_touch_catches_a_uikit_bounce_and_its_release_springs_back() {
+    let mut runtime = uikit_runtime(tall_stack());
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    drag_past_the_top(&mut runtime, start);
+    runtime.push_input_event(touch_up(200.0, 310.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(400));
+    let springing = pump_offsets(&mut runtime, start, 400, 2);
+    let caught_at = *springing.last().expect("two frames");
+    assert!(caught_at < 0.0, "still past the edge when the touch lands");
+
+    // The touch stops the spring where it is.
+    runtime.push_input_event(touch_down(200.0, 300.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(448));
+    let held = pump_offsets(&mut runtime, start, 448, 3);
+    assert!(
+        held.iter()
+            .all(|&offset| (offset - caught_at).abs() < f64::EPSILON)
+    );
+
+    // Lifting without a drag lets it go: it springs back onto the edge.
+    runtime.push_input_event(touch_up(200.0, 300.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(512));
+    let offsets = pump_offsets(&mut runtime, start, 512, 150);
+    assert_eq!(offsets.last().copied(), Some(0.0));
+    assert!(offsets.iter().all(|&offset| offset <= 0.0));
+}
+
+#[test]
+fn a_clamped_drag_at_the_top_edge_toward_it_is_not_claimed() {
+    // The non-Apple family is unchanged: nothing to scroll toward, no claim.
+    let mut runtime = runtime(tall_stack());
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    drag_past_the_top(&mut runtime, start);
+    assert_eq!(offset_y_at(&runtime, 200.0, 300.0), Some(0.0));
+}
+
+#[test]
+fn the_physics_family_follows_the_compile_target() {
+    let expected = if cfg!(target_vendor = "apple") {
+        ScrollPlatform::Apple
+    } else {
+        ScrollPlatform::Other
+    };
+    assert_eq!(ScrollPlatform::native(), expected);
+    assert_eq!(
+        TouchScrollConfig::for_platform(ScrollPlatform::Apple),
+        TouchScrollConfig::uikit_default()
+    );
+    assert_eq!(
+        TouchScrollConfig::for_platform(ScrollPlatform::Other),
+        TouchScrollConfig::android_default()
+    );
+}
+
+#[test]
+fn the_physics_family_follows_the_browsers_user_agent() {
+    let apple = [
+        // Safari on iPhone.
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+        // Chrome on iPhone.
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/126.0.6478.54 Mobile/15E148 Safari/604.1",
+        // Safari on iPad with "Request Mobile Website".
+        "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1",
+        // Safari on iPadOS by default, and on macOS: both report Macintosh.
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+        // Chrome on macOS.
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+    ];
+    let other = [
+        // Chrome on Android (the reduced user agent).
+        "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
+        // Firefox on Android.
+        "Mozilla/5.0 (Android 14; Mobile; rv:127.0) Gecko/127.0 Firefox/127.0",
+        // Edge on Windows.
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0",
+        // Firefox on Linux.
+        "Mozilla/5.0 (X11; Linux x86_64; rv:127.0) Gecko/20100101 Firefox/127.0",
+    ];
+    for user_agent in apple {
+        assert_eq!(
+            ScrollPlatform::from_user_agent(user_agent),
+            ScrollPlatform::Apple,
+            "{user_agent}"
+        );
+    }
+    for user_agent in other {
+        assert_eq!(
+            ScrollPlatform::from_user_agent(user_agent),
+            ScrollPlatform::Other,
+            "{user_agent}"
+        );
+    }
 }

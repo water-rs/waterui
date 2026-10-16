@@ -261,26 +261,28 @@ impl GpuSample {
     }
 }
 
-/// One render-thread CPU phase of a submitted frame.
+/// One CPU phase of a submitted frame, as the adapter names it.
 #[derive(Clone, Debug, Serialize)]
 pub struct PhaseSample {
-    /// The phase's name (`"lower"`, `"encode"`, `"stamp"`, `"wait"`).
+    /// The phase's name: `"lower"`, `"encode"`, `"stamp"` and `"wait"` for
+    /// Cherenkov GPU; `"lower"`, `"glyph"` and `"shade"` for Cherenkov CPU.
     pub name: String,
-    /// Wall-clock seconds the render thread spent in it.
+    /// Wall-clock seconds the engine spent in it.
     pub seconds: f64,
 }
 
-/// Render-thread CPU seconds of each phase of one frame.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Phases {
-    /// CPU lowering of dirty surfaces.
-    pub lower: f64,
-    /// Command encoding and queue submission.
-    pub encode: f64,
-    /// Timestamp drain and resolve work.
-    pub stamp: f64,
-    /// The final blocking queue drain.
-    pub wait: f64,
+impl PhaseSample {
+    /// One sample per `(name, seconds)`, in the order given.
+    #[must_use]
+    pub fn list(phases: &[(&str, f64)]) -> Vec<Self> {
+        phases
+            .iter()
+            .map(|&(name, seconds)| Self {
+                name: name.to_owned(),
+                seconds,
+            })
+            .collect()
+    }
 }
 
 /// What one frame's composition kept on chip and what it materialized
@@ -339,9 +341,9 @@ pub struct Submit {
     /// GPU timings returned with this submission. Cherenkov adapters
     /// return their timings from [`Engine::finish_gpu`].
     pub gpu: Vec<GpuSample>,
-    /// Render-thread CPU timings for Cherenkov GPU; `None` when the adapter
-    /// does not expose phase timings.
-    pub phases: Option<Phases>,
+    /// The frame's CPU phases in render order; empty when the adapter does
+    /// not expose phase timings.
+    pub phases: Vec<PhaseSample>,
     /// What this frame's composition kept on chip and why it materialized
     /// the rest; `None` when the adapter reports no composition
     /// attribution (#2547).
@@ -540,7 +542,7 @@ pub fn engine_names() -> Vec<&'static str> {
 pub fn create_engine(name: &str) -> Result<Box<dyn Engine>, BenchError> {
     match name {
         #[cfg(feature = "vello-cpu")]
-        vello_cpu_ad::VelloCpu::NAME => Ok(Box::new(vello_cpu_ad::VelloCpu::new())),
+        vello_cpu_ad::VelloCpu::NAME => Ok(Box::new(vello_cpu_ad::VelloCpu::new()?)),
         #[cfg(feature = "vello-classic")]
         vello_classic_ad::VelloClassic::NAME => {
             vello_classic_ad::VelloClassic::new().map(|e| Box::new(e) as Box<dyn Engine>)

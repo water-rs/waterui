@@ -121,6 +121,16 @@ pub struct Phases {
     /// Blocking waits on the GPU: for an upload staging slot still in
     /// flight, and the final drain of the queue.
     pub wait_seconds: f64,
+    /// Glyph resolution after lowering: rasterizing the glyph masks the
+    /// lowered items read that no cache holds, and filling their slots.
+    /// Zero on a backend that does not time it apart from
+    /// `lower_seconds`.
+    pub glyph_seconds: f64,
+    /// The CPU raster pass: shading the lowered items into the target,
+    /// the store into its output format, and the local images (with their
+    /// mip chains) of projective layers. Zero on a GPU backend, whose
+    /// shading is GPU time.
+    pub shade_seconds: f64,
 }
 
 /// Measurements of the last [`Engine::render`](crate::Engine::render).

@@ -73,9 +73,13 @@ pub struct ScrollHandle {
     reason = "scroll snapshot every backend fills field by field from its native scroll view; a new field must fail their build rather than be left unset"
 )]
 pub struct ScrollMetrics {
-    /// Current horizontal offset, clamped to `0.0..=max_x`.
+    /// Current horizontal offset: inside `0.0..=max_x`, except while a touch
+    /// gesture or its fling holds it past an edge (an overscroll such as a
+    /// rubber band) — see [`ScrollHandle::apply_gesture_offset`].
     pub offset_x: f64,
-    /// Current vertical offset, clamped to `0.0..=max_y`.
+    /// Current vertical offset: inside `0.0..=max_y`, except while a touch
+    /// gesture or its fling holds it past an edge — see
+    /// [`ScrollHandle::apply_gesture_offset`].
     pub offset_y: f64,
     /// Maximum horizontal offset: `(content_width - viewport_width).max(0.0)`.
     pub max_x: f64,
@@ -221,6 +225,13 @@ struct ScrollState {
     /// single slot reports an earlier run as `Interrupted` once a newer one
     /// has ended.
     last_run_outcome: Option<(u64, ScrollRunOutcome)>,
+    /// Whether the offset's current claim — a touch gesture or its fling —
+    /// holds it unclamped through [`ScrollHandle::apply_gesture_offset`] or
+    /// [`ScrollHandle::apply_overscroll_fling_offset`]. While it does, a
+    /// rebind never snaps it into the extents; it clamps back when the claim
+    /// ends ([`ScrollHandle::end_gesture`]) or a newer claim takes the
+    /// offset — except a touch catching it, which keeps it.
+    unclamped: bool,
     /// The coordinate shift [`ScrollHandle::rebind`] has applied since the
     /// current fling began — added to its sampled positions so the fling's
     /// origin moves with the content. Reset by [`ScrollHandle::begin_gesture`]
@@ -590,6 +601,102 @@ impl ScrollHandle {
         changed
     }
 
+    /// Whether `claim` still owns the offset — no newer claim has taken it.
+    /// A fling asks before each tick: a write that changes nothing is not a
+    /// lost claim.
+    ///
+    /// # Panics
+    ///
+    /// When `claim` was minted by a different scroll view's handle.
+    #[must_use]
+    pub fn holds(&self, claim: &GestureClaim) -> bool {
+        self.assert_same_state(&claim.state, "gesture claim");
+        self.state.borrow().offset_epoch == claim.offset_epoch
+    }
+
+    /// Writes an absolute offset for the touch gesture `claim` names —
+    /// unclamped, so a drag past an edge can rubber-band — and returns
+    /// whether it moved. `None` leaves that axis untouched, as does an axis
+    /// the view does not scroll. The offset stays unclamped, rendered and
+    /// reported as it is, until [`Self::end_gesture`] or a newer claim
+    /// clamps it; a [`Self::rebind`] in between leaves it alone. Refused —
+    /// nothing written, `false` returned — once a newer claim owns the
+    /// offset.
+    ///
+    /// # Panics
+    ///
+    /// When `claim` was minted by a different scroll view's handle.
+    #[must_use]
+    pub fn apply_gesture_offset(
+        &self,
+        claim: &GestureClaim,
+        x: Option<f64>,
+        y: Option<f64>,
+    ) -> bool {
+        self.assert_same_state(&claim.state, "gesture claim");
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            if state.offset_epoch != claim.offset_epoch {
+                return false;
+            }
+            state.write_unclamped(x, y)
+        };
+        self.flush_offset_report();
+        changed
+    }
+
+    /// [`Self::apply_fling_offset`] without the clamp: the fling's sampled
+    /// positions, carrying the coordinate shift a rebind applied since the
+    /// fling began, land as they are — past an edge while the fling bounces
+    /// — and stay unclamped until [`Self::end_gesture`] or a newer claim
+    /// clamps them.
+    ///
+    /// # Panics
+    ///
+    /// When `claim` was minted by a different scroll view's handle.
+    #[must_use]
+    pub fn apply_overscroll_fling_offset(
+        &self,
+        claim: &GestureClaim,
+        x: Option<f64>,
+        y: Option<f64>,
+    ) -> bool {
+        self.assert_same_state(&claim.state, "gesture claim");
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            if state.offset_epoch != claim.offset_epoch {
+                return false;
+            }
+            let (shift_x, shift_y) = (state.fling_shift_x, state.fling_shift_y);
+            state.write_unclamped(x.map(|x| x + shift_x), y.map(|y| y + shift_y))
+        };
+        self.flush_offset_report();
+        changed
+    }
+
+    /// Ends the touch gesture `claim` names — its drag released with no
+    /// fling, or its fling came to rest: an offset it held unclamped clamps
+    /// into the extents live now. Returns whether that moved the offset; a
+    /// claim that never wrote unclamped, or one a newer claim already
+    /// superseded, changes nothing.
+    ///
+    /// # Panics
+    ///
+    /// When `claim` was minted by a different scroll view's handle.
+    #[must_use]
+    pub fn end_gesture(&self, claim: &GestureClaim) -> bool {
+        self.assert_same_state(&claim.state, "gesture claim");
+        let changed = {
+            let mut state = self.state.borrow_mut();
+            if state.offset_epoch != claim.offset_epoch {
+                return false;
+            }
+            state.clamp_unclamped()
+        };
+        self.flush_offset_report();
+        changed
+    }
+
     /// Asserts `issuer` names this handle's state. Runs and gesture claims
     /// carry the issuing state's `Weak`, which pins its allocation, so an
     /// `Rc` address can never be recycled into a false match.
@@ -624,6 +731,7 @@ impl ScrollState {
             programmatic: None,
             offset_epoch: 0,
             last_run_outcome: None,
+            unclamped: false,
             fling_shift_x: 0.0,
             fling_shift_y: 0.0,
             offset_report: None,
@@ -696,8 +804,11 @@ impl ScrollState {
     /// Takes the next claim on the offset for a writer — a request, a jump,
     /// a user delta — ending any programmatic run as `Interrupted` and
     /// returning the claim's value: a programmatic run's token, or the epoch
-    /// a touch gesture must still hold to own the offset.
-    const fn claim(&mut self) -> u64 {
+    /// a touch gesture must still hold to own the offset. An offset the
+    /// previous claim held unclamped is lost with it and clamps back into
+    /// the extents.
+    fn claim(&mut self) -> u64 {
+        self.clamp_unclamped();
         self.offset_epoch = self
             .offset_epoch
             .checked_add(1)
@@ -709,7 +820,7 @@ impl ScrollState {
     /// Takes the offset for a programmatic writer — a jump or a run —
     /// returning the claim: a live run ends `Interrupted` and the wheel
     /// glide, its targets and its frame clock, is dropped.
-    const fn take_for_request(&mut self) -> u64 {
+    fn take_for_request(&mut self) -> u64 {
         let claim = self.claim();
         self.smooth_target_x = None;
         self.smooth_target_y = None;
@@ -720,7 +831,7 @@ impl ScrollState {
     /// Takes the offset for user input: the request's take plus the spend of
     /// a recorded `Landed`, so a pending request cannot correct its
     /// post-landing position back over the user's scroll.
-    const fn take_for_user(&mut self) -> u64 {
+    fn take_for_user(&mut self) -> u64 {
         let claim = self.take_for_request();
         self.spend_recorded_outcome();
         claim
@@ -728,11 +839,43 @@ impl ScrollState {
 
     /// Mints a touch gesture's claim: the gesture takes the offset as user
     /// input, and the coordinate shift a fling's positions accumulate
-    /// restarts.
-    const fn begin_gesture(&mut self) -> u64 {
+    /// restarts. A touch catching an offset its predecessor held unclamped
+    /// past an edge — a bounce in flight — keeps it where it is, as its own:
+    /// the drag continues from the caught position.
+    fn begin_gesture(&mut self) -> u64 {
+        let caught = core::mem::take(&mut self.unclamped);
         let claim = self.take_for_user();
+        self.unclamped = caught;
         self.reset_fling_shift();
         claim
+    }
+
+    /// Writes an absolute offset on the scrolled axes without clamping, for
+    /// the touch claim the handle already checked, and marks the offset held
+    /// unclamped. `None` keeps that axis.
+    fn write_unclamped(&mut self, x: Option<f64>, y: Option<f64>) -> bool {
+        let (scroll_x, scroll_y) = self.scrolled_axes();
+        let offset_x = x.filter(|_| scroll_x).unwrap_or(self.offset_x);
+        let offset_y = y.filter(|_| scroll_y).unwrap_or(self.offset_y);
+        let changed =
+            value_changed(self.offset_x, offset_x) || value_changed(self.offset_y, offset_y);
+        self.offset_x = offset_x;
+        self.offset_y = offset_y;
+        self.unclamped = true;
+        self.report_offset();
+        changed
+    }
+
+    /// Clamps an offset the current claim held unclamped back into the
+    /// extents and reports whether that moved it.
+    fn clamp_unclamped(&mut self) -> bool {
+        if !core::mem::take(&mut self.unclamped) {
+            return false;
+        }
+        let (offset_x, offset_y) = (self.offset_x, self.offset_y);
+        self.clamp_offsets();
+        self.report_offset();
+        value_changed(offset_x, self.offset_x) || value_changed(offset_y, self.offset_y)
     }
 
     /// Restarts the coordinate shift a fling's sampled positions carry.
@@ -1107,10 +1250,15 @@ impl ScrollState {
         }
     }
 
+    /// Clamps everything into the extents — except an offset the current
+    /// touch claim holds unclamped, which only that claim's end or loss
+    /// clamps.
     fn clamp_offsets(&mut self) {
         let metrics = self.metrics();
-        self.offset_x = clamp_scroll_offset(self.offset_x, metrics.max_x);
-        self.offset_y = clamp_scroll_offset(self.offset_y, metrics.max_y);
+        if !self.unclamped {
+            self.offset_x = clamp_scroll_offset(self.offset_x, metrics.max_x);
+            self.offset_y = clamp_scroll_offset(self.offset_y, metrics.max_y);
+        }
         self.smooth_target_x = self
             .smooth_target_x
             .map(|target| clamp_scroll_offset(target, metrics.max_x));
@@ -1299,8 +1447,10 @@ mod tests {
         (counted, writes)
     }
 
+    /// Wheel and trackpad deltas always clamp: only a touch claim may hold
+    /// the offset past an edge (see the overscroll tests below).
     #[test]
-    fn scroll_offsets_clamp_to_content_extent() {
+    fn scroll_deltas_clamp_to_content_extent() {
         let handle = vertical_handle();
         assert!(handle.apply_scroll_delta(0.0, -50.0, false));
         assert_eq!(handle.metrics().offset_y, 50.0);
@@ -1314,6 +1464,113 @@ mod tests {
 
         // Scrolling back past the top clamps to zero.
         assert!(handle.apply_scroll_delta(0.0, 10_000.0, false));
+        assert_eq!(handle.metrics().offset_y, 0.0);
+    }
+
+    #[test]
+    fn a_touch_claim_holds_its_offset_unclamped_until_its_gesture_ends() {
+        let (report, _) = counting_report();
+        let mut handle = ScrollHandle::new(
+            Axis::Vertical,
+            100.0,
+            100.0,
+            100.0,
+            300.0,
+            Some(report.clone()),
+        );
+        let claim = handle.begin_gesture();
+        // A rubber-banded drag 30pt past the top edge is held, rendered and
+        // reported where it is.
+        assert!(handle.apply_gesture_offset(&claim, Some(12.0), Some(-30.0)));
+        assert_eq!(handle.metrics().offset_y, -30.0);
+        assert_eq!(
+            handle.metrics().offset_x,
+            0.0,
+            "an unscrolled axis is untouched"
+        );
+        assert_eq!(report.snapshot().y, -30.0);
+        // A rebind — rows measured mid-gesture — leaves the claim's offset
+        // alone.
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 320.0, (0.0, 0.0));
+        assert_eq!(handle.metrics().offset_y, -30.0);
+        // The fling writes past the edge too, carrying a rebind's shift.
+        assert!(handle.begin_fling(&claim));
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 330.0, (0.0, 10.0));
+        assert!(handle.apply_overscroll_fling_offset(&claim, None, Some(-25.0)));
+        assert_eq!(handle.metrics().offset_y, -15.0);
+        // The spring settles on the edge and the gesture ends: nothing left
+        // to clamp.
+        assert!(handle.apply_overscroll_fling_offset(&claim, None, Some(-10.0)));
+        assert_eq!(handle.metrics().offset_y, 0.0);
+        assert!(!handle.end_gesture(&claim));
+        // Ended with the content changed under it: the end clamps.
+        let next = handle.begin_gesture();
+        assert!(handle.apply_gesture_offset(&next, None, Some(260.0)));
+        assert!(handle.end_gesture(&next));
+        assert_eq!(handle.metrics().offset_y, 230.0);
+        assert_eq!(report.snapshot().y, 230.0);
+        // Once ended, a rebind clamps as usual.
+        let _ = handle.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 300.0, (0.0, 0.0));
+        assert_eq!(handle.metrics().offset_y, 200.0);
+    }
+
+    #[test]
+    fn a_lost_touch_claim_clamps_its_unclamped_offset() {
+        let competitors: [Competitor; 4] = [
+            ("user_scroll_to", |handle| {
+                let _ = handle.user_scroll_to(0.0, 150.0);
+            }),
+            ("a wheel tick", |handle| {
+                assert!(handle.apply_scroll_delta(0.0, 2.0, true));
+            }),
+            ("a trackpad pixel delta", |handle| {
+                assert!(handle.apply_scroll_delta(0.0, 10.0, false));
+            }),
+            ("scroll_to_animated", |handle| {
+                assert!(
+                    handle
+                        .scroll_to_animated(0.0, 100.0, Animation::default(), Instant::now())
+                        .is_some()
+                );
+            }),
+        ];
+        for (name, compete) in competitors {
+            let handle = vertical_handle();
+            let claim = handle.begin_gesture();
+            assert!(
+                handle.apply_gesture_offset(&claim, None, Some(240.0)),
+                "{name}"
+            );
+            compete(&handle);
+            let offset = handle.metrics().offset_y;
+            assert!(
+                (0.0..=200.0).contains(&offset),
+                "{name}: the lost claim's offset clamps, found {offset}"
+            );
+            assert!(
+                !handle.apply_gesture_offset(&claim, None, Some(260.0)),
+                "{name}"
+            );
+            assert!(!handle.end_gesture(&claim), "{name}");
+            // The extents clamp again on a rebind.
+            let mut rebound = handle.clone();
+            let _ = rebound.rebind(Axis::Vertical, 100.0, 100.0, 100.0, 150.0, (0.0, 0.0));
+            assert!(handle.metrics().offset_y <= 50.0, "{name}");
+        }
+    }
+
+    #[test]
+    fn a_new_touch_catches_an_unclamped_offset_where_it_stands() {
+        let handle = vertical_handle();
+        let fling = touch_fling(&handle);
+        assert!(handle.apply_overscroll_fling_offset(&fling, None, Some(-40.0)));
+        // A touch catching the bounce takes the offset as it is.
+        let caught = handle.begin_gesture();
+        assert_eq!(handle.metrics().offset_y, -40.0);
+        assert!(!handle.holds(&fling));
+        assert!(handle.holds(&caught));
+        assert!(!handle.apply_overscroll_fling_offset(&fling, None, Some(-20.0)));
+        assert!(handle.end_gesture(&caught));
         assert_eq!(handle.metrics().offset_y, 0.0);
     }
 

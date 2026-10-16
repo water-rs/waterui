@@ -16,9 +16,19 @@ use web_sys::{
 
 use super::{
     CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
-    PointerButton, PointerKind, PresentationSurface as _, TextInputPurpose, TextInputState,
-    TouchScrollConfig, WindowState, WuiWindow,
+    PointerButton, PointerKind, PresentationSurface as _, ScrollPlatform, TextInputPurpose,
+    TextInputState, TouchScrollConfig, WindowState, WuiWindow,
 };
+
+/// The touch-scroll physics of the system `window`'s browser runs on, as
+/// its `navigator.userAgent` names it.
+fn touch_scroll_config_for(window: &BrowserHostWindow) -> TouchScrollConfig {
+    let user_agent = window
+        .navigator()
+        .user_agent()
+        .expect("hydrolysis web platform: navigator.userAgent unavailable");
+    TouchScrollConfig::for_platform(ScrollPlatform::from_user_agent(&user_agent))
+}
 
 #[derive(Clone, Copy)]
 struct PendingResize {
@@ -226,6 +236,9 @@ pub struct BrowserWindow {
     /// the one it needs.
     schedule_frame: Rc<dyn Fn()>,
     current_cursor_style: CursorStyle,
+    /// The touch-scroll physics of the system the browser runs on, read
+    /// once from `navigator.userAgent`.
+    touch_scroll_config: TouchScrollConfig,
     /// The page background last matched to the app's top edge.
     top_edge_color: Option<waterui_graphics::draw::WorkingColor>,
     /// Held for its lifetime: the observer keeps reporting only while
@@ -283,6 +296,7 @@ impl BrowserWindow {
         let redraw_requested = Rc::new(Cell::new(false));
         let scale_factor = Rc::new(Cell::new(browser_window.device_pixel_ratio()));
         let pending_resize = Rc::new(Cell::new(None));
+        let touch_scroll_config = touch_scroll_config_for(&browser_window);
 
         let initial_resize = measure_root(&browser_window, &root);
         pending_resize.set(Some(initial_resize));
@@ -375,6 +389,7 @@ impl BrowserWindow {
             safe_area,
             schedule_frame,
             current_cursor_style: CursorStyle::Arrow,
+            touch_scroll_config,
             top_edge_color: None,
             _intersection_observer: intersection_observer,
             _listeners: listeners,
@@ -491,10 +506,11 @@ impl PlatformWindow for BrowserWindow {
 
     /// The browser publishes no touch-gesture parameters, and CSS pixels
     /// are the window's density-1 logical units, so it reports the
-    /// Android `OverScroller` model at density 1 — a touch drag scrolls
-    /// here the way it does on a host with values of its own.
+    /// density-1 model of the system its user agent names —
+    /// `UIScrollView`'s on Apple systems, Android's `OverScroller`
+    /// elsewhere.
     fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
-        Some(TouchScrollConfig::android_default())
+        Some(self.touch_scroll_config)
     }
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {

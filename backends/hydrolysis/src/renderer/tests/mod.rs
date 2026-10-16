@@ -120,8 +120,8 @@ use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
 use waterui_navigation::tab::{Tab, TabsLayout};
 
-use crate::engine::WidgetTheme;
-use waterui_backend_core::widget::{
+use crate::theme::WidgetTheme;
+use crate::theme::{
     BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding,
     InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
     PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
@@ -1312,6 +1312,77 @@ fn capture_root_window<V: waterui_core::View>(
     renderer.finish_rebuild_frame();
 }
 
+/// `docs/layout-spec.md` §6: a segmented picker answers the proposal width and
+/// its intrinsic height, and its intrinsic width when the width is unbounded;
+/// a menu picker answers its intrinsic size under any offer.
+#[cfg(feature = "accessibility")]
+#[test]
+fn a_segmented_picker_takes_the_width_it_is_offered() {
+    fn picked_width(view: impl waterui_core::View + 'static, window: Rect) -> f64 {
+        let env = test_environment();
+        let mut renderer = test_renderer();
+        capture_root_window(&mut renderer, view, &env, window);
+        let update = renderer
+            .take_accessibility_tree_update()
+            .expect("a picker must publish an accessibility tree");
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Mode"))
+            .expect("the picker node must exist");
+        node.bounds().expect("the picker must carry bounds").width()
+    }
+    let picker = |style| {
+        let selection = Binding::i32(0);
+        Picker::new(
+            "Mode",
+            vec![text("One").tag(0), text("Two").tag(1), text("Three").tag(2)],
+            &selection,
+        )
+        .style(style)
+    };
+    let window = Rect::new(0.0, 0.0, 480.0, 200.0);
+
+    // The retained node's own answers, straight from its measure: an
+    // unbounded width proposal is the intrinsic width, and a finite one is
+    // taken whole by a segmented picker only.
+    let env = test_environment();
+    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
+    let mut renderer = test_renderer();
+    let mut hydro = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut measure = |style, width: Option<f32>| {
+        let mut node = crate::widgets::controls::picker::PickerRenderState::from_config(
+            waterui_core::view::ConfigurableView::config(picker(style)),
+        );
+        node.prebuild(&mut renderer, &env);
+        crate::widgets::controls::picker::measure_picker_node(
+            &node,
+            ProposalSize::new(width, None),
+            &mut hydro,
+            &env,
+            &theme,
+        )
+        .size
+    };
+    let segmented = measure(PickerStyle::Segmented, None);
+    assert!(
+        segmented.width < 300.0,
+        "an unbounded width proposal answers the intrinsic width, got {}",
+        segmented.width
+    );
+    let offered = measure(PickerStyle::Segmented, Some(300.0));
+    approx::assert_relative_eq!(offered.width, 300.0);
+    approx::assert_relative_eq!(offered.height, segmented.height);
+    let menu = measure(PickerStyle::Menu, None);
+    assert_eq!(measure(PickerStyle::Menu, Some(300.0)), menu);
+
+    approx::assert_relative_eq!(
+        picked_width(picker(PickerStyle::Segmented).width(300.0), window),
+        300.0
+    );
+    approx::assert_relative_eq!(picked_width(picker(PickerStyle::Segmented), window), 480.0);
+}
+
 /// A composed container carrying a non-`Group` role is a real container in the
 /// accessibility tree: a navigation bar/rail declares itself a tab list so
 /// assistive technology can tell that the tabs inside belong together. Only the
@@ -2211,8 +2282,8 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
     reason = "the local-space mapping must carry the wave's progress and opacity through untouched, so the values stay bit-identical"
 )]
 fn interaction_press_origin_is_converted_to_widget_local_space() {
-    let mut press_waves = waterui_backend_core::widget::PressWaves::EMPTY;
-    press_waves.push(waterui_backend_core::widget::PressWave {
+    let mut press_waves = crate::theme::PressWaves::EMPTY;
+    press_waves.push(crate::theme::PressWave {
         origin: Some(Point::new(125.0, 84.0)),
         progress: 0.5,
         opacity: 0.12,
