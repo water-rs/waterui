@@ -1,30 +1,36 @@
-//! Winding-resolved fill and stroke geometry, carried from a realization
-//! that is about to be dropped or rebuilt to the lowering that replaces it.
+//! Winding-resolved fill and stroke geometry in a draw's
+//! translation-normalized [`Frame`], and the per-frame table that carries it
+//! from a realization about to be dropped to the lowering that replaces it.
 //!
 //! A path whose flattened segments may overlap has to be swept
 //! ([`cherenkov::lowering::resolve_winding`]) before its signed area is
 //! accumulated, and the sweep is the dominant cost of lowering such a path.
-//! Its result depends only on the flattened content, which is a pure
-//! function of the shape, the stroke style and the device transform. A
-//! static scene records its content again every frame, which drops every
-//! realization; a placement whose clip changes rebuilds one. Before either
-//! happens, the swept edges of the realization are offered here under that
-//! key, and the lowering that follows takes them for a draw whose key
-//! matches bit for bit instead of sweeping again.
+//! Its result depends only on the flattened content, which is flattened and
+//! swept in the draw's [`Frame`]: a pure function of the shape, the stroke
+//! style and the linear part of the device transform. A placement that
+//! differs only by a translation therefore keeps its realization's
+//! geometry and moves it by the frame's offset; only a change of the linear
+//! part flattens and sweeps again, because the flattening tolerance depends
+//! on scale.
+//!
+//! A static scene records its content again every frame, which drops every
+//! realization. Before that happens, the swept edges of the realization are
+//! offered here under their key, and the lowering that follows takes them
+//! for a draw whose key matches bit for bit instead of sweeping again.
 //!
 //! Only swept geometry is offered: input the pre-sweep test proves
 //! disjoint costs about as much to flatten and test again as to look up.
 //!
 //! The table lives for one frame: [`GeometryCache::finish_frame`] drops it
 //! after the frame's lowering, so it holds no memory between frames and its
-//! bound is the swept draws replaced or rebuilt in one frame. Under
-//! critical memory pressure [`GeometryCache::clear`] drops it at once.
+//! bound is the swept draws replaced in one frame. Under critical memory
+//! pressure [`GeometryCache::clear`] drops it at once.
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use arrayvec::ArrayVec;
-use cherenkov::kurbo::{self, Affine, PathEl, Point};
+use cherenkov::kurbo::{self, Affine, BezPath, PathEl, Point, Vec2};
 use cherenkov::lowering::Winding;
 use cherenkov::{FillRule, ShapeData};
 use rustc_hash::{FxHashMap, FxHasher};
@@ -35,7 +41,7 @@ use super::raster::Edge;
 struct Entry {
     shape: ShapeData,
     stroke: Option<kurbo::Stroke>,
-    transform: [u64; 6],
+    linear: [u64; 4],
     edges: Arc<[Edge]>,
     rule: FillRule,
 }
@@ -48,8 +54,8 @@ pub struct GeometryCache {
     entries: FxHashMap<u64, Entry>,
 }
 
-/// Geometry produced for a draw: its device edges, the rule they fill under,
-/// and whether the winding sweep produced or confirmed them.
+/// Geometry produced for a draw: its edges in the draw's [`Frame`], the rule
+/// they fill under, and whether the winding sweep produced or confirmed them.
 pub struct Resolved {
     pub edges: Arc<[Edge]>,
     pub rule: FillRule,
@@ -57,10 +63,11 @@ pub struct Resolved {
 }
 
 impl GeometryCache {
-    /// The device edges of `shape` under `transform` — its outline stroked
-    /// by `stroke` when set. An offered entry with the same key is reused;
-    /// otherwise `flatten` produces the flattened edges and their rule, and
-    /// the winding is resolved. `None` means the shape has no area.
+    /// The edges of `shape` under `transform` in its [`Frame`] — its outline
+    /// stroked by `stroke` when set. An offered entry with the same key is
+    /// reused; otherwise `flatten` produces the flattened frame edges and
+    /// their rule, and the winding is resolved. `None` means the shape has
+    /// no area.
     pub fn resolve(
         &self,
         shape: &ShapeData,
@@ -105,9 +112,9 @@ impl GeometryCache {
         })
     }
 
-    /// Offers the swept edges of a draw of `shape` under `transform`
-    /// (stroked by `stroke` when set) whose realization is being dropped or
-    /// rebuilt, for the rest of the frame.
+    /// Offers the swept frame edges of a draw of `shape` under `transform`
+    /// (stroked by `stroke` when set) whose realization is being dropped,
+    /// for the rest of the frame.
     pub fn offer(
         &mut self,
         shape: &ShapeData,
@@ -122,7 +129,7 @@ impl GeometryCache {
                 Entry {
                     shape: shape.clone(),
                     stroke: stroke.cloned(),
-                    transform: key.transform,
+                    linear: key.linear,
                     edges: edges.clone(),
                     rule,
                 },
@@ -164,12 +171,85 @@ impl GeometryCache {
     }
 }
 
-/// A draw's geometry key, borrowed. Ellipses have none: kurbo keeps their
+/// A draw's translation-normalized frame: its shape moved so that the
+/// shape's anchor sits at the origin, then mapped by the linear part of the
+/// device transform. Fill and stroke geometry is outlined, flattened and
+/// winding-resolved in it, so the coordinates the stroker and the sweep see
+/// — and with them the sweep's absolute epsilon and its coordinate-scaled
+/// error bound — depend on the shape and the linear part only, never on
+/// where the shape sits. Device space is the frame moved by
+/// [`Frame::offset`], the anchor's device position, and a placement that
+/// differs only by a translation reuses the geometry exactly.
+pub struct Frame {
+    anchor: Vec2,
+    linear: Affine,
+    /// The device position of the frame's origin: the anchor under the
+    /// device transform.
+    pub offset: [f32; 2],
+}
+
+impl Frame {
+    /// The frame of `shape` drawn under `transform`.
+    #[expect(clippy::cast_possible_truncation, reason = "geometry is f32")]
+    pub fn new(shape: &ShapeData, transform: Affine) -> Self {
+        let anchor = anchor(shape);
+        let [a, b, c, d, _, _] = transform.as_coeffs();
+        let at = transform * anchor;
+        Self {
+            anchor: anchor.to_vec2(),
+            linear: Affine::new([a, b, c, d, 0.0, 0.0]),
+            offset: [at.x as f32, at.y as f32],
+        }
+    }
+
+    /// `path`, in shape space, moved so the anchor sits at the origin: the
+    /// space strokes are outlined in.
+    pub fn anchored(&self, mut path: BezPath) -> BezPath {
+        path.apply_affine(Affine::translate(-self.anchor));
+        path
+    }
+
+    /// An anchored `path` mapped into the frame by the linear part.
+    pub fn map(&self, path: BezPath) -> BezPath {
+        self.linear * path
+    }
+}
+
+/// A point of `shape` that moves with it: the anchor of its frame.
+fn anchor(shape: &ShapeData) -> Point {
+    match shape {
+        ShapeData::Rect(r) => r.origin(),
+        ShapeData::RoundedRect(r) => r.rect().origin(),
+        ShapeData::Continuous(c) => c.rect.origin(),
+        ShapeData::Circle(c) => c.center,
+        ShapeData::Ellipse(e) => e.center(),
+        ShapeData::Line(l) => l.p0,
+        ShapeData::Path { elements, .. } => elements
+            .iter()
+            .find_map(|el| element_parts(el).1.first().copied())
+            .unwrap_or(Point::ORIGIN),
+    }
+}
+
+/// Whether `a` and `b` have the same linear part, bit for bit: the frame
+/// geometry of a draw under one is the frame geometry under the other.
+pub fn same_linear(a: Affine, b: Affine) -> bool {
+    linear_bits(a) == linear_bits(b)
+}
+
+/// The linear part of `transform` as exact words.
+fn linear_bits(transform: Affine) -> [u64; 4] {
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    [a, b, c, d].map(f64::to_bits)
+}
+
+/// A draw's geometry key, borrowed: the frame geometry does not depend on
+/// the transform's translation. Ellipses have none: kurbo keeps their
 /// affine private, so they cannot be compared bit for bit.
 struct Key<'a> {
     shape: &'a ShapeData,
     stroke: Option<&'a kurbo::Stroke>,
-    transform: [u64; 6],
+    linear: [u64; 4],
 }
 
 impl<'a> Key<'a> {
@@ -181,18 +261,18 @@ impl<'a> Key<'a> {
         (!matches!(shape, ShapeData::Ellipse(_))).then(|| Self {
             shape,
             stroke,
-            transform: transform.as_coeffs().map(f64::to_bits),
+            linear: linear_bits(transform),
         })
     }
 
     fn digest(&self) -> u64 {
-        key_hash(self.shape, self.stroke, &self.transform)
+        key_hash(self.shape, self.stroke, &self.linear)
     }
 }
 
 impl Entry {
     fn matches(&self, key: &Key<'_>) -> bool {
-        self.transform == key.transform
+        self.linear == key.linear
             && match (&self.stroke, key.stroke) {
                 (None, None) => true,
                 (Some(a), Some(b)) => stroke_words(a).eq(stroke_words(b)),
@@ -202,9 +282,9 @@ impl Entry {
     }
 }
 
-fn key_hash(shape: &ShapeData, stroke: Option<&kurbo::Stroke>, transform: &[u64; 6]) -> u64 {
+fn key_hash(shape: &ShapeData, stroke: Option<&kurbo::Stroke>, linear: &[u64; 4]) -> u64 {
     let mut hasher = FxHasher::default();
-    transform.hash(&mut hasher);
+    linear.hash(&mut hasher);
     match stroke {
         Some(stroke) => {
             1u8.hash(&mut hasher);
