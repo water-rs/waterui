@@ -31,7 +31,7 @@ fn eval(b: Bencher, case: &Case) {
         mut out,
     } = case.eval();
     b.bench_local(|| {
-        paint.eval_span(black_box(x0), black_box(py), black_box(&mut out));
+        black_box(paint.eval_span(black_box(x0), black_box(py), black_box(&mut out)));
     });
 }
 

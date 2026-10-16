@@ -17,6 +17,7 @@ mod cases;
 
 mod kernels_bench {
     use std::hint::black_box;
+    use std::mem::MaybeUninit;
 
     use cherenkov_cpu::testing::kernels::composite_span;
     use gungraun::{library_benchmark, library_benchmark_group};
@@ -41,13 +42,13 @@ mod kernels_bench {
     #[benches::image_nearest(iter = cases::of(Kind::ImageNearest), setup = eval_setup)]
     #[benches::image_bilinear(iter = cases::of(Kind::ImageBilinear), setup = eval_setup)]
     #[benches::transformed(iter = cases::of(Kind::Transformed), setup = eval_setup)]
-    fn eval(mut input: Eval) -> Vec<[f32; 4]> {
-        input.paint.eval_span(
+    fn eval(mut input: Eval) -> Vec<MaybeUninit<[f32; 4]>> {
+        black_box(input.paint.eval_span(
             black_box(input.x0),
             black_box(input.py),
             black_box(&mut input.out),
-        );
-        black_box(input.out)
+        ));
+        input.out
     }
 
     #[library_benchmark]

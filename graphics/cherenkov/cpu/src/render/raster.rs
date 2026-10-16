@@ -14,6 +14,7 @@
 use arrayvec::ArrayVec;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+use std::mem::MaybeUninit;
 use std::ops::Range;
 
 use cherenkov::FillRule;
@@ -36,6 +37,11 @@ pub const BAND_H: usize = 16;
 /// moves across a texel boundary still lands on a kept row.
 pub const SAMPLE_MARGIN: usize = 1;
 
+/// The run length one span paint evaluation covers: a longer run is
+/// evaluated and composited in `SPAN_CHUNK`-pixel pieces against one
+/// stack-resident buffer.
+const SPAN_CHUNK: usize = 64;
+
 /// One worker's reusable raster and filter buffers.
 ///
 /// Created per rayon worker for the duration of a pass (`for_each_init`);
@@ -57,12 +63,6 @@ pub struct Scratch {
 struct Buffers {
     free: Vec<Vec<[f32; 4]>>,
     coverage: Vec<Vec<f32>>,
-    /// Span-shading scratch: one row's coverage and one run's evaluated
-    /// paint, reused across rows, items and bands so a steady frame
-    /// allocates nothing. Unmetered — they are transient like
-    /// [`Scratch::coverage`], not pixel buffers held across a band.
-    span_cov: Vec<f32>,
-    span_src: Vec<[f32; 4]>,
     /// Live colour-buffer bytes and their peak for the current band.
     meter: Meter,
 }
@@ -395,8 +395,6 @@ impl Scratch {
             buffers: Buffers {
                 free: Vec::new(),
                 coverage: Vec::new(),
-                span_cov: Vec::new(),
-                span_src: Vec::new(),
                 meter: Meter::default(),
             },
             captures: Captures::default(),
@@ -613,6 +611,32 @@ impl Accum {
                 }
             };
         }
+    }
+
+    /// [`coverage_into`](Self::coverage_into) writing back into the
+    /// accumulation cells it consumed: the coverage of columns
+    /// `x0..min(x1, w)` — computed by the same prefix sum with the same
+    /// expressions — lands in the row's cells `x0 + 1..min(x1, w) + 1`,
+    /// each written after that cell has been added to the running sum.
+    ///
+    /// The row's window columns are consumed and must be cleared by
+    /// [`clear_range`](Self::clear_range) before the next accumulation.
+    /// Every column it reads or writes lies in `cmin..=cmax` once
+    /// [`set_window(x0, x1)`](Self::set_window) is set.
+    pub fn coverage_in_place(&mut self, y: usize, rule: FillRule, x0: usize, x1: usize) -> &[f32] {
+        let row = y * (self.w + 2);
+        let mut acc = self.a[row + x0];
+        for x in x0..x1.min(self.w) {
+            acc += self.a[row + x + 1];
+            self.a[row + x + 1] = match rule {
+                FillRule::NonZero => acc.abs().min(1.0),
+                FillRule::EvenOdd => {
+                    let m = acc.rem_euclid(2.0);
+                    if m > 1.0 { 2.0 - m } else { m }
+                }
+            };
+        }
+        &self.a[row + x0 + 1..=row + x1.min(self.w)]
     }
 }
 
@@ -1138,6 +1162,42 @@ pub fn composite_span(
     }
 }
 
+/// Shades the nonzero runs of `cov` over `dst`: coverage index `i`
+/// covers device column `x0 + i` on device row `py`, so a run `r0..r1`
+/// shades `dst[x0 + r0..x0 + r1]`. Each run is paint-evaluated and
+/// composited in `SPAN_CHUNK`-pixel pieces against `src`, the
+/// stack-resident chunk.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row context travels together"
+)]
+fn composite_runs(
+    dst: &mut [[f32; 4]],
+    cov: &[f32],
+    x0: usize,
+    py: usize,
+    w: usize,
+    paint: &PaintData,
+    clip: Option<&ClipRef>,
+    space: cherenkov::BlendSpace,
+    src: &mut [MaybeUninit<[f32; 4]>],
+) {
+    nonzero_runs(cov, |r0, r1| {
+        let mut x = r0;
+        while x < r1 {
+            let n = (r1 - x).min(SPAN_CHUNK);
+            composite_span(
+                &mut dst[x0 + x..x0 + x + n],
+                paint.eval_span(x0 + x, py, &mut src[..n]),
+                &cov[x..x + n],
+                ClipRun::new(clip, w, x0 + x, py),
+                space,
+            );
+            x += n;
+        }
+    });
+}
+
 /// `(draws, edges)` stats for an item list.
 fn stats(items: &[Item]) -> (u32, u32) {
     let (mut draws, mut edges) = (0_u32, 0_u32);
@@ -1581,16 +1641,7 @@ fn run(
                 rule,
                 paint,
                 clip,
-            } => band.draw(
-                acc,
-                stack,
-                buffers,
-                edges,
-                *bbox,
-                *rule,
-                paint,
-                clip.as_ref(),
-            ),
+            } => band.draw(acc, stack, edges, *bbox, *rule, paint, clip.as_ref()),
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
                 space: *space,
@@ -1720,7 +1771,7 @@ fn run(
             } => band.shadow(stack, rbox, radii, *sigma_eff, color, *bbox, clip.as_ref()),
             Item::Project(item) => band.project(stack, item),
             Item::Silhouette { slot, paint, clip } => {
-                band.glyph(stack, buffers, slot, 0, 0, paint, clip.as_ref());
+                band.glyph(stack, slot, 0, 0, paint, clip.as_ref());
             }
             Item::Glyph {
                 slot,
@@ -1728,7 +1779,7 @@ fn run(
                 y,
                 paint,
                 clip,
-            } => band.glyph(stack, buffers, slot, *x, *y, paint, clip.as_ref()),
+            } => band.glyph(stack, slot, *x, *y, paint, clip.as_ref()),
         }
         i += 1;
     }
@@ -2120,7 +2171,6 @@ impl Band<'_> {
         &mut self,
         acc: &mut Accum,
         stack: &mut Vec<Plane>,
-        buffers: &mut Buffers,
         edges: &[Edge],
         bbox: crate::render::lower::IRect,
         rule: FillRule,
@@ -2160,27 +2210,22 @@ impl Band<'_> {
             acc.draw_line(e.x0, ey0, e.x1, ey1);
         }
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
-        let Buffers {
-            span_cov, span_src, ..
-        } = &mut *buffers;
-        span_cov.clear();
-        span_cov.resize(x_hi - x_lo, 0.0);
+        let mut src = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
         for y in y_lo..y_hi {
             let py = self.y0 + y;
-            acc.coverage_into(y, rule, x_lo, x_hi, span_cov);
+            let cov = acc.coverage_in_place(y, rule, x_lo, x_hi);
             let row = y * self.w;
-            nonzero_runs(span_cov, |r0, r1| {
-                span_src.clear();
-                span_src.resize(r1 - r0, [0.0; 4]);
-                paint.eval_span(x_lo + r0, py, span_src);
-                composite_span(
-                    &mut dst[row + x_lo + r0..row + x_lo + r1],
-                    span_src,
-                    &span_cov[r0..r1],
-                    ClipRun::new(clip, self.w, x_lo + r0, py),
-                    space,
-                );
-            });
+            composite_runs(
+                &mut dst[row..],
+                cov,
+                x_lo,
+                py,
+                self.w,
+                paint,
+                clip,
+                space,
+                &mut src,
+            );
         }
     }
 
@@ -2466,14 +2511,11 @@ impl Band<'_> {
     #[expect(
         clippy::cast_possible_wrap,
         clippy::cast_possible_truncation,
-        clippy::too_many_arguments,
-        reason = "mask coordinates and pixel indices are small; the mask, \
-                  scratch, paint and clip travel together"
+        reason = "mask coordinates and pixel indices are small"
     )]
     fn glyph(
         &mut self,
         stack: &mut Vec<Plane>,
-        buffers: &mut Buffers,
         slot: &std::sync::OnceLock<std::sync::Arc<crate::render::glyph::GlyphMask>>,
         ox: i32,
         oy: i32,
@@ -2503,25 +2545,24 @@ impl Band<'_> {
             return;
         }
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
-        let span_src = &mut buffers.span_src;
+        let mut src = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
         for y in y_lo..y_hi {
             let py = self.y0 + y;
             let row = usize::try_from(py as i32 - my0).unwrap_or(0) * mask.w as usize;
             // The mask columns under `x_lo..x_hi`, indexed `x - mx0`.
             let m_lo = usize::try_from(x_lo as i32 - mx0).unwrap_or(0);
             let cov = &mask.cov[row + m_lo..row + m_lo + (x_hi - x_lo)];
-            nonzero_runs(cov, |r0, r1| {
-                span_src.clear();
-                span_src.resize(r1 - r0, [0.0; 4]);
-                paint.eval_span(x_lo + r0, py, span_src);
-                composite_span(
-                    &mut dst[y * self.w + x_lo + r0..y * self.w + x_lo + r1],
-                    span_src,
-                    &cov[r0..r1],
-                    ClipRun::new(clip, self.w, x_lo + r0, py),
-                    space,
-                );
-            });
+            composite_runs(
+                &mut dst[y * self.w..],
+                cov,
+                x_lo,
+                py,
+                self.w,
+                paint,
+                clip,
+                space,
+                &mut src,
+            );
         }
     }
 

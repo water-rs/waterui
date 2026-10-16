@@ -2,6 +2,8 @@
 //! sampled at the pixel centre mapped by the item's inverse transform into
 //! content space, then premultiplied.
 
+use std::mem::MaybeUninit;
+
 use cherenkov::kurbo::Affine;
 use cherenkov::{ColorStop, Extend, Interpolation, Paint};
 use rustc_hash::FxHashMap;
@@ -590,20 +592,30 @@ impl PaintData {
 
     /// Evaluates the run of pixel centres `(x0 + i + 0.5, py + 0.5)` into
     /// `out`: `out[i] == self.eval(x0 + i + 0.5, py + 0.5)` bit for bit.
-    /// Scalar for now; the span shape is what the SIMD kernels take over.
+    /// `out` may be uninitialised — every element is written — and is
+    /// returned as the initialised run. Scalar for now; the span shape is
+    /// what the SIMD kernels take over.
     #[expect(
         clippy::cast_precision_loss,
         reason = "pixel indices and band offsets are far below 2^24"
     )]
-    pub fn eval_span(&self, x0: usize, py: usize, out: &mut [[f32; 4]]) {
+    pub fn eval_span<'a>(
+        &self,
+        x0: usize,
+        py: usize,
+        out: &'a mut [MaybeUninit<[f32; 4]>],
+    ) -> &'a mut [[f32; 4]] {
         for (i, px) in out.iter_mut().enumerate() {
-            *px = self.eval((x0 + i) as f32 + 0.5, py as f32 + 0.5);
+            px.write(self.eval((x0 + i) as f32 + 0.5, py as f32 + 0.5));
         }
+        // SAFETY: every element of `out` was just written.
+        unsafe { out.assume_init_mut() }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::mem::MaybeUninit;
     use std::sync::Arc;
 
     use cherenkov::kurbo::Affine;
@@ -714,8 +726,8 @@ mod tests {
             for x0 in 0..4usize {
                 for len in 0..=67usize {
                     let py = 13usize;
-                    let mut span = vec![[0.0; 4]; len];
-                    paint.eval_span(x0, py, &mut span);
+                    let mut span = vec![MaybeUninit::uninit(); len];
+                    let span = paint.eval_span(x0, py, &mut span);
                     for (i, px) in span.iter().enumerate() {
                         assert_eq!(
                             px.map(f32::to_bits),

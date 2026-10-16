@@ -5,6 +5,7 @@
 //! the bench measures data the renderer actually produces.
 
 use std::fmt;
+use std::mem::MaybeUninit;
 use std::sync::Arc;
 
 use cherenkov::kurbo::Affine;
@@ -242,7 +243,7 @@ pub struct Eval {
     /// The run's device row.
     pub py: usize,
     /// The output buffer, `len` pixels.
-    pub out: Vec<[f32; 4]>,
+    pub out: Vec<MaybeUninit<[f32; 4]>>,
 }
 
 /// `composite_span`'s inputs: a destination row, the paint evaluated
@@ -272,7 +273,7 @@ impl Case {
             paint,
             x0: self.offset,
             py: PY,
-            out: vec![[0.0; 4]; self.len],
+            out: vec![MaybeUninit::uninit(); self.len],
         }
     }
 
@@ -290,7 +291,7 @@ impl Case {
             py,
             mut out,
         } = self.eval();
-        paint.eval_span(x0, py, &mut out);
+        let src = paint.eval_span(x0, py, &mut out).to_vec();
         Composite {
             dst: (0..self.len)
                 .map(|i| {
@@ -302,7 +303,7 @@ impl Case {
                     ]
                 })
                 .collect(),
-            src: out,
+            src,
             cov: (0..self.len)
                 .map(|i| 0.25 + 0.75 * ((i * 29 + self.offset) % 13) as f32 / 12.0)
                 .collect(),
