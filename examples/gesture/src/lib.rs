@@ -146,7 +146,7 @@ fn middle_click_tab_section(tabs: &ReactiveList<TabChip>, open_tabs: &Binding<i3
                     .background(Srgb::from_hex("#607D8B").with_opacity(0.3))
                     .gesture(
                         TapGesture::new().buttons(PointerButtons::MIDDLE),
-                        move |State(tabs): State<ReactiveList<TabChip>>,
+                        move |State(mut tabs): State<ReactiveList<TabChip>>,
                               State(open_tabs): State<Binding<i32>>| {
                             if let Some(index) =
                                 tabs.snapshot().iter().position(|tab| tab.id == tab_id)

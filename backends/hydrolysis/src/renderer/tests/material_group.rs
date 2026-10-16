@@ -1191,7 +1191,7 @@ fn a_partial_re_record_keeps_the_scope_anchored() {
 /// ordered child list against the mirror (water-rs/waterui#2097, MEDIUM-1).
 #[test]
 fn a_scope_moving_between_lists_keeps_one_owner() {
-    let rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
+    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
     let mut runtime = {
         let rows = rows.clone();
         let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -1270,7 +1270,7 @@ fn a_scope_moving_between_lists_keeps_one_owner() {
 
 #[test]
 fn a_scope_enter_completion_keeps_one_direct_owner() {
-    let rows: Membership<SelfId<u64>> = Membership::from(vec![]);
+    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![]);
     let builder = {
         let rows = rows.clone();
         AnyViewBuilder::<AnyView>::new(move || {
@@ -1334,7 +1334,7 @@ fn a_scope_enter_completion_keeps_one_direct_owner() {
 
 #[test]
 fn a_scope_reinserted_during_exit_keeps_one_direct_owner() {
-    let rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
+    let mut rows: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(1)]);
     let builder = {
         let rows = rows.clone();
         AnyViewBuilder::<AnyView>::new(move || {
