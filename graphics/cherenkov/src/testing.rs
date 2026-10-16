@@ -209,6 +209,26 @@ struct NullProducer {
 }
 
 impl NullRenderer {
+    fn register_image(&mut self, id: ImageId, _image: &ImageUpload) -> Result<(), ResourceError> {
+        if self.reject.contains(&NullReject::Image) {
+            return Err(ResourceError::Image("injected rejection".into()));
+        }
+        self.images.insert(id);
+        let _ = self.events.send(Event::AddImage(id));
+        Ok(())
+    }
+
+    fn swap_image(&self, id: ImageId, image: &ImageUpload) {
+        assert!(
+            self.images.contains(&id),
+            "replace of unregistered image {}",
+            id.raw()
+        );
+        let _ = self
+            .events
+            .send(Event::ReplaceImage(id, (image.width, image.height)));
+    }
+
     /// Releases the binding every producer holds on `(surface, layer)`,
     /// like `set_content` and `remove_layer` dropping the layer's other
     /// content.
@@ -370,25 +390,34 @@ impl Renderer for NullRenderer {
         self.image_limits
     }
 
-    fn add_image(&mut self, id: ImageId, _image: ImageUpload) -> Result<(), ResourceError> {
-        if self.reject.contains(&NullReject::Image) {
-            return Err(ResourceError::Image("injected rejection".into()));
-        }
-        self.images.insert(id);
-        let _ = self.events.send(Event::AddImage(id));
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        self.register_image(id, &image)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn add_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        core::future::ready(self.register_image(id, &image))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        self.swap_image(id, &image);
         Ok(())
     }
 
-    fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        assert!(
-            self.images.contains(&id),
-            "replace of unregistered image {}",
-            id.raw()
-        );
-        let _ = self
-            .events
-            .send(Event::ReplaceImage(id, (image.width, image.height)));
-        Ok(())
+    #[cfg(target_arch = "wasm32")]
+    fn replace_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        self.swap_image(id, &image);
+        core::future::ready(Ok(()))
     }
 
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {
@@ -1587,6 +1616,80 @@ mod tests {
             ),
             "{events:?}"
         );
+    }
+
+    /// Registered images share the image budget, decided on the calling
+    /// thread: a registration or a growing replacement that would take
+    /// the live images past `max_texels` fails with `OverBudget`, queues
+    /// nothing and keeps the previous pixels; a shrinking replacement
+    /// and the last handle's drop return texels, and a clone holds none
+    /// of its own.
+    #[test]
+    fn registered_images_share_the_image_budget() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let limits = crate::ImageLimits {
+            max_dimension: 4,
+            max_texels: 16,
+        };
+        let engine = Engine::<Null>::new(NullConfig {
+            events: tx,
+            reject: HashSet::new(),
+            image_limits: limits,
+        })
+        .expect("init");
+        let image = |w: u32, h: u32| {
+            let len = usize::try_from(w * h * 4).expect("a small image");
+            ImageData::<Rgba8>::new(w, h, vec![0u8; len]).expect("image data")
+        };
+        let over = |result: Result<_, ResourceError>| match result {
+            Err(ResourceError::OverBudget {
+                width,
+                height,
+                available,
+                limits: rejected,
+            }) => {
+                assert_eq!(rejected, limits);
+                (width, height, available)
+            }
+            other => panic!("an image past the budget was admitted: {other:?}"),
+        };
+
+        let a = engine.image(image(4, 2)).expect("a");
+        let b = engine.image(image(4, 2)).expect("b");
+        // Each fits alone; the budget is spent.
+        assert_eq!(over(engine.image(image(1, 1)).map(drop)), (1, 1, 0));
+        // A shrinking replacement returns texels at once.
+        a.replace(image(4, 1)).expect("shrink");
+        let c = engine.image(image(2, 2)).expect("c");
+        // A growing replacement is admitted in place of its own pixels:
+        // 12 texels beside a and c's 8 do not fit.
+        assert_eq!(over(b.replace(image(4, 3))), (4, 3, 8));
+        // A clone holds nothing of its own: dropping it returns nothing.
+        drop(a.clone());
+        assert_eq!(over(b.replace(image(4, 3))), (4, 3, 8));
+        // The last handle's drop does.
+        drop(a);
+        b.replace(image(4, 3)).expect("grow");
+
+        // Only the admitted operations reached the render thread.
+        let _ = engine.memory();
+        let events: Vec<Event> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|event| !matches!(event, Event::RemoveImage(_)))
+            .collect();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    Event::AddImage(_),
+                    Event::AddImage(_),
+                    Event::ReplaceImage(_, (4, 1)),
+                    Event::AddImage(_),
+                    Event::ReplaceImage(_, (4, 3)),
+                ]
+            ),
+            "{events:?}"
+        );
+        drop((b, c));
     }
 
     fn frames(rx: &std::sync::mpsc::Receiver<Event>) -> Vec<FrameRecord> {

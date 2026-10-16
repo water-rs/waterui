@@ -29,6 +29,7 @@ use crate::render::instance::{
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
+use crate::render::raster;
 
 /// The target a pass draws into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +99,17 @@ pub enum ShaderVariant {
     /// binary form: clips, masks and strokes keep every other Full
     /// behaviour; only the stop lookup differs.
     LongGradient,
+    /// Everything but the union field — `LongGradient`'s stop search
+    /// included — plus the GPU coverage cell buffer (issue #2543): the
+    /// module reads a GPU-routed path's partial cells from the frame's
+    /// cell-texel buffer. No range is lowered with it —
+    /// [`DrawRange::module`] selects it for GPU-routed ranges, so the
+    /// pipelines every other draw uses carry none of the cell-buffer code.
+    Cell,
+    /// `Full` plus the per-tap conversion of source image texels: an
+    /// image paint whose texture keeps its source encoding (non-zero
+    /// `image_storage` source flags).
+    Image,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -128,6 +140,23 @@ pub struct DrawRange {
     pub variant: ShaderVariant,
     /// Range into the frame's instance buffer.
     pub instances: Range<u32>,
+    /// For a GPU-routed path (issue #2543): its applied compute record
+    /// index. The range carries no CPU-side instances; the coverage
+    /// kernels write its spans and cells into the instance buffer's
+    /// tail and the draw reads its indirect arguments.
+    pub gpu: Option<u32>,
+}
+
+impl DrawRange {
+    /// The engine module the range's pipeline is built from: its
+    /// `variant`, except that a GPU-routed range reads its cells from the
+    /// cell-texel buffer, which only the `Cell` and `Union` modules carry.
+    pub const fn module(&self) -> ShaderVariant {
+        match (self.gpu, self.variant) {
+            (Some(_), ShaderVariant::Union) | (None, _) => self.variant,
+            (Some(_), _) => ShaderVariant::Cell,
+        }
+    }
 }
 
 /// One render pass.
@@ -462,11 +491,11 @@ const GRADIENT_LINEAR_STOPS: u32 = 8;
 
 /// The specialised fragment pipeline `inst` requires: the union variant
 /// for a backdrop member drawing against the group's shared field, the
-/// long-gradient module for a gradient past `GRADIENT_LINEAR_STOPS`,
-/// the uber-shader when it reads rare fields (clip, mask, inner,
-/// strokes, other non-solid paint), the shadow kernel otherwise for
-/// shadows, and the trivial coverage path for solid fills, spans, and
-/// glyphs.
+/// long-gradient module for a gradient past `GRADIENT_LINEAR_STOPS`, the
+/// image variant for an image paint sampling source-encoded texels, the
+/// uber-shader when it reads rare fields (clip, mask, inner, strokes,
+/// other non-solid paint), the shadow kernel otherwise for shadows, and
+/// the trivial coverage path for solid fills, spans, and glyphs.
 const fn variant_of(inst: &Instance) -> ShaderVariant {
     let flags = inst.meta[3] >> 24;
     if (flags & FLAG_UNION) != 0 {
@@ -479,6 +508,13 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
         || inst.meta[1] != PAINT_SOLID
         || matches!(inst.meta[0], KIND_STROKE_OFFSET | KIND_STROKE_DIST)
     {
+        // An image paint is never solid, so every image instance reaches
+        // this branch; testing it here keeps the solid path free of it.
+        // `SOURCE` first: in that order the common path compiles to the
+        // same instructions as without the image variant.
+        if (inst.meta[3] & super::image_storage::SOURCE) != 0 && inst.meta[1] == PAINT_IMAGE {
+            return ShaderVariant::Image;
+        }
         return ShaderVariant::Full;
     }
     if inst.meta[0] == KIND_SHADOW {
@@ -1372,6 +1408,10 @@ pub struct Lowering<'a> {
     /// The surface size: a local walk lowers onto its image's size, the
     /// surface walk onto this.
     surface: (u32, u32),
+    /// Whether the device can run the GPU coverage route's compute
+    /// passes — the route consults it at [`Self::path`] (issue #2543).
+    has_compute: bool,
+    pub(crate) coverage_route: path::CoverageRoute,
 }
 
 impl<'a> Lowering<'a> {
@@ -1382,6 +1422,7 @@ impl<'a> Lowering<'a> {
         size: (u32, u32),
         anchor_scratch: &'a mut AnchorScratch,
         raster_scratch: &'a mut path::EmitScratch,
+        has_compute: bool,
     ) -> Self {
         anchor_scratch.clear();
         Self {
@@ -1427,6 +1468,8 @@ impl<'a> Lowering<'a> {
             projected: FxHashMap::default(),
             projective_draws: 0,
             surface: size,
+            has_compute,
+            coverage_route: path::CoverageRoute::Sweep,
         }
     }
 
@@ -2005,6 +2048,7 @@ impl<'a> Lowering<'a> {
                 pipeline: open.pipeline,
                 variant: open.variant,
                 instances: open.seg_start..end,
+                gpu: None,
             });
             open.maybe_coverage &= open.pipeline == PipelineKind::SrcOver
                 && open.variant == ShaderVariant::Simple
@@ -3968,6 +4012,20 @@ impl<'a> Lowering<'a> {
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
     ) -> Result<bool, RenderError> {
+        if self.has_compute
+            && self.coverage_route == path::CoverageRoute::Gpu
+            && matches!(op, Op::Path { .. })
+        {
+            // GPU coverage is frame-scoped. Retain semantic operations,
+            // never their generated instances or empty CPU emissions.
+            cache.valid = false;
+            self.set_image(None);
+            let transform = self.transform;
+            let result = self.realize(op, None, glyphs, source);
+            self.transform = transform;
+            result?;
+            return Ok(true);
+        }
         let cover = self.shadow_cover(op, next);
         let hit = cache.valid
             && cache.data.as_mut().is_some_and(|e| {
@@ -4740,6 +4798,21 @@ impl<'a> Lowering<'a> {
         } else {
             (None, None)
         };
+        // Scope item 7: the GPU route needs the device's compute
+        // capability; without it the CPU sweep runs even under the
+        // #2546 force hook. The forced route cannot serve its emission
+        // from the CPU atlas, so it decides before the hit checks.
+        if self.has_compute && self.coverage_route == path::CoverageRoute::Gpu {
+            self.path_gpu(
+                rule,
+                shader_path,
+                make.take(),
+                paint,
+                shader_data.as_ref(),
+                surface,
+            );
+            return Ok(());
+        }
         let hit = glyphs
             .atlas
             .path(pl.key)
@@ -4837,16 +4910,109 @@ impl<'a> Lowering<'a> {
             offset,
         );
         if let Some(pending) = pending {
-            for i in 0..emit.cells.len() {
-                let patch = (
+            // Extending from the exact-size range grows each list at most
+            // once per path, where a push per cell can grow it several times.
+            let patches = (0..emit.cells.len()).map(|i| {
+                (
                     u32::try_from(first + i).expect("instance index fits u32"),
                     pending,
                     u32::try_from(i).expect("cell index fits u32"),
-                );
-                self.emission_patches.push(patch);
-                self.cell_patches.push(patch);
-            }
+                )
+            });
+            self.emission_patches.extend(patches.clone());
+            self.cell_patches.extend(patches);
         }
+    }
+
+    /// The GPU coverage route of issue #2543: the path's curve elements
+    /// go into a pending compute record untouched by the CPU — the
+    /// coverage kernels flatten, bin and classify them on device and
+    /// write the same span/cell emission the CPU route's `replay` would,
+    /// into the instance buffer's tail behind indirect arguments.
+    fn path_gpu(
+        &mut self,
+        rule: FillRule,
+        shader_path: Option<BezPath>,
+        make: Option<impl FnOnce() -> BezPath>,
+        paint: &ResolvedPaint,
+        shader_data: Option<&PaintData>,
+        surface: (u32, u32),
+    ) {
+        let local = shader_path.unwrap_or_else(|| make.expect("path factory")());
+        let (elements, bound) = path::gpu_bound(
+            local.elements(),
+            self.transform,
+            (f64::from(surface.0), f64::from(surface.1)),
+        );
+        if bound.empty {
+            return;
+        }
+        let mut template = self.gpu_template(paint, shader_data);
+        template.bounds = bound.rect;
+        self.set_variant(&template);
+        self.end_segment();
+        let anchor = u32::try_from(self.frame.instances.len()).expect("instance index");
+        template.params[0] = f32::from_bits(anchor);
+        template.meta[3] |= 0x8000_0000;
+        self.frame.instances.push(template);
+        if let Some(mask) = self.mask_pending {
+            self.mask_patches.push((anchor, mask));
+        }
+        if let Some(open) = &mut self.frame.open {
+            open.seg_start = anchor + 1;
+        }
+        let template = Box::new(template);
+        let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
+        self.pending.push(PendingRaster::GpuPath {
+            rule: rule as u32,
+            raster: self.transform,
+            surface,
+            template,
+            elements,
+            bound,
+        });
+        self.push_gpu_range(pending);
+    }
+
+    /// The instance template a GPU-routed path shares with `replay`:
+    /// every field but the per-instance `bounds`, `uv` and `meta[0]`
+    /// kind the classify kernel stamps.
+    fn gpu_template(&mut self, paint: &ResolvedPaint, shader_data: Option<&PaintData>) -> Instance {
+        let paint = shader_data
+            .copied()
+            .unwrap_or_else(|| self.resolved_paint(paint));
+        let mut template = Self::base(KIND_SPAN, affine(self.transform), self.clip);
+        template.color = paint.color;
+        template.grad = paint.grad;
+        template.grad2 = paint.grad2;
+        template.meta[1] = paint.kind;
+        template.meta[2] = paint.first_stop;
+        template.meta[3] |= paint.packed & 0x00ff_ffff;
+        template
+    }
+
+    /// Appends a GPU-path draw range: no CPU instances — the coverage
+    /// kernels emit them — and the pending record index the apply step
+    /// resolves to a compute record.
+    fn push_gpu_range(&mut self, pending: u32) {
+        let Some(open) = &mut self.frame.open else {
+            return;
+        };
+        open.ranges.push(DrawRange {
+            source: open.source,
+            image: open.image.clone(),
+            mask: open.mask,
+            pipeline: open.pipeline,
+            variant: open.variant,
+            instances: (u32::try_from(self.frame.instances.len()).expect("instance count") - 1)
+                ..u32::try_from(self.frame.instances.len()).expect("instance count"),
+            gpu: Some(pending),
+        });
+        open.maybe_coverage &= open.pipeline == PipelineKind::SrcOver
+            && open.variant == ShaderVariant::Simple
+            && open.source.is_none()
+            && open.image.is_none()
+            && open.mask.is_none();
     }
 
     /// All quads in a path group share paint, clip and shader variant. Reserve
@@ -4945,11 +5111,7 @@ impl<'a> Lowering<'a> {
             let (Ok(w), Ok(h)) = (u32::try_from(coverage.w), u32::try_from(coverage.h)) else {
                 return Err(RenderError::Unsupported(names::PATH_CLIP_TOO_LARGE));
             };
-            let texels: Vec<u8> = coverage
-                .data
-                .iter()
-                .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-                .collect();
+            let texels: Vec<u8> = coverage.data.iter().copied().map(raster::texel).collect();
             let key = if coverage.clipped {
                 pl.key_exact()
             } else {
@@ -5647,6 +5809,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
+            true,
         );
         let transforms = [
             Affine::IDENTITY,
@@ -5771,6 +5934,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
+            true,
         );
         lowering.begin_pass(Target::Part(0), None);
         let glyphs = GlyphContext {
@@ -5875,6 +6039,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
+            true,
         );
         lowering.begin_pass(Target::Part(0), None);
         lowering
@@ -5960,6 +6125,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
+            true,
         );
         lowering.begin_pass(Target::Part(0), None);
         lowering
@@ -6056,6 +6222,7 @@ mod tests {
             (64, 64),
             &mut anchor_scratch,
             &mut raster_scratch,
+            true,
         );
         let Some((device, _queue)) = device_and_queue() else {
             return;
@@ -6362,6 +6529,7 @@ mod tests {
                 (32, 32),
                 &mut anchor_scratch,
                 &mut raster_scratch,
+                true,
             );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
@@ -6474,6 +6642,7 @@ mod tests {
                 (32, 32),
                 &mut anchor_scratch,
                 &mut raster_scratch,
+                true,
             );
             lowering.prepare(&mut caches, &glyphs).expect("prepared");
             lowering
@@ -6533,6 +6702,7 @@ mod tests {
             (32, 32),
             &mut anchor_scratch,
             &mut raster_scratch,
+            true,
         );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
@@ -6793,6 +6963,7 @@ mod tests {
             (32, 32),
             &mut anchor_scratch,
             &mut raster_scratch,
+            true,
         );
         lowering.prepare(&mut caches, &glyphs).expect("prepared");
         lowering
@@ -6890,7 +7061,13 @@ mod tests {
         let mut scratch = AnchorScratch::default();
         assert_eq!(scratch.heap_bytes(), 0);
         let mut raster_scratch = path::EmitScratch::new();
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch, &mut raster_scratch);
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (32, 32),
+            &mut scratch,
+            &mut raster_scratch,
+            true,
+        );
         lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
         lowering.backdrops.insert(7, plan(anchor_a, member));
         lowering.anchor_scratch.members.push((7, None, 2));

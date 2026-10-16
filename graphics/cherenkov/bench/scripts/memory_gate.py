@@ -283,21 +283,26 @@ def counter_engine_memory(
     ):
         raise GateError(f"{report_path} has invalid CPU/GPU engine memory counters")
     measured = {"cpu_bytes": cpu_bytes, "gpu_bytes": gpu_bytes}
-    # `backdrop_capture_bytes` is optional: binaries predating its
-    # introduction do not serialize it, and adapters without backdrop
-    # groups may leave it out.
-    if "memory_backdrop_capture_bytes" in counters:
-        captures = counters["memory_backdrop_capture_bytes"]
-        if captures is not None:
+    # `backdrop_capture_bytes` and `filter_target_bytes` are optional:
+    # binaries predating their introduction do not serialize them, and
+    # adapters without the feature may leave them out.
+    for counter, key in (
+        ("memory_backdrop_capture_bytes", "backdrop_capture_bytes"),
+        ("memory_filter_target_bytes", "filter_target_bytes"),
+    ):
+        if counter not in counters:
+            continue
+        value = counters[counter]
+        if value is not None:
             if (
-                not isinstance(captures, int)
-                or isinstance(captures, bool)
-                or captures < 0
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
             ):
                 raise GateError(
-                    f"{report_path} has an invalid backdrop capture counter"
+                    f"{report_path} has an invalid {key} counter"
                 )
-            measured["backdrop_capture_bytes"] = captures
+            measured[key] = value
     return {"measured": measured}
 
 
@@ -318,7 +323,8 @@ def read_phase_memory(report_path: Path, report: dict) -> dict[str, Any]:
     """Per-phase engine and wgpu-allocator readings of one report.
 
     Returns `{phase: {"engine": {...}, "allocator": {...}}}` — engine
-    entries keep the `{cpu_bytes, gpu_bytes[, backdrop_capture_bytes]}`
+    entries keep the
+    `{cpu_bytes, gpu_bytes[, backdrop_capture_bytes[, filter_target_bytes]]}`
     shape; allocator entries keep `{allocated_bytes, reserved_bytes,
     allocations, blocks}`. A required reading that reports `unavailable`
     fails the gate through `unavailable:` — it is not a pass (#169 A5).
@@ -354,17 +360,18 @@ def read_phase_memory(report_path: Path, report: dict) -> dict[str, Any]:
                 ):
                     raise GateError(f"{report_path} has invalid {phase} CPU/GPU engine bytes")
                 measured = {"cpu_bytes": cpu_bytes, "gpu_bytes": gpu_bytes}
-                captures = engine.get("backdrop_capture_bytes")
-                if captures is not None:
-                    if (
-                        not isinstance(captures, int)
-                        or isinstance(captures, bool)
-                        or captures < 0
-                    ):
-                        raise GateError(
-                            f"{report_path} has invalid {phase} backdrop capture bytes"
-                        )
-                    measured["backdrop_capture_bytes"] = captures
+                for key in ("backdrop_capture_bytes", "filter_target_bytes"):
+                    value = engine.get(key)
+                    if value is not None:
+                        if (
+                            not isinstance(value, int)
+                            or isinstance(value, bool)
+                            or value < 0
+                        ):
+                            raise GateError(
+                                f"{report_path} has invalid {phase} {key}"
+                            )
+                        measured[key] = value
                 entry["engine"] = measured
         allocator = read_reading(
             snapshot.get("wgpu_allocator"), report_path, f"{phase} wgpu allocator"

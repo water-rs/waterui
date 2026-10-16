@@ -121,6 +121,9 @@ alias StopBuffer = array<Stop>;
 @group(1) @binding(3) var mask_tex: texture_2d<f32>;
 struct VsOut {
     @builtin(position) position: vec4<f32>,
+    // The local point of a local-space quad. A device-space quad
+    // (`kind >= KIND_GLYPH`) has none: a fragment that paints it derives it
+    // from the pixel (`device_quad_pixel`).
     @location(0) local: vec2<f32>,
     @location(1) device: vec2<f32>,
     @location(2) @interpolate(flat) instance: u32,
@@ -141,6 +144,35 @@ fn apply(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
         m[0].x * p.x + m[0].z * p.y + m[1].x,
         m[0].y * p.x + m[0].w * p.y + m[1].y,
     );
+}
+
+// cell-buffer
+@group(0) @binding(4) var<storage, read> cell_texels: array<u32>;
+// cell-buffer
+
+// Buffer cells carry local pixel coordinates, keeping large word offsets
+// out of interpolated f32 values; CPU atlas cells carry atlas coordinates.
+fn cell_texel_origin(origin: vec2<f32>, packed: u32) -> vec2<f32> {
+    // cell-buffer
+    if (packed & 0x80000000u) != 0u { return vec2<f32>(0.0); }
+    // cell-buffer
+    return origin;
+}
+
+// Decode the cell coordinate convention shared by the raster entry points.
+fn path_cell_coverage(texel: vec2<i32>, origin: vec2<f32>, interior: vec2<f32>, packed: u32) -> f32 {
+    // cell-buffer
+    if (packed & 0x80000000u) != 0u {
+        let local = vec2<u32>(texel);
+        if local.x >= u32(interior.x) && local.x < u32(interior.y) { return 1.0; }
+        let omitted = u32(interior.y - interior.x);
+        let column = local.x - select(0u, omitted, local.x >= u32(interior.y));
+        let pixel = local.y * (u32(origin.y) - omitted) + column;
+        let word = cell_texels[u32(origin.x) + pixel / 4u];
+        return f32((word >> ((pixel % 4u) * 8u)) & 255u) / 255.0;
+    }
+    // cell-buffer
+    return textureLoad(atlas, texel, 0).r;
 }
 
 fn apply_inverse(m: array<vec4<f32>, 2>, p: vec2<f32>) -> vec2<f32> {
@@ -172,7 +204,7 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     var out: VsOut;
     if inst.meta_.x >= KIND_GLYPH {
         out.device = p;
-        out.local = apply_inverse(inst.affine, p);
+        out.local = vec2<f32>(0.0);
     } else {
         out.local = p;
         out.device = apply(inst.affine, p);
@@ -193,6 +225,25 @@ fn instance_vertex(vi: u32, ii: u32, inst: Instance) -> VsOut {
     out.affine0 = inst.affine[0];
     out.affine1 = inst.affine[1];
     out.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
+    return out;
+}
+
+// A device-space quad's fragment (`kind >= KIND_GLYPH`: glyph and path
+// cells, regions, spans) shades the pixel whose centre is its position in
+// the attachment grid, offset by that grid's device-space origin — every
+// pass's viewport maps device space onto the grid at
+// `globals.attachment_origin`. Interpolating the device or local point
+// across the quad instead would round by where the quad's corners lie, so
+// the same pixel would paint differently whenever emission cut a path
+// into other cells. The device point and the local point (`apply_inverse`
+// of it) are therefore functions of the pixel alone. Local-space quads
+// keep their interpolated points: their corners are the shape's own.
+fn device_quad_pixel(in: VsOut) -> VsOut {
+    var out = in;
+    if in.meta_.x >= KIND_GLYPH {
+        out.device = in.position.xy + globals.attachment_origin;
+        out.local = apply_inverse(array<vec4<f32>, 2>(in.affine0, in.affine1), out.device);
+    }
     return out;
 }
 
@@ -645,63 +696,17 @@ fn clip_mask_coverage(in: VsOut) -> f32 {
     return cov;
 }
 
-fn srgb_decode(c: vec3<f32>) -> vec3<f32> {
-    let lo = c / 12.92;
-    let hi = pow((max(c, vec3<f32>(0.0)) + 0.055) / 1.055, vec3<f32>(2.4));
-    return select(hi, lo, c <= vec3<f32>(0.04045));
-}
-
-// The sRGB transfer pair preserving sign: a premultiplied pixel's
-// channel can sit below the encoded black level only by going negative,
-// so the byte-pipeline variants above clamp; the compositing converter
-// matches the CPU backend's `convert_pixel` and does not.
-fn srgb_encode_signed(c: vec3<f32>) -> vec3<f32> {
-    let a = abs(c);
-    let lo = a * 12.92;
-    let hi = 1.055 * pow(a, vec3<f32>(1.0 / 2.4)) - 0.055;
-    return sign(c) * select(hi, lo, a <= vec3<f32>(0.0031308));
-}
-
-fn srgb_decode_signed(c: vec3<f32>) -> vec3<f32> {
-    let a = abs(c);
-    let lo = a / 12.92;
-    let hi = pow((a + 0.055) / 1.055, vec3<f32>(2.4));
-    return sign(c) * select(hi, lo, a <= vec3<f32>(0.04045));
-}
-
-// Linear sRGB -> linear Display P3 (column-major constructor: columns).
-const SRGB_TO_P3 = mat3x3<f32>(
-    vec3<f32>(0.8224621, 0.0331941, 0.0170827),
-    vec3<f32>(0.1775380, 0.9668058, 0.0723974),
-    vec3<f32>(0.0, 0.0, 0.9105199),
-);
-
-// Linear Display-P3 -> linear sRGB primaries (column-major
-// constructor: columns), the transpose of the CPU backend's
-// row-major `P3_TO_SRGB`.
-const P3_TO_SRGB = mat3x3<f32>(
-    vec3<f32>(1.2249401, -0.0420569, -0.0196376),
-    vec3<f32>(-0.2249404, 1.0420571, -0.0786361),
-    vec3<f32>(0.0, 0.0, 1.0982735),
-);
-
-// One premultiplied pixel moved between spaces: unpremultiply,
-// convert the straight colour (P3->sRGB then transfer-encode when
-// going to sRGB, transfer-decode then sRGB->P3 back), repremultiply.
-// Alpha carries through; a transparent pixel stays a transparent pixel
-// so masks composite correctly.
+// One premultiplied pixel moved between spaces: the space fragment's
+// `space_to_srgb` / `space_from_srgb` (filtrate-core's `space::WGSL`,
+// which precedes this file in every build), the conversion the CPU
+// backend and the filter stages run too. Alpha carries through; a pixel
+// with zero alpha becomes transparent black.
 fn move_space(px: vec4<f32>, src: u32, dst: u32) -> vec4<f32> {
     if (src == dst) {
         return px;
     }
-    if (px.a <= 0.0) {
-        return vec4<f32>(0.0);
-    }
-    let straight = px.rgb / px.a;
     if (dst == SPACE_SRGB) {
-        let enc = srgb_encode_signed(P3_TO_SRGB * straight);
-        return vec4<f32>(enc * px.a, px.a);
+        return space_to_srgb(px);
     }
-    let dec = SRGB_TO_P3 * srgb_decode_signed(straight);
-    return vec4<f32>(dec * px.a, px.a);
+    return space_from_srgb(px);
 }

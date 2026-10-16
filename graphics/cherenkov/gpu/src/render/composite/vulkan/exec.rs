@@ -43,6 +43,7 @@ pub struct Resources<'a> {
     pub globals: &'a wgpu::Buffer,
     pub instances: &'a wgpu::Buffer,
     pub stops: &'a wgpu::Buffer,
+    pub image_decode: &'a wgpu::Buffer,
     pub dummy: &'a wgpu::TextureView,
     /// The texture `dummy` views, so it can be transitioned with the
     /// rest of the epoch's sampled resources.
@@ -200,10 +201,14 @@ pub fn encode(
                 // A union member is `PAINT_BACKDROP` sampling its
                 // group's capture: a neighbourhood read that
                 // `ExecutionPlan::epoch` never admits into an epoch.
+                // `Cell` is a draw module (`DrawRange::module`), never a
+                // range's lowered variant.
+                ShaderVariant::Cell => unreachable!("no range is lowered with the cell module"),
                 ShaderVariant::Union => {
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }
                 ShaderVariant::LongGradient => 4,
+                ShaderVariant::Image => 6,
             };
             draws.push(Draw {
                 key: PipeKey {
@@ -245,6 +250,7 @@ pub fn encode(
         crate::render::raw_vk_buffer(resources.instances),
         crate::render::raw_vk_buffer(resources.stops),
         crate::render::raw_vk_view(resources.atlas.view()),
+        crate::render::raw_vk_buffer(resources.image_decode),
     )?;
     let slots = mirror.slots(size, epoch.slots - 1)?;
     let mut views = [vk::ImageView::null(); super::SLOTS as usize];
@@ -679,7 +685,7 @@ fn note(
             variant: match key.variant {
                 0 => report::Variant::Simple,
                 1 => report::Variant::Shadow,
-                2 | 4 => report::Variant::Source,
+                2 | 4 | 6 => report::Variant::Source,
                 3 => report::Variant::Clear,
                 _ => unreachable!("closed tile shader set"),
             },

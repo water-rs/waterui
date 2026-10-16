@@ -8,12 +8,12 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::theme::{ButtonMetrics, FocusRing, InteractionStyle};
 use kurbo::RoundedRectRadii;
 use nami::Signal as _;
 use waterui::accessibility::AccessibilityRole;
 use waterui::gesture::TapGesture;
 use waterui::{AnyView, Color, ViewExt as _};
-use waterui_backend_core::widget::{ButtonMetrics, FocusRing, InteractionStyle};
 use waterui_core::Environment;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::interaction::{InteractionState, StateValue};
@@ -324,7 +324,7 @@ fn focus_ring_draws_only_for_keyboard_focus() {
 /// takes the disabled override, an enabled one the resting value.
 #[test]
 fn label_color_resolves_disabled() {
-    let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(MinimalTestTheme::default());
+    let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let style = InteractionStyle::new(
         ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
         Color::srgb(0, 0, 0),
@@ -376,7 +376,7 @@ fn label_color_resolves_disabled() {
 /// control's state binding recolors it without a rebuild.
 #[test]
 fn retained_label_color_resolves_hovered() {
-    let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(MinimalTestTheme::default());
+    let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(MinimalTestTheme::default());
     let style = InteractionStyle::new(
         ButtonMetrics::new(16.0, 8.0, 0.0, 0.0),
         Color::srgb(0, 0, 0),

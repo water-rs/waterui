@@ -1574,7 +1574,7 @@ pub enum SeedFontCacheError {
 
 /// Seeds the font cache with every font a build of `project` would demand.
 ///
-/// `water fetch` and the tail of `water create` share this one path:
+/// `water fetch` and the tail of `water create` share one path:
 /// declarations resolve exactly as a build resolves them —
 /// `manifest_font_declarations` plus `scan_crate_font_declarations` over
 /// the manifest of each crate a build compiles, then `resolve_declarations`
@@ -1590,7 +1590,24 @@ pub enum SeedFontCacheError {
 /// [`FetchOutcome::Unsatisfiable`] instead, carrying the same report the
 /// build gives them.
 pub async fn seed_font_cache(project: &Project) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
-    seed_font_cache_scoped(project, None).await
+    seed_font_cache_scoped(project, FontScanScope::HostBackends).await
+}
+
+/// [`seed_font_cache`] restricted to the mainline backends' crates.
+///
+/// `water create` is the caller: creating a project resolves only what
+/// mainline builds need, so an experimental backend's managed crate — whose
+/// pinned dependencies may not resolve against the framework — is neither
+/// scaffolded nor scanned here. It is when that backend is built or fetched
+/// for ([`seed_font_cache_for_backend`], or an unscoped [`seed_font_cache`]).
+///
+/// # Errors
+///
+/// Same as [`seed_font_cache`], narrowed to the mainline crate set.
+pub async fn seed_mainline_font_cache(
+    project: &Project,
+) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
+    seed_font_cache_scoped(project, FontScanScope::Mainline).await
 }
 
 /// [`seed_font_cache`] restricted to the crates a `backend` build scans.
@@ -1607,12 +1624,35 @@ pub async fn seed_font_cache_for_backend(
     project: &Project,
     backend: crate::platform::TargetBackend,
 ) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
-    seed_font_cache_scoped(project, Some(backend)).await
+    seed_font_cache_scoped(project, FontScanScope::Backend(backend)).await
+}
+
+/// Which backends' generated crates a font scan covers.
+#[derive(Clone, Copy, Debug)]
+enum FontScanScope {
+    /// The mainline backends (Apple, Hydrolysis): what `water create` seeds.
+    Mainline,
+    /// Every backend this host can run, experimental ones included: an
+    /// unscoped `water fetch`.
+    HostBackends,
+    /// One backend's crates: `water fetch --backend`.
+    Backend(crate::platform::TargetBackend),
+}
+
+impl FontScanScope {
+    /// Whether a build for `backend` has its crates scanned under this scope.
+    fn covers(self, backend: crate::platform::TargetBackend) -> bool {
+        match self {
+            Self::Mainline => !backend.is_experimental(),
+            Self::HostBackends => true,
+            Self::Backend(selected) => selected == backend,
+        }
+    }
 }
 
 async fn seed_font_cache_scoped(
     project: &Project,
-    scope: Option<crate::platform::TargetBackend>,
+    scope: FontScanScope,
 ) -> Result<Vec<FetchOutcome>, SeedFontCacheError> {
     let host = project.host();
     let mut declarations = manifest_font_declarations(project.manifest(), project.root())
@@ -1648,24 +1688,25 @@ async fn seed_font_cache_scoped(
 /// paths regenerate it. Scaffolding writes template files — nothing
 /// compiles.
 ///
-/// The scanned set is the crates for the backends this host can run —
-/// Hydrolysis anywhere, GTK4 on Linux, `WinUI` on Windows — since the CLI
-/// manages them all. `scope` narrows the set to one backend's
-/// crates — the manifests that backend's builds read — so a fetch preparing
-/// a single-backend build never touches crates that build cannot compile. A
+/// The scanned set depends on `scope`. The mainline scope (`water create`)
+/// covers Apple and Hydrolysis only, so an experimental backend's pinned
+/// crates never gate project creation. The host scope (an unscoped
+/// `water fetch`) adds the experimental backends this host can run — GTK4 on
+/// Linux, `WinUI` on Windows. A backend scope narrows the set to one
+/// backend's crates — the manifests that backend's builds read — so a fetch
+/// preparing a single-backend build never touches crates that build cannot
+/// compile. A
 /// crate that cannot be produced is an error naming its backend — silently
 /// dropping it is how a build's font demand and a fetch's scan disagree.
 async fn ensure_font_scan_manifests(
     project: &Project,
-    scope: Option<crate::platform::TargetBackend>,
+    scope: FontScanScope,
 ) -> eyre::Result<Vec<PathBuf>> {
     let mut manifests = vec![project.root().join("Cargo.toml")];
 
     // Apple builds scan the Apple companion; no other backend's build does,
     // and a scoped fetch includes it only for that one.
-    let apple_scanned =
-        scope.is_none_or(|backend| backend == crate::platform::TargetBackend::Apple);
-    if apple_scanned {
+    if scope.covers(crate::platform::TargetBackend::Apple) {
         let manifest = project.apple_crate_path().join("Cargo.toml");
         // The companion on disk is re-rendered for the scan — the manifest
         // a build produces, so the font declarations the scan sees are the
@@ -1701,11 +1742,11 @@ trait FontScanCrate: crate::backend::Backend {
     /// Whether a build on this host can ever compile this crate: the CLI
     /// manages every backend the host supports.
     fn wanted() -> bool;
-    /// Whether `scope` — `water fetch --backend`'s value — selects this
-    /// crate: an unscoped fetch covers every wanted crate, a scoped one only
-    /// the selected backend's own.
-    fn in_scope(scope: Option<crate::platform::TargetBackend>) -> bool {
-        scope.is_none_or(|backend| backend == Self::TARGET)
+    /// Whether `scope` selects this crate: a mainline scan skips the
+    /// experimental backends, a host scan covers every wanted crate, and a
+    /// backend scan only the selected backend's own.
+    fn in_scope(scope: FontScanScope) -> bool {
+        scope.covers(Self::TARGET)
     }
     /// Whether the crate on disk is missing or behind the current templates
     /// — the check the build and preview paths apply before regenerating.
@@ -1718,7 +1759,7 @@ trait FontScanCrate: crate::backend::Backend {
 /// is an error naming the backend, never a skip.
 async fn ensure_backend_manifest<B: FontScanCrate>(
     project: &Project,
-    scope: Option<crate::platform::TargetBackend>,
+    scope: FontScanScope,
     manifests: &mut Vec<PathBuf>,
 ) -> eyre::Result<()> {
     if !B::in_scope(scope) || !B::wanted() {
@@ -3635,14 +3676,14 @@ mod permission_audit_tests {
     fn a_backend_scope_selects_only_that_backends_crate() {
         use crate::platform::TargetBackend;
 
-        let scope = Some(TargetBackend::Hydrolysis);
+        let scope = FontScanScope::Backend(TargetBackend::Hydrolysis);
         assert!(!crate::gtk4::backend::Gtk4Backend::in_scope(scope));
         assert!(crate::hydrolysis::backend::HydrolysisBackend::in_scope(
             scope
         ));
         assert!(!crate::winui::backend::WinUiBackend::in_scope(scope));
 
-        let gtk4 = Some(TargetBackend::Gtk4);
+        let gtk4 = FontScanScope::Backend(TargetBackend::Gtk4);
         assert!(crate::gtk4::backend::Gtk4Backend::in_scope(gtk4));
         assert!(!crate::hydrolysis::backend::HydrolysisBackend::in_scope(
             gtk4
@@ -3650,11 +3691,21 @@ mod permission_audit_tests {
         assert!(!crate::winui::backend::WinUiBackend::in_scope(gtk4));
 
         // An unscoped fetch keeps scanning every wanted crate.
-        assert!(crate::gtk4::backend::Gtk4Backend::in_scope(None));
+        let host = FontScanScope::HostBackends;
+        assert!(crate::gtk4::backend::Gtk4Backend::in_scope(host));
         assert!(crate::hydrolysis::backend::HydrolysisBackend::in_scope(
-            None
+            host
         ));
-        assert!(crate::winui::backend::WinUiBackend::in_scope(None));
+        assert!(crate::winui::backend::WinUiBackend::in_scope(host));
+
+        // `water create` scans the mainline crates only: an experimental
+        // backend's pin that does not resolve cannot fail project creation.
+        let mainline = FontScanScope::Mainline;
+        assert!(!crate::gtk4::backend::Gtk4Backend::in_scope(mainline));
+        assert!(crate::hydrolysis::backend::HydrolysisBackend::in_scope(
+            mainline
+        ));
+        assert!(!crate::winui::backend::WinUiBackend::in_scope(mainline));
     }
 
     /// Manifest components are collected across the resolved graph the way

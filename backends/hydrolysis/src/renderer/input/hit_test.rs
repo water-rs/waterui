@@ -2,15 +2,13 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::platform::Overscroll;
+use crate::theme::{InteractionFocusBinding, ModalInteraction, WidgetInteractionState};
 use nami::Signal as _;
 use std::path::PathBuf;
 use waterui::Url;
 use waterui::drag_drop::{DragPayload, Files};
 use waterui::gesture::PointerButton as WuiPointerButton;
 use waterui_backend_core::gesture::{GesturePlacement, LONG_PRESS_SLOP};
-use waterui_backend_core::widget::{
-    InteractionFocusBinding, ModalInteraction, WidgetInteractionState,
-};
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::ScrollUnit;
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -545,10 +543,7 @@ impl SemanticCore {
         let mut staged_occlusions: Vec<Staged<NativeViewOcclusion>> = Vec::new();
         let mut staged_platform: Vec<StagedPlatform> = Vec::new();
         let mut staged_back: Vec<Staged<crate::renderer::NavigationBackTarget>> = Vec::new();
-        let mut modal: Option<(
-            mount::PaintOrder,
-            waterui_backend_core::widget::ModalInteraction,
-        )> = None;
+        let mut modal: Option<(mount::PaintOrder, crate::theme::ModalInteraction)> = None;
 
         for cell in self.retained.owners() {
             let mut slot = cell.registrations.borrow_mut();
@@ -4468,7 +4463,7 @@ impl HydrolysisRenderer {
             );
         if env
             .get::<ModalInteraction>()
-            .is_some_and(waterui_backend_core::widget::ModalInteraction::is_active)
+            .is_some_and(crate::theme::ModalInteraction::is_active)
         {
             press_slot.modal = true;
             self.register_modal_scope(env);

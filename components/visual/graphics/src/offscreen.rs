@@ -163,13 +163,7 @@ impl OffscreenImage {
 }
 
 fn encode(linear: f32) -> u8 {
-    let clipped = linear.clamp(0.0, 1.0);
-    let encoded = if clipped <= 0.003_130_8 {
-        clipped * 12.92
-    } else {
-        1.055_f32.mul_add(clipped.powf(1.0 / 2.4), -0.055)
-    };
-    encode_alpha(encoded)
+    encode_alpha(filtrate_core::space::srgb_encode(linear.clamp(0.0, 1.0)))
 }
 
 #[expect(
@@ -181,15 +175,9 @@ fn encode_alpha(unit: f32) -> u8 {
     (unit.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// Linear Display P3 to linear sRGB, via XYZ D65.
-fn p3_to_srgb([r, g, b]: [f32; 3]) -> [f32; 3] {
-    const P3_TO_SRGB: [[f32; 3]; 3] = [
-        [1.224_940_2, -0.224_940_2, 0.0],
-        [-0.042_056_96, 1.042_056_9, 0.0],
-        [-0.019_637_55, -0.078_636_05, 1.098_273_6],
-    ];
-    let row = |m: [f32; 3]| m[2].mul_add(b, m[0].mul_add(r, m[1] * g));
-    [row(P3_TO_SRGB[0]), row(P3_TO_SRGB[1]), row(P3_TO_SRGB[2])]
+/// Linear Display P3 to linear sRGB, with the engine's matrix.
+fn p3_to_srgb(p3: [f32; 3]) -> [f32; 3] {
+    filtrate_core::space::transform(&filtrate_core::space::P3_TO_SRGB, p3)
 }
 
 #[expect(

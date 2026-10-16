@@ -335,6 +335,19 @@ impl fmt::Debug for EffectOutput<'_> {
     }
 }
 
+/// Device-resident bytes an effect retains between frames, reported by
+/// [`Effect::retained_memory`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RetainedMemory {
+    /// Render targets the effect retains between frames, such as a
+    /// chain's intermediates.
+    pub targets: u64,
+    /// Textures the effect uploaded itself from CPU-side images.
+    /// Textures bound from the host's own textures (`Image::Bound`) are
+    /// the host's and are excluded.
+    pub images: u64,
+}
+
 /// Trait for GPU effects.
 ///
 /// Implement this trait to create custom GPU filters that process captured
@@ -426,4 +439,30 @@ pub trait Effect: 'static {
     fn redraw_hint(&self) -> bool {
         false
     }
+
+    /// Device-resident bytes the effect itself retains between frames:
+    /// the render targets it keeps, such as a multi-pass chain's
+    /// intermediates, and the textures it uploaded itself from CPU-side
+    /// images.
+    ///
+    /// Hosts add this to their memory accounting. The input and output
+    /// targets a host supplies are the host's to count, not the effect's,
+    /// and so is a texture bound from the host's own. There is no
+    /// default: an effect that retains nothing states
+    /// [`RetainedMemory::default()`], and a wrapper forwards its inner
+    /// effect's value, so no retained resource goes unreported.
+    fn retained_memory(&self) -> RetainedMemory;
+
+    /// Drops every render target the effect retains between frames that
+    /// its next encode can recreate, such as a multi-pass chain's
+    /// intermediates. It keeps what it cannot recreate without its
+    /// inputs, such as auxiliary images it uploaded. After `trim`,
+    /// [`RetainedMemory::targets`] in [`Self::retained_memory`] reports
+    /// `0`. A host calls it under memory pressure.
+    ///
+    /// There is no default, for the same reason as
+    /// [`retained_memory`](Self::retained_memory): an effect that
+    /// retains no targets states an empty body, and a wrapper forwards
+    /// to its inner effect, so no retained target survives a trim.
+    fn trim(&mut self);
 }

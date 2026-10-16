@@ -719,7 +719,7 @@ pub fn run(
     // while the menu is open (water-rs/hydrolysis#247).
     let _ = env.get_or_insert_with::<MenuShortcutRegistry, _>(MenuShortcutRegistry::default);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
-    let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
+    let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
     ));
@@ -823,7 +823,7 @@ struct WinitRunner {
     env: Environment,
     /// The style the runtime was launched with: every window's renderer
     /// measures and encodes with this widget theme.
-    theme: Rc<dyn crate::engine::WidgetTheme>,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
     /// The application's font collection, the same one the environment carries.
     /// Every window's renderer is seeded from it.
     fonts: FontCollection,

@@ -40,7 +40,7 @@ fn navigation_leading_reserve(env: &Environment) -> f64 {
         .map_or(0.0, |reserve| reserve.0)
 }
 
-fn back_button_title_reserve(theme: &Rc<dyn crate::engine::WidgetTheme>) -> f64 {
+fn back_button_title_reserve(theme: &Rc<dyn crate::theme::WidgetTheme>) -> f64 {
     let metrics = theme.navigation_metrics();
     metrics.back_button_size + metrics.title_leading_inset
 }
@@ -54,7 +54,7 @@ fn back_button_title_reserve(theme: &Rc<dyn crate::engine::WidgetTheme>) -> f64 
 fn presented_page_env(
     base: &Environment,
     identity: u64,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> Environment {
     let mut env = base.clone();
     if identity != 0 {
@@ -210,7 +210,7 @@ impl HydroNativeView for Native<NavigationView> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_navigation_view_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -219,7 +219,7 @@ impl HydroNativeView for Native<NavigationView> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         if let (Some(width), Some(height)) = (proposal.width, proposal.height) {
@@ -242,7 +242,7 @@ impl HydroNativeView for Native<NavigationView> {
 pub fn navigation_view_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
-    theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
     hidden: &Computed<bool>,
     display_mode: NavigationTitleDisplayMode,
     state: &NavigationViewRenderState,
@@ -395,7 +395,7 @@ pub fn measure_navigation_view_node(
     proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     if let (Some(width), Some(height)) = (proposal.width, proposal.height) {
         return ViewDimensions::new(LayoutSize::new(width, height));
@@ -479,7 +479,7 @@ fn measure_retained_toolbar_group(
     group: &[RetainedSubview],
     hydro: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let metrics = theme.navigation_metrics();
     let mut width = 0.0_f64;
@@ -792,7 +792,7 @@ fn measure_toolbar_group_intrinsic(
     group: &mut [RetainedSubview],
     renderer: &mut HydrolysisRenderer,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let metrics = theme.navigation_metrics();
     let mut width = 0.0_f64;
@@ -1047,7 +1047,7 @@ impl HydroNativeView for Native<NavigationSplitLayout> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_navigation_split_layout(
             view.as_inner(),
@@ -1062,7 +1062,7 @@ impl HydroNativeView for Native<NavigationSplitLayout> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         ViewDimensions::new(measure_navigation_split_layout(
@@ -1165,7 +1165,7 @@ fn measure_navigation_split_layout(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let primary_selection = state.measure_signal(split.primary_selection());
     let detail_selection = split
@@ -1284,7 +1284,7 @@ pub fn measure_navigation_split_node(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let primary_selection = state.measure_signal(&split.primary_selection);
     let detail_selection = split
@@ -1808,7 +1808,7 @@ fn moving_page_transition(
     slot_key: &crate::renderer::NavigationKey,
     stack_env: &Environment,
     identity: u64,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> Option<waterui_core::transition::TransitionSpec> {
     let env = presented_page_env(stack_env, identity, theme);
     if identity == ROOT_NAVIGATION_IDENTITY {
@@ -2272,7 +2272,7 @@ fn present_navigation_pages(
     active_identity: u64,
     size: LayoutSize,
     page_area: Option<SafeAreaLayout>,
-    motion: waterui_backend_core::widget::NavigationMotion,
+    motion: crate::theme::NavigationMotion,
     presentation: Option<NavigationPresentationFrame>,
 ) {
     use crate::renderer::{
@@ -2380,7 +2380,7 @@ impl HydroNativeView for Native<NavigationStack<(), ()>> {
         _state: &mut HydroState,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::zero()
     }
@@ -2394,7 +2394,7 @@ impl HydroNativeView for Native<NavigationStack<(), ()>> {
 pub fn navigation_stack_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
-    theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
     state: &Rc<RefCell<NavigationStackRenderState>>,
     env: &Environment,
 ) {
@@ -2463,7 +2463,7 @@ pub fn measure_navigation_stack_node(
     _proposal: ProposalSize,
     _hydro: &mut HydroState,
     _env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     ViewDimensions::new(LayoutSize::zero())
 }

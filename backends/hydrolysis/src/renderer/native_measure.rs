@@ -5,8 +5,8 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::engine::WidgetTheme;
 use crate::platform_view::PlatformView;
+use crate::theme::WidgetTheme;
 use std::rc::Rc;
 
 /// The measure half of a native leaf view. Rendering is owned by the retained

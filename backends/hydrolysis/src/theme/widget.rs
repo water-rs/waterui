@@ -1,5 +1,7 @@
-//! Widget chrome contracts shared by rendering backends and theme packages.
+//! The widget chrome half of the theme contract: [`WidgetTheme`] and the
+//! token tables, state snapshots and presentation plugins it names.
 
+use cherenkov_record::{MaterialRegistry, Paint, Recorder};
 use core::time::Duration;
 use kurbo::{BezPath, Point, Rect, RoundedRectRadii};
 use nami::signal::IntoComputed;
@@ -14,7 +16,6 @@ use waterui_core::{Binding, Computed, Signal};
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::Color;
-use waterui_graphics::draw::{MaterialRegistry, Paint, Recorder};
 use waterui_text::font::Font;
 
 /// Button layout metrics.
@@ -1263,7 +1264,16 @@ pub struct TableMetrics {
     pub outline_width: f64,
 }
 
-/// Theme contract for backend-rendered widgets.
+/// The widget chrome a style package supplies to Hydrolysis.
+///
+/// Hydrolysis lays out every widget it renders from the theme's metrics,
+/// animates it with the theme's motion policies, and records its chrome by
+/// calling the theme's `draw_*` methods with the widget's bounds and the
+/// renderer-resolved [`WidgetInteractionState`]. Every draw method records
+/// into a `cherenkov-record` [`Recorder`], the render-target-neutral
+/// vocabulary every Hydrolysis render target consumes, so a theme never
+/// names a render engine. A theme becomes a runnable style by also
+/// implementing [`Style`](crate::Style).
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
     fn interaction_motion(&self) -> InteractionMotion;
@@ -1281,10 +1291,10 @@ pub trait WidgetTheme {
     /// theme's chrome names when it records a backdrop material with
     /// [`Recorder::backdrop_material`].
     ///
-    /// [`MaterialShader`]: waterui_graphics::draw::MaterialShader
-    /// [`BackdropShaderSource`]: waterui_graphics::draw::BackdropShaderSource
-    /// [`CaptureClass`]: waterui_graphics::draw::CaptureClass
-    /// [`MaterialCapture`]: waterui_graphics::draw::MaterialCapture
+    /// [`MaterialShader`]: cherenkov_record::MaterialShader
+    /// [`BackdropShaderSource`]: cherenkov_record::BackdropShaderSource
+    /// [`CaptureClass`]: cherenkov_record::CaptureClass
+    /// [`MaterialCapture`]: cherenkov_record::MaterialCapture
     ///
     /// The contract a backend that realizes backdrop materials follows: it
     /// calls this once, before it draws any chrome, and keeps the

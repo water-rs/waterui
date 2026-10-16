@@ -181,7 +181,7 @@ for entry in ${subjects[@]+"${subjects[@]}"}; do
     # in the font cache, so it is fetched once per subject before the
     # platform packaging passes (#2638). A fetch failure fails the subject
     # the way a package failure does.
-    if ! "${water_bin}" fetch --path "${subject_dir}"; then
+    if ! "${water_bin}" fetch --path "${subject_dir}" --backend apple; then
         echo "::error::water fetch failed for ${label}; see output above"
         failed=1
         continue

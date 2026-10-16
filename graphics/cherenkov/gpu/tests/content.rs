@@ -425,6 +425,12 @@ impl filtrate::Effect for ParkingEffect {
     ) -> filtrate::EffectRenderResult {
         unreachable!("the parking effect is never attached")
     }
+
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
+    }
+
+    fn trim(&mut self) {}
 }
 
 /// An effect that hands its redraw callback to the test and passes its
@@ -462,6 +468,12 @@ impl filtrate::Effect for CallbackEffect {
         );
         Ok(false)
     }
+
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
+    }
+
+    fn trim(&mut self) {}
 }
 
 /// A hidden surface's producer and filter stop waking the host the moment

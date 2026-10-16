@@ -14,7 +14,7 @@ use std::collections::{BTreeSet, HashMap};
 
 use cherenkov::{
     Draw as _, Engine as GpuEngine, Fixed, ImageData, Layer as GpuLayer, LayerEdit, Offscreen,
-    OffscreenFormat, RenderError, ResourceError, Rgba8, Rgba16F, Surface, Transaction,
+    OffscreenFormat, RenderError, ResourceError, Surface, Transaction,
 };
 use cherenkov_gpu::interop::{
     OutputAlpha, OutputColor, Presenter, SharedDevice, TextureOutput, TextureTarget,
@@ -434,6 +434,20 @@ struct ContentRun {
     live: Vec<LiveRun>,
     /// Paint motions inside the run.
     motions: Vec<PaintMotion>,
+    /// The registrations of the run's group filters, kept alive while
+    /// the ops are drawn.
+    filters: Vec<cherenkov::Filter>,
+}
+
+impl ContentRun {
+    const fn new() -> Self {
+        Self {
+            ops: Vec::new(),
+            live: Vec::new(),
+            motions: Vec::new(),
+            filters: Vec::new(),
+        }
+    }
 }
 
 /// A prepared child item: a draw-item run wrapped in its own layer, or a
@@ -847,6 +861,9 @@ fn cherenkov_features() -> Vec<Feature> {
         Feature::ImageColorSpace(ImageColorSpace::LinearP3),
         Feature::ImageColorSpace(ImageColorSpace::LinearSrgb),
         Feature::ImageF16,
+        Feature::ImageCompressed(cherenkov_scene::ImageCompression::Astc4x4),
+        Feature::ImageCompressed(cherenkov_scene::ImageCompression::Bc7),
+        Feature::ImageCompressed(cherenkov_scene::ImageCompression::Etc2Rgba),
         Feature::Backdrop,
         Feature::BackdropBlur,
         Feature::BackdropColorMatrix,
@@ -1001,12 +1018,35 @@ fn register_group_fonts(
     Ok(())
 }
 
-/// Keeps a registered image alive until the engine's surface drops —
-/// `Image<F>` is format-typed, so the two encodings box separately.
+/// Format-typed handles keep each registered resource alive until its surface drops.
 #[expect(dead_code, reason = "the handles exist to keep uploads alive")]
 enum ImageHandle {
     Rgba8(cherenkov::Image<cherenkov::Rgba8>),
     Rgba16F(cherenkov::Image<cherenkov::Rgba16F>),
+    Astc4x4(cherenkov::Image<cherenkov::Astc4x4>),
+    Bc7(cherenkov::Image<cherenkov::Bc7>),
+    Etc2Rgba(cherenkov::Image<cherenkov::Etc2Rgba>),
+}
+
+fn upload_image<F: cherenkov::Format>(
+    engine: &GpuEngine<Gpu>,
+    size: (u32, u32),
+    bytes: impl Into<std::sync::Arc<[u8]>>,
+    color_space: cherenkov::ImageColorSpace,
+    premultiplied: bool,
+    wrap: fn(cherenkov::Image<F>) -> ImageHandle,
+) -> Result<(cherenkov::ImageId, ImageHandle), BenchError>
+where
+    Gpu: cherenkov::Uploads<F>,
+{
+    let mut data = ImageData::<F>::new(size.0, size.1, bytes)
+        .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?
+        .color_space(color_space);
+    data.premultiplied = premultiplied;
+    let image = engine
+        .image(data)
+        .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?;
+    Ok((image.id(), wrap(image)))
 }
 
 /// Registers one scene image resource, once per (hash, encoding).
@@ -1014,7 +1054,7 @@ enum ImageHandle {
 /// PNGs carry encoded sRGB or Display P3 data;
 /// [`cherenkov_oracle::image::decode_png_rgba8`] is the shared decoder the
 /// oracle and every adapter use, and the engine converts to the working
-/// space at upload; `Rgba16F` blobs go through `Uploads<Rgba16F>` —
+/// space before interpolation; `Rgba16F` blobs go through `Uploads<Rgba16F>` —
 /// straight-alpha, already linear-light in the declared primaries.
 fn register_image(
     images: &mut HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
@@ -1024,6 +1064,7 @@ fn register_image(
     encoding: ImageEncoding,
     blobs: &Blobs,
 ) -> Result<(), BenchError> {
+    encoding.validate()?;
     let key = (*hash, encoding);
     if images.contains_key(&key) {
         return Ok(());
@@ -1031,64 +1072,72 @@ fn register_image(
     let blob = blobs
         .get(hash)
         .ok_or(cherenkov_scene::SceneError::MissingResource(*hash))?;
-    let (width, height, rgba, color_space) = match encoding {
+    let space = |space| match space {
+        ImageColorSpace::Srgb => cherenkov::ImageColorSpace::Srgb,
+        ImageColorSpace::DisplayP3 => cherenkov::ImageColorSpace::DisplayP3,
+        ImageColorSpace::LinearSrgb => cherenkov::ImageColorSpace::LinearSrgb,
+        ImageColorSpace::LinearP3 => cherenkov::ImageColorSpace::LinearP3,
+    };
+    let (id, handle) = match encoding {
         ImageEncoding::Png { color_space } => {
             let (width, height, rgba) = cherenkov_oracle::image::decode_png_rgba8(blob)
                 .map_err(|e| BenchError::Engine(format!("cherenkov image decode: {e}")))?;
-            let space = match color_space {
-                ImageColorSpace::Srgb => cherenkov::ImageColorSpace::Srgb,
-                ImageColorSpace::DisplayP3 => cherenkov::ImageColorSpace::DisplayP3,
-                _ => {
-                    return Err(BenchError::Engine(format!(
-                        "PNG images are sRGB-encoded, not {color_space:?}"
-                    )));
-                }
-            };
-            (width, height, rgba, space)
+            upload_image(
+                engine,
+                (width, height),
+                rgba,
+                space(color_space),
+                false,
+                ImageHandle::Rgba8,
+            )
         }
+        ImageEncoding::BlockCompressed {
+            format,
+            width,
+            height,
+            color_space,
+            premultiplied,
+        } => match format {
+            cherenkov_scene::ImageCompression::Astc4x4 => upload_image(
+                engine,
+                (width, height),
+                blob.clone(),
+                space(color_space),
+                premultiplied,
+                ImageHandle::Astc4x4,
+            ),
+            cherenkov_scene::ImageCompression::Bc7 => upload_image(
+                engine,
+                (width, height),
+                blob.clone(),
+                space(color_space),
+                premultiplied,
+                ImageHandle::Bc7,
+            ),
+            cherenkov_scene::ImageCompression::Etc2Rgba => upload_image(
+                engine,
+                (width, height),
+                blob.clone(),
+                space(color_space),
+                premultiplied,
+                ImageHandle::Etc2Rgba,
+            ),
+        },
         ImageEncoding::Rgba16F {
             width,
             height,
             color_space,
-        } => {
-            let expected = usize::try_from(width * height * 8)
-                .map_err(|e| BenchError::Engine(format!("f16 image: {e}")))?;
-            if blob.len() != expected {
-                return Err(BenchError::Engine(format!(
-                    "f16 image: {} bytes for {width}x{height}, expected {expected}",
-                    blob.len()
-                )));
-            }
-            let space = match color_space {
-                ImageColorSpace::LinearSrgb => cherenkov::ImageColorSpace::LinearSrgb,
-                ImageColorSpace::LinearP3 => cherenkov::ImageColorSpace::LinearP3,
-                _ => {
-                    return Err(BenchError::Engine(format!(
-                        "f16 images are linear-light, not {color_space:?}"
-                    )));
-                }
-            };
-            let image = engine
-                .image(
-                    ImageData::<Rgba16F>::new(width, height, blob.clone())
-                        .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?
-                        .color_space(space),
-                )
-                .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?;
-            images.insert(key, image.id());
-            handles.push(ImageHandle::Rgba16F(image));
-            return Ok(());
-        }
-    };
-    let image = engine
-        .image(
-            ImageData::<Rgba8>::new(width, height, rgba)
-                .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?
-                .color_space(color_space),
-        )
-        .map_err(|e| BenchError::Engine(format!("cherenkov image: {e}")))?;
-    images.insert(key, image.id());
-    handles.push(ImageHandle::Rgba8(image));
+        } => upload_image(
+            engine,
+            (width, height),
+            blob.clone(),
+            space(color_space),
+            false,
+            ImageHandle::Rgba16F,
+        ),
+    }?;
+    images.insert(key, id);
+    handles.push(handle);
     Ok(())
 }
 
@@ -1251,11 +1300,7 @@ fn prep_layer(
             .as_deref()
             .map(|filter| register_filter(engine, filter, blobs))
             .transpose()?,
-        own: ContentRun {
-            ops: Vec::new(),
-            live: Vec::new(),
-            motions: Vec::new(),
-        },
+        own: ContentRun::new(),
         items: Vec::new(),
         backdrop: layer.backdrop,
         backdrop_effect: layer
@@ -1296,33 +1341,25 @@ fn prep_layer(
                 Item::Layer(l) => prep.items.push(PrepItem::Layer(Box::new(prep_layer(
                     l, engine, fonts, images, blobs,
                 )?))),
-                _ => prep_run_item(&mut prep.own, layer, index, item, fonts, images, blobs)?,
+                _ => prep_run_item(&mut prep.own, engine, layer, index, fonts, images, blobs)?,
             }
         }
     } else {
-        let mut run = ContentRun {
-            ops: Vec::new(),
-            live: Vec::new(),
-            motions: Vec::new(),
-        };
+        let mut run = ContentRun::new();
         for (index, item) in layer.items.iter().enumerate() {
             match item {
                 Item::Layer(l) => {
                     if !run.ops.is_empty() {
                         prep.items.push(PrepItem::Content(std::mem::replace(
                             &mut run,
-                            ContentRun {
-                                ops: Vec::new(),
-                                live: Vec::new(),
-                                motions: Vec::new(),
-                            },
+                            ContentRun::new(),
                         )));
                     }
                     prep.items.push(PrepItem::Layer(Box::new(prep_layer(
                         l, engine, fonts, images, blobs,
                     )?)));
                 }
-                _ => prep_run_item(&mut run, layer, index, item, fonts, images, blobs)?,
+                _ => prep_run_item(&mut run, engine, layer, index, fonts, images, blobs)?,
             }
         }
         if !run.ops.is_empty() {
@@ -1332,18 +1369,19 @@ fn prep_layer(
     Ok(prep)
 }
 
-/// Prepares a draw-or-group item of `layer` into `run`: pushes its op and
-/// records any live entry or paint motion that targets it.
+/// Prepares draw-or-group item `index` of `layer` into `run`: pushes its
+/// op, registers its group filters and records any live entry or paint
+/// motion that targets it.
 fn prep_run_item(
     run: &mut ContentRun,
+    engine: &GpuEngine<Gpu>,
     layer: &SceneLayer,
     index: usize,
-    item: &Item,
     fonts: &HashMap<(ResourceHash, u32), cherenkov::Font>,
     images: &HashMap<(ResourceHash, ImageEncoding), cherenkov::ImageId>,
     blobs: &Blobs,
 ) -> Result<(), BenchError> {
-    match item {
+    match &layer.items[index] {
         Item::Draw(d) => {
             run.ops.push(op(d, fonts, images, blobs, &FRONT)?);
             let position = run.ops.len() - 1;
@@ -1356,7 +1394,14 @@ fn prep_run_item(
             }
         }
         Item::Group(g) => {
-            run.ops.push(group_op(g, fonts, images, blobs, &FRONT)?);
+            let filters = &mut run.filters;
+            let op = group_op(g, fonts, images, blobs, &FRONT, &mut |filter| {
+                let filter = register_filter(engine, filter, blobs)?;
+                let id = filter.id();
+                filters.push(filter);
+                Ok(id)
+            })?;
+            run.ops.push(op);
         }
         Item::Layer(_) => unreachable!("layers are never run items"),
     }
@@ -1486,6 +1531,7 @@ fn build_layer(
     for item in prep.items {
         match item {
             PrepItem::Content(run) => {
+                filter_handles.extend(run.filters);
                 let child = surface.layer();
                 tx[layer].push(&child);
                 content_layers.push(ContentLayer {
@@ -1513,6 +1559,7 @@ fn build_layer(
     if let Some(filter) = prep.filter {
         filter_handles.push(filter);
     }
+    filter_handles.extend(prep.own.filters);
     content_layers.push(ContentLayer {
         layer: owned,
         id: prep.id,
@@ -1941,16 +1988,10 @@ impl Engine for Cherenkov {
                 pixels: rb.pixels,
             })
         };
-        let phases = stats.phases;
         Ok(Submit {
             image,
             gpu: Vec::new(),
-            phases: Some(crate::Phases {
-                lower: phases.lower_seconds,
-                encode: phases.encode_seconds,
-                stamp: phases.stamp_seconds,
-                wait: phases.wait_seconds,
-            }),
+            phases: phase_samples(&stats.phases),
             composition: self
                 .composition_diag
                 .as_ref()
@@ -1965,6 +2006,19 @@ impl Engine for Cherenkov {
         Ok(self.timings.samples(timings))
     }
 
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // The engine submits on this device, so the latest submission on
+        // it is the frame's last.
+        self.shared_device
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .map(drop)
+            .map_err(|e| BenchError::Gpu(format!("cherenkov: wait for the GPU: {e}")))
+    }
+
     fn counters(&self) -> Counters {
         let mut counters = self.counters.clone();
         let stats = self.engine.stats();
@@ -1975,6 +2029,8 @@ impl Engine for Cherenkov {
         counters.memory_cpu_bytes = Some(memory.cpu.0);
         counters.memory_backdrop_capture_bytes = Some(memory.backdrop_captures.0);
         counters.memory_backdrop_capture_format = memory.backdrop_capture_format;
+        counters.memory_filter_target_bytes = Some(memory.filter_targets.0);
+        counters.memory_filter_image_bytes = Some(memory.filter_images.0);
         counters
     }
 
@@ -2006,6 +2062,8 @@ impl Engine for Cherenkov {
                 cpu_bytes: usage.cpu.0,
                 gpu_bytes: usage.gpu.0,
                 backdrop_capture_bytes: usage.backdrop_captures.0,
+                filter_target_bytes: usage.filter_targets.0,
+                filter_image_bytes: usage.filter_images.0,
             }),
             wgpu_allocator: wgpu_allocator(&self.shared_device.device, adapter_info.backend),
             skia_budgeted: Reading::unavailable("not a Skia adapter"),
@@ -2086,4 +2144,14 @@ fn record_op(c: &mut cherenkov::Recorder, op: &Op) {
         }),
         Op::Text { layout, origin } => cherenkov::draw_text(c, layout, *origin),
     }
+}
+
+/// The GPU engine's render-thread phases of one frame.
+pub(crate) fn phase_samples(phases: &cherenkov::Phases) -> Vec<crate::PhaseSample> {
+    crate::PhaseSample::list(&[
+        ("lower", phases.lower_seconds),
+        ("encode", phases.encode_seconds),
+        ("stamp", phases.stamp_seconds),
+        ("wait", phases.wait_seconds),
+    ])
 }

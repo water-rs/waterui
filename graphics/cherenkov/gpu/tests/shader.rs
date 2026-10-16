@@ -6,32 +6,44 @@ use naga::back::{hlsl, msl, spv};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{Module, front::wgsl};
 
-/// The five engine modules exactly as `build.rs` composed, validated
+/// The seven engine modules exactly as `build.rs` composed, validated
 /// and emitted them — read from `OUT_DIR` so the test exercises the
 /// shipped source rather than a copy of its composition logic.
-const ENGINE_SOURCES: [&str; 5] = [
+const ENGINE_SOURCES: [&str; 7] = [
     include_str!(concat!(env!("OUT_DIR"), "/engine0.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine1.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine2.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine3.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine4.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine5.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine6.wgsl")),
 ];
-const SHARED: &str = include_str!("../src/render/shared.wgsl");
+const SHARED: &str = include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl"));
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
 const PROJECTIVE: &str = include_str!("../src/render/projective.wgsl");
 const MIP: &str = include_str!("../src/render/mip.wgsl");
 const RESOLVE: &str = include_str!("../src/render/resolve.wgsl");
 
+/// The Metal language version `build.rs` precompiles the engine modules
+/// at: 2.3, the first to take `-ftexture-write-rounding-mode` (#2773).
+const ENGINE_MSL_VERSION: (u8, u8) = (2, 3);
+
 /// The oldest Metal language version wgpu selects on a supported macOS
-/// (10.13 → 2.0), which is where `instance_id` and friends became legal.
+/// (10.13 → 2.0) for the modules it compiles at run time, such as backdrop
+/// effects, which is where `instance_id` and friends became legal.
 const MSL_VERSION: (u8, u8) = (2, 0);
 
 fn composed(variant: usize) -> (Module, naga::valid::ModuleInfo) {
     let source = ENGINE_SOURCES[variant];
     let module = wgsl::parse_str(source).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
+    // The capabilities `build.rs` validates every engine module with: the
+    // image-source conversion rounds through `quantizeToF16`.
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
     (module, info)
 }
 
@@ -40,7 +52,7 @@ fn every_variant_emits_msl() {
     for variant in 0..ENGINE_SOURCES.len() {
         let (module, info) = composed(variant);
         let options = msl::Options {
-            lang_version: MSL_VERSION,
+            lang_version: ENGINE_MSL_VERSION,
             ..msl::Options::default()
         };
         msl::write_string(&module, &info, &options, &msl::PipelineOptions::default())
@@ -90,14 +102,20 @@ fn effect_module(name: &str, user: &str) -> (Module, naga::valid::ModuleInfo) {
     let union_text = cherenkov_gpu::backdrop_effect_text(user, true);
     let union_module =
         wgsl::parse_str(&union_text).unwrap_or_else(|e| panic!("{name} (union): {e}"));
-    Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&union_module)
-        .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
+    Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&union_module)
+    .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
     let text = cherenkov_gpu::backdrop_effect_text(user, false);
     let module = wgsl::parse_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     (module, info)
 }
 
@@ -129,7 +147,7 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
 split_test! {
 fn silhouette_shadow_emits() {
     let module = wgsl::parse_str(include_str!("../src/render/shadow.wgsl")).expect("silhouette WGSL");
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32)
         .validate(&module).expect("valid silhouette module");
     effect_emits("silhouette shadow", &module, &info);
 }
@@ -197,7 +215,7 @@ fn standalone_modules_emit() {
         ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32)
             .validate(&module)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         effect_emits(name, &module, &info);

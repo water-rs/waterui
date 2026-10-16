@@ -64,7 +64,7 @@ impl HydroNativeView for WebView {
         _state: &mut HydroState,
         _view: &Self,
         _env: &Environment,
-        _theme: &std::rc::Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         #[cfg(hydrolysis_system_webview)]
         {
@@ -83,7 +83,7 @@ impl HydroNativeView for WebView {
         _state: &mut HydroState,
         _view: &Self,
         _env: &Environment,
-        _theme: &std::rc::Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::zero()
     }
@@ -92,7 +92,7 @@ impl HydroNativeView for WebView {
         _state: &mut HydroState,
         _view: &Self,
         _env: &Environment,
-        _theme: &std::rc::Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &std::rc::Rc<dyn crate::theme::WidgetTheme>,
         proposal: waterui_core::layout::ProposalSize,
     ) -> waterui_core::layout::ViewDimensions {
         crate::renderer::graphics_dimensions_from_proposal(proposal)

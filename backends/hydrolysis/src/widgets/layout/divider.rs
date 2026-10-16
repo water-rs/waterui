@@ -17,7 +17,7 @@ pub fn measure_divider_node(
     _proposal: ProposalSize,
     _state: &mut HydroState,
     _env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     ViewDimensions::new(LayoutSize::new(1.0, 1.0))
 }

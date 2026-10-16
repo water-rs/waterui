@@ -81,6 +81,11 @@ All media components integrate with `WaterUI`'s reactive system via `Binding` an
 
 ### Photo with Loading Events
 
+`Event::Loaded` fires once the picture is actually on screen — when the
+final decoded frame's registration with the scene backend settles. A frame
+the backend refuses (over its image limits or image budget) reports
+`Event::Error` instead, never `Loaded`.
+
 ```rust
 use waterui_media::{Photo, photo::Event, Url};
 

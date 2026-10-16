@@ -79,7 +79,7 @@ const FRAGMENT_ENTRY: &str = "main";
 fn module_text(source: &ShaderSource) -> String {
     format!(
         "{}\n{}\n{}",
-        include_str!("color.wgsl"),
+        include_str!(concat!(env!("OUT_DIR"), "/color.wgsl")),
         include_str!("paint.wgsl"),
         source.source
     )
@@ -233,6 +233,7 @@ impl Registry {
             });
             Texture {
                 image: super::GpuImage {
+                    sampling_flags: 0,
                     texture,
                     view,
                     width: key.size.0,

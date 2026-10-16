@@ -1779,6 +1779,7 @@ dependencies = [
  "rspirv",
  "rustc-hash 2.1.3",
  "skrifa 0.44.0",
+ "texture2ddecoder",
  "thiserror 2.0.21",
  "toml 1.1.6+spec-1.1.0",
  "tracing",
@@ -1801,6 +1802,7 @@ dependencies = [
  "read-fonts 0.41.0",
  "serde",
  "skrifa 0.44.0",
+ "texture2ddecoder",
 ]
 
 [[package]]
@@ -1808,6 +1810,7 @@ name = "cherenkov-record"
 version = "0.0.0"
 dependencies = [
  "color",
+ "filtrate-core",
  "kurbo 0.13.1",
  "nami",
  "nami-core",
@@ -3590,6 +3593,7 @@ dependencies = [
 name = "filtrate-core"
 version = "0.2.0"
 dependencies = [
+ "askama",
  "libm",
 ]
 
@@ -4657,7 +4661,6 @@ name = "hydrolysis-android-test-app"
 version = "0.0.0"
 dependencies = [
  "hydrolysis",
- "hydrolysis-m3",
  "jni 0.21.1",
  "waterui",
  "waterui-core",
@@ -4666,13 +4669,12 @@ dependencies = [
 [[package]]
 name = "hydrolysis-m3"
 version = "0.3.1"
-source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#7c9ed56b1ac49dd9e1317313f62ddfc12596e644"
+source = "git+https://github.com/water-rs/hydrolysis-m3?branch=dev#0add1da1efe14f4b42349de93c687df033ec258e"
 dependencies = [
  "hydrolysis",
  "material-color-utils",
  "num-traits",
  "waterui",
- "waterui-backend-core",
  "waterui-controls",
  "waterui-core",
  "waterui-form",
@@ -8013,6 +8015,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ordered-channel"
+version = "1.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95be4d57809897b5a7539fc15a7dfe0e84141bc3dfaa2e9b1b27caa90acf61ab"
+dependencies = [
+ "crossbeam-channel",
+]
+
+[[package]]
 name = "ordered-float"
 version = "5.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10920,6 +10931,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "texture2ddecoder"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "427ae8ec7f2f0fdd3146b77cfa44bea880caf066f7e55398a8467afe2645c832"
+dependencies = [
+ "paste",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11879,9 +11899,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ace506ca414548966fcf3c283be94eb1cad8254de488791ee698bf438b0890a9"
 dependencies = [
  "bytemuck",
+ "crossbeam-channel",
  "glifo",
  "hashbrown 0.17.1",
+ "ordered-channel",
  "png",
+ "rayon",
+ "thread_local",
  "vello_common",
 ]
 
@@ -12656,12 +12680,8 @@ dependencies = [
  "num-traits",
  "tracing",
  "waterui",
- "waterui-controls",
  "waterui-core",
- "waterui-form",
- "waterui-graphics",
  "waterui-layout",
- "waterui-text",
  "web-time",
 ]
 
@@ -12973,6 +12993,7 @@ dependencies = [
  "color",
  "event-listener",
  "filtrate",
+ "filtrate-core",
  "fontique",
  "half",
  "image",
@@ -13074,12 +13095,15 @@ dependencies = [
 [[package]]
 name = "waterui-image"
 version = "0.5.0"
-source = "git+https://github.com/water-rs/image?branch=dev#64be73b636fb85fe583d9e088763b40273b01e8e"
+source = "git+https://github.com/water-rs/image?branch=dev#76eb42ae9e44618f929d7634c844bd85d2dd268e"
 dependencies = [
+ "executor-core",
  "half",
  "image",
  "mp4-atom",
  "num-traits",
+ "thiserror 2.0.21",
+ "tracing",
  "waterkit-codec",
  "waterui-core",
  "waterui-graphics",
@@ -13452,7 +13476,6 @@ dependencies = [
  "sysinfo",
  "waterui",
  "waterui-assets-planner",
- "waterui-backend-core",
  "waterui-canvas",
  "waterui-core",
  "waterui-preview-protocol",
@@ -13588,7 +13611,7 @@ dependencies = [
 [[package]]
 name = "waterui-video-gpu"
 version = "0.4.0"
-source = "git+https://github.com/water-rs/video-gpu?branch=dev#042e0c33839dad4b3d8e2d319015f4e7136107f1"
+source = "git+https://github.com/water-rs/video-gpu?branch=dev#42e592b9afe10d42e9ba8bf5f99a8bba73309e05"
 dependencies = [
  "async-channel",
  "executor-core",

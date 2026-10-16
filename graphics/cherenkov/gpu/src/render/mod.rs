@@ -12,6 +12,8 @@ pub mod external;
 pub mod filter;
 mod glyph;
 mod gpu_content;
+mod gpu_cov;
+mod image_storage;
 mod instance;
 mod lower;
 mod paint;
@@ -25,6 +27,7 @@ mod reduce;
 mod resolve;
 pub mod shaders;
 mod shadow;
+mod space_convert;
 pub mod surface_control;
 mod upload;
 
@@ -71,6 +74,9 @@ enum ExportPool {}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Bound {
     Engine(PipelineKind, ShaderVariant),
+    /// A coverage-order pass's partial-phase pipeline, from the cell
+    /// module (`true`) for GPU-routed ranges or the simple one.
+    Coverage(bool),
     External,
     /// The projective composite, source-over or replace.
     Projective(bool),
@@ -244,7 +250,9 @@ fn coverage_depth_bytes(texture: &wgpu::Texture) -> u64 {
 
 /// A GPU-resident image registered with the engine.
 pub struct GpuImage {
-    /// The texture holding premultiplied linear-P3 f16 texels.
+    /// Per-texel colour conversion flags, packed above sampling in image paints.
+    pub sampling_flags: u32,
+    /// The texture holding source texels.
     pub texture: wgpu::Texture,
     /// Its view for bind group 1.
     pub view: wgpu::TextureView,
@@ -255,15 +263,11 @@ pub struct GpuImage {
 }
 
 impl GpuImage {
-    /// The texture's bytes: f16 RGBA, eight a texel.
+    /// The texture's storage bytes: its format's blocks over the
+    /// allocated extent.
     pub fn bytes(&self) -> u64 {
-        image_bytes((self.width, self.height))
+        image_storage::bytes(&self.texture)
     }
-}
-
-/// The bytes of a [`GpuImage`] of `size`: f16 RGBA, eight a texel.
-fn image_bytes((width, height): (u32, u32)) -> u64 {
-    u64::from(width) * u64::from(height) * 8
 }
 
 pub struct GpuBitmap {
@@ -948,6 +952,9 @@ pub struct GpuRenderer {
     /// The capture pyramid reduce pipelines — `None` until a frame
     /// reduces a levelled capture.
     reduce: Option<reduce::Pipelines>,
+    /// The filter space conversion pipelines — `None` until a frame
+    /// filters an sRGB-encoded scope.
+    space_convert: Option<space_convert::Pipelines>,
     last_frame: Option<Instant>,
     origin: Option<Instant>,
     device: wgpu::Device,
@@ -959,16 +966,21 @@ pub struct GpuRenderer {
     /// pipelines are built once (#170). A `None` cell is created at first
     /// use — preparation is measured on the frame that needs it (#170 B3).
     /// `[space][format][ShaderVariant]` — a fourth variant slot holds
-    /// the union-field pipelines for backdrop-union members; a fifth
-    /// holds the long-gradient pipelines. Slot 3 is never built at
-    /// init: the variant-3 module and pipeline are created on the first
-    /// union or outer-band member (on wasm, by `prepare_lazy_pipelines`
+    /// the union-field pipelines for backdrop-union members, a fifth the
+    /// long-gradient pipelines, a sixth the cell-buffer pipelines of
+    /// GPU-routed ranges (`DrawRange::module`) and a seventh the
+    /// image-source pipelines. Slots 3, 5 and 6 are never built at init:
+    /// their modules and pipelines are created on the first union or
+    /// outer-band member, the first GPU-routed draw and the first image
+    /// paint with source flags (on wasm, by `prepare_lazy_pipelines`
     /// before the frame that needs them).
-    pipelines: [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
-    /// `[opaque, partial]` coverage pipelines, same cell policy as the
-    /// core set: built at init under `core_pipelines_eager()` (always,
-    /// on wasm), else created at the first coverage pass (#170 B3, #49).
-    coverage_pipelines: [Option<wgpu::RenderPipeline>; 2],
+    pipelines: [[[Option<wgpu::RenderPipeline>; 7]; 2]; 2],
+    /// `[module][opaque, partial]` coverage pipelines, same cell policy
+    /// as the core set: the simple module's pair is built at init under
+    /// `core_pipelines_eager()` (always, on wasm), else created at the
+    /// first coverage pass (#170 B3, #49); the cell module's pair, which
+    /// GPU-routed ranges draw with, at the first such range.
+    coverage_pipelines: [[Option<wgpu::RenderPipeline>; 2]; 2],
     /// The pipeline layout every core and backdrop pipeline shares.
     pipeline_layout: wgpu::PipelineLayout,
     #[cfg(target_vendor = "apple")]
@@ -988,12 +1000,13 @@ pub struct GpuRenderer {
     /// Registered backdrop effect shaders, by raw id — see
     /// [`BackdropShaderEntry`].
     backdrop_shaders: FxHashMap<u64, BackdropShaderEntry>,
-    /// The union-linked engine module, created on the first frame that
-    /// draws a union or outer-band member (async preparation cannot
-    /// run inside the synchronous encode loop, so the module materializes
-    /// in `prepare_lazy_pipelines`).
+    /// The demand-built engine modules by variant index — union, and
+    /// image — each created on the first frame that draws a range of that
+    /// variant (async preparation cannot run inside the synchronous
+    /// encode loop, so the module materializes in
+    /// `prepare_lazy_pipelines`).
     #[cfg(target_arch = "wasm32")]
-    union_module: Option<wgpu::ShaderModule>,
+    lazy_modules: FxHashMap<usize, wgpu::ShaderModule>,
     /// The configured isolation texture format.
     scratch_format: wgpu::TextureFormat,
     layout0: wgpu::BindGroupLayout,
@@ -1001,6 +1014,8 @@ pub struct GpuRenderer {
     globals: wgpu::Buffer,
     instances: wgpu::Buffer,
     stops: wgpu::Buffer,
+    /// `image_storage::transfer_table`, group 0's `image_decode`.
+    image_decode: wgpu::Buffer,
     /// `{0, 1, 2, 2, 1, 3}` — see `quad_index_buffer`.
     quad_indices: wgpu::Buffer,
     bind0: wgpu::BindGroup,
@@ -1012,6 +1027,13 @@ pub struct GpuRenderer {
     bound_stop_size: u64,
     /// The globals buffer size `bind0` was built against.
     bound_globals_size: u64,
+    /// The per-frame cell-texel storage buffer the GPU coverage route
+    /// writes and the raster passes read (decision S1, issue #2543).
+    cell_texels: wgpu::Buffer,
+    /// The cell-texel buffer size `bind0` was built against.
+    bound_cell_texels_size: u64,
+    /// The frame's GPU coverage dispatch context (issue #2543).
+    gpu_cov: gpu_cov::GpuCoverage,
     atlas: Atlas,
     /// Per-commit cell writes: the emptied container the last upload
     /// returned, refilled in place each frame (#2671).
@@ -1087,6 +1109,16 @@ pub struct GpuRenderer {
     /// installed content draws the image (#199), so neither counts.
     image_replacements: u64,
     timestamps: bool,
+    /// A pass's beginning sample is an encoder timestamp written just
+    /// before the pass opens, not the pass's own beginning-of-pass write.
+    /// Set wherever the device has `TIMESTAMP_QUERY_INSIDE_ENCODERS`
+    /// (Vulkan): Mali executes the in-pass beginning sample at a point
+    /// that moves against the pass's own work — before or after roughly
+    /// 20 µs of it, frame to frame — so a bracket opened there measures
+    /// one of two spans and a per-process p50 lands on whichever
+    /// dominates (#2840). The encoder sample precedes the pass's barriers
+    /// and work in command order.
+    pass_start_on_encoder: bool,
     query_set: Option<wgpu::QuerySet>,
     /// First query of the active frame's independent range.
     query_base: u32,
@@ -1107,7 +1139,8 @@ pub struct GpuRenderer {
     /// at its start and `base + 2i + 1` at its end. GPU time runs from the
     /// first pass's start to the last pass's end: pass boundaries are the
     /// one timestamp position every backend with `TIMESTAMP_QUERY`
-    /// supports (Metal on Apple GPUs samples only at stage boundaries).
+    /// supports (Metal on Apple GPUs samples only at stage boundaries);
+    /// see `pass_start_on_encoder` for where a pass starts on Vulkan.
     query_capacity: u32,
     /// Frames whose timestamp resolve was submitted but whose staging
     /// buffer is not mapped yet — read on a later call, in order.
@@ -1176,6 +1209,8 @@ enum PendingOrigin {
     Cells(Vec<(u32, u32)>, Vec<u32>),
     /// A clip mask's cell origin.
     Mask([f32; 2]),
+    /// A GPU-routed path: its compute record index (issue #2543).
+    Gpu(u32),
     /// A COLR cache insert; no instance patch.
     None,
 }
@@ -1345,7 +1380,8 @@ fn create_device(
         "adapter"
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
-    let mut required = wgpu::Features::empty();
+    let mut required =
+        supported & (image_storage::COMPRESSION_FEATURES | wgpu::Features::INDIRECT_FIRST_INSTANCE);
     // The fixed engine shaders are precompiled (#57): Vulkan loads SPIR-V
     // and Metal a metallib through the passthrough API; wgpu-hal advertises
     // the feature unconditionally on both backends.
@@ -1361,8 +1397,10 @@ fn create_device(
     // Vulkan is asked for both, because the tile executor records its
     // epoch in a native command buffer that is no wgpu pass: the only
     // place its bracket can go is the encoder, where Vulkan's
-    // `vkCmdWriteTimestamp` is exact (#2191). Every wgpu Vulkan adapter
-    // with `TIMESTAMP_QUERY` has it, so it is required, not probed.
+    // `vkCmdWriteTimestamp` is exact (#2191). Every render pass starts on
+    // an encoder sample there too (`pass_start_on_encoder`, #2840). Every
+    // wgpu Vulkan adapter with `TIMESTAMP_QUERY` has it, so it is
+    // required, not probed.
     if config.timestamps && supported.contains(wgpu::Features::TIMESTAMP_QUERY) {
         required |= wgpu::Features::TIMESTAMP_QUERY;
         if info.backend == wgpu::Backend::Vulkan {
@@ -1605,7 +1643,8 @@ async fn create_device(
         "adapter"
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
-    let mut required = wgpu::Features::empty();
+    let mut required =
+        supported & (image_storage::COMPRESSION_FEATURES | wgpu::Features::INDIRECT_FIRST_INSTANCE);
     // Pass-boundary timestamps are all Metal is asked for: Apple GPUs
     // advertise `TIMESTAMP_QUERY_INSIDE_ENCODERS` but sample only at
     // stage boundaries, so an encoder-level `write_timestamp` goes through
@@ -1613,8 +1652,10 @@ async fn create_device(
     // Vulkan is asked for both, because the tile executor records its
     // epoch in a native command buffer that is no wgpu pass: the only
     // place its bracket can go is the encoder, where Vulkan's
-    // `vkCmdWriteTimestamp` is exact (#2191). Every wgpu Vulkan adapter
-    // with `TIMESTAMP_QUERY` has it, so it is required, not probed.
+    // `vkCmdWriteTimestamp` is exact (#2191). Every render pass starts on
+    // an encoder sample there too (`pass_start_on_encoder`, #2840). Every
+    // wgpu Vulkan adapter with `TIMESTAMP_QUERY` has it, so it is
+    // required, not probed.
     if config.timestamps && supported.contains(wgpu::Features::TIMESTAMP_QUERY) {
         required |= wgpu::Features::TIMESTAMP_QUERY;
         if info.backend == wgpu::Backend::Vulkan {
@@ -1660,6 +1701,11 @@ pub fn layout_entries(entries: &[bindings::Entry]) -> Vec<wgpu::BindGroupLayoutE
                 },
                 bindings::Kind::StorageRead => wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Storage { read_only: true },
+                    has_dynamic_offset: entry.dynamic_offset,
+                    min_binding_size: wgpu::BufferSize::new(entry.min_size),
+                },
+                bindings::Kind::Storage => wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { read_only: false },
                     has_dynamic_offset: entry.dynamic_offset,
                     min_binding_size: wgpu::BufferSize::new(entry.min_size),
                 },
@@ -1781,14 +1827,40 @@ fn make_bind1(
 }
 
 /// Builds the group-0 bind group over the current buffers and atlas.
+/// The placeholder cell-texel buffer bound until the GPU coverage
+/// route first sizes it (issue #2543).
+fn cell_texels_placeholder(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("cell texels"),
+        size: 4,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// The buffers of the engine bind group (`ENGINE_GROUP0`).
+#[derive(Clone, Copy)]
+struct EngineBuffers<'a> {
+    globals: &'a wgpu::Buffer,
+    instances: &'a wgpu::Buffer,
+    stops: &'a wgpu::Buffer,
+    cell_texels: &'a wgpu::Buffer,
+    image_decode: &'a wgpu::Buffer,
+}
+
 fn make_bind0(
     device: &wgpu::Device,
     layout0: &wgpu::BindGroupLayout,
-    globals: &wgpu::Buffer,
-    instances: &wgpu::Buffer,
-    stops: &wgpu::Buffer,
+    buffers: &EngineBuffers<'_>,
     atlas: &Atlas,
 ) -> wgpu::BindGroup {
+    let EngineBuffers {
+        globals,
+        instances,
+        stops,
+        cell_texels,
+        image_decode,
+    } = *buffers;
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("engine data"),
         layout: layout0,
@@ -1812,8 +1884,16 @@ fn make_bind0(
                 resource: stops.as_entire_binding(),
             },
             wgpu::BindGroupEntry {
+                binding: 4,
+                resource: cell_texels.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
                 binding: 3,
                 resource: wgpu::BindingResource::TextureView(atlas.view()),
+            },
+            wgpu::BindGroupEntry {
+                binding: bindings::IMAGE_DECODE_BINDING,
+                resource: image_decode.as_entire_binding(),
             },
         ],
     })
@@ -1880,11 +1960,13 @@ const fn variant_index(variant: ShaderVariant) -> usize {
         ShaderVariant::Full => 2,
         ShaderVariant::Union => 3,
         ShaderVariant::LongGradient => 4,
+        ShaderVariant::Cell => 5,
+        ShaderVariant::Image => 6,
     }
 }
 
-/// The core slots built at init — every variant but Union, which
-/// materializes lazily (native `core_pipeline` demand cells) or in
+/// The core slots built at init — every variant but Union and Image,
+/// which materialize lazily (native `core_pipeline` demand cells) or in
 /// `prepare_lazy_pipelines` (wasm). The list drives both the module
 /// creation and the pipeline fill, zipped so a slot never indexes the
 /// modules array.
@@ -2148,7 +2230,7 @@ impl PipelineFactory<'_> {
 /// created at first use so preparation lands inside the frame that needs
 /// it (#170).
 fn core_pipeline<'m>(
-    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
+    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 7]; 2]; 2],
     factory: &PipelineFactory<'_>,
     format: wgpu::TextureFormat,
     replace: bool,
@@ -2166,16 +2248,21 @@ fn core_pipeline<'m>(
 /// the same cell policy as `core_pipeline`: an empty cell is created at
 /// the first coverage pass that needs it (#170 B3, #49).
 fn coverage_pipeline<'m>(
-    pipelines: &'m mut [Option<wgpu::RenderPipeline>; 2],
+    pipelines: &'m mut [[Option<wgpu::RenderPipeline>; 2]; 2],
     factory: &PipelineFactory<'_>,
     phase: CoveragePhase,
+    gpu: bool,
 ) -> Result<&'m wgpu::RenderPipeline, RenderError> {
-    let cell = &mut pipelines[phase as usize];
+    let cell = &mut pipelines[usize::from(gpu)][phase as usize];
     if cell.is_none() {
         *cell = Some(factory.create(
             TARGET_FORMAT,
             CoveragePass::Coverage(phase),
-            ShaderVariant::Simple,
+            if gpu {
+                ShaderVariant::Cell
+            } else {
+                ShaderVariant::Simple
+            },
         )?);
     }
     Ok(cell.as_ref().expect("coverage pipeline ready"))
@@ -2275,6 +2362,16 @@ fn target_bytes(c: &ScratchTarget, deep: u32) -> u64 {
     texels * texel_bytes(c.texture.format())
 }
 
+/// The `image_decode` storage binding: the transfer table straight 8-bit
+/// image sources decode through (`image_storage::transfer_table`).
+fn image_decode_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("image decode"),
+        contents: bytemuck::cast_slice(&image_storage::transfer_table()),
+        usage: wgpu::BufferUsages::STORAGE,
+    })
+}
+
 /// `{0, 1, 2, 2, 1, 3}`: the coverage partial pass's indexed draw replays
 /// the painter path's ordered triangles while the vertex shader runs once
 /// per corner.
@@ -2341,7 +2438,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         let mut pipelines = std::array::from_fn(|_| {
             std::array::from_fn(|_| std::array::from_fn(|_| None::<wgpu::RenderPipeline>))
         });
-        let mut coverage_pipelines = [None, None];
+        let mut coverage_pipelines = [[None, None], [None, None]];
         // The closed core set, deduplicated by format slot: when surface
         // and scratch share `Rgba16Float` every cell lands in slot 0 and
         // the later iteration's `is_none` skips its duplicates (#170).
@@ -2368,7 +2465,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                     }
                 }
             }
-            for (cell, phase) in coverage_pipelines
+            for (cell, phase) in coverage_pipelines[0]
                 .iter_mut()
                 .zip([CoveragePhase::Opaque, CoveragePhase::Partial])
             {
@@ -2413,9 +2510,11 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             mapped_at_creation: false,
         });
         let quad_indices = quad_index_buffer(&device);
+        let image_decode = image_decode_buffer(&device);
         diag::create(&device, "globals", globals.size());
         diag::create(&device, "instances", instances.size());
         diag::create(&device, "stops", stops.size());
+        diag::create(&device, "image decode", image_decode.size());
         fire_probe(
             &config,
             CreationPhase::Buffers,
@@ -2424,7 +2523,19 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         )?;
         let atlas = Atlas::new(&device, config.budget.gpu.0);
         fire_probe(&config, CreationPhase::Atlas, Some(&adapter), Some(&device))?;
-        let bind0 = make_bind0(&device, &layout0, &globals, &instances, &stops, &atlas);
+        let cell_texels = cell_texels_placeholder(&device);
+        let bind0 = make_bind0(
+            &device,
+            &layout0,
+            &EngineBuffers {
+                globals: &globals,
+                instances: &instances,
+                stops: &stops,
+                cell_texels: &cell_texels,
+                image_decode: &image_decode,
+            },
+            &atlas,
+        );
         #[cfg_attr(
             not(all(unix, not(target_vendor = "apple"))),
             expect(
@@ -2456,6 +2567,10 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         )?;
         let timestamps =
             config.timestamps && device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let pass_start_on_encoder = timestamps
+            && device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
         let (query_set, query_buffer) = if timestamps {
             (
                 Some(device.create_query_set(&wgpu::QuerySetDescriptor {
@@ -2554,6 +2669,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             shadow_blur: None,
             resolve: None,
             reduce: None,
+            space_convert: None,
             last_frame: None,
             origin: None,
             max_texture: device.limits().max_texture_dimension_2d,
@@ -2573,6 +2689,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             globals,
             instances,
             stops,
+            image_decode,
             quad_indices,
             bind0,
             dummy_view,
@@ -2597,6 +2714,9 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             exports: FxHashMap::default(),
             bound_atlas: 0,
             bound_instance_size: 272 * 16,
+            cell_texels,
+            bound_cell_texels_size: 4,
+            gpu_cov: gpu_cov::GpuCoverage::new(),
             bound_stop_size: 32 * 16,
             bound_globals_size: 256,
             atlas,
@@ -2612,6 +2732,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             images_gen: 0,
             image_replacements: 0,
             timestamps,
+            pass_start_on_encoder,
             query_set,
             query_base: 0,
             query_pool,
@@ -2722,7 +2843,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
             }
         }
     }
-    let coverage_pipelines = <[_; 2]>::from(
+    let simple_coverage = <[_; 2]>::from(
         futures_util::future::try_join(
             create_pipeline(
                 &device,
@@ -2746,6 +2867,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         .await?,
     )
     .map(Some);
+    let coverage_pipelines = [simple_coverage, [None, None]];
     fire_probe(
         &config,
         CreationPhase::CorePipelines,
@@ -2772,9 +2894,11 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         mapped_at_creation: false,
     });
     let quad_indices = quad_index_buffer(&device);
+    let image_decode = image_decode_buffer(&device);
     diag::create(&device, "globals", globals.size());
     diag::create(&device, "instances", instances.size());
     diag::create(&device, "stops", stops.size());
+    diag::create(&device, "image decode", image_decode.size());
     fire_probe(
         &config,
         CreationPhase::Buffers,
@@ -2783,7 +2907,19 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     )?;
     let atlas = Atlas::new(&device, config.budget.gpu.0);
     fire_probe(&config, CreationPhase::Atlas, Some(&adapter), Some(&device))?;
-    let bind0 = make_bind0(&device, &layout0, &globals, &instances, &stops, &atlas);
+    let cell_texels = cell_texels_placeholder(&device);
+    let bind0 = make_bind0(
+        &device,
+        &layout0,
+        &EngineBuffers {
+            globals: &globals,
+            instances: &instances,
+            stops: &stops,
+            cell_texels: &cell_texels,
+            image_decode: &image_decode,
+        },
+        &atlas,
+    );
     let (_, dummy_view) = create_target(
         &device,
         "dummy source",
@@ -2808,6 +2944,10 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     )?;
     let timestamps =
         config.timestamps && device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+    let pass_start_on_encoder = timestamps
+        && device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
     let (query_set, query_buffer) = if timestamps {
         (
             Some(device.create_query_set(&wgpu::QuerySetDescriptor {
@@ -2878,11 +3018,12 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         shader_delivery,
         shaders: paint::Registry::default(),
         backdrop_shaders: FxHashMap::default(),
-        union_module: None,
+        lazy_modules: FxHashMap::default(),
         filters: filter::Registry::default(),
         shadow_blur: None,
         resolve: None,
         reduce: None,
+        space_convert: None,
         last_frame: None,
         origin: None,
         max_texture: device.limits().max_texture_dimension_2d,
@@ -2898,7 +3039,11 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         globals,
         instances,
         stops,
+        image_decode,
         quad_indices,
+        cell_texels,
+        bound_cell_texels_size: 4,
+        gpu_cov: gpu_cov::GpuCoverage::new(),
         bind0,
         dummy_view,
         dummy_uint_view,
@@ -2929,6 +3074,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         images_gen: 0,
         image_replacements: 0,
         timestamps,
+        pass_start_on_encoder,
         query_set,
         query_base: 0,
         query_pool,
@@ -3081,6 +3227,93 @@ pub(in crate::render) type FrameCommits = Vec<()>;
 /// One surface's platform commit; its `Default` is the empty commit a
 /// surface that commits nothing off-thread produces (`None` on Apple).
 type PlatformCommit = <planes::Platform as planes::SystemPlanes>::Commit;
+
+impl GpuRenderer {
+    /// [`Renderer::add_image`]'s work, awaiting the device's report.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the renderer is not Send: native targets block on this future on the render thread, and the browser engine runs it on the page's event loop"
+    )]
+    async fn register_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> Result<(), ResourceError> {
+        let size = (image.width, image.height);
+        let data = image_storage::Upload::new(&image, self.device.features())?;
+        let image = upload_image(&self.device, &self.queue, size, &data).await?;
+        self.images.insert(id.raw(), image);
+        self.images_gen += 1;
+        Ok(())
+    }
+
+    /// [`Renderer::replace_image`]'s work, awaiting the device's report.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the renderer is not Send: native targets block on this future on the render thread, and the browser engine runs it on the page's event loop"
+    )]
+    async fn swap_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        let _diag_guard = diag::Guard::scope(self.diag.as_ref());
+        let data = image_storage::Upload::new(&image, self.device.features())?;
+        let size = (image.width, image.height);
+        let current = self
+            .images
+            .get(&id.raw())
+            .expect("replace targets a registered image");
+        if (current.width, current.height) == size
+            && current.texture.format() == data.format
+            && current.sampling_flags == data.flags
+        {
+            // The copy is queued ahead of the next submission, after every
+            // frame already submitted, so no frame samples a partly
+            // written texture. The view is unchanged: bind groups and
+            // lowered paints stay valid.
+            write_image(&self.device, &self.queue, &current.texture, size, &data).await?;
+            // Local images that sampled the previous pixels are no longer
+            // current.
+            self.image_replacements += 1;
+            return Ok(());
+        }
+        let replacement = upload_image(&self.device, &self.queue, size, &data).await?;
+        self.image_replacements += 1;
+        let old = self
+            .images
+            .insert(id.raw(), replacement)
+            .expect("replace targets a registered image");
+        self.images_gen += 1;
+        diag::retire(
+            &self.device,
+            diag::RetireArgs {
+                label: "image",
+                class: diag::Class::Image,
+                bytes: old.bytes(),
+                used_in_latest_submit: true,
+                reason: "replace_image",
+            },
+        );
+        // #169 A4: bind groups created against the replaced view are
+        // stale — `Registered(id)` now binds the new texture; submitted
+        // encoders keep the old one until completion. Lowering resolved
+        // the old dimensions into the image's paints, so content sampling
+        // it is lowered again.
+        let images_gen = self.images_gen;
+        let mask_gen = self.atlas.mask_texture_generation();
+        for surf in self.surfaces.values_mut() {
+            retire_binds1(
+                surf,
+                &self.device,
+                images_gen,
+                mask_gen,
+                "image replaced",
+                |key| key.2 == Some(lower::ImageSource::Registered(id.raw())),
+            );
+            for content in surf.layers.values_mut() {
+                content.invalidate_image(id);
+            }
+        }
+        Ok(())
+    }
+}
 
 impl Renderer for GpuRenderer {
     type Target = GpuTarget;
@@ -3494,79 +3727,48 @@ impl Renderer for GpuRenderer {
     fn image_limits(&self) -> cherenkov::ImageLimits {
         cherenkov::ImageLimits {
             max_dimension: self.max_texture,
-            // The upload lands as f16 RGBA: eight bytes a texel.
+            // The image budget: every registered image together holds at
+            // most the GPU budget at eight bytes a texel, the largest
+            // storage an image takes (`Rgba16F`); natively stored formats
+            // take less. The engine admits registrations against it.
             max_texels: self.config.budget.gpu.0 / 8,
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let size = (image.width, image.height);
-        self.admit_image(size, 0)?;
-        let data = image_texels_f16(&image)?;
-        let image = upload_image(&self.device, &self.queue, size, &data)?;
-        self.images.insert(id.raw(), image);
-        self.images_gen += 1;
-        Ok(())
+        pollster::block_on(self.register_image(id, image))
     }
 
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    fn add_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        self.register_image(id, image)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let _diag_guard = diag::Guard::scope(self.diag.as_ref());
-        let data = image_texels_f16(&image)?;
-        let size = (image.width, image.height);
-        let current = self
-            .images
-            .get(&id.raw())
-            .expect("replace targets a registered image");
-        if (current.width, current.height) == size {
-            // The copy is queued ahead of the next submission, after every
-            // frame already submitted, so no frame samples a partly
-            // written texture. The view is unchanged: bind groups and
-            // lowered paints stay valid.
-            write_image(&self.device, &self.queue, &current.texture, size, &data)?;
-            // Local images that sampled the previous pixels are no longer
-            // current.
-            self.image_replacements += 1;
-            return Ok(());
-        }
-        self.admit_image(size, current.bytes())?;
-        let replacement = upload_image(&self.device, &self.queue, size, &data)?;
-        self.image_replacements += 1;
-        let old = self
-            .images
-            .insert(id.raw(), replacement)
-            .expect("replace targets a registered image");
-        self.images_gen += 1;
-        diag::retire(
-            &self.device,
-            diag::RetireArgs {
-                label: "image",
-                class: diag::Class::Image,
-                bytes: old.bytes(),
-                used_in_latest_submit: true,
-                reason: "replace_image",
-            },
-        );
-        // #169 A4: bind groups created against the replaced view are
-        // stale — `Registered(id)` now binds the new texture; submitted
-        // encoders keep the old one until completion. Lowering resolved
-        // the old dimensions into the image's paints, so content sampling
-        // it is lowered again.
-        let images_gen = self.images_gen;
-        let mask_gen = self.atlas.mask_texture_generation();
-        for surf in self.surfaces.values_mut() {
-            retire_binds1(
-                surf,
-                &self.device,
-                images_gen,
-                mask_gen,
-                "image replaced",
-                |key| key.2 == Some(lower::ImageSource::Registered(id.raw())),
-            );
-            for content in surf.layers.values_mut() {
-                content.invalidate_image(id);
-            }
-        }
-        Ok(())
+        pollster::block_on(self.swap_image(id, image))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    fn replace_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        self.swap_image(id, image)
     }
 
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {
@@ -3806,9 +4008,13 @@ impl Renderer for GpuRenderer {
         self.bind0 = make_bind0(
             &self.device,
             &self.layout0,
-            &self.globals,
-            &self.instances,
-            &self.stops,
+            &EngineBuffers {
+                globals: &self.globals,
+                instances: &self.instances,
+                stops: &self.stops,
+                cell_texels: &self.cell_texels,
+                image_decode: &self.image_decode,
+            },
             atlas,
         );
         self.bound_atlas = atlas.generation();
@@ -3823,6 +4029,10 @@ impl Renderer for GpuRenderer {
 
     fn memory(&self) -> MemoryUsage {
         let gpu = self.instances.size()
+            // The GPU coverage route's buffers plus the cell texels
+            // (`self.instances` already counts the emission tail).
+            + self.gpu_cov.bytes()
+            + self.cell_texels.size()
             + self
                 .planes
                 .values()
@@ -3830,6 +4040,7 @@ impl Renderer for GpuRenderer {
                 .sum::<u64>()
             + self.uploads.gpu_bytes()
             + self.stops.size()
+            + self.image_decode.size()
             + self.globals.size()
             + self.atlas.gpu_bytes()
             + self.atlas.mask_texture_bytes()
@@ -3854,6 +4065,8 @@ impl Renderer for GpuRenderer {
             .values()
             .map(SurfaceState::backdrop_bytes)
             .sum();
+        let filter_targets = self.filters.target_bytes();
+        let filter_images = self.filters.image_bytes();
         let capture_format = self
             .surfaces
             .values()
@@ -3862,6 +4075,7 @@ impl Renderer for GpuRenderer {
             .map(|c| format_name(c.target.texture.format()))
             .next();
         let cpu = self.atlas.cpu_bytes()
+            + self.gpu_cov.cpu_bytes()
             + self.commit_writes.heap_bytes()
             + self
                 .surfaces
@@ -3910,7 +4124,8 @@ impl Renderer for GpuRenderer {
         let (tile_reserved, tile_committed) = (0, None);
         MemoryUsage {
             gpu: cherenkov::Bytes(
-                gpu + self.filters.gpu_bytes()
+                gpu + filter_targets
+                    + filter_images
                     + self.shadow_blur.as_ref().map_or(0, shadow::Blur::gpu_bytes)
                     + tile_committed.unwrap_or(0),
             ),
@@ -3919,6 +4134,8 @@ impl Renderer for GpuRenderer {
             tile_committed: tile_committed.map(cherenkov::Bytes),
             backdrop_captures: cherenkov::Bytes(captures),
             backdrop_capture_format: capture_format,
+            filter_targets: cherenkov::Bytes(filter_targets),
+            filter_images: cherenkov::Bytes(filter_images),
         }
     }
 
@@ -4515,6 +4732,7 @@ impl GpuRenderer {
                     .saturating_add(surf.frame.reduce_slots());
             }
         }
+        self.gpu_cov.set_inst_origin(inst_base);
         let wait = stats.phases.wait_seconds;
         if result.is_ok() {
             result = self.upload_frame(&dirty, stats).await;
@@ -4680,6 +4898,7 @@ impl GpuRenderer {
                     .saturating_add(surf.frame.reduce_slots());
             }
         }
+        self.gpu_cov.set_inst_origin(inst_base);
         let wait = stats.phases.wait_seconds;
         result = result.and_then(|()| self.upload_frame(&dirty, stats));
         stats.phases.lower_seconds =
@@ -5612,29 +5831,6 @@ impl GpuRenderer {
             .saturating_sub(self.resident_bytes())
     }
 
-    /// Admits a registered image of `size` against the GPU budget. A
-    /// registered image stays resident until it is released, so it must
-    /// fit beside every other resident resource; the local images give
-    /// way to it. `replaced` is the bytes of the image a resize frees.
-    ///
-    /// # Errors
-    /// [`ResourceError::Image`] when the image does not fit.
-    fn admit_image(&self, (width, height): (u32, u32), replaced: u64) -> Result<(), ResourceError> {
-        let required = image_bytes((width, height));
-        let available = self
-            .config
-            .budget
-            .gpu
-            .0
-            .saturating_sub(self.resident_bytes() - replaced);
-        if required > available {
-            return Err(ResourceError::Image(format!(
-                "{width}x{height} needs {required} bytes; the GPU budget has {available} left"
-            )));
-        }
-        Ok(())
-    }
-
     /// What surface `sf`'s lowering needs to plan and reuse local images.
     /// First drops every retained image no frame can compose again: its
     /// layer is gone or affine, its content stamp moved on, or an image
@@ -6018,6 +6214,28 @@ impl GpuRenderer {
         }
     }
 
+    fn coverage_options(&self) -> (bool, path::CoverageRoute) {
+        let has_compute = self
+            .adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+            && self.device.limits().max_compute_workgroups_per_dimension > 0
+            && self
+                .device
+                .features()
+                .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
+        #[cfg(test)]
+        if self.config.force_gpu_coverage {
+            assert!(
+                has_compute,
+                "forced GPU coverage requires compute and indirect first-instance support"
+            );
+            return (has_compute, path::CoverageRoute::Gpu);
+        }
+        (has_compute, path::CoverageRoute::Sweep)
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     fn lower_all(
         &mut self,
@@ -6025,6 +6243,7 @@ impl GpuRenderer {
         frames: &[&SurfaceFrame<'_>],
         inputs: &[projective::Inputs],
     ) -> Vec<Result<Lowered, RenderError>> {
+        let coverage_options = self.coverage_options();
         let mut grew = false;
         loop {
             let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
@@ -6076,6 +6295,7 @@ impl GpuRenderer {
                                     groups,
                                     inputs,
                                     ready,
+                                    coverage_options,
                                 )
                             })
                         })
@@ -6103,6 +6323,7 @@ impl GpuRenderer {
                             groups,
                             inputs,
                             ready,
+                            coverage_options,
                         )
                     })
                     .collect()
@@ -6143,6 +6364,7 @@ impl GpuRenderer {
         frames: &[&SurfaceFrame<'_>],
         inputs: &[projective::Inputs],
     ) -> Vec<Result<Lowered, RenderError>> {
+        let coverage_options = self.coverage_options();
         let mut grew = false;
         loop {
             let group_maps: Vec<FxHashMap<u64, BackdropGroupInfo>> = pending
@@ -6174,6 +6396,7 @@ impl GpuRenderer {
                         groups,
                         inputs,
                         ready,
+                        coverage_options,
                     )
                 })
                 .collect();
@@ -6492,6 +6715,7 @@ impl GpuRenderer {
         groups: &FxHashMap<u64, BackdropGroupInfo>,
         inputs: &projective::Inputs,
         ready: &FxHashSet<LayerId>,
+        coverage_options: (bool, path::CoverageRoute),
     ) -> Result<Lowered, RenderError> {
         surf.frame.reset();
         surf.plan_dirty = false;
@@ -6532,12 +6756,18 @@ impl GpuRenderer {
                 bitmaps: resources.bitmaps,
                 content: &surf.bindings,
             };
+            // The GPU coverage route gates on the device's compute
+            // capability (issue #2543, scope item 7): the lowering
+            // carries the adapter's flag so the #2546 route hook cannot
+            // route a compute-less device.
             let mut lowering = Lowering::new(
                 &mut surf.frame,
                 surf.size,
                 &mut surf.anchor_scratch,
                 &mut surf.raster_scratch,
+                coverage_options.0,
             );
+            lowering.coverage_route = coverage_options.1;
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)
@@ -6713,6 +6943,10 @@ impl GpuRenderer {
         results: &mut [Result<Lowered, RenderError>],
         grew: bool,
     ) -> Commit {
+        // The frame's GPU coverage context restarts with its lowers:
+        // retry-safe — a re-committed frame records its dispatches from
+        // the same pending records (issue #2543).
+        self.gpu_cov.begin_frame();
         let rasters: Vec<&glyph::PendingRaster> = results
             .iter()
             .filter_map(|r| r.as_ref().ok())
@@ -6970,6 +7204,21 @@ impl GpuRenderer {
         for raster in pending {
             origins.push(self.apply_raster(raster, arena, writes)?);
         }
+        // DrawRange.gpu records a pending index; resolve it to the
+        // compute record `apply_raster` assigned (issue #2543).
+        for range in surf
+            .frame
+            .passes
+            .iter_mut()
+            .flat_map(|pass| pass.ranges.iter_mut())
+        {
+            if let Some(p) = range.gpu {
+                let PendingOrigin::Gpu(index) = origins[p as usize] else {
+                    unreachable!("gpu draw range must reference a GpuPath raster");
+                };
+                range.gpu = Some(index);
+            }
+        }
         let cell_origin = |p: u32, c: u32| {
             let PendingOrigin::Cells(cells, _) = &origins[p as usize] else {
                 unreachable!("cell patch must reference cell raster");
@@ -7141,6 +7390,19 @@ impl GpuRenderer {
                     self.bitmaps.insert(key, GpuBitmap { image, em });
                 }
                 Ok(PendingOrigin::None)
+            }
+            PendingRaster::GpuPath {
+                rule,
+                raster,
+                surface,
+                template,
+                elements,
+                bound,
+            } => {
+                let index = self
+                    .gpu_cov
+                    .push(rule, raster, surface, &template, &elements, bound)?;
+                Ok(PendingOrigin::Gpu(index))
             }
         }
     }
@@ -7747,6 +8009,15 @@ impl GpuRenderer {
                 }
             }
         }
+        for range in surf.frame.passes.iter().flat_map(|pass| &pass.ranges) {
+            if let Some(index) = range.gpu {
+                self.gpu_cov.set_template(
+                    index,
+                    &surf.frame.instances[range.instances.start as usize],
+                    inst_base,
+                );
+            }
+        }
         surf.inst_base = inst_base;
         surf.globals_base = globals_base;
         // Appended `KIND_POLYGON` slots store the painter index locally;
@@ -7764,9 +8035,13 @@ impl GpuRenderer {
                 self.bind0 = make_bind0(
                     &self.device,
                     &self.layout0,
-                    &self.globals,
-                    &self.instances,
-                    &self.stops,
+                    &EngineBuffers {
+                        globals: &self.globals,
+                        instances: &self.instances,
+                        stops: &self.stops,
+                        cell_texels: &self.cell_texels,
+                        image_decode: &self.image_decode,
+                    },
                     atlas,
                 );
                 self.bound_atlas = atlas.generation();
@@ -7784,9 +8059,13 @@ impl GpuRenderer {
             self.bind0 = make_bind0(
                 &self.device,
                 &self.layout0,
-                &self.globals,
-                &self.instances,
-                &self.stops,
+                &EngineBuffers {
+                    globals: &self.globals,
+                    instances: &self.instances,
+                    stops: &self.stops,
+                    cell_texels: &self.cell_texels,
+                    image_decode: &self.image_decode,
+                },
                 atlas,
             );
             self.bound_atlas = atlas.generation();
@@ -7845,7 +8124,10 @@ impl GpuRenderer {
         // The timestamp query set and resolve buffer grow once for the
         // frame's whole pass count; never mid-encoder.
         if self.timestamps && passes > 0 {
-            self.ensure_query_capacity(2 * u32::try_from(passes).unwrap_or(u32::MAX));
+            let coverage_passes = u32::from(self.gpu_cov.active());
+            self.ensure_query_capacity(
+                2 * (u32::try_from(passes).expect("frame pass count fits u32") + coverage_passes),
+            );
         }
     }
 
@@ -8077,9 +8359,13 @@ impl GpuRenderer {
             self.bind0 = make_bind0(
                 &self.device,
                 &self.layout0,
-                &self.globals,
-                &self.instances,
-                &self.stops,
+                &EngineBuffers {
+                    globals: &self.globals,
+                    instances: &self.instances,
+                    stops: &self.stops,
+                    cell_texels: &self.cell_texels,
+                    image_decode: &self.image_decode,
+                },
                 atlas,
             );
             self.bound_atlas = atlas.generation();
@@ -8087,6 +8373,61 @@ impl GpuRenderer {
             self.bound_stop_size = self.stops.size();
             self.bound_globals_size = self.globals.size();
             self.invalidate_painter_replays();
+        }
+        // The GPU coverage tail of the instance buffer (issue #2543):
+        // grow the frame buffer and the cell-texel buffer before the
+        // upload copies reference them, then rebuild `bind0` when
+        // either moved. The dispatch itself lands on the encoder below.
+        let gpu_active = self.gpu_cov.active();
+        if gpu_active {
+            self.gpu_cov.validate_output_sizes(&self.device.limits())?;
+            let need = (u64::from(self.gpu_cov.inst_origin())
+                + u64::from(self.gpu_cov.inst_total()))
+                * 272;
+            if self.instances.size() < need {
+                diag::bind_groups_dropped(&self.device, 1, "coverage instance tail");
+                self.instances = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("instances"),
+                    size: need,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            let need = u64::from(self.gpu_cov.texel_words()) * 4;
+            if self.cell_texels.size() < need {
+                self.cell_texels = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some("cell texels"),
+                    size: need,
+                    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+            }
+            if self.instances.size() > self.bound_instance_size
+                || self.stops.size() > self.bound_stop_size
+                || self.globals.size() > self.bound_globals_size
+                || self.cell_texels.size() > self.bound_cell_texels_size
+            {
+                let atlas = &self.atlas;
+                diag::bind_groups_dropped(&self.device, 1, "coverage buffers");
+                self.bind0 = make_bind0(
+                    &self.device,
+                    &self.layout0,
+                    &EngineBuffers {
+                        globals: &self.globals,
+                        instances: &self.instances,
+                        stops: &self.stops,
+                        cell_texels: &self.cell_texels,
+                        image_decode: &self.image_decode,
+                    },
+                    atlas,
+                );
+                self.bound_atlas = atlas.generation();
+                self.bound_instance_size = self.instances.size();
+                self.bound_stop_size = self.stops.size();
+                self.bound_globals_size = self.globals.size();
+                self.bound_cell_texels_size = self.cell_texels.size();
+                self.invalidate_painter_replays();
+            }
         }
         let Some(surf) = self.surfaces.get_mut(&id) else {
             return Ok(());
@@ -8155,6 +8496,36 @@ impl GpuRenderer {
         surf.painter_replays
             .retain(|index, _| *index < surf.frame.passes.len());
         let mask_gen = self.atlas.mask_texture_generation();
+        // Decision S2: the whole frame's coverage dispatch runs once,
+        // in this encoder ahead of the raster passes — whichever dirty
+        // surface is encoded first records it (#2543).
+        if self.gpu_cov.needs_dispatch() {
+            let first_query = self.query_base + 2 * self.frame_pass_count;
+            self.frame_pass_count += 1;
+            if self.timestamps {
+                self.pass_meta.push(PassMeta {
+                    name: "coverage".to_owned(),
+                    width: 0,
+                    height: 0,
+                    format: "compute",
+                });
+            }
+            self.gpu_cov.dispatch(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &self.instances,
+                &self.cell_texels,
+                self.shader_delivery,
+                self.query_set
+                    .as_ref()
+                    .map(|query_set| wgpu::ComputePassTimestampWrites {
+                        query_set,
+                        beginning_of_pass_write_index: Some(first_query),
+                        end_of_pass_write_index: Some(first_query + 1),
+                    }),
+            )?;
+        }
         let mut i = 0;
         // The pyramid steps' globals-slot index within this surface:
         // `write_uploads` lays them out in pass and level order after the
@@ -8215,6 +8586,7 @@ impl GpuRenderer {
                         globals: &self.globals,
                         instances: &self.instances,
                         stops: &self.stops,
+                        image_decode: &self.image_decode,
                         dummy: &self.dummy_view,
                         dummy_texture: &self.dummy,
                         images: &self.images,
@@ -8316,7 +8688,8 @@ impl GpuRenderer {
                         && range.image.is_none()
                         && range.mask.is_none()
                 });
-            let replayable = !coverage_order
+            let replayable = !pass.ranges.iter().any(|range| range.gpu.is_some())
+                && !coverage_order
                 && !pass.ranges.is_empty()
                 && pass.ranges.iter().all(|range| {
                     range.pipeline == PipelineKind::SrcOver
@@ -8324,6 +8697,9 @@ impl GpuRenderer {
                         && range.source.is_none()
                         && range.image.is_none()
                         && range.mask.is_none()
+                        // Indirect draws are recorded per frame — a
+                        // replayed bundle would bind stale arguments.
+                        && range.gpu.is_none()
                 });
             if !replayable {
                 surf.painter_replays.remove(&i);
@@ -8523,15 +8899,18 @@ impl GpuRenderer {
                 });
             #[cfg(not(all(unix, not(target_vendor = "apple"))))]
             let native_run = false;
-            let timestamp_writes =
-                self.query_set
-                    .as_ref()
-                    .map(|qs| wgpu::RenderPassTimestampWrites {
-                        query_set: qs,
-                        beginning_of_pass_write_index: Some(self.query_base + 2 * pass_index),
-                        end_of_pass_write_index: (!native_run)
-                            .then_some(self.query_base + 2 * pass_index + 1),
-                    });
+            let begin_index = self.query_base + 2 * pass_index;
+            let in_pass_begin = (!self.pass_start_on_encoder).then_some(begin_index);
+            let in_pass_end = (!native_run).then_some(begin_index + 1);
+            let timestamp_writes = self
+                .query_set
+                .as_ref()
+                .filter(|_| in_pass_begin.or(in_pass_end).is_some())
+                .map(|qs| wgpu::RenderPassTimestampWrites {
+                    query_set: qs,
+                    beginning_of_pass_write_index: in_pass_begin,
+                    end_of_pass_write_index: in_pass_end,
+                });
             // Only the timestamp path reads `pass_meta`; skip the
             // allocation when timing is off.
             if self.timestamps {
@@ -8608,6 +8987,11 @@ impl GpuRenderer {
                     buffers.push(acquire.finish());
                 }
             }
+            if self.pass_start_on_encoder
+                && let Some(query_set) = &self.query_set
+            {
+                encoder.write_timestamp(query_set, begin_index);
+            }
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -8649,10 +9033,12 @@ impl GpuRenderer {
             #[cfg(all(unix, not(target_vendor = "apple")))]
             let target_size = (texture.width(), texture.height());
             if coverage_order {
+                let mut gpu_module = false;
                 render_pass.set_pipeline(coverage_pipeline(
                     &mut self.coverage_pipelines,
                     &factory,
                     CoveragePhase::Opaque,
+                    gpu_module,
                 )?);
                 render_pass.set_bind_group(
                     0,
@@ -8676,10 +9062,27 @@ impl GpuRenderer {
                     });
                 render_pass.set_bind_group(1, &*bind, &[]);
                 for range in &pass.ranges {
-                    render_pass.draw(
-                        0..8,
-                        (inst_base + range.instances.start)..(inst_base + range.instances.end),
-                    );
+                    if range.gpu.is_some() != gpu_module {
+                        gpu_module = range.gpu.is_some();
+                        render_pass.set_pipeline(coverage_pipeline(
+                            &mut self.coverage_pipelines,
+                            &factory,
+                            CoveragePhase::Opaque,
+                            gpu_module,
+                        )?);
+                        stats.pipeline_switches += 1;
+                    }
+                    if let Some(g) = range.gpu {
+                        render_pass.draw_indirect(
+                            self.gpu_cov.args_buffer(),
+                            self.gpu_cov.args_base(g) + u64::from(gpu_cov::ARGS_OPAQUE),
+                        );
+                    } else {
+                        render_pass.draw(
+                            0..8,
+                            (inst_base + range.instances.start)..(inst_base + range.instances.end),
+                        );
+                    }
                     stats.draws += 1;
                 }
                 for (tier, range) in pass.tier_ranges.iter().enumerate() {
@@ -8695,6 +9098,7 @@ impl GpuRenderer {
                     &mut self.coverage_pipelines,
                     &factory,
                     CoveragePhase::Partial,
+                    false,
                 )?);
                 render_pass
                     .set_index_buffer(self.quad_indices.slice(..), wgpu::IndexFormat::Uint16);
@@ -8738,7 +9142,11 @@ impl GpuRenderer {
             render_pass.set_bind_group(0, &self.bind0, &[offset]);
             // External ranges bind a slot's group-1 over the external
             // pipeline; an engine range after one must rebind its pipeline.
-            let mut pipeline = Bound::Engine(PipelineKind::SrcOver, ShaderVariant::Simple);
+            let mut pipeline = if coverage_order {
+                Bound::Coverage(false)
+            } else {
+                Bound::Engine(PipelineKind::SrcOver, ShaderVariant::Simple)
+            };
             let backdrop_slot = scratch_backdrop.then_some(match pass.target {
                 Target::Part(_) | Target::Projected(_) | Target::Plane(_) => 0,
                 Target::Scratch(_) | Target::Backdrop { .. } => 1,
@@ -9080,83 +9488,98 @@ impl GpuRenderer {
                     ri += 1;
                     continue;
                 }
-                let want = Bound::Engine(range.pipeline, range.variant);
+                let want = if coverage_order {
+                    Bound::Coverage(range.gpu.is_some())
+                } else {
+                    Bound::Engine(range.pipeline, range.module())
+                };
                 if want != pipeline {
                     pipeline = want;
                     stats.pipeline_switches += 1;
-                    let Bound::Engine(kind, variant) = pipeline else {
-                        unreachable!("engine want")
-                    };
-                    let pipe = match kind {
-                        PipelineKind::Effect { id, replace } => {
-                            let entry = self.backdrop_shaders.get_mut(&id).ok_or_else(|| {
-                                RenderError::Render(format!(
-                                    "backdrop shader {id} is not registered"
-                                ))
-                            })?;
-                            let union = variant == ShaderVariant::Union;
-                            let replace_i = usize::from(replace);
-                            let missing = if union {
-                                entry.union[replace_i][format_i].is_none()
-                            } else {
-                                entry.plain[replace_i][format_i].is_none()
-                            };
-                            if missing {
-                                // A union-shaped or replace pipeline builds
-                                // at its first use — wasm fills them ahead
-                                // of encode in `prepare_lazy_pipelines`.
-                                #[cfg(not(target_arch = "wasm32"))]
-                                {
-                                    let module = if union {
-                                        &*entry.union_module.get_or_insert_with(|| {
-                                            self.device.create_shader_module(
-                                                wgpu::ShaderModuleDescriptor {
-                                                    label: Some("backdrop effect (union)"),
-                                                    source: wgpu::ShaderSource::Wgsl(
-                                                        (&*entry.union_source).into(),
-                                                    ),
-                                                },
-                                            )
-                                        })
-                                    } else {
-                                        &entry.plain_module
-                                    };
-                                    let built = create_pipeline(
-                                        &self.device,
-                                        &self.config,
-                                        &self.pipeline_layout,
-                                        self.pipeline_cache.as_ref(),
-                                        module,
-                                        target_format,
-                                        CoveragePass::Painter(replace),
-                                    )
-                                    .map_err(|e| {
-                                        RenderError::Render(format!("backdrop shader {id}: {e}"))
-                                    })?;
-                                    let cells = if union {
-                                        &mut entry.union
-                                    } else {
-                                        &mut entry.plain
-                                    };
-                                    cells[replace_i][format_i] = Some(built);
-                                }
-                                #[cfg(target_arch = "wasm32")]
-                                return Err(RenderError::Render(format!(
-                                    "backdrop shader {id}'s pipeline was not prepared"
-                                )));
-                            }
-                            let cells = if union { &entry.union } else { &entry.plain };
-                            cells[replace_i][format_i]
-                                .as_ref()
-                                .expect("the effect pipeline is built")
-                        }
-                        kind => core_pipeline(
-                            &mut self.pipelines,
+                    let pipe = match pipeline {
+                        Bound::Coverage(gpu) => coverage_pipeline(
+                            &mut self.coverage_pipelines,
                             &factory,
-                            target_format,
-                            kind == PipelineKind::Replace,
-                            variant,
+                            CoveragePhase::Partial,
+                            gpu,
                         )?,
+                        Bound::External | Bound::Projective(_) => {
+                            unreachable!("a range here wants an engine or coverage pipeline")
+                        }
+                        Bound::Engine(kind, variant) => match kind {
+                            PipelineKind::Effect { id, replace } => {
+                                let entry =
+                                    self.backdrop_shaders.get_mut(&id).ok_or_else(|| {
+                                        RenderError::Render(format!(
+                                            "backdrop shader {id} is not registered"
+                                        ))
+                                    })?;
+                                let union = variant == ShaderVariant::Union;
+                                let replace_i = usize::from(replace);
+                                let missing = if union {
+                                    entry.union[replace_i][format_i].is_none()
+                                } else {
+                                    entry.plain[replace_i][format_i].is_none()
+                                };
+                                if missing {
+                                    // A union-shaped or replace pipeline builds
+                                    // at its first use — wasm fills them ahead
+                                    // of encode in `prepare_lazy_pipelines`.
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    {
+                                        let module = if union {
+                                            &*entry.union_module.get_or_insert_with(|| {
+                                                self.device.create_shader_module(
+                                                    wgpu::ShaderModuleDescriptor {
+                                                        label: Some("backdrop effect (union)"),
+                                                        source: wgpu::ShaderSource::Wgsl(
+                                                            (&*entry.union_source).into(),
+                                                        ),
+                                                    },
+                                                )
+                                            })
+                                        } else {
+                                            &entry.plain_module
+                                        };
+                                        let built = create_pipeline(
+                                            &self.device,
+                                            &self.config,
+                                            &self.pipeline_layout,
+                                            self.pipeline_cache.as_ref(),
+                                            module,
+                                            target_format,
+                                            CoveragePass::Painter(replace),
+                                        )
+                                        .map_err(|e| {
+                                            RenderError::Render(format!(
+                                                "backdrop shader {id}: {e}"
+                                            ))
+                                        })?;
+                                        let cells = if union {
+                                            &mut entry.union
+                                        } else {
+                                            &mut entry.plain
+                                        };
+                                        cells[replace_i][format_i] = Some(built);
+                                    }
+                                    #[cfg(target_arch = "wasm32")]
+                                    return Err(RenderError::Render(format!(
+                                        "backdrop shader {id}'s pipeline was not prepared"
+                                    )));
+                                }
+                                let cells = if union { &entry.union } else { &entry.plain };
+                                cells[replace_i][format_i]
+                                    .as_ref()
+                                    .expect("the effect pipeline is built")
+                            }
+                            kind => core_pipeline(
+                                &mut self.pipelines,
+                                &factory,
+                                target_format,
+                                kind == PipelineKind::Replace,
+                                variant,
+                            )?,
+                        },
                     };
                     render_pass.set_pipeline(pipe);
                 }
@@ -9203,7 +9626,19 @@ impl GpuRenderer {
                     }
                 };
                 render_pass.set_bind_group(1, bind, &[]);
-                if coverage_order {
+                if let Some(g) = range.gpu {
+                    if coverage_order {
+                        render_pass.draw_indexed_indirect(
+                            self.gpu_cov.args_buffer(),
+                            self.gpu_cov.args_base(g) + u64::from(gpu_cov::ARGS_PARTIAL),
+                        );
+                    } else {
+                        render_pass.draw_indirect(
+                            self.gpu_cov.args_buffer(),
+                            self.gpu_cov.args_base(g) + u64::from(gpu_cov::ARGS_NORMAL),
+                        );
+                    }
+                } else if coverage_order {
                     // Four vertex shader runs per quad, but the indices
                     // submit the painter path's exact ordered triangles —
                     // required for bit-identical rasterization.
@@ -9282,6 +9717,14 @@ impl GpuRenderer {
                         )));
                     }
                 };
+                // A filter works in the linear working space: over an
+                // sRGB-encoded scope its input is decoded and its output
+                // encoded back.
+                let convert = (pass.space == cherenkov::BlendSpace::SrgbEncoded).then(|| {
+                    self.space_convert.get_or_insert_with(|| {
+                        space_convert::Pipelines::new(&self.device, self.shader_delivery)
+                    })
+                });
                 self.filters.apply(
                     *filter,
                     &filtrate::EffectContext {
@@ -9290,8 +9733,11 @@ impl GpuRenderer {
                         input_format: TARGET_FORMAT,
                         output_format: TARGET_FORMAT,
                     },
-                    capture,
-                    (pass.region[2], pass.region[3]),
+                    filter::Scope {
+                        target: capture,
+                        size: (pass.region[2], pass.region[3]),
+                        encoded: convert,
+                    },
                     timing,
                     &mut encoder,
                 )?;
@@ -10013,214 +10459,224 @@ impl GpuRenderer {
     }
 }
 
-/// A registered image's texture of `size`, holding `data` (f16 texels
-/// from [`image_texels_f16`]).
+/// A registered image's texture of `size`, holding `data`'s texels in
+/// their storage format.
+///
+/// The texture's allocation and the texel upload each run under an
+/// out-of-memory error scope, so an allocation the device cannot back is
+/// this call's error rather than an uncaptured device error — a panic in
+/// wgpu's handler on native targets, a console message the browser
+/// reports to no one. The scope resolves asynchronously: native targets
+/// block on it, and the browser awaits it on its event loop. A failed
+/// allocation is returned before anything uses its handle.
 ///
 /// # Errors
 /// [`ResourceError::Image`] when the device cannot back the texture or
 /// its upload.
-fn upload_image(
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::future_not_send,
+        reason = "the browser engine runs this future on the page's event loop; whether wgpu's handles are Send on wasm32 depends on the backends the build enables"
+    )
+)]
+async fn upload_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     (width, height): (u32, u32),
-    data: &[u8],
+    data: &image_storage::Upload<'_>,
 ) -> Result<GpuImage, ResourceError> {
-    let (texture, view) = out_of_memory(device, || {
-        create_target(
-            device,
-            "image",
-            (width, height),
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            TARGET_FORMAT,
-        )
-    })
-    .map_err(|error| {
-        ResourceError::Image(format!(
-            "{width}x{height} texture allocation failed: {error}"
-        ))
-    })?;
-    diag::create(
+    let (bw, bh) = data.format.block_dimensions();
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let (texture, view) = create_target(
         device,
         "image",
-        u64::from(width) * u64::from(height) * texel_bytes(TARGET_FORMAT),
+        (width.div_ceil(bw) * bw, height.div_ceil(bh) * bh),
+        image_usage(device, data.format, (width, height)),
+        data.format,
     );
-    write_image(device, queue, &texture, (width, height), data)?;
+    if let Some(error) = scope.pop().await {
+        return Err(ResourceError::Image(format!(
+            "{width}x{height} texture allocation failed: {error}"
+        )));
+    }
+    diag::create(device, "image", image_storage::bytes(&texture));
+    write_image(device, queue, &texture, (width, height), data).await?;
     Ok(GpuImage {
         texture,
         view,
         width,
         height,
+        sampling_flags: data.flags,
     })
 }
 
-/// Runs `allocate` under an out-of-memory error scope, so an allocation
-/// the device cannot back is this call's error rather than a panic in
-/// wgpu's uncaptured-error handler. Only the allocation is scoped: a
-/// failed allocation is returned before anything uses its handle.
+/// Writes `data`'s texels over the whole of an image texture of `size`
+/// in `data`'s storage format.
 ///
-/// On the browser's WebGPU an error scope resolves only asynchronously
-/// and `Renderer::add_image` is synchronous, so there the allocation
-/// runs unscoped; an uncaptured error is reported to the page and does
-/// not panic.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "the browser's error scope resolves only asynchronously, so the synchronous browser path has no error to return"
-    )
-)]
-fn out_of_memory<T>(device: &wgpu::Device, allocate: impl FnOnce() -> T) -> Result<T, wgpu::Error> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let value = allocate();
-        pollster::block_on(scope.pop()).map_or(Ok(value), Err)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = device;
-        Ok(allocate())
-    }
-}
-
-/// Writes `data` (f16 texels from [`image_texels_f16`]) over the whole of
-/// an image texture of `size`.
+/// The upload runs under an out-of-memory error scope, as in
+/// [`upload_image`].
 ///
 /// # Errors
 /// [`ResourceError::Image`] when the device cannot back the upload's
 /// staging memory; the texture keeps its previous texels.
-fn write_image(
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::future_not_send,
+        reason = "the browser engine runs this future on the page's event loop; whether wgpu's handles are Send on wasm32 depends on the backends the build enables"
+    )
+)]
+async fn write_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     (width, height): (u32, u32),
-    data: &[u8],
+    data: &image_storage::Upload<'_>,
 ) -> Result<(), ResourceError> {
-    out_of_memory(device, || {
-        write_texels(device, queue, texture, (width, height), data);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    write_texels(
+        device,
+        queue,
+        "image",
+        texture,
+        data.format,
+        (width, height),
+        &data.bytes,
+    );
+    scope.pop().await.map_or(Ok(()), |error| {
+        Err(ResourceError::Image(format!(
+            "{width}x{height} upload failed: {error}"
+        )))
     })
-    .map_err(|error| ResourceError::Image(format!("{width}x{height} upload failed: {error}")))
 }
 
-/// [`write_image`]'s unscoped copy.
+/// [`write_image`]'s unscoped copy: the texture's whole `bytes`, an
+/// image of `size` in the storage `format`, in the block-row bands
+/// [`upload_bands`] decides, so no `write_texture` exceeds the device's
+/// `max_buffer_size`. A browser stages a `writeTexture` through one
+/// internal buffer of the upload's size and rejects it above that
+/// limit, silently dropping the image (#2793); a texture under the
+/// limit uploads in the single band it is one of.
 fn write_texels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
+    label: &'static str,
     texture: &wgpu::Texture,
+    format: wgpu::TextureFormat,
     (width, height): (u32, u32),
-    data: &[u8],
+    bytes: &[u8],
 ) {
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        data,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 8),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
-    );
-    diag::upload(
-        device,
-        "image",
-        data.len() as u64,
-        Some((0, 0, width, height)),
-    );
+    let (bw, bh) = format.block_dimensions();
+    let row = block_row_bytes(format, width);
+    let pitch = u32::try_from(row).expect("a texture row's bytes fit u32");
+    let block_rows = height.div_ceil(bh);
+    for (first, rows) in upload_bands(row, block_rows, device.limits().max_buffer_size) {
+        let offset = usize::try_from(u64::from(first) * row).expect("band offset fits usize");
+        let len = usize::try_from(u64::from(rows) * row).expect("band bytes fit usize");
+        let y = first * bh;
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x: 0, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &bytes[offset..offset + len],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(pitch),
+                rows_per_image: Some(rows),
+            },
+            // A block format's texture is allocated in whole blocks, so
+            // the band covers its blocks' full extent.
+            wgpu::Extent3d {
+                width: width.div_ceil(bw) * bw,
+                height: rows * bh,
+                depth_or_array_layers: 1,
+            },
+        );
+        diag::upload(
+            device,
+            label,
+            len as u64,
+            Some((0, y, width, (rows * bh).min(height - y))),
+        );
+    }
 }
 
-/// `Rgba8` or `Rgba16F` upload bytes -> premultiplied linear-P3 f16 texels,
-/// the working texel format of [`GpuImage`].
+/// The bytes of one row of `format`'s blocks across `width` texels.
+fn block_row_bytes(format: wgpu::TextureFormat, width: u32) -> u64 {
+    let (bw, _) = format.block_dimensions();
+    u64::from(width.div_ceil(bw))
+        * u64::from(
+            format
+                .block_copy_size(None)
+                .expect("an image format is a colour format"),
+        )
+}
+
+/// The usage of an image texture of `size` in `format` that
+/// [`write_texels`] fills.
 ///
-/// Straight-alpha input decodes each channel; premultiplied input is
-/// un-premultiplied in the encoded domain first — bounded at 1.0 for the
-/// quantized `Rgba8` encoding, unbounded for `Rgba16F`, whose texels keep
-/// extended (HDR and wide-gamut) values.
-fn image_texels_f16(image: &ImageUpload) -> Result<Vec<u8>, ResourceError> {
-    let convert = |enc: [f64; 4], unpremul_max: f64, data: &mut Vec<u8>| {
-        let a = enc[3];
-        // Straight-alpha input decodes each channel; premultiplied input
-        // is un-premultiplied in the encoded domain first.
-        let decode = |v: f64| {
-            if image.premultiplied && a > 0.0 {
-                (v / a).min(unpremul_max)
-            } else {
-                v
-            }
-        };
-        let lin = match image.color_space {
-            cherenkov::ImageColorSpace::LinearSrgb | cherenkov::ImageColorSpace::LinearP3 => {
-                [decode(enc[0]), decode(enc[1]), decode(enc[2])]
-            }
-            _ => [
-                srgb_decode_u8_f64(decode(enc[0])),
-                srgb_decode_u8_f64(decode(enc[1])),
-                srgb_decode_u8_f64(decode(enc[2])),
-            ],
-        };
-        // sRGB-primaries input additionally needs the primaries' matrix;
-        // Display P3 uses sRGB's transfer function, so the decode above
-        // covers both encoded spaces. `LinearP3` is already the working
-        // space: no transfer, no matrix.
-        let lin_p3 = match image.color_space {
-            cherenkov::ImageColorSpace::Srgb | cherenkov::ImageColorSpace::LinearSrgb => {
-                let [x, y, z] = [
-                    SRGB_TO_XYZ[0][2].mul_add(
-                        lin[2],
-                        SRGB_TO_XYZ[0][1].mul_add(lin[1], SRGB_TO_XYZ[0][0] * lin[0]),
-                    ),
-                    SRGB_TO_XYZ[1][2].mul_add(
-                        lin[2],
-                        SRGB_TO_XYZ[1][1].mul_add(lin[1], SRGB_TO_XYZ[1][0] * lin[0]),
-                    ),
-                    SRGB_TO_XYZ[2][2].mul_add(
-                        lin[2],
-                        SRGB_TO_XYZ[2][1].mul_add(lin[1], SRGB_TO_XYZ[2][0] * lin[0]),
-                    ),
-                ];
-                [
-                    XYZ_TO_P3[0][2].mul_add(z, XYZ_TO_P3[0][1].mul_add(y, XYZ_TO_P3[0][0] * x)),
-                    XYZ_TO_P3[1][2].mul_add(z, XYZ_TO_P3[1][1].mul_add(y, XYZ_TO_P3[1][0] * x)),
-                    XYZ_TO_P3[2][2].mul_add(z, XYZ_TO_P3[2][1].mul_add(y, XYZ_TO_P3[2][0] * x)),
-                ]
-            }
-            cherenkov::ImageColorSpace::DisplayP3 | cherenkov::ImageColorSpace::LinearP3 => lin,
-        };
-        for v in [a * lin_p3[0], a * lin_p3[1], a * lin_p3[2], a] {
-            data.extend_from_slice(&half::f16::from_f64(v).to_le_bytes());
-        }
-    };
-    let mut data = Vec::with_capacity(image.width as usize * image.height as usize * 8);
-    let pixels: &[u8] = &image.data;
-    match image.format {
-        cherenkov::ImageFormat::Rgba8 => {
-            for px in pixels.as_chunks::<4>().0 {
-                convert(px.map(|v| f64::from(v) / 255.0), 1.0, &mut data);
-            }
-        }
-        cherenkov::ImageFormat::Rgba16F => {
-            for px in pixels.as_chunks::<8>().0 {
-                let enc = std::array::from_fn(|i| {
-                    f64::from(half::f16::from_le_bytes([px[2 * i], px[2 * i + 1]]))
-                });
-                convert(enc, f64::INFINITY, &mut data);
-            }
-        }
-        format => {
-            return Err(ResourceError::Image(format!(
-                "unsupported image format {format:?}"
-            )));
-        }
+/// A texture that uploads in more than one band receives partial writes,
+/// and an implementation zero-initializes a texture before its first
+/// partial write. Without `RENDER_ATTACHMENT` the browser's
+/// implementation clears it through one staging buffer the size of the
+/// whole texture, which exceeds `max_buffer_size` exactly when banding is
+/// needed and fails every later write on the device (#2793); with it, the
+/// clear is a render pass.
+///
+/// # Panics
+/// When a block-compressed image needs more than one band: such a format
+/// cannot be a render attachment, so the browser could not clear it. It
+/// stores one byte a texel, so one band holds any image whose texel count
+/// fits `max_buffer_size` — every 16384 × 16384 image at WebGPU's default
+/// 256 MiB.
+fn image_usage(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    (width, height): (u32, u32),
+) -> wgpu::TextureUsages {
+    let usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
+    let bands = upload_bands(
+        block_row_bytes(format, width),
+        height.div_ceil(format.block_dimensions().1),
+        device.limits().max_buffer_size,
+    );
+    if bands.count() > 1 {
+        assert!(
+            !format.is_compressed(),
+            "a {width}x{height} {format:?} image needs a banded upload, which a \
+             block-compressed texture cannot be cleared for"
+        );
+        usage | wgpu::TextureUsages::RENDER_ATTACHMENT
+    } else {
+        usage
     }
-    Ok(data)
+}
+
+/// The `(first_row, rows)` bands an upload of `rows` rows of `row` bytes
+/// each splits into so that every band stays within `limit` staging
+/// bytes: each band is the largest whole number of rows that fits, and
+/// the last takes what remains. A row is a row of blocks for a
+/// block-compressed format.
+///
+/// # Panics
+/// When a single row exceeds `limit` — unreachable for an image
+/// [`cherenkov::ImageLimits`] admits, whose widest row is its largest
+/// dimension in eight-byte texels (128 KiB at 16384), far under the
+/// smallest `max_buffer_size` a WebGPU device reports.
+fn upload_bands(row: u64, rows: u32, limit: u64) -> impl Iterator<Item = (u32, u32)> {
+    assert!(
+        0 < row && row <= limit,
+        "a {row}-byte row exceeds the {limit}-byte staging limit"
+    );
+    let band = u32::try_from(limit / row).unwrap_or(u32::MAX);
+    (0..rows.div_ceil(band)).map(move |i| {
+        let first = i * band;
+        (first, band.min(rows - first))
+    })
 }
 
 fn image_texels(
@@ -10230,51 +10686,14 @@ fn image_texels(
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(pixels.len() * 2);
     for px in pixels.as_chunks::<4>().0 {
-        let a = f64::from(px[3]) / 255.0;
-        let decode = |v: u8| {
-            if premultiplied && a > 0.0 {
-                ((f64::from(v) / 255.0) / a).min(1.0)
-            } else {
-                f64::from(v) / 255.0
-            }
-        };
-        let lin = match color_space {
-            cherenkov::ImageColorSpace::LinearSrgb | cherenkov::ImageColorSpace::LinearP3 => {
-                [decode(px[0]), decode(px[1]), decode(px[2])]
-            }
-            _ => [
-                srgb_decode_u8_f64(decode(px[0])),
-                srgb_decode_u8_f64(decode(px[1])),
-                srgb_decode_u8_f64(decode(px[2])),
-            ],
-        };
-        let lin_p3 = match color_space {
-            cherenkov::ImageColorSpace::Srgb | cherenkov::ImageColorSpace::LinearSrgb => {
-                let [x, y, z] = [
-                    SRGB_TO_XYZ[0][2].mul_add(
-                        lin[2],
-                        SRGB_TO_XYZ[0][1].mul_add(lin[1], SRGB_TO_XYZ[0][0] * lin[0]),
-                    ),
-                    SRGB_TO_XYZ[1][2].mul_add(
-                        lin[2],
-                        SRGB_TO_XYZ[1][1].mul_add(lin[1], SRGB_TO_XYZ[1][0] * lin[0]),
-                    ),
-                    SRGB_TO_XYZ[2][2].mul_add(
-                        lin[2],
-                        SRGB_TO_XYZ[2][1].mul_add(lin[1], SRGB_TO_XYZ[2][0] * lin[0]),
-                    ),
-                ];
-                [
-                    XYZ_TO_P3[0][2].mul_add(z, XYZ_TO_P3[0][1].mul_add(y, XYZ_TO_P3[0][0] * x)),
-                    XYZ_TO_P3[1][2].mul_add(z, XYZ_TO_P3[1][1].mul_add(y, XYZ_TO_P3[1][0] * x)),
-                    XYZ_TO_P3[2][2].mul_add(z, XYZ_TO_P3[2][1].mul_add(y, XYZ_TO_P3[2][0] * x)),
-                ]
-            }
-            cherenkov::ImageColorSpace::DisplayP3 | cherenkov::ImageColorSpace::LinearP3 => lin,
-        };
-        for v in [a * lin_p3[0], a * lin_p3[1], a * lin_p3[2], a] {
-            data.extend_from_slice(&half::f16::from_f64(v).to_le_bytes());
-        }
+        // Quantized codes un-premultiply to at most 1.0.
+        image_storage::push_working_f16(
+            px.map(|v| f64::from(v) / 255.0),
+            color_space,
+            premultiplied,
+            1.0,
+            &mut data,
+        );
     }
     data
 }
@@ -10291,41 +10710,24 @@ fn create_gpu_image(
         device,
         label,
         (width, height),
-        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        image_usage(device, TARGET_FORMAT, (width, height)),
         TARGET_FORMAT,
     );
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
+    write_texels(
+        device,
+        queue,
+        label,
+        &texture,
+        TARGET_FORMAT,
+        (width, height),
         texels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 8),
-            rows_per_image: Some(height),
-        },
-        wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        },
     );
     GpuImage {
+        sampling_flags: 0,
         texture,
         view,
         width,
         height,
-    }
-}
-
-fn srgb_decode_u8_f64(v: f64) -> f64 {
-    if v <= 0.04045 {
-        v / 12.92
-    } else {
-        ((v + 0.055) / 1.055).powf(2.4)
     }
 }
 
@@ -10396,7 +10798,8 @@ impl GpuRenderer {
     }
 
     /// wasm: the lazily built pipelines a frame's lowered passes need —
-    /// core `(format, replace)` cells for `ShaderVariant::Union` ranges,
+    /// core `(variant, format, replace)` cells for `ShaderVariant::Union`
+    /// and `ShaderVariant::Image` ranges,
     /// and every backdrop effect slot they draw that registration did not
     /// build (a union-shaped or replace pipeline) — prepared ahead of
     /// encode, which cannot await pipeline creation. The union engine
@@ -10409,8 +10812,9 @@ impl GpuRenderer {
     )]
     async fn prepare_lazy_pipelines(&mut self, surface: SurfaceId) -> Result<(), RenderError> {
         let surface = &self.surfaces[&surface];
-        // (format index, replace) core union cells and (shader id, union,
-        // replace, format index) effect slots the frame draws.
+        // (variant index, format index, replace) demand-built core cells
+        // and (shader id, union, replace, format index) effect slots the
+        // frame draws.
         let mut core = FxHashSet::default();
         let mut effects = FxHashSet::default();
         for pass in &surface.frame.passes {
@@ -10428,37 +10832,17 @@ impl GpuRenderer {
                 let union = range.variant == ShaderVariant::Union;
                 if let PipelineKind::Effect { id, replace } = range.pipeline {
                     effects.insert((id, union, replace, format_i));
-                } else if union {
-                    core.insert((format_i, range.pipeline == PipelineKind::Replace));
+                } else if matches!(range.variant, ShaderVariant::Union | ShaderVariant::Image) {
+                    core.insert((
+                        variant_index(range.variant),
+                        format_i,
+                        range.pipeline == PipelineKind::Replace,
+                    ));
                 }
             }
         }
-        if !core.is_empty() {
-            let module = self
-                .union_module
-                .get_or_insert_with(|| self.shader_delivery.engine_module(&self.device, 3));
-            for (format_i, replace) in core {
-                let cell = &mut self.pipelines[format_i][usize::from(replace)][3];
-                if cell.is_none() {
-                    *cell = Some(
-                        create_pipeline(
-                            &self.device,
-                            &self.config,
-                            &self.pipeline_layout,
-                            self.pipeline_cache.as_ref(),
-                            module,
-                            if format_i == 0 {
-                                TARGET_FORMAT
-                            } else {
-                                self.scratch_format
-                            },
-                            CoveragePass::Painter(replace),
-                        )
-                        .await
-                        .map_err(|e| RenderError::Render(e.to_string()))?,
-                    );
-                }
-            }
+        for (variant, format_i, replace) in core {
+            self.prepare_lazy_core(variant, format_i, replace).await?;
         }
         for (id, union, replace, format_i) in effects {
             let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
@@ -10506,6 +10890,47 @@ impl GpuRenderer {
             };
             cells[replace_i][format_i] = Some(built);
         }
+        Ok(())
+    }
+
+    /// wasm: the demand-built core cell `(variant, format index, replace)`
+    /// of a union or image range, with its engine module.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    async fn prepare_lazy_core(
+        &mut self,
+        variant: usize,
+        format_i: usize,
+        replace: bool,
+    ) -> Result<(), RenderError> {
+        let cell = &mut self.pipelines[format_i][usize::from(replace)][variant];
+        if cell.is_some() {
+            return Ok(());
+        }
+        let module = self
+            .lazy_modules
+            .entry(variant)
+            .or_insert_with(|| self.shader_delivery.engine_module(&self.device, variant));
+        *cell = Some(
+            create_pipeline(
+                &self.device,
+                &self.config,
+                &self.pipeline_layout,
+                self.pipeline_cache.as_ref(),
+                module,
+                if format_i == 0 {
+                    TARGET_FORMAT
+                } else {
+                    self.scratch_format
+                },
+                CoveragePass::Painter(replace),
+            )
+            .await
+            .map_err(|e| RenderError::Render(e.to_string()))?,
+        );
         Ok(())
     }
 }
@@ -10622,5 +11047,37 @@ mod tests {
             0,
             "a trimmed engine retains no commit_writes capacity"
         );
+    }
+
+    /// The browser stages a `writeTexture` through one buffer of the
+    /// upload's size, so [`upload_bands`] keeps every band within the
+    /// staging limit (#2793).
+    #[test]
+    fn upload_bands_stay_within_the_staging_limit() {
+        let mib = 1024 * 1024;
+        let limit = 256 * mib;
+        // An image under the limit is one band.
+        assert_eq!(
+            upload_bands(4096 * 8, 4096, limit).collect::<Vec<_>>(),
+            [(0, 4096)]
+        );
+        // The issue's case: 8192×8192 f16 texels (512 MiB) at a 256 MiB
+        // limit is two bands of 4096 rows.
+        assert_eq!(
+            upload_bands(8192 * 8, 8192, limit).collect::<Vec<_>>(),
+            [(0, 4096), (4096, 4096)]
+        );
+        // An odd height leaves a short last band.
+        assert_eq!(
+            upload_bands(8192 * 8, 4097, limit).collect::<Vec<_>>(),
+            [(0, 4096), (4096, 1)]
+        );
+        // Bands cover every row exactly once.
+        let mut covered = 0;
+        for (first_row, rows) in upload_bands(4096 * 8, 20011, mib) {
+            assert_eq!(first_row, covered);
+            covered += rows;
+        }
+        assert_eq!(covered, 20011);
     }
 }

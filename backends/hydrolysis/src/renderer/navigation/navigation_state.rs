@@ -1,12 +1,12 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::{ModalInteraction, NavigationMotion};
 use std::collections::BTreeSet;
 use waterui::navigation::{
     AnyNavigationTransition, NavigationDestinationState, NavigationTransactionId,
     NavigationTransitionDirection,
 };
-use waterui_backend_core::widget::{ModalInteraction, NavigationMotion};
 use waterui_core::id::Id;
 
 pub const ROOT_NAVIGATION_IDENTITY: u64 = 0;
@@ -1305,8 +1305,8 @@ mod tests {
         NavigationInteractivePop, NavigationInteractivePopOutcome, NavigationInteractivePopPhase,
         NavigationPage,
     };
+    use crate::theme::NavigationMotion;
     use std::time::{Duration, Instant};
-    use waterui_backend_core::widget::NavigationMotion;
     use waterui_core::EasingCurve;
 
     fn material_navigation_motion() -> NavigationMotion {

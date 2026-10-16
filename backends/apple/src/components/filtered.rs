@@ -2316,7 +2316,7 @@ pub mod native_test {
     use futures::channel::oneshot;
     use waterui_graphics::filtrate::{
         EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
-        EffectSetupResult,
+        EffectSetupResult, RetainedMemory,
     };
 
     use objc2_metal::{
@@ -2471,6 +2471,12 @@ pub mod native_test {
         fn redraw_hint(&self) -> bool {
             false
         }
+
+        fn retained_memory(&self) -> RetainedMemory {
+            RetainedMemory::default()
+        }
+
+        fn trim(&mut self) {}
     }
 
     /// Holds a nested [`FillEffect`]'s setup until [`Self::release`].

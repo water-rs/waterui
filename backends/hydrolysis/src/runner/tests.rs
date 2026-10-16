@@ -12,6 +12,7 @@ use crate::platform::{
 use crate::renderer::tests::MinimalTestTheme;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
 use crate::text::SessionTextEngine;
+use crate::theme::TextCaretMotion;
 use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,7 +20,6 @@ use std::time::Instant;
 use waterui::component::list::{List, ListItem};
 use waterui::window::{Window, WindowState};
 use waterui::{Binding, Signal, ViewExt as _};
-use waterui_backend_core::widget::TextCaretMotion;
 use waterui_core::animation::Animation;
 use waterui_core::id::SelfId;
 use waterui_core::{AnyView, Environment, binding};

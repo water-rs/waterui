@@ -13,7 +13,7 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::TableProvider;
 use skrifa::raw::types::F2Dot14;
 
-use crate::render::raster::Raster;
+use crate::render::raster::{self, Raster};
 use cherenkov::RenderError;
 
 /// Initial atlas edge length.
@@ -1058,7 +1058,8 @@ impl Atlas {
                 }
                 PendingRaster::MaskTexture { .. }
                 | PendingRaster::Colr { .. }
-                | PendingRaster::Bitmap { .. } => {}
+                | PendingRaster::Bitmap { .. }
+                | PendingRaster::GpuPath { .. } => {}
             }
         }
     }
@@ -2117,7 +2118,10 @@ impl PendingRaster {
         match self {
             Self::Glyph { w, .. } | Self::Mask { w, .. } => usize::from(*w > 0),
             Self::Path { cells, .. } => cells.len(),
-            Self::MaskTexture { .. } | Self::Colr { .. } | Self::Bitmap { .. } => 0,
+            Self::MaskTexture { .. }
+            | Self::Colr { .. }
+            | Self::Bitmap { .. }
+            | Self::GpuPath { .. } => 0,
         }
     }
 }
@@ -2207,6 +2211,27 @@ pub enum PendingRaster {
         height: u32,
         /// Premultiplied linear-P3 f16 texels.
         texels: Vec<u8>,
+    },
+    /// A path routed to the GPU coverage kernels (issue #2543, decision
+    /// S3): the lowering recorded its curve elements, fill rule, device
+    /// transform and template instance — the CPU never flattened it and
+    /// nothing is rasterized or stored in the atlas. The record joins
+    /// the frame's compute input at apply time.
+    GpuPath {
+        /// `FillRule` as the kernel's `rule` field (0 non-zero,
+        /// 1 even-odd).
+        rule: u32,
+        /// Local → device transform the kernels apply.
+        raster: kurbo::Affine,
+        /// The target surface size the grid bounds clip to.
+        surface: (u32, u32),
+        /// The instance template `classify` copies per emitted span or
+        /// cell — the same bytes `replay` would stamp.
+        template: Box<crate::render::instance::Instance>,
+        /// Curve elements encoded for the compute input buffer.
+        elements: Vec<crate::render::path::GpuElement>,
+        /// Decision R2's bound over those elements.
+        bound: crate::render::path::GpuBound,
     },
 }
 
@@ -2356,7 +2381,8 @@ fn rasterize_texels(
     }
     // Overlapping contours resolve to the union's boundary edges, like
     // `path::rasterize`: `None` keeps the glyph bit-identical.
-    let resolved = cherenkov::lowering::resolve_winding(&segments, cherenkov::FillRule::NonZero);
+    let resolved = cherenkov::lowering::resolve_winding(&segments, cherenkov::FillRule::NonZero)
+        .into_resolved();
     let segments = resolved.as_deref().unwrap_or(&segments);
     let left = bbox.x0.floor() as i32 - 1;
     let top = bbox.y0.floor() as i32 - 1;
@@ -2372,10 +2398,7 @@ fn rasterize_texels(
         raster.draw_line(x0 - ox, y0 - oy, x1 - ox, y1 - oy);
     }
     let coverage = raster.coverage();
-    let texels: Vec<u8> = coverage
-        .iter()
-        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-        .collect();
+    let texels: Vec<u8> = coverage.iter().copied().map(raster::texel).collect();
     Ok(Some(CellRaster {
         left,
         top,

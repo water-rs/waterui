@@ -1,7 +1,7 @@
 // Cherenkov external-frame tail: the producer plane decode and composite.
 // `shared.wgsl` precedes this file in every build — the consts, instance
-// layout, vertex stage, coverage machinery, clip-mask coverage and
-// `srgb_decode` live there.
+// layout, vertex stage, coverage machinery and clip-mask coverage live
+// there, after the space fragment that supplies `space_srgb_decode`.
 //
 // One instanced quad per external layer samples the retained planes in
 // place — never a copy or a raster fallback — decodes range, matrix and
@@ -68,7 +68,7 @@ struct ExtParams {
 fn ext_decode(c: vec3<f32>, transfer: u32) -> vec3<f32> {
     switch transfer {
         case EXT_T_SRGB: {
-            return srgb_decode(c);
+            return space_srgb_decode(c);
         }
         case EXT_T_709: {
             // BT.1886 reference EOTF — a pure 2.4 power, black level 0:
@@ -188,7 +188,8 @@ fn ext_frame_yuv(px: vec2<f32>) -> vec4<f32> {
 }
 
 @fragment
-fn fs_external(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_external(fragment: VsOut) -> @location(0) vec4<f32> {
+    let in = device_quad_pixel(fragment);
     var cov: f32;
     switch in.meta_.x {
         case KIND_SPAN: {
