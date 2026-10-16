@@ -57,8 +57,14 @@ fn sweep(
     probes: &[[f64; 2]],
     medial: impl Fn([f64; 2]) -> bool,
 ) -> Sweep {
-    let module = wgsl::parse_str(include_str!("../../gpu/src/render/shared.wgsl"))
-        .expect("shared.wgsl parses");
+    // `shared.wgsl` builds on the working-space conversion fragment, as
+    // in the GPU backend's build script.
+    let source = format!(
+        "{}\n{}",
+        filtrate_core::space::WGSL,
+        include_str!("../../gpu/src/render/shared.wgsl")
+    );
+    let module = wgsl::parse_str(&source).expect("shared.wgsl parses");
     let eval = Eval::new(&module);
     let sdf_sample = eval.function("sdf_sample");
     let (oracle_box, extra) = box_params(shape).expect("the shape is a box");

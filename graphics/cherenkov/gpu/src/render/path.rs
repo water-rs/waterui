@@ -104,54 +104,12 @@ pub enum CoverageRoute {
     /// The scanline sweep of this module: `O((n + k) log n)` in `n`
     /// segments and `k` crossings.
     Sweep,
-}
-
-// The test-only route override. Decision T2 of the coverage specification:
-// large scenes select the GPU route by themselves, and a route is never
-// forced through public API — the route-equivalence tests reach this hook
-// from inside the crate instead.
-#[cfg(test)]
-thread_local! {
-    // Android's emulated TLS expands even a `const { … }` initializer into a
-    // non-const init fn, which the lint inspects; native-TLS targets keep it
-    // const, so the expectation is Android-only.
-    #[cfg_attr(
-        target_os = "android",
-        expect(
-            clippy::missing_const_for_thread_local,
-            reason = "the initializer is already const; the lint misfires on std's emulated-TLS expansion (rust-lang/rust-clippy#13422)"
-        )
-    )]
-    static FORCED_ROUTE: std::cell::Cell<Option<CoverageRoute>> =
-        const { std::cell::Cell::new(None) };
-}
-
-/// Forces `route` for every rasterization on this thread until it is reset
-/// with `None`. Test-only, and never reachable from public API.
-#[cfg(test)]
-pub fn force_route(route: Option<CoverageRoute>) {
-    FORCED_ROUTE.with(|forced| forced.set(route));
-}
-
-/// The route a rasterization takes. One route exists, so there is nothing
-/// to decide and the function takes no inputs: #2543 gives it the
-/// route-selection inputs of the coverage specification's section 6 — the
-/// flattened segment count, the coverage grid's device bounds, the surface
-/// rect and `SharedDevice::has_compute` — along with the variant that
-/// needs them.
-#[cfg_attr(
-    not(test),
-    expect(
-        clippy::missing_const_for_fn,
-        reason = "the test build reads the thread-local override"
-    )
-)]
-fn route() -> CoverageRoute {
-    #[cfg(test)]
-    if let Some(forced) = FORCED_ROUTE.with(std::cell::Cell::get) {
-        return forced;
-    }
-    CoverageRoute::Sweep
+    /// The GPU compute route of water-rs/waterui#2543: curve elements go
+    /// to the frame's compute input buffer untouched by the CPU, and the
+    /// coverage and classification kernels emit the same spans and
+    /// partial cells. Route selection is water-rs/waterui#2545; in this
+    /// change the route is reachable only through the test hook.
+    Gpu,
 }
 
 /// A coverage grid over an integer device-space rect.
@@ -182,9 +140,7 @@ pub fn rasterize(
     rule: FillRule,
     scratch: &mut EmitScratch,
 ) -> Option<Coverage> {
-    match route() {
-        CoverageRoute::Sweep => sweep(segments, bbox, surface, rule, &mut scratch.raster),
-    }
+    sweep(segments, bbox, surface, rule, &mut scratch.raster)
 }
 
 fn sweep(
@@ -264,9 +220,6 @@ pub fn rasterize_emit(
     scratch: &mut EmitScratch,
     arena: &mut Vec<u8>,
 ) -> Option<Result<(PathEmit, Vec<CellTexels>, bool), RenderError>> {
-    match route() {
-        CoverageRoute::Sweep => {}
-    }
     let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
     let (segments, rule) = resolve(segments, rule);
     let EmitScratch {
@@ -441,6 +394,247 @@ fn clip_x(draw: &mut impl FnMut(f32, f32, f32, f32), x0: f32, y0: f32, x1: f32, 
         dx.mul_add(t1, x0).clamp(0.0, w),
         dy.mul_add(t1, y0),
     );
+}
+
+/// One curve element encoded for the coverage kernel: three `vec4`s in
+/// the compute input buffer — `(kind, n, path index, segment slot)`, the
+/// start point and first control point, and the (padded) second control
+/// point and end point. `n` is the uniform subdivision count
+/// [`wang_segments`] picked, mirrored exactly by the flatten kernel.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GpuElement {
+    /// `(kind, n, path index, segment slot)` as exact integers.
+    pub head: [u32; 4],
+    /// Start point and first control point.
+    pub lo: [f32; 4],
+    /// Second control point (padded with the first for a quad, unused
+    /// for a line) and the end point.
+    pub hi: [f32; 4],
+}
+
+/// Decision R2's per-path buffer bound, computed in `O(n)` over the
+/// curve elements from their device-space bounding boxes.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GpuBound {
+    /// Segments the flatten kernel will produce.
+    pub segments: usize,
+    /// Segment/strip incidences bounded by vertical control-polygon variation.
+    pub bins: usize,
+    /// Segment/cell incidences bounded by control-polygon L1 variation.
+    pub fragments: usize,
+    /// Logical key stride; the kernel's tighter grid fits within it.
+    pub grid_w: usize,
+    /// Bound raster grid rows.
+    pub grid_h: usize,
+    /// Maximum span instances the path can emit.
+    pub span_cap: usize,
+    /// Maximum cell instances the path can emit.
+    pub cell_cap: usize,
+    /// Stored R8 bytes, excluding implicit full interiors.
+    pub texels: usize,
+    /// The bound grid is empty: the path cannot emit anything.
+    pub empty: bool,
+    /// Conservative device bounds, used by pass planning before compute.
+    pub rect: [f32; 4],
+}
+
+/// The uniform subdivision count for `kind` (1 quad, 2 cubic) whose
+/// control hull sits at `points` in device space, at the `FLATTEN`
+/// tolerance. The kernel subdivides uniformly into exactly this many
+/// segments; the same closed form runs here so the segment slots match.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "subdivision counts are small"
+)]
+#[expect(clippy::cast_sign_loss)]
+fn wang_segments(kind: u32, p0: Point, a: Point, b: Point, p1: Point) -> usize {
+    let second = match kind {
+        0 => return 1,
+        1 => (p0.to_vec2() - a.to_vec2() * 2.0 + p1.to_vec2()).hypot() * 2.0,
+        _ => {
+            (p0.to_vec2() - a.to_vec2() * 2.0 + b.to_vec2())
+                .hypot()
+                .max((a.to_vec2() - b.to_vec2() * 2.0 + p1.to_vec2()).hypot())
+                * 6.0
+        }
+    };
+    // Linear interpolation error <= max|B''| / (8 n^2).
+    (second / (8.0 * FLATTEN)).sqrt().ceil().max(1.0) as usize
+}
+
+/// The element walk state of [`gpu_bound`]: the encoded records so far,
+/// the running bounds and the subpath cursor.
+struct GpuEncode {
+    out: Vec<GpuElement>,
+    last: Point,
+    start: Point,
+    raster: Affine,
+    bound: GpuBound,
+}
+
+impl GpuEncode {
+    /// Encodes one producing element — a line, quad or cubic from the
+    /// cursor's `last` to `p1` — into a [`GpuElement`] and adds its
+    /// device bbox to the hull and touched-cell bound.
+    #[expect(clippy::cast_possible_truncation, reason = "device coords are f32")]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "absolute control-polygon variation is nonnegative"
+    )]
+    fn push(&mut self, hull: &mut Rect, kind: u32, a: Point, b: Point, p1: Point) {
+        if kind == 0 && p1 == self.last {
+            return;
+        }
+        // The subdivision count is measured on the device-space control
+        // hull; the element itself is uploaded in local space for the
+        // kernel to transform.
+        let n = wang_segments(
+            kind,
+            self.raster * self.last,
+            self.raster * a,
+            self.raster * b,
+            self.raster * p1,
+        );
+        let mut dev = Rect::from_points(self.raster * self.last, self.raster * p1);
+        dev = dev.union_pt(self.raster * a);
+        if kind == 2 {
+            dev = dev.union_pt(self.raster * b);
+        }
+        *hull = hull.union(dev);
+        let points = [self.last, a, b, p1];
+        let short;
+        let points: &[Point] = match kind {
+            0 => {
+                short = [self.last, p1, p1];
+                &short[..2]
+            }
+            1 => {
+                short = [self.last, a, p1];
+                &short
+            }
+            _ => &points,
+        };
+        let mut variation = kurbo::Vec2::ZERO;
+        for pair in points.windows(2) {
+            let delta = self.raster * pair[1] - self.raster * pair[0];
+            variation.x += delta.x.abs();
+            variation.y += delta.y.abs();
+        }
+        // Each chord visits at most |dx|+|dy|+3 cells, including
+        // horizontal/vertical boundary ownership. Bezier variation is
+        // bounded by its control polygon's variation.
+        self.bound.bins += n * 2
+            + (variation.y / f64::from(u32::try_from(STRIP_H).expect("strip height fits u32")))
+                .ceil() as usize;
+        self.bound.fragments += n * 3 + (variation.x + variation.y).ceil() as usize;
+        self.out.push(GpuElement {
+            head: [
+                kind,
+                u32::try_from(n).expect("subdivision count"),
+                0,
+                u32::try_from(self.bound.segments).expect("segment count"),
+            ],
+            lo: [
+                self.last.x as f32,
+                self.last.y as f32,
+                a.x as f32,
+                a.y as f32,
+            ],
+            hi: [b.x as f32, b.y as f32, p1.x as f32, p1.y as f32],
+        });
+        self.bound.segments += n;
+        self.last = p1;
+    }
+}
+
+/// Encodes `elements` (the local path elements, already closed through
+/// `ClosePath`/`MoveTo` semantics) for the compute input buffer under
+/// the device transform `raster`, and computes the R2 bound over their
+/// device bounding boxes. Returns the element records (their `path` and
+/// `slot` fields zeroed — the caller stamps them) and the bound.
+#[expect(clippy::cast_possible_truncation, reason = "device coords are f32")]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "grid dimensions are clamped nonnegative"
+)]
+pub fn gpu_bound(
+    elements: &[PathEl],
+    raster: Affine,
+    surface: (f64, f64),
+) -> (Vec<GpuElement>, GpuBound) {
+    let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
+    let mut hull = Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    let mut state = GpuEncode {
+        out: Vec::new(),
+        last: Point::ORIGIN,
+        start: Point::ORIGIN,
+        raster,
+        bound: GpuBound::default(),
+    };
+    for &el in elements {
+        match el {
+            PathEl::MoveTo(p) => {
+                state.push(&mut hull, 0, state.last, state.last, state.start);
+                state.start = p;
+                state.last = p;
+            }
+            PathEl::LineTo(p) => {
+                let p0 = state.last;
+                state.push(&mut hull, 0, p0, p0, p);
+            }
+            PathEl::QuadTo(c, p) => {
+                state.push(&mut hull, 1, c, c, p);
+            }
+            PathEl::CurveTo(c0, c1, p) => {
+                state.push(&mut hull, 2, c0, c1, p);
+            }
+            PathEl::ClosePath => {
+                let p0 = state.last;
+                let s = state.start;
+                state.push(&mut hull, 0, p0, p0, s);
+                state.last = s;
+            }
+        }
+    }
+    {
+        let (p0, s) = (state.last, state.start);
+        state.push(&mut hull, 0, p0, p0, s);
+    }
+    let (out, mut bound) = (state.out, state.bound);
+    // The bound raster grid: the hull inflated by a pixel and clipped to
+    // the surface, floored and ceiled like the sweep's rect.
+    let inflated = hull.inflate(1.0, 1.0);
+    let r = inflated.intersect(clip);
+    let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
+    let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
+    bound.rect = [
+        r.x0.floor() as f32,
+        r.y0.floor() as f32,
+        r.x1.ceil() as f32,
+        r.y1.ceil() as f32,
+    ];
+    bound.grid_w = w;
+    bound.grid_h = h;
+    // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
+    // need at most 16 columns per touched boundary column. Four rows
+    // per strip; the retained large full interval is implicit.
+    bound.texels = if w <= 32 && h <= 32 {
+        w * h
+    } else {
+        bound.fragments * 64
+    };
+    bound.empty = w == 0 || h == 0;
+    // Cells are column-disjoint inside their strip, so the strip count
+    // times the grid width is the grid-side cap; spans obey the same
+    // bound. The element bound may be tighter.
+    let strip_cap = h.div_ceil(STRIP_H) * w;
+    bound.cell_cap = bound
+        .fragments
+        .min(strip_cap)
+        .max(usize::from(w <= 32 && h <= 32));
+    bound.span_cap = bound.cell_cap + h.div_ceil(STRIP_H);
+    (out, bound)
 }
 
 /// Emits `coverage` as spans and atlas cells: one cell when the grid is

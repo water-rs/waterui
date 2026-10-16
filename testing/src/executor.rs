@@ -28,6 +28,16 @@ thread_local! {
     /// Whether [`install_test_executor`] installed the parked queue as this
     /// thread's local executor. When a runtime installed its own first, the
     /// runtime's executor is the one whose wake edge a wait must observe.
+    // Android's emulated TLS expands even a `const { … }` initializer into a
+    // non-const init fn, which the lint inspects; native-TLS targets keep it
+    // const, so the expectation is Android-only.
+    #[cfg_attr(
+        target_os = "android",
+        expect(
+            clippy::missing_const_for_thread_local,
+            reason = "the initializer is already const; the lint misfires on std's emulated-TLS expansion (rust-lang/rust-clippy#13422)"
+        )
+    )]
     static INSTALLED: Cell<bool> = const { Cell::new(false) };
     /// Parks runnables so dropping them — which cancels the task — is deferred to
     /// thread teardown rather than happening inside `schedule`.

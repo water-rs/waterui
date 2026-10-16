@@ -31,7 +31,7 @@ use super::program::{
 };
 use super::target::LayerTarget;
 use crate::renderer::ProducerWake;
-use crate::renderer::recording::SolidRect;
+use crate::renderer::recording::{LoweredResources, SolidRect};
 
 /// The liveness token of one node's layers: parents list children by
 /// `(LayerId, Weak<LayerToken>)`, so a dropped child is told apart from a
@@ -125,7 +125,7 @@ fn write_props<T: LayerTarget>(
 pub struct RunLayer {
     key: RunKey,
     layer: Option<Layer>,
-    held: Option<HeldResources>,
+    held: Option<LoweredResources>,
     /// The single-colour rectangles the run's recording fills, in the
     /// parent's content space — what a top-edge sample composes.
     solid: Box<[SolidRect]>,

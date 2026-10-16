@@ -53,6 +53,11 @@ pub struct Group {
     /// composites sRGB-encoded values.
     #[serde(default)]
     pub blend_space: BlendSpace,
+    /// A filter applied to the group's isolated content before `opacity`
+    /// and `blend`. It works in the working space whatever `blend_space`
+    /// the members composite in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Box<LayerFilter>>,
 }
 
 impl Group {

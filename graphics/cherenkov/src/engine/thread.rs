@@ -648,6 +648,7 @@ fn set_display_moved(surfaces: &mut FxHashMap<SurfaceId, SurfaceState>, id: Surf
 /// whose registration was rejected is registered with the new pixels
 /// instead. A rejection is recorded, and the marked surfaces are then left
 /// out of the frames that would draw them.
+#[cfg(not(target_arch = "wasm32"))]
 fn replace_image<B: Backend>(
     renderer: &mut B::Renderer,
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
@@ -655,20 +656,64 @@ fn replace_image<B: Backend>(
     id: ImageId,
     image: ImageUpload,
 ) {
-    let resource = ResourceId::Image(id);
-    debug_assert!(
-        !resources.pending.contains_key(&resource),
-        "{resource} replaced after its release: a replacement needs a live handle"
-    );
-    let rejections = &mut resources.rejections;
-    let held = rejections
-        .get(&resource)
-        .is_none_or(|rejection| rejection.held);
+    let held = replacement_held(resources, id);
     let result = if held {
         renderer.replace_image(id, image)
     } else {
         renderer.add_image(id, image)
     };
+    replaced(renderer, surfaces, resources, id, held, result);
+}
+
+/// [`replace_image`] on the browser's serial executor, awaiting the
+/// backend's report.
+#[cfg(target_arch = "wasm32")]
+#[expect(
+    clippy::future_not_send,
+    reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+)]
+async fn replace_image<B: Backend>(
+    renderer: &mut B::Renderer,
+    surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
+    resources: &mut Resources<B>,
+    id: ImageId,
+    image: ImageUpload,
+) {
+    let held = replacement_held(resources, id);
+    let result = if held {
+        renderer.replace_image(id, image).await
+    } else {
+        renderer.add_image(id, image).await
+    };
+    replaced(renderer, surfaces, resources, id, held, result);
+}
+
+/// Whether the backend holds image `id`: a replacement of an image whose
+/// registration was rejected registers it instead.
+fn replacement_held<B: Backend>(resources: &Resources<B>, id: ImageId) -> bool {
+    let resource = ResourceId::Image(id);
+    debug_assert!(
+        !resources.pending.contains_key(&resource),
+        "{resource} replaced after its release: a replacement needs a live handle"
+    );
+    resources
+        .rejections
+        .get(&resource)
+        .is_none_or(|rejection| rejection.held)
+}
+
+/// Records the backend's `result` for a replacement of image `id` and
+/// marks changed the surfaces that sample it.
+fn replaced<B: Backend>(
+    renderer: &B::Renderer,
+    surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
+    resources: &mut Resources<B>,
+    id: ImageId,
+    held: bool,
+    result: Result<(), ResourceError>,
+) {
+    let resource = ResourceId::Image(id);
+    let rejections = &mut resources.rejections;
     match result {
         Ok(()) => {
             rejections.remove(&resource);
@@ -1195,7 +1240,7 @@ impl<B: Backend> LocalState<B> {
                 resources.release(renderer, surfaces, resource, op);
             }
             Message::ReplaceImage { id, image } => {
-                replace_image::<B>(renderer, surfaces, resources, id, image);
+                replace_image::<B>(renderer, surfaces, resources, id, image).await;
             }
             Message::Apply { id, mut changes } => {
                 apply_hidden::<B>(renderer, surfaces, resources, id, &mut changes);

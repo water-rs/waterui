@@ -15,7 +15,10 @@ use super::{
 };
 use crate::{
     aux_image::TextureImage,
-    effect::{EffectContext, EffectInput, EffectOutput, EffectRenderError, EffectSetupError},
+    effect::{
+        EffectContext, EffectInput, EffectOutput, EffectRenderError, EffectSetupError,
+        RetainedMemory,
+    },
 };
 
 /// The format every intermediate is materialized in: f16, so every
@@ -85,7 +88,7 @@ enum Image {
     /// The executor's own upload.
     Uploaded {
         view: wgpu::TextureView,
-        _texture: wgpu::Texture,
+        texture: wgpu::Texture,
     },
     /// The caller's texture, at its native format.
     Bound {
@@ -99,6 +102,18 @@ impl Image {
     const fn view(&self) -> &wgpu::TextureView {
         match self {
             Self::Uploaded { view, .. } | Self::Bound { view, .. } => view,
+        }
+    }
+
+    /// Device-resident bytes of the executor's own upload; a bound
+    /// texture is the caller's and reports none.
+    fn retained_bytes(&self) -> u64 {
+        match self {
+            Self::Uploaded { texture, .. } => {
+                let size = texture.size();
+                texture_bytes((size.width, size.height), texture.format())
+            }
+            Self::Bound { .. } => 0,
         }
     }
 }
@@ -268,6 +283,30 @@ impl Gpu {
             input_format: ctx.input_format,
             output_format: ctx.output_format,
         })
+    }
+
+    /// Device-resident bytes the executor retains: the intermediate
+    /// targets across every live input size, plus the auxiliary images
+    /// it uploaded itself.
+    pub(super) fn retained_memory(&self) -> RetainedMemory {
+        let targets = self
+            .intermediates
+            .iter()
+            .map(|intermediates| {
+                texture_bytes(intermediates.size, INTERMEDIATE_FORMAT)
+                    * intermediates.views.len() as u64
+            })
+            .sum();
+        let images = self.shared.images.iter().map(Image::retained_bytes).sum();
+        RetainedMemory { targets, images }
+    }
+
+    /// Drops every retained intermediate; the next encode recreates them
+    /// through the same path that allocates a new input size's slots.
+    /// `shared.images` stays: an uploaded auxiliary image cannot be
+    /// recreated without its source.
+    pub(super) fn trim(&mut self) {
+        self.intermediates.clear();
     }
 
     /// The stage ranges each pass's segment covers — for tests asserting a
@@ -703,6 +742,18 @@ impl Intermediates {
     }
 }
 
+/// Device bytes of a `w` × `h` single-level texture in `format` — the
+/// size formula for intermediates and uploaded auxiliary images alike.
+fn texture_bytes((width, height): (u32, u32), format: wgpu::TextureFormat) -> u64 {
+    u64::from(width)
+        * u64::from(height)
+        * u64::from(
+            format
+                .block_copy_size(None)
+                .expect("a single-aspect colour format"),
+        )
+}
+
 fn intermediate_texture(device: &wgpu::Device, (width, height): (u32, u32)) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("filtrate intermediate"),
@@ -884,7 +935,7 @@ impl ImageVisitor for Uploader<'_, '_> {
         );
         self.images[index] = Some(Image::Uploaded {
             view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-            _texture: texture,
+            texture,
         });
     }
 }

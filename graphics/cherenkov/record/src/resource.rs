@@ -39,18 +39,22 @@ impl std::fmt::Display for ResourceId {
     }
 }
 
-/// The largest image a render target admits, in each dimension and in
-/// total texels.
+/// The images a render target admits: the largest image in each
+/// dimension, and the texels every registered image holds together.
 ///
 /// The target reports it once, when its renderer is initialized, and it
-/// does not change afterwards: a registration the limits do not
-/// [`admit`](Self::admits) is rejected before any work is queued, so the
-/// content that made it sees the error instead of a failed render.
+/// does not change afterwards. A registration the limits do not
+/// [`admit`](Self::admits) alone, or that would take the registered images
+/// together past [`max_texels`](Self::max_texels), is rejected before any
+/// work is queued, so the content that made it sees the error instead of
+/// a failed render.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ImageLimits {
     /// Largest admitted width or height, in pixels.
     pub max_dimension: u32,
-    /// Largest admitted texel count (`width * height`).
+    /// The image budget: the largest texel count (`width * height`) the
+    /// registered images hold together, and so also the largest single
+    /// image.
     pub max_texels: u64,
 }
 
@@ -61,7 +65,8 @@ impl ImageLimits {
         max_texels: u64::MAX,
     };
 
-    /// Whether a `width` × `height` image fits the limits.
+    /// Whether a `width` × `height` image fits the limits on its own,
+    /// with no other image registered.
     #[must_use]
     pub fn admits(&self, width: u32, height: u32) -> bool {
         width != 0
@@ -90,6 +95,32 @@ impl ImageLimits {
                 limits: *self,
             })
         }
+    }
+
+    /// Checks a `width` × `height` image beside `others`, the texels the
+    /// other registered images hold, which never exceed
+    /// [`max_texels`](Self::max_texels): `Ok` with the image's texel count
+    /// when the limits admit it alone and the images together stay
+    /// within [`max_texels`](Self::max_texels).
+    ///
+    /// # Errors
+    ///
+    /// [`ResourceError::TooLarge`] when the limits do not admit the image
+    /// alone, [`ResourceError::OverBudget`] with the texels left when the
+    /// images together would exceed the budget.
+    pub fn check_beside(&self, width: u32, height: u32, others: u64) -> Result<u64, ResourceError> {
+        self.check(width, height)?;
+        let texels = u64::from(width) * u64::from(height);
+        let available = self.max_texels - others;
+        if texels > available {
+            return Err(ResourceError::OverBudget {
+                width,
+                height,
+                available,
+                limits: *self,
+            });
+        }
+        Ok(texels)
     }
 
     /// The largest admitted size at `width`:`height`'s aspect ratio, to
