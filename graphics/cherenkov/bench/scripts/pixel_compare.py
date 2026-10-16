@@ -49,17 +49,18 @@ a pass, and the raw report stays on disk.
 over its measured frames, the median of those per arm, and their change. A
 p50 over a finite frame count has a sampling error, and a fresh process can
 land at a different cost, so the change alone does not say whether the
-collection can tell a 2% change from none: a scene whose frame times spread
-widely around a short GPU time needs far more frames than one whose frames
-agree to a fraction of a percent. `analyze` therefore puts a 95% interval
+collection can tell a 2% change from none. `analyze` therefore puts a 95% interval
 around the change by a hierarchical bootstrap (invocations, then the frames
 of each) and decides only a scene whose interval is no wider than the limit
 (half-width at most half of `--limit-percent`): a true change of zero then
 reads above the limit with probability far below a percent. Such a scene
 `fails` above `--limit-percent` (2%) and passes otherwise; a wider interval
-is `unresolved`, never a pass, and the scene is collected again with more
-`--frames` or `--rounds`. In governor mode `analyze` reports each arm's
-worst invocation GPU p99 against `--budget-ms` and makes no cost decision.
+is `unresolved`, never a pass. More `--frames` shrink the sampling error of
+each p50 and more `--rounds` average over more processes; full-size scenes
+resolve at the defaults, while scenes of a fraction of a millisecond vary
+per process and stay unresolved (#2775). In governor mode `analyze` reports
+each arm's worst invocation GPU p99 against `--budget-ms` and makes no cost
+decision.
 """
 
 from __future__ import annotations

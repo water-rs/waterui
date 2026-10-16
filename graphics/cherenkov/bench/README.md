@@ -127,11 +127,11 @@ collection. `scripts/pixel_compare.py analyze OUT` reports, per scene, the
 median of each arm's per-invocation GPU p50, the change, and its 95% interval
 from a hierarchical bootstrap over invocations and their frames. A scene whose
 interval is no wider than the 2% limit fails above +2% and passes otherwise; a
-wider interval is `unresolved`, never a pass. Small scenes, whose frame times
-spread by tens of percent around a GPU time of tens of microseconds, need
-thousands of frames per invocation (`--frames 3600`) where a full-size scene
-resolves in 120. `--governor` leaves the clocks to the governors, for the
-8.33 ms p99 budget check:
+wider interval is `unresolved`, never a pass. Full-size scenes resolve in 120
+frames per invocation; scenes whose GPU time is a fraction of a millisecond
+vary per process by more than more frames remove and stay unresolved (#2775).
+`--governor` leaves the clocks to the governors, for the 8.33 ms p99 budget
+check:
 
     bench/scripts/pixel_compare.py run --serial pixel-9-pro:5555 \
         --base bench-dev --head bench-change \
