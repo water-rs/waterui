@@ -420,8 +420,21 @@ fn layer_filter_reports_its_uploaded_image() -> Result<(), Box<dyn std::error::E
         );
     });
     wait!(engine.render(FrameTime::now()))?;
+    // Both ends are measured trimmed, so the renderer's grow-only caches
+    // (a filtered layer's isolated target among them) cannot tell them apart.
+    engine.trim(cherenkov::Pressure::Critical);
     let before = wait!(engine.memory());
     assert_eq!(before.filter_images, cherenkov::Bytes(0));
+    // A filter that uploads nothing gives what a filtered layer costs
+    // apart from its chain's own targets and images: the layer's isolated
+    // target is part of `gpu` whatever the filter.
+    let invert = engine.filter(filtrate::filters::Invert);
+    surface.update(|tx| {
+        tx[&layer].filter(invert.id());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let plain = wait!(engine.memory());
+    assert_eq!(plain.filter_images, cherenkov::Bytes(0));
     let blend = engine.filter(filtrate::filters::BlendWithImage {
         image: filtrate::FilterImage::from_rgba8(16, 16, vec![128; 16 * 16 * 4]),
         amount: 0.5,
@@ -430,13 +443,17 @@ fn layer_filter_reports_its_uploaded_image() -> Result<(), Box<dyn std::error::E
     surface.update(|tx| {
         tx[&layer].filter(blend.id());
     });
+    drop(invert);
     wait!(engine.render(FrameTime::now()))?;
     let memory = wait!(engine.memory());
     assert_eq!(memory.filter_images, cherenkov::Bytes(IMAGE_BYTES));
+    // The upload joins `gpu` exactly once: with each side's chain targets
+    // and images taken out, the two filtered layers cost the same.
+    let rest = |m: &cherenkov::MemoryUsage| m.gpu.0 - m.filter_targets.0 - m.filter_images.0;
     assert_eq!(
-        memory.gpu,
-        cherenkov::Bytes(before.gpu.0 + memory.filter_targets.0 + IMAGE_BYTES),
-        "the uploaded image's bytes join `gpu` with the chain's targets"
+        rest(&memory),
+        rest(&plain),
+        "the uploaded image's bytes join `gpu` once, with the chain's targets"
     );
     // The upload leaves with the chain: detaching and dropping the
     // filter returns `gpu` to its baseline.
@@ -445,6 +462,7 @@ fn layer_filter_reports_its_uploaded_image() -> Result<(), Box<dyn std::error::E
     });
     drop(blend);
     wait!(engine.render(FrameTime::now()))?;
+    engine.trim(cherenkov::Pressure::Critical);
     let after = wait!(engine.memory());
     assert_eq!(after.filter_images, cherenkov::Bytes(0));
     assert_eq!(after.filter_targets, cherenkov::Bytes(0));
