@@ -5742,6 +5742,8 @@ pub use web_impl::ExportedBrowserWindow as BrowserWindow;
     any(feature = "video", feature = "webview-system")
 ))]
 pub use web_impl::OcclusionShields;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::report_fatal_error;
 #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
 pub use web_impl::yield_wheel;
 
