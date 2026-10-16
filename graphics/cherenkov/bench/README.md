@@ -131,18 +131,44 @@ only when its interval is no wider than the 2% limit: it fails above +2% and
 passes otherwise. A wider interval is `unresolved`, never a pass; that holds
 for an interval wholly below −2% too, since the limit bounds a cost increase
 and a decrease is no failure. Full-size scenes resolve in 120
-frames per invocation. Scenes whose GPU time is a fraction of a millisecond
-are not judged on the Pixel (#2775). They vary per process by more than more
-frames remove, and their GPU time is not additive in GPU work: a fixed buffer
-clear added just before the pass moved continuous-s50 by −2.5% at
-`--frames 1200 --rounds 16`.
-`--governor` leaves the clocks to the governors, for the 8.33 ms p99 budget
-check:
+frames per invocation. `--governor` leaves the clocks to the governors, for
+the 8.33 ms p99 budget check:
 
     bench/scripts/pixel_compare.py run --serial pixel-9-pro:5555 \
         --base bench-dev --head bench-change \
-        --scene scenes/perf/map --scene scenes/corpus/continuous-s50 --out compare
+        --scene scenes/perf/map --scene scenes/perf/chart --out compare
     bench/scripts/pixel_compare.py analyze compare
+
+### Sub-millisecond scenes: shader-core cycles
+
+A scene whose GPU time is a fraction of a millisecond is not judged by GPU
+time on the Pixel (#2775). Its frame is latency-bound: a fixed buffer clear
+added just before the pass moved continuous-s50 by −2.5% at
+`--frames 1200 --rounds 16`, because added work is absorbed or changes the
+GPU's power state. Such scenes are compared by cost instead:
+`measure --gpu-counters` reads the Mali hardware counters through the kbase
+driver (root), waits for the GPU to go idle after every measured frame and
+samples, so each frame records exactly the counters its own work added —
+shader-core active cycles summed over the cores, with fragment, non-fragment,
+GPU-active and tiler cycles and fragment warps beside them. The wait changes
+the run's GPU timings, so a counter run is never read for time. The counter
+layout read is the Mali-G715's; another GPU fails rather than read a
+different layout under these names.
+
+`pixel_compare.py run --gpu-counters` compares the shader-core active cycles
+under the same interval rule. Every process settles at its own cycle level,
+a few percent apart for identical binaries, while frames inside one agree to
+about 1%, so these scenes need many short invocations:
+
+    bench/scripts/pixel_compare.py run --serial pixel-9-pro:5555 --gpu-counters \
+        --rounds 32 --frames 300 --base bench-dev --head bench-change \
+        --scene scenes/corpus/continuous-s50 \
+        --scene scenes/corpus/stroke-join-continuous-s00-miter-lo --out compare-cycles
+
+At those settings an identical-binary comparison passes both 96 px scenes
+(intervals within ±1.1%). A 4 KiB buffer clear added to every pass fails them
+at +5.1% and +4.7%, and the same clear adds the same cycles to chart, so added
+work reads as the same cost in every scene.
 
 ## Sparse live updates
 

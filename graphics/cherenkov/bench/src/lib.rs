@@ -50,6 +50,7 @@ pub mod energy;
 pub mod external_cost;
 pub mod gamut_sweep;
 pub mod gpu_clock;
+pub mod gpu_counters;
 pub mod memory;
 #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
 pub mod motion;
@@ -474,6 +475,19 @@ pub trait Engine {
     /// [`BenchError`] on engine or GPU failure.
     fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
         Ok(Vec::new())
+    }
+    /// Blocks until the GPU has finished every submission so far, so a
+    /// GPU-wide reading taken next covers whole frames
+    /// (`measure --gpu-counters`).
+    ///
+    /// # Errors
+    /// [`BenchError::Engine`] for an adapter that cannot wait on its GPU,
+    /// or a GPU failure while waiting.
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        Err(BenchError::Engine(format!(
+            "{} cannot wait for its GPU to go idle",
+            self.info().name
+        )))
     }
     /// Explicitly retires what the backend can release outside a frame
     /// (scratch targets, backdrops, caches) and returns once the
