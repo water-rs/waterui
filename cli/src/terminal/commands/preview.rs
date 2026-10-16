@@ -276,8 +276,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     }
     header!(shell, "Preview: {}", request.target.display_name());
 
-    let kotlin_toolchain =
-        request::check_toolchain_for_backend(&host, request.backend).await?;
+    let kotlin_toolchain = request::check_toolchain_for_backend(&host, request.backend).await?;
 
     // Detect sccache for compilation caching
     let sccache_path = super::detect_sccache_path(shell, &host).await;

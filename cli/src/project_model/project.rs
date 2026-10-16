@@ -1554,7 +1554,6 @@ impl ProjectDraft {
             }),
         }
     }
-
 }
 
 async fn remove_project_and_cache(host: &Host, root: &Path) -> eyre::Result<()> {
