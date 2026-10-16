@@ -1094,7 +1094,7 @@ pub struct GpuRenderer {
     /// that moves against the pass's own work — before or after roughly
     /// 20 µs of it, frame to frame — so a bracket opened there measures
     /// one of two spans and a per-process p50 lands on whichever
-    /// dominates (#2775). The encoder sample precedes the pass's barriers
+    /// dominates (#2840). The encoder sample precedes the pass's barriers
     /// and work in command order.
     pass_start_on_encoder: bool,
     query_set: Option<wgpu::QuerySet>,
@@ -1373,7 +1373,7 @@ fn create_device(
     // epoch in a native command buffer that is no wgpu pass: the only
     // place its bracket can go is the encoder, where Vulkan's
     // `vkCmdWriteTimestamp` is exact (#2191). Every render pass starts on
-    // an encoder sample there too (`pass_start_on_encoder`, #2775). Every
+    // an encoder sample there too (`pass_start_on_encoder`, #2840). Every
     // wgpu Vulkan adapter with `TIMESTAMP_QUERY` has it, so it is
     // required, not probed.
     if config.timestamps && supported.contains(wgpu::Features::TIMESTAMP_QUERY) {
@@ -1627,7 +1627,7 @@ async fn create_device(
     // epoch in a native command buffer that is no wgpu pass: the only
     // place its bracket can go is the encoder, where Vulkan's
     // `vkCmdWriteTimestamp` is exact (#2191). Every render pass starts on
-    // an encoder sample there too (`pass_start_on_encoder`, #2775). Every
+    // an encoder sample there too (`pass_start_on_encoder`, #2840). Every
     // wgpu Vulkan adapter with `TIMESTAMP_QUERY` has it, so it is
     // required, not probed.
     if config.timestamps && supported.contains(wgpu::Features::TIMESTAMP_QUERY) {

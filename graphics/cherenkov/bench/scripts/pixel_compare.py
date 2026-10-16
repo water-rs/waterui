@@ -58,7 +58,8 @@ reads above the limit with probability far below a percent. Such a scene
 is `unresolved`, never a pass. More `--frames` shrink the sampling error of
 each p50 and more `--rounds` average over more processes; full-size scenes
 resolve at the defaults, while scenes of a fraction of a millisecond vary
-per process and stay unresolved (#2775). In governor mode `analyze` reports
+per process and need more rounds, and some stay unresolved even then
+(#2775). In governor mode `analyze` reports
 each arm's worst invocation GPU p99 against `--budget-ms` and makes no cost
 decision.
 """

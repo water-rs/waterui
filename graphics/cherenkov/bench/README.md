@@ -128,8 +128,10 @@ median of each arm's per-invocation GPU p50, the change, and its 95% interval
 from a hierarchical bootstrap over invocations and their frames. A scene whose
 interval is no wider than the 2% limit fails above +2% and passes otherwise; a
 wider interval is `unresolved`, never a pass. Full-size scenes resolve in 120
-frames per invocation; scenes whose GPU time is a fraction of a millisecond
-vary per process by more than more frames remove and stay unresolved (#2775).
+frames per invocation. Scenes whose GPU time is a fraction of a millisecond
+vary per process by more than more frames remove, so they need more rounds:
+continuous-s50 resolves at `--frames 1200 --rounds 16`, while
+stroke-join-continuous-s00-miter-lo stays unresolved there (#2775).
 `--governor` leaves the clocks to the governors, for the 8.33 ms p99 budget
 check:
 
