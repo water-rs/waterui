@@ -76,7 +76,7 @@ impl TargetBackend {
     /// Whether the backend is experimental — shipped without full testing
     /// ahead of milestone releases — so selecting it asks for confirmation.
     const fn is_experimental(self) -> bool {
-        matches!(self, Self::Gtk4 | Self::WinUi)
+        self.cli_backend().lib_backend().is_experimental()
     }
 
     /// The shared command-line backend this packaging backend is.
