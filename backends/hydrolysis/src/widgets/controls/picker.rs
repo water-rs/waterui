@@ -25,9 +25,7 @@ use waterui_form::picker::{PickerConfig, PickerStyle};
 use waterui_text::styled::StyledStr;
 
 use crate::renderer::local_interaction_state;
-use crate::widgets::util::label_beside_control_bounds;
-#[cfg(feature = "accessibility")]
-use crate::widgets::util::widget_disabled;
+use crate::widgets::util::{label_beside_control_bounds, widget_disabled};
 use waterui_backend_core::widget::PickerMetrics;
 
 impl HydroNativeView for Native<PickerConfig> {
@@ -940,6 +938,13 @@ pub fn render_segmented_picker(
     let selected = ctx.renderer_mut().read_signal(&selection);
     let bounds = ctx.bounds;
     let item_count = items.len();
+    // Reading the disabled signal watches it, so a change schedules a frame
+    // and this persistent node re-renders (and re-registers input) with the
+    // new state.
+    let disabled = {
+        let signal = widget_disabled(env);
+        ctx.renderer_mut().read_signal(&signal)
+    };
     // The group heading spans the full width at the top edge; the segment
     // row keeps its unlabelled height in the space below it, and keeps the
     // full bounds when the label is hidden.
@@ -966,9 +971,12 @@ pub fn render_segmented_picker(
         let hit_rect = segment_rect;
         let discriminator = crate::num_cast::i32_as_u32(i32::from(item.tag)) as usize;
         let interaction_key = crate::renderer::InteractionKey::for_rc(owner, discriminator);
-        let (interaction, press_slot, _) =
-            ctx.renderer_mut()
-                .bind_interaction_target(interaction_key, hit_rect, env);
+        let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
+            interaction_key,
+            hit_rect,
+            env,
+            disabled,
+        );
         let interaction =
             local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
         {
@@ -1007,6 +1015,12 @@ pub fn render_segmented_picker(
         };
         ctx.render_styled_text(styled, HorizontalAlignment::Leading, env, label_rect);
 
+        // A disabled segmented picker registers no tap target: the pointer
+        // neither presses nor selects a segment. Targets are re-registered
+        // every flush, so re-enabling restores interactivity on the next frame.
+        if disabled {
+            continue;
+        }
         let tag = item.tag;
         ctx.renderer_mut()
             .register_interactive_pointer_target(hit_rect, press_slot, {
