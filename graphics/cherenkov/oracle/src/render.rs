@@ -181,6 +181,15 @@ fn move_space(pixel: [f64; 4], from: BlendSpace, to: BlendSpace) -> [f64; 4] {
     }
 }
 
+/// Move every pixel of `canvas` between storage spaces.
+fn move_canvas(canvas: &mut Canvas, from: BlendSpace, to: BlendSpace) {
+    if from != to {
+        for pixel in &mut canvas.pixels {
+            *pixel = move_space(*pixel, from, to);
+        }
+    }
+}
+
 /// Composite `src` onto `dst` blending in `blend` space: both operands are
 /// converted from their storage spaces into `blend`, the blend applies,
 /// and the result lands back in the destination's space. Matches
@@ -266,8 +275,14 @@ fn backdrop_capture(chain: &[Level], group: &BackdropGroup) -> Capture {
     } else {
         flat
     };
-    for filter in &group.filters {
-        apply_backdrop_filter(&mut capture, filter);
+    if !group.filters.is_empty() {
+        // The chain runs in the working space whatever space the capture
+        // is stored in.
+        move_canvas(&mut capture, space, BlendSpace::Linear);
+        for filter in &group.filters {
+            apply_backdrop_filter(&mut capture, filter);
+        }
+        move_canvas(&mut capture, BlendSpace::Linear, space);
     }
     // The blur pyramid: level `k` is the exact 2×2 box reduction of level
     // `k − 1` (the filtered capture), matching the GPU's mip chain.
@@ -853,25 +868,7 @@ impl Renderer {
             ..
         } = chain.pop().expect("the child level is pushed above");
         if let Some(filter) = filter {
-            let texels = match filter {
-                LayerFilter::BlendImage { image, .. } => {
-                    Some(resources.texels(*image).map_err(RenderError::Resource)?)
-                }
-                _ => None,
-            };
-            crate::filter::apply(filter, texels, &mut sub.pixels, sub.width, sub.height);
-            // The layer clip masks the filter's output, not only its input.
-            if !child_clips.is_empty() {
-                let mask = self.shape_coverage(
-                    &Shape::Rect(self.scene_rect),
-                    FillRule::NonZero,
-                    Affine::IDENTITY,
-                    child_clips,
-                );
-                for (px, m) in sub.pixels.iter_mut().zip(mask) {
-                    *px = px.map(|v| v * m);
-                }
-            }
+            self.filter_level(&mut sub, space, filter, child_clips, resources)?;
         }
 
         let clip_cov: Option<Vec<f64>> = if Self::is_destructive(mode) && !child_clips.is_empty() {
@@ -902,6 +899,47 @@ impl Renderer {
                     None => b,
                 }
             };
+        }
+        Ok(())
+    }
+
+    /// Applies `filter` to a level's canvas stored in `space`, then masks
+    /// the output by `clips`. The filter runs in the working space
+    /// whatever space the level stores its pixels in; the clips mask its
+    /// output, not only its input.
+    fn filter_level(
+        &self,
+        canvas: &mut Canvas,
+        space: BlendSpace,
+        filter: &LayerFilter,
+        clips: &[Vec<Segment>],
+        resources: &mut Resources,
+    ) -> Result<(), RenderError> {
+        let texels = match filter {
+            LayerFilter::BlendImage { image, .. } => {
+                Some(resources.texels(*image).map_err(RenderError::Resource)?)
+            }
+            _ => None,
+        };
+        move_canvas(canvas, space, BlendSpace::Linear);
+        crate::filter::apply(
+            filter,
+            texels,
+            &mut canvas.pixels,
+            canvas.width,
+            canvas.height,
+        );
+        move_canvas(canvas, BlendSpace::Linear, space);
+        if !clips.is_empty() {
+            let mask = self.shape_coverage(
+                &Shape::Rect(self.scene_rect),
+                FillRule::NonZero,
+                Affine::IDENTITY,
+                clips,
+            );
+            for (px, m) in canvas.pixels.iter_mut().zip(mask) {
+                *px = px.map(|v| v * m);
+            }
         }
         Ok(())
     }
@@ -1076,9 +1114,10 @@ impl Renderer {
 
     /// A display-list group: members composite with each other in the
     /// group's `blend_space` (the level's canvas stores premultiplied
-    /// values in that space), then the group composites onto the level
-    /// below with `opacity` and `blend`. A pass-through group (`opacity`
-    /// 1, `Normal`, `Linear`) shares the enclosing level's space.
+    /// values in that space), its filter applies, and the group composites
+    /// onto the level below with `opacity` and `blend`. A pass-through
+    /// group (`opacity` 1, `Normal`, `Linear`, unfiltered) shares the
+    /// enclosing level's space.
     fn render_group(
         &self,
         group: &cherenkov_scene::Group,
@@ -1089,7 +1128,9 @@ impl Renderer {
         backdrops: &mut Backdrops<'_>,
     ) -> Result<(), RenderError> {
         let parent_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
-        let semantic = group.blend != BlendMode::Normal || group.blend_space != BlendSpace::Linear;
+        let semantic = group.blend != BlendMode::Normal
+            || group.blend_space != BlendSpace::Linear
+            || group.filter.is_some();
         // A translucent or isolated group keeps its declared `blend_space`;
         // a pass-through group shares the space it composites into.
         let space = if semantic || group.opacity < 1.0 {
@@ -1116,12 +1157,15 @@ impl Renderer {
             }
         }
         let Level {
-            canvas: sub,
+            canvas: mut sub,
             opacity,
             blend: mode,
             space,
             ..
         } = chain.pop().expect("the group level is pushed above");
+        if let Some(filter) = group.filter.as_deref() {
+            self.filter_level(&mut sub, space, filter, clips, resources)?;
+        }
         let dst_space = chain.last().map_or(BlendSpace::Linear, |l| l.space);
         for (dst, &src) in top(chain).pixels.iter_mut().zip(&sub.pixels) {
             let s = src.map(|v| v * opacity);
