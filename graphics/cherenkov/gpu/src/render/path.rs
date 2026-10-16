@@ -777,8 +777,6 @@ fn push_run(runs: &mut Vec<Run>, start: u32, end: u32, class: Class) {
 /// Splits a dense band of `w` columns and `sh` rows into class runs.
 fn dense_runs(strip: &[f32], w: usize, sh: usize, runs: &mut Vec<Run>) {
     runs.clear();
-    // Runs never outnumber columns: the scratch grows once, to its bound.
-    runs.reserve(w);
     let columns = u32::try_from(w).expect("a band is at most a surface wide");
     for x in 0..columns {
         let mut state = (true, true);
@@ -794,9 +792,6 @@ fn dense_runs(strip: &[f32], w: usize, sh: usize, runs: &mut Vec<Run>) {
 /// run ends, and every column between two splits shares one class.
 fn sparse_runs(coverage: &[(u32, f32)], ends: &[usize], w: usize, runs: &mut Vec<Run>) {
     runs.clear();
-    // Every run ends where some row's coverage run ends, and never
-    // outnumbers columns: the scratch grows once, to that bound.
-    runs.reserve(w.min(coverage.len()));
     // `ends[r]` bounds row `r`'s runs; the cursors index the flat buffer
     // absolutely and a row's runs always end at column `w`, so no cursor
     // can read past its row.
