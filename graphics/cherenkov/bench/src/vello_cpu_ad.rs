@@ -8,7 +8,8 @@
 //! single-threaded dispatcher, which flattens and builds strips inside
 //! `encode` and rasterizes in `submit`. `N > 0` is the multithreaded
 //! dispatcher with `N` workers beside the calling thread; `submit` flushes
-//! it before rasterizing, so the flush is timed with the render.
+//! it before rasterizing, so the flush is timed with the render. The
+//! report's `device.adapter` states the dispatcher and its worker count.
 
 use std::collections::BTreeSet;
 use std::time::Instant;
@@ -307,7 +308,7 @@ impl Engine for VelloCpu {
         Ok(Submit {
             image,
             gpu: Vec::new(),
-            phases: None,
+            phases: Vec::new(),
             composition: None,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),
@@ -319,7 +320,13 @@ impl Engine for VelloCpu {
     }
 
     fn device(&self) -> DeviceInfo {
+        let threads = self.settings.num_threads;
         DeviceInfo {
+            adapter: Some(if threads == 0 {
+                "vello-cpu (single-threaded dispatcher)".to_owned()
+            } else {
+                format!("vello-cpu ({threads} threads)")
+            }),
             cpu: cpu_model(),
             thermal_celsius: thermal_celsius(),
             ..Default::default()
