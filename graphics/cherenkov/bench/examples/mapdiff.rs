@@ -1,6 +1,7 @@
 //! Prints the adaptive and CSS f64 maps' outputs for hand-picked linear
 //! sRGB inputs — a spot check of how far the two maps land apart (#158).
 
+use cherenkov_oracle::color::linear_p3_to_linear_srgb;
 use cherenkov_oracle::gamut::{
     delta_e_ok, gamut_map_srgb_analytic, linear_srgb_to_oklab, oklab_to_linear_srgb,
 };
@@ -56,11 +57,12 @@ fn gamut_map_srgb_css(rgb: [f64; 3]) -> [f64; 3] {
 }
 
 fn main() {
-    for (name, srgb) in [
-        ("p3 green", [-0.224_940_2, 1.042_056_9, -0.078_636_05]),
-        ("p3 red", [1.224_940_2, -0.042_056_95, -0.019_637_55]),
-        ("p3 blue", [-0.019_637_55, -0.078_636_05, 1.098_273_6]),
+    for (name, p3) in [
+        ("p3 green", [0.0, 1.0, 0.0]),
+        ("p3 red", [1.0, 0.0, 0.0]),
+        ("p3 blue", [0.0, 0.0, 1.0]),
     ] {
+        let srgb = linear_p3_to_linear_srgb(p3);
         let a = gamut_map_srgb_analytic(srgb);
         let c = gamut_map_srgb_css(srgb);
         let de = delta_e_ok(linear_srgb_to_oklab(a), linear_srgb_to_oklab(c));

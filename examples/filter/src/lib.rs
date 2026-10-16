@@ -17,6 +17,7 @@ use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::graphics::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
+    RetainedMemory,
 };
 use waterui::graphics::wgpu;
 use waterui::prelude::slider::slider;
@@ -406,10 +407,12 @@ impl Effect for FillEffect {
         Ok(false)
     }
 
-    // Fills the host's output directly; it keeps no targets of its own.
-    fn target_bytes(&self) -> u64 {
-        0
+    // Fills the host's output directly; it keeps nothing of its own.
+    fn retained_memory(&self) -> RetainedMemory {
+        RetainedMemory::default()
     }
+
+    fn trim(&mut self) {}
 }
 
 /// A custom `Effect` over a view.

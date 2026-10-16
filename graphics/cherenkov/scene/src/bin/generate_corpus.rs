@@ -23,10 +23,10 @@ use cherenkov_scene::kurbo::{
 };
 use cherenkov_scene::{
     BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Color, ColorSpace,
-    Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, ImageColorSpace,
-    ImageEncoding, ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live, Motion,
-    MotionAnimation, NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash, Sampling,
-    Scene, SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
+    Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, Group, GroupItem,
+    ImageColorSpace, ImageEncoding, ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live,
+    Motion, MotionAnimation, NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash,
+    Sampling, Scene, SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
 };
 use fontique::FontWeight;
 use parley::{
@@ -4116,6 +4116,31 @@ fn run() -> Result<(), SceneError> {
         });
     }
 
+    // A wide-gamut stop interpolated in sRGB: Display P3 (0, 0.85, 0.05)
+    // has a negative sRGB red component, so the interpolated encoded value
+    // goes below zero and its decode must stay sign-preserving (#2825).
+    corpus.scene("grad-linear-srgb-negative", 128, 128, white, |l| {
+        l.fill(
+            gradient_rect.clone(),
+            Paint::Linear(LinearGradient {
+                start: Point::new(16.0, 64.0),
+                end: Point::new(112.0, 64.0),
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::new(ColorSpace::DisplayP3, [0.0, 0.85, 0.05, 1.0]),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::new(ColorSpace::DisplayP3, [0.9, 0.2, 1.0, 1.0]),
+                    },
+                ],
+                extend: Extend::Pad,
+                interpolation: ColorSpace::Srgb,
+            }),
+        );
+    });
+
     // Images in wide-gamut and half-float encodings. The P3 PNG carries
     // Display-P3-encoded bytes; the f16 blobs are linear P3 straight alpha
     // with a radial ramp to 16.0 and some alpha < 1 texels.
@@ -7376,6 +7401,64 @@ fn run() -> Result<(), SceneError> {
                     ],
                 });
             });
+        }
+    });
+
+    // Filters inside a group blend space (#1979): each cell isolates a
+    // hard black|white edge, crossed by a P3-only bar and an HDR bar, in
+    // a filtered group. The top row's groups composite in sRGB-encoded
+    // space, the bottom row's identical groups in linear space; the left
+    // column blurs, the right column applies a colour matrix. A filter
+    // works in the working space whatever space its group stores, so the
+    // two rows render alike.
+    corpus.scene("filter-group-encoded", 256, 256, srgb(0.5, 0.5, 0.5), |l| {
+        let cell = |x0: f64, y0: f64| {
+            let fill = |shape: Shape, color: Color| {
+                GroupItem::Draw(Draw::Fill {
+                    shape,
+                    rule: FillRule::NonZero,
+                    paint: solid(color),
+                })
+            };
+            vec![
+                fill(
+                    Shape::rect(x0 + 8.0, y0 + 8.0, 56.0, 112.0),
+                    srgb(0.0, 0.0, 0.0),
+                ),
+                fill(
+                    Shape::rect(x0 + 64.0, y0 + 8.0, 56.0, 112.0),
+                    srgb(1.0, 1.0, 1.0),
+                ),
+                fill(
+                    Shape::rect(x0 + 16.0, y0 + 32.0, 96.0, 20.0),
+                    p3(0.0, 0.85, 0.05),
+                ),
+                fill(
+                    Shape::rect(x0 + 16.0, y0 + 76.0, 96.0, 20.0),
+                    hdr(2.5, 2.2, 1.8),
+                ),
+            ]
+        };
+        let tint = LayerFilter::ColorMatrix {
+            matrix: [
+                0.6, 0.3, 0.1, 0.05, //
+                0.1, 0.5, 0.2, 0.0, //
+                0.2, 0.1, 0.9, 0.1,
+            ],
+        };
+        for (y0, blend_space) in [(0.0, BlendSpace::SrgbEncoded), (128.0, BlendSpace::Linear)] {
+            for (x0, filter) in [
+                (0.0, LayerFilter::GaussianBlur { sigma: 4.0 }),
+                (128.0, tint.clone()),
+            ] {
+                l.group(Group {
+                    items: cell(x0, y0),
+                    opacity: 1.0,
+                    blend: BlendMode::Normal,
+                    blend_space,
+                    filter: Some(Box::new(filter)),
+                });
+            }
         }
     });
 

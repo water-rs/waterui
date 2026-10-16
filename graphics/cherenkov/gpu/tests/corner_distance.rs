@@ -51,7 +51,7 @@ struct Sweep {
 /// the nearest boundary point is not unique and the normal is either of
 /// the tied ones.
 fn sweep(shape: &Shape, probes: &[[f64; 2]], medial: impl Fn([f64; 2]) -> bool) -> Sweep {
-    let source = include_str!("../src/render/shared.wgsl");
+    let source = include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl"));
     let module = naga::front::wgsl::parse_str(source).expect("shared.wgsl parses");
     let eval = Eval::new(&module);
     let sdf_sample = eval.function("sdf_sample");
