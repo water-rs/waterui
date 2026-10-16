@@ -4040,7 +4040,7 @@ mod tests {
         // the same source built under the workspace release profile.
         assert_eq!(release["lto"].as_bool(), Some(true));
         assert_eq!(release["codegen-units"].as_integer(), Some(1));
-        assert_eq!(release["opt-level"].as_str(), Some("z"));
+        assert_eq!(release["opt-level"].as_integer(), Some(3));
         assert_eq!(release["strip"].as_bool(), Some(true));
         assert_eq!(release["panic"].as_str(), Some("abort"));
     }
@@ -4449,7 +4449,7 @@ fn generated_profiles_table(project_packages: &BTreeSet<String>) -> cargo_toml::
     let release = cargo_toml::Profile {
         lto: Some(cargo_toml::LtoSetting::Fat),
         codegen_units: Some(1),
-        opt_level: Some(toml::Value::String("z".to_string())),
+        opt_level: Some(toml::Value::Integer(3)),
         strip: Some(cargo_toml::StripSetting::Symbols),
         panic: Some("abort".to_string()),
         ..Default::default()
