@@ -72,6 +72,9 @@ enum ExportPool {}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Bound {
     Engine(PipelineKind, ShaderVariant),
+    /// A coverage-order pass's partial-phase pipeline, from the cell
+    /// module (`true`) for GPU-routed ranges or the simple one.
+    Coverage(bool),
     External,
     /// The projective composite, source-over or replace.
     Projective(bool),
@@ -963,12 +966,16 @@ pub struct GpuRenderer {
     /// the union-field pipelines for backdrop-union members. Slot 3 is
     /// never built at init: the variant-3 module and pipeline are
     /// created on the first union or outer-band member (on wasm, by
-    /// `prepare_lazy_pipelines` before the frame that needs them).
-    pipelines: [[[Option<wgpu::RenderPipeline>; 4]; 2]; 2],
-    /// `[opaque, partial]` coverage pipelines, same cell policy as the
-    /// core set: built at init under `core_pipelines_eager()` (always,
-    /// on wasm), else created at the first coverage pass (#170 B3, #49).
-    coverage_pipelines: [Option<wgpu::RenderPipeline>; 2],
+    /// `prepare_lazy_pipelines` before the frame that needs them). Slot
+    /// 4 holds the cell-buffer pipelines of GPU-routed ranges
+    /// (`DrawRange::module`), created at the first such draw.
+    pipelines: [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
+    /// `[module][opaque, partial]` coverage pipelines, same cell policy
+    /// as the core set: the simple module's pair is built at init under
+    /// `core_pipelines_eager()` (always, on wasm), else created at the
+    /// first coverage pass (#170 B3, #49); the cell module's pair, which
+    /// GPU-routed ranges draw with, at the first such range.
+    coverage_pipelines: [[Option<wgpu::RenderPipeline>; 2]; 2],
     /// The pipeline layout every core and backdrop pipeline shares.
     pipeline_layout: wgpu::PipelineLayout,
     #[cfg(target_vendor = "apple")]
@@ -1908,6 +1915,7 @@ const fn variant_index(variant: ShaderVariant) -> usize {
         ShaderVariant::Shadow => 1,
         ShaderVariant::Full => 2,
         ShaderVariant::Union => 3,
+        ShaderVariant::Cell => 4,
     }
 }
 
@@ -2166,7 +2174,7 @@ impl PipelineFactory<'_> {
 /// created at first use so preparation lands inside the frame that needs
 /// it (#170).
 fn core_pipeline<'m>(
-    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 4]; 2]; 2],
+    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
     factory: &PipelineFactory<'_>,
     format: wgpu::TextureFormat,
     replace: bool,
@@ -2184,16 +2192,21 @@ fn core_pipeline<'m>(
 /// the same cell policy as `core_pipeline`: an empty cell is created at
 /// the first coverage pass that needs it (#170 B3, #49).
 fn coverage_pipeline<'m>(
-    pipelines: &'m mut [Option<wgpu::RenderPipeline>; 2],
+    pipelines: &'m mut [[Option<wgpu::RenderPipeline>; 2]; 2],
     factory: &PipelineFactory<'_>,
     phase: CoveragePhase,
+    gpu: bool,
 ) -> Result<&'m wgpu::RenderPipeline, RenderError> {
-    let cell = &mut pipelines[phase as usize];
+    let cell = &mut pipelines[usize::from(gpu)][phase as usize];
     if cell.is_none() {
         *cell = Some(factory.create(
             TARGET_FORMAT,
             CoveragePass::Coverage(phase),
-            ShaderVariant::Simple,
+            if gpu {
+                ShaderVariant::Cell
+            } else {
+                ShaderVariant::Simple
+            },
         )?);
     }
     Ok(cell.as_ref().expect("coverage pipeline ready"))
@@ -2358,7 +2371,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         let mut pipelines = std::array::from_fn(|_| {
             std::array::from_fn(|_| std::array::from_fn(|_| None::<wgpu::RenderPipeline>))
         });
-        let mut coverage_pipelines = [None, None];
+        let mut coverage_pipelines = [[None, None], [None, None]];
         // The closed core set, deduplicated by format slot: when surface
         // and scratch share `Rgba16Float` every cell lands in slot 0 and
         // the later iteration's `is_none` skips its duplicates (#170).
@@ -2385,7 +2398,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                     }
                 }
             }
-            for (cell, phase) in coverage_pipelines
+            for (cell, phase) in coverage_pipelines[0]
                 .iter_mut()
                 .zip([CoveragePhase::Opaque, CoveragePhase::Partial])
             {
@@ -2747,7 +2760,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
             }
         }
     }
-    let coverage_pipelines = <[_; 2]>::from(
+    let simple_coverage = <[_; 2]>::from(
         futures_util::future::try_join(
             create_pipeline(
                 &device,
@@ -2771,6 +2784,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         .await?,
     )
     .map(Some);
+    let coverage_pipelines = [simple_coverage, [None, None]];
     fire_probe(
         &config,
         CreationPhase::CorePipelines,
@@ -8861,10 +8875,12 @@ impl GpuRenderer {
             #[cfg(all(unix, not(target_vendor = "apple")))]
             let target_size = (texture.width(), texture.height());
             if coverage_order {
+                let mut gpu_module = false;
                 render_pass.set_pipeline(coverage_pipeline(
                     &mut self.coverage_pipelines,
                     &factory,
                     CoveragePhase::Opaque,
+                    gpu_module,
                 )?);
                 render_pass.set_bind_group(
                     0,
@@ -8888,6 +8904,16 @@ impl GpuRenderer {
                     });
                 render_pass.set_bind_group(1, &*bind, &[]);
                 for range in &pass.ranges {
+                    if range.gpu.is_some() != gpu_module {
+                        gpu_module = range.gpu.is_some();
+                        render_pass.set_pipeline(coverage_pipeline(
+                            &mut self.coverage_pipelines,
+                            &factory,
+                            CoveragePhase::Opaque,
+                            gpu_module,
+                        )?);
+                        stats.pipeline_switches += 1;
+                    }
                     if let Some(g) = range.gpu {
                         render_pass.draw_indirect(
                             self.gpu_cov.args_buffer(),
@@ -8914,6 +8940,7 @@ impl GpuRenderer {
                     &mut self.coverage_pipelines,
                     &factory,
                     CoveragePhase::Partial,
+                    false,
                 )?);
                 render_pass
                     .set_index_buffer(self.quad_indices.slice(..), wgpu::IndexFormat::Uint16);
@@ -8957,7 +8984,11 @@ impl GpuRenderer {
             render_pass.set_bind_group(0, &self.bind0, &[offset]);
             // External ranges bind a slot's group-1 over the external
             // pipeline; an engine range after one must rebind its pipeline.
-            let mut pipeline = Bound::Engine(PipelineKind::SrcOver, ShaderVariant::Simple);
+            let mut pipeline = if coverage_order {
+                Bound::Coverage(false)
+            } else {
+                Bound::Engine(PipelineKind::SrcOver, ShaderVariant::Simple)
+            };
             let backdrop_slot = scratch_backdrop.then_some(match pass.target {
                 Target::Part(_) | Target::Projected(_) | Target::Plane(_) => 0,
                 Target::Scratch(_) | Target::Backdrop { .. } => 1,
@@ -9299,83 +9330,98 @@ impl GpuRenderer {
                     ri += 1;
                     continue;
                 }
-                let want = Bound::Engine(range.pipeline, range.variant);
+                let want = if coverage_order {
+                    Bound::Coverage(range.gpu.is_some())
+                } else {
+                    Bound::Engine(range.pipeline, range.module())
+                };
                 if want != pipeline {
                     pipeline = want;
                     stats.pipeline_switches += 1;
-                    let Bound::Engine(kind, variant) = pipeline else {
-                        unreachable!("engine want")
-                    };
-                    let pipe = match kind {
-                        PipelineKind::Effect { id, replace } => {
-                            let entry = self.backdrop_shaders.get_mut(&id).ok_or_else(|| {
-                                RenderError::Render(format!(
-                                    "backdrop shader {id} is not registered"
-                                ))
-                            })?;
-                            let union = variant == ShaderVariant::Union;
-                            let replace_i = usize::from(replace);
-                            let missing = if union {
-                                entry.union[replace_i][format_i].is_none()
-                            } else {
-                                entry.plain[replace_i][format_i].is_none()
-                            };
-                            if missing {
-                                // A union-shaped or replace pipeline builds
-                                // at its first use — wasm fills them ahead
-                                // of encode in `prepare_lazy_pipelines`.
-                                #[cfg(not(target_arch = "wasm32"))]
-                                {
-                                    let module = if union {
-                                        &*entry.union_module.get_or_insert_with(|| {
-                                            self.device.create_shader_module(
-                                                wgpu::ShaderModuleDescriptor {
-                                                    label: Some("backdrop effect (union)"),
-                                                    source: wgpu::ShaderSource::Wgsl(
-                                                        (&*entry.union_source).into(),
-                                                    ),
-                                                },
-                                            )
-                                        })
-                                    } else {
-                                        &entry.plain_module
-                                    };
-                                    let built = create_pipeline(
-                                        &self.device,
-                                        &self.config,
-                                        &self.pipeline_layout,
-                                        self.pipeline_cache.as_ref(),
-                                        module,
-                                        target_format,
-                                        CoveragePass::Painter(replace),
-                                    )
-                                    .map_err(|e| {
-                                        RenderError::Render(format!("backdrop shader {id}: {e}"))
-                                    })?;
-                                    let cells = if union {
-                                        &mut entry.union
-                                    } else {
-                                        &mut entry.plain
-                                    };
-                                    cells[replace_i][format_i] = Some(built);
-                                }
-                                #[cfg(target_arch = "wasm32")]
-                                return Err(RenderError::Render(format!(
-                                    "backdrop shader {id}'s pipeline was not prepared"
-                                )));
-                            }
-                            let cells = if union { &entry.union } else { &entry.plain };
-                            cells[replace_i][format_i]
-                                .as_ref()
-                                .expect("the effect pipeline is built")
-                        }
-                        kind => core_pipeline(
-                            &mut self.pipelines,
+                    let pipe = match pipeline {
+                        Bound::Coverage(gpu) => coverage_pipeline(
+                            &mut self.coverage_pipelines,
                             &factory,
-                            target_format,
-                            kind == PipelineKind::Replace,
-                            variant,
+                            CoveragePhase::Partial,
+                            gpu,
                         )?,
+                        Bound::External | Bound::Projective(_) => {
+                            unreachable!("a range here wants an engine or coverage pipeline")
+                        }
+                        Bound::Engine(kind, variant) => match kind {
+                            PipelineKind::Effect { id, replace } => {
+                                let entry =
+                                    self.backdrop_shaders.get_mut(&id).ok_or_else(|| {
+                                        RenderError::Render(format!(
+                                            "backdrop shader {id} is not registered"
+                                        ))
+                                    })?;
+                                let union = variant == ShaderVariant::Union;
+                                let replace_i = usize::from(replace);
+                                let missing = if union {
+                                    entry.union[replace_i][format_i].is_none()
+                                } else {
+                                    entry.plain[replace_i][format_i].is_none()
+                                };
+                                if missing {
+                                    // A union-shaped or replace pipeline builds
+                                    // at its first use — wasm fills them ahead
+                                    // of encode in `prepare_lazy_pipelines`.
+                                    #[cfg(not(target_arch = "wasm32"))]
+                                    {
+                                        let module = if union {
+                                            &*entry.union_module.get_or_insert_with(|| {
+                                                self.device.create_shader_module(
+                                                    wgpu::ShaderModuleDescriptor {
+                                                        label: Some("backdrop effect (union)"),
+                                                        source: wgpu::ShaderSource::Wgsl(
+                                                            (&*entry.union_source).into(),
+                                                        ),
+                                                    },
+                                                )
+                                            })
+                                        } else {
+                                            &entry.plain_module
+                                        };
+                                        let built = create_pipeline(
+                                            &self.device,
+                                            &self.config,
+                                            &self.pipeline_layout,
+                                            self.pipeline_cache.as_ref(),
+                                            module,
+                                            target_format,
+                                            CoveragePass::Painter(replace),
+                                        )
+                                        .map_err(|e| {
+                                            RenderError::Render(format!(
+                                                "backdrop shader {id}: {e}"
+                                            ))
+                                        })?;
+                                        let cells = if union {
+                                            &mut entry.union
+                                        } else {
+                                            &mut entry.plain
+                                        };
+                                        cells[replace_i][format_i] = Some(built);
+                                    }
+                                    #[cfg(target_arch = "wasm32")]
+                                    return Err(RenderError::Render(format!(
+                                        "backdrop shader {id}'s pipeline was not prepared"
+                                    )));
+                                }
+                                let cells = if union { &entry.union } else { &entry.plain };
+                                cells[replace_i][format_i]
+                                    .as_ref()
+                                    .expect("the effect pipeline is built")
+                            }
+                            kind => core_pipeline(
+                                &mut self.pipelines,
+                                &factory,
+                                target_format,
+                                kind == PipelineKind::Replace,
+                                variant,
+                            )?,
+                        },
                     };
                     render_pass.set_pipeline(pipe);
                 }

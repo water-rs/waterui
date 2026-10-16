@@ -94,6 +94,12 @@ pub enum ShaderVariant {
     /// `Full` plus the backdrop union field: the module carries the
     /// member-record fold and its ownership weights.
     Union,
+    /// `Full` plus the GPU coverage cell buffer (issue #2543): the module
+    /// reads a GPU-routed path's partial cells from the frame's cell-texel
+    /// buffer. No range is lowered with it — [`DrawRange::module`] selects
+    /// it for GPU-routed ranges, so the pipelines every other draw uses
+    /// carry none of the cell-buffer code.
+    Cell,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -129,6 +135,18 @@ pub struct DrawRange {
     /// kernels write its spans and cells into the instance buffer's
     /// tail and the draw reads its indirect arguments.
     pub gpu: Option<u32>,
+}
+
+impl DrawRange {
+    /// The engine module the range's pipeline is built from: its
+    /// `variant`, except that a GPU-routed range reads its cells from the
+    /// cell-texel buffer, which only the `Cell` and `Union` modules carry.
+    pub const fn module(&self) -> ShaderVariant {
+        match (self.gpu, self.variant) {
+            (Some(_), ShaderVariant::Union) | (None, _) => self.variant,
+            (Some(_), _) => ShaderVariant::Cell,
+        }
+    }
 }
 
 /// One render pass.
@@ -6946,7 +6964,13 @@ mod tests {
         let mut scratch = AnchorScratch::default();
         assert_eq!(scratch.heap_bytes(), 0);
         let mut raster_scratch = path::EmitScratch::new();
-        let mut lowering = Lowering::new(&mut frame, (32, 32), &mut scratch, &mut raster_scratch, true);
+        let mut lowering = Lowering::new(
+            &mut frame,
+            (32, 32),
+            &mut scratch,
+            &mut raster_scratch,
+            true,
+        );
         lowering.anchor_scratch.pos.insert(anchor_a, (None, 1));
         lowering.backdrops.insert(7, plan(anchor_a, member));
         lowering.anchor_scratch.members.push((7, None, 2));

@@ -7,11 +7,14 @@ use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{Module, front::wgsl};
 
 const SHADER: &str = include_str!("../src/render/shader.wgsl");
-/// The build-time outputs the runtime assembles modules from: the
-/// `// union-stub`-stripped shader and the `UNION_MAX_MEMBERS`
-/// fragment — read from `OUT_DIR` so the test cannot drift from what
-/// `build.rs` ships.
-const SHADER_NO_UNION: &str = include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl"));
+/// The build-time outputs the runtime assembles modules from: the cell
+/// variant's `// union-stub`-stripped shader, the plain variants' shader
+/// and shared prelude with `// cell-buffer` spans also stripped, and the
+/// `UNION_MAX_MEMBERS` fragment — read from `OUT_DIR` so the test cannot
+/// drift from what `build.rs` ships.
+const SHADER_CELL: &str = include_str!(concat!(env!("OUT_DIR"), "/shader_cell.wgsl"));
+const SHADER_PLAIN: &str = include_str!(concat!(env!("OUT_DIR"), "/shader_plain.wgsl"));
+const SHARED_PLAIN: &str = include_str!(concat!(env!("OUT_DIR"), "/shared_plain.wgsl"));
 const UNION_MAX: &str = include_str!(concat!(env!("OUT_DIR"), "/union_max_members.wgsl"));
 const SHARED: &str = include_str!("../src/render/shared.wgsl");
 const UNION: &str = include_str!("../src/render/union.wgsl");
@@ -25,17 +28,18 @@ const RESOLVE: &str = include_str!("../src/render/resolve.wgsl");
 const MSL_VERSION: (u8, u8) = (2, 0);
 
 fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
-    // The engine module is `shared.wgsl`, `shader.wgsl` then `blend.wgsl`,
-    // as in build.rs: the union variant additionally prepends
-    // `UNION_MAX_MEMBERS` and links `union.wgsl`; the plain variants use
-    // the shipped `shader_no_union.wgsl`.
-    let (cap, shader, union) = if variant == 3 {
-        (UNION_MAX, SHADER, UNION)
-    } else {
-        ("", SHADER_NO_UNION, "")
+    // The engine module is the shared prelude, the shader then
+    // `blend.wgsl`, as in build.rs: the union variant additionally
+    // prepends `UNION_MAX_MEMBERS` and links `union.wgsl`; the cell
+    // variant uses the full prelude with the union-stripped shader, and
+    // the plain variants the cell-stripped prelude and shader.
+    let (cap, shared, shader, union) = match variant {
+        3 => (UNION_MAX, SHARED, SHADER, UNION),
+        4 => ("", SHARED, SHADER_CELL, ""),
+        _ => ("", SHARED_PLAIN, SHADER_PLAIN, ""),
     };
     let source =
-        format!("const VARIANT: u32 = {variant}u;\n{cap}{SHARED}\n{shader}\n{union}{BLEND}");
+        format!("const VARIANT: u32 = {variant}u;\n{cap}{shared}\n{shader}\n{union}{BLEND}");
     let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
     let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
         .validate(&module)
@@ -45,7 +49,7 @@ fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
 
 split_test! {
 fn every_variant_emits_msl() {
-    for variant in 0..4 {
+    for variant in 0..5 {
         let (module, info) = composed(variant);
         let options = msl::Options {
             lang_version: MSL_VERSION,
@@ -59,7 +63,7 @@ fn every_variant_emits_msl() {
 
 split_test! {
 fn every_variant_emits_spirv() {
-    for variant in 0..4 {
+    for variant in 0..5 {
         let (module, info) = composed(variant);
         let mut writer = spv::Writer::new(&spv::Options::default())
             .unwrap_or_else(|e| panic!("variant {variant}: spv: {e}"));
@@ -74,7 +78,7 @@ fn every_variant_emits_spirv() {
 
 split_test! {
 fn every_variant_emits_hlsl() {
-    for variant in 0..4 {
+    for variant in 0..5 {
         let (module, info) = composed(variant);
         let options = hlsl::Options::default();
         let mut out = String::new();

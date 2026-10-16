@@ -19,6 +19,8 @@ const VARIANT_SIMPLE: u32 = 0u;
 const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
 const VARIANT_UNION: u32 = 3u;
+// Full plus the `// cell-buffer` spans: GPU-routed path draws (#2543).
+const VARIANT_CELL: u32 = 4u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
@@ -709,7 +711,11 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     var inst = instances[ii];
     var ellipse = false;
     var ellipse_half = vec2<f32>(0.0);
-    var inst_index = select(ii, bitcast<u32>(inst.params.x), (inst.meta_.w & 0x80000000u) != 0u);
+    var inst_index = ii;
+    // cell-buffer
+    // A GPU-routed path's emitted instances order by its anchor.
+    inst_index = select(ii, bitcast<u32>(inst.params.x), (inst.meta_.w & 0x80000000u) != 0u);
+    // cell-buffer
     var tier = 0u;
     var promoted = false;
     if inst.meta_.x == KIND_REGION {
@@ -788,7 +794,10 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
 @vertex
 fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PartialOut {
     var out = quad_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[vi], ii);
-    let depth_index = select(ii, bitcast<u32>(instances[ii].params.x), (instances[ii].meta_.w & 0x80000000u) != 0u);
+    var depth_index = ii;
+    // cell-buffer
+    depth_index = select(ii, bitcast<u32>(instances[ii].params.x), (instances[ii].meta_.w & 0x80000000u) != 0u);
+    // cell-buffer
     out.position.z = bitcast<f32>(0x3e000000u + depth_index * 8u);
     let inst = instances[ii];
     let s = inst.shape;
@@ -817,9 +826,12 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     let inst = instances[in.instance];
     var data: VsOut;
     data.local = in.local;
+    // cell-buffer
+    // A buffer cell's origin, interior run and flag for `path_cell_coverage`.
     data.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
     data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
     data.meta_.w = inst.meta_.w;
+    // cell-buffer
     data.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
     data.color = inst.color;
     data.params.y = inst.params.y;
