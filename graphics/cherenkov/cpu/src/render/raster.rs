@@ -17,6 +17,7 @@ use rustc_hash::FxHashMap;
 use std::ops::Range;
 
 use cherenkov::FillRule;
+use cherenkov::lowering::scanline::{EdgeX, RowWalk, walk_rows};
 
 use crate::render::lower::{
     BoxClip, CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect,
@@ -514,15 +515,28 @@ impl Accum {
 
     /// Accumulates the signed area of the segment `(x0,y0)-(x1,y1)`, where
     /// `y` is band-local (`0..h`).
+    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        walk_rows(Line {
+            acc: self,
+            p: [x0, y0, x1, y1],
+        });
+    }
+
+    /// [`Self::draw_line`] with every row boundary evaluated from the
+    /// segment's origin by `E` ([`cherenkov::lowering::scanline`]), never
+    /// by advancing an absolute x row by row.
+    #[inline(always)]
     #[expect(
+        clippy::inline_always,
         clippy::similar_names,
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::suboptimal_flops,
-        reason = "a direct port of font-rs's scanline area accounting"
+        reason = "inlined into `walk_rows`' instantiation for `E`; a direct port of \
+                  font-rs's scanline area accounting"
     )]
-    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+    fn accumulate<E: EdgeX>(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
         if (y0 - y1).abs() <= f32::EPSILON {
             return;
         }
@@ -531,16 +545,14 @@ impl Accum {
         } else {
             (-1.0, x1, y1, x0, y0)
         };
-        let dxdy = (x1 - x0) / (y1 - y0);
-        let mut x = x0;
-        if y0 < 0.0 {
-            x -= y0 * dxdy;
-        }
+        let line = E::new((x1 - x0) / (y1 - y0), x0);
+        let mut x = if y0 < 0.0 { line.at(-y0) } else { x0 };
         let y_start = y0.max(0.0) as usize;
         let y_end = self.h.min((y1.ceil() as usize).min(self.h));
         for y in y_start..y_end {
-            let dy = ((y + 1) as f32).min(y1) - (y as f32).max(y0);
-            let xnext = x + dxdy * dy;
+            let bottom = ((y + 1) as f32).min(y1);
+            let dy = bottom - (y as f32).max(y0);
+            let xnext = line.at(bottom - y0);
             let d = dy * dir;
             let (xa, xb) = if x < xnext { (x, xnext) } else { (xnext, x) };
             let xa_floor = xa.floor();
@@ -607,6 +619,23 @@ impl Accum {
                 f(x, cov);
             }
         }
+    }
+}
+
+/// One [`Accum::draw_line`] call, run by [`walk_rows`].
+struct Line<'a> {
+    acc: &'a mut Accum,
+    p: [f32; 4],
+}
+
+impl RowWalk for Line<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    #[expect(clippy::inline_always, reason = "see `RowWalk::walk`")]
+    fn walk<E: EdgeX>(self) {
+        let [x0, y0, x1, y1] = self.p;
+        self.acc.accumulate::<E>(x0, y0, x1, y1);
     }
 }
 
@@ -2538,7 +2567,77 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::reduce_rows;
+    use super::{Accum, Edge, coverage_mask, reduce_rows};
+    use cherenkov::FillRule;
+
+    /// The long edges of water-rs/waterui#2665 against the independent f64
+    /// area of the same polygon: through one accumulator over the whole
+    /// height, as glyph masks rasterize, and through the 16-row bands of
+    /// a coverage mask, in both directions and under both fill rules.
+    #[test]
+    fn tall_edges_agree_with_independent_pixel_area() {
+        let cases = [
+            (
+                [(900.0_f32, 0.0_f32), (512.0, 900.0), (900.0, 900.0)],
+                (598_u16, 699_u16),
+            ),
+            (
+                [
+                    (689.4518, 1.803_737_2),
+                    (532.2187, 337.7357),
+                    (668.394_17, 2.898_188_6),
+                ],
+                (534, 332),
+            ),
+        ];
+        let size = 901;
+        for (vertices, pixel) in cases {
+            let (px, py) = (usize::from(pixel.0), usize::from(pixel.1));
+            for reverse in [false, true] {
+                let mut reference = cherenkov_oracle::coverage::Coverage::new(1, 1);
+                let mut edges = Vec::new();
+                for i in 0..vertices.len() {
+                    let (mut a, mut b) = (vertices[i], vertices[(i + 1) % vertices.len()]);
+                    if reverse {
+                        std::mem::swap(&mut a, &mut b);
+                    }
+                    edges.push(Edge {
+                        x0: a.0,
+                        y0: a.1,
+                        x1: b.0,
+                        y1: b.1,
+                    });
+                    reference.add_line(
+                        f64::from(a.0) - f64::from(pixel.0),
+                        f64::from(a.1) - f64::from(pixel.1),
+                        f64::from(b.0) - f64::from(pixel.0),
+                        f64::from(b.1) - f64::from(pixel.1),
+                    );
+                }
+                let expected = reference.finish(cherenkov_scene::FillRule::NonZero)[0];
+                for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                    let mut acc = Accum::new(size, size);
+                    for e in &edges {
+                        acc.draw_line(e.x0, e.y0, e.x1, e.y1);
+                    }
+                    let mut whole = 0.0;
+                    acc.coverage_row(py, rule, 0, size, |x, c| {
+                        if x == px {
+                            whole = c;
+                        }
+                    });
+                    let banded = coverage_mask(&edges, rule, size, size)[py * size + px];
+                    for (route, actual) in [("whole", whole), ("banded", banded)] {
+                        let actual = f64::from(actual);
+                        assert!(
+                            (actual - expected).abs() < 0.0002,
+                            "{route} {rule:?} reverse={reverse} ({px},{py}): {actual} versus {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     /// Texel `(x, y)` of the source level: every channel varies, alpha
     /// included.

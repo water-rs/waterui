@@ -8,15 +8,20 @@
 //! [`BandRaster`] carries the same deposits through two `STRIP_H`-row band
 //! buffers — accumulation and coverage — walking the grid top to bottom, so
 //! the working set scales with the grid's width instead of its area. Each
-//! edge keeps a cursor — its next deposit row and the x recurrence at that
-//! row — so its scanline math resumes across bands unchanged, and a deposit
-//! that wraps a row forward rides its edge into the next band: every cell's
-//! contribution order stays exactly as the dense walk wrote it.
+//! edge keeps a cursor — its origin and its next deposit row — so its
+//! scanline math resumes across bands unchanged, and a deposit that wraps a
+//! row forward rides its edge into the next band: every cell's contribution
+//! order stays exactly as the dense walk wrote it.
+//!
+//! Both walks evaluate every row boundary from the edge's origin
+//! ([`cherenkov::lowering::scanline`]), never by advancing an absolute x row by row, so a tall
+//! edge does not accumulate rounding error down its length.
 
 #[cfg(test)]
 use std::mem::size_of;
 
 use cherenkov::FillRule;
+use cherenkov::lowering::scanline::{EdgeX, RowWalk, walk_rows};
 
 use crate::render::path::STRIP_H;
 
@@ -39,14 +44,24 @@ impl Raster {
     }
 
     /// Accumulates the signed area of the segment `p0 -> p1`.
+    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        walk_rows(Line {
+            raster: self,
+            p: [x0, y0, x1, y1],
+        });
+    }
+
+    /// [`Self::draw_line`] with row boundaries evaluated by `E`.
+    #[inline(always)]
     #[expect(
+        clippy::inline_always,
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        clippy::suboptimal_flops,
-        reason = "a direct port of font-rs's scanline area accounting"
+        reason = "inlined into `walk_rows`' instantiation for `E`; a direct port of \
+                  font-rs's scanline area accounting"
     )]
-    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+    fn accumulate<E: EdgeX>(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
         if (y0 - y1).abs() <= f32::EPSILON {
             return;
         }
@@ -55,11 +70,8 @@ impl Raster {
         } else {
             (-1.0, x1, y1, x0, y0)
         };
-        let dxdy = (x1 - x0) / (y1 - y0);
-        let mut x = x0;
-        if y0 < 0.0 {
-            x -= y0 * dxdy;
-        }
+        let line = E::new((x1 - x0) / (y1 - y0), x0);
+        let mut x = if y0 < 0.0 { line.at(-y0) } else { x0 };
         let y_start = y0.max(0.0) as usize;
         let y_end = self.h.min((y1.ceil() as usize).min(self.h));
         let len = self.a.len();
@@ -67,8 +79,9 @@ impl Raster {
         let mut put = a.as_mut_slice();
         for y in y_start..y_end {
             let row = y * (self.w + 1);
-            let dy = ((y + 1) as f32).min(y1) - (y as f32).max(y0);
-            let xnext = x + dxdy * dy;
+            let bottom = ((y + 1) as f32).min(y1);
+            let dy = bottom - (y as f32).max(y0);
+            let xnext = line.at(bottom - y0);
             deposit_row(row, dy * dir, x, xnext, len, &mut put);
             x = xnext;
         }
@@ -100,6 +113,23 @@ impl Raster {
             }
         }
         out
+    }
+}
+
+/// One [`Raster::draw_line`] call, run by [`walk_rows`].
+struct Line<'a> {
+    raster: &'a mut Raster,
+    p: [f32; 4],
+}
+
+impl RowWalk for Line<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    #[expect(clippy::inline_always, reason = "see `RowWalk::walk`")]
+    fn walk<E: EdgeX>(self) {
+        let [x0, y0, x1, y1] = self.p;
+        self.raster.accumulate::<E>(x0, y0, x1, y1);
     }
 }
 
@@ -259,16 +289,17 @@ impl<S: DepositSink> Deposit for Put<'_, S> {
     }
 }
 
-/// One clipped edge's band-by-band cursor: its next deposit row `y` and
-/// the x recurrence at that row — the same values the dense walk's loop
-/// carries, so resuming across a band boundary changes nothing.
+/// One clipped edge's band-by-band cursor: its origin `(x0, y0)` and its
+/// next deposit row `y`. Every row boundary, the top of the row a turn
+/// resumes at included, is evaluated from the origin exactly as the dense
+/// walk evaluates it, so resuming across a band boundary changes nothing.
 #[derive(Debug, Clone)]
 struct Edge {
     dir: f32,
     dxdy: f32,
+    x0: f32,
     y0: f32,
     y1: f32,
-    x: f32,
     y: usize,
     y_end: usize,
     /// A deposit that wrapped past the current band. It is applied at the
@@ -281,8 +312,7 @@ impl Edge {
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        clippy::suboptimal_flops,
-        reason = "same port as `scan`"
+        reason = "same port as `Raster::accumulate`"
     )]
     fn new(x0: f32, y0: f32, x1: f32, y1: f32, h: usize) -> Option<Self> {
         if (y0 - y1).abs() <= f32::EPSILON {
@@ -294,18 +324,14 @@ impl Edge {
             (-1.0, x1, y1, x0, y0)
         };
         let dxdy = (x1 - x0) / (y1 - y0);
-        let mut x = x0;
-        if y0 < 0.0 {
-            x -= y0 * dxdy;
-        }
         let y = y0.max(0.0) as usize;
         let y_end = h.min((y1.ceil() as usize).min(h));
         (y < y_end).then_some(Self {
             dir,
             dxdy,
+            x0,
             y0,
             y1,
-            x,
             y,
             y_end,
             pending: None,
@@ -314,18 +340,22 @@ impl Edge {
 
     /// Emits this edge's deposit cells in `[self.y, band_end)` through
     /// `out` as flat grid indices in `[lo, lo + len)` of the `stride`-wide
-    /// grid. A deposit outside the window is queued on the edge, or
-    /// dropped when it wraps into the dead column of the band above.
+    /// grid, with row boundaries evaluated by `E`. A deposit outside the
+    /// window is queued on the edge, or dropped when it wraps into the dead
+    /// column of the band above.
+    #[inline(always)]
     #[expect(
+        clippy::inline_always,
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_possible_wrap,
         clippy::cast_sign_loss,
         clippy::float_cmp,
         clippy::suboptimal_flops,
-        reason = "same port as `scan`; `dy == 1.0` selects the identical bit pattern"
+        reason = "inlined into `walk_rows`' instantiation for `E`; same port as \
+                  `Raster::accumulate`; the origin's own row starts at x0 exactly"
     )]
-    fn turn(
+    fn turn<E: EdgeX>(
         &mut self,
         band_end: usize,
         stride: usize,
@@ -342,9 +372,15 @@ impl Edge {
         let end = self.y_end.min(band_end);
         // The cursor fields run as locals — the `pending` borrow inside
         // `put` would otherwise alias `self` and force a reload per row;
-        // they write back once when the band's rows are done.
-        let (mut x, mut y) = (self.x, self.y);
-        let (y0, y1, dir, dxdy) = (self.y0, self.y1, self.dir, self.dxdy);
+        // the row writes back once when the band's rows are done.
+        let mut y = self.y;
+        let (x0, y0, y1, dir, dxdy) = (self.x0, self.y0, self.y1, self.dir, self.dxdy);
+        let line = E::new(dxdy, x0);
+        // The x where row `y` starts, as the dense walk reached it: the
+        // origin's own row starts at x0, a row above the raster's top at
+        // the boundary 0, and every later row at the previous row's bottom.
+        let top = (y as f32).max(y0);
+        let mut x = if top == y0 { x0 } else { line.at(top - y0) };
         let mut pending = None;
         let mut put = Put {
             sink,
@@ -375,17 +411,15 @@ impl Edge {
         } else {
             while y < end {
                 let row = y * stride;
-                let dy = ((y + 1) as f32).min(y1) - (y as f32).max(y0);
-                // `dxdy * 1.0` is `dxdy` bitwise, so a full-height row
-                // skips the multiply; the value that reaches
-                // `deposit_row` is unchanged.
-                let xnext = if dy == 1.0 { x + dxdy } else { x + dxdy * dy };
+                let bottom = ((y + 1) as f32).min(y1);
+                let dy = bottom - (y as f32).max(y0);
+                let xnext = line.at(bottom - y0);
                 deposit_row(row, dy * dir, x, xnext, grid_len, &mut put);
                 x = xnext;
                 y += 1;
             }
         }
-        (self.x, self.y) = (x, y);
+        self.y = y;
         if pending.is_some() {
             self.pending = pending;
         }
@@ -551,6 +585,13 @@ impl BandRaster {
     /// Accumulates every queued edge band by band, pushing each sealed
     /// band's `rows * w` coverage values into `sink` in row order.
     pub fn finish<F: FnMut(&[f32])>(&mut self, sink: &mut F) {
+        walk_rows(Finish { raster: self, sink });
+    }
+
+    /// [`Self::finish`] with row boundaries evaluated by `E`.
+    #[inline(always)]
+    #[expect(clippy::inline_always, reason = "see `RowWalk::walk`")]
+    fn finish_with<E: EdgeX, F: FnMut(&[f32])>(&mut self, sink: &mut F) {
         self.size_dense();
         let (w, h, stride, rule) = (self.w, self.h, self.stride, self.rule);
         let grid_len = stride * h;
@@ -561,7 +602,7 @@ impl BandRaster {
             let len = rows * stride;
             let acc = self.acc.as_mut_slice();
             for e in &mut self.edges {
-                e.turn(base + rows, stride, lo, len, grid_len, &mut *acc);
+                e.turn::<E>(base + rows, stride, lo, len, grid_len, &mut *acc);
             }
             for r in 0..rows {
                 let mut a = 0.0;
@@ -581,13 +622,21 @@ impl BandRaster {
     /// bound exceeds `1 / SPARSE_MAX_EVENT_DENSITY` of its cells; under
     /// it the band's deposits collect as events. `sink` receives the band
     /// and its base row.
+    pub fn finish_choose<F: FnMut(Band<'_>, usize)>(&mut self, sink: &mut F) {
+        walk_rows(FinishChoose { raster: self, sink });
+    }
+
+    /// [`Self::finish_choose`] with row boundaries evaluated by `E`.
+    #[inline(always)]
     #[expect(
+        clippy::inline_always,
         clippy::many_single_char_names,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
-        reason = "indices and deposit bounds are within the clipped raster grid"
+        reason = "see `RowWalk::walk`; indices and deposit bounds are within the clipped \
+                  raster grid"
     )]
-    pub fn finish_choose<F: FnMut(Band<'_>, usize)>(&mut self, sink: &mut F) {
+    fn finish_choose_with<E: EdgeX, F: FnMut(Band<'_>, usize)>(&mut self, sink: &mut F) {
         let (w, h, stride, rule) = (self.w, self.h, self.stride, self.rule);
         let grid_len = stride * h;
         self.bucket(h.div_ceil(STRIP_H));
@@ -617,7 +666,7 @@ impl BandRaster {
                 }
                 let acc = self.acc.as_mut_slice();
                 for &i in &self.active {
-                    self.edges[i].turn(base + rows, stride, lo, len, grid_len, &mut *acc);
+                    self.edges[i].turn::<E>(base + rows, stride, lo, len, grid_len, &mut *acc);
                 }
                 for r in 0..rows {
                     let mut a = 0.0;
@@ -634,7 +683,14 @@ impl BandRaster {
                 self.events.clear();
                 self.events.reserve(estimate);
                 for &i in &self.active {
-                    self.edges[i].turn(base + rows, stride, lo, len, grid_len, &mut self.events);
+                    self.edges[i].turn::<E>(
+                        base + rows,
+                        stride,
+                        lo,
+                        len,
+                        grid_len,
+                        &mut self.events,
+                    );
                 }
                 // The flat grid index orders events row-major; a stable
                 // sort keeps each cell's deposits in write order.
@@ -703,9 +759,172 @@ impl Default for BandRaster {
     }
 }
 
+/// One [`BandRaster::finish`] call, run by [`walk_rows`].
+struct Finish<'a, F> {
+    raster: &'a mut BandRaster,
+    sink: &'a mut F,
+}
+
+impl<F: FnMut(&[f32])> RowWalk for Finish<'_, F> {
+    type Output = ();
+
+    #[inline(always)]
+    #[expect(clippy::inline_always, reason = "see `RowWalk::walk`")]
+    fn walk<E: EdgeX>(self) {
+        self.raster.finish_with::<E, F>(self.sink);
+    }
+}
+
+/// One [`BandRaster::finish_choose`] call, run by [`walk_rows`].
+struct FinishChoose<'a, F> {
+    raster: &'a mut BandRaster,
+    sink: &'a mut F,
+}
+
+impl<F: FnMut(Band<'_>, usize)> RowWalk for FinishChoose<'_, F> {
+    type Output = ();
+
+    #[inline(always)]
+    #[expect(clippy::inline_always, reason = "see `RowWalk::walk`")]
+    fn walk<E: EdgeX>(self) {
+        self.raster.finish_choose_with::<E, F>(self.sink);
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use cherenkov::lowering::scanline::{Fused, Widened};
+
     use super::*;
+
+    /// Both row evaluations accumulate bit-identical areas, so coverage does
+    /// not depend on whether the CPU has a fused multiply-add, and the band
+    /// walk, resuming each edge from its origin at every band, deposits
+    /// what the dense walk deposits.
+    #[test]
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "random bits shaped into coordinates"
+    )]
+    fn row_evaluations_accumulate_identical_areas() {
+        let mut state = 0x2545_f491_4f6c_dd1d_u64;
+        // Edges cross the top and bottom of the raster; columns stay inside
+        // it, as the path rasterizer's callers guarantee.
+        let mut coordinate = |low: f32, high: f32| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            ((state >> 40) as f32 / 16_777_216.0).mul_add(high - low, low)
+        };
+        let (w, h) = (257, 731);
+        let (mut fused, mut widened) = (Raster::new(w, h), Raster::new(w, h));
+        let mut banded = BandRaster::new();
+        banded.reset(w, h, FillRule::NonZero);
+        for _ in 0..20_000 {
+            let (x0, y0) = (coordinate(0.0, 256.0), coordinate(-4.0, 735.0));
+            let (x1, y1) = (coordinate(0.0, 256.0), coordinate(-4.0, 735.0));
+            fused.accumulate::<Fused>(x0, y0, x1, y1);
+            widened.accumulate::<Widened>(x0, y0, x1, y1);
+            banded.draw(x0, y0, x1, y1);
+        }
+        assert!(
+            fused
+                .a
+                .iter()
+                .zip(&widened.a)
+                .all(|(f, w)| f.to_bits() == w.to_bits()),
+            "fused and widened row evaluations diverge"
+        );
+        let mut out = Vec::new();
+        banded.finish(&mut |band: &[f32]| out.extend_from_slice(band));
+        assert!(
+            out.iter()
+                .zip(&fused.coverage())
+                .all(|(b, d)| b.to_bits() == d.to_bits()),
+            "the band walk diverges from the dense walk"
+        );
+    }
+
+    /// The issue's long edges (#2665) against the independent f64 area of
+    /// the same polygon, through the dense walk and the banded walk the
+    /// path rasterizer takes, in both directions and under both fill rules.
+    #[test]
+    fn tall_edges_agree_with_independent_pixel_area() {
+        let cases = [
+            (
+                [(900.0_f32, 0.0_f32), (512.0, 900.0), (900.0, 900.0)],
+                (598_u16, 699_u16),
+            ),
+            (
+                [
+                    (689.4518, 1.803_737_2),
+                    (532.2187, 337.7357),
+                    (668.394_17, 2.898_188_6),
+                ],
+                (534, 332),
+            ),
+        ];
+        let size = 901;
+        for (vertices, pixel) in cases {
+            let (px, py) = (usize::from(pixel.0), usize::from(pixel.1));
+            for reverse in [false, true] {
+                let mut raster = Raster::new(size, size);
+                // Translate only the independent f64 oracle to the target pixel.
+                // The rasterizers must traverse the full height of each edge.
+                let mut reference = cherenkov_oracle::coverage::Coverage::new(1, 1);
+                let mut edges = Vec::new();
+                for i in 0..vertices.len() {
+                    let (mut a, mut b) = (vertices[i], vertices[(i + 1) % vertices.len()]);
+                    if reverse {
+                        std::mem::swap(&mut a, &mut b);
+                    }
+                    raster.draw_line(a.0, a.1, b.0, b.1);
+                    edges.push((a, b));
+                    reference.add_line(
+                        f64::from(a.0) - f64::from(pixel.0),
+                        f64::from(a.1) - f64::from(pixel.1),
+                        f64::from(b.0) - f64::from(pixel.0),
+                        f64::from(b.1) - f64::from(pixel.1),
+                    );
+                }
+                let expected = reference.finish(cherenkov_scene::FillRule::NonZero)[0];
+                for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                    let dense = raster.coverage_rule(rule)[py * size + px];
+                    let mut banded = BandRaster::new();
+                    banded.reset(size, size, rule);
+                    for &(a, b) in &edges {
+                        banded.draw(a.0, a.1, b.0, b.1);
+                    }
+                    let mut band_value = None;
+                    banded.finish_choose(&mut |band, base| {
+                        if !(base..base + STRIP_H).contains(&py) {
+                            return;
+                        }
+                        let row = py - base;
+                        band_value = Some(match band {
+                            Band::Dense(strip) => strip[row * size + px],
+                            Band::Sparse(runs, ends) => {
+                                let lo = if row == 0 { 0 } else { ends[row - 1] };
+                                let runs = &runs[lo..ends[row]];
+                                runs[runs.partition_point(|&(end, _)| end as usize <= px)].1
+                            }
+                        });
+                    });
+                    let banded = band_value.expect("the pixel's band was walked");
+                    assert_eq!(
+                        banded.to_bits(),
+                        dense.to_bits(),
+                        "{rule:?} reverse={reverse} ({px},{py}): band {banded} versus dense {dense}"
+                    );
+                    let actual = f64::from(dense);
+                    assert!(
+                        (actual - expected).abs() < 0.0002,
+                        "{rule:?} reverse={reverse} ({px},{py}): {actual} versus {expected}"
+                    );
+                }
+            }
+        }
+    }
 
     /// The classification bounds are exactly where the quantization steps:
     /// `texel` is monotonic, so the two sides of each step decide it.
