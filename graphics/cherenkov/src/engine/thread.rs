@@ -18,7 +18,7 @@ use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
 use crate::engine::{CompletionWaker, SurfaceWaker};
-use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
+use crate::error::{EngineError, ResourceError, SurfaceError, SurfaceRejection};
 use cherenkov_record::RefreshRange;
 
 use crate::frame::{FrameId, FrameStats, Next};
@@ -26,7 +26,7 @@ use crate::image::ImageUpload;
 use cherenkov_record::ResourceId;
 use cherenkov_record::{BackdropShaderId, ChangeSet, LayerId, SurfaceId, SurfaceTree};
 
-use crate::message::{Message, RenderOutcome, ResOp};
+use crate::message::{Message, RenderOutcome, RenderedFrame, ResOp};
 use crate::paint::ImageId;
 use crate::{BackdropEffect, WorkingColor};
 
@@ -142,9 +142,11 @@ struct PendingRelease<B: Backend> {
 /// The render loop's per-resource bookkeeping, shared by the native render
 /// thread and the browser executor.
 ///
-/// - A rejection the backend reported fails every render that draws the
-///   resource with [`RenderError::Rejected`], until a replacement succeeds
-///   or the resource is freed.
+/// - A rejection the backend reported leaves every surface whose content
+///   draws the resource out of the frame, reported as
+///   [`RenderError::Rejected`](crate::RenderError::Rejected), until a
+///   replacement succeeds or the surface stops drawing it; every other
+///   surface renders.
 /// - A released resource is freed only once no surface's installed
 ///   content draws it: the release waits while one does, and is carried
 ///   out when a commit, a layer removal or a surface's destruction leaves
@@ -261,33 +263,38 @@ impl<B: Backend> Resources<B> {
         }
     }
 
-    /// Fails when a surface that changed since the last render draws a
-    /// rejected resource. An unchanged surface cannot: a rejected
-    /// registration's id reaches content only in a commit, and a rejected
-    /// replacement marks every surface sampling the image changed.
-    fn check(
+    /// The visible surfaces that changed since the last render and draw
+    /// a rejected resource, each with the first such resource. An
+    /// unchanged surface cannot draw one: a rejected registration's id
+    /// reaches content only in a commit, a rejected replacement marks
+    /// every surface sampling the image changed, and a surface left out
+    /// of a frame keeps its changes pending.
+    fn rejected(
         &self,
         renderer: &B::Renderer,
         surfaces: &FxHashMap<SurfaceId, SurfaceState>,
-    ) -> Result<(), RenderError> {
+    ) -> Vec<SurfaceRejection> {
         if self.rejections.is_empty() {
-            return Ok(());
+            return Vec::new();
         }
-        // A hidden surface is not drawn: it fails no frame until the one
-        // that shows it, when its changes are still pending.
-        for (surface, state) in surfaces.iter().filter(|(_, state)| {
-            state.commits != Commits::Clean && state.visibility == Visibility::Visible
-        }) {
-            for (resource, rejection) in &self.rejections {
-                if draws(renderer, *surface, state, *resource) {
-                    return Err(RenderError::Rejected {
+        // A hidden surface is not drawn: it is reported by the frame that
+        // shows it, when its changes are still pending.
+        surfaces
+            .iter()
+            .filter(|(_, state)| {
+                state.commits != Commits::Clean && state.visibility == Visibility::Visible
+            })
+            .filter_map(|(surface, state)| {
+                self.rejections
+                    .iter()
+                    .find(|(resource, _)| draws(renderer, *surface, state, **resource))
+                    .map(|(resource, rejection)| SurfaceRejection {
+                        surface: *surface,
                         resource: *resource,
                         reason: Arc::clone(&rejection.reason),
-                    });
-                }
-            }
-        }
-        Ok(())
+                    })
+            })
+            .collect()
     }
 }
 
@@ -639,8 +646,8 @@ fn set_display_moved(surfaces: &mut FxHashMap<SurfaceId, SurfaceState>, id: Surf
 /// hidden one wakes nothing; the next render redraws the visible ones with
 /// the new pixels and leaves every other surface's skip intact. An image
 /// whose registration was rejected is registered with the new pixels
-/// instead. A rejection is recorded, and the marked surfaces then fail
-/// their render.
+/// instead. A rejection is recorded, and the marked surfaces are then left
+/// out of the frames that would draw them.
 fn replace_image<B: Backend>(
     renderer: &mut B::Renderer,
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
@@ -756,16 +763,14 @@ fn apply_hidden<B: Backend>(
 
 /// Applies every surface's commit, then carries out the pending releases
 /// no installed content draws any more, before the frame can draw them.
-///
-/// # Errors
-/// [`RenderError::Rejected`] when a changed surface draws a resource the
-/// backend rejected.
+/// Returns the surfaces the frame leaves out: the changed ones that draw a
+/// resource the backend rejected.
 fn apply_commits<B: Backend>(
     renderer: &mut B::Renderer,
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     resources: &mut Resources<B>,
     commits: &mut [(SurfaceId, ChangeSet<B>)],
-) -> Result<(), RenderError> {
+) -> Vec<SurfaceRejection> {
     for (surface, changes) in commits.iter_mut() {
         if let Some(state) = surfaces.get_mut(surface) {
             commit(renderer, state, *surface, changes);
@@ -777,7 +782,14 @@ fn apply_commits<B: Backend>(
         }
     }
     resources.settle(renderer, surfaces);
-    resources.check(renderer, surfaces)
+    resources.rejected(renderer, surfaces)
+}
+
+/// Whether the frame draws surface `id`: it is visible and was not left
+/// out for drawing a rejected resource.
+fn drawn(id: SurfaceId, state: &SurfaceState, rejected: &[SurfaceRejection]) -> bool {
+    state.visibility == Visibility::Visible
+        && !rejected.iter().any(|rejection| rejection.surface == id)
 }
 
 /// Samples compositor-owned tracks before a commit can retarget them.
@@ -800,16 +812,19 @@ fn sample_owned<B: Backend>(
     }
 }
 
-/// Samples and lists visible surfaces, retaining their cadence until the
-/// backend has accepted or withdrawn this frame's animation handoffs.
-fn sample_frames(
-    surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
+/// Samples and lists the surfaces the frame draws, retaining their
+/// cadence until the backend has accepted or withdrawn this frame's
+/// animation handoffs. A surface left out is not sampled, like a hidden
+/// one: the frame that draws it samples its tracks at its own time.
+fn sample_frames<'a>(
+    surfaces: &'a mut FxHashMap<SurfaceId, SurfaceState>,
     time: crate::Instant,
-) -> Vec<SurfaceFrame<'_>> {
+    rejected: &[SurfaceRejection],
+) -> Vec<SurfaceFrame<'a>> {
     let mut frames: Vec<SurfaceFrame<'_>> = Vec::with_capacity(surfaces.len());
     for (id, state) in surfaces
         .iter_mut()
-        .filter(|(_, state)| state.visibility == Visibility::Visible)
+        .filter(|(id, state)| drawn(**id, state, rejected))
     {
         let sampling = state.tree.sample(time, state.display.scale);
         let changed = state.commits != Commits::Clean || sampling.stepped;
@@ -840,7 +855,8 @@ fn sample_frames(
 /// refresh class combined with the backend's request for that surface
 /// alone, published through [`Surface::next_frame`] — and the aggregate
 /// answer `Engine::render` returns to hosts that keep one presentation
-/// loop.
+/// loop. A surface left out keeps its per-frame state, its changes
+/// included, and asks for no frame: a commit or a replacement wakes it.
 ///
 /// [`Surface::next_frame`]: crate::Surface::next_frame
 fn finish_frame<B: Backend>(
@@ -848,14 +864,15 @@ fn finish_frame<B: Backend>(
     surfaces: &mut FxHashMap<SurfaceId, SurfaceState>,
     time: crate::Instant,
     redraw: &FrameRedraw,
+    rejected: &[SurfaceRejection],
 ) -> (Next, FxHashMap<SurfaceId, Next>) {
     let mut rate = None;
-    // Keyed by surface: one entry per visible surface, so publication
+    // Keyed by surface: one entry per drawn surface, so publication
     // stays linear in the surface count instead of rescanning a Vec.
     let mut surface_next = FxHashMap::default();
     for (id, state) in surfaces
         .iter_mut()
-        .filter(|(_, state)| state.visibility == Visibility::Visible)
+        .filter(|(id, state)| drawn(**id, state, rejected))
     {
         let owned = renderer.owned_animations(*id);
         let running = if state.content_animating {
@@ -921,10 +938,10 @@ fn render<B: Backend>(
     commits: &mut [(SurfaceId, ChangeSet<B>)],
 ) -> RenderOutcome<B> {
     sample_owned::<B>(renderer, surfaces, time);
-    apply_commits(renderer, surfaces, resources, commits)?;
-    let frames = sample_frames(surfaces, time);
+    let rejected = apply_commits(renderer, surfaces, resources, commits);
+    let frames = sample_frames(surfaces, time, &rejected);
     let mut stats = FrameStats::default();
-    let (redraw, frame_commit) = renderer.render(
+    let (redraw, commit) = renderer.render(
         &Frame {
             id,
             time: crate::frame::FrameTime(time),
@@ -933,8 +950,14 @@ fn render<B: Backend>(
         &mut stats,
     )?;
     drop(frames);
-    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw);
-    Ok((next, surface_next, stats, frame_commit))
+    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw, &rejected);
+    Ok(RenderedFrame {
+        next,
+        surface_next,
+        stats,
+        commit,
+        rejected,
+    })
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -951,10 +974,10 @@ async fn render_local<B: Backend>(
     commits: &mut [(SurfaceId, ChangeSet<B>)],
 ) -> RenderOutcome<B> {
     sample_owned::<B>(renderer, surfaces, time);
-    apply_commits(renderer, surfaces, resources, commits)?;
-    let frames = sample_frames(surfaces, time);
+    let rejected = apply_commits(renderer, surfaces, resources, commits);
+    let frames = sample_frames(surfaces, time, &rejected);
     let mut stats = FrameStats::default();
-    let (redraw, frame_commit) = renderer
+    let (redraw, commit) = renderer
         .render(
             &Frame {
                 id,
@@ -965,8 +988,14 @@ async fn render_local<B: Backend>(
         )
         .await?;
     drop(frames);
-    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw);
-    Ok((next, surface_next, stats, frame_commit))
+    let (next, surface_next) = finish_frame::<B>(renderer, surfaces, time, &redraw, &rejected);
+    Ok(RenderedFrame {
+        next,
+        surface_next,
+        stats,
+        commit,
+        rejected,
+    })
 }
 
 #[cfg(all(test, feature = "testing", not(target_arch = "wasm32")))]
