@@ -123,7 +123,7 @@ use filtrate_core::{FilterParam, WatchGuard};
 
 use crate::effect::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderError,
-    EffectRenderResult, EffectSetupError, EffectSetupResult,
+    EffectRenderResult, EffectSetupError, EffectSetupResult, RetainedMemory,
 };
 use crate::executor::{animation::ParamAnimator, filterable, sampler, uniforms::UniformBuffers};
 
@@ -742,6 +742,13 @@ impl Effect for ShaderEffect {
     fn redraw_hint(&self) -> bool {
         self.is_animated() || self.animator.redraw_hint()
     }
+
+    // One pass from the host's input to its output: nothing of its own.
+    fn retained_memory(&self) -> RetainedMemory {
+        RetainedMemory::default()
+    }
+
+    fn trim(&mut self) {}
 }
 
 #[cfg(test)]

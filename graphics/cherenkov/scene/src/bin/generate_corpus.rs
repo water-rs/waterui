@@ -7,6 +7,8 @@
 
 #[path = "generate_corpus/authored.rs"]
 mod authored;
+#[path = "generate_corpus/gradient_search.rs"]
+mod gradient_search;
 #[path = "generate_corpus/text_layout.rs"]
 mod text_layout;
 
@@ -21,10 +23,10 @@ use cherenkov_scene::kurbo::{
 };
 use cherenkov_scene::{
     BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Color, ColorSpace,
-    Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, ImageColorSpace,
-    ImageEncoding, ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live, Motion,
-    MotionAnimation, NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash, Sampling,
-    Scene, SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
+    Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, Group, GroupItem,
+    ImageColorSpace, ImageEncoding, ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live,
+    Motion, MotionAnimation, NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash,
+    Sampling, Scene, SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
 };
 use fontique::FontWeight;
 use parley::{
@@ -3078,6 +3080,8 @@ fn run() -> Result<(), SceneError> {
 
     // ---- Gradients ---------------------------------------------------------
 
+    gradient_search::add_corpus(&mut corpus);
+
     let gradient_rect = Shape::rect(8.0, 8.0, 112.0, 112.0);
     for extends in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
         let ename = match extends {
@@ -4111,6 +4115,31 @@ fn run() -> Result<(), SceneError> {
             );
         });
     }
+
+    // A wide-gamut stop interpolated in sRGB: Display P3 (0, 0.85, 0.05)
+    // has a negative sRGB red component, so the interpolated encoded value
+    // goes below zero and its decode must stay sign-preserving (#2825).
+    corpus.scene("grad-linear-srgb-negative", 128, 128, white, |l| {
+        l.fill(
+            gradient_rect.clone(),
+            Paint::Linear(LinearGradient {
+                start: Point::new(16.0, 64.0),
+                end: Point::new(112.0, 64.0),
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::new(ColorSpace::DisplayP3, [0.0, 0.85, 0.05, 1.0]),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::new(ColorSpace::DisplayP3, [0.9, 0.2, 1.0, 1.0]),
+                    },
+                ],
+                extend: Extend::Pad,
+                interpolation: ColorSpace::Srgb,
+            }),
+        );
+    });
 
     // Images in wide-gamut and half-float encodings. The P3 PNG carries
     // Display-P3-encoded bytes; the f16 blobs are linear P3 straight alpha
@@ -5543,6 +5572,7 @@ fn run() -> Result<(), SceneError> {
 
     let (pw, ph) = (1024u32, 2216u32);
     let mut perf = Corpus::new();
+    gradient_search::add_perf(&mut perf);
 
     // Scrolling UI list: 30 rows, each a shadowed rounded card with an
     // avatar, two text runs and a chevron icon path.
@@ -7372,6 +7402,147 @@ fn run() -> Result<(), SceneError> {
                 });
             });
         }
+    });
+
+    // Filters inside a group blend space (#1979): each cell isolates a
+    // hard black|white edge, crossed by a P3-only bar and an HDR bar, in
+    // a filtered group. The top row's groups composite in sRGB-encoded
+    // space, the bottom row's identical groups in linear space; the left
+    // column blurs, the right column applies a colour matrix. A filter
+    // works in the working space whatever space its group stores, so the
+    // two rows render alike.
+    corpus.scene("filter-group-encoded", 256, 256, srgb(0.5, 0.5, 0.5), |l| {
+        let cell = |x0: f64, y0: f64| {
+            let fill = |shape: Shape, color: Color| {
+                GroupItem::Draw(Draw::Fill {
+                    shape,
+                    rule: FillRule::NonZero,
+                    paint: solid(color),
+                })
+            };
+            vec![
+                fill(
+                    Shape::rect(x0 + 8.0, y0 + 8.0, 56.0, 112.0),
+                    srgb(0.0, 0.0, 0.0),
+                ),
+                fill(
+                    Shape::rect(x0 + 64.0, y0 + 8.0, 56.0, 112.0),
+                    srgb(1.0, 1.0, 1.0),
+                ),
+                fill(
+                    Shape::rect(x0 + 16.0, y0 + 32.0, 96.0, 20.0),
+                    p3(0.0, 0.85, 0.05),
+                ),
+                fill(
+                    Shape::rect(x0 + 16.0, y0 + 76.0, 96.0, 20.0),
+                    hdr(2.5, 2.2, 1.8),
+                ),
+            ]
+        };
+        let tint = LayerFilter::ColorMatrix {
+            matrix: [
+                0.6, 0.3, 0.1, 0.05, //
+                0.1, 0.5, 0.2, 0.0, //
+                0.2, 0.1, 0.9, 0.1,
+            ],
+        };
+        for (y0, blend_space) in [(0.0, BlendSpace::SrgbEncoded), (128.0, BlendSpace::Linear)] {
+            for (x0, filter) in [
+                (0.0, LayerFilter::GaussianBlur { sigma: 4.0 }),
+                (128.0, tint.clone()),
+            ] {
+                l.group(Group {
+                    items: cell(x0, y0),
+                    opacity: 1.0,
+                    blend: BlendMode::Normal,
+                    blend_space,
+                    filter: Some(Box::new(filter)),
+                });
+            }
+        }
+    });
+
+    // sRGB-encoded composites below the root (#2853): a pass-through
+    // level — an opaque child layer or a pass-through linear group —
+    // opens no isolation, so an encoded group inside it blends against
+    // the content beneath, exactly as at the root (top left: inside a
+    // child layer; top right: inside a pass-through group). Bottom left:
+    // an encoded backdrop member nested in a pass-through layer blends
+    // its darkened sample, edge and outer band against the backdrop.
+    // Bottom right: a translucent layer isolates, so its encoded group
+    // composites against the layer's own transparent canvas. A P3-only
+    // bar and an HDR bar cross every cell.
+    corpus.scene_setup("blend-space-nested", 256, 256, white, |b| {
+        b.backdrop_group(BackdropGroup {
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0, 1)
+        });
+        let encoded = |x0: f64, y0: f64| {
+            let fill = |shape: Shape, color: Color| {
+                GroupItem::Draw(Draw::Fill {
+                    shape,
+                    rule: FillRule::NonZero,
+                    paint: solid(color),
+                })
+            };
+            Group {
+                items: vec![
+                    fill(
+                        Shape::rect(x0 + 16.0, y0 + 16.0, 72.0, 72.0),
+                        srgba(0.15, 0.3, 0.85, 0.6),
+                    ),
+                    fill(
+                        Shape::circle(x0 + 80.0, y0 + 80.0, 34.0),
+                        p3(0.0, 0.85, 0.05).with_alpha(0.5),
+                    ),
+                ],
+                opacity: 1.0,
+                blend: BlendMode::Normal,
+                blend_space: BlendSpace::SrgbEncoded,
+                filter: None,
+            }
+        };
+        let l = &mut b.root();
+        backdrop_background(l);
+        l.fill(
+            Shape::rect(0.0, 56.0, 256.0, 16.0),
+            solid(p3(0.0, 0.85, 0.05)),
+        );
+        l.fill(
+            Shape::rect(0.0, 184.0, 256.0, 16.0),
+            solid(hdr(2.5, 2.2, 1.8)),
+        );
+        l.layer(|m| {
+            m.clip(Shape::rect(4.0, 4.0, 120.0, 120.0));
+            m.group(encoded(0.0, 0.0));
+        });
+        l.group(Group {
+            items: vec![GroupItem::Group(encoded(128.0, 0.0))],
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+            blend_space: BlendSpace::Linear,
+            filter: None,
+        });
+        l.layer(|outer| {
+            outer.layer(|m| {
+                m.clip(Shape::RoundedRect(RoundedRect::new(
+                    20.0, 148.0, 108.0, 236.0, 16.0,
+                )));
+                m.backdrop(1);
+                m.backdrop_outer(6.0);
+                m.backdrop_effect(BackdropEffectSpec::ColorMatrix {
+                    matrix: [
+                        0.2, 0.0, 0.0, 0.0, //
+                        0.0, 0.2, 0.0, 0.0, //
+                        0.0, 0.0, 0.2, 0.0,
+                    ],
+                });
+            });
+        });
+        l.layer(|m| {
+            m.opacity(0.85);
+            m.group(encoded(128.0, 128.0));
+        });
     });
 
     // The #211 dense city map: a 1600×1200 frame whose live coverage

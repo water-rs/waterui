@@ -17,6 +17,7 @@ fn pass(target: Target, clear: bool, source: Option<Source>, instance: u32) -> P
             pipeline: PipelineKind::SrcOver,
             variant: ShaderVariant::Full,
             instances: instance..instance + 1,
+            gpu: None,
         }],
         space: cherenkov::BlendSpace::Linear,
         region: [0, 0, 16, 16],

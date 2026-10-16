@@ -29,7 +29,7 @@ use filtrate_core::{Chain, Filter, ParamArray, SpatialFilter, WatchGuard};
 
 use crate::effect::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderError,
-    EffectRenderResult, EffectSetupError, EffectSetupResult,
+    EffectRenderResult, EffectSetupError, EffectSetupResult, RetainedMemory,
 };
 use animation::ParamAnimator;
 use gpu::Gpu;
@@ -291,5 +291,17 @@ impl<F: Filter, S: Fn(u32, u32) -> (u32, u32) + 'static> Effect for Executor<F, 
 
     fn redraw_hint(&self) -> bool {
         self.animator.redraw_hint()
+    }
+
+    fn retained_memory(&self) -> RetainedMemory {
+        self.gpu
+            .as_ref()
+            .map_or_else(RetainedMemory::default, Gpu::retained_memory)
+    }
+
+    fn trim(&mut self) {
+        if let Some(gpu) = &mut self.gpu {
+            gpu.trim();
+        }
     }
 }

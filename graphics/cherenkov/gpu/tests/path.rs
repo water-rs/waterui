@@ -797,3 +797,65 @@ fn overlapping_fills_cover_their_union_not_their_winding() -> Result<(), Box<dyn
     Ok(())
 }
 }
+
+/// Quarter-covered dots 10 px apart in every 4-row coverage strip: each
+/// dot is its own atlas cell, 51 × 64 = 3264 cells in one path.
+fn sparse_dots() -> BezPath {
+    let mut path = BezPath::new();
+    for strip in 0..64_u32 {
+        for column in 0..51_u32 {
+            let x = f64::from(column * 10) + 1.25;
+            let y = f64::from(strip * 4) + 1.25;
+            path.move_to((x, y));
+            path.line_to((x + 0.5, y));
+            path.line_to((x + 0.5, y + 0.5));
+            path.line_to((x, y + 0.5));
+            path.close_path();
+        }
+    }
+    path
+}
+
+split_test! {
+/// A leaf whose path emits more cells than 11 bits count keeps every
+/// one: replayed from retained storage while a sibling layer changes,
+/// it draws the same pixels as the frame that produced it
+/// (water-rs/waterui#2778).
+fn a_leaf_with_thousands_of_cells_replays_every_cell() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine())? else {
+        return Ok(());
+    };
+    let (surface, dots) = wait!(sized_surface(&engine, (512, 272)))?;
+    let marker = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&marker);
+        tx[&dots].content(surface.record(|c| c.fill(sparse_dots(), RED)));
+        tx[&marker].content(surface.record(|c| {
+            c.fill(cherenkov::kurbo::Rect::new(0.0, 260.0, 8.0, 268.0), RED);
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 1);
+    let produced = wait!(surface.readback())?;
+    let [r, ..] = px(&produced, 1, 1);
+    assert!((r - 0.25).abs() < 0.01, "a dot is quarter covered: {r}");
+    surface.update(|tx| {
+        tx[&marker].content(surface.record(|c| {
+            c.fill(cherenkov::kurbo::Rect::new(0.0, 260.0, 8.0, 268.0), CLEAR);
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    assert_eq!(engine.stats().paths_rasterized, 0, "the dots replay");
+    let replayed = wait!(surface.readback())?;
+    for y in 0..256 {
+        for x in 0..512 {
+            assert_eq!(
+                px(&replayed, x, y).map(f32::to_bits),
+                px(&produced, x, y).map(f32::to_bits),
+                "replayed pixel {x},{y}"
+            );
+        }
+    }
+    Ok(())
+}
+}

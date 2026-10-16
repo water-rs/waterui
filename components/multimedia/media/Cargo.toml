@@ -63,7 +63,7 @@ waterui-testing = { path = "../../../testing" }
 # this crate's test targets without turning it on for anything that depends on
 # the crate.
 waterui-media = { path = ".", features = ["video"] }
-waterkit-codec = { version = "0.1.2", features = ["software-decode"] }
+waterkit-codec = { version = "0.2", features = ["software-decode"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff"] }
 
 

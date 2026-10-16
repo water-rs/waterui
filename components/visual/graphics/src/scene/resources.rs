@@ -240,7 +240,9 @@ pub trait SceneBackend: 'static {
     /// # Errors
     ///
     /// [`ResourceError::TooLarge`] when the image exceeds
-    /// [`image_limits`](Self::image_limits), [`ResourceError::Image`] when
+    /// [`image_limits`](Self::image_limits),
+    /// [`ResourceError::OverBudget`] when it does not fit the image budget
+    /// beside the images already registered, [`ResourceError::Image`] when
     /// the target rejects the upload for another cause,
     /// [`ResourceError::Lost`] when the renderer is gone.
     fn register_rgba8(&self, data: ImageData<Rgba8>) -> Result<Handle<ImageId>, ResourceError>;
@@ -250,17 +252,21 @@ pub trait SceneBackend: 'static {
     /// # Errors
     ///
     /// [`ResourceError::TooLarge`] when the image exceeds
-    /// [`image_limits`](Self::image_limits), [`ResourceError::Image`] when
+    /// [`image_limits`](Self::image_limits),
+    /// [`ResourceError::OverBudget`] when it does not fit the image budget
+    /// beside the images already registered, [`ResourceError::Image`] when
     /// the target rejects the upload for another cause,
     /// [`ResourceError::Lost`] when the renderer is gone.
     fn register_rgba16f(&self, data: ImageData<Rgba16F>) -> Result<Handle<ImageId>, ResourceError>;
 
-    /// The largest image the target admits, in each dimension and in
-    /// total texels — the device's texture limit, or the per-image share
-    /// of the target's memory budget. Fixed for the target's life: an
-    /// image it does not admit fails at registration with
-    /// [`ResourceError::TooLarge`] instead of failing every render that
-    /// draws it.
+    /// The images the target admits: the largest image in each dimension
+    /// — the device's texture limit — and the image budget, the texels
+    /// every registered image holds together — the target's memory
+    /// budget. Fixed for the target's life: an image it does not admit
+    /// alone fails at registration with [`ResourceError::TooLarge`], and
+    /// one that does not fit beside the images already registered with
+    /// [`ResourceError::OverBudget`], instead of failing every render
+    /// that draws it.
     fn image_limits(&self) -> crate::draw::ImageLimits;
 }
 
@@ -894,8 +900,10 @@ impl Table {
 /// The calling thread's only waits are inside that validation — a font's
 /// parse, a shader's pre-validation, an image's check against
 /// [`image_limits`](Self::image_limits): an image the limits do not
-/// admit fails here with [`ResourceError::TooLarge`] before anything is
-/// queued, never as a failed render.
+/// admit fails here with [`ResourceError::TooLarge`], and one that does
+/// not fit the image budget beside the images already registered with
+/// [`ResourceError::OverBudget`], before anything is queued, never as a
+/// failed render.
 ///
 /// [`SceneContent::build_scene`]: crate::scene_view::SceneContent::build_scene
 pub struct SceneResources {
@@ -1067,9 +1075,11 @@ impl SceneResources {
     /// # Errors
     ///
     /// [`ResourceError::TooLarge`] when the image exceeds the target's
-    /// image limits, [`ResourceError::Image`] when the target rejects the
-    /// upload for another cause, [`ResourceError::Lost`] when the render
-    /// thread is gone.
+    /// image limits, [`ResourceError::OverBudget`] when it does not fit the
+    /// image budget beside the images already registered,
+    /// [`ResourceError::Image`] when the target rejects the upload for
+    /// another cause, [`ResourceError::Lost`] when the render thread is
+    /// gone.
     pub fn image(&self, data: ImageData<Rgba8>) -> Result<Registered<ImageId>, ResourceError> {
         self.admit_image(&data)?;
         self.intern(
@@ -1091,9 +1101,11 @@ impl SceneResources {
     /// # Errors
     ///
     /// [`ResourceError::TooLarge`] when the image exceeds the target's
-    /// image limits, [`ResourceError::Image`] when the target rejects the
-    /// upload for another cause, [`ResourceError::Lost`] when the render
-    /// thread is gone.
+    /// image limits, [`ResourceError::OverBudget`] when it does not fit the
+    /// image budget beside the images already registered,
+    /// [`ResourceError::Image`] when the target rejects the upload for
+    /// another cause, [`ResourceError::Lost`] when the render thread is
+    /// gone.
     pub fn image16f(&self, data: ImageData<Rgba16F>) -> Result<Registered<ImageId>, ResourceError> {
         self.admit_image(&data)?;
         self.intern(

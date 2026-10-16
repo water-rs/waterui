@@ -17,7 +17,7 @@ use web_sys::{
 use super::{
     CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
     PointerButton, PointerKind, PresentationSurface as _, TextInputPurpose, TextInputState,
-    WindowState, WuiWindow,
+    TouchScrollConfig, WindowState, WuiWindow,
 };
 
 #[derive(Clone, Copy)]
@@ -487,6 +487,14 @@ impl PlatformWindow for BrowserWindow {
 
     fn scale_factor(&self) -> f64 {
         self.scale_factor.get()
+    }
+
+    /// The browser publishes no touch-gesture parameters, and CSS pixels
+    /// are the window's density-1 logical units, so it reports the
+    /// Android `OverScroller` model at density 1 — a touch drag scrolls
+    /// here the way it does on a host with values of its own.
+    fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
+        Some(TouchScrollConfig::android_default())
     }
 
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {

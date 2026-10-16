@@ -24,7 +24,7 @@ use cherenkov::Filter;
 use waterui_graphics::filter_view::ErasedEffect;
 use waterui_graphics::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
-    EffectSetupResult,
+    EffectSetupResult, RetainedMemory,
 };
 use waterui_graphics::{AnyEffect, ParamGuards};
 
@@ -167,6 +167,18 @@ impl Effect for EngineEffect {
 
     fn redraw_hint(&self) -> bool {
         self.built.as_ref().is_some_and(|built| built.redraw_hint())
+    }
+
+    fn retained_memory(&self) -> RetainedMemory {
+        self.built
+            .as_ref()
+            .map_or_else(RetainedMemory::default, |built| built.retained_memory())
+    }
+
+    fn trim(&mut self) {
+        if let Some(built) = &mut self.built {
+            built.trim();
+        }
     }
 }
 

@@ -200,9 +200,13 @@ pub fn encode(
                 // A union member is `PAINT_BACKDROP` sampling its
                 // group's capture: a neighbourhood read that
                 // `ExecutionPlan::epoch` never admits into an epoch.
+                // `Cell` is a draw module (`DrawRange::module`), never a
+                // range's lowered variant.
+                ShaderVariant::Cell => unreachable!("no range is lowered with the cell module"),
                 ShaderVariant::Union => {
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }
+                ShaderVariant::LongGradient => 4,
             };
             draws.push(Draw {
                 key: PipeKey {
@@ -678,7 +682,7 @@ fn note(
             variant: match key.variant {
                 0 => report::Variant::Simple,
                 1 => report::Variant::Shadow,
-                2 => report::Variant::Source,
+                2 | 4 => report::Variant::Source,
                 3 => report::Variant::Clear,
                 _ => unreachable!("closed tile shader set"),
             },

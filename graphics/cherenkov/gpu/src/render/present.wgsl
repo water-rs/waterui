@@ -9,6 +9,9 @@
 // analytic clip stayed under one ΔE_OK JND of it on the corpus sweep).
 // #98 reuses the same family for Display P3 destinations with cusp
 // coefficients fitted against the f64 P3 boundary (oracle/src/gamut.rs).
+//
+// The P3 → sRGB matrix and the sRGB transfer (`SPACE_*`, `space_srgb_*`)
+// come from filtrate-core's space fragment, which precedes this file.
 
 struct Present {
     // 0: sRGB SDR, hardware transfer; 1: sRGB SDR, shader transfer;
@@ -45,29 +48,6 @@ fn vs_main(@builtin(vertex_index) index: u32) -> Vertex {
     out.position = vec4<f32>(x, y, 0.0, 1.0);
     out.uv = vec2<f32>((x + 1.0) * 0.5, 1.0 - (y + 1.0) * 0.5);
     return out;
-}
-
-fn srgb_encode(c: f32) -> f32 {
-    if c <= 0.0031308 {
-        return c * 12.92;
-    }
-    return 1.055 * pow(c, 1.0 / 2.4) - 0.055;
-}
-
-fn srgb_decode(c: f32) -> f32 {
-    if c <= 0.04045 { return c / 12.92; }
-    return pow((c + 0.055) / 1.055, 2.4);
-}
-
-// The sRGB OETF continued beyond [0, 1] with odd symmetry through the
-// origin — the wire format of the ExtendedSrgb and ExtendedDisplayP3
-// colour spaces (wgpu's HDR surface example, IEC 61966-2-2 nonlinear).
-// Negative (out-of-gamut) and above-one (HDR) components are encoded,
-// never clamped.
-fn srgb_encode_extended(c: f32) -> f32 {
-    let a = abs(c);
-    let e = select(1.055 * pow(a, 1.0 / 2.4) - 0.055, a * 12.92, a <= 0.0031308);
-    return sign(c) * e;
 }
 
 // SMPTE ST 2084 (PQ) OETF; input is luminance normalized to 10000 nits.
@@ -434,15 +414,6 @@ fn gamut_map(dest: u32, rgb: vec3<f32>) -> vec3<f32> {
                  vec3<f32>(0.0), vec3<f32>(1.0));
 }
 
-// Linear Display P3 → linear sRGB (Bradford-adapted, D65).
-fn p3_to_linear_srgb(rgb: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        1.2249402 * rgb.r - 0.2249402 * rgb.g,
-        -0.04205695 * rgb.r + 1.0420569 * rgb.g,
-        -0.01963755 * rgb.r - 0.07863605 * rgb.g + 1.0982736 * rgb.b,
-    );
-}
-
 // Linear Display P3 → linear BT.2020 (D65) — inverse(REC2020_TO_XYZ) ·
 // P3_TO_XYZ, the same constants as oracle/src/color.rs.
 fn p3_to_bt2020(rgb: vec3<f32>) -> vec3<f32> {
@@ -453,29 +424,12 @@ fn p3_to_bt2020(rgb: vec3<f32>) -> vec3<f32> {
     );
 }
 
-fn srgb_encode3(rgb: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(srgb_encode(rgb.r), srgb_encode(rgb.g), srgb_encode(rgb.b));
-}
-
-fn srgb_encode_extended3(rgb: vec3<f32>) -> vec3<f32> {
-    return vec3<f32>(
-        srgb_encode_extended(rgb.r),
-        srgb_encode_extended(rgb.g),
-        srgb_encode_extended(rgb.b),
-    );
-}
-
 // Presents an already-encoded colour, undoing the hardware transfer when
 // the destination format applies one: the stored bytes then match what a
 // non-sRGB-format write would produce.
 fn present_encoded(encoded: vec3<f32>, alpha: f32) -> vec4<f32> {
     let result = present_color(encoded, alpha);
-    return vec4<f32>(
-        srgb_decode(result.r),
-        srgb_decode(result.g),
-        srgb_decode(result.b),
-        result.a,
-    );
+    return vec4<f32>(space_srgb_decode(result.rgb), result.a);
 }
 
 @fragment
@@ -498,7 +452,7 @@ fn fs_main(in: Vertex) -> @location(0) vec4<f32> {
             // sRGB transfer (Display P3's transfer is sRGB's).
             let toned = tone_map(p3.rgb, min(present.headroom, 1.0));
             let mapped = gamut_map(1u, toned);
-            let encoded = srgb_encode3(mapped);
+            let encoded = space_srgb_encode(mapped);
             if present.encode == 3u {
                 return present_color(encoded, alpha);
             }
@@ -509,18 +463,18 @@ fn fs_main(in: Vertex) -> @location(0) vec4<f32> {
             // linear transfer, extended range — no [0,1] gamut clip:
             // negative and above-one components carry wide gamut.
             let toned = tone_map(p3.rgb, present.headroom);
-            return present_color(p3_to_linear_srgb(toned), alpha);
+            return present_color(SPACE_P3_TO_SRGB * toned, alpha);
         }
         case 6u: {
             // Encoded extended sRGB: signed extended transfer.
             let toned = tone_map(p3.rgb, present.headroom);
-            return present_color(srgb_encode_extended3(p3_to_linear_srgb(toned)), alpha);
+            return present_color(space_srgb_encode(SPACE_P3_TO_SRGB * toned), alpha);
         }
         case 7u: {
             // Encoded extended Display P3: signed extended transfer on
             // the working primaries — not a raw linear attachment.
             let toned = tone_map(p3.rgb, present.headroom);
-            return present_color(srgb_encode_extended3(toned), alpha);
+            return present_color(space_srgb_encode(toned), alpha);
         }
         case 8u: {
             // BT.2100 PQ: BT.2020 primaries, SDR white at 203 nits of
@@ -545,9 +499,9 @@ fn fs_main(in: Vertex) -> @location(0) vec4<f32> {
             // sRGB-intensity P3 colour never takes the shoulder — then
             // the matrix, then the gamut map (#97).
             let p3_toned = tone_map(p3.rgb, min(present.headroom, 1.0));
-            let rgb = p3_to_linear_srgb(p3_toned);
+            let rgb = SPACE_P3_TO_SRGB * p3_toned;
             let clamped = gamut_map(0u, rgb);
-            let encoded = srgb_encode3(clamped);
+            let encoded = space_srgb_encode(clamped);
             if present.encode == 1u {
                 return present_color(encoded, alpha);
             }

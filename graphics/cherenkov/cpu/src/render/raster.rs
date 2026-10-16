@@ -25,6 +25,7 @@ use crate::render::lower::{
 use crate::render::paint::PaintData;
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
+use filtrate_core::space::{from_srgb, to_srgb};
 use filtrate_core::{CpuFilterError, CpuImage, WorkingSpace};
 
 /// Rows per rasterization band.
@@ -1579,7 +1580,7 @@ fn run(
                     buffers.give_color(window);
                     return Err(error);
                 }
-                if let Err(error) = apply_filter(filter, &mut window, top, (band.w, h)) {
+                if let Err(error) = apply_filter(filter, &mut window, *space, top, (band.w, h)) {
                     buffers.give_color(window);
                     return Err(error);
                 }
@@ -1648,23 +1649,39 @@ fn run(
     Ok(())
 }
 
+/// Runs `filter` over `pixels` stored in `space`. A filter works in the
+/// linear working space whatever space its scope stores: sRGB-encoded
+/// pixels are decoded before it and encoded again after it.
 fn apply_filter(
     (filter, params): &FrameFilter,
     pixels: &mut [[f32; 4]],
+    space: cherenkov::BlendSpace,
     top: usize,
     size: (usize, usize),
 ) -> Result<(), cherenkov::RenderError> {
+    let encoded = space == cherenkov::BlendSpace::SrgbEncoded;
+    if encoded {
+        from_srgb(pixels);
+    }
     filter
         .apply(
             params,
             &WorkingSpace::LINEAR_DISPLAY_P3,
-            &mut CpuImage { pixels, top, size },
+            &mut CpuImage {
+                pixels: &mut *pixels,
+                top,
+                size,
+            },
         )
         .map_err(|error| match error {
             CpuFilterError::GpuImage { .. } => {
                 cherenkov::RenderError::Unsupported(crate::names::FILTER_GPU_IMAGE)
             }
-        })
+        })?;
+    if encoded {
+        to_srgb(pixels);
+    }
+    Ok(())
 }
 
 /// Runs one backdrop group's capture for this band: copies the device
@@ -1755,7 +1772,7 @@ fn capture_band(
         flat
     };
     if let Some(filter) = &item.filter {
-        apply_filter(filter, &mut canvas, win0 - ry0, (rw, ry1 - ry0))?;
+        apply_filter(filter, &mut canvas, space, win0 - ry0, (rw, ry1 - ry0))?;
     }
     let kept_rows = kept1 - kept0;
     let mut buf = buffers.take_color(rw * kept_rows);

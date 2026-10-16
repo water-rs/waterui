@@ -5,10 +5,13 @@
 #[path = "../../record/src/union_cap.rs"]
 mod union_cap;
 
-use cherenkov_oracle::color::{linear_srgb_to_linear_p3, to_working};
+use cherenkov_oracle::color::{
+    linear_p3_to_linear_srgb, linear_srgb_to_linear_p3, srgb_decode, srgb_encode, to_working,
+};
 use cherenkov_oracle::{Renderer, metrics};
 use cherenkov_scene::{
-    BackdropGroup, BlendMode, Color, Extend, GradientStop, LinearGradient, Paint, Scene, Shape,
+    BackdropGroup, BlendMode, BlendSpace, Color, Draw, Extend, FillRule, GradientStop, Group,
+    GroupItem, LinearGradient, Paint, Scene, Shape,
 };
 use kurbo::Rect;
 
@@ -1101,6 +1104,141 @@ fn a_mixed_group_without_a_union_draws_the_band() {
             "plain member inflated at ({col}, 16): {:?}",
             px(col, 16)
         );
+    }
+}
+
+/// A member's sample at its coverage blends source-over in its group's
+/// space against the content beneath the member. Two empty members sample
+/// an opaque backdrop through an all-zero colour matrix, so each sample
+/// is opaque black; their clips cover half of column 4. The
+/// `SrgbEncoded` member's edge pixel is `decode(½·encode(dst))`, the
+/// linear member's `½·dst`. Blending the encoded sample against the
+/// member's own transparent canvas gives the linear edge for both.
+#[test]
+fn an_encoded_member_edge_blends_with_the_content_beneath() {
+    let mut b = Scene::builder(W, H);
+    let black = || cherenkov_scene::BackdropEffectSpec::ColorMatrix { matrix: [0.0; 12] };
+    b.backdrop_group(BackdropGroup {
+        blend_space: BlendSpace::SrgbEncoded,
+        ..BackdropGroup::new(1, vec![], 1.0, 1)
+    });
+    b.backdrop_group(BackdropGroup::new(2, vec![], 1.0, 1));
+    let backdrop = Color::srgb(0.6, 0.3, 0.8);
+    b.root().fill(
+        Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+        Paint::Solid(backdrop),
+    );
+    for (group, y0) in [(1, 1.0), (2, 9.0)] {
+        b.root().layer(|m| {
+            m.clip(Shape::Rect(Rect::new(4.5, y0, 12.0, y0 + 6.0)));
+            m.backdrop(group);
+            m.backdrop_effect(black());
+        });
+    }
+    let img = render(&b.build(), &tmp());
+    let dst = to_working(&backdrop);
+    let encoded = linear_srgb_to_linear_p3(
+        linear_p3_to_linear_srgb([dst[0], dst[1], dst[2]])
+            .map(|c| srgb_decode(0.5 * srgb_encode(c))),
+    );
+    let linear = [0.5 * dst[0], 0.5 * dst[1], 0.5 * dst[2]];
+    for (row, want) in [(4usize, encoded), (12, linear)] {
+        let got = img.pixels[row * W as usize + 4];
+        for ch in 0..3 {
+            assert!(
+                (f64::from(got[ch]) - want[ch]).abs() < 1e-6,
+                "edge pixel (4, {row}): got {got:?}, want {want:?}"
+            );
+        }
+        assert!((f64::from(got[3]) - 1.0).abs() < 1e-6, "{got:?}");
+        // Past the edge the sample is opaque black.
+        assert_eq!(img.pixels[row * W as usize + 8][..3], [0.0; 3]);
+    }
+}
+
+/// A pass-through level opens no canvas: an opaque `Normal` child layer
+/// and a pass-through linear group leave an sRGB-encoded group, and an
+/// encoded backdrop member, compositing against the content beneath them
+/// exactly as at the root. A fresh canvas would blend the encoded
+/// composite against transparent black, which is the linear result.
+#[test]
+fn encoded_content_in_a_pass_through_level_renders_as_at_the_root() {
+    #[derive(Clone, Copy)]
+    enum Wrap {
+        Root,
+        Layer,
+        Group,
+    }
+    let encoded = || Group {
+        items: vec![GroupItem::Draw(Draw::Fill {
+            shape: Shape::Rect(Rect::new(2.5, 2.5, 13.5, 13.5)),
+            rule: FillRule::NonZero,
+            paint: Paint::Solid(Color::srgb(0.15, 0.3, 0.85).with_alpha(0.5)),
+        })],
+        opacity: 1.0,
+        blend: BlendMode::Normal,
+        blend_space: BlendSpace::SrgbEncoded,
+        filter: None,
+    };
+    let scene = |group: Wrap, member: bool| {
+        let mut b = Scene::builder(W, H);
+        b.backdrop_group(BackdropGroup {
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(1, vec![], 1.0, 1)
+        });
+        b.root().fill(
+            Shape::Rect(Rect::new(0.0, 0.0, 16.0, 16.0)),
+            Paint::Solid(Color::srgb(0.6, 0.3, 0.8)),
+        );
+        match group {
+            Wrap::Root => {
+                b.root().group(encoded());
+            }
+            Wrap::Layer => {
+                b.root().layer(|l| {
+                    l.group(encoded());
+                });
+            }
+            Wrap::Group => {
+                b.root().group(Group {
+                    items: vec![GroupItem::Group(encoded())],
+                    opacity: 1.0,
+                    blend: BlendMode::Normal,
+                    blend_space: BlendSpace::Linear,
+                    filter: None,
+                });
+            }
+        }
+        let sample = |m: &mut cherenkov_scene::LayerBuilder| {
+            m.clip(Shape::Rect(Rect::new(4.5, 4.5, 11.5, 11.5)));
+            m.backdrop(1);
+            m.backdrop_effect(cherenkov_scene::BackdropEffectSpec::ColorMatrix {
+                matrix: [0.0; 12],
+            });
+        };
+        if member {
+            b.root().layer(|outer| {
+                outer.layer(sample);
+            });
+        } else {
+            b.root().layer(sample);
+        }
+        render(&b.build(), &tmp())
+    };
+    let bits = |img: cherenkov_oracle::F32Image| {
+        img.pixels
+            .iter()
+            .map(|p| p.map(f32::to_bits))
+            .collect::<Vec<_>>()
+    };
+    let root = bits(scene(Wrap::Root, false));
+    for (wrap, member) in [
+        (Wrap::Layer, false),
+        (Wrap::Group, false),
+        (Wrap::Root, true),
+        (Wrap::Layer, true),
+    ] {
+        assert_eq!(bits(scene(wrap, member)), root);
     }
 }
 

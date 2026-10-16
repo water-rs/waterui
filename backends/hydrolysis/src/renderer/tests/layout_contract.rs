@@ -6,6 +6,7 @@ use waterui::{AnyView, Color, Environment, View, ViewExt};
 use waterui_graphics::FilteredView;
 use waterui_graphics::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
+    RetainedMemory,
 };
 use waterui_layout::container::FixedContainer;
 use waterui_layout::stack::vstack;
@@ -490,6 +491,12 @@ impl Effect for LayoutOnlyEffect {
     ) -> EffectRenderResult {
         panic!("layout-only verification must not invoke effect rendering");
     }
+
+    fn retained_memory(&self) -> RetainedMemory {
+        RetainedMemory::default()
+    }
+
+    fn trim(&mut self) {}
 }
 
 #[test]
