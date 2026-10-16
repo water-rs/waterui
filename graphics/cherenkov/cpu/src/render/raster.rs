@@ -145,9 +145,9 @@ struct CaptureRows {
 /// over the device rows `need` of a surface `w × h`, `None` when those
 /// rows sample none of it.
 ///
-/// `need` is the surface band, widened for a top-level capture by every
-/// later top-level capture's window this band runs ([`top_captures`]):
-/// those captures read the rows this group's members draw. The device
+/// `need` is the surface band, widened for a top-level capture by the
+/// window of every later top-level capture this band runs that reads
+/// the rows this group's members draw ([`top_captures`]). The device
 /// rows are the union's rows within the capture's reach of `need`. The
 /// item list's last capture, when its members displace their reads,
 /// keeps only the rows its members' taps reach ([`sample_rows`]); any
@@ -1166,32 +1166,47 @@ fn shade(
 
 /// Plans the top-level captures (captures inside filter scopes are
 /// planned by the scope's own windowed run) for the surface band
-/// `surface`, last to first: a capture's members draw into the rows
-/// every later capture's window reads, so each capture covers the band
-/// plus the windows of the captures after it.
+/// `surface`, last to first. A later capture reads the rows its window
+/// covers, including what this group's members drew there when one of
+/// them samples before that capture's item; such a capture's window
+/// widens the rows this capture covers past the band.
 fn top_captures(items: &[Item], surface: (usize, usize), size: (usize, usize)) -> TopCaptures {
-    let mut top = TopCaptures::new();
-    let mut i = 0;
-    while i < items.len() {
-        match &items[i] {
-            Item::PushFilter { end, .. } => {
-                i = usize::try_from(*end).unwrap_or(items.len());
-                continue;
+    // (capture item, its group, the first item sampling the group)
+    let mut plan: Vec<(usize, u64, usize)> = Vec::new();
+    let mut scope_end = 0;
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            Item::PushFilter { end, .. } if i >= scope_end => {
+                scope_end = usize::try_from(*end).unwrap_or(items.len());
             }
-            Item::Capture(_) => top.push((i, None)),
+            Item::Capture(capture) if i >= scope_end => {
+                plan.push((i, capture.group, usize::MAX));
+            }
+            Item::Sample { group, .. } => {
+                if let Some((_, _, first)) = plan
+                    .iter_mut()
+                    .find(|(_, g, first)| g == group && *first == usize::MAX)
+                {
+                    *first = i;
+                }
+            }
             _ => {}
         }
-        i += 1;
     }
-    let mut need = surface;
-    for (i, rows) in top.iter_mut().rev() {
-        let Item::Capture(capture) = &items[*i] else {
+    let mut top: TopCaptures = plan.iter().map(|&(i, _, _)| (i, None)).collect();
+    for k in (0..plan.len()).rev() {
+        let (i, _, first) = plan[k];
+        let need = top[k + 1..]
+            .iter()
+            .filter(|(j, _)| first < *j)
+            .filter_map(|(_, rows)| rows.as_ref())
+            .fold(surface, |need, rows| {
+                (need.0.min(rows.window.0), need.1.max(rows.window.1))
+            });
+        let Item::Capture(capture) = &items[i] else {
             unreachable!("only capture items are planned");
         };
-        *rows = capture_rows(capture, items, need, size);
-        if let Some(rows) = rows {
-            need = (need.0.min(rows.window.0), need.1.max(rows.window.1));
-        }
+        top[k].1 = capture_rows(capture, items, need, size);
     }
     top
 }
