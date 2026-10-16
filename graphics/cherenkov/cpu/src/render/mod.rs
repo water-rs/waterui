@@ -184,6 +184,61 @@ fn cpu_model() -> Option<String> {
     None
 }
 
+impl RasterRenderer {
+    /// [`Renderer::add_image`]'s work, which never waits on a device.
+    fn register_image(&mut self, id: ImageId, image: &ImageUpload) -> Result<(), ResourceError> {
+        let decoded = Arc::new(CpuImage::decode(image)?);
+        self.images.insert(id.raw(), decoded);
+        self.refresh_cache_budgets();
+        Ok(())
+    }
+
+    /// [`Renderer::replace_image`]'s work, which never waits on a device.
+    fn swap_image(&mut self, id: ImageId, image: &ImageUpload) -> Result<(), ResourceError> {
+        let current = self
+            .images
+            .get(&id.raw())
+            .expect("replace targets a registered image");
+        let resized = if (current.width, current.height) == (image.width, image.height) {
+            CpuImage::validate(image)?;
+            None
+        } else {
+            Some(Arc::new(CpuImage::decode(image)?))
+        };
+        // Retained paint operands share the pixels and lowering resolved
+        // the dimensions: content sampling the image is lowered again.
+        self.image_replacements += 1;
+        for surface in self.surfaces.values_mut() {
+            for content in surface.layers.values_mut() {
+                let _ = content.invalidate_image(id);
+            }
+        }
+        let slot = self
+            .images
+            .get_mut(&id.raw())
+            .expect("replace targets a registered image");
+        if let Some(resized) = resized {
+            *slot = resized;
+            self.refresh_cache_budgets();
+        } else {
+            // Discarding the content above released every retained operand
+            // sharing the pixels. An operand that survived is an engine
+            // defect; it is reported as this replacement's rejection, which
+            // keeps the previous pixels and fails the renders that draw the
+            // image, instead of panicking the render thread.
+            Arc::get_mut(slot)
+                .ok_or_else(|| {
+                    ResourceError::Image(format!(
+                        "image {} is still shared by retained paint operands after its content was discarded",
+                        id.raw()
+                    ))
+                })?
+                .overwrite(image);
+        }
+        Ok(())
+    }
+}
+
 impl Renderer for RasterRenderer {
     type Target = RasterTarget;
     type Font = font::PreparedFont;
@@ -347,55 +402,32 @@ impl Renderer for RasterRenderer {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let decoded = Arc::new(CpuImage::decode(&image)?);
-        self.images.insert(id.raw(), decoded);
-        self.refresh_cache_budgets();
-        Ok(())
+        self.register_image(id, &image)
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn add_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        core::future::ready(self.register_image(id, &image))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let current = self
-            .images
-            .get(&id.raw())
-            .expect("replace targets a registered image");
-        let resized = if (current.width, current.height) == (image.width, image.height) {
-            CpuImage::validate(&image)?;
-            None
-        } else {
-            Some(Arc::new(CpuImage::decode(&image)?))
-        };
-        // Retained paint operands share the pixels and lowering resolved
-        // the dimensions: content sampling the image is lowered again.
-        self.image_replacements += 1;
-        for surface in self.surfaces.values_mut() {
-            for content in surface.layers.values_mut() {
-                let _ = content.invalidate_image(id);
-            }
-        }
-        let slot = self
-            .images
-            .get_mut(&id.raw())
-            .expect("replace targets a registered image");
-        if let Some(resized) = resized {
-            *slot = resized;
-            self.refresh_cache_budgets();
-        } else {
-            // Discarding the content above released every retained operand
-            // sharing the pixels. An operand that survived is an engine
-            // defect; it is reported as this replacement's rejection, which
-            // keeps the previous pixels and fails the renders that draw the
-            // image, instead of panicking the render thread.
-            Arc::get_mut(slot)
-                .ok_or_else(|| {
-                    ResourceError::Image(format!(
-                        "image {} is still shared by retained paint operands after its content was discarded",
-                        id.raw()
-                    ))
-                })?
-                .overwrite(&image);
-        }
-        Ok(())
+        self.swap_image(id, &image)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn replace_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        core::future::ready(self.swap_image(id, &image))
     }
 
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {

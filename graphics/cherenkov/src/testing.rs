@@ -209,6 +209,26 @@ struct NullProducer {
 }
 
 impl NullRenderer {
+    fn register_image(&mut self, id: ImageId, _image: &ImageUpload) -> Result<(), ResourceError> {
+        if self.reject.contains(&NullReject::Image) {
+            return Err(ResourceError::Image("injected rejection".into()));
+        }
+        self.images.insert(id);
+        let _ = self.events.send(Event::AddImage(id));
+        Ok(())
+    }
+
+    fn swap_image(&self, id: ImageId, image: &ImageUpload) {
+        assert!(
+            self.images.contains(&id),
+            "replace of unregistered image {}",
+            id.raw()
+        );
+        let _ = self
+            .events
+            .send(Event::ReplaceImage(id, (image.width, image.height)));
+    }
+
     /// Releases the binding every producer holds on `(surface, layer)`,
     /// like `set_content` and `remove_layer` dropping the layer's other
     /// content.
@@ -370,25 +390,34 @@ impl Renderer for NullRenderer {
         self.image_limits
     }
 
-    fn add_image(&mut self, id: ImageId, _image: ImageUpload) -> Result<(), ResourceError> {
-        if self.reject.contains(&NullReject::Image) {
-            return Err(ResourceError::Image("injected rejection".into()));
-        }
-        self.images.insert(id);
-        let _ = self.events.send(Event::AddImage(id));
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        self.register_image(id, &image)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn add_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        core::future::ready(self.register_image(id, &image))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        self.swap_image(id, &image);
         Ok(())
     }
 
-    fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        assert!(
-            self.images.contains(&id),
-            "replace of unregistered image {}",
-            id.raw()
-        );
-        let _ = self
-            .events
-            .send(Event::ReplaceImage(id, (image.width, image.height)));
-        Ok(())
+    #[cfg(target_arch = "wasm32")]
+    fn replace_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        self.swap_image(id, &image);
+        core::future::ready(Ok(()))
     }
 
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {

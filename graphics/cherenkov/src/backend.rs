@@ -167,8 +167,26 @@ pub trait Renderer: 'static {
     /// draws the image with [`RenderError::Rejected`].
     ///
     /// # Errors
-    /// [`ResourceError`] when the upload cannot be used.
+    /// [`ResourceError`] when the upload cannot be used or the device
+    /// cannot back its memory.
+    #[cfg(not(target_arch = "wasm32"))]
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError>;
+
+    /// Registers an image on the owning JS thread, awaiting what the
+    /// browser reports only asynchronously — an allocation the device
+    /// cannot back — without blocking its event loop. A rejection fails
+    /// every later render that draws the image with
+    /// [`RenderError::Rejected`].
+    ///
+    /// # Errors
+    /// [`ResourceError`] when the upload cannot be used or the device
+    /// cannot back its memory.
+    #[cfg(target_arch = "wasm32")]
+    fn add_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>>;
 
     /// Replaces a registered image's pixels behind the same id: every
     /// recording naming `id` samples the new pixels from the next render
@@ -178,10 +196,26 @@ pub trait Renderer: 'static {
     /// surfaces for which [`Renderer::samples`] answers true.
     ///
     /// # Errors
-    /// [`ResourceError`] when the upload cannot be used; the image keeps
-    /// its previous pixels, and renders that draw it fail with
-    /// [`RenderError::Rejected`] until a replacement succeeds.
+    /// [`ResourceError`] when the upload cannot be used or the device
+    /// cannot back its memory; the image keeps its previous pixels, and
+    /// renders that draw it fail with [`RenderError::Rejected`] until a
+    /// replacement succeeds.
+    #[cfg(not(target_arch = "wasm32"))]
     fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError>;
+
+    /// Replaces a registered image's pixels on the owning JS thread,
+    /// awaiting what the browser reports only asynchronously, as
+    /// [`add_image`](Self::add_image) does; otherwise as on native
+    /// targets.
+    ///
+    /// # Errors
+    /// As [`replace_image`](Self::replace_image).
+    #[cfg(target_arch = "wasm32")]
+    fn replace_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>>;
 
     /// Whether any layer content on `surface`, with its slot updates
     /// applied and nested pictures included, samples `resource`: a font,

@@ -3059,6 +3059,96 @@ pub(in crate::render) type FrameCommits = Vec<()>;
 /// surface that commits nothing off-thread produces (`None` on Apple).
 type PlatformCommit = <planes::Platform as planes::SystemPlanes>::Commit;
 
+impl GpuRenderer {
+    /// [`Renderer::add_image`]'s work, awaiting the device's report.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+        )
+    )]
+    async fn register_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> Result<(), ResourceError> {
+        let size = (image.width, image.height);
+        let data = image_texels_f16(&image)?;
+        let image = upload_image(&self.device, &self.queue, size, &data).await?;
+        self.images.insert(id.raw(), image);
+        self.images_gen += 1;
+        Ok(())
+    }
+
+    /// [`Renderer::replace_image`]'s work, awaiting the device's report.
+    #[cfg_attr(
+        target_arch = "wasm32",
+        expect(
+            clippy::future_not_send,
+            reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+        )
+    )]
+    async fn swap_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        let _diag_guard = diag::Guard::scope(self.diag.as_ref());
+        let data = image_texels_f16(&image)?;
+        let size = (image.width, image.height);
+        let current = self
+            .images
+            .get(&id.raw())
+            .expect("replace targets a registered image");
+        if (current.width, current.height) == size {
+            // The copy is queued ahead of the next submission, after every
+            // frame already submitted, so no frame samples a partly
+            // written texture. The view is unchanged: bind groups and
+            // lowered paints stay valid.
+            write_image(&self.device, &self.queue, &current.texture, size, &data).await?;
+            // Local images that sampled the previous pixels are no longer
+            // current.
+            self.image_replacements += 1;
+            return Ok(());
+        }
+        let replacement = upload_image(&self.device, &self.queue, size, &data).await?;
+        self.image_replacements += 1;
+        let old = self
+            .images
+            .insert(id.raw(), replacement)
+            .expect("replace targets a registered image");
+        self.images_gen += 1;
+        diag::retire(
+            &self.device,
+            diag::RetireArgs {
+                label: "image",
+                class: diag::Class::Image,
+                bytes: old.bytes(),
+                used_in_latest_submit: true,
+                reason: "replace_image",
+            },
+        );
+        // #169 A4: bind groups created against the replaced view are
+        // stale — `Registered(id)` now binds the new texture; submitted
+        // encoders keep the old one until completion. Lowering resolved
+        // the old dimensions into the image's paints, so content sampling
+        // it is lowered again.
+        let images_gen = self.images_gen;
+        let mask_gen = self.atlas.mask_texture_generation();
+        for surf in self.surfaces.values_mut() {
+            retire_binds1(
+                surf,
+                &self.device,
+                images_gen,
+                mask_gen,
+                "image replaced",
+                |key| key.2 == Some(lower::ImageSource::Registered(id.raw())),
+            );
+            for content in surf.layers.values_mut() {
+                content.invalidate_image(id);
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Renderer for GpuRenderer {
     type Target = GpuTarget;
     type Font = PreparedFont;
@@ -3478,74 +3568,33 @@ impl Renderer for GpuRenderer {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let size = (image.width, image.height);
-        let data = image_texels_f16(&image)?;
-        let image = upload_image(&self.device, &self.queue, size, &data)?;
-        self.images.insert(id.raw(), image);
-        self.images_gen += 1;
-        Ok(())
+        pollster::block_on(self.register_image(id, image))
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn add_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        self.register_image(id, image)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let _diag_guard = diag::Guard::scope(self.diag.as_ref());
-        let data = image_texels_f16(&image)?;
-        let size = (image.width, image.height);
-        let current = self
-            .images
-            .get(&id.raw())
-            .expect("replace targets a registered image");
-        if (current.width, current.height) == size {
-            // The copy is queued ahead of the next submission, after every
-            // frame already submitted, so no frame samples a partly
-            // written texture. The view is unchanged: bind groups and
-            // lowered paints stay valid.
-            write_image(&self.device, &self.queue, &current.texture, size, &data)?;
-            // Local images that sampled the previous pixels are no longer
-            // current.
-            self.image_replacements += 1;
-            return Ok(());
-        }
-        let replacement = upload_image(&self.device, &self.queue, size, &data)?;
-        self.image_replacements += 1;
-        let old = self
-            .images
-            .insert(id.raw(), replacement)
-            .expect("replace targets a registered image");
-        self.images_gen += 1;
-        diag::retire(
-            &self.device,
-            diag::RetireArgs {
-                label: "image",
-                class: diag::Class::Image,
-                bytes: old.bytes(),
-                used_in_latest_submit: true,
-                reason: "replace_image",
-            },
-        );
-        // #169 A4: bind groups created against the replaced view are
-        // stale — `Registered(id)` now binds the new texture; submitted
-        // encoders keep the old one until completion. Lowering resolved
-        // the old dimensions into the image's paints, so content sampling
-        // it is lowered again.
-        let images_gen = self.images_gen;
-        let mask_gen = self.atlas.mask_texture_generation();
-        for surf in self.surfaces.values_mut() {
-            retire_binds1(
-                surf,
-                &self.device,
-                images_gen,
-                mask_gen,
-                "image replaced",
-                |key| key.2 == Some(lower::ImageSource::Registered(id.raw())),
-            );
-            for content in surf.layers.values_mut() {
-                content.invalidate_image(id);
-            }
-        }
-        Ok(())
+        pollster::block_on(self.swap_image(id, image))
     }
 
+    #[cfg(target_arch = "wasm32")]
+    fn replace_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        self.swap_image(id, image)
+    }
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {
         self.surfaces.get(&surface).is_some_and(|state| {
             state
@@ -9970,35 +10019,49 @@ impl GpuRenderer {
 /// A registered image's texture of `size`, holding `data` (f16 texels
 /// from [`image_texels_f16`]).
 ///
+/// The texture's allocation and the texel upload each run under an
+/// out-of-memory error scope, so an allocation the device cannot back is
+/// this call's error rather than an uncaptured device error — a panic in
+/// wgpu's handler on native targets, a console message the browser
+/// reports to no one. The scope resolves asynchronously: native targets
+/// block on it, and the browser awaits it on its event loop. A failed
+/// allocation is returned before anything uses its handle.
+///
 /// # Errors
 /// [`ResourceError::Image`] when the device cannot back the texture or
 /// its upload.
-fn upload_image(
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )
+)]
+async fn upload_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     (width, height): (u32, u32),
     data: &[u8],
 ) -> Result<GpuImage, ResourceError> {
-    let (texture, view) = out_of_memory(device, || {
-        create_target(
-            device,
-            "image",
-            (width, height),
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            TARGET_FORMAT,
-        )
-    })
-    .map_err(|error| {
-        ResourceError::Image(format!(
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let (texture, view) = create_target(
+        device,
+        "image",
+        (width, height),
+        wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        TARGET_FORMAT,
+    );
+    if let Some(error) = scope.pop().await {
+        return Err(ResourceError::Image(format!(
             "{width}x{height} texture allocation failed: {error}"
-        ))
-    })?;
+        )));
+    }
     diag::create(
         device,
         "image",
         u64::from(width) * u64::from(height) * texel_bytes(TARGET_FORMAT),
     );
-    write_image(device, queue, &texture, (width, height), data)?;
+    write_image(device, queue, &texture, (width, height), data).await?;
     Ok(GpuImage {
         texture,
         view,
@@ -10007,53 +10070,36 @@ fn upload_image(
     })
 }
 
-/// Runs `allocate` under an out-of-memory error scope, so an allocation
-/// the device cannot back is this call's error rather than a panic in
-/// wgpu's uncaptured-error handler. Only the allocation is scoped: a
-/// failed allocation is returned before anything uses its handle.
-///
-/// On the browser's WebGPU an error scope resolves only asynchronously
-/// and `Renderer::add_image` is synchronous, so there the allocation
-/// runs unscoped; an uncaptured error is reported to the page and does
-/// not panic.
-#[cfg_attr(
-    target_arch = "wasm32",
-    expect(
-        clippy::unnecessary_wraps,
-        reason = "the browser's error scope resolves only asynchronously, so the synchronous browser path has no error to return"
-    )
-)]
-fn out_of_memory<T>(device: &wgpu::Device, allocate: impl FnOnce() -> T) -> Result<T, wgpu::Error> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-        let value = allocate();
-        pollster::block_on(scope.pop()).map_or(Ok(value), Err)
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        let _ = device;
-        Ok(allocate())
-    }
-}
-
 /// Writes `data` (f16 texels from [`image_texels_f16`]) over the whole of
 /// an image texture of `size`.
+///
+/// The upload runs under an out-of-memory error scope, as in
+/// [`upload_image`].
 ///
 /// # Errors
 /// [`ResourceError::Image`] when the device cannot back the upload's
 /// staging memory; the texture keeps its previous texels.
-fn write_image(
+#[cfg_attr(
+    target_arch = "wasm32",
+    expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )
+)]
+async fn write_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,
     (width, height): (u32, u32),
     data: &[u8],
 ) -> Result<(), ResourceError> {
-    out_of_memory(device, || {
-        write_texels(device, queue, texture, (width, height), data);
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    write_texels(device, queue, texture, (width, height), data);
+    scope.pop().await.map_or(Ok(()), |error| {
+        Err(ResourceError::Image(format!(
+            "{width}x{height} upload failed: {error}"
+        )))
     })
-    .map_err(|error| ResourceError::Image(format!("{width}x{height} upload failed: {error}")))
 }
 
 /// [`write_image`]'s unscoped copy.

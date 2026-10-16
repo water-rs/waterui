@@ -284,9 +284,7 @@ impl<B: Backend> Engine<B> {
         let resource = ResourceId::Image(id);
         self.register(
             resource,
-            Box::new(move |r: &mut B::Renderer| {
-                Box::pin(std::future::ready(r.add_image(id, upload)))
-            }),
+            Box::new(move |r: &mut B::Renderer| Box::pin(r.add_image(id, upload))),
         )?;
         self.images.settle(0, texels);
         Ok(Image::new(
