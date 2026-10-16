@@ -1541,6 +1541,8 @@ struct Window {
     /// Warmup-frame captures only — measured frames sample nothing.
     memory_samples: Vec<MemorySnapshot>,
     meter: Option<energy::Meter>,
+    /// The GPU clock residency table as the window opened.
+    gpu_clock: Option<crate::gpu_clock::Snapshot>,
     start: Instant,
     missed_deadlines: u32,
 }
@@ -1580,6 +1582,7 @@ fn run_frames(
         measure_energy,
     } = options;
     let mut meter = None;
+    let mut gpu_clock = None;
     let mut start = Instant::now();
     let mut missed_deadlines = 0u32;
     let mut samples = Vec::with_capacity(frames as usize);
@@ -1592,6 +1595,7 @@ fn run_frames(
             if measure_energy {
                 meter = Some(energy::Meter::begin(window_hint)?);
             }
+            gpu_clock = crate::gpu_clock::Snapshot::read()?;
             start = Instant::now();
         }
         if frame >= warmup
@@ -1648,6 +1652,7 @@ fn run_frames(
         samples,
         memory_samples,
         meter,
+        gpu_clock,
         start,
         missed_deadlines,
     })
@@ -1827,6 +1832,15 @@ fn measure_scene(
         },
     )?;
     let window_end = Instant::now();
+    let gpu_clock = match (&window.gpu_clock, crate::gpu_clock::Snapshot::read()?) {
+        (Some(start), Some(end)) => Some(start.until(&end)?),
+        (None, None) => None,
+        _ => {
+            return Err(BenchError::Engine(
+                "gpu clock: the residency table appeared or vanished during the window".into(),
+            ));
+        }
+    };
     let window_seconds = window_end.duration_since(window.start).as_secs_f64();
     let energy_outcome = window
         .meter
@@ -1871,6 +1885,7 @@ fn measure_scene(
         pacing,
         energy: energy_outcome.map(|o| o.report),
         conditions,
+        gpu_clock,
         counters,
         memory: MemoryReport::new(idle_memory, &memory_samples, Some(post_retire_memory)),
         device: engine.device(),
