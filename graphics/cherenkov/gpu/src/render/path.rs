@@ -323,7 +323,7 @@ pub fn emit(
             arena.extend(
                 coverage.data[(y + row) * coverage.w + x..][..w]
                     .iter()
-                    .map(|&c| texel(c)),
+                    .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8),
             );
         }
         rasters.push((w32, h32, start..arena.len()));
@@ -412,24 +412,16 @@ pub fn emit(
     Ok((out, rasters))
 }
 
-/// The `R8Unorm` texel a coverage value uploads as.
+/// Classifies one strip's columns as 0 empty, 1 full (1.0 in every row),
+/// 2 partial. Full runs narrower than `FULL_RUN_MIN` are demoted to
+/// partial so a partial run is not fragmented by isolated full columns,
+/// and empty gaps up to `PARTIAL_GAP_MAX` between two partial runs are
+/// carried as zero texels inside one cell rather than as a separate cell
+/// instance.
 #[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    reason = "a coverage clamped to [0, 1] scales into u8 range"
+    clippy::float_cmp,
+    reason = "a column is 'full' exactly when coverage clamped to 1.0"
 )]
-fn texel(coverage: f32) -> u8 {
-    (coverage.clamp(0.0, 1.0) * 255.0).round() as u8
-}
-
-/// Classifies one strip's columns by the texels they upload as: 0 empty
-/// (texel 0 in every row), 1 full (texel 255 in every row), 2 partial.
-/// A full column drawn as a span covers exactly what its texels would, and
-/// coverage differences below one texel step do not change the partition.
-/// Full runs narrower than `FULL_RUN_MIN` are demoted to partial so a
-/// partial run is not fragmented by isolated full columns, and empty gaps
-/// up to `PARTIAL_GAP_MAX` between two partial runs are carried as zero
-/// texels inside one cell rather than as a separate cell instance.
 fn strip_class(coverage: &Coverage, sy: usize, sh: usize, class: &mut Vec<u8>) {
     class.clear();
     class.resize(coverage.w, 0);
@@ -437,11 +429,9 @@ fn strip_class(coverage: &Coverage, sy: usize, sh: usize, class: &mut Vec<u8>) {
         let mut empty = true;
         let mut full = true;
         for row in 0..sh {
-            // `texel(v)` is 0 exactly when `v * 255 < 0.5` and 255 exactly
-            // when `v * 255 >= 254.5`.
-            let scaled = coverage.data[(sy + row) * coverage.w + x] * 255.0;
-            empty &= scaled < 0.5;
-            full &= scaled >= 254.5;
+            let v = coverage.data[(sy + row) * coverage.w + x];
+            empty &= v == 0.0;
+            full &= v == 1.0;
         }
         *c = if empty {
             0
