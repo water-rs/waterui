@@ -25,6 +25,12 @@ const VARIANT_UNION: u32 = 3u;
 @group(1) @binding(1) var backdrop: texture_2d<f32>;
 @group(1) @binding(2) var image_tex: texture_2d<f32>;
 
+// The sRGB transfer decode of each 8-bit code (`image_storage::transfer_table`).
+struct ImageDecode {
+    linear: array<f32, 256>,
+}
+@group(0) @binding(4) var<storage, read> image_decode: ImageDecode;
+
 // Abramowitz & Stegun 7.1.26, |error| < 1.5e-7.
 fn erf(x: f32) -> f32 {
     let s = sign(x);
@@ -257,16 +263,27 @@ fn sweep_t(i: u32, p: vec2<f32>) -> f32 {
 // Conversion happens separately at each tap, BEFORE interpolation. In
 // particular neither straight alpha nor encoded premultiplied alpha may be
 // hardware-filtered and subsequently converted to the working representation.
+// Flag bits (`image_storage`): 12 source texels, 13 premultiplied, 14 the
+// transfer function, 15 sRGB primaries, 16 the transfer table.
 fn image_working_texel(encoded: vec4<f32>, flags: u32) -> vec4<f32> {
     if (flags & 4096u) == 0u { return encoded; }
     let a = encoded.a;
     var rgb = encoded.rgb;
-    if (flags & 8192u) != 0u && a > 0.0 {
-        rgb /= a;
-        if (flags & 65536u) == 0u { rgb = min(rgb, vec3<f32>(1.0)); }
-    }
-    if (flags & 16384u) != 0u {
-        rgb = select(pow(max((rgb + 0.055) / 1.055, vec3<f32>(0.0)), vec3<f32>(2.4)), rgb / 12.92, rgb <= vec3<f32>(0.04045));
+    if (flags & 65536u) != 0u {
+        // A straight 8-bit code: its decode is a table entry.
+        let code = vec3<u32>(round(rgb * 255.0));
+        rgb = vec3<f32>(
+            image_decode.linear[code.r],
+            image_decode.linear[code.g],
+            image_decode.linear[code.b],
+        );
+    } else {
+        if (flags & 8192u) != 0u && a > 0.0 {
+            rgb = min(rgb / a, vec3<f32>(1.0));
+        }
+        if (flags & 16384u) != 0u {
+            rgb = select(pow(max((rgb + 0.055) / 1.055, vec3<f32>(0.0)), vec3<f32>(2.4)), rgb / 12.92, rgb <= vec3<f32>(0.04045));
+        }
     }
     if (flags & 32768u) != 0u {
         rgb = mat3x3<f32>(

@@ -43,6 +43,7 @@ pub struct Resources<'a> {
     pub globals: &'a wgpu::Buffer,
     pub instances: &'a wgpu::Buffer,
     pub stops: &'a wgpu::Buffer,
+    pub image_decode: &'a wgpu::Buffer,
     pub dummy: &'a wgpu::TextureView,
     /// The texture `dummy` views, so it can be transitioned with the
     /// rest of the epoch's sampled resources.
@@ -244,6 +245,7 @@ pub fn encode(
         crate::render::raw_vk_buffer(resources.instances),
         crate::render::raw_vk_buffer(resources.stops),
         crate::render::raw_vk_view(resources.atlas.view()),
+        crate::render::raw_vk_buffer(resources.image_decode),
     )?;
     let slots = mirror.slots(size, epoch.slots - 1)?;
     let mut views = [vk::ImageView::null(); super::SLOTS as usize];

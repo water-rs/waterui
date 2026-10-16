@@ -6,6 +6,37 @@ pub(super) const COMPRESSION_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_
     .union(wgpu::Features::TEXTURE_COMPRESSION_BC)
     .union(wgpu::Features::TEXTURE_COMPRESSION_ETC2);
 
+/// Image paint bits 12–16, `shader.wgsl`'s `image_working_texel`. Zero is
+/// a texture already holding premultiplied linear Display P3: internal
+/// textures, and `Rgba16F` sources converted at upload.
+const SOURCE: u32 = 1 << 12;
+/// The texels carry premultiplied alpha.
+const PREMULTIPLIED: u32 = 1 << 13;
+/// The sRGB transfer decode, evaluated per tap.
+const TRANSFER: u32 = 1 << 14;
+/// sRGB primaries, converted to Display P3 per tap.
+const SRGB_PRIMARIES: u32 = 1 << 15;
+/// The sRGB transfer decode, looked up in [`transfer_table`] by the
+/// texel's 8-bit code.
+const TRANSFER_TABLE: u32 = 1 << 16;
+
+/// The sRGB transfer decode of every 8-bit code, as the shader's
+/// `image_decode` binding holds it.
+///
+/// Each entry is the f64 decode the f16 upload conversion applies to a
+/// straight-alpha code, rounded once to f32, so a straight 8-bit source
+/// decodes to the same linear value whether it is converted at upload or
+/// per tap.
+pub(super) fn transfer_table() -> [f32; 256] {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the f64 decode is rounded to the shader's f32 once, by design"
+    )]
+    std::array::from_fn(|code| {
+        super::srgb_decode_u8_f64(f64::from(u8::try_from(code).expect("256 codes")) / 255.0) as f32
+    })
+}
+
 pub(super) struct Upload<'a> {
     pub bytes: Cow<'a, [u8]>,
     pub format: wgpu::TextureFormat,
@@ -15,17 +46,21 @@ pub(super) struct Upload<'a> {
 impl<'a> Upload<'a> {
     pub fn new(image: &'a ImageUpload, features: wgpu::Features) -> Result<Self, ResourceError> {
         use wgpu::TextureFormat as T;
-        let nonlinear = matches!(
-            image.color_space,
-            ImageColorSpace::Srgb | ImageColorSpace::DisplayP3
-        );
+        // An f16 source is no smaller than the working texels, so it takes
+        // its colour interpretation once, here, into the same storage.
+        if image.format == ImageFormat::Rgba16F {
+            return Ok(Self {
+                bytes: Cow::Owned(working_f16(image)),
+                format: T::Rgba16Float,
+                flags: 0,
+            });
+        }
         // sRGB texture decoding can quantize dark values more coarsely than
         // the working f16 representation. Preserve the encoded bytes and
         // decode each tap in the shader, for both alpha interpretations.
         let rgba8 = T::Rgba8Unorm;
         let (native, required) = match image.format {
             ImageFormat::Rgba8 => (rgba8, wgpu::Features::empty()),
-            ImageFormat::Rgba16F => (T::Rgba16Float, wgpu::Features::empty()),
             ImageFormat::Astc4x4 => (
                 T::Astc {
                     block: wgpu::AstcBlock::B4x4,
@@ -35,6 +70,7 @@ impl<'a> Upload<'a> {
             ),
             ImageFormat::Bc7 => (T::Bc7RgbaUnorm, wgpu::Features::TEXTURE_COMPRESSION_BC),
             ImageFormat::Etc2Rgba => (T::Etc2Rgba8Unorm, wgpu::Features::TEXTURE_COMPRESSION_ETC2),
+            ImageFormat::Rgba16F => unreachable!("converted at upload above"),
         };
         let (format, bytes) = if features.contains(required) {
             (native, Cow::Borrowed(image.data.as_ref()))
@@ -42,22 +78,127 @@ impl<'a> Upload<'a> {
             tracing::debug!(format = ?image.format, required = ?required, "decoding image because the device lacks its compression feature");
             (rgba8, Cow::Owned(decode(image)?))
         };
-        // Image paint bits 12–16: source storage, premultiplied input,
-        // shader transfer decode, sRGB primaries, unbounded f16 channels.
-        // Zero is reserved for internal, already-linear-P3 textures.
-        let flags = (1 << 12)
-            | (u32::from(image.premultiplied) << 13)
-            | (u32::from(nonlinear) << 14)
-            | (u32::from(matches!(
+        let nonlinear = matches!(
+            image.color_space,
+            ImageColorSpace::Srgb | ImageColorSpace::DisplayP3
+        );
+        // A table entry is the decode of an 8-bit code. Straight alpha
+        // decodes the stored code itself; premultiplied texels decode
+        // their quotient by alpha, which is no code, and ASTC's UNORM
+        // decode is 16-bit, so both evaluate the transfer function.
+        let codes = format
+            != T::Astc {
+                block: wgpu::AstcBlock::B4x4,
+                channel: wgpu::AstcChannel::Unorm,
+            };
+        let transfer = match (nonlinear, codes && !image.premultiplied) {
+            (false, _) => 0,
+            (true, true) => TRANSFER_TABLE,
+            (true, false) => TRANSFER,
+        };
+        let flags = SOURCE
+            | if image.premultiplied {
+                PREMULTIPLIED
+            } else {
+                0
+            }
+            | transfer
+            | if matches!(
                 image.color_space,
                 ImageColorSpace::Srgb | ImageColorSpace::LinearSrgb
-            )) << 15)
-            | (u32::from(image.format == ImageFormat::Rgba16F) << 16);
+            ) {
+                SRGB_PRIMARIES
+            } else {
+                0
+            };
         Ok(Self {
             bytes,
             format,
             flags,
         })
+    }
+}
+
+/// `Rgba16F` upload bytes -> premultiplied linear-P3 f16 texels, the
+/// working texel format.
+fn working_f16(image: &ImageUpload) -> Vec<u8> {
+    let mut data = Vec::with_capacity(image.data.len());
+    for px in image.data.as_chunks::<8>().0 {
+        let encoded = std::array::from_fn(|i| {
+            f64::from(half::f16::from_le_bytes([px[2 * i], px[2 * i + 1]]))
+        });
+        // The texels keep extended (HDR and wide-gamut) values, so the
+        // un-premultiplied quotient is unbounded.
+        push_working_f16(
+            encoded,
+            image.color_space,
+            image.premultiplied,
+            f64::INFINITY,
+            &mut data,
+        );
+    }
+    data
+}
+
+/// Appends one encoded texel as a premultiplied linear-P3 f16 texel, the
+/// working texel format.
+///
+/// Straight-alpha input decodes each channel; premultiplied input is
+/// un-premultiplied in the encoded domain first, bounded at
+/// `unpremultiplied_max`.
+pub(super) fn push_working_f16(
+    encoded: [f64; 4],
+    color_space: ImageColorSpace,
+    premultiplied: bool,
+    unpremultiplied_max: f64,
+    data: &mut Vec<u8>,
+) {
+    let alpha = encoded[3];
+    // `min` also maps a NaN quotient to the bound.
+    let decode = |v: f64| {
+        if premultiplied && alpha > 0.0 {
+            (v / alpha).min(unpremultiplied_max)
+        } else {
+            v
+        }
+    };
+    let lin = match color_space {
+        ImageColorSpace::LinearSrgb | ImageColorSpace::LinearP3 => {
+            [decode(encoded[0]), decode(encoded[1]), decode(encoded[2])]
+        }
+        _ => [
+            super::srgb_decode_u8_f64(decode(encoded[0])),
+            super::srgb_decode_u8_f64(decode(encoded[1])),
+            super::srgb_decode_u8_f64(decode(encoded[2])),
+        ],
+    };
+    // sRGB-primaries input additionally needs the primaries' matrix;
+    // Display P3 uses sRGB's transfer function, so the decode above
+    // covers both encoded spaces. `LinearP3` is already the working
+    // space: no transfer, no matrix.
+    let lin_p3 = match color_space {
+        ImageColorSpace::Srgb | ImageColorSpace::LinearSrgb => {
+            let (to_xyz, to_p3) = (super::SRGB_TO_XYZ, super::XYZ_TO_P3);
+            let [x, y, z] = [
+                to_xyz[0][2].mul_add(lin[2], to_xyz[0][1].mul_add(lin[1], to_xyz[0][0] * lin[0])),
+                to_xyz[1][2].mul_add(lin[2], to_xyz[1][1].mul_add(lin[1], to_xyz[1][0] * lin[0])),
+                to_xyz[2][2].mul_add(lin[2], to_xyz[2][1].mul_add(lin[1], to_xyz[2][0] * lin[0])),
+            ];
+            [
+                to_p3[0][2].mul_add(z, to_p3[0][1].mul_add(y, to_p3[0][0] * x)),
+                to_p3[1][2].mul_add(z, to_p3[1][1].mul_add(y, to_p3[1][0] * x)),
+                to_p3[2][2].mul_add(z, to_p3[2][1].mul_add(y, to_p3[2][0] * x)),
+            ]
+        }
+        ImageColorSpace::DisplayP3 | ImageColorSpace::LinearP3 => lin,
+    };
+    for v in [
+        alpha * lin_p3[0],
+        alpha * lin_p3[1],
+        alpha * lin_p3[2],
+        alpha,
+    ] {
+        data.extend_from_slice(&half::f16::from_f64(v).to_le_bytes());
     }
 }
 
@@ -115,7 +256,7 @@ mod tests {
     }
 
     #[test]
-    fn source_storage_borrows_bytes_and_preserves_color_metadata() {
+    fn eight_bit_sources_borrow_bytes_and_select_their_per_tap_decode() {
         for color_space in [
             ImageColorSpace::Srgb,
             ImageColorSpace::DisplayP3,
@@ -123,37 +264,82 @@ mod tests {
             ImageColorSpace::LinearP3,
         ] {
             for premultiplied in [false, true] {
-                for format in [ImageFormat::Rgba8, ImageFormat::Rgba16F] {
-                    let mut source = image(
-                        format,
-                        vec![0; if format == ImageFormat::Rgba8 { 24 } else { 48 }],
-                    );
-                    source.color_space = color_space;
-                    source.premultiplied = premultiplied;
-                    let upload = Upload::new(&source, wgpu::Features::empty()).unwrap();
-                    assert!(matches!(upload.bytes, Cow::Borrowed(_)));
-                    assert_eq!(upload.bytes.as_ptr(), source.data.as_ptr());
-                    assert_eq!((upload.flags & 8192) != 0, premultiplied);
-                    assert_eq!(
-                        (upload.flags & 32768) != 0,
-                        matches!(
-                            color_space,
-                            ImageColorSpace::Srgb | ImageColorSpace::LinearSrgb
-                        )
-                    );
-                    assert_eq!((upload.flags & 65536) != 0, format == ImageFormat::Rgba16F);
-                    let nonlinear = matches!(
+                let mut source = image(ImageFormat::Rgba8, vec![0; 24]);
+                source.color_space = color_space;
+                source.premultiplied = premultiplied;
+                let upload = Upload::new(&source, wgpu::Features::empty()).unwrap();
+                assert!(matches!(upload.bytes, Cow::Borrowed(_)));
+                assert_eq!(upload.bytes.as_ptr(), source.data.as_ptr());
+                assert_eq!(upload.format, wgpu::TextureFormat::Rgba8Unorm);
+                assert_eq!(storage_bytes(upload.format, 3, 2), 24);
+                assert_ne!(upload.flags & SOURCE, 0);
+                assert_eq!((upload.flags & PREMULTIPLIED) != 0, premultiplied);
+                assert_eq!(
+                    (upload.flags & SRGB_PRIMARIES) != 0,
+                    matches!(
                         color_space,
-                        ImageColorSpace::Srgb | ImageColorSpace::DisplayP3
-                    );
-                    assert!(!upload.format.is_srgb());
-                    assert_eq!(
-                        (upload.flags & 16384) != 0,
-                        nonlinear && !upload.format.is_srgb()
-                    );
-                    assert_eq!(storage_bytes(upload.format, 3, 2), source.data.len() as u64);
-                }
+                        ImageColorSpace::Srgb | ImageColorSpace::LinearSrgb
+                    )
+                );
+                let nonlinear = matches!(
+                    color_space,
+                    ImageColorSpace::Srgb | ImageColorSpace::DisplayP3
+                );
+                assert_eq!(
+                    (upload.flags & TRANSFER_TABLE) != 0,
+                    nonlinear && !premultiplied
+                );
+                assert_eq!((upload.flags & TRANSFER) != 0, nonlinear && premultiplied);
             }
+        }
+    }
+
+    #[test]
+    fn f16_sources_take_their_interpretation_at_upload() {
+        let texel = |v: [f32; 4]| -> Vec<u8> {
+            v.into_iter()
+                .flat_map(|c| half::f16::from_f32(c).to_le_bytes())
+                .collect()
+        };
+        let channels = |bytes: &[u8]| -> Vec<f32> {
+            bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|c| half::f16::from_le_bytes(*c).to_f32())
+                .collect()
+        };
+        let mut source = image(ImageFormat::Rgba16F, texel([2.0, 0.5, 0.0, 0.5]).repeat(6));
+        source.color_space = ImageColorSpace::LinearP3;
+        source.premultiplied = true;
+        let upload = Upload::new(&source, wgpu::Features::empty()).unwrap();
+        assert_eq!(upload.format, wgpu::TextureFormat::Rgba16Float);
+        assert_eq!(upload.flags, 0);
+        // Premultiplied linear P3 is already the working representation,
+        // extended channels included.
+        assert_eq!(channels(&upload.bytes), [2.0, 0.5, 0.0, 0.5].repeat(6));
+        source.premultiplied = false;
+        let upload = Upload::new(&source, wgpu::Features::empty()).unwrap();
+        assert_eq!(channels(&upload.bytes), [1.0, 0.25, 0.0, 0.5].repeat(6));
+    }
+
+    #[test]
+    fn transfer_table_reproduces_the_upload_conversion_of_opaque_codes() {
+        let table = transfer_table();
+        for code in 0..=255_u8 {
+            let mut texel = Vec::new();
+            push_working_f16(
+                [f64::from(code) / 255.0, 0.0, 0.0, 1.0],
+                ImageColorSpace::DisplayP3,
+                false,
+                1.0,
+                &mut texel,
+            );
+            assert_eq!(
+                half::f16::from_f32(table[usize::from(code)]),
+                half::f16::from_le_bytes([texel[0], texel[1]]),
+                "code {code}"
+            );
         }
     }
 
@@ -202,7 +388,13 @@ mod tests {
             assert_eq!(storage_bytes(native.format, 5, 7), 64);
             let decoded = Upload::new(&source, wgpu::Features::empty()).unwrap();
             assert!(matches!(decoded.bytes, Cow::Owned(_)));
-            assert_eq!(decoded.flags, native.flags);
+            // Every decoded texel is an 8-bit code; natively, ASTC's UNORM
+            // decode is not, so it evaluates the transfer function.
+            assert_eq!(decoded.flags & !TRANSFER_TABLE, SOURCE | SRGB_PRIMARIES);
+            assert_ne!(decoded.flags & TRANSFER_TABLE, 0);
+            let astc = format == ImageFormat::Astc4x4;
+            assert_eq!((native.flags & TRANSFER) != 0, astc);
+            assert_eq!((native.flags & TRANSFER_TABLE) != 0, !astc);
             assert_eq!(decoded.format, wgpu::TextureFormat::Rgba8Unorm);
             assert_eq!(decoded.bytes.len(), 24);
             for pixel in decoded.bytes.as_chunks::<4>().0 {

@@ -210,8 +210,8 @@ struct FrameSets {
 /// resources.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum SetKey {
-    /// Group 0: globals, instances, stops, atlas.
-    Engine(u64, u64, u64, u64),
+    /// Group 0: globals, instances, stops, atlas, image transfer table.
+    Engine(u64, u64, u64, u64, u64),
     /// Group 1: source, backdrop, image, mask views. The tile path
     /// never binds source or backdrop — they read as attachments — so
     /// only the last two vary, but the key carries all four to stay
@@ -703,7 +703,7 @@ impl Mirror {
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 2 * SETS_PER_POOL,
+                descriptor_count: 3 * SETS_PER_POOL,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
@@ -772,9 +772,16 @@ impl Mirror {
         instances: vk::Buffer,
         stops: vk::Buffer,
         atlas: vk::ImageView,
+        image_decode: vk::Buffer,
     ) -> Result<vk::DescriptorSet, MirrorError> {
         self.check(stamp);
-        let key = SetKey::Engine(raw(globals), raw(instances), raw(stops), raw_view(atlas));
+        let key = SetKey::Engine(
+            raw(globals),
+            raw(instances),
+            raw(stops),
+            raw_view(atlas),
+            raw(image_decode),
+        );
         if let Some(set) = self.lookup(key) {
             return Ok(set);
         }
@@ -792,6 +799,11 @@ impl Mirror {
             },
             vk::DescriptorBufferInfo {
                 buffer: stops,
+                offset: 0,
+                range: vk::WHOLE_SIZE,
+            },
+            vk::DescriptorBufferInfo {
+                buffer: image_decode,
                 offset: 0,
                 range: vk::WHOLE_SIZE,
             },
@@ -827,6 +839,11 @@ impl Mirror {
                         .dst_binding(3)
                         .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                         .image_info(&image),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(set)
+                        .dst_binding(4)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(std::slice::from_ref(&buffers[3])),
                 ],
                 &[],
             );
@@ -1298,7 +1315,8 @@ impl Built {
         };
         // Group 0 mirrors `ENGINE_GROUP0`: the globals uniform window
         // the dynamic offset selects a pass's slot in, the instance and
-        // stop storage buffers, and the glyph atlas.
+        // stop storage buffers, the glyph atlas and the image transfer
+        // table.
         let group0 = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -1316,6 +1334,11 @@ impl Built {
                 .descriptor_count(1)
                 .stage_flags(fragment),
             sampled(3),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(fragment),
         ];
         // Group 1 mirrors `ENGINE_GROUP1`: source, backdrop, image and
         // mask. A tile draw binds the dummy for the first two.
@@ -1339,7 +1362,7 @@ impl Built {
         // directly — but only while that holds, and a table edited out
         // of order must not silently misbind the mirror.
         for (group, count) in [(ENGINE_GROUP0, group0.len()), (ENGINE_GROUP1, group1.len())] {
-            for ordinal in 0..u32::try_from(count).expect("four bindings") {
+            for ordinal in 0..u32::try_from(count).expect("a handful of bindings") {
                 assert_eq!(
                     vulkan_slot(group, ordinal),
                     ordinal,

@@ -39,6 +39,7 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
     constant Globals& globals [[buffer(0)]], \
     device InstanceBuffer const& instances [[buffer(1)]], \
     device StopBuffer const& stops [[buffer(2)]], \
+    device ImageDecode const& image_decode [[buffer(3)]], \
     metal::texture2d<float> atlas [[texture(0)]], \
     metal::texture2d<float> source [[texture(1)]], \
     metal::texture2d<float> image_tex [[texture(3)]], \
@@ -52,7 +53,7 @@ VsOut tile_input(TileInput v, metal::float4 position, constant Globals& globals)
     metal::float4 source_pixel = metal::float4(src); \
     metal::float4 destination_pixel = metal::float4(dst); \
     return { fs_full(tile_input(v, position, globals), globals, instances, stops, \
-        atlas, mask_tex, source, image_tex, backdrop_origin, backdrop_size, \
+        atlas, mask_tex, source, image_tex, image_decode, backdrop_origin, backdrop_size, \
         backdrop_scale, backdrop_levels, backdrop_member, source_pixel, destination_pixel) };
 
 #define TILE_OUTPUT(D) \

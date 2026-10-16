@@ -989,6 +989,8 @@ pub struct GpuRenderer {
     globals: wgpu::Buffer,
     instances: wgpu::Buffer,
     stops: wgpu::Buffer,
+    /// `image_storage::transfer_table`, group 0's `image_decode`.
+    image_decode: wgpu::Buffer,
     /// `{0, 1, 2, 2, 1, 3}` — see `quad_index_buffer`.
     quad_indices: wgpu::Buffer,
     bind0: wgpu::BindGroup,
@@ -1774,6 +1776,7 @@ fn make_bind0(
     instances: &wgpu::Buffer,
     stops: &wgpu::Buffer,
     atlas: &Atlas,
+    image_decode: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("engine data"),
@@ -1800,6 +1803,10 @@ fn make_bind0(
             wgpu::BindGroupEntry {
                 binding: 3,
                 resource: wgpu::BindingResource::TextureView(atlas.view()),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: image_decode.as_entire_binding(),
             },
         ],
     })
@@ -2250,6 +2257,16 @@ fn target_bytes(c: &ScratchTarget, deep: u32) -> u64 {
     texels * texel_bytes(c.texture.format())
 }
 
+/// The `image_decode` storage binding: the transfer table straight 8-bit
+/// image sources decode through (`image_storage::transfer_table`).
+fn image_decode_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("image decode"),
+        contents: bytemuck::cast_slice(&image_storage::transfer_table()),
+        usage: wgpu::BufferUsages::STORAGE,
+    })
+}
+
 /// `{0, 1, 2, 2, 1, 3}`: the coverage partial pass's indexed draw replays
 /// the painter path's ordered triangles while the vertex shader runs once
 /// per corner.
@@ -2383,9 +2400,11 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             mapped_at_creation: false,
         });
         let quad_indices = quad_index_buffer(&device);
+        let image_decode = image_decode_buffer(&device);
         diag::create(&device, "globals", globals.size());
         diag::create(&device, "instances", instances.size());
         diag::create(&device, "stops", stops.size());
+        diag::create(&device, "image decode", image_decode.size());
         fire_probe(
             &config,
             CreationPhase::Buffers,
@@ -2394,7 +2413,15 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         )?;
         let atlas = Atlas::new(&device, config.budget.gpu.0);
         fire_probe(&config, CreationPhase::Atlas, Some(&adapter), Some(&device))?;
-        let bind0 = make_bind0(&device, &layout0, &globals, &instances, &stops, &atlas);
+        let bind0 = make_bind0(
+            &device,
+            &layout0,
+            &globals,
+            &instances,
+            &stops,
+            &atlas,
+            &image_decode,
+        );
         #[cfg_attr(
             not(all(unix, not(target_vendor = "apple"))),
             expect(
@@ -2540,6 +2567,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             globals,
             instances,
             stops,
+            image_decode,
             quad_indices,
             bind0,
             dummy_view,
@@ -2739,9 +2767,11 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         mapped_at_creation: false,
     });
     let quad_indices = quad_index_buffer(&device);
+    let image_decode = image_decode_buffer(&device);
     diag::create(&device, "globals", globals.size());
     diag::create(&device, "instances", instances.size());
     diag::create(&device, "stops", stops.size());
+    diag::create(&device, "image decode", image_decode.size());
     fire_probe(
         &config,
         CreationPhase::Buffers,
@@ -2750,7 +2780,15 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     )?;
     let atlas = Atlas::new(&device, config.budget.gpu.0);
     fire_probe(&config, CreationPhase::Atlas, Some(&adapter), Some(&device))?;
-    let bind0 = make_bind0(&device, &layout0, &globals, &instances, &stops, &atlas);
+    let bind0 = make_bind0(
+        &device,
+        &layout0,
+        &globals,
+        &instances,
+        &stops,
+        &atlas,
+        &image_decode,
+    );
     let (_, dummy_view) = create_target(
         &device,
         "dummy source",
@@ -2865,6 +2903,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         globals,
         instances,
         stops,
+        image_decode,
         quad_indices,
         bind0,
         dummy_view,
@@ -3776,6 +3815,7 @@ impl Renderer for GpuRenderer {
             &self.instances,
             &self.stops,
             atlas,
+            &self.image_decode,
         );
         self.bound_atlas = atlas.generation();
         diag::set_phase("render");
@@ -3796,6 +3836,7 @@ impl Renderer for GpuRenderer {
                 .sum::<u64>()
             + self.uploads.gpu_bytes()
             + self.stops.size()
+            + self.image_decode.size()
             + self.globals.size()
             + self.atlas.gpu_bytes()
             + self.atlas.mask_texture_bytes()
@@ -7689,6 +7730,7 @@ impl GpuRenderer {
                     &self.instances,
                     &self.stops,
                     atlas,
+                    &self.image_decode,
                 );
                 self.bound_atlas = atlas.generation();
                 self.invalidate_painter_replays();
@@ -7709,6 +7751,7 @@ impl GpuRenderer {
                 &self.instances,
                 &self.stops,
                 atlas,
+                &self.image_decode,
             );
             self.bound_atlas = atlas.generation();
             self.invalidate_painter_replays();
@@ -8002,6 +8045,7 @@ impl GpuRenderer {
                 &self.instances,
                 &self.stops,
                 atlas,
+                &self.image_decode,
             );
             self.bound_atlas = atlas.generation();
             self.bound_instance_size = self.instances.size();
@@ -8135,6 +8179,7 @@ impl GpuRenderer {
                         globals: &self.globals,
                         instances: &self.instances,
                         stops: &self.stops,
+                        image_decode: &self.image_decode,
                         dummy: &self.dummy_view,
                         dummy_texture: &self.dummy,
                         images: &self.images,
@@ -9996,51 +10041,14 @@ fn image_texels(
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(pixels.len() * 2);
     for px in pixels.as_chunks::<4>().0 {
-        let a = f64::from(px[3]) / 255.0;
-        let decode = |v: u8| {
-            if premultiplied && a > 0.0 {
-                ((f64::from(v) / 255.0) / a).min(1.0)
-            } else {
-                f64::from(v) / 255.0
-            }
-        };
-        let lin = match color_space {
-            cherenkov::ImageColorSpace::LinearSrgb | cherenkov::ImageColorSpace::LinearP3 => {
-                [decode(px[0]), decode(px[1]), decode(px[2])]
-            }
-            _ => [
-                srgb_decode_u8_f64(decode(px[0])),
-                srgb_decode_u8_f64(decode(px[1])),
-                srgb_decode_u8_f64(decode(px[2])),
-            ],
-        };
-        let lin_p3 = match color_space {
-            cherenkov::ImageColorSpace::Srgb | cherenkov::ImageColorSpace::LinearSrgb => {
-                let [x, y, z] = [
-                    SRGB_TO_XYZ[0][2].mul_add(
-                        lin[2],
-                        SRGB_TO_XYZ[0][1].mul_add(lin[1], SRGB_TO_XYZ[0][0] * lin[0]),
-                    ),
-                    SRGB_TO_XYZ[1][2].mul_add(
-                        lin[2],
-                        SRGB_TO_XYZ[1][1].mul_add(lin[1], SRGB_TO_XYZ[1][0] * lin[0]),
-                    ),
-                    SRGB_TO_XYZ[2][2].mul_add(
-                        lin[2],
-                        SRGB_TO_XYZ[2][1].mul_add(lin[1], SRGB_TO_XYZ[2][0] * lin[0]),
-                    ),
-                ];
-                [
-                    XYZ_TO_P3[0][2].mul_add(z, XYZ_TO_P3[0][1].mul_add(y, XYZ_TO_P3[0][0] * x)),
-                    XYZ_TO_P3[1][2].mul_add(z, XYZ_TO_P3[1][1].mul_add(y, XYZ_TO_P3[1][0] * x)),
-                    XYZ_TO_P3[2][2].mul_add(z, XYZ_TO_P3[2][1].mul_add(y, XYZ_TO_P3[2][0] * x)),
-                ]
-            }
-            cherenkov::ImageColorSpace::DisplayP3 | cherenkov::ImageColorSpace::LinearP3 => lin,
-        };
-        for v in [a * lin_p3[0], a * lin_p3[1], a * lin_p3[2], a] {
-            data.extend_from_slice(&half::f16::from_f64(v).to_le_bytes());
-        }
+        // Quantized codes un-premultiply to at most 1.0.
+        image_storage::push_working_f16(
+            px.map(|v| f64::from(v) / 255.0),
+            color_space,
+            premultiplied,
+            1.0,
+            &mut data,
+        );
     }
     data
 }

@@ -125,15 +125,16 @@ impl Entry {
 }
 
 /// Group 0 of the engine pipelines (`shader.wgsl`): the per-pass globals
-/// window, the instance and gradient-stop buffers and the glyph atlas.
-/// Backdrop union member records ride in the stops buffer, so the group
-/// stays fixed at four entries.
+/// window, the instance and gradient-stop buffers, the glyph atlas and the
+/// image transfer table. Backdrop union member records ride in the stops
+/// buffer rather than in a binding of their own.
 pub const ENGINE_GROUP0: &[Entry] = &[
     // One 32-byte Globals window; the dynamic offset selects the pass's slot.
     Entry::uniform(0, VERTEX | FRAGMENT, true, 32),
     Entry::storage_read(1, VERTEX | FRAGMENT),
     Entry::storage_read(2, FRAGMENT),
     Entry::texture(3),
+    Entry::storage_read(4, FRAGMENT),
 ];
 
 /// Group 1 of the engine pipelines: the textures a composite or paint
