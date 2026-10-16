@@ -1977,6 +1977,19 @@ impl Engine for Cherenkov {
         Ok(self.timings.samples(timings))
     }
 
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        // The engine submits on this device, so the latest submission on
+        // it is the frame's last.
+        self.shared_device
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .map(drop)
+            .map_err(|e| BenchError::Gpu(format!("cherenkov: wait for the GPU: {e}")))
+    }
+
     fn counters(&self) -> Counters {
         let mut counters = self.counters.clone();
         let stats = self.engine.stats();

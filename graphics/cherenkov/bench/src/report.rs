@@ -77,6 +77,41 @@ pub struct FrameSample {
     /// the run collected no attribution.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub composition: Option<crate::Composition>,
+    /// The Mali hardware counters this frame's GPU work added
+    /// (`measure --gpu-counters`, [`crate::gpu_counters`]); omitted when
+    /// the run read none.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub gpu_counters: Option<GpuCounterSample>,
+}
+
+/// One frame's Mali hardware counters: what accumulated between a sample
+/// taken with the GPU idle before the frame and one taken with the GPU
+/// idle after it. Cycles are counted at each block's own clock.
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+pub struct GpuCounterSample {
+    /// Cycles the shader cores were executing work, summed over cores —
+    /// the frame's cost.
+    pub shader_core_active_cycles: u64,
+    /// Shader-core cycles running fragment work, summed over cores.
+    pub fragment_active_cycles: u64,
+    /// Shader-core cycles running compute and vertex work, summed over
+    /// cores.
+    pub non_fragment_active_cycles: u64,
+    /// Fragment warps the shader cores ran.
+    pub fragment_warps: u64,
+    /// Cycles the GPU front end was active.
+    pub gpu_active_cycles: u64,
+    /// Cycles the tiler was active.
+    pub tiler_active_cycles: u64,
+}
+
+/// The GPU a `measure --gpu-counters` run read its counters from.
+#[derive(Clone, Debug, Serialize)]
+pub struct GpuCountersInfo {
+    /// The GPU product whose counter layout was read.
+    pub gpu: &'static str,
+    /// Shader cores the counters are summed over.
+    pub shader_cores: u32,
 }
 
 /// CPU placement of a `measure` run.
@@ -286,6 +321,10 @@ pub struct MeasureReport {
     /// ([`crate::gpu_clock`]); `null` where the platform keeps no
     /// residency table.
     pub gpu_clock: Option<GpuClockReport>,
+    /// The GPU the per-frame hardware counters came from
+    /// (`--gpu-counters`); omitted when the run read none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gpu_counters: Option<GpuCountersInfo>,
     /// What the adapter issued per frame.
     pub counters: Counters,
     /// Idle, steady-state and peak memory readings for this scene.
