@@ -5,7 +5,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::engine::WidgetTheme;
+use crate::theme::WidgetTheme;
 use std::rc::Rc;
 
 /// A [`SubView`] adapter that measures a child [`RenderNode`] **on demand** at

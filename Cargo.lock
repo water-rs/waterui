@@ -4659,7 +4659,6 @@ name = "hydrolysis-android-test-app"
 version = "0.0.0"
 dependencies = [
  "hydrolysis",
- "hydrolysis-m3",
  "jni 0.21.1",
  "waterui",
  "waterui-core",
@@ -12658,12 +12657,8 @@ dependencies = [
  "num-traits",
  "tracing",
  "waterui",
- "waterui-controls",
  "waterui-core",
- "waterui-form",
- "waterui-graphics",
  "waterui-layout",
- "waterui-text",
  "web-time",
 ]
 
@@ -13458,7 +13453,6 @@ dependencies = [
  "sysinfo",
  "waterui",
  "waterui-assets-planner",
- "waterui-backend-core",
  "waterui-canvas",
  "waterui-core",
  "waterui-preview-protocol",

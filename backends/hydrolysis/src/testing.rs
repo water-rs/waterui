@@ -50,10 +50,7 @@ pub fn artifact_snapshot_path(suite: &str, case: &str, stage: &str) -> PathBuf {
 mod test_style {
     use std::time::Duration;
 
-    use kurbo::{BezPath, Point, Rect};
-    use waterui::animation::Animation;
-    use waterui::{Color, EasingCurve, Environment};
-    use waterui_backend_core::widget::{
+    use crate::theme::{
         BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
         ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
         ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
@@ -61,6 +58,9 @@ mod test_style {
         TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
         WidgetInteractionState, WidgetTheme,
     };
+    use kurbo::{BezPath, Point, Rect};
+    use waterui::animation::Animation;
+    use waterui::{Color, EasingCurve, Environment};
     use waterui_controls::ControlSize;
     use waterui_controls::button::ButtonStyle;
     use waterui_controls::toggle::ToggleStyle;

@@ -185,7 +185,7 @@ pub fn measure_gradient_node(
     proposal: ProposalSize,
     _state: &mut HydroState,
     _env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     graphics_dimensions_from_proposal(proposal)
 }
@@ -249,7 +249,7 @@ pub fn measure_shape_node(
     proposal: ProposalSize,
     _state: &mut HydroState,
     _env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     graphics_dimensions_from_proposal(proposal)
 }
@@ -297,7 +297,7 @@ pub fn measure_morph_shape_node(
     proposal: ProposalSize,
     _state: &mut HydroState,
     _env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     graphics_dimensions_from_proposal(proposal)
 }
@@ -406,7 +406,7 @@ pub fn measure_str_node(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     HydrolysisRenderer::measure_text_dimensions(
         state,

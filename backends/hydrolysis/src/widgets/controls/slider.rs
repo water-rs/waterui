@@ -89,7 +89,7 @@ impl HydroNativeView for Native<SliderConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_slider_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -172,7 +172,7 @@ pub fn measure_slider_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let metrics = theme.slider_metrics(render_state.size);
     let label_size = render_state.label_view.measure_built(state, env, theme);

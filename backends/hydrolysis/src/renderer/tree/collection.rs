@@ -331,7 +331,7 @@ impl CollectionNode {
     pub(super) fn measure(
         &self,
         state: &mut HydroState,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let cell = RefCell::new(state);
@@ -1163,7 +1163,7 @@ impl LazyStackNode {
         &self,
         snapshot: &AnyViewsSnapshot<AnyView>,
         state: &mut HydroState,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         index: usize,
         proposal: ProposalSize,
     ) -> (Size, StretchAxis) {
@@ -1208,7 +1208,7 @@ impl LazyStackNode {
         &self,
         snapshot: &AnyViewsSnapshot<AnyView>,
         state: &mut HydroState,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         cross: Option<f32>,
     ) -> f64 {
         if let Some((previous, floor)) = self.floor_sample.get()
@@ -1227,7 +1227,7 @@ impl LazyStackNode {
         &self,
         snapshot: &AnyViewsSnapshot<AnyView>,
         state: &mut HydroState,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         cross: Option<f32>,
     ) -> Size {
         if let Some((previous, size)) = self.estimate_sample.get()
@@ -1282,7 +1282,7 @@ impl LazyStackNode {
         &self,
         snapshot: &AnyViewsSnapshot<AnyView>,
         state: &mut HydroState,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         count: usize,
         cross: Option<f32>,
     ) {
@@ -1312,7 +1312,7 @@ impl LazyStackNode {
     pub(super) fn measure(
         &self,
         state: &mut HydroState,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         // One snapshot per measure pass: the sampled item, the extent index,

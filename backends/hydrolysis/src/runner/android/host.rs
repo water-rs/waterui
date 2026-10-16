@@ -34,7 +34,6 @@ use super::accessibility::AccessibilitySnapshot;
 use super::gpu::{AndroidGpuContext, AndroidSurface};
 use super::ime::ImeBridge;
 use super::jni::JniError;
-use crate::engine::WidgetTheme;
 use crate::platform::{
     GpuSurfaceWindow, InputEvent, PlatformWindow, PresentationSurface as _, TextInputState,
     validated_window_frame,
@@ -54,6 +53,7 @@ use crate::runner::{
     install_native_component_hooks, menu_bar,
 };
 use crate::text::SessionTextEngine;
+use crate::theme::WidgetTheme;
 use crate::time::Instant;
 
 /// One coherent metrics snapshot the host pushes — size, density, font scale,

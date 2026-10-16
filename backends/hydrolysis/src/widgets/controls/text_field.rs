@@ -7,11 +7,11 @@ use crate::renderer::{
     measure_text_field_size_with_label_size, transformed_rect,
 };
 use crate::text::{TextLayout as _, TextPosition};
+use crate::theme::ModalInteraction;
 use core::num::NonZeroUsize;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
-use waterui_backend_core::widget::ModalInteraction;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native, Str};
@@ -103,7 +103,7 @@ impl HydroNativeView for Native<ResolvedTextFieldConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_text_field_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -112,7 +112,7 @@ impl HydroNativeView for Native<ResolvedTextFieldConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let text_field = view.as_inner();
@@ -128,7 +128,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_secure_field_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -137,7 +137,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let secure_field = view.as_inner();
@@ -851,7 +851,7 @@ pub fn measure_text_field_node(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_size = render_state.label_view.measure_built(state, env, theme);
     ViewDimensions::new(measure_text_field_size_with_label_size(
@@ -872,7 +872,7 @@ pub fn measure_secure_field_node(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_size = render_state.label_view.measure_built(state, env, theme);
     ViewDimensions::new(measure_secure_field_size_with_label_size(

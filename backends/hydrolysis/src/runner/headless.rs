@@ -243,7 +243,7 @@ pub struct HeadlessRuntime {
     popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow>>,
     /// The style the runtime was launched with, kept so popup windows'
     /// renderers measure and encode with the same widget theme.
-    theme: Rc<dyn crate::engine::WidgetTheme>,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
     /// Every window this runtime opens renders on this one device: the main
     /// window, and each popup it later vends. Requesting a device per window
     /// made a runtime that opens a popup pay for two.
@@ -494,7 +494,7 @@ impl HeadlessRuntime {
         install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
-        let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
+        let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
         env.insert(waterui_core::ViewRenderer::new(
             crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
         ));
