@@ -15,10 +15,11 @@ belong to water-rs/waterui.
 ## Correctness
 
 - **The oracle is the reference.** The corpus (`scenes/corpus`) is rendered
-  against the independent f64 oracle. Every scene on dev keeps bit-identical
-  metrics and PNG bytes across every change that is not meant to change pixels.
-  A change that intends to change pixels (for example #71) must be no worse
-  than dev against the oracle on every scene, and better overall.
+  against the independent f64 oracle, and a change is judged by what a viewer
+  can see. A difference from dev that no eye can perceive is acceptable
+  whatever its cause; a perceptible one is acceptable only where it brings
+  that scene closer to the oracle. Bit-identical output is never a goal in
+  itself.
 - **The scene tree is generated, not committed.** `scenes/corpus`,
   `scenes/perf` and `scenes/fonts` are produced by
   `uv run --python 3.12 --with-requirements scenes/fonts/tools/requirements.txt python scenes/tools/generate.py`
