@@ -69,13 +69,6 @@ jobs:
           python3 graphics/cherenkov/bench/scripts/ir_gate.py ab
           --base "$IR_BASE" --head "$IR_HEAD"
           --work "$RUNNER_TEMP/cherenkov-ir" --out ir-results
-      - name: Re-profile the candidate (reproduction for #1962, to be removed)
-        if: always() && hashFiles('ir-results/head/head-map.result.json') != ''
-        timeout-minutes: 20
-        run: |
-          python3 graphics/cherenkov/bench/scripts/ir_gate.py batch --binary ir-results/bench-head --tag again \
-            --repo graphics/cherenkov --out ir-results/again
-          python3 graphics/cherenkov/bench/scripts/ir_gate.py same --out ir-results head again
       - name: Summarize
         if: always() && hashFiles('ir-results/comparison.md') != ''
         run: cat ir-results/comparison.md >> "$GITHUB_STEP_SUMMARY"
