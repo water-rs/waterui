@@ -326,8 +326,8 @@ impl filtrate::Effect for YieldingEffect {
         Ok(false)
     }
 
-    fn target_bytes(&self) -> u64 {
-        0
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
     }
 }
 

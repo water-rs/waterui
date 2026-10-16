@@ -75,4 +75,9 @@ pub struct MemoryUsage {
     /// in bytes; included in `gpu`. Zero on a backend whose filters hold
     /// no targets between frames.
     pub filter_targets: Bytes,
+    /// Images uploaded by registered filter chains from CPU-side image
+    /// data, in bytes; included in `gpu`. Textures bound from the host's
+    /// own are the host's and count elsewhere. Zero on a backend whose
+    /// filters upload no images.
+    pub filter_images: Bytes,
 }

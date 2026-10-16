@@ -45,8 +45,8 @@ impl Effect for CopyEffect {
         Ok(true)
     }
 
-    fn target_bytes(&self) -> u64 {
-        0
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
     }
 }
 
@@ -251,8 +251,8 @@ impl Effect for ObservedEffect {
         Ok(false)
     }
 
-    fn target_bytes(&self) -> u64 {
-        0
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
     }
 }
 
@@ -398,6 +398,57 @@ fn shared_effect_consumes_one_delta_per_presentation() -> Result<(), Box<dyn std
     assert_eq!(a.sequence(), b.sequence());
     assert_eq!(a.delta(), Duration::from_millis(250));
     assert_eq!(b.delta(), Duration::ZERO);
+    Ok(())
+}
+}
+
+split_test! {
+/// `filter_images` counts the textures a chain uploads itself (#2766): a
+/// CPU auxiliary image's bytes join `gpu` while the filter is registered
+/// and leave with it.
+fn layer_filter_reports_its_uploaded_image() -> Result<(), Box<dyn std::error::Error>> {
+    // A 16×16 Rgba8 auxiliary image — 1024 bytes the executor uploads at
+    // setup and retains for the chain's life.
+    const IMAGE_BYTES: u64 = 16 * 16 * 4;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    let layer = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&layer);
+        tx[&layer].content(
+            surface.record(|r| r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), WorkingColor::WHITE)),
+        );
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let before = wait!(engine.memory());
+    assert_eq!(before.filter_images, cherenkov::Bytes(0));
+    let blend = engine.filter(filtrate::filters::BlendWithImage {
+        image: filtrate::FilterImage::from_rgba8(16, 16, vec![128; 16 * 16 * 4]),
+        amount: 0.5,
+        mode: filtrate::filters::BlendMode::Normal,
+    });
+    surface.update(|tx| {
+        tx[&layer].filter(blend.id());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let memory = wait!(engine.memory());
+    assert_eq!(memory.filter_images, cherenkov::Bytes(IMAGE_BYTES));
+    assert_eq!(
+        memory.gpu,
+        cherenkov::Bytes(before.gpu.0 + memory.filter_targets.0 + IMAGE_BYTES),
+        "the uploaded image's bytes join `gpu` with the chain's targets"
+    );
+    // The upload leaves with the chain: detaching and dropping the
+    // filter returns `gpu` to its baseline.
+    surface.update(|tx| {
+        tx[&layer].clear_filter();
+    });
+    drop(blend);
+    wait!(engine.render(FrameTime::now()))?;
+    let after = wait!(engine.memory());
+    assert_eq!(after.filter_images, cherenkov::Bytes(0));
+    assert_eq!(after.filter_targets, cherenkov::Bytes(0));
+    assert_eq!(after.gpu, before.gpu);
     Ok(())
 }
 }

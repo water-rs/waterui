@@ -9,7 +9,8 @@ use rustc_hash::FxHashMap;
 
 use cherenkov::{CompletionWaker, RenderError, SurfaceWakes};
 use filtrate::{
-    Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput, ShapeTextures,
+    Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput, RetainedMemory,
+    ShapeTextures,
 };
 
 /// An effect moved to the render thread before its device resources exist.
@@ -106,8 +107,8 @@ where
         ))
     }
 
-    fn target_bytes(&self) -> u64 {
-        Effect::target_bytes(&self.0)
+    fn retained_memory(&self) -> RetainedMemory {
+        Effect::retained_memory(&self.0)
     }
 }
 
@@ -149,10 +150,11 @@ pub trait Runnable {
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<bool, filtrate::EffectRenderError>;
     fn set_redraw(&mut self, callback: filtrate::EffectRedrawCallback);
-    /// Device-resident bytes of the targets the effect itself retains —
-    /// a chain's intermediates. The registry's per-size input/output
-    /// targets are the registry's, not the effect's, and count elsewhere.
-    fn target_bytes(&self) -> u64;
+    /// Device-resident bytes the effect itself retains — a chain's
+    /// intermediates and the auxiliary images it uploaded. The
+    /// registry's per-size input/output targets are the registry's, not
+    /// the effect's, and count elsewhere.
+    fn retained_memory(&self) -> RetainedMemory;
 }
 
 impl<E: Effect> Runnable for E {
@@ -181,8 +183,8 @@ impl<E: Effect> Runnable for E {
     fn set_redraw(&mut self, callback: filtrate::EffectRedrawCallback) {
         self.set_redraw_callback(callback);
     }
-    fn target_bytes(&self) -> u64 {
-        Effect::target_bytes(self)
+    fn retained_memory(&self) -> RetainedMemory {
+        Effect::retained_memory(self)
     }
 }
 
@@ -424,10 +426,20 @@ impl Registry {
     /// Device-resident bytes of every registered chain's targets: the
     /// registry's per-size input/output pairs plus each effect's own
     /// retained targets (a multi-pass chain's intermediates).
-    pub fn gpu_bytes(&self) -> u64 {
+    pub fn target_bytes(&self) -> u64 {
         self.entries
             .values()
-            .map(|entry| entry.io_bytes() + entry.effect.target_bytes())
+            .map(|entry| entry.io_bytes() + entry.effect.retained_memory().targets)
+            .sum()
+    }
+
+    /// Device-resident bytes of the auxiliary images registered chains
+    /// uploaded themselves; textures bound from the host's own are the
+    /// host's and excluded.
+    pub fn image_bytes(&self) -> u64 {
+        self.entries
+            .values()
+            .map(|entry| entry.effect.retained_memory().images)
             .sum()
     }
 
