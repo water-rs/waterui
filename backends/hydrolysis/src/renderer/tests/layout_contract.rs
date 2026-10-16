@@ -490,6 +490,10 @@ impl Effect for LayoutOnlyEffect {
     ) -> EffectRenderResult {
         panic!("layout-only verification must not invoke effect rendering");
     }
+
+    fn target_bytes(&self) -> u64 {
+        0
+    }
 }
 
 #[test]

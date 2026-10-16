@@ -255,6 +255,13 @@ pub struct GpuImage {
     pub height: u32,
 }
 
+impl GpuImage {
+    /// The texture's bytes: f16 RGBA, eight a texel.
+    pub fn bytes(&self) -> u64 {
+        u64::from(self.width) * u64::from(self.height) * 8
+    }
+}
+
 pub struct GpuBitmap {
     pub(super) image: GpuImage,
     pub(super) em: kurbo::Rect,
@@ -334,6 +341,9 @@ struct SurfaceState {
     /// Backdrop groups registered on this surface by raw id.
     backdrop_groups: FxHashMap<u64, BackdropGroupState>,
     anchor_scratch: lower::AnchorScratch,
+    /// Path emission buffers, lent to each lowering so their capacity
+    /// carries across frames; released by a critical trim.
+    raster_scratch: path::EmitScratch,
     layers: FxHashMap<LayerId, ContentData>,
     /// GPU producer bindings by layer (`cherenkov::GpuContent`): a layer
     /// binds one producer, a producer serves bindings on any surface,
@@ -575,9 +585,7 @@ impl SurfaceState {
         let shader_bytes = self
             .shader_textures
             .values()
-            .map(|texture| {
-                u64::from(texture.image.width) * u64::from(texture.image.height) * 8 + 272
-            })
+            .map(|texture| texture.image.bytes() + 272)
             .sum::<u64>();
         surface_bytes * (1 + self.parts.len() as u64)
             + self
@@ -950,11 +958,12 @@ pub struct GpuRenderer {
     /// pipelines are built once (#170). A `None` cell is created at first
     /// use — preparation is measured on the frame that needs it (#170 B3).
     /// `[space][format][ShaderVariant]` — a fourth variant slot holds
-    /// the union-field pipelines for backdrop-union members. Slot 3 is
-    /// never built at init: the variant-3 module and pipeline are
-    /// created on the first union or outer-band member (on wasm, by
-    /// `prepare_lazy_pipelines` before the frame that needs them).
-    pipelines: [[[Option<wgpu::RenderPipeline>; 4]; 2]; 2],
+    /// the union-field pipelines for backdrop-union members; a fifth
+    /// holds the long-gradient pipelines. Slot 3 is never built at
+    /// init: the variant-3 module and pipeline are created on the first
+    /// union or outer-band member (on wasm, by `prepare_lazy_pipelines`
+    /// before the frame that needs them).
+    pipelines: [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
     /// `[opaque, partial]` coverage pipelines, same cell policy as the
     /// core set: built at init under `core_pipelines_eager()` (always,
     /// on wasm), else created at the first coverage pass (#170 B3, #49).
@@ -1359,7 +1368,8 @@ fn create_device(
             required |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         }
     }
-    if config.pipeline_cache.is_some() && supported.contains(wgpu::Features::PIPELINE_CACHE) {
+    // Share compilation within this engine even without a persistent cache.
+    if supported.contains(wgpu::Features::PIPELINE_CACHE) {
         required |= wgpu::Features::PIPELINE_CACHE;
     }
     let limits = wgpu::Limits::default().or_worse_values_from(&adapter.limits());
@@ -1868,8 +1878,16 @@ const fn variant_index(variant: ShaderVariant) -> usize {
         ShaderVariant::Shadow => 1,
         ShaderVariant::Full => 2,
         ShaderVariant::Union => 3,
+        ShaderVariant::LongGradient => 4,
     }
 }
+
+/// The core slots built at init — every variant but Union, which
+/// materializes lazily (native `core_pipeline` demand cells) or in
+/// `prepare_lazy_pipelines` (wasm). The list drives both the module
+/// creation and the pipeline fill, zipped so a slot never indexes the
+/// modules array.
+const EAGER_CORE_VARIANTS: [usize; 4] = [0, 1, 2, 4];
 
 /// #170's measured pipeline policy (`CoreEager`): the deduplicated core
 /// set is built at creation. The Pixel A/B rejected demand-mode creation:
@@ -1929,14 +1947,17 @@ fn create_pipeline_layout(
     })
 }
 
-/// The configured pipeline cache, opened once for the whole pipeline
-/// set — it was previously re-read and re-opened per pipeline (#170).
+/// One cache shared by the eager pipeline set. A configured path retains
+/// the existing persistent cache; otherwise native init drops the temporary
+/// compilation cache before returning the engine.
 fn open_pipeline_cache(device: &wgpu::Device, config: &GpuConfig) -> Option<wgpu::PipelineCache> {
-    let path = config.pipeline_cache.as_ref()?;
     if !device.features().contains(wgpu::Features::PIPELINE_CACHE) {
         return None;
     }
-    let data = std::fs::read(path).ok();
+    let data = config
+        .pipeline_cache
+        .as_ref()
+        .and_then(|path| std::fs::read(path).ok());
     // SAFETY: `data` is either a blob previously produced by wgpu or
     // absent; `fallback: true` keeps us off the unsafe fallback path.
     Some(unsafe {
@@ -2126,7 +2147,7 @@ impl PipelineFactory<'_> {
 /// created at first use so preparation lands inside the frame that needs
 /// it (#170).
 fn core_pipeline<'m>(
-    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 4]; 2]; 2],
+    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
     factory: &PipelineFactory<'_>,
     format: wgpu::TextureFormat,
     replace: bool,
@@ -2288,9 +2309,10 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             Some(&device),
         )?;
         let scratch_format = scratch_wgpu(config.scratch_format);
-        // Three specialised fragment shaders from one source file, compiled
+        // Specialised fragment shaders from one source file, compiled
         // at build time: the prepended `VARIANT` constant makes fs_main a
-        // constant-folded dispatch to fs_simple/fs_shadow/fs_full. On Vulkan
+        // constant-folded dispatch; the union module is not in this eager
+        // set (it materializes with the first union member). On Vulkan
         // and Metal these are the embedded passthrough binaries (#57).
         let shader_delivery = shaders::delivery(info.backend, &device)?;
         // What this device — the engine's own or a host's shared one —
@@ -2306,7 +2328,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             );
         }
         let modules = core_pipelines_eager()
-            .then(|| [0usize, 1, 2].map(|v| shader_delivery.engine_module(&device, v)));
+            .then(|| EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_module(&device, v)));
         fire_probe(
             &config,
             CreationPhase::ShaderModules,
@@ -2329,15 +2351,15 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             for format in [TARGET_FORMAT, scratch_format] {
                 let slot = usize::from(format != TARGET_FORMAT);
                 for replace in [false, true] {
-                    for variant in 0usize..3 {
-                        let cell = &mut pipelines[slot][usize::from(replace)][variant];
+                    for (variant, module) in EAGER_CORE_VARIANTS.iter().zip(modules) {
+                        let cell = &mut pipelines[slot][usize::from(replace)][*variant];
                         if cell.is_none() {
                             *cell = Some(create_pipeline(
                                 &device,
                                 &config,
                                 &pipeline_layout,
                                 pipeline_cache.as_ref(),
-                                &modules[variant],
+                                module,
                                 format,
                                 CoveragePass::Painter(replace),
                             )?);
@@ -2360,6 +2382,10 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                 )?);
             }
         }
+        // The pipelines own their compiled programs. Drop only the temporary
+        // compilation cache here; configured disk caches keep their existing
+        // renderer lifetime and persistence behavior.
+        let pipeline_cache = config.pipeline_cache.as_ref().and(pipeline_cache);
         fire_probe(
             &config,
             CreationPhase::CorePipelines,
@@ -2649,12 +2675,12 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         Some(&device),
     )?;
     let scratch_format = scratch_wgpu(config.scratch_format);
-    // Three specialised fragment shaders from one source file: the
-    // prepended `VARIANT` constant makes fs_main a constant-folded
-    // dispatch to fs_simple/fs_shadow/fs_full. WebGPU keeps WGSL (#57).
+    // Specialised fragment shaders from one source file: the prepended
+    // `VARIANT` constant makes fs_main a constant-folded dispatch; the
+    // union module is not in this eager set. WebGPU keeps WGSL (#57).
     let shader_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let shader_delivery = shaders::delivery(info.backend, &device)?;
-    let modules = [0usize, 1, 2].map(|v| shader_delivery.engine_module(&device, v));
+    let modules = EAGER_CORE_VARIANTS.map(|v| shader_delivery.engine_module(&device, v));
     if let Some(error) = shader_scope.pop().await {
         return Err(EngineError::Backend(error.to_string()));
     }
@@ -2677,8 +2703,8 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     for format in [TARGET_FORMAT, scratch_format] {
         let slot = usize::from(format != TARGET_FORMAT);
         for replace in [false, true] {
-            for variant in 0usize..3 {
-                let cell = &mut pipelines[slot][usize::from(replace)][variant];
+            for (variant, module) in EAGER_CORE_VARIANTS.iter().zip(&modules) {
+                let cell = &mut pipelines[slot][usize::from(replace)][*variant];
                 if cell.is_none() {
                     *cell = Some(
                         create_pipeline(
@@ -2686,7 +2712,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
                             &config,
                             &pipeline_layout,
                             pipeline_cache.as_ref(),
-                            &modules[variant],
+                            module,
                             format,
                             CoveragePass::Painter(replace),
                         )
@@ -3057,6 +3083,90 @@ pub(in crate::render) type FrameCommits = Vec<()>;
 /// surface that commits nothing off-thread produces (`None` on Apple).
 type PlatformCommit = <planes::Platform as planes::SystemPlanes>::Commit;
 
+impl GpuRenderer {
+    /// [`Renderer::add_image`]'s work, awaiting the device's report.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the renderer is not Send: native targets block on this future on the render thread, and the browser engine runs it on the page's event loop"
+    )]
+    async fn register_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> Result<(), ResourceError> {
+        let size = (image.width, image.height);
+        let data = image_texels_f16(&image)?;
+        let image = upload_image(&self.device, &self.queue, size, &data).await?;
+        self.images.insert(id.raw(), image);
+        self.images_gen += 1;
+        Ok(())
+    }
+
+    /// [`Renderer::replace_image`]'s work, awaiting the device's report.
+    #[expect(
+        clippy::future_not_send,
+        reason = "the renderer is not Send: native targets block on this future on the render thread, and the browser engine runs it on the page's event loop"
+    )]
+    async fn swap_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        let _diag_guard = diag::Guard::scope(self.diag.as_ref());
+        let data = image_texels_f16(&image)?;
+        let size = (image.width, image.height);
+        let current = self
+            .images
+            .get(&id.raw())
+            .expect("replace targets a registered image");
+        if (current.width, current.height) == size {
+            // The copy is queued ahead of the next submission, after every
+            // frame already submitted, so no frame samples a partly
+            // written texture. The view is unchanged: bind groups and
+            // lowered paints stay valid.
+            write_image(&self.device, &self.queue, &current.texture, size, &data).await?;
+            // Local images that sampled the previous pixels are no longer
+            // current.
+            self.image_replacements += 1;
+            return Ok(());
+        }
+        let replacement = upload_image(&self.device, &self.queue, size, &data).await?;
+        self.image_replacements += 1;
+        let old = self
+            .images
+            .insert(id.raw(), replacement)
+            .expect("replace targets a registered image");
+        self.images_gen += 1;
+        diag::retire(
+            &self.device,
+            diag::RetireArgs {
+                label: "image",
+                class: diag::Class::Image,
+                bytes: old.bytes(),
+                used_in_latest_submit: true,
+                reason: "replace_image",
+            },
+        );
+        // #169 A4: bind groups created against the replaced view are
+        // stale — `Registered(id)` now binds the new texture; submitted
+        // encoders keep the old one until completion. Lowering resolved
+        // the old dimensions into the image's paints, so content sampling
+        // it is lowered again.
+        let images_gen = self.images_gen;
+        let mask_gen = self.atlas.mask_texture_generation();
+        for surf in self.surfaces.values_mut() {
+            retire_binds1(
+                surf,
+                &self.device,
+                images_gen,
+                mask_gen,
+                "image replaced",
+                |key| key.2 == Some(lower::ImageSource::Registered(id.raw())),
+            );
+            for content in surf.layers.values_mut() {
+                content.invalidate_image(id);
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Renderer for GpuRenderer {
     type Target = GpuTarget;
     type Font = PreparedFont;
@@ -3155,6 +3265,7 @@ impl Renderer for GpuRenderer {
                 staging_bind: [None, None],
                 backdrop_groups: FxHashMap::default(),
                 anchor_scratch: lower::AnchorScratch::default(),
+                raster_scratch: path::EmitScratch::new(),
                 layers: FxHashMap::default(),
                 bindings: FxHashMap::default(),
                 hosted: FxHashMap::default(),
@@ -3468,80 +3579,47 @@ impl Renderer for GpuRenderer {
     fn image_limits(&self) -> cherenkov::ImageLimits {
         cherenkov::ImageLimits {
             max_dimension: self.max_texture,
-            // The upload lands as f16 RGBA: eight bytes a texel.
+            // The image budget: every registered image together holds at
+            // most the GPU budget, uploaded as f16 RGBA at eight bytes a
+            // texel. The engine admits registrations against it.
             max_texels: self.config.budget.gpu.0 / 8,
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let data = image_texels_f16(&image)?;
-        let image = upload_image(
-            &self.device,
-            &self.queue,
-            (image.width, image.height),
-            &data,
-        );
-        self.images.insert(id.raw(), image);
-        self.images_gen += 1;
-        Ok(())
+        pollster::block_on(self.register_image(id, image))
     }
 
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    fn add_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        self.register_image(id, image)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let _diag_guard = diag::Guard::scope(self.diag.as_ref());
-        let data = image_texels_f16(&image)?;
-        let size = (image.width, image.height);
-        let current = self
-            .images
-            .get(&id.raw())
-            .expect("replace targets a registered image");
-        // Local images that sampled the previous pixels are no longer
-        // current, whichever path the upload takes.
-        self.image_replacements += 1;
-        if (current.width, current.height) == size {
-            // The copy is queued ahead of the next submission, after every
-            // frame already submitted, so no frame samples a partly
-            // written texture. The view is unchanged: bind groups and
-            // lowered paints stay valid.
-            write_image(&self.device, &self.queue, &current.texture, size, &data);
-            return Ok(());
-        }
-        let replacement = upload_image(&self.device, &self.queue, size, &data);
-        let old = self
-            .images
-            .insert(id.raw(), replacement)
-            .expect("replace targets a registered image");
-        self.images_gen += 1;
-        diag::retire(
-            &self.device,
-            diag::RetireArgs {
-                label: "image",
-                class: diag::Class::Image,
-                bytes: u64::from(old.width) * u64::from(old.height) * 8,
-                used_in_latest_submit: true,
-                reason: "replace_image",
-            },
-        );
-        // #169 A4: bind groups created against the replaced view are
-        // stale — `Registered(id)` now binds the new texture; submitted
-        // encoders keep the old one until completion. Lowering resolved
-        // the old dimensions into the image's paints, so content sampling
-        // it is lowered again.
-        let images_gen = self.images_gen;
-        let mask_gen = self.atlas.mask_texture_generation();
-        for surf in self.surfaces.values_mut() {
-            retire_binds1(
-                surf,
-                &self.device,
-                images_gen,
-                mask_gen,
-                "image replaced",
-                |key| key.2 == Some(lower::ImageSource::Registered(id.raw())),
-            );
-            for content in surf.layers.values_mut() {
-                content.invalidate_image(id);
-            }
-        }
-        Ok(())
+        pollster::block_on(self.swap_image(id, image))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    fn replace_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        self.swap_image(id, image)
     }
 
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {
@@ -3561,7 +3639,7 @@ impl Renderer for GpuRenderer {
                 diag::RetireArgs {
                     label: "image",
                     class: diag::Class::Image,
-                    bytes: u64::from(image.width) * u64::from(image.height) * 8,
+                    bytes: image.bytes(),
                     used_in_latest_submit: true,
                     reason: "remove_image",
                 },
@@ -3724,6 +3802,7 @@ impl Renderer for GpuRenderer {
             surf.frame.instances.shrink_to_fit();
             surf.frame.stops.shrink_to_fit();
             surf.frame.passes.shrink_to_fit();
+            surf.raster_scratch = path::EmitScratch::new();
         }
         self.uploads = upload::Uploads::default();
         diag::grow(
@@ -3817,21 +3896,18 @@ impl Renderer for GpuRenderer {
                 .values()
                 .map(gpu_content::Producer::gpu_bytes)
                 .sum::<u64>()
-            + self
-                .images
-                .values()
-                .map(|i| u64::from(i.width) * u64::from(i.height) * 8)
-                .sum::<u64>()
+            + self.images.values().map(GpuImage::bytes).sum::<u64>()
             + self
                 .bitmaps
                 .values()
-                .map(|bitmap| u64::from(bitmap.image.width) * u64::from(bitmap.image.height) * 8)
+                .map(|bitmap| bitmap.image.bytes())
                 .sum::<u64>();
         let captures = self
             .surfaces
             .values()
             .map(SurfaceState::backdrop_bytes)
             .sum();
+        let filter_targets = self.filters.gpu_bytes();
         let capture_format = self
             .surfaces
             .values()
@@ -3844,7 +3920,9 @@ impl Renderer for GpuRenderer {
             + self
                 .surfaces
                 .values()
-                .map(|surface| surface.anchor_scratch.heap_bytes())
+                .map(|surface| {
+                    surface.anchor_scratch.heap_bytes() + surface.raster_scratch.heap_bytes()
+                })
                 .sum::<u64>()
             + self
                 .surfaces
@@ -3886,7 +3964,7 @@ impl Renderer for GpuRenderer {
         let (tile_reserved, tile_committed) = (0, None);
         MemoryUsage {
             gpu: cherenkov::Bytes(
-                gpu + self.filters.gpu_bytes()
+                gpu + filter_targets
                     + self.shadow_blur.as_ref().map_or(0, shadow::Blur::gpu_bytes)
                     + tile_committed.unwrap_or(0),
             ),
@@ -3895,6 +3973,7 @@ impl Renderer for GpuRenderer {
             tile_committed: tile_committed.map(cherenkov::Bytes),
             backdrop_captures: cherenkov::Bytes(captures),
             backdrop_capture_format: capture_format,
+            filter_targets: cherenkov::Bytes(filter_targets),
         }
     }
 
@@ -5572,11 +5651,20 @@ impl GpuRenderer {
             .sum()
     }
 
+    /// Every resident GPU byte except the local images, which are
+    /// evictable and give way to everything else.
+    fn resident_bytes(&self) -> u64 {
+        self.memory().gpu.0 - self.projective_bytes()
+    }
+
     /// The bytes local images may hold: the GPU budget less every other
     /// resident resource.
     fn projective_available(&self) -> u64 {
-        let others = self.memory().gpu.0 - self.projective_bytes();
-        self.config.budget.gpu.0.saturating_sub(others)
+        self.config
+            .budget
+            .gpu
+            .0
+            .saturating_sub(self.resident_bytes())
     }
 
     /// What surface `sf`'s lowering needs to plan and reuse local images.
@@ -6476,7 +6564,12 @@ impl GpuRenderer {
                 bitmaps: resources.bitmaps,
                 content: &surf.bindings,
             };
-            let mut lowering = Lowering::new(&mut surf.frame, surf.size, &mut surf.anchor_scratch);
+            let mut lowering = Lowering::new(
+                &mut surf.frame,
+                surf.size,
+                &mut surf.anchor_scratch,
+                &mut surf.raster_scratch,
+            );
             let result = lowering.prepare(&mut layers, &glyphs).and_then(|()| {
                 for placement in &surf.plan.planes {
                     if let Some(entry) = surf.static_layers.get(&placement.layer)
@@ -9965,12 +10058,32 @@ impl GpuRenderer {
 
 /// A registered image's texture of `size`, holding `data` (f16 texels
 /// from [`image_texels_f16`]).
-fn upload_image(
+///
+/// The texture's allocation and the texel upload each run under an
+/// out-of-memory error scope, so an allocation the device cannot back is
+/// this call's error rather than an uncaptured device error — a panic in
+/// wgpu's handler on native targets, a console message the browser
+/// reports to no one. The scope resolves asynchronously: native targets
+/// block on it, and the browser awaits it on its event loop. A failed
+/// allocation is returned before anything uses its handle.
+///
+/// # Errors
+/// [`ResourceError::Image`] when the device cannot back the texture or
+/// its upload.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::future_not_send,
+        reason = "the browser engine runs this future on the page's event loop; whether wgpu's handles are Send on wasm32 depends on the backends the build enables"
+    )
+)]
+async fn upload_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     (width, height): (u32, u32),
     data: &[u8],
-) -> GpuImage {
+) -> Result<GpuImage, ResourceError> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
     let (texture, view) = create_target(
         device,
         "image",
@@ -9978,23 +10091,59 @@ fn upload_image(
         wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         TARGET_FORMAT,
     );
+    if let Some(error) = scope.pop().await {
+        return Err(ResourceError::Image(format!(
+            "{width}x{height} texture allocation failed: {error}"
+        )));
+    }
     diag::create(
         device,
         "image",
         u64::from(width) * u64::from(height) * texel_bytes(TARGET_FORMAT),
     );
-    write_image(device, queue, &texture, (width, height), data);
-    GpuImage {
+    write_image(device, queue, &texture, (width, height), data).await?;
+    Ok(GpuImage {
         texture,
         view,
         width,
         height,
-    }
+    })
 }
 
 /// Writes `data` (f16 texels from [`image_texels_f16`]) over the whole of
 /// an image texture of `size`.
-fn write_image(
+///
+/// The upload runs under an out-of-memory error scope, as in
+/// [`upload_image`].
+///
+/// # Errors
+/// [`ResourceError::Image`] when the device cannot back the upload's
+/// staging memory; the texture keeps its previous texels.
+#[cfg_attr(
+    target_arch = "wasm32",
+    allow(
+        clippy::future_not_send,
+        reason = "the browser engine runs this future on the page's event loop; whether wgpu's handles are Send on wasm32 depends on the backends the build enables"
+    )
+)]
+async fn write_image(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    (width, height): (u32, u32),
+    data: &[u8],
+) -> Result<(), ResourceError> {
+    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    write_texels(device, queue, texture, (width, height), data);
+    scope.pop().await.map_or(Ok(()), |error| {
+        Err(ResourceError::Image(format!(
+            "{width}x{height} upload failed: {error}"
+        )))
+    })
+}
+
+/// [`write_image`]'s unscoped copy.
+fn write_texels(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     texture: &wgpu::Texture,

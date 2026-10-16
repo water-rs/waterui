@@ -123,6 +123,10 @@ impl Effect for CopyEffect {
         );
         Ok(false)
     }
+
+    fn target_bytes(&self) -> u64 {
+        0
+    }
 }
 
 fn producer() -> (

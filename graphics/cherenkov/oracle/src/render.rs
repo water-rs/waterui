@@ -40,9 +40,9 @@
 //! whole result when that ancestor composites, so a fading material
 //! panel fades rather than disappearing. A member that
 //! is itself isolated sees the parent canvas, since the capture happens
-//! before its own isolation begins. The group's filters then run over the copy: `GaussianBlur` is a
-//! separable true Gaussian `w(o) = exp(-o² / 2σ²)` normalized over
-//! `⌈3σ⌉` taps, clamp-to-edge; `ColorMatrix` applies its three rows to
+//! before its own isolation begins. The group's filters then run over the copy: `GaussianBlur` is the
+//! oracle's true Gaussian, the one layer filters run
+//! (`filter::gaussian_blur_rgba`), clamp-to-edge; `ColorMatrix` applies its three rows to
 //! the premultiplied `[r, g, b, a]` pixel, alpha untouched. Every member
 //! composites the filtered capture under its own clip's exact coverage,
 //! source-over, as its bottom-most content; its items and children draw
@@ -69,7 +69,9 @@ use kurbo::{Affine, Point, Rect, Vec2};
 
 use crate::blend::{blend, src_over};
 use crate::clip::{Segment, intersect_edges};
-use crate::color::{linear_p3_to_linear_srgb, linear_srgb_to_linear_p3, to_working};
+use crate::color::{
+    linear_p3_to_linear_srgb, linear_srgb_to_linear_p3, srgb_decode, srgb_encode, to_working,
+};
 use crate::coverage::Coverage;
 use crate::glyphs;
 use crate::image::{F32Image, Image};
@@ -133,24 +135,6 @@ struct Canvas {
     height: usize,
 }
 
-/// `srgb_encode` preserving sign, like the backends' `convert_pixel`.
-fn srgb_encode_signed(c: f64) -> f64 {
-    if c.abs() <= 0.003_130_8 {
-        c * 12.92
-    } else {
-        (1.055f64.mul_add(c.abs().powf(1.0 / 2.4), -0.055)).copysign(c)
-    }
-}
-
-/// `srgb_decode` preserving sign, like the backends' `convert_pixel`.
-fn srgb_decode_signed(c: f64) -> f64 {
-    if c.abs() <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c.abs() + 0.055) / 1.055).powf(2.4).copysign(c)
-    }
-}
-
 /// Convert a premultiplied pixel between linear Display P3 and encoded
 /// sRGB: `cpu/src/render/paint.rs::convert_pixel` in `f64`.
 fn convert_pixel(pixel: [f64; 4], encode: bool) -> [f64; 4] {
@@ -160,9 +144,9 @@ fn convert_pixel(pixel: [f64; 4], encode: bool) -> [f64; 4] {
     }
     let straight = [pixel[0] / alpha, pixel[1] / alpha, pixel[2] / alpha];
     let converted = if encode {
-        linear_p3_to_linear_srgb(straight).map(srgb_encode_signed)
+        linear_p3_to_linear_srgb(straight).map(srgb_encode)
     } else {
-        linear_srgb_to_linear_p3(straight.map(srgb_decode_signed))
+        linear_srgb_to_linear_p3(straight.map(srgb_decode))
     };
     [
         converted[0] * alpha,
@@ -1917,7 +1901,12 @@ fn box_weights(len: usize, texels: usize, scale: f64) -> Vec<Vec<(usize, f64)>> 
 fn apply_backdrop_filter(canvas: &mut Canvas, filter: &BackdropFilter) {
     match filter {
         BackdropFilter::GaussianBlur { sigma } => {
-            canvas.pixels = backdrop_blur(&canvas.pixels, canvas.width, canvas.height, *sigma);
+            crate::filter::gaussian_blur_rgba(
+                *sigma,
+                &mut canvas.pixels,
+                canvas.width,
+                canvas.height,
+            );
         }
         BackdropFilter::ColorMatrix { matrix } => {
             for px in &mut canvas.pixels {
@@ -1940,62 +1929,6 @@ fn apply_backdrop_filter(canvas: &mut Canvas, filter: &BackdropFilter) {
             }
         }
     }
-}
-
-/// Separable true-Gaussian blur of premultiplied pixels in `f64`:
-/// `w(o) = exp(-o² / 2σ²)` normalized over `⌈3σ⌉` taps each side,
-/// clamp-to-edge at the canvas boundary.
-#[expect(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_possible_wrap,
-    clippy::cast_precision_loss,
-    reason = "kernel radius and pixel indices are small non-negative values"
-)]
-fn backdrop_blur(src: &[[f64; 4]], width: usize, height: usize, sigma: f64) -> Vec<[f64; 4]> {
-    if sigma <= 1e-9 || src.is_empty() {
-        return src.to_vec();
-    }
-    let radius = (3.0 * sigma).ceil() as usize;
-    let mut kernel: Vec<f64> = (0..=2 * radius)
-        .map(|i| {
-            let d = i as f64 - radius as f64;
-            (-d * d / (2.0 * sigma * sigma)).exp()
-        })
-        .collect();
-    let sum: f64 = kernel.iter().sum();
-    for w in &mut kernel {
-        *w /= sum;
-    }
-    let mut tmp = vec![[0.0; 4]; src.len()];
-    for y in 0..height {
-        for x in 0..width {
-            let mut acc = [0.0; 4];
-            for (i, &w) in kernel.iter().enumerate() {
-                let xx = (x as i64 + i as i64 - radius as i64).clamp(0, width as i64 - 1) as usize;
-                let s = src[y * width + xx];
-                for (a, &c) in acc.iter_mut().zip(&s) {
-                    *a = w.mul_add(c, *a);
-                }
-            }
-            tmp[y * width + x] = acc;
-        }
-    }
-    let mut out = vec![[0.0; 4]; src.len()];
-    for y in 0..height {
-        for x in 0..width {
-            let mut acc = [0.0; 4];
-            for (i, &w) in kernel.iter().enumerate() {
-                let yy = (y as i64 + i as i64 - radius as i64).clamp(0, height as i64 - 1) as usize;
-                let s = tmp[yy * width + x];
-                for (a, &c) in acc.iter_mut().zip(&s) {
-                    *a = w.mul_add(c, *a);
-                }
-            }
-            out[y * width + x] = acc;
-        }
-    }
-    out
 }
 
 /// Edges of `shape` under `tf` (used for clip boundaries), flattened in

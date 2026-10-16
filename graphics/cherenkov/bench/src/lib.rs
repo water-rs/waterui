@@ -49,6 +49,7 @@ pub mod energy;
 #[cfg(feature = "cherenkov")]
 pub mod external_cost;
 pub mod gamut_sweep;
+pub mod gpu_clock;
 pub mod memory;
 #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
 pub mod motion;
@@ -181,6 +182,9 @@ pub struct Counters {
     /// run (`null` while no capture is allocated); `None` for other
     /// engines.
     pub memory_backdrop_capture_format: Option<&'static str>,
+    /// `Engine::memory()` filter-chain target bytes at the end of the run;
+    /// `None` for other engines.
+    pub memory_filter_target_bytes: Option<u64>,
 }
 
 /// Device and thermal metadata captured at measure time.

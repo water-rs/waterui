@@ -133,6 +133,8 @@ Async is the same shape: `.action_async(|State(x): State<Binding<Str>>| async mo
 
 `ForEach`/`List` diff by `Identifiable` id, so inserting one row touches one row.
 `watch` over a `Vec` rebuilds everything and can escalate to a full-window rebuild.
+The list's mutators take `&mut self`; a clone shares the same list, so a handler mutates
+its own clone (`mut state: Editor`).
 
 ```rust
 use waterui::Identifiable;                             // the derive is NOT in the prelude
@@ -142,7 +144,7 @@ use waterui::reactive::collection::List as ReactiveList;
 #[derive(Clone, Identifiable)]
 struct Row { #[id] id: u64, title: Str }
 
-let rows = ReactiveList::from(seed_rows);              // bulk-seed; .push/.insert/.remove diff by id
+let rows = ReactiveList::from(seed_rows);              // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
 Lazy::for_each(rows.clone(), |row| text(row.title))        // reactive sequence in a stack
 List::for_each(rows.clone(), |row| ListItem::new(...))     // platform list: lazy, editable

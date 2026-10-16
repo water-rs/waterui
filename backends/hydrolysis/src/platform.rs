@@ -409,11 +409,15 @@ pub struct TouchScrollConfig {
 }
 
 impl TouchScrollConfig {
-    /// Android's density-1 defaults — `ViewConfiguration`'s constants
-    /// normalized to logical units, not the scaled values a host reports
-    /// at runtime. Tests drive them through the host's
-    /// `touch_scroll_config` seam so a touch drag claims scroll views the
-    /// way it does on device.
+    /// The Android `OverScroller` model at density 1 —
+    /// `ViewConfiguration`'s constants normalized to logical units, not
+    /// the scaled values the Android host reports at runtime.
+    ///
+    /// This is what hosts that publish no touch-scroll parameters of
+    /// their own — the browser window, the winit desktop windows,
+    /// offscreen surfaces — report through
+    /// [`PlatformWindow::touch_scroll_config`], so a touch drag scrolls
+    /// on every host. Tests drive it through the same seam.
     #[must_use]
     pub fn android_default() -> Self {
         Self {
@@ -1085,18 +1089,17 @@ pub trait PlatformWindow: 'static {
     fn is_occluded(&self) -> bool {
         false
     }
-    /// The window's touch-drag scroll gesture parameters, when the host
-    /// delivers touch input: the platform's own slop, fling velocity bounds
-    /// and deceleration coefficients, by value — the renderer carries no
-    /// defaults for them.
+    /// The window's touch-drag scroll gesture parameters: the platform's
+    /// own slop, fling velocity bounds and deceleration coefficients, by
+    /// value — the renderer carries no defaults for them.
     ///
-    /// The default `None` is for platforms with no platform-published
-    /// touch-gesture parameters to carry — a host that cannot source the
-    /// values reports none rather than inventing them, and a touch drag
-    /// then never claims a scroll view.
-    fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
-        None
-    }
+    /// Every host returns the values its touch input runs under; a host
+    /// that publishes no parameters of its own reports
+    /// [`TouchScrollConfig::android_default`]. `None` is only the window
+    /// that genuinely cannot have them yet — the Android host before its
+    /// first metrics push — and a `PointerKind::Touch` press arriving
+    /// while it holds is a host bug the renderer panics on.
+    fn touch_scroll_config(&self) -> Option<TouchScrollConfig>;
     /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
     /// Sets the cursor image the window displays.
@@ -1136,6 +1139,19 @@ pub trait GpuSurfaceWindow: PlatformWindow {
     /// asking. A target with no compositor blur keeps this default no-op.
     fn set_blur_behind(&mut self, blur: bool) {
         let _ = blur;
+    }
+
+    /// Whether the host matches chrome of its own to the colour the
+    /// content paints along the window's top edge. When it does, the
+    /// runner reports that colour for every presented frame through
+    /// [`Self::set_top_edge_color`]; otherwise it never computes it.
+    const SAMPLES_TOP_EDGE: bool = false;
+
+    /// The colour the presented frame shows along the window's top edge
+    /// ([`HydrolysisRenderer::top_edge_color`](crate::renderer::HydrolysisRenderer::top_edge_color)),
+    /// reported when [`Self::SAMPLES_TOP_EDGE`] is set.
+    fn set_top_edge_color(&mut self, color: waterui_graphics::draw::WorkingColor) {
+        let _ = color;
     }
 }
 
@@ -2376,6 +2392,13 @@ impl PlatformWindow for OffscreenWindow {
         self.scale_factor
     }
 
+    /// An offscreen surface publishes no touch-gesture parameters of its
+    /// own; its logical units are unscaled points — density 1 — so it
+    /// reports the Android `OverScroller` model at density 1.
+    fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
+        Some(TouchScrollConfig::android_default())
+    }
+
     /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, _state: Option<TextInputState>) {}
 
@@ -2431,7 +2454,7 @@ mod winit_impl {
     use super::{
         CursorStyle, DeviceLoss, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
         PlatformWindow, PointerButton, PointerKind, RedrawHandle, TextInputPurpose, TextInputState,
-        TouchPhase, enabled_window_buttons, validated_window_frame,
+        TouchPhase, TouchScrollConfig, enabled_window_buttons, validated_window_frame,
     };
     #[cfg(not(target_os = "macos"))]
     use super::{SurfaceError, SurfaceFrame, SurfaceProvider, reclaim_device};
@@ -4571,6 +4594,14 @@ mod winit_impl {
                 .current_monitor()
                 .and_then(|monitor| monitor.refresh_rate_millihertz())
                 .map(|millihertz| f64::from(millihertz) / 1000.0)
+        }
+
+        /// winit publishes no touch-gesture parameters, and its logical
+        /// points are density-1 units, so the window reports the Android
+        /// `OverScroller` model at density 1 — a touch drag scrolls here
+        /// the way it does on a host with values of its own.
+        fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
+            Some(TouchScrollConfig::android_default())
         }
 
         /// Pushes the focused text input's state to the platform IME.

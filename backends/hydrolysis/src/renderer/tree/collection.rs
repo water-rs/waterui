@@ -19,23 +19,22 @@ use super::transition::{
     start_ghost,
 };
 
-/// Collect into `out` the ids occupying the positions a [`CollectionChange`]
-/// reports as replaced: `change.replaced` names new-snapshot indices, and
-/// `snapshot` is the immutable row set the notification carried — index-
-/// parallel with the collection it reported on. A producer that knows only a
-/// whole-value replacement reports `everything`, so an empty change means
-/// nothing needs re-materializing.
-pub fn collect_replaced_ids<S: ViewSnapshot>(
+/// Collect into `out` the ids of the items a [`CollectionChange`] reports as
+/// updated in place — same id, possibly different content: the updates name
+/// new-snapshot indices, and `snapshot` is the row set delivered with the
+/// notification. Insertions, removals and moves are membership changes the
+/// id reconciliation applies; an empty change means nothing needs
+/// re-materializing.
+pub fn collect_replaced_ids<S>(
     snapshot: &S,
     change: &CollectionChange,
     out: &mut std::collections::HashSet<S::Id>,
-) {
-    for range in &change.replaced {
-        for index in range.start..range.end {
-            if let Some(id) = snapshot.get_id(index) {
-                out.insert(id);
-            }
-        }
+) where
+    S: ViewSnapshot,
+    S::Id: std::hash::Hash,
+{
+    for range in change.updates() {
+        out.extend(range.filter_map(|index| snapshot.get_id(index)));
     }
 }
 

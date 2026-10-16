@@ -129,6 +129,48 @@ fn blurred_backdrop_keeps_extended_range() -> Result<(), Box<dyn std::error::Err
 }
 
 split_test! {
+/// `filter_targets` counts the capture chain's held targets (#1941): the
+/// registry's input/output pair plus the executor's intermediates, freed
+/// with the group.
+fn filtered_group_reports_its_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(4.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&glass);
+        tx[&glass]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let memory = wait!(engine.memory());
+    // footprint = ceil(4 * 4) = 16 → region (8-16..56+16) ∩ 0..64 = 64×64.
+    // The chain holds an input/output pair at the capture's format plus
+    // the one intermediate the blur's two passes share — three
+    // Rgba16Float targets.
+    assert_eq!(memory.filter_targets, Bytes(3 * 64 * 64 * 8));
+    // The targets go with the chain: removing the group frees them.
+    surface.update(|tx| {
+        tx[&glass].clear_backdrop();
+    });
+    drop(group);
+    wait!(engine.render(FrameTime::now()))?;
+    assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+    Ok(())
+}
+}
+
+split_test! {
 fn nested_groups_capture_in_paint_order() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;

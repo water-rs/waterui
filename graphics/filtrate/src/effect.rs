@@ -426,4 +426,14 @@ pub trait Effect: 'static {
     fn redraw_hint(&self) -> bool {
         false
     }
+
+    /// Device-resident bytes of the render targets the effect itself
+    /// retains between frames, such as a multi-pass chain's intermediates.
+    ///
+    /// Hosts add this to their memory accounting. The input and output
+    /// targets a host supplies are the host's to count, not the effect's.
+    /// There is no default: an effect that keeps no targets of its own
+    /// states `0`, and a wrapper forwards its inner effect's count, so no
+    /// retained target goes unreported.
+    fn target_bytes(&self) -> u64;
 }

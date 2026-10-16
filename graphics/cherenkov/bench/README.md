@@ -107,6 +107,37 @@ thermal status (`dumpsys thermalservice` severity on Android,
 `/sys/class/thermal` zone temperature, screen state and brightness
 where readable, alongside the `placement` block `--cpu` already
 produces. Screen brightness is not recorded on macOS or Windows.
+
+## Comparing two builds on the Pixel
+
+GPU time scales with the GPU clock, and the default governor picks the clock
+per process from recent load: identical builds measured back to back land on
+different operating points and differ by the clock ratio. On Android `measure`
+records the GPU's clock residency over the measured window (`gpu_clock`, from
+the Mali driver's `time_in_state`), so every report shows the clocks its GPU
+time ran at.
+
+`scripts/pixel_compare.py run` compares two Android builds over interleaved
+base/head rounds with the GPU and CPU 7 pinned to one clock each
+(`--gpu-khz`, `--cpu-khz`; 649 MHz and 2.294 GHz by default), restoring the
+original limits afterwards. Every invocation's controls are checked and
+recorded — screen off, thermal status, cooling devices, the pinned policy
+ranges, GPU and CPU residency, CPU placement — and a failed control stops the
+collection. `scripts/pixel_compare.py analyze OUT` reports, per scene, the
+median of each arm's per-invocation GPU p50, the change, and its 95% interval
+from a hierarchical bootstrap over invocations and their frames. A scene whose
+interval is no wider than the 2% limit fails above +2% and passes otherwise; a
+wider interval is `unresolved`, never a pass. Full-size scenes resolve in 120
+frames per invocation; scenes whose GPU time is a fraction of a millisecond
+vary per process by more than more frames remove and stay unresolved (#2775).
+`--governor` leaves the clocks to the governors, for the 8.33 ms p99 budget
+check:
+
+    bench/scripts/pixel_compare.py run --serial pixel-9-pro:5555 \
+        --base bench-dev --head bench-change \
+        --scene scenes/perf/map --scene scenes/corpus/continuous-s50 --out compare
+    bench/scripts/pixel_compare.py analyze compare
+
 ## Sparse live updates
 
 `scenes/perf/live-dashboard` changes one two-digit glyph run and one bar height

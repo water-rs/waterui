@@ -1,14 +1,13 @@
 name: Cherenkov CPU instructions
 
 # The Callgrind instruction-count gate `graphics/cherenkov/AGENTS.md`
-# requires for CPU-side engine changes. It builds and profiles two release
-# binaries, so it runs on request only: on a pull request carrying the
-# `cherenkov-ir` label (again on every push while the label stays), or by
-# dispatch for any pair of revisions. The baseline is the merge base of
-# `base` and `head`. A pull request is measured as merged into dev, against
-# the dev commit it merges into, so a branch that predates a dev fix the
-# gate host needs is still measurable:
+# requires for CPU-side engine changes. It runs on every pull request that
+# touches the engine, and by dispatch for any pair of revisions. The
+# baseline is the merge base of `base` and `head`. A pull request is
+# measured as merged into dev, against the dev commit it merges into, so a
+# branch that predates a dev fix the gate host needs is still measurable:
 #   gh workflow run cherenkov-ir.yml -f head=refs/pull/<number>/merge
+# It reports the result and is not a required check.
 on:
   workflow_dispatch:
     inputs:
@@ -23,20 +22,17 @@ on:
         type: string
   pull_request:
     branches: [dev]
-    types: [opened, reopened, synchronize, labeled]
+    paths:
+      - graphics/cherenkov/**
+      - .github/workflows/cherenkov-ir.yml
 
 permissions:
   contents: read
 
 jobs:
   instructions:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (contains(github.event.pull_request.labels.*.name, 'cherenkov-ir') &&
-       (github.event.action != 'labeled' || github.event.label.name == 'cherenkov-ir'))
     runs-on: ubuntu-24.04
-    # Job-level, so an event the `if` skips (another label) never cancels
-    # a running measurement.
+    # A newer push to the same pull request supersedes the running measurement.
     concurrency:
       group: cherenkov-ir-${{ github.event.pull_request.number || github.run_id }}
       cancel-in-progress: true

@@ -646,7 +646,7 @@ pub mod components_block_21 {
         let _ = {
             List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
                 .editing(is_editing.clone()) // impl IntoComputed<bool>
-                .on_delete(|ListDelete(i), s: AppState| {
+                .on_delete(|ListDelete(i), mut s: AppState| {
                     let _ = s.rows.remove(i);
                 })
                 .on_move(|ListMove(m), _s: AppState| {
@@ -699,12 +699,10 @@ pub fn components_block_23() -> impl View {
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_list_item_prose() {
-    use waterui::id::SelfId;
-
     let signal = Binding::bool(true);
     let section = ListSection::default();
-    let selection = Binding::container(None::<SelfId<usize>>);
-    let multi = Binding::container(alloc::collections::BTreeSet::<SelfId<usize>>::new());
+    let selection = Binding::container(None::<usize>);
+    let multi = Binding::container(alloc::collections::BTreeSet::<usize>::new());
 
     let _ = ListItem::new(text("a")).deletable(signal.clone());
     let _ = ListItem::new(text("a")).section(section);

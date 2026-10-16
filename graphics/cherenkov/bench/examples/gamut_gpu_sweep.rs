@@ -13,7 +13,7 @@ use cherenkov_gpu::GpuConfig;
 use cherenkov_gpu::interop::{
     OutputAlpha, OutputColor, Presenter, SharedDevice, TextureOutput, shader_delivery, wgpu,
 };
-use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_decode_extended, srgb_encode};
+use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_decode, srgb_encode};
 use cherenkov_oracle::gamut::{delta_e_ok, gamut_map_srgb_analytic, linear_srgb_to_oklab};
 use cherenkov_oracle::tone::tone_map;
 
@@ -257,9 +257,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let gpu_linear = |i: usize| -> [f64; 3] {
         let base = (i as u32 / width) as usize * row as usize + (i as u32 % width) as usize * 4;
         [
-            srgb_decode_extended(f64::from(bytes[base]) / 255.0),
-            srgb_decode_extended(f64::from(bytes[base + 1]) / 255.0),
-            srgb_decode_extended(f64::from(bytes[base + 2]) / 255.0),
+            srgb_decode(f64::from(bytes[base]) / 255.0),
+            srgb_decode(f64::from(bytes[base + 1]) / 255.0),
+            srgb_decode(f64::from(bytes[base + 2]) / 255.0),
         ]
     };
 

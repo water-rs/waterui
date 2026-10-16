@@ -24,7 +24,7 @@ use std::collections::HashMap;
 
 use cocoa_ui::{Retained, view};
 use waterui::component::table::{TableColumn, TableConfig};
-use waterui::id::{Id as RawId, SelfId};
+use waterui::id::Id as RawId;
 use waterui::reactive::watcher::Metadata;
 use waterui::reactive::{Computed, Signal};
 use waterui::text::{StyledStr, Text};
@@ -44,7 +44,7 @@ use cocoa_ui::uikit::HostView;
 use cocoa_ui::objc2_app_kit::{NSTableColumn, NSTableHeaderView};
 
 /// A row's identity: the collection id `Views` answers for an index.
-type ItemId = SelfId<RawId>;
+type ItemId = RawId;
 
 /// `HORIZONTAL_PADDING` — the cell inset on the horizontal axis.
 const HORIZONTAL_PADDING: f64 = 12.0;
