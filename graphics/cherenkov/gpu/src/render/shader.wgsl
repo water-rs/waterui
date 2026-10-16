@@ -19,17 +19,20 @@ const VARIANT_SIMPLE: u32 = 0u;
 const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
 const VARIANT_UNION: u32 = 3u;
+const VARIANT_IMAGE: u32 = 4u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
 @group(1) @binding(1) var backdrop: texture_2d<f32>;
 @group(1) @binding(2) var image_tex: texture_2d<f32>;
 
+// image-source
 // The sRGB transfer decode of each 8-bit code (`image_storage::transfer_table`).
 struct ImageDecode {
     linear: array<f32, 256>,
 }
 @group(0) @binding(4) var<storage, read> image_decode: ImageDecode;
+// image-source
 
 // Abramowitz & Stegun 7.1.26, |error| < 1.5e-7.
 fn erf(x: f32) -> f32 {
@@ -260,13 +263,24 @@ fn sweep_t(i: u32, p: vec2<f32>) -> f32 {
     return (theta - start) / span;
 }
 
+// A loaded image texel in the working representation. Only the image
+// variant (and union, which carries everything) converts source texels:
+// the `// image-source` spans are dropped from every other variant, whose
+// image paints all sample working texels (flags 0).
+fn image_working_texel(encoded: vec4<f32>, flags: u32) -> vec4<f32> {
+    // image-source
+    if (flags & 4096u) != 0u { return image_source_texel(encoded, flags); }
+    // image-source
+    return encoded;
+}
+
+// image-source
 // Conversion happens separately at each tap, BEFORE interpolation. In
 // particular neither straight alpha nor encoded premultiplied alpha may be
 // hardware-filtered and subsequently converted to the working representation.
 // Flag bits (`image_storage`): 12 source texels, 13 premultiplied, 14 the
 // transfer function, 15 sRGB primaries, 16 the transfer table.
-fn image_working_texel(encoded: vec4<f32>, flags: u32) -> vec4<f32> {
-    if (flags & 4096u) == 0u { return encoded; }
+fn image_source_texel(encoded: vec4<f32>, flags: u32) -> vec4<f32> {
     let a = encoded.a;
     var rgb = encoded.rgb;
     if (flags & 65536u) != 0u {
@@ -296,6 +310,7 @@ fn image_working_texel(encoded: vec4<f32>, flags: u32) -> vec4<f32> {
     // Match the previous upload's working-f16 rounding before interpolation.
     return quantizeToF16(linear);
 }
+// image-source
 
 // Samples `tex` like the oracle's sample_image: texel centres at n + 0.5,
 // coordinate already in image-pixel space after the per-axis extend.

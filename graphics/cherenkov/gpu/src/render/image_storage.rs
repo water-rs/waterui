@@ -9,7 +9,7 @@ pub(super) const COMPRESSION_FEATURES: wgpu::Features = wgpu::Features::TEXTURE_
 /// Image paint bits 12–16, `shader.wgsl`'s `image_working_texel`. Zero is
 /// a texture already holding premultiplied linear Display P3: internal
 /// textures, and `Rgba16F` sources converted at upload.
-const SOURCE: u32 = 1 << 12;
+pub(super) const SOURCE: u32 = 1 << 12;
 /// The texels carry premultiplied alpha.
 const PREMULTIPLIED: u32 = 1 << 13;
 /// The sRGB transfer decode, evaluated per tap.

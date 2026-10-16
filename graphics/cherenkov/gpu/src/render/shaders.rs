@@ -116,14 +116,14 @@ const SHADOW_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
 
 /// The `VARIANT = 0` specialization of `shader.wgsl` (simple).
 ///
-/// Non-union variants compile `shader_no_union.wgsl` — `shader.wgsl`
-/// with every `// union-stub` span removed by `build.rs` — so the
-/// pipelines plain draws use contain neither the union fold nor its
-/// member-cap arrays.
+/// Variants 0–2 compile `shader_plain.wgsl` — `shader.wgsl` with every
+/// `// union-stub` and `// image-source` span removed by `build.rs` — so
+/// the pipelines plain draws use contain neither the union fold, its
+/// member-cap arrays, nor the per-tap image source conversion.
 const ENGINE_WGSL0: &str = concat!(
     "const VARIANT: u32 = 0u;\n",
     include_str!("shared.wgsl"),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/shader_plain.wgsl")),
     "\n",
     include_str!("blend.wgsl")
 );
@@ -131,7 +131,7 @@ const ENGINE_WGSL0: &str = concat!(
 const ENGINE_WGSL1: &str = concat!(
     "const VARIANT: u32 = 1u;\n",
     include_str!("shared.wgsl"),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/shader_plain.wgsl")),
     "\n",
     include_str!("blend.wgsl")
 );
@@ -139,7 +139,7 @@ const ENGINE_WGSL1: &str = concat!(
 const ENGINE_WGSL2: &str = concat!(
     "const VARIANT: u32 = 2u;\n",
     include_str!("shared.wgsl"),
-    include_str!(concat!(env!("OUT_DIR"), "/shader_no_union.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/shader_plain.wgsl")),
     "\n",
     include_str!("blend.wgsl")
 );
@@ -157,10 +157,22 @@ const ENGINE_WGSL3: &str = concat!(
     include_str!("blend.wgsl")
 );
 
+/// The `VARIANT = 4` specialization (image): the full module plus the
+/// `// image-source` spans, which convert source image texels per tap.
+/// Only ranges drawing an image paint with source flags use it.
+const ENGINE_WGSL4: &str = concat!(
+    "const VARIANT: u32 = 4u;\n",
+    include_str!("shared.wgsl"),
+    include_str!(concat!(env!("OUT_DIR"), "/shader_image.wgsl")),
+    "\n",
+    include_str!("blend.wgsl")
+);
+
 /// The effect-module text for a user `backdrop_effect` source.
 ///
-/// The full engine module — `ENGINE_WGSL2`, or `ENGINE_WGSL3` when
-/// `union` marks a member of a union group — with the stub
+/// The full engine module with source conversion — `ENGINE_WGSL4`, or
+/// `ENGINE_WGSL3` when `union` marks a member of a union group, since
+/// one effect pipeline serves whatever paint its draws carry — with the stub
 /// `backdrop_effect` removed and the user source appended. The stub sits
 /// between two `// backdrop-effect-stub` marker lines, so removal is a
 /// plain string split.
@@ -171,7 +183,7 @@ const ENGINE_WGSL3: &str = concat!(
 #[must_use]
 pub fn backdrop_effect_text(user: &str, union: bool) -> Cow<'static, str> {
     const MARK: &str = "// backdrop-effect-stub";
-    let module = if union { ENGINE_WGSL3 } else { ENGINE_WGSL2 };
+    let module = if union { ENGINE_WGSL3 } else { ENGINE_WGSL4 };
     let (head, rest) = module
         .split_once(MARK)
         .expect("the backdrop-effect stub marker is part of shader.wgsl");
@@ -214,13 +226,14 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
 /// exactly those targets, so the condition lives in one place (issue #241).
 #[cfg(cherenkov_spirv)]
 pub mod spirv {
-    /// naga SPIR-V for the four `VARIANT` specializations of
+    /// naga SPIR-V for the five `VARIANT` specializations of
     /// `shader.wgsl`.
-    pub const ENGINE: [&[u8]; 4] = [
+    pub const ENGINE: [&[u8]; 5] = [
         include_bytes!(concat!(env!("OUT_DIR"), "/engine0.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine1.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine2.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine3.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine4.spv")),
     ];
     /// `present.wgsl`.
     pub const PRESENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.spv"));
@@ -261,14 +274,15 @@ pub mod spirv {
 // produce them otherwise, and a Metal backend cannot appear on a
 // non-Apple build), so the empty slices are unreachable.
 #[cfg(target_vendor = "apple")]
-const ENGINE_METALLIB: [&[u8]; 4] = [
+const ENGINE_METALLIB: [&[u8]; 5] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/engine0.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine1.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine2.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine3.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine4.metallib")),
 ];
 #[cfg(not(target_vendor = "apple"))]
-const ENGINE_METALLIB: [&[u8]; 4] = [&[], &[], &[], &[]];
+const ENGINE_METALLIB: [&[u8]; 5] = [&[], &[], &[], &[], &[]];
 #[cfg(target_vendor = "apple")]
 const PRESENT_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.metallib"));
 #[cfg(not(target_vendor = "apple"))]
@@ -298,9 +312,9 @@ const SHADOW_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.
 #[cfg(not(target_vendor = "apple"))]
 const SHADOW_METALLIB: &[u8] = &[];
 
-/// The four `VARIANT` specializations of `shader.wgsl`, indexed by
+/// The five `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
-const ENGINE: [Fixed; 4] = [
+const ENGINE: [Fixed; 5] = [
     Fixed {
         wgsl: ENGINE_WGSL0,
         #[cfg(cherenkov_spirv)]
@@ -327,6 +341,13 @@ const ENGINE: [Fixed; 4] = [
         #[cfg(cherenkov_spirv)]
         spirv: spirv::ENGINE[3],
         metallib: ENGINE_METALLIB[3],
+        entries: ENGINE_ENTRIES,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL4,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[4],
+        metallib: ENGINE_METALLIB[4],
         entries: ENGINE_ENTRIES,
     },
 ];

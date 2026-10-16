@@ -426,7 +426,8 @@ pub fn encode(
             let variant = match range.variant {
                 ShaderVariant::Simple => 0,
                 ShaderVariant::Shadow => 1,
-                ShaderVariant::Full => 2,
+                // The tile module is the image variant's superset of Full.
+                ShaderVariant::Full | ShaderVariant::Image => 2,
                 // A union member is `PAINT_BACKDROP` sampling its group's
                 // capture: a neighbourhood (or effect) read that
                 // `ExecutionPlan::epoch` never admits into a tile epoch.

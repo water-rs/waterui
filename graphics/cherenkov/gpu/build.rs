@@ -89,15 +89,15 @@ struct AppleTarget {
 /// Removes every `// <marker>`-bracketed span from `source` — the mirror
 /// of the marker convention in `shaders.rs`: marker lines pair up, and
 /// the text between an opening and closing marker is a specialization's
-/// optional block (the union field today), dropped wholesale by variants
-/// that do not carry it.
+/// optional block (the union field, the image source conversion),
+/// dropped wholesale by variants that do not carry it.
 ///
 /// Only a whole trimmed line equal to the marker toggles the span — a
 /// marker inside other text is not a marker. An unpaired marker is a
-/// build bug and panics. The stripped output must carry neither
-/// `union_field` nor `member_field`: the check fails loudly if the
-/// spans drift from what the marker is supposed to remove.
-fn drop_marked(source: &str, marker: &str) -> String {
+/// build bug and panics. The stripped output must contain none of
+/// `removed`: the check fails loudly if the spans drift from what the
+/// marker is supposed to remove.
+fn drop_marked(source: &str, marker: &str, removed: &[&str]) -> String {
     let tag = format!("// {marker}");
     let mut out = String::with_capacity(source.len());
     let mut dropping = false;
@@ -109,10 +109,12 @@ fn drop_marked(source: &str, marker: &str) -> String {
         }
     }
     assert!(!dropping, "unpaired `{tag}` marker");
-    assert!(
-        !out.contains("union_field") && !out.contains("member_field"),
-        "`{tag}` stripping left union code in the output"
-    );
+    for name in removed {
+        assert!(
+            !out.contains(name),
+            "`{tag}` stripping left `{name}` in the output"
+        );
+    }
     out
 }
 
@@ -171,20 +173,28 @@ fn main() {
     // The union member cap the WGSL fold is compiled against:
     // `union_cap::UNION_MAX_MEMBERS` prepended like `VARIANT`, so the
     // Rust constant stays the single definition. The runtime assembles
-    // the union module from this fragment and the non-union variants
-    // from `shader_no_union.wgsl` — `shader.wgsl` minus every
-    // `// union-stub`-bracketed span.
+    // the union module from this fragment and `shader.wgsl`, the image
+    // variant from `shader_image.wgsl` — `shader.wgsl` minus every
+    // `// union-stub`-bracketed span — and the plain variants from
+    // `shader_plain.wgsl`, which also drops every `// image-source` span.
     let union_max = format!(
         "const UNION_MAX_MEMBERS: u32 = {}u;\n",
         union_cap::UNION_MAX_MEMBERS
     );
     std::fs::write(out_dir.join("union_max_members.wgsl"), &union_max).unwrap();
-    let shader_no_union = drop_marked(&shader, "union-stub");
-    std::fs::write(out_dir.join("shader_no_union.wgsl"), &shader_no_union).unwrap();
+    let shader_image = drop_marked(&shader, "union-stub", &["union_field", "member_field"]);
+    std::fs::write(out_dir.join("shader_image.wgsl"), &shader_image).unwrap();
+    let shader_plain = drop_marked(
+        &shader_image,
+        "image-source",
+        &["image_decode", "image_source_texel"],
+    );
+    std::fs::write(out_dir.join("shader_plain.wgsl"), &shader_plain).unwrap();
     let specs = module_specs(&Modules {
         shared: &shared,
         shader: &shader,
-        shader_no_union: &shader_no_union,
+        shader_image: &shader_image,
+        shader_plain: &shader_plain,
         union: &union,
         union_max: &union_max,
         blend: &blend,
@@ -207,7 +217,9 @@ struct Modules<'a> {
     shared: &'a str,
     shader: &'a str,
     /// `shader` minus its `// union-stub` spans.
-    shader_no_union: &'a str,
+    shader_image: &'a str,
+    /// `shader_image` minus its `// image-source` spans.
+    shader_plain: &'a str,
     union: &'a str,
     /// The `UNION_MAX_MEMBERS` const fragment.
     union_max: &'a str,
@@ -224,21 +236,23 @@ struct Modules<'a> {
     tile: &'a str,
 }
 
-/// The fixed module set `render` creates: four VARIANT specializations
+/// The fixed module set `render` creates: five VARIANT specializations
 /// of `shader.wgsl` plus `present`, `external`, `external_native`,
 /// `projective`, `mip`, `resolve`, `reduce` and `shadow`. The engine, external
 /// and projective modules share the `shared.wgsl` prelude; the engine
 /// and projective tails share the `blend.wgsl` compositing helpers.
 /// Variant 3 (Union) additionally prepends `UNION_MAX_MEMBERS` and links
-/// `union.wgsl`; the plain variants drop every `// union-stub` span, so
-/// their modules carry no union fold or member-cap arrays.
+/// `union.wgsl`; every other variant drops each `// union-stub` span, so
+/// its module carries no union fold or member-cap arrays. Variant 4
+/// (Image) is Full plus the `// image-source` spans, the per-tap source
+/// texel conversion; variants 0–2 drop those too.
 fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
-    let mut specs: Vec<Spec> = (0..4u32)
+    let mut specs: Vec<Spec> = (0..5u32)
         .map(|variant| {
-            let (cap, shader, union) = if variant == 3 {
-                (m.union_max, m.shader, m.union)
-            } else {
-                ("", m.shader_no_union, "")
+            let (cap, shader, union) = match variant {
+                3 => (m.union_max, m.shader, m.union),
+                4 => ("", m.shader_image, ""),
+                _ => ("", m.shader_plain, ""),
             };
             Spec {
                 name: format!("engine{variant}"),
@@ -305,13 +319,14 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         });
     }
     // The Vulkan tile executor's composition module (issue #2191): the
-    // stripped no-union variant, like the Apple `engine_tile` metallib,
-    // plus the tile stage interfaces. A union member samples its group's
-    // capture, a read `ExecutionPlan::epoch` never admits into a tile
-    // epoch.
+    // no-union image variant — Full plus source conversion, since one
+    // module serves every draw an epoch admits — like the Apple
+    // `engine_tile` metallib, plus the tile stage interfaces. A union
+    // member samples its group's capture, a read `ExecutionPlan::epoch`
+    // never admits into a tile epoch.
     specs.push(Spec {
         name: "engine_tile".into(),
-        source: format!("{}\n{}", specs[2].source, m.tile),
+        source: format!("{}\n{}", specs[4].source, m.tile),
         groups: bindings::ENGINE_GROUPS,
         metal: false,
         merge_pair: None,
@@ -338,12 +353,12 @@ fn compile_specs(out_dir: &Path, specs: &[Spec]) {
         compile(out_dir, spec, apple.as_ref(), wasm, spirv);
     }
     if let Some(apple) = apple.as_ref() {
-        // The tile executor's composition shaders. Only the stripped
-        // no-union variant: a union member samples its group's capture,
-        // a read `ExecutionPlan::epoch` never admits into a tile epoch.
+        // The tile executor's composition shaders. Only the no-union
+        // image variant: a union member samples its group's capture, a
+        // read `ExecutionPlan::epoch` never admits into a tile epoch.
         let spec = Spec {
             name: "engine_tile".into(),
-            source: specs[2].source.clone(),
+            source: specs[4].source.clone(),
             groups: bindings::ENGINE_GROUPS,
             metal: true,
             merge_pair: None,

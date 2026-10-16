@@ -953,7 +953,7 @@ pub struct GpuRenderer {
     /// never built at init: the variant-3 module and pipeline are
     /// created on the first union or outer-band member (on wasm, by
     /// `prepare_lazy_pipelines` before the frame that needs them).
-    pipelines: [[[Option<wgpu::RenderPipeline>; 4]; 2]; 2],
+    pipelines: [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
     /// `[opaque, partial]` coverage pipelines, same cell policy as the
     /// core set: built at init under `core_pipelines_eager()` (always,
     /// on wasm), else created at the first coverage pass (#170 B3, #49).
@@ -977,12 +977,13 @@ pub struct GpuRenderer {
     /// Registered backdrop effect shaders, by raw id — see
     /// [`BackdropShaderEntry`].
     backdrop_shaders: FxHashMap<u64, BackdropShaderEntry>,
-    /// The union-linked engine module, created on the first frame that
-    /// draws a union or outer-band member (async preparation cannot
-    /// run inside the synchronous encode loop, so the module materializes
-    /// in `prepare_lazy_pipelines`).
+    /// The demand-built engine modules by variant index — union, and
+    /// image — each created on the first frame that draws a range of that
+    /// variant (async preparation cannot run inside the synchronous
+    /// encode loop, so the module materializes in
+    /// `prepare_lazy_pipelines`).
     #[cfg(target_arch = "wasm32")]
-    union_module: Option<wgpu::ShaderModule>,
+    lazy_modules: FxHashMap<usize, wgpu::ShaderModule>,
     /// The configured isolation texture format.
     scratch_format: wgpu::TextureFormat,
     layout0: wgpu::BindGroupLayout,
@@ -1874,6 +1875,7 @@ const fn variant_index(variant: ShaderVariant) -> usize {
         ShaderVariant::Shadow => 1,
         ShaderVariant::Full => 2,
         ShaderVariant::Union => 3,
+        ShaderVariant::Image => 4,
     }
 }
 
@@ -2132,7 +2134,7 @@ impl PipelineFactory<'_> {
 /// created at first use so preparation lands inside the frame that needs
 /// it (#170).
 fn core_pipeline<'m>(
-    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 4]; 2]; 2],
+    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 5]; 2]; 2],
     factory: &PipelineFactory<'_>,
     format: wgpu::TextureFormat,
     replace: bool,
@@ -2888,7 +2890,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         shader_delivery,
         shaders: paint::Registry::default(),
         backdrop_shaders: FxHashMap::default(),
-        union_module: None,
+        lazy_modules: FxHashMap::default(),
         filters: filter::Registry::default(),
         shadow_blur: None,
         resolve: None,
@@ -10193,7 +10195,8 @@ impl GpuRenderer {
     }
 
     /// wasm: the lazily built pipelines a frame's lowered passes need —
-    /// core `(format, replace)` cells for `ShaderVariant::Union` ranges,
+    /// core `(variant, format, replace)` cells for `ShaderVariant::Union`
+    /// and `ShaderVariant::Image` ranges,
     /// and every backdrop effect slot they draw that registration did not
     /// build (a union-shaped or replace pipeline) — prepared ahead of
     /// encode, which cannot await pipeline creation. The union engine
@@ -10206,8 +10209,9 @@ impl GpuRenderer {
     )]
     async fn prepare_lazy_pipelines(&mut self, surface: SurfaceId) -> Result<(), RenderError> {
         let surface = &self.surfaces[&surface];
-        // (format index, replace) core union cells and (shader id, union,
-        // replace, format index) effect slots the frame draws.
+        // (variant index, format index, replace) demand-built core cells
+        // and (shader id, union, replace, format index) effect slots the
+        // frame draws.
         let mut core = FxHashSet::default();
         let mut effects = FxHashSet::default();
         for pass in &surface.frame.passes {
@@ -10225,37 +10229,17 @@ impl GpuRenderer {
                 let union = range.variant == ShaderVariant::Union;
                 if let PipelineKind::Effect { id, replace } = range.pipeline {
                     effects.insert((id, union, replace, format_i));
-                } else if union {
-                    core.insert((format_i, range.pipeline == PipelineKind::Replace));
+                } else if matches!(range.variant, ShaderVariant::Union | ShaderVariant::Image) {
+                    core.insert((
+                        variant_index(range.variant),
+                        format_i,
+                        range.pipeline == PipelineKind::Replace,
+                    ));
                 }
             }
         }
-        if !core.is_empty() {
-            let module = self
-                .union_module
-                .get_or_insert_with(|| self.shader_delivery.engine_module(&self.device, 3));
-            for (format_i, replace) in core {
-                let cell = &mut self.pipelines[format_i][usize::from(replace)][3];
-                if cell.is_none() {
-                    *cell = Some(
-                        create_pipeline(
-                            &self.device,
-                            &self.config,
-                            &self.pipeline_layout,
-                            self.pipeline_cache.as_ref(),
-                            module,
-                            if format_i == 0 {
-                                TARGET_FORMAT
-                            } else {
-                                self.scratch_format
-                            },
-                            CoveragePass::Painter(replace),
-                        )
-                        .await
-                        .map_err(|e| RenderError::Render(e.to_string()))?,
-                    );
-                }
-            }
+        for (variant, format_i, replace) in core {
+            self.prepare_lazy_core(variant, format_i, replace).await?;
         }
         for (id, union, replace, format_i) in effects {
             let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
@@ -10303,6 +10287,47 @@ impl GpuRenderer {
             };
             cells[replace_i][format_i] = Some(built);
         }
+        Ok(())
+    }
+
+    /// wasm: the demand-built core cell `(variant, format index, replace)`
+    /// of a union or image range, with its engine module.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    async fn prepare_lazy_core(
+        &mut self,
+        variant: usize,
+        format_i: usize,
+        replace: bool,
+    ) -> Result<(), RenderError> {
+        let cell = &mut self.pipelines[format_i][usize::from(replace)][variant];
+        if cell.is_some() {
+            return Ok(());
+        }
+        let module = self
+            .lazy_modules
+            .entry(variant)
+            .or_insert_with(|| self.shader_delivery.engine_module(&self.device, variant));
+        *cell = Some(
+            create_pipeline(
+                &self.device,
+                &self.config,
+                &self.pipeline_layout,
+                self.pipeline_cache.as_ref(),
+                module,
+                if format_i == 0 {
+                    TARGET_FORMAT
+                } else {
+                    self.scratch_format
+                },
+                CoveragePass::Painter(replace),
+            )
+            .await
+            .map_err(|e| RenderError::Render(e.to_string()))?,
+        );
         Ok(())
     }
 }

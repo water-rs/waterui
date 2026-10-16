@@ -94,6 +94,10 @@ pub enum ShaderVariant {
     /// `Full` plus the backdrop union field: the module carries the
     /// member-record fold and its ownership weights.
     Union,
+    /// `Full` plus the per-tap conversion of source image texels: an
+    /// image paint whose texture keeps its source encoding (non-zero
+    /// `image_storage` source flags).
+    Image,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -455,6 +459,7 @@ fn interior_tier(inst: &Instance) -> u32 {
 
 /// The specialised fragment pipeline `inst` requires: the union variant
 /// for a backdrop member drawing against the group's shared field, the
+/// image variant for an image paint sampling source-encoded texels, the
 /// uber-shader when it reads rare fields (clip, mask, inner, strokes,
 /// non-solid paint), the shadow kernel otherwise for shadows, and the
 /// trivial coverage path for solid fills, spans, and glyphs.
@@ -462,6 +467,9 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
     let flags = inst.meta[3] >> 24;
     if (flags & FLAG_UNION) != 0 {
         return ShaderVariant::Union;
+    }
+    if inst.meta[1] == PAINT_IMAGE && (inst.meta[3] & super::image_storage::SOURCE) != 0 {
+        return ShaderVariant::Image;
     }
     if (flags & (FLAG_HAS_CLIP | FLAG_HAS_MASK | FLAG_HAS_INNER)) != 0
         || inst.meta[1] != PAINT_SOLID
