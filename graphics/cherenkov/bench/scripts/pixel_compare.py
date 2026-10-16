@@ -2,7 +2,8 @@
 """Interleaved A/B timing of two `cherenkov-bench` Android builds on a rooted
 Pixel-class device.
 
-  pixel_compare.py run     --base B --head H --scene DIR... --out O [--governor]
+  pixel_compare.py run     --base B --head H --scene DIR... --out O
+                           [--governor | --gpu-counters]
   pixel_compare.py analyze O
 
 `run` pushes both binaries and the scene directories, then measures every
@@ -26,6 +27,16 @@ the run waits for the device to cool and fails if it does not. `--governor`
 leaves both clocks to their governors instead; that mode measures what the
 device delivers (the 8.33 ms p99 frame budget), not cost.
 
+A frame whose GPU time is a fraction of a millisecond is latency-bound on the
+Pixel's Mali: added work is absorbed or changes the GPU's power state, so its
+GPU time is not a cost measure at 2% (#2775). `--gpu-counters` passes
+`measure --gpu-counters`, which records each frame's Mali shader-core active
+cycles, and `analyze` then compares those cycles instead of GPU time. Each
+process still settles at its own cycle level, a few percent apart for
+identical binaries, while frames within it agree, so such a scene needs many
+short invocations: `--rounds 32 --frames 300` resolves the 96 px corpus
+scenes.
+
 Controls, checked for every invocation and recorded with it:
 
 - before: screen off; thermal status below moderate; battery below
@@ -45,8 +56,10 @@ A failed control marks the invocation invalid and stops the collection:
 `analyze` reports a scene with an invalid invocation as `invalid`, never as
 a pass, and the raw report stays on disk.
 
-`analyze` reads a collection and, per scene, takes each invocation's GPU p50
-over its measured frames, the median of those per arm, and their change. A
+`analyze` reads a collection and, per scene, takes each invocation's p50 of
+the plan's metric (GPU milliseconds, or shader-core active cycles with
+`--gpu-counters`) over its measured frames, the median of those per arm, and
+their change. A
 p50 over a finite frame count has a sampling error, and a fresh process can
 land at a different cost, so the change alone does not say whether the
 collection can tell a 2% change from none. `analyze` therefore puts a 95% interval
@@ -62,9 +75,8 @@ cost increase, so an interval wholly below the negative limit — the head
 measurably cheaper — is no failure, and like any other it passes only at that
 width and is `unresolved` beyond it. More `--frames` shrink the sampling error of
 each p50 and more `--rounds` average over more processes; full-size scenes
-resolve at the defaults, while scenes of a fraction of a millisecond are
-not judged on the Pixel: they vary per process, and their GPU time is not
-additive in GPU work (#2775). In governor mode `analyze` reports
+resolve on GPU time at the defaults, and scenes of a fraction of a
+millisecond on shader-core cycles. In governor mode `analyze` reports
 each arm's worst invocation GPU p99 against `--budget-ms` and makes no cost
 decision.
 """
