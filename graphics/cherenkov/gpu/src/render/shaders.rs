@@ -102,6 +102,23 @@ const VS_FS_PROJECTIVE: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
     },
 ];
 
+/// `vs_main` + `fs_decode` + `fs_encode`, the space conversion's entry
+/// points.
+const SPACE_CONVERT_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
+    wgpu::PassthroughShaderEntryPoint {
+        name: Cow::Borrowed("vs_main"),
+        workgroup_size: (0, 0, 0),
+    },
+    wgpu::PassthroughShaderEntryPoint {
+        name: Cow::Borrowed("fs_decode"),
+        workgroup_size: (0, 0, 0),
+    },
+    wgpu::PassthroughShaderEntryPoint {
+        name: Cow::Borrowed("fs_encode"),
+        workgroup_size: (0, 0, 0),
+    },
+];
+
 /// `vs` + `fs`, the silhouette convolution's entry points.
 const SHADOW_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
     wgpu::PassthroughShaderEntryPoint {
@@ -218,6 +235,8 @@ pub mod spirv {
     pub const REDUCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.spv"));
     /// `shadow.wgsl`, the silhouette convolution module.
     pub const SHADOW: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.spv"));
+    /// The space fragment plus `space_convert.wgsl`.
+    pub const SPACE_CONVERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/space_convert.spv"));
     /// `coverage.wgsl`.
     pub const COVERAGE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coverage.spv"));
     /// `external_native.spv` — the Vulkan native module: `vs_main`,
@@ -292,6 +311,11 @@ const REDUCE_METALLIB: &[u8] = &[];
 const SHADOW_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.metallib"));
 #[cfg(not(target_vendor = "apple"))]
 const SHADOW_METALLIB: &[u8] = &[];
+#[cfg(target_vendor = "apple")]
+const SPACE_CONVERT_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/space_convert.metallib"));
+#[cfg(not(target_vendor = "apple"))]
+const SPACE_CONVERT_METALLIB: &[u8] = &[];
 #[cfg(target_vendor = "apple")]
 const COVERAGE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/coverage.metallib"));
 #[cfg(not(target_vendor = "apple"))]
@@ -408,6 +432,17 @@ const SHADOW: Fixed = Fixed {
     spirv: spirv::SHADOW,
     metallib: SHADOW_METALLIB,
     entries: SHADOW_ENTRIES,
+};
+
+/// The space fragment plus `space_convert.wgsl`, the module moving a
+/// filter's input and output between an sRGB-encoded scope and the
+/// working space.
+const SPACE_CONVERT: Fixed = Fixed {
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/space_convert.wgsl")),
+    #[cfg(cherenkov_spirv)]
+    spirv: spirv::SPACE_CONVERT,
+    metallib: SPACE_CONVERT_METALLIB,
+    entries: SPACE_CONVERT_ENTRIES,
 };
 
 const COVERAGE: Fixed = Fixed {
@@ -580,6 +615,12 @@ impl ShaderDelivery {
     #[must_use]
     pub fn shadow_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
         self.module(device, "cherenkov silhouette convolution", &SHADOW)
+    }
+
+    /// The space conversion module.
+    #[must_use]
+    pub fn space_convert_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
+        self.module(device, "cherenkov space conversion", &SPACE_CONVERT)
     }
 
     /// The GPU coverage compute module (issue #2543).
