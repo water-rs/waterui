@@ -742,6 +742,11 @@ impl Effect for ShaderEffect {
     fn redraw_hint(&self) -> bool {
         self.is_animated() || self.animator.redraw_hint()
     }
+
+    // One pass from the host's input to its output: no target of its own.
+    fn target_bytes(&self) -> u64 {
+        0
+    }
 }
 
 #[cfg(test)]

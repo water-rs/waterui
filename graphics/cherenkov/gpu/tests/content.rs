@@ -425,6 +425,10 @@ impl filtrate::Effect for ParkingEffect {
     ) -> filtrate::EffectRenderResult {
         unreachable!("the parking effect is never attached")
     }
+
+    fn target_bytes(&self) -> u64 {
+        0
+    }
 }
 
 /// An effect that hands its redraw callback to the test and passes its
@@ -461,6 +465,10 @@ impl filtrate::Effect for CallbackEffect {
             },
         );
         Ok(false)
+    }
+
+    fn target_bytes(&self) -> u64 {
+        0
     }
 }
 

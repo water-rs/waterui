@@ -29,6 +29,8 @@ pub struct EngineBytes {
     pub gpu_bytes: u64,
     /// Bytes of backdrop-group capture textures; included in `gpu_bytes`.
     pub backdrop_capture_bytes: u64,
+    /// Bytes of registered filter chains' targets; included in `gpu_bytes`.
+    pub filter_target_bytes: u64,
 }
 
 /// Wgpu allocator totals.
@@ -217,6 +219,7 @@ fn merge_engine<'a>(
     let mut cpu_bytes = None;
     let mut gpu_bytes = None;
     let mut backdrop_capture_bytes = None;
+    let mut filter_target_bytes = None;
     let mut reasons = Vec::new();
     for reading in readings {
         match reading {
@@ -230,6 +233,11 @@ fn merge_engine<'a>(
                         n.max(value.backdrop_capture_bytes)
                     }),
                 );
+                filter_target_bytes = Some(
+                    filter_target_bytes.map_or(value.filter_target_bytes, |n: u64| {
+                        n.max(value.filter_target_bytes)
+                    }),
+                );
             }
             Reading::Unavailable(reason) => reasons.push(reason.clone()),
         }
@@ -239,6 +247,7 @@ fn merge_engine<'a>(
             cpu_bytes,
             gpu_bytes,
             backdrop_capture_bytes: backdrop_capture_bytes.unwrap_or(0),
+            filter_target_bytes: filter_target_bytes.unwrap_or(0),
         }),
         _ => Reading::Unavailable(
             reasons
@@ -845,6 +854,7 @@ mod tests {
                 cpu_bytes: 8,
                 gpu_bytes: 11,
                 backdrop_capture_bytes: 3,
+                filter_target_bytes: 5,
             }),
             Reading::Measured(vec![VkHeap {
                 heap: 0,
@@ -858,6 +868,7 @@ mod tests {
                 cpu_bytes: 6,
                 gpu_bytes: 15,
                 backdrop_capture_bytes: 7,
+                filter_target_bytes: 2,
             }),
             Reading::Measured(vec![VkHeap {
                 heap: 0,
@@ -892,6 +903,7 @@ mod tests {
                 cpu_bytes: 8,
                 gpu_bytes: 15,
                 backdrop_capture_bytes: 7,
+                filter_target_bytes: 5,
             })
         );
         assert_eq!(
