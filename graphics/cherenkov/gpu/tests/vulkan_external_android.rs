@@ -854,18 +854,37 @@ fn two_layers_replace_retire_and_release_fence() {
         assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
     }
     assert_eq!(frame.generation.lease_count(), 2);
-    // Replace one attachment, then drop the other — the last retire
-    // submits the release and exports the fence.
-    surface.update(|tx| {
-        tx[surface.root()].remove(&a);
-    });
-    drop(a);
+    // An attachment is a producer's current frame, not a layer: removing
+    // a layer leaves the frame with its producer, which shows it again on
+    // the next binding. Replace one producer's frame, then retire the
+    // other producer — the last retire submits the release and exports
+    // the fence.
+    let replacement = device
+        .import(FrameSource::Ahb(Box::new(vulkan::Ahb {
+            buffer: make_ahb_rgb(16, 16, [0xa0, 0x30, 0x30, 0xff]).cast(),
+            sync: None,
+            release: None,
+            color: FrameColor::SRGB,
+            alpha: RgbAlpha::Opaque,
+            hdr: HdrMetadata::default(),
+        })))
+        .expect("replacement AHB import");
+    sa.submit(ExternalFrame::native(replacement).expect("replacement"));
     assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    assert_eq!(frame.generation.lease_count(), 1);
+    assert!(
+        matches!(frame.release_fd(), Err(vulkan::NativeError::Unready)),
+        "a frame a producer still holds exports no release fence"
+    );
+    // The layer's binding holds the producer's last handle: the render
+    // that drops it retires the producer and drains that retirement into
+    // the release submission before it returns.
     surface.update(|tx| {
         tx[surface.root()].remove(&b);
     });
-    drop(b);
+    drop((b, pb, sb));
     assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    assert_eq!(frame.generation.lease_count(), 0);
     let fd = frame.release_fd().expect("release fence after submission");
     // The fence signals once the release submission executes; a sync-file
     // fd becomes readable at signal — `poll` is the producer's wait, never
