@@ -192,9 +192,9 @@ impl<F: Format> Image<F> {
     /// calling thread: an image the device cannot hold fails here with
     /// [`ResourceError::TooLarge`] and keeps the previous pixels. A
     /// rejection only the backend can detect keeps the previous pixels
-    /// too, and fails every render that draws the image with
-    /// [`RenderError::Rejected`], until a later replacement succeeds, as
-    /// for [`Engine::image`](crate::Engine::image).
+    /// too, and leaves every surface that draws the image out of the
+    /// frame, reported as [`RenderError::Rejected`], until a later
+    /// replacement succeeds, as for [`Engine::image`](crate::Engine::image).
     ///
     /// # Errors
     /// [`ResourceError::TooLarge`] when the image exceeds the engine's
