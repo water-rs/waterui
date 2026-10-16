@@ -182,6 +182,11 @@ pub struct CursorTarget {
 #[derive(Clone)]
 pub struct HoverTarget {
     pub(crate) bounds: kurbo::Rect,
+    /// Maps a window hit-test point into the registration's local space —
+    /// the inverse of the region's resolved hit transform, rewritten at
+    /// materialization like `bounds`. `on_move` receives points through it,
+    /// so a handler under any transform reads its own coordinates.
+    pub(crate) to_local: kurbo::Affine,
     pub slot: HoverSlot,
     /// Replayable state-layer handles for the widget owning this target, so
     /// hover feedback animates without a structural rebuild.
@@ -263,6 +268,8 @@ pub type PointerAction =
     Rc<RefCell<dyn FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool>>;
 pub type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
 pub type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
+/// A hover-move handler; the point is in the registration's local space
+/// (the space of the `bounds` it registered), never window space.
 pub type HoverMoveAction = Rc<RefCell<dyn FnMut(kurbo::Point, &Environment) -> bool>>;
 pub type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
 
@@ -623,6 +630,7 @@ impl SemanticCore {
                 if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
                     let mut payload = entry.payload.clone();
                     payload.bounds = resolved.rect;
+                    payload.to_local = entry.region.placement.resolved_transform(true).inverse();
                     orders.push(entry.order.clone());
                     staged_hover.push(Staged {
                         entry_order: entry.order.clone(),
@@ -1208,7 +1216,7 @@ impl HitTestState {
             if contains
                 && dispatch_move
                 && let Some(on_move) = target.on_move.as_mut()
-                && (on_move.borrow_mut())(point, env)
+                && (on_move.borrow_mut())(target.to_local * point, env)
             {
                 sync.chrome_keys.push(target.slot.key.clone());
             }
@@ -4373,6 +4381,7 @@ impl HydrolysisRenderer {
                 HoverTarget {
                     owner: Weak::new(),
                     bounds,
+                    to_local: kurbo::Affine::IDENTITY,
                     slot: hover_slot,
                     handles: Some(Rc::clone(&handles)),
                     on_enter: None,
@@ -4647,6 +4656,7 @@ impl SemanticCore {
             HoverTarget {
                 owner: Weak::new(),
                 bounds,
+                to_local: kurbo::Affine::IDENTITY,
                 slot,
                 handles,
                 on_enter,

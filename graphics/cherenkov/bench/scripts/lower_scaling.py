@@ -48,6 +48,7 @@ the fit (`segments ** 1.4` and `40 * segments`), not measurements of anything.
 import argparse
 import concurrent.futures
 import importlib.util
+import json
 import math
 import pathlib
 import sys
@@ -92,12 +93,16 @@ def measure(args):
         sys.exit(f'Callgrind runs on Linux only; this is {sys.platform}. Run the scaling report on a Linux host.')
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
+    icd = ir_gate.lavapipe_icd(args.icd)
 
     def task(scene):
         path = out / f'{args.tag}-{scene}.result.json'
         if path.is_file():
+            ir_gate.verify_reused_profile(json.loads(path.read_text()), args.binary, icd)
             return f'{args.tag} {scene} reused completed profile'
-        ir_gate.profile(args.binary, args.tag, scene, args.repo, args.out, args.pause_at, args.warmup)
+        # Every size is the road-network scene, with its roots.
+        ir_gate.profile(args.binary, args.tag, scene, args.repo, args.out, args.pause_at, args.warmup, icd,
+                        ir_gate.SCENES['road-network'])
         return f'{args.tag} {scene} done'
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
@@ -152,6 +157,7 @@ def main():
     p.add_argument('--pause-at', type=int, default=8)
     p.add_argument('--warmup', type=int, default=30)
     p.add_argument('--jobs', type=int, default=2)
+    p.add_argument('--icd', type=pathlib.Path, help='explicit Lavapipe ICD manifest')
     p = sub.add_parser('report')
     p.add_argument('--out', required=True)
     p.add_argument('--tag', required=True)
