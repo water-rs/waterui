@@ -1087,6 +1087,16 @@ pub struct GpuRenderer {
     /// installed content draws the image (#199), so neither counts.
     image_replacements: u64,
     timestamps: bool,
+    /// A pass's beginning sample is an encoder timestamp written just
+    /// before the pass opens, not the pass's own beginning-of-pass write.
+    /// Set wherever the device has `TIMESTAMP_QUERY_INSIDE_ENCODERS`
+    /// (Vulkan): Mali executes the in-pass beginning sample at a point
+    /// that moves against the pass's own work — before or after roughly
+    /// 20 µs of it, frame to frame — so a bracket opened there measures
+    /// one of two spans and a per-process p50 lands on whichever
+    /// dominates (#2775). The encoder sample precedes the pass's barriers
+    /// and work in command order.
+    pass_start_on_encoder: bool,
     query_set: Option<wgpu::QuerySet>,
     /// First query of the active frame's independent range.
     query_base: u32,
@@ -1107,7 +1117,8 @@ pub struct GpuRenderer {
     /// at its start and `base + 2i + 1` at its end. GPU time runs from the
     /// first pass's start to the last pass's end: pass boundaries are the
     /// one timestamp position every backend with `TIMESTAMP_QUERY`
-    /// supports (Metal on Apple GPUs samples only at stage boundaries).
+    /// supports (Metal on Apple GPUs samples only at stage boundaries);
+    /// see `pass_start_on_encoder` for where a pass starts on Vulkan.
     query_capacity: u32,
     /// Frames whose timestamp resolve was submitted but whose staging
     /// buffer is not mapped yet — read on a later call, in order.
@@ -1361,8 +1372,10 @@ fn create_device(
     // Vulkan is asked for both, because the tile executor records its
     // epoch in a native command buffer that is no wgpu pass: the only
     // place its bracket can go is the encoder, where Vulkan's
-    // `vkCmdWriteTimestamp` is exact (#2191). Every wgpu Vulkan adapter
-    // with `TIMESTAMP_QUERY` has it, so it is required, not probed.
+    // `vkCmdWriteTimestamp` is exact (#2191). Every render pass starts on
+    // an encoder sample there too (`pass_start_on_encoder`, #2775). Every
+    // wgpu Vulkan adapter with `TIMESTAMP_QUERY` has it, so it is
+    // required, not probed.
     if config.timestamps && supported.contains(wgpu::Features::TIMESTAMP_QUERY) {
         required |= wgpu::Features::TIMESTAMP_QUERY;
         if info.backend == wgpu::Backend::Vulkan {
@@ -1613,8 +1626,10 @@ async fn create_device(
     // Vulkan is asked for both, because the tile executor records its
     // epoch in a native command buffer that is no wgpu pass: the only
     // place its bracket can go is the encoder, where Vulkan's
-    // `vkCmdWriteTimestamp` is exact (#2191). Every wgpu Vulkan adapter
-    // with `TIMESTAMP_QUERY` has it, so it is required, not probed.
+    // `vkCmdWriteTimestamp` is exact (#2191). Every render pass starts on
+    // an encoder sample there too (`pass_start_on_encoder`, #2775). Every
+    // wgpu Vulkan adapter with `TIMESTAMP_QUERY` has it, so it is
+    // required, not probed.
     if config.timestamps && supported.contains(wgpu::Features::TIMESTAMP_QUERY) {
         required |= wgpu::Features::TIMESTAMP_QUERY;
         if info.backend == wgpu::Backend::Vulkan {
@@ -2456,6 +2471,10 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         )?;
         let timestamps =
             config.timestamps && device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+        let pass_start_on_encoder = timestamps
+            && device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
         let (query_set, query_buffer) = if timestamps {
             (
                 Some(device.create_query_set(&wgpu::QuerySetDescriptor {
@@ -2612,6 +2631,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             images_gen: 0,
             image_replacements: 0,
             timestamps,
+            pass_start_on_encoder,
             query_set,
             query_base: 0,
             query_pool,
@@ -2808,6 +2828,10 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     )?;
     let timestamps =
         config.timestamps && device.features().contains(wgpu::Features::TIMESTAMP_QUERY);
+    let pass_start_on_encoder = timestamps
+        && device
+            .features()
+            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS);
     let (query_set, query_buffer) = if timestamps {
         (
             Some(device.create_query_set(&wgpu::QuerySetDescriptor {
@@ -2929,6 +2953,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         images_gen: 0,
         image_replacements: 0,
         timestamps,
+        pass_start_on_encoder,
         query_set,
         query_base: 0,
         query_pool,
@@ -8523,15 +8548,18 @@ impl GpuRenderer {
                 });
             #[cfg(not(all(unix, not(target_vendor = "apple"))))]
             let native_run = false;
-            let timestamp_writes =
-                self.query_set
-                    .as_ref()
-                    .map(|qs| wgpu::RenderPassTimestampWrites {
-                        query_set: qs,
-                        beginning_of_pass_write_index: Some(self.query_base + 2 * pass_index),
-                        end_of_pass_write_index: (!native_run)
-                            .then_some(self.query_base + 2 * pass_index + 1),
-                    });
+            let begin_index = self.query_base + 2 * pass_index;
+            let in_pass_begin = (!self.pass_start_on_encoder).then_some(begin_index);
+            let in_pass_end = (!native_run).then_some(begin_index + 1);
+            let timestamp_writes = self
+                .query_set
+                .as_ref()
+                .filter(|_| in_pass_begin.or(in_pass_end).is_some())
+                .map(|qs| wgpu::RenderPassTimestampWrites {
+                    query_set: qs,
+                    beginning_of_pass_write_index: in_pass_begin,
+                    end_of_pass_write_index: in_pass_end,
+                });
             // Only the timestamp path reads `pass_meta`; skip the
             // allocation when timing is off.
             if self.timestamps {
@@ -8607,6 +8635,11 @@ impl GpuRenderer {
                     .map_err(|e| RenderError::Render(e.to_string()))?;
                     buffers.push(acquire.finish());
                 }
+            }
+            if self.pass_start_on_encoder
+                && let Some(query_set) = &self.query_set
+            {
+                encoder.write_timestamp(query_set, begin_index);
             }
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("pass"),
