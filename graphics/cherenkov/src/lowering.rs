@@ -10,6 +10,7 @@ use smallvec::SmallVec;
 
 use crate::{BlendMode, Command, Dirty, DisplayList, FillRule, Group, ShapeData};
 
+mod disjoint;
 pub mod projective;
 pub mod rounded_box;
 pub mod shadow;
@@ -2030,6 +2031,31 @@ impl Ord for Split {
     }
 }
 
+/// What [`resolve_winding`] made of a path's flattened segments.
+#[derive(Debug, PartialEq)]
+pub enum Winding {
+    /// The pre-sweep test proved that no overlapping region can exist, so
+    /// the sweep was not run: draw the input as it is.
+    Disjoint,
+    /// The sweep ran and found no overlapping region: draw the input as it
+    /// is.
+    Unchanged,
+    /// The boundary of the covered region, winding `0` or `1` everywhere:
+    /// draw it under `NonZero` in place of the input.
+    Resolved(Vec<(f32, f32, f32, f32)>),
+}
+
+impl Winding {
+    /// The replacement segments, or `None` when the input stands.
+    #[must_use]
+    pub fn into_resolved(self) -> Option<Vec<(f32, f32, f32, f32)>> {
+        match self {
+            Self::Resolved(segments) => Some(segments),
+            Self::Disjoint | Self::Unchanged => None,
+        }
+    }
+}
+
 /// Winding resolution before signed-area accumulation.
 ///
 /// The area accumulator reads each pixel's net winding: overlapping
@@ -2042,52 +2068,40 @@ impl Ord for Split {
 /// inside/outside boundary edges, so every covered region carries
 /// winding `1` and the accumulator becomes exact under `NonZero`.
 ///
-/// `None` means the input had no overlap: the caller keeps the original
-/// segments and rule untouched, leaving every non-overlapping scene
-/// bit-identical.
+/// An exact, conservative test runs first (see `disjoint`): when it proves
+/// that no overlapping region can exist the sweep is skipped and the result
+/// is [`Winding::Disjoint`], which the sweep would have answered with an
+/// unchanged input. Either way an input without overlap keeps its original
+/// segments and rule, leaving every non-overlapping scene bit-identical.
+pub fn resolve_winding<S: Copy + Into<(f32, f32, f32, f32)>>(
+    segments: &[S],
+    rule: FillRule,
+) -> Winding {
+    let (disjoint, prepared) = disjoint::prepare(segments);
+    if disjoint {
+        return Winding::Disjoint;
+    }
+    sweep(prepared, rule).map_or(Winding::Unchanged, Winding::Resolved)
+}
+
+/// The band sweep over `prepared` segments, normalized top to bottom in
+/// input order; `None` when it finds no overlap.
 #[expect(
     clippy::too_many_lines,
     clippy::cast_possible_truncation,
     clippy::float_cmp,
     reason = "one sweep per design; emitted coordinates fit f32; key equality mirrors the sort; the winding prefix is a sum of unit directions, so its boundary test is an exact comparison"
 )]
-pub fn resolve_winding(
-    segments: &[(f32, f32, f32, f32)],
-    rule: FillRule,
-) -> Option<Vec<(f32, f32, f32, f32)>> {
-    let mut segs: Vec<Seg> = Vec::with_capacity(segments.len());
-    for &(x0, y0, x1, y1) in segments {
-        if !(x0.is_finite() && y0.is_finite() && x1.is_finite() && y1.is_finite()) {
-            continue;
-        }
-        let (x0, y0, x1, y1) = (f64::from(x0), f64::from(y0), f64::from(x1), f64::from(y1));
-        #[expect(clippy::float_cmp, reason = "horizontal edges carry no area")]
-        if y0 == y1 {
-            continue;
-        }
-        if y0 < y1 {
-            segs.push(Seg {
-                x0,
-                y0,
-                y1,
-                slope: (x1 - x0) / (y1 - y0),
-                dir: 1.0,
-            });
-        } else {
-            segs.push(Seg {
-                x0: x1,
-                y0: y1,
-                y1: y0,
-                slope: (x0 - x1) / (y0 - y1),
-                dir: -1.0,
-            });
-        }
-    }
+fn sweep(prepared: disjoint::Prepared, rule: FillRule) -> Option<Vec<(f32, f32, f32, f32)>> {
+    let disjoint::Prepared { mut segs, scratch } = prepared;
     if segs.is_empty() {
         return None;
     }
     // Endpoints came from f32 input; only calculated crossings need f64.
-    let mut ys: Vec<f32> = Vec::with_capacity(2 * segs.len());
+    // The pre-sweep test's scratch holds at least `2 * segs.len()` words:
+    // reinterpreting it in place keeps the ordinates from allocating again.
+    let mut ys: Vec<f32> = scratch.into_iter().map(f32::from_bits).collect();
+    ys.clear();
     ys.extend(segs.iter().flat_map(|s| [s.y0 as f32, s.y1 as f32]));
     ys.sort_by(f32::total_cmp);
     ys.dedup();
@@ -2426,8 +2440,16 @@ mod tests {
     #[test]
     fn a_single_square_needs_no_resolution() {
         let segs = square(0.0, 0.0, 9.0, 9.0);
-        assert!(resolve_winding(&segs, FillRule::NonZero).is_none());
-        assert!(resolve_winding(&segs, FillRule::EvenOdd).is_none());
+        assert!(
+            resolve_winding(&segs, FillRule::NonZero)
+                .into_resolved()
+                .is_none()
+        );
+        assert!(
+            resolve_winding(&segs, FillRule::EvenOdd)
+                .into_resolved()
+                .is_none()
+        );
     }
 
     #[test]
@@ -2435,7 +2457,9 @@ mod tests {
         // [0,3]² and [1.5,4.5]², same winding: union 9 + 9 − 1.5² = 15.75.
         let mut segs = square(0.0, 0.0, 3.0, 3.0);
         segs.extend(square(1.5, 1.5, 4.5, 4.5));
-        let resolved = resolve_winding(&segs, FillRule::NonZero).expect("overlap present");
+        let resolved = resolve_winding(&segs, FillRule::NonZero)
+            .into_resolved()
+            .expect("overlap present");
         // One merged edge per boundary line: x=0, x=3, x=1.5, x=4.5.
         assert_eq!(resolved.len(), 4, "merged edges: {resolved:?}");
         assert!(
@@ -2464,7 +2488,9 @@ mod tests {
             let y = 0.5 * f32::from(i);
             segs.extend(square(0.0, y, 10.0, y + 5.0));
         }
-        let resolved = resolve_winding(&segs, FillRule::NonZero).expect("overlap present");
+        let resolved = resolve_winding(&segs, FillRule::NonZero)
+            .into_resolved()
+            .expect("overlap present");
         assert_eq!(resolved.len(), 2, "merged edges: {resolved:?}");
         assert!(
             (area(&resolved).abs() - 245.0).abs() < 1e-3,
@@ -2487,7 +2513,9 @@ mod tests {
             (6.0, 6.0, 6.0, 5.0),
         ];
         assert_eq!(
-            resolve_winding(&segs, FillRule::NonZero).expect("inner overlap"),
+            resolve_winding(&segs, FillRule::NonZero)
+                .into_resolved()
+                .expect("inner overlap"),
             [(0.0, 0.0, 1.0, 2e9), (10.0, 2e9, 10.0, 0.0)],
         );
     }
@@ -2503,7 +2531,9 @@ mod tests {
             (4.0, 0.0, 0.0, 4.0),
             (0.0, 4.0, 0.0, 0.0),
         ];
-        let resolved = resolve_winding(&segs, FillRule::NonZero).expect("mixed signs overlap");
+        let resolved = resolve_winding(&segs, FillRule::NonZero)
+            .into_resolved()
+            .expect("mixed signs overlap");
         assert!(
             (area(&resolved).abs() - 8.0).abs() < 1e-3,
             "lobes area {}",
@@ -2515,7 +2545,9 @@ mod tests {
     fn even_odd_nested_squares_open_the_hole() {
         let mut segs = square(0.0, 0.0, 4.0, 4.0);
         segs.extend(square(1.0, 1.0, 3.0, 3.0));
-        let resolved = resolve_winding(&segs, FillRule::EvenOdd).expect("winding reaches 2");
+        let resolved = resolve_winding(&segs, FillRule::EvenOdd)
+            .into_resolved()
+            .expect("winding reaches 2");
         // Outer minus inner area: the hole's boundary edges run
         // reversed (the inner square's winding is cancelled).
         assert!(
@@ -2563,7 +2595,9 @@ mod tests {
             (5.0, 0.0, 4.0, 4.0),
             (6.0, 0.0, 3.0, 4.0),
         ];
-        let resolved = resolve_winding(&segs, FillRule::NonZero).expect("crossing present");
+        let resolved = resolve_winding(&segs, FillRule::NonZero)
+            .into_resolved()
+            .expect("crossing present");
         // The crossing splits the band, so no two emitted edges cross
         // strictly inside (the pre-fix walk emitted crossing pieces).
         for (i, first) in resolved.iter().enumerate() {
@@ -2594,7 +2628,9 @@ mod tests {
             (111.367_424, 42.820_42, 113.994_24, 42.55686),
             (113.994_24, 42.55686, 113.099_07, 43.651_7),
         ];
-        let resolved = resolve_winding(&segs, FillRule::NonZero).expect("crossing present");
+        let resolved = resolve_winding(&segs, FillRule::NonZero)
+            .into_resolved()
+            .expect("crossing present");
         assert!(
             resolved
                 .iter()

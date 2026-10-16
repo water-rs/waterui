@@ -440,6 +440,12 @@ pub struct Edge {
     pub y1: f32,
 }
 
+impl From<Edge> for (f32, f32, f32, f32) {
+    fn from(e: Edge) -> Self {
+        (e.x0, e.y0, e.x1, e.y1)
+    }
+}
+
 /// A signed-area accumulation buffer over a band of `h` rows.
 ///
 /// Columns are indexed `x + 1`, so column 0 collects every deposit at

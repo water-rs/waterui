@@ -2381,7 +2381,8 @@ fn rasterize_texels(
     }
     // Overlapping contours resolve to the union's boundary edges, like
     // `path::rasterize`: `None` keeps the glyph bit-identical.
-    let resolved = cherenkov::lowering::resolve_winding(&segments, cherenkov::FillRule::NonZero);
+    let resolved = cherenkov::lowering::resolve_winding(&segments, cherenkov::FillRule::NonZero)
+        .into_resolved();
     let segments = resolved.as_deref().unwrap_or(&segments);
     let left = bbox.x0.floor() as i32 - 1;
     let top = bbox.y0.floor() as i32 - 1;

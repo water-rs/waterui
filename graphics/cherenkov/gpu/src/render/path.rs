@@ -321,7 +321,7 @@ type Segments<'a> = std::borrow::Cow<'a, [(f32, f32, f32, f32)]>;
 /// `resolve_winding`'s output plus the rule it leaves: resolved input
 /// rasterizes as `NonZero`.
 fn resolve(segments: &[(f32, f32, f32, f32)], rule: FillRule) -> (Segments<'_>, FillRule) {
-    let resolved = cherenkov::lowering::resolve_winding(segments, rule);
+    let resolved = cherenkov::lowering::resolve_winding(segments, rule).into_resolved();
     let rule = if resolved.is_some() {
         FillRule::NonZero
     } else {

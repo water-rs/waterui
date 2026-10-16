@@ -609,6 +609,7 @@ pub struct Lowering<'a, 'b> {
     fonts: &'b mut FxHashMap<u64, super::font::Font>,
     bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
     bitmap_cache: &'b mut super::bitmap::BitmapCache,
+    geometry: &'b mut super::geometry::GeometryCache,
     width: usize,
     height: usize,
     transform: Affine,
@@ -814,21 +815,21 @@ fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
     edges
 }
 
-/// Resolves overlapping windings: `Some` swaps in boundary edges whose
-/// winding is 0 or 1 everywhere, drawn under `NonZero`. `None` keeps the
-/// original edges and rule untouched.
+/// Resolves overlapping windings: edges whose winding can overlap are
+/// replaced by boundary edges whose winding is 0 or 1 everywhere, drawn
+/// under `NonZero`; otherwise the edges and rule are returned untouched.
 pub fn resolve_edges(edges: Vec<Edge>, rule: FillRule) -> (Vec<Edge>, FillRule) {
-    let segments: Vec<(f32, f32, f32, f32)> =
-        edges.iter().map(|e| (e.x0, e.y0, e.x1, e.y1)).collect();
-    cherenkov::lowering::resolve_winding(&segments, rule).map_or((edges, rule), |resolved| {
-        (
-            resolved
-                .into_iter()
-                .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
-                .collect(),
-            FillRule::NonZero,
-        )
-    })
+    cherenkov::lowering::resolve_winding(&edges, rule)
+        .into_resolved()
+        .map_or((edges, rule), |resolved| {
+            (
+                resolved
+                    .into_iter()
+                    .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
+                    .collect(),
+                FillRule::NonZero,
+            )
+        })
 }
 
 /// The bounding box of `edges` as an integer rect intersected with the
@@ -927,7 +928,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         frame: FrameId,
         fonts: &'b mut FxHashMap<u64, super::font::Font>,
         bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
-        bitmap_cache: &'b mut super::bitmap::BitmapCache,
+        (bitmap_cache, geometry): (
+            &'b mut super::bitmap::BitmapCache,
+            &'b mut super::geometry::GeometryCache,
+        ),
     ) -> Self {
         let (items, anchor_scratch) = buffers;
         anchor_scratch.clear();
@@ -942,6 +946,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             fonts,
             bitmap_fonts,
             bitmap_cache,
+            geometry,
             width: size.0 as usize,
             height: size.1 as usize,
             transform: Affine::IDENTITY,
@@ -2149,7 +2154,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             FrameId::new(0),
             &mut *self.fonts,
             self.bitmap_fonts,
-            &mut *self.bitmap_cache,
+            (&mut *self.bitmap_cache, &mut *self.geometry),
         );
         compose.width = self.width;
         compose.height = self.height;
@@ -2213,13 +2218,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
 
     /// `Fill`: a flattened polygon of edges in device space.
     fn fill(&mut self, shape: &ShapeData, paint: &PaintData) {
-        let sm = sigma_max(self.transform).max(1e-12);
-        let tol_u = FLATTEN_TOL / sm;
-        let Some((path, rule)) = shape_outline(shape, tol_u) else {
+        let transform = self.transform;
+        let Some((edges, rule)) = self.geometry.resolve(shape, None, transform, || {
+            let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+            let (path, rule) = shape_outline(shape, tol_u)?;
+            Some((flatten_edges(transform * path, FLATTEN_TOL), rule))
+        }) else {
             return;
         };
-        let edges = flatten_edges(self.transform * path, FLATTEN_TOL);
-        let (edges, rule) = resolve_edges(edges, rule);
         if edges.is_empty() {
             return;
         }
@@ -2229,7 +2235,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             return;
         }
         self.items.push(Item::Draw {
-            edges: edges.into(),
+            edges,
             bbox,
             rule,
             paint,
@@ -2240,32 +2246,33 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// `Stroke`: `kurbo::stroke` the content-space path, transform,
     /// flatten and fill non-zero — dashes included, like the oracle.
     fn stroke(&mut self, shape: &ShapeData, stroke: &kurbo::Stroke, paint: &PaintData) {
-        let sm = sigma_max(self.transform).max(1e-12);
-        let tol_u = FLATTEN_TOL / sm;
-        let path = match shape {
-            ShapeData::Line(l) => {
-                let mut p = BezPath::new();
-                p.move_to(l.p0);
-                p.line_to(l.p1);
-                p
-            }
-            shape => {
-                let Some((path, _)) = shape_outline(shape, tol_u) else {
-                    return;
-                };
-                path
-            }
+        let transform = self.transform;
+        let Some((edges, _)) = self.geometry.resolve(shape, Some(stroke), transform, || {
+            let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+            let path = match shape {
+                ShapeData::Line(l) => {
+                    let mut p = BezPath::new();
+                    p.move_to(l.p0);
+                    p.line_to(l.p1);
+                    p
+                }
+                shape => shape_outline(shape, tol_u)?.0,
+            };
+            let outline = kurbo::stroke(path, stroke, &kurbo::StrokeOpts::default(), tol_u);
+            Some((
+                flatten_edges(transform * outline, FLATTEN_TOL),
+                FillRule::NonZero,
+            ))
+        }) else {
+            return;
         };
-        let outline = kurbo::stroke(path, stroke, &kurbo::StrokeOpts::default(), tol_u);
-        let edges = flatten_edges(self.transform * outline, FLATTEN_TOL);
-        let (edges, _) = resolve_edges(edges, FillRule::NonZero);
         if edges.is_empty() {
             return;
         }
         let paint = paint.transformed(self.transform.inverse());
         let bbox = bbox_of(&edges, self.width, self.height);
         self.items.push(Item::Draw {
-            edges: edges.into(),
+            edges,
             bbox,
             rule: FillRule::NonZero,
             paint,
