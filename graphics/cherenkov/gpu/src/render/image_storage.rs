@@ -33,7 +33,7 @@ pub(super) fn transfer_table() -> [f32; 256] {
         reason = "the f64 decode is rounded to the shader's f32 once, by design"
     )]
     std::array::from_fn(|code| {
-        super::srgb_decode_u8_f64(f64::from(u8::try_from(code).expect("256 codes")) / 255.0) as f32
+        super::srgb_decode_f64(f64::from(u8::try_from(code).expect("256 codes")) / 255.0) as f32
     })
 }
 
@@ -167,9 +167,9 @@ pub(super) fn push_working_f16(
             [decode(encoded[0]), decode(encoded[1]), decode(encoded[2])]
         }
         _ => [
-            super::srgb_decode_u8_f64(decode(encoded[0])),
-            super::srgb_decode_u8_f64(decode(encoded[1])),
-            super::srgb_decode_u8_f64(decode(encoded[2])),
+            super::srgb_decode_f64(decode(encoded[0])),
+            super::srgb_decode_f64(decode(encoded[1])),
+            super::srgb_decode_f64(decode(encoded[2])),
         ],
     };
     // sRGB-primaries input additionally needs the primaries' matrix;
