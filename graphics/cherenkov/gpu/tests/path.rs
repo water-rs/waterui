@@ -859,3 +859,77 @@ fn a_leaf_with_thousands_of_cells_replays_every_cell() -> Result<(), Box<dyn std
     Ok(())
 }
 }
+
+/// The transform both renders of the cut test draw under: a rotation with
+/// a non-uniform scale, so the local point of a device pixel is inexact.
+const CUT_TRANSFORM: [f64; 6] = [0.93, 0.37, -0.41, 0.89, 21.3, 3.7];
+const CUT_SIZE: (u32, u32) = (96, 64);
+
+split_fn! {
+/// `path` filled under [`CUT_TRANSFORM`] with a three-stop linear gradient
+/// in its local space, on a cleared `Rgba32Float` target.
+fn render_cut(
+    engine: &Engine<Gpu>,
+    path: BezPath,
+) -> Result<cherenkov::Readback, Box<dyn std::error::Error>> {
+    let surface = wait!(engine.surface(Offscreen::new(CUT_SIZE, OffscreenFormat::LinearF32), || {}))?;
+    surface.clear_color(CLEAR);
+    let paint = cherenkov::LinearGradient::new((0.0, 0.0), (41.3, 17.9))
+        .stop(0.0, WorkingColor::new([0.93, 0.11, 0.27, 1.0]))
+        .stop(0.43, WorkingColor::new([0.17, 0.81, 0.39, 1.0]))
+        .stop(1.0, WorkingColor::new([0.21, 0.29, 1.37, 1.0]));
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.transform(cherenkov::kurbo::Affine::new(CUT_TRANSFORM), |c| c.fill(path, paint));
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    Ok(wait!(surface.readback())?)
+}
+}
+
+split_test! {
+/// A device-space cell paints its pixel, not a point interpolated across
+/// the cell (#2835). A gradient-filled triangle renders twice: alone, and
+/// with a dot a few pixels to its right in the same path. The dot changes
+/// how emission cuts the triangle's strips into cells — its gap is cheaper
+/// to bridge than a second cell — but not one covered pixel of the
+/// triangle, so every pixel away from the dot keeps its exact f32 bits.
+fn a_cell_paints_the_same_however_its_path_is_cut() -> Result<(), Box<dyn std::error::Error>> {
+    use cherenkov::kurbo::{Affine, Rect, Shape as _};
+    let Some(engine) = wait!(engine())? else {
+        return Ok(());
+    };
+    let transform = Affine::new(CUT_TRANSFORM);
+    let mut triangle = BezPath::new();
+    triangle.move_to((1.3, 2.1));
+    triangle.line_to((47.9, 5.3));
+    triangle.line_to((9.7, 51.6));
+    triangle.close_path();
+    let device = (transform * triangle.clone()).bounding_box();
+    // Twelve device columns right of the triangle, inside its rows.
+    let dot = Rect::from_center_size((device.x1 + 13.0, device.center().y), (1.6, 1.6));
+    let mut with_dot = triangle.clone();
+    with_dot.extend((transform.inverse() * dot.to_path(0.01)).iter());
+    let alone = wait!(render_cut(&engine, triangle))?;
+    let cut = wait!(render_cut(&engine, with_dot))?;
+    let away = dot.inflate(2.0, 2.0);
+    let mut painted = 0;
+    for y in 0..CUT_SIZE.1 {
+        for x in 0..CUT_SIZE.0 {
+            if away.contains((f64::from(x) + 0.5, f64::from(y) + 0.5)) {
+                continue;
+            }
+            let pixel = px(&alone, x, y);
+            painted += usize::from(pixel != CLEAR.components);
+            assert_eq!(
+                px(&cut, x, y).map(f32::to_bits),
+                pixel.map(f32::to_bits),
+                "pixel {x},{y}"
+            );
+        }
+    }
+    assert!(painted > 900, "the triangle paints {painted} pixels");
+    Ok(())
+}
+}
