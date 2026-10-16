@@ -873,9 +873,11 @@ fn write_metal(out_dir: &Path, spec: &Spec, module: &naga::Module, apple: Option
         .validate(&module)
         .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
     let options = msl::Options {
-        // The floor Metal language version wgpu selects on supported
-        // hardware; the shader test covers the same value.
-        lang_version: if spec.attachment { (3, 0) } else { (2, 0) },
+        // Metal 2.3 is the first language version that takes
+        // `-ftexture-write-rounding-mode` (see `compile_metal`); every
+        // supported deployment target (macOS and iOS 26) runs it. The
+        // shader test covers the same value.
+        lang_version: if spec.attachment { (3, 0) } else { (2, 3) },
         per_entry_point_map: resource_map(spec, &module),
         inline_samplers: Vec::new(),
         spirv_cross_compatibility: false,
@@ -976,6 +978,11 @@ fn compile_metal(
         // the build SDK's newest version, which older supported
         // operating systems cannot load.
         .arg(format!("-std={dialect}{}.{}", version.0, version.1))
+        // Apple GPUs store float pixels toward zero by default, which
+        // biases every Rgba16Float store one step low and compounds
+        // across a pixel's stores; round to nearest even, as the CPU
+        // backend and other GPUs do (#2773). Metal 2.3 and later.
+        .arg("-ftexture-write-rounding-mode=rte")
         .arg("-target")
         .arg(&apple.metal_target)
         .arg("-I")
