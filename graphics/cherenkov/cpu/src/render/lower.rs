@@ -642,6 +642,8 @@ pub struct Lowering<'a, 'b> {
     local: Option<(LayerId, Affine)>,
     /// Projective layers' images placed in this raster, by layer.
     projected: FxHashMap<LayerId, crate::render::projective::Placed>,
+    /// The host CPU's SIMD level the coverage passes dispatch under.
+    level: fearless_simd::Level,
 }
 
 /// Reusable state for anchor planning and capture emission, owned by the
@@ -920,6 +922,10 @@ fn integer_edges(r: Rect) -> Option<IRect> {
 
 impl<'a, 'b> Lowering<'a, 'b> {
     /// Starts a lowering for a `w` × `h` surface using its output and anchor buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one lowering's inputs travel together"
+    )]
     pub fn new(
         buffers: (&'a mut Vec<Item>, &'a mut AnchorScratch),
         size: (u32, u32),
@@ -928,6 +934,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         fonts: &'b mut FxHashMap<u64, super::font::Font>,
         bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
         bitmap_cache: &'b mut super::bitmap::BitmapCache,
+        level: fearless_simd::Level,
     ) -> Self {
         let (items, anchor_scratch) = buffers;
         anchor_scratch.clear();
@@ -957,6 +964,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             layers_composed: 0,
             local: None,
             projected: FxHashMap::default(),
+            level,
         }
     }
 
@@ -2150,6 +2158,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             &mut *self.fonts,
             self.bitmap_fonts,
             &mut *self.bitmap_cache,
+            self.level,
         );
         compose.width = self.width;
         compose.height = self.height;

@@ -1724,6 +1724,7 @@ dependencies = [
  "cherenkov-oracle",
  "cherenkov-scene",
  "cherenkov-shader",
+ "fearless_simd",
  "filtrate",
  "filtrate-core",
  "half",
