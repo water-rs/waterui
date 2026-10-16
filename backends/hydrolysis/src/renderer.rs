@@ -40,9 +40,9 @@ pub mod recording;
 mod render;
 
 mod signals;
-mod top_edge;
 #[cfg(test)]
 pub mod tests;
+mod top_edge;
 mod tree;
 mod views;
 
