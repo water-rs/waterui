@@ -54,10 +54,12 @@ belong to water-rs/waterui.
 - **Frames** target 120fps: 8.33 ms at p99. 60fps is accepted only where no
   renderer can fit the budget in theory.
 - **CPU-side changes are accepted on deterministic Callgrind instruction
-  counts:** Ir for `lower` and `encode` at the second steady frame of the five
+  counts:** Ir for `lower` and `encode` at the second steady frame of the
   perf scenes, sampled by frame index (`bench/scripts/ir_gate.py`, which runs
-  `measure --pause-at`). The gated Ir excludes the allocator (calls into the
-  Rust allocator shims and the libc malloc family) and the libc memory
+  `measure --pause-at`). CI runs it for a pull request that carries the
+  `cherenkov-ir` label, or by dispatch of `cherenkov-ir.yml` for any revision
+  against its merge base with dev. The gated Ir excludes the allocator (calls
+  into the Rust allocator shims and the libc malloc family) and the libc memory
   primitives (memcpy, memmove, memset, memcmp, bcmp), whose Ir depends on
   buffer addresses: at most +1% per scene against dev, and alloc, realloc,
   dealloc and memory-primitive calls per frame must not rise.
