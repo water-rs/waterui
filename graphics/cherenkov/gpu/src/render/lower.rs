@@ -24,8 +24,8 @@ use crate::render::instance::{
     ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
     FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
     KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN, KIND_STROKE_DIST,
-    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_PROJECTIVE, PAINT_SOLID, PAINT_TEXTURE, Shape, Stop,
-    affine, blend_code,
+    KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE, PAINT_RADIAL, PAINT_SOLID,
+    PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
@@ -94,6 +94,10 @@ pub enum ShaderVariant {
     /// `Full` plus the backdrop union field: the module carries the
     /// member-record fold and its ownership weights.
     Union,
+    /// `Full` with the gradient stop scan compiled to its upper-bound
+    /// binary form: clips, masks and strokes keep every other Full
+    /// behaviour; only the stop lookup differs.
+    LongGradient,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -453,15 +457,23 @@ fn interior_tier(inst: &Instance) -> u32 {
     u32::from(area >= ELLIPSE_TIER16_MIN_AREA) + u32::from(area >= ELLIPSE_TIER32_MIN_AREA)
 }
 
+/// Maximum stop count handled by the original linear-search module.
+const GRADIENT_LINEAR_STOPS: u32 = 8;
+
 /// The specialised fragment pipeline `inst` requires: the union variant
 /// for a backdrop member drawing against the group's shared field, the
-/// uber-shader when it reads rare fields (clip, mask, inner, strokes,
-/// non-solid paint), the shadow kernel otherwise for shadows, and the
-/// trivial coverage path for solid fills, spans, and glyphs.
+/// long-gradient module for a gradient past `GRADIENT_LINEAR_STOPS`,
+/// the uber-shader when it reads rare fields (clip, mask, inner,
+/// strokes, other non-solid paint), the shadow kernel otherwise for
+/// shadows, and the trivial coverage path for solid fills, spans, and
+/// glyphs.
 const fn variant_of(inst: &Instance) -> ShaderVariant {
     let flags = inst.meta[3] >> 24;
     if (flags & FLAG_UNION) != 0 {
         return ShaderVariant::Union;
+    }
+    if is_gradient(inst) && inst.meta[3] & 0xffff > GRADIENT_LINEAR_STOPS {
+        return ShaderVariant::LongGradient;
     }
     if (flags & (FLAG_HAS_CLIP | FLAG_HAS_MASK | FLAG_HAS_INNER)) != 0
         || inst.meta[1] != PAINT_SOLID
@@ -473,6 +485,31 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
         return ShaderVariant::Shadow;
     }
     ShaderVariant::Simple
+}
+
+/// Whether `inst` paints a linear, radial or sweep gradient.
+const fn is_gradient(inst: &Instance) -> bool {
+    matches!(
+        inst.meta[1] & 0xffff,
+        PAINT_LINEAR | PAINT_RADIAL | PAINT_SWEEP
+    )
+}
+
+/// The variant `inst` draws with when the open range draws with `open`:
+/// a gradient the uber-shader would draw joins an open long-gradient
+/// range instead. That module evaluates every linear, radial and sweep
+/// paint the uber-shader does, and its upper-bound search selects the
+/// same stop interval as the linear scan, so interleaved short and long
+/// gradients share one draw instead of switching pipelines per instance.
+const fn variant_after(open: ShaderVariant, inst: &Instance) -> ShaderVariant {
+    let variant = variant_of(inst);
+    if matches!(open, ShaderVariant::LongGradient)
+        && matches!(variant, ShaderVariant::Full)
+        && is_gradient(inst)
+    {
+        return ShaderVariant::LongGradient;
+    }
+    variant
 }
 
 /// The part of a shadow its following opaque fill hides, in shadow-local
@@ -762,17 +799,9 @@ pub const DEFERRED_REFS: u64 = 1 << 62;
 
 /// Per-operation device output under its sampled placement.
 pub struct Emission {
-    /// `(instance, pending raster, cell)` patch range in the producing
-    /// frame's `Lowering::emission_patches` — `inst_base << 32 | start
-    /// << 11 | len`, verbatim frame indices resolved at apply and never
-    /// carried past it, where `inst_base` is the first frame instance
-    /// slot the leaf occupied so apply and a same-frame recompose can
-    /// recover storage-local indices without copying the patch list.
-    /// The range indexes `emission_patches`, not `cell_patches`: frame
-    /// rollbacks truncate the latter but never the former, so a leaf
-    /// produced inside a rolled-back speculation keeps a valid range
-    /// (#119).
-    pub(crate) pending_cells: u64,
+    /// The leaf's `(instance, pending raster, cell)` patches in the
+    /// producing frame's `Lowering::emission_patches` (#119).
+    pub(crate) pending_cells: PendingCells,
     /// `(start << 32 | len)` range into `EmissionStorage::refs`
     /// holding the `(shelf slot, band epoch)` of every atlas band the
     /// retained instances sample. `DEFERRED_REFS` marks an emission
@@ -850,35 +879,69 @@ impl Emission {
     }
 
     /// The emission's patch range in the producing frame's
-    /// `Lowering::emission_patches`, unpacked from `pending_cells`
-    /// (#119).
+    /// `Lowering::emission_patches` (#119).
     pub(crate) const fn pending_cells(&self) -> Range<usize> {
-        let start = ((self.pending_cells >> 11) & 0x1F_FFFF) as usize;
-        start..start + (self.pending_cells & 0x7FF) as usize
+        self.pending_cells.range()
     }
 
     /// Whether the emission carries no pending cell patches.
     pub(crate) const fn pending_cells_empty(&self) -> bool {
-        self.pending_cells.trailing_zeros() >= 11
+        self.pending_cells.start == self.pending_cells.end
     }
 
     /// Frame instance index the pending-cell entries are relative to
     /// (#119).
     pub(crate) const fn cell_inst_base(&self) -> u32 {
-        (self.pending_cells >> 32) as u32
-    }
-
-    /// Pack `pending_cells` from the producing leaf's cell range and
-    /// its frame instance base (#119).
-    pub(crate) const fn pack_pending_cells(inst_base: u32, start: usize, len: usize) -> u64 {
-        debug_assert!(start < (1 << 21), "cell patch count fits 21 bits");
-        debug_assert!(len <= 0x7FF, "cells per leaf fit 11 bits");
-        ((inst_base as u64) << 32) | ((start as u64) << 11) | len as u64
+        self.pending_cells.inst_base
     }
 
     /// Clear the pending-cell extent after the commit applied it (#119).
     pub(crate) const fn clear_pending_cells(&mut self) {
-        self.pending_cells = 0;
+        self.pending_cells = PendingCells::NONE;
+    }
+}
+
+/// A leaf's cell patches: the range of the producing frame's
+/// `Lowering::emission_patches` its cells occupy, verbatim frame
+/// indices resolved at apply and never carried past it, and
+/// `inst_base`, the first frame instance slot the leaf occupied, so
+/// apply and a same-frame recompose recover storage-local indices
+/// without copying the patch list. The range indexes
+/// `emission_patches`, not `cell_patches`: frame rollbacks truncate the
+/// latter but never the former, so a leaf produced inside a
+/// rolled-back speculation keeps a valid range (#119).
+///
+/// Every bound is a full `u32`, the width of the instance indices the
+/// patches carry, so no leaf's cell count or position in the frame can
+/// overflow it (water-rs/waterui#2778).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingCells {
+    start: u32,
+    end: u32,
+    inst_base: u32,
+}
+
+impl PendingCells {
+    /// No pending patches.
+    pub const NONE: Self = Self {
+        start: 0,
+        end: 0,
+        inst_base: 0,
+    };
+
+    /// The leaf whose first frame instance is `inst_base` and whose
+    /// cells occupy `patches` of the frame's `emission_patches`.
+    pub fn new(inst_base: u32, patches: Range<usize>) -> Self {
+        Self {
+            start: u32::try_from(patches.start).expect("emission patch index fits u32"),
+            end: u32::try_from(patches.end).expect("emission patch index fits u32"),
+            inst_base,
+        }
+    }
+
+    /// The patch range, as indices into `emission_patches`.
+    pub const fn range(self) -> Range<usize> {
+        self.start as usize..self.end as usize
     }
 }
 
@@ -2244,14 +2307,14 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Starts a new draw range when the shader variant changes.
-    fn set_variant(&mut self, variant: ShaderVariant) {
-        if self
-            .frame
-            .open
-            .as_ref()
-            .is_some_and(|o| o.variant != variant)
-        {
+    /// Starts a new draw range when `inst` needs a different shader
+    /// variant from the open range's.
+    fn set_variant(&mut self, inst: &Instance) {
+        let Some(open) = &self.frame.open else {
+            return;
+        };
+        let variant = variant_after(open.variant, inst);
+        if open.variant != variant {
             self.end_segment();
             if let Some(open) = &mut self.frame.open {
                 open.variant = variant;
@@ -2263,7 +2326,7 @@ impl<'a> Lowering<'a> {
     /// specialised fragment variant. Under a pending clip mask the
     /// instance's `uv.zw` is patched after the mask is stored.
     fn push_instance(&mut self, inst: &Instance) {
-        self.set_variant(variant_of(inst));
+        self.set_variant(inst);
         if inst.meta[0] == KIND_FILL
             && let Some(open) = &self.frame.open
             && open.maybe_coverage
@@ -4016,15 +4079,10 @@ impl<'a> Lowering<'a> {
             .stops
             .extend_from_slice(&self.frame.stops[first_stop..]);
         cache.data = Some(Emission {
-            pending_cells: if first_epatch == self.emission_patches.len() {
-                0
-            } else {
-                Emission::pack_pending_cells(
-                    instance_base,
-                    first_epatch,
-                    self.emission_patches.len() - first_epatch,
-                )
-            },
+            pending_cells: PendingCells::new(
+                instance_base,
+                first_epatch..self.emission_patches.len(),
+            ),
             // `refs` pairs are derived at apply — deferred, so the
             // leaf check's stamp compare needs nothing extra for a
             // pending emission to hit inside its own frame, and a
@@ -4071,7 +4129,7 @@ impl<'a> Lowering<'a> {
             // kinds (fill/span/cell) all use the same shader specialization.
             let mut template = first.restore(&storage.templates[emission.template], offset);
             Self::apply_clip(&mut template, clip);
-            self.set_variant(variant_of(&template));
+            self.set_variant(&template);
             let first = self.frame.instances.len();
             check_instance_bound(first + retained.len());
             self.frame
@@ -4802,7 +4860,7 @@ impl<'a> Lowering<'a> {
         if quads.len() == 0 {
             return;
         }
-        self.set_variant(variant_of(template));
+        self.set_variant(template);
         let first = self.frame.instances.len();
         check_instance_bound(first + quads.len());
         self.frame.instances.resize(first + quads.len(), *template);
@@ -5608,6 +5666,34 @@ mod tests {
             let translated = Affine::new([a, b, c, d, 123.0, -456.0]);
             assert_eq!(lowering.margin(translated).to_bits(), expected);
         }
+    }
+
+    #[test]
+    fn short_gradients_join_an_open_long_gradient_range() {
+        let gradient = |stops: u32| {
+            let mut instance = Instance::new(KIND_FILL);
+            instance.meta[1] = PAINT_LINEAR;
+            instance.meta[3] = stops;
+            instance
+        };
+        let image = {
+            let mut instance = Instance::new(KIND_FILL);
+            instance.meta[1] = PAINT_IMAGE;
+            instance
+        };
+        let mut open = ShaderVariant::Simple;
+        let mut ranges = 0;
+        for instance in [2, 128, 8, 9, 2].map(gradient) {
+            let variant = variant_after(open, &instance);
+            ranges += usize::from(variant != open);
+            open = variant;
+        }
+        assert_eq!((open, ranges), (ShaderVariant::LongGradient, 2));
+        assert_eq!(variant_after(open, &image), ShaderVariant::Full);
+        assert_eq!(
+            variant_after(ShaderVariant::Full, &gradient(2)),
+            ShaderVariant::Full
+        );
     }
 
     #[test]

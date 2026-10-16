@@ -325,6 +325,10 @@ impl filtrate::Effect for YieldingEffect {
         );
         Ok(false)
     }
+
+    fn target_bytes(&self) -> u64 {
+        0
+    }
 }
 
 #[wasm_bindgen_test(async)]
@@ -1446,13 +1450,37 @@ async fn dom_planes_stack_a_hosted_element_between_parts() {
         .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
         .await
         .expect("offscreen surface");
+    let parts = root.query_selector_all("canvas").expect("a selector");
     drop(surface);
     engine.render(FrameTime::now()).await.expect("render");
     assert!(
         host.first_element_child().is_none(),
         "the surface's stacking root leaves with it"
     );
+    assert_unconfigured(&parts);
     host.remove();
+}
+
+/// Each of a dropped surface's part canvases has an unconfigured context,
+/// not one left holding its device and swapchain texture for the garbage
+/// collector (#2776): an unconfigured context has no current texture.
+fn assert_unconfigured(parts: &web_sys::NodeList) {
+    for i in 0..parts.length() {
+        let context = parts
+            .item(i)
+            .expect("listed")
+            .unchecked_into::<web_sys::HtmlCanvasElement>()
+            .get_context("webgpu")
+            .expect("a WebGPU context")
+            .expect("the part's context");
+        let current = js_sys::Reflect::get(&context, &"getCurrentTexture".into())
+            .expect("GPUCanvasContext.getCurrentTexture")
+            .unchecked_into::<js_sys::Function>();
+        assert!(
+            current.call0(&context).is_err(),
+            "part {i}'s context is still configured after its surface dropped"
+        );
+    }
 }
 
 /// The host's element a DOM surface presents in: 480 by 320 CSS pixels at

@@ -31,6 +31,7 @@ use accesskit::{
 use hydrolysis::testing::TestStyle;
 use hydrolysis::{
     AccessibilityActivationPointError, HeadlessRuntime, InputEvent, PointerButton, PointerKind,
+    TouchScrollConfig,
 };
 use waterui::component::list::{List, ListItem};
 use waterui::component::{hstack, spacer, text};
@@ -67,7 +68,17 @@ fn row_label(row: i32) -> String {
 /// a property of the rendered tree, not of a style package's chrome, so the
 /// minimal style mounts these tests.
 fn headless(content: AnyViewBuilder<AnyView>, width: u32, height: u32) -> HeadlessRuntime {
-    HeadlessRuntime::new_for_tests(Environment::new(), content, width, height, TestStyle::new())
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        Environment::new(),
+        content,
+        width,
+        height,
+        TestStyle::new(),
+    );
+    // The host reports the touch-gesture parameters a real touch
+    // platform publishes — a touch press without them panics.
+    runtime.set_touch_scroll_config(TouchScrollConfig::android_default());
+    runtime
 }
 
 /// Pumps one frame per virtual display interval until the runtime reports

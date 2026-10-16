@@ -270,6 +270,25 @@ impl Gpu {
         })
     }
 
+    /// Device-resident bytes of the retained intermediate targets, across
+    /// every live input size.
+    pub(super) fn target_bytes(&self) -> u64 {
+        let texel = u64::from(
+            INTERMEDIATE_FORMAT
+                .block_copy_size(None)
+                .expect("the intermediate format is a single-aspect colour format"),
+        );
+        self.intermediates
+            .iter()
+            .map(|intermediates| {
+                u64::from(intermediates.size.0)
+                    * u64::from(intermediates.size.1)
+                    * texel
+                    * intermediates.views.len() as u64
+            })
+            .sum()
+    }
+
     /// The stage ranges each pass's segment covers — for tests asserting a
     /// folded segment was selected.
     #[cfg(test)]

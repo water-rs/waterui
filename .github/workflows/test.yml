@@ -458,13 +458,15 @@ jobs:
       # lints; only the workspace crate is named here. Hydrolysis's `web`
       # feature is its browser runner — it used to be linted for wasm32 in the
       # hydrolysis repository's own CI and moved in with the tree (#1428).
+      # Its web video bridge needs `video` as well, so the pass enables both
+      # (#2799).
       - name: Lint the wasm32-only paths
         run: |
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
             -p waterui-media \
             -- -D warnings
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
-            -p hydrolysis --features web \
+            -p hydrolysis --features web,video \
             -- -D warnings
           # The bare build is a separate gate: every feature off selects a
           # third of the backend's `cfg(feature)` surface that `web` never

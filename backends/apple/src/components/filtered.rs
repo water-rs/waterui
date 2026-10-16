@@ -2471,6 +2471,10 @@ pub mod native_test {
         fn redraw_hint(&self) -> bool {
             false
         }
+
+        fn target_bytes(&self) -> u64 {
+            0
+        }
     }
 
     /// Holds a nested [`FillEffect`]'s setup until [`Self::release`].

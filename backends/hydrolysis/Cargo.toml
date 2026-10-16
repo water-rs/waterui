@@ -311,8 +311,9 @@ web-sys = { version = "0.3", optional = true, features = [
 ] }
 
 [dev-dependencies]
-# The recording tests lower through the engine's `testing::Null` backend,
-# whose events report every registration and release.
+# The recording tests lower through the engine's `testing::Null` backend:
+# its events report every registration and release, and the image-budget
+# test sets the image limits it reports.
 cherenkov = { workspace = true, features = ["testing"] }
 # The crate's own test targets need the `accessibility` and `testing`
 # feature APIs — the headless runtimes' `new_for_tests` constructors, the

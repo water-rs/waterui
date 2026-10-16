@@ -27,7 +27,7 @@ use waterui_graphics::draw::{
 };
 use waterui_graphics::{
     FontSource, HeldResources, ImageColorSpace, ImageData, PlainId, RecordingResources, Registered,
-    Rgba8,
+    ResourceError, Rgba8,
 };
 
 /// One positioned glyph in a shaped run — the currency text shaping hands
@@ -176,10 +176,10 @@ pub fn assert_well_formed_image(image: &peniko::ImageData) {
 
 /// `image`'s RGBA8 bytes fitted to `limits`: an admitted source passes
 /// through with its own pixels; a larger one — a decoded photo past the
-/// device's texture limit or its per-image budget — is Lanczos3-resampled
-/// to the largest admitted size at the same aspect ratio, so the
-/// registration below still holds the engine's contract rather than
-/// panicking on it. Returns `(width, height, bytes)`.
+/// device's texture limit or the whole image budget — is
+/// Lanczos3-resampled to the largest admitted size at the same aspect
+/// ratio, so the registration below still holds the engine's contract
+/// rather than panicking on it. Returns `(width, height, bytes)`.
 fn fit_image_to_limits(
     image: &peniko::ImageData,
     limits: waterui_graphics::draw::ImageLimits,
@@ -443,11 +443,17 @@ impl SceneResources {
 
     /// The registered image id for `image`, uploading the pixels on first use
     /// and holding the registration for `names`' recording.
+    ///
+    /// # Errors
+    ///
+    /// The engine's [`ResourceError`] when it does not register the image —
+    /// [`ResourceError::OverBudget`] when the image does not fit the image
+    /// budget beside the images already registered.
     pub(crate) fn image(
         &self,
         names: &mut LoweringNames<'_>,
         image: &peniko::ImageData,
-    ) -> ImageId {
+    ) -> Result<ImageId, ResourceError> {
         let key = ImageKey {
             blob: image.data.id(),
             width: image.width,
@@ -456,9 +462,11 @@ impl SceneResources {
             alpha: image.alpha_type as u8,
         };
         if let Some(cached) = names.images.get(&key) {
-            return names.table.name(&cached.registered);
+            return Ok(names.table.name(&cached.registered));
         }
-        let cached = self.images.get(key).unwrap_or_else(|| {
+        let cached = if let Some(cached) = self.images.get(key) {
+            cached
+        } else {
             assert_eq!(
                 image.format,
                 peniko::ImageFormat::Rgba8,
@@ -477,28 +485,36 @@ impl SceneResources {
             } else {
                 data
             };
-            let registered = self
-                .inner
-                .image(data)
-                .expect("hydrolysis renderer: engine rejected an image it must accept");
+            // A refused registration caches nothing: a later recording
+            // naming the image tries a registration of its own.
+            let registered = self.inner.image(data)?;
             self.image_registrations
                 .set(self.image_registrations.get() + 1);
             self.images.insert(key, registered)
-        });
+        };
         let id = names.table.name(&cached.registered);
         names.images.insert(key, cached);
-        id
+        Ok(id)
     }
 
     /// The engine paint for `brush`, registering any image it names and
     /// holding it for `names`' recording.
-    pub(crate) fn paint(&self, names: &mut LoweringNames<'_>, brush: &peniko::Brush) -> Paint {
-        match brush {
+    ///
+    /// # Errors
+    ///
+    /// The engine's [`ResourceError`] when it does not register the
+    /// brush's image; see [`image`](Self::image).
+    pub(crate) fn paint(
+        &self,
+        names: &mut LoweringNames<'_>,
+        brush: &peniko::Brush,
+    ) -> Result<Paint, ResourceError> {
+        Ok(match brush {
             peniko::Brush::Solid(color) => Paint::Solid(working_color(*color)),
             peniko::Brush::Gradient(gradient) => gradient_paint(gradient),
             peniko::Brush::Image(brush) => {
                 let pattern = ImagePattern {
-                    image: self.image(names, &brush.image),
+                    image: self.image(names, &brush.image)?,
                     transform: Affine::IDENTITY,
                     extend_x: extend(brush.sampler.x_extend),
                     extend_y: extend(brush.sampler.y_extend),
@@ -506,17 +522,22 @@ impl SceneResources {
                 };
                 Paint::Image(pattern)
             }
-        }
+        })
     }
 
     /// `brush` mapped through its own coordinate transform.
+    ///
+    /// # Errors
+    ///
+    /// The engine's [`ResourceError`] when it does not register the
+    /// brush's image; see [`image`](Self::image).
     pub(crate) fn transformed_paint(
         &self,
         names: &mut LoweringNames<'_>,
         brush: &peniko::Brush,
         brush_transform: Option<Affine>,
-    ) -> Paint {
-        transform_paint(self.paint(names, brush), brush_transform)
+    ) -> Result<Paint, ResourceError> {
+        Ok(transform_paint(self.paint(names, brush)?, brush_transform))
     }
 }
 
@@ -1003,6 +1024,18 @@ pub fn axis_aligned(transform: Affine) -> bool {
     b == 0.0 && c == 0.0 && a > 0.0 && d > 0.0
 }
 
+/// The paint of an op, or `None` when the engine did not register the
+/// image its brush names: that op is not drawn, and the rejection is
+/// reported as a warning naming the engine's reason, instead of taking the
+/// window down. Nothing stands in for the image.
+fn drawable(paint: Result<Paint, ResourceError>) -> Option<Paint> {
+    paint
+        .inspect_err(|error| {
+            tracing::warn!(%error, "hydrolysis renderer: the engine did not register an image brush; the op that paints with it is not drawn");
+        })
+        .ok()
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the function drives one continuous scenario through the renderer; splitting it would obscure the sequence"
@@ -1025,7 +1058,11 @@ fn lower(
                 shape,
                 ..
             } => {
-                let paint = resources.transformed_paint(names, brush, *brush_transform);
+                let Some(paint) =
+                    drawable(resources.transformed_paint(names, brush, *brush_transform))
+                else {
+                    continue;
+                };
                 recorder.transform(*transform, |r| r.fill(shape.clone(), paint));
             }
             Op::FillPaint {
@@ -1056,7 +1093,9 @@ fn lower(
                 glyphs,
             } => {
                 let font = resources.font(names, font);
-                let mut paint = resources.paint(names, brush);
+                let Some(mut paint) = drawable(resources.paint(names, brush)) else {
+                    continue;
+                };
                 if *brush_alpha < 1.0 {
                     paint = alpha_scaled_paint(paint, *brush_alpha);
                 }
@@ -1565,6 +1604,65 @@ mod tests {
         assert_eq!(ids(&events, removed_images).len(), 1, "{events:?}");
         assert_eq!(ids(&events, removed_fonts).len(), 1, "{events:?}");
         assert_eq!(mount.resources.cached(), (0, 0));
+    }
+
+    /// An image the engine's limits admit alone, registered beside images
+    /// that leave less of the image budget than it needs, reports the
+    /// engine's `OverBudget` error instead of panicking the window or
+    /// standing in a resampled image (water-rs/waterui#2755), and an op
+    /// painting with it is not drawn.
+    #[test]
+    fn an_image_past_the_image_budget_reports_the_error() {
+        let (events, _events) = std::sync::mpsc::channel();
+        let limits = waterui_graphics::draw::ImageLimits {
+            max_dimension: 8,
+            max_texels: 64,
+        };
+        let engine = std::rc::Rc::new(
+            cherenkov::Engine::<cherenkov::testing::Null>::new(cherenkov::testing::NullConfig {
+                events,
+                reject: std::collections::HashSet::new(),
+                image_limits: limits,
+            })
+            .expect("engine"),
+        );
+        let resources = SceneResources::over(waterui_graphics::SceneResources::new(engine));
+        let mut names = resources.recording();
+        let square = |side: u32, fill: u8| peniko::ImageData {
+            data: peniko::Blob::from(vec![fill; 4 * side as usize * side as usize]),
+            format: peniko::ImageFormat::Rgba8,
+            alpha_type: peniko::ImageAlphaType::Alpha,
+            width: side,
+            height: side,
+        };
+
+        // 36 texels, then 36 more beside them: 28 are left.
+        resources
+            .image(&mut names, &square(6, 1))
+            .expect("the first image fits");
+        let rejected = square(6, 2);
+        match resources.image(&mut names, &rejected) {
+            Err(ResourceError::OverBudget {
+                width,
+                height,
+                available,
+                limits: reported,
+            }) => assert_eq!((width, height, available, reported), (6, 6, 28, limits)),
+            other => panic!("an image past the budget was registered: {other:?}"),
+        }
+
+        // A brush painting with it reports the same error, and the op that
+        // paints with it is not drawn.
+        let brush = peniko::Brush::Image(peniko::ImageBrush::new(rejected));
+        let paint = resources.paint(&mut names, &brush);
+        assert!(
+            matches!(paint, Err(ResourceError::OverBudget { .. })),
+            "{paint:?}"
+        );
+        assert!(drawable(paint).is_none());
+
+        // The refused image is not cached: only the first is listed.
+        assert_eq!(resources.cached(), (0, 1));
     }
 
     /// A decoded source the engine's limits admit keeps its own pixels;

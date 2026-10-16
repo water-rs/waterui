@@ -339,19 +339,15 @@ impl Renderer for RasterRenderer {
     fn image_limits(&self) -> cherenkov::ImageLimits {
         cherenkov::ImageLimits {
             max_dimension: u32::MAX,
-            // The decoded image is f32 RGBA: sixteen bytes a texel.
+            // The image budget: every registered image together holds at
+            // most the CPU budget, decoded as f32 RGBA at sixteen bytes a
+            // texel. The engine admits registrations against it, and the
+            // glyph caches take what the images leave.
             max_texels: self.image_budget / 16,
         }
     }
 
     fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        let resident: u64 = self.images.values().map(|image| image.bytes()).sum();
-        let required = u64::from(image.width)
-            .checked_mul(u64::from(image.height))
-            .and_then(|count| count.checked_mul(16));
-        if required.is_none_or(|bytes| bytes > self.image_budget.saturating_sub(resident)) {
-            return Err(ResourceError::Image("CPU image budget exhausted".into()));
-        }
         let decoded = Arc::new(CpuImage::decode(&image)?);
         self.images.insert(id.raw(), decoded);
         self.refresh_cache_budgets();
@@ -367,14 +363,6 @@ impl Renderer for RasterRenderer {
             CpuImage::validate(&image)?;
             None
         } else {
-            let resident =
-                self.images.values().map(|image| image.bytes()).sum::<u64>() - current.bytes();
-            let required = u64::from(image.width)
-                .checked_mul(u64::from(image.height))
-                .and_then(|count| count.checked_mul(16));
-            if required.is_none_or(|bytes| bytes > self.image_budget.saturating_sub(resident)) {
-                return Err(ResourceError::Image("CPU image budget exhausted".into()));
-            }
             Some(Arc::new(CpuImage::decode(&image)?))
         };
         // Retained paint operands share the pixels and lowering resolved
@@ -586,6 +574,9 @@ impl Renderer for RasterRenderer {
             tile_committed: None,
             backdrop_captures: cherenkov::Bytes(backdrop_captures),
             backdrop_capture_format: (backdrop_captures > 0).then_some("linear-f32"),
+            // CPU filters run on the band's transient windows, accounted
+            // under `cpu`; no chain retains a target of its own.
+            filter_targets: cherenkov::Bytes(0),
         }
     }
 

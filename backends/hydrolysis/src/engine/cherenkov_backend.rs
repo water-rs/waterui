@@ -219,6 +219,26 @@ impl SurfaceCore {
         self.surface.begin_frame()
     }
 
+    /// This surface's outcome of a render of the shared engine, which
+    /// renders every surface on it. A rejection that left out only other
+    /// surfaces belongs to them — each owner's own render reports it — and
+    /// this surface's frame stands.
+    fn own(
+        &self,
+        rendered: Result<cherenkov::Next, cherenkov::RenderError>,
+    ) -> Result<cherenkov::Next, cherenkov::RenderError> {
+        match rendered {
+            Err(cherenkov::RenderError::Rejected { surfaces, next })
+                if surfaces
+                    .iter()
+                    .all(|rejection| rejection.surface != self.surface.id()) =>
+            {
+                Ok(next)
+            }
+            rendered => rendered,
+        }
+    }
+
     /// Queues a resize when `size` changed.
     pub fn resize(&mut self, size: (u32, u32)) {
         if self.size == size {
@@ -365,7 +385,9 @@ impl TextureCherenkovSurface {
     /// to render.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self.core.engine.render(cherenkov::FrameTime::now())?;
+        let next = self
+            .core
+            .own(self.core.engine.render(cherenkov::FrameTime::now()))?;
         Ok(self.render_inner(next))
     }
 
@@ -377,7 +399,9 @@ impl TextureCherenkovSurface {
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
     pub(crate) async fn render(&mut self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self.core.engine.render(cherenkov::FrameTime::now()).await?;
+        let next = self
+            .core
+            .own(self.core.engine.render(cherenkov::FrameTime::now()).await)?;
         Ok(self.render_inner(next))
     }
 
@@ -548,7 +572,9 @@ impl WindowCherenkovSurface {
     /// Returns the engine's [`cherenkov::RenderError`] when the frame fails
     /// to render.
     pub fn render(&mut self, scale: f64) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        let next = self.core.engine.render(cherenkov::FrameTime::now())?;
+        let next = self
+            .core
+            .own(self.core.engine.render(cherenkov::FrameTime::now()))?;
         let (headroom, changed) = self.headroom();
         if changed {
             self.core.display(cherenkov::Display { scale, headroom });
@@ -643,7 +669,8 @@ impl DomCherenkovSurface {
         reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
     )]
     pub(crate) async fn render(&self) -> Result<cherenkov::Next, cherenkov::RenderError> {
-        self.core.engine.render(cherenkov::FrameTime::now()).await
+        self.core
+            .own(self.core.engine.render(cherenkov::FrameTime::now()).await)
     }
 }
 

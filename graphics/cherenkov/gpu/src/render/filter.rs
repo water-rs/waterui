@@ -105,6 +105,10 @@ where
             &self.0.param_bounds(),
         ))
     }
+
+    fn target_bytes(&self) -> u64 {
+        Effect::target_bytes(&self.0)
+    }
 }
 
 /// A registered filter's identity: a layer filter or a backdrop group's
@@ -145,6 +149,10 @@ pub trait Runnable {
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<bool, filtrate::EffectRenderError>;
     fn set_redraw(&mut self, callback: filtrate::EffectRedrawCallback);
+    /// Device-resident bytes of the targets the effect itself retains —
+    /// a chain's intermediates. The registry's per-size input/output
+    /// targets are the registry's, not the effect's, and count elsewhere.
+    fn target_bytes(&self) -> u64;
 }
 
 impl<E: Effect> Runnable for E {
@@ -173,6 +181,9 @@ impl<E: Effect> Runnable for E {
     fn set_redraw(&mut self, callback: filtrate::EffectRedrawCallback) {
         self.set_redraw_callback(callback);
     }
+    fn target_bytes(&self) -> u64 {
+        Effect::target_bytes(self)
+    }
 }
 
 struct Entry {
@@ -199,7 +210,24 @@ struct FilterTargets {
     last_used: u64,
 }
 
+/// Device bytes of one single-level filter target.
+fn texture_bytes(texture: &wgpu::Texture) -> u64 {
+    u64::from(texture.width()) * u64::from(texture.height()) * super::texel_bytes(texture.format())
+}
+
+impl FilterTargets {
+    /// Device bytes of the input/output pair.
+    fn bytes(&self) -> u64 {
+        texture_bytes(&self.input.0) + texture_bytes(&self.output.0)
+    }
+}
+
 impl Entry {
+    /// Device bytes of the registry's per-size input/output pairs.
+    fn io_bytes(&self) -> u64 {
+        self.io.iter().map(|(_, targets)| targets.bytes()).sum()
+    }
+
     #[cfg_attr(
         target_arch = "wasm32",
         expect(
@@ -272,9 +300,7 @@ impl Entry {
                             crate::diag::RetireArgs {
                                 label,
                                 class: crate::diag::Class::Target,
-                                bytes: u64::from(texture.width())
-                                    * u64::from(texture.height())
-                                    * super::texel_bytes(texture.format()),
+                                bytes: texture_bytes(&texture),
                                 used_in_latest_submit: true,
                                 reason: "filter size eviction",
                             },
@@ -354,22 +380,15 @@ impl Registry {
     }
 
     /// Removes an entry; returns the GPU bytes its retired
-    /// input/output targets held (for the allocation diagnostic).
+    /// input/output targets held (for the allocation diagnostic). The
+    /// effect's own targets are not included: the effect allocates them
+    /// itself, so the diagnostic never recorded them growing.
     pub fn remove(&mut self, id: FilterKey) -> u64 {
         let Some(entry) = self.entries.remove(&id) else {
             return 0;
         };
         entry.wakes.clear();
-        entry
-            .io
-            .iter()
-            .flat_map(|(_, targets)| [&targets.input.0, &targets.output.0])
-            .map(|texture| {
-                u64::from(texture.width())
-                    * u64::from(texture.height())
-                    * super::texel_bytes(texture.format())
-            })
-            .sum()
+        entry.io_bytes()
     }
 
     /// Sets each filter's wakes to the surfaces whose frames run it; a
@@ -396,30 +415,19 @@ impl Registry {
         let mut bytes = 0;
         for entry in self.entries.values_mut() {
             for (_, targets) in std::mem::take(&mut entry.io) {
-                for texture in [targets.input.0, targets.output.0] {
-                    bytes += u64::from(texture.width())
-                        * u64::from(texture.height())
-                        * super::texel_bytes(texture.format());
-                }
+                bytes += targets.bytes();
             }
         }
         bytes
     }
 
+    /// Device-resident bytes of every registered chain's targets: the
+    /// registry's per-size input/output pairs plus each effect's own
+    /// retained targets (a multi-pass chain's intermediates).
     pub fn gpu_bytes(&self) -> u64 {
         self.entries
             .values()
-            .flat_map(|entry| entry.io.iter())
-            .flat_map(|(_, targets)| [&targets.input.0, &targets.output.0])
-            .map(|texture| {
-                u64::from(texture.width())
-                    * u64::from(texture.height())
-                    * if texture.format() == wgpu::TextureFormat::Rgba16Float {
-                        8
-                    } else {
-                        4
-                    }
-            })
+            .map(|entry| entry.io_bytes() + entry.effect.target_bytes())
             .sum()
     }
 

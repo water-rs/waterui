@@ -257,21 +257,19 @@ waterui-icons-native = { version = "0.5.1", path = "components/icon/native" }
 waterui-locale = { version = "0.5.1", path = "utils/locale" }
 waterui-map = { version = "0.5.1", path = "components/data/map" }
 waterui-meta = { version = "0.5.1", path = "utils/meta" }
-waterkit-location = "0.1.4"
-waterkit-screen = "0.1.4"
-waterkit-audio = { version = "0.1.4", default-features = false }
-waterkit-clipboard = "0.1.4"
-waterkit-permission = "0.1.4"
-waterkit-dialog = "0.1.4"
-waterkit-fs = "0.1.4"
-waterkit-haptic = "0.1.4"
-waterkit-camera = "0.1.4"
-waterkit-codec = { version = "0.1.4", default-features = false }
-waterkit-video = { version = "0.1.4", features = ["streaming"] }
-waterkit-build = "0.1.4"
-# Unreleased: `0.1.4` is the crate's own manifest version, and the
-# `[patch.crates-io]` git pin below supplies the source.
-waterkit-menu = "0.1.4"
+waterkit-location = "0.2"
+waterkit-screen = "0.2"
+waterkit-audio = { version = "0.2", default-features = false }
+waterkit-clipboard = "0.2"
+waterkit-permission = "0.2"
+waterkit-dialog = "0.2"
+waterkit-fs = "0.2"
+waterkit-haptic = "0.2"
+waterkit-camera = "0.2"
+waterkit-codec = { version = "0.2", default-features = false }
+waterkit-video = { version = "0.2", features = ["streaming"] }
+waterkit-build = "0.2"
+waterkit-menu = "0.2"
 waterui-backend-core = { version = "0.5.2", path = "backends/core", default-features = false }
 # The `filtrate` family — the filter library `.filter(F)`/`.effect(E)` and
 # Cherenkov share — lives in-tree under `graphics/filtrate/` (#1449). Every
@@ -610,18 +608,14 @@ waterui-webview = { path = "components/platform/webview" }
 # release has both changes.
 hydrolysis = { path = "backends/hydrolysis" }
 hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "dev" }
-# `waterkit-codec` linked `cros-codecs`(vaapi) unconditionally on Linux, so
-# turning on `assets` (still images) built `cros-libva` against the system
-# libva headers and broke any SDK older than 2.20 — water-rs/waterui#1190.
-# waterkit's `dev` carries the fix: the codec gates VA-API behind a `vaapi`
-# feature that the player requests, and `waterui-image` asks for the codec
-# with its defaults off. Every waterkit crate the video/audio graph shares
-# types across comes from the same source — a registry `waterkit-audio`
-# beside the patched `waterkit-video` gives two `DecodedAudioFrame` types —
-# and `waterkit-core` keeps the whole waterkit graph on one source; drop
-# these entries once registry releases carry the change.
-# waterkit-* and waterui-image are patched by the block at the bottom of
-# this table.
+# The waterkit family follows waterkit's `dev` so the framework consumes its
+# unreleased changes; the patches apply only while the `[workspace.dependencies]`
+# requirements admit `dev`'s version (0.2). Every waterkit crate the
+# video/audio graph shares types across comes from the same source — a
+# registry `waterkit-audio` beside the patched `waterkit-video` gives two
+# `DecodedAudioFrame` types — and `waterkit-core` keeps the whole waterkit
+# graph on one source. waterkit-*, waterui-image and waterui-video-gpu are
+# patched by the block at the bottom of this table.
 # `block` 0.1.6 declares the Blocks ABI symbol as an uninhabited extern
 # static. This pinned fork changes only that declaration to the symbol's byte
 # storage and takes its address as the opaque class pointer.
@@ -678,18 +672,15 @@ wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a9
 wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
 wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
 
-# Split component repositories, pinned to commits on their `dev`. The six
-# that name nami directly (barcode, canvas, chart, map-gpu, math, video-gpu)
-# follow their `feat/nami-0.13` branch until those merge (water-rs/waterui#2633). The waterkit
-# family and suiteki follow their `dev` branch; `Cargo.lock` records the exact
-# commit.
-waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "feat/nami-0.13" }
-waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "feat/nami-0.13" }
-waterui-chart = { git = "https://github.com/water-rs/chart", branch = "feat/nami-0.13" }
-waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "feat/nami-0.13" }
-waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "feat/nami-0.13" }
+# Split component repositories, the waterkit family and suiteki follow their
+# `dev` branch; `Cargo.lock` records the exact commit.
+waterui-barcode = { git = "https://github.com/water-rs/barcode", branch = "dev" }
+waterui-canvas = { git = "https://github.com/water-rs/canvas", branch = "dev" }
+waterui-chart = { git = "https://github.com/water-rs/chart", branch = "dev" }
+waterui-map-gpu = { git = "https://github.com/water-rs/map-gpu", branch = "dev" }
+waterui-video-gpu = { git = "https://github.com/water-rs/video-gpu", branch = "dev" }
 waterui-particle = { git = "https://github.com/water-rs/particle", rev = "bf663af85211d1f0bcce511b94ac435efad046a6" }
-waterui-image = { git = "https://github.com/water-rs/image", rev = "a36e16c555bd78ade9e28fad947af66a52f8f071" }
+waterui-image = { git = "https://github.com/water-rs/image", branch = "dev" }
 waterui-svg = { git = "https://github.com/water-rs/svg", rev = "16f99e021f735d0b1b31c95552b074e953d56418" }
 waterkit-build = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-camera = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
@@ -698,9 +689,6 @@ waterkit-dialog = { git = "https://github.com/water-rs/waterkit", branch = "dev"
 waterkit-fs = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-haptic = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-location = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-# Unreleased, so there is no registry version to resolve: waterkit's `dev`
-# carries the crate (water-rs/waterkit#223), the same source as the rest of
-# the family. Drop the patch once a release exists.
 waterkit-menu = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-permission = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-audio = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
@@ -711,7 +699,7 @@ waterkit-video-container = { git = "https://github.com/water-rs/waterkit", branc
 waterkit-video-core = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-video-player = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
 waterkit-video-streaming = { git = "https://github.com/water-rs/waterkit", branch = "dev" }
-waterui-math = { git = "https://github.com/water-rs/math", branch = "feat/nami-0.13" }
+waterui-math = { git = "https://github.com/water-rs/math", branch = "dev" }
 # suiteki 0.1.1 on crates.io implements nami-core 0.3's `Signal`; suiteki's
 # `dev` implements 0.5's (water-rs/suiteki#29). Drop once a release carries
 # it.
