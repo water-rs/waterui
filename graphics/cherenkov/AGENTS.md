@@ -67,6 +67,11 @@ belong to water-rs/waterui.
   interleaved A/B rounds with per-round results: the Apple M1, the iPad Pro M4
   (Metal) and the Pixel 9 Pro (Vulkan). The iPad's GPU clock is bimodal with
   device state.
+- **Pixel cost comparisons hold the GPU and the measuring CPU at one clock**
+  and check every run's clock residency (`bench/scripts/pixel_compare.py`):
+  the GPU governor's per-process clock moves identical builds by the clock
+  ratio. A scene is decided only when the change's bootstrap interval is no
+  wider than the limit; frame-budget checks run under the default governor.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five
