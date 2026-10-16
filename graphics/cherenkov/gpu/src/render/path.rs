@@ -850,20 +850,20 @@ fn emit_runs<R: Runs + ?Sized, F: FnMut(usize, std::ops::Range<usize>, &mut Vec<
     while let Some(head) = at {
         let (start, head_end) = runs.columns(head);
         match runs.mark(head).link() {
-            Link::Skip => {}
-            Link::Span => out.spans.push(rect(start, head_end)),
-            Link::Head => {
+            Link::SKIP => {}
+            Link::SPAN => out.spans.push(rect(start, head_end)),
+            Link::HEAD => {
                 let mut last = head;
                 let mut interior = 0..0;
                 loop {
                     let columns = runs.columns(last);
-                    if runs.mark(last).class() == Class::Full
+                    if runs.mark(last).class() == Class::FULL
                         && columns.1 - columns.0 > interior.end - interior.start
                     {
                         interior = columns.0..columns.1;
                     }
                     match runs.next(last) {
-                        Some(next) if runs.mark(next).link() == Link::Cell => last = next,
+                        Some(next) if runs.mark(next).link() == Link::CELL => last = next,
                         _ => break,
                     }
                 }
@@ -888,7 +888,7 @@ fn emit_runs<R: Runs + ?Sized, F: FnMut(usize, std::ops::Range<usize>, &mut Vec<
                 at = runs.next(last);
                 continue;
             }
-            Link::Cell => unreachable!("a cell's runs follow its head"),
+            _ => unreachable!("a cell's runs follow its head"),
         }
         at = runs.next(head);
     }
@@ -899,25 +899,26 @@ fn emit_runs<R: Runs + ?Sized, F: FnMut(usize, std::ops::Range<usize>, &mut Vec<
 /// coverage against the quantization's steps ([`raster::TEXEL_NONZERO`],
 /// [`raster::TEXEL_FULL`]): coverage that [`raster::texel`] rounds away,
 /// such as floating-point residue, never moves the partition.
+/// The value is the class's bits in a [`Mark`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Class {
-    /// Every texel is 0.
-    Empty = 0,
-    /// Every texel is `u8::MAX`.
-    Full = 1,
-    /// Anything else.
-    Partial = 2,
-}
+struct Class(u8);
 
 impl Class {
+    /// Every texel is 0.
+    const EMPTY: Self = Self(0);
+    /// Every texel is `u8::MAX`.
+    const FULL: Self = Self(1);
+    /// Anything else.
+    const PARTIAL: Self = Self(2);
+
     /// The class of a column whose rows are all `empty`, or all `full`.
     const fn new(empty: bool, full: bool) -> Self {
         if empty {
-            Self::Empty
+            Self::EMPTY
         } else if full {
-            Self::Full
+            Self::FULL
         } else {
-            Self::Partial
+            Self::PARTIAL
         }
     }
 
@@ -931,20 +932,23 @@ impl Class {
 }
 
 /// What a run became in the band's cheapest emission. The forward pass
-/// of [`partition`] sets `Skip`, `Span` or `Cell` on each run as the end
+/// of [`partition`] sets `SKIP`, `SPAN` or `CELL` on each run as the end
 /// of the cheapest prefix; the backward pass then marks the first run of
-/// every chosen cell `Head` and the rest of it `Cell`, so the emission
-/// walk reads each cell as a `Head` and the `Cell` runs after it.
+/// every chosen cell `HEAD` and the rest of it `CELL`, so the emission
+/// walk reads each cell as a `HEAD` and the `CELL` runs after it. The
+/// value is the link's bits in a [`Mark`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Link {
+struct Link(u8);
+
+impl Link {
     /// The run is empty and emits nothing.
-    Skip = 0,
+    const SKIP: Self = Self(0);
     /// The run is full and emits a span.
-    Span = 1,
+    const SPAN: Self = Self(1);
     /// The run is part of a cell that starts at an earlier run.
-    Cell = 2,
+    const CELL: Self = Self(2);
     /// The run starts a cell.
-    Head = 3,
+    const HEAD: Self = Self(3);
 }
 
 /// A run's state in five bits: its [`Class`] in bits 0–1, its [`Link`]
@@ -964,31 +968,22 @@ impl Mark {
 
     /// A run of `class` that the partition has not reached.
     const fn new(class: Class) -> Self {
-        Self(class as u8)
+        Self(class.0)
     }
 
     /// The run's class.
     const fn class(self) -> Class {
-        match self.0 & 0b11 {
-            0 => Class::Empty,
-            1 => Class::Full,
-            _ => Class::Partial,
-        }
+        Class(self.0 & 0b11)
     }
 
-    /// What the run became; `Skip` until [`partition`] sets it.
+    /// What the run became; `SKIP` until [`partition`] sets it.
     const fn link(self) -> Link {
-        match self.0 >> 2 & 0b11 {
-            0 => Link::Skip,
-            1 => Link::Span,
-            2 => Link::Cell,
-            _ => Link::Head,
-        }
+        Link(self.0 >> 2 & 0b11)
     }
 
     /// The mark with `link`, keeping its class and flag.
     const fn with_link(self, link: Link) -> Self {
-        Self(self.0 & !0b1100 | (link as u8) << 2)
+        Self(self.0 & !0b1100 | link.0 << 2)
     }
 
     /// Whether the mark carries [`Mark::OPENS`].
@@ -1031,12 +1026,13 @@ trait Runs {
 struct Run(u32);
 
 impl Run {
-    /// The record of a run ending at `end` with `mark`.
+    /// The columns a run's end can name; [`sparse_runs`] checks its
+    /// band against it once.
+    const END_LIMIT: u32 = 1 << (u32::BITS - Mark::BITS);
+
+    /// The record of a run ending at `end`, below [`Run::END_LIMIT`],
+    /// with `mark`.
     fn new(end: u32, mark: Mark) -> Self {
-        assert!(
-            end < 1 << (u32::BITS - Mark::BITS),
-            "a band's columns fit a run's end"
-        );
         Self(end << Mark::BITS | u32::from(mark.0))
     }
 
@@ -1281,6 +1277,7 @@ fn sparse_runs(coverage: &[(u32, f32)], ends: &[usize], w: usize, runs: &mut Vec
     }
     let cursors = &mut cursors[..ends.len()];
     let w = u32::try_from(w).expect("a band is at most a surface wide");
+    assert!(w < Run::END_LIMIT, "a band's columns fit a run's end");
     let mut pos = 0;
     while pos < w {
         let mut next = w;
@@ -1342,9 +1339,9 @@ fn partition<R: Runs + ?Sized>(runs: &mut R, sh: usize) {
     while let Some(run) = at {
         let (start, end) = runs.columns(run);
         let mut mark = runs.mark(run);
-        let (cost, link) = if mark.class() == Class::Empty {
+        let (cost, link) = if mark.class() == Class::EMPTY {
             // A cell never starts or ends on a gap.
-            (before, Link::Skip)
+            (before, Link::SKIP)
         } else {
             let here = before - sh * i64::from(start);
             let best = match open {
@@ -1356,10 +1353,10 @@ fn partition<R: Runs + ?Sized>(runs: &mut R, sh: usize) {
             };
             let cell = best + instance + sh * i64::from(end);
             let span = before + instance;
-            if mark.class() == Class::Full && span <= cell {
-                (span, Link::Span)
+            if mark.class() == Class::FULL && span <= cell {
+                (span, Link::SPAN)
             } else {
-                (cell, Link::Cell)
+                (cell, Link::CELL)
             }
         };
         runs.set_mark(run, mark.with_link(link));
@@ -1370,8 +1367,8 @@ fn partition<R: Runs + ?Sized>(runs: &mut R, sh: usize) {
     while let Some(last) = at {
         let link = runs.mark(last).link();
         at = match link {
-            Link::Skip | Link::Span => runs.prev(last),
-            Link::Cell => {
+            Link::SKIP | Link::SPAN => runs.prev(last),
+            Link::CELL => {
                 let mut from = last;
                 while !runs.mark(from).opens() {
                     let Some(prev) = runs.prev(from) else {
@@ -1379,18 +1376,18 @@ fn partition<R: Runs + ?Sized>(runs: &mut R, sh: usize) {
                     };
                     from = prev;
                 }
-                runs.set_mark(from, runs.mark(from).with_link(Link::Head));
+                runs.set_mark(from, runs.mark(from).with_link(Link::HEAD));
                 let mut run = from;
                 while run != last {
                     let Some(next) = runs.next(run) else {
                         unreachable!("a cell's runs reach its last")
                     };
                     run = next;
-                    runs.set_mark(run, runs.mark(run).with_link(Link::Cell));
+                    runs.set_mark(run, runs.mark(run).with_link(Link::CELL));
                 }
                 runs.prev(from)
             }
-            Link::Head => unreachable!("the forward pass marks no heads"),
+            _ => unreachable!("the forward pass marks no heads"),
         };
     }
 }
@@ -1852,7 +1849,7 @@ mod tests {
         dense_columns(&coverage.data, coverage.w, STRIP_H, &mut columns);
         assert_eq!(
             classes(&Columns(&mut columns)),
-            [(10, Class::Empty), (13, Class::Partial), (40, Class::Empty)]
+            [(10, Class::EMPTY), (13, Class::PARTIAL), (40, Class::EMPTY)]
         );
         let mut arena = Vec::new();
         let (emitted, rasters) = emit(&coverage, &mut arena).unwrap();
