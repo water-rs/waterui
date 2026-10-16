@@ -335,6 +335,8 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
     phases = SCENES[scene] if phases is None else phases
     assert FRAME_ROOT in phases, (scene, phases, f'{FRAME_ROOT} runs every frame')
     binary = pathlib.Path(binary).resolve(); out = pathlib.Path(out).resolve(); out.mkdir(parents=True, exist_ok=True)
+    scene_dir = (pathlib.Path(repo) / 'scenes' / 'perf' / scene).resolve()
+    assert scene_dir.is_dir(), f'no perf scene at {scene_dir}; generate it with scenes/tools/generate.py'
     icd = lavapipe_icd(icd)
     prefix = out / f'{tag}-{scene}'
     assert not [p for p in out.glob(prefix.name + '.*') if not p.name.endswith('.progress.log')], f'existing run: {prefix}'
@@ -367,7 +369,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
     command = ['valgrind', '--tool=callgrind', '--demangle=no', '--instr-atstart=no', '--separate-threads=no',
                *function_options(roots.values()),
                f'--callgrind-out-file={prefix}', str(binary), 'measure', '--engine', 'cherenkov',
-               '--scene', f'scenes/perf/{scene}', '--frames', '100000', '--warmup', str(warmup),
+               '--scene', str(scene_dir), '--frames', '100000', '--warmup', str(warmup),
                '--pause-at', str(pause_at), '--out', str(prefix) + '.unused-timing.json']
     after = {phase: [] for phase in roots}
     monitor = selectors.DefaultSelector(); fds = []
@@ -631,7 +633,7 @@ def main():
     for name in ('profile', 'batch'):
         p = sub.add_parser(name)
         p.add_argument('--binary', required=True); p.add_argument('--tag', required=True)
-        p.add_argument('--repo', required=True, help='checkout holding scenes/perf')
+        p.add_argument('--repo', required=True, help='checkout directory holding scenes/perf (the cherenkov tree)')
         p.add_argument('--out', required=True); sampling(p)
         if name == 'profile':
             p.add_argument('--scene', required=True, choices=SCENES)
