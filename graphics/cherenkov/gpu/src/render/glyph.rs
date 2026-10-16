@@ -13,6 +13,7 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::TableProvider;
 use skrifa::raw::types::F2Dot14;
 
+use crate::render::instance::Middle;
 use crate::render::raster::{self, Raster};
 use cherenkov::RenderError;
 
@@ -161,8 +162,8 @@ struct CachedGlyph {
 
 /// One atlas cell emitted by the path rasterizer: a device-space quad
 /// sampling coverage texels at `(x, y)`. The texels cover the quad's
-/// columns except its full-coverage middle ([`Self::interior`]), which
-/// stores none.
+/// columns except its constant middle ([`Self::middle`]), which stores
+/// none.
 #[derive(Clone, Copy, Debug)]
 pub struct PathCell {
     /// Device-space quad `(x0, y0, x1, y1)`.
@@ -173,19 +174,8 @@ pub struct PathCell {
     pub y: u16,
     /// Shelf the cell lives on, for [`Atlas::begin_commit`] touches.
     pub slot: u32,
-    /// The full-coverage middle columns: `start | end << 16`, relative to
-    /// x0. They store no texels; the columns right of them follow the
-    /// columns left of them in the atlas. Zero means no middle.
-    pub interior: u32,
-}
-
-impl PathCell {
-    /// The middle's column count: the quad's columns minus the texels
-    /// each atlas row stores.
-    #[must_use]
-    pub const fn middle_width(&self) -> u32 {
-        (self.interior >> 16) - (self.interior & 0xffff)
-    }
+    /// The constant middle, in columns from x0.
+    pub middle: Middle,
 }
 
 /// What a cached path draw replays: full-coverage spans and atlas cells,
@@ -230,7 +220,7 @@ impl PathEmit {
                     x: c.x,
                     y: c.y,
                     slot: c.slot,
-                    interior: c.interior,
+                    middle: c.middle,
                 })
                 .collect(),
             slots: self.slots.clone(),
@@ -1003,7 +993,7 @@ impl Atlas {
             for cell in &emit.cells {
                 if touched(cell.slot) {
                     self.plan_all.push((
-                        (cell.rect[2] - cell.rect[0]).round().max(0.0) as u32 - cell.middle_width(),
+                        (cell.rect[2] - cell.rect[0]).round().max(0.0) as u32 - cell.middle.width(),
                         (cell.rect[3] - cell.rect[1]).round().max(0.0) as u32,
                     ));
                 }
@@ -3125,7 +3115,7 @@ mod tests {
                         x: 0,
                         y: 0,
                         slot: 0,
-                        interior: 0,
+                        middle: Middle::NONE,
                     })
                     .collect(),
                 ..PathEmit::default()
@@ -3180,7 +3170,7 @@ mod tests {
                         x: 0,
                         y: 0,
                         slot: 0,
-                        interior: 0,
+                        middle: Middle::NONE,
                     })
                     .collect(),
                 ..PathEmit::default()

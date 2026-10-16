@@ -15,8 +15,8 @@ pub const KIND_SHADOW: u32 = 3;
 pub const KIND_GLYPH: u32 = 4;
 /// A device-space run of fully covered columns from a path strip.
 pub const KIND_SPAN: u32 = 5;
-/// A solid-paint path cell with a full-coverage middle, which the opaque
-/// phase also draws. Its `uv` packs like [`KIND_CELL`]'s.
+/// A solid-paint path cell with a full [`Middle`], which the opaque phase
+/// also draws. Its `uv` packs like [`KIND_CELL`]'s.
 pub const KIND_REGION: u32 = 6;
 /// An opaque ellipse interior appended after a coverage-order pass's
 /// painter ranges and drawn only by the opaque phase at the tier's
@@ -204,11 +204,72 @@ impl From<RoundedBox> for Shape {
     }
 }
 
-/// A path cell with a full-coverage middle that stores no atlas texels,
-/// for a paint other than solid. `uv.xy` carries bit patterns, unpacked by
-/// the vertex stage: `uv.x` the atlas origin `x | y << 16`, `uv.y` the
-/// middle `start | end << 16` in columns from the cell's left edge.
+/// A path cell with a [`Middle`] that is not a solid paint's full one.
+/// `uv.xy` carries bit patterns, unpacked by the vertex stage: `uv.x` the
+/// atlas origin `x | y << 16`, `uv.y` the middle's [`Middle::bits`].
 pub const KIND_CELL: u32 = 8;
+
+/// A path cell's constant middle: the columns `start..end` from the cell's
+/// left edge whose coverage is all full or all empty. They store no atlas
+/// texels; each atlas row holds the columns left of them, then the columns
+/// right of them. One cell has at most one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Middle(u32);
+
+impl Middle {
+    /// No middle: every column stores its texels.
+    pub const NONE: Self = Self(0);
+    /// The flag bit of an empty middle; columns stay below it.
+    const EMPTY: u32 = 1 << 31;
+    /// Columns are 15-bit, below [`Self::EMPTY`].
+    const COLUMN: u32 = 0x7fff;
+
+    /// The middle `columns` of full (`full`) or empty coverage, or `None`
+    /// when a column does not fit 15 bits.
+    #[must_use]
+    pub fn new(columns: std::ops::Range<usize>, full: bool) -> Option<Self> {
+        if columns.is_empty() {
+            return Some(Self::NONE);
+        }
+        let column = |c: usize| u32::try_from(c).ok().filter(|&c| c <= Self::COLUMN);
+        let flag = if full { 0 } else { Self::EMPTY };
+        Some(Self(
+            column(columns.start)? | column(columns.end)? << 16 | flag,
+        ))
+    }
+
+    /// Whether the cell has no middle.
+    #[must_use]
+    pub const fn is_none(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Whether the middle is full coverage.
+    #[must_use]
+    pub const fn is_full(self) -> bool {
+        !self.is_none() && self.0 & Self::EMPTY == 0
+    }
+
+    /// The middle's columns from the cell's left edge.
+    #[must_use]
+    pub const fn columns(self) -> std::ops::Range<usize> {
+        (self.0 & Self::COLUMN) as usize..(self.0 >> 16 & Self::COLUMN) as usize
+    }
+
+    /// The middle's column count: the quad's columns minus the texels
+    /// each atlas row stores.
+    #[must_use]
+    pub const fn width(self) -> u32 {
+        (self.0 >> 16 & Self::COLUMN) - (self.0 & Self::COLUMN)
+    }
+
+    /// The packed form the vertex stage reads from a cell's `uv.y`:
+    /// `start | end << 16`, with bit 31 set for an empty middle.
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        self.0
+    }
+}
 
 /// Whether `kind`'s `uv.xy` packs a cell origin and middle
 /// ([`KIND_CELL`]) rather than holding the origin as `f32`s.
@@ -217,17 +278,17 @@ pub const fn packs_cell_uv(kind: u32) -> bool {
     matches!(kind, KIND_REGION | KIND_CELL)
 }
 
-/// The `uv.xy` of a path cell at atlas origin `(x, y)` with middle
-/// `start | end << 16` (`0` for none): a cell without a middle holds its
-/// origin as `f32`s like a glyph, a cell with one packs as [`KIND_CELL`].
+/// The `uv.xy` of a path cell at atlas origin `(x, y)`: a cell without a
+/// middle holds its origin as `f32`s like a glyph, a cell with one packs
+/// as [`KIND_CELL`].
 #[must_use]
-pub fn cell_uv(x: u16, y: u16, middle: u32) -> [f32; 2] {
-    if middle == 0 {
+pub fn cell_uv(x: u16, y: u16, middle: Middle) -> [f32; 2] {
+    if middle.is_none() {
         [f32::from(x), f32::from(y)]
     } else {
         [
             f32::from_bits(u32::from(x) | u32::from(y) << 16),
-            f32::from_bits(middle),
+            f32::from_bits(middle.bits()),
         ]
     }
 }

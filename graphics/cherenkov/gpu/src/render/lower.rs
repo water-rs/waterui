@@ -24,7 +24,7 @@ use crate::render::instance::{
     ELLIPSE_TIER16_MIN_AREA, ELLIPSE_TIER32_MIN_AREA, FLAG_BLEND_SRC, FLAG_HAS_CLIP,
     FLAG_HAS_INNER, FLAG_HAS_MASK, FLAG_MASK_TEXTURE, FLAG_TEX_SRGB, FLAG_UNION, Globals, Instance,
     KIND_CELL, KIND_FILL, KIND_GLYPH, KIND_POLYGON, KIND_REGION, KIND_SHADOW, KIND_SPAN,
-    KIND_STROKE_DIST, KIND_STROKE_OFFSET, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE,
+    KIND_STROKE_DIST, KIND_STROKE_OFFSET, Middle, PAINT_IMAGE, PAINT_LINEAR, PAINT_PROJECTIVE,
     PAINT_RADIAL, PAINT_SOLID, PAINT_SWEEP, PAINT_TEXTURE, Shape, Stop, affine, blend_code,
     cell_uv,
 };
@@ -4809,20 +4809,18 @@ impl<'a> Lowering<'a> {
         template.meta[3] |= paint.packed & 0x00ff_ffff;
         self.replay_quads(
             &template,
-            emit.spans.iter().map(|rect| (*rect, [0.0; 2], 0)),
+            emit.spans
+                .iter()
+                .map(|rect| (*rect, [0.0; 2], Middle::NONE)),
             offset,
         );
         template.meta[0] = KIND_GLYPH;
         let first = self.frame.instances.len();
         self.replay_quads(
             &template,
-            emit.cells.iter().map(|cell| {
-                (
-                    cell.rect,
-                    cell_uv(cell.x, cell.y, cell.interior),
-                    cell.interior,
-                )
-            }),
+            emit.cells
+                .iter()
+                .map(|cell| (cell.rect, cell_uv(cell.x, cell.y, cell.middle), cell.middle)),
             offset,
         );
         if let Some(pending) = pending {
@@ -4843,7 +4841,7 @@ impl<'a> Lowering<'a> {
     fn replay_quads(
         &mut self,
         template: &Instance,
-        quads: impl ExactSizeIterator<Item = ([f32; 4], [f32; 2], u32)>,
+        quads: impl ExactSizeIterator<Item = ([f32; 4], [f32; 2], Middle)>,
         offset: Vec2,
     ) {
         if quads.len() == 0 {
@@ -4853,7 +4851,7 @@ impl<'a> Lowering<'a> {
         let first = self.frame.instances.len();
         check_instance_bound(first + quads.len());
         self.frame.instances.resize(first + quads.len(), *template);
-        for (inst, (rect, uv, interior)) in self.frame.instances[first..].iter_mut().zip(quads) {
+        for (inst, (rect, uv, middle)) in self.frame.instances[first..].iter_mut().zip(quads) {
             inst.bounds = [
                 f32_f64(f64::from(rect[0]) + offset.x),
                 f32_f64(f64::from(rect[1]) + offset.y),
@@ -4861,11 +4859,12 @@ impl<'a> Lowering<'a> {
                 f32_f64(f64::from(rect[3]) + offset.y),
             ];
             inst.uv[..2].copy_from_slice(&uv);
-            if interior != 0 {
+            if !middle.is_none() {
                 // `uv` packs the cell's origin and its stored-less middle,
-                // which the shader reads as full coverage for every paint;
-                // a solid paint also draws the middle in the opaque pass.
-                inst.meta[0] = if inst.meta[1] == PAINT_SOLID {
+                // which the shader reads as its constant coverage for every
+                // paint; a solid paint's full middle is also drawn by the
+                // opaque pass.
+                inst.meta[0] = if middle.is_full() && inst.meta[1] == PAINT_SOLID {
                     KIND_REGION
                 } else {
                     KIND_CELL
