@@ -227,7 +227,9 @@ fn sweep(
 #[derive(Debug, Default)]
 pub struct EmitScratch {
     raster: BandRaster,
-    /// A band's class runs, which [`partition`] annotates.
+    /// A dense band's [`Columns`].
+    columns: Vec<u8>,
+    /// A sparse band's [`Run`]s.
     runs: Vec<Run>,
 }
 
@@ -236,13 +238,15 @@ impl EmitScratch {
     pub const fn new() -> Self {
         Self {
             raster: BandRaster::new(),
+            columns: Vec::new(),
             runs: Vec::new(),
         }
     }
 
     /// Heap bytes the buffers hold between emissions.
     pub const fn heap_bytes(&self) -> u64 {
-        self.raster.heap_bytes() + (self.runs.capacity() * size_of::<Run>()) as u64
+        self.raster.heap_bytes()
+            + (self.columns.capacity() + self.runs.capacity() * size_of::<Run>()) as u64
     }
 }
 
@@ -265,7 +269,11 @@ pub fn rasterize_emit(
     }
     let (x0, y0, w, h, clipped) = grid(bbox, surface)?;
     let (segments, rule) = resolve(segments, rule);
-    let EmitScratch { raster, runs } = scratch;
+    let EmitScratch {
+        raster,
+        columns,
+        runs,
+    } = scratch;
     if (w as f64) <= SMALL_BBOX && (h as f64) <= SMALL_BBOX {
         // One whole-bbox cell needs the texels: collect the (small)
         // coverage and emit it like `emit` does.
@@ -301,7 +309,7 @@ pub fn rasterize_emit(
                 y0,
                 sy,
                 strip.len() / w,
-                runs,
+                columns,
                 &mut out,
                 &mut rasters,
                 arena,
@@ -480,7 +488,7 @@ pub fn emit(
             &mut reserve,
         )?;
     } else {
-        let mut runs = Vec::new();
+        let mut columns = Vec::new();
         for sy in (0..coverage.h).step_by(STRIP_H) {
             let sh = STRIP_H.min(coverage.h - sy);
             emit_strip(
@@ -490,7 +498,7 @@ pub fn emit(
                 coverage.y,
                 sy,
                 sh,
-                &mut runs,
+                &mut columns,
                 &mut out,
                 &mut rasters,
                 arena,
@@ -545,8 +553,8 @@ fn make_cell<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
 }
 
 /// Emits one dense band — `sh * w` coverage values for the `sy`-anchored
-/// band of a grid at `cov_x, cov_y` — through [`emit_runs`]. `runs` is
-/// the emission's classification scratch, `reserve` its pending
+/// band of a grid at `cov_x, cov_y` — through [`emit_runs`]. `columns`
+/// is the emission's classification scratch, `reserve` its pending
 /// reservation (see [`make_cell`]).
 #[expect(clippy::too_many_arguments)]
 fn emit_strip(
@@ -556,15 +564,15 @@ fn emit_strip(
     cov_y: f64,
     sy: usize,
     sh: usize,
-    runs: &mut Vec<Run>,
+    columns: &mut Vec<u8>,
     out: &mut PathEmit,
     rasters: &mut Vec<CellTexels>,
     arena: &mut Vec<u8>,
     reserve: &mut usize,
 ) -> Result<(), RenderError> {
-    dense_runs(strip, w, sh, runs);
+    dense_columns(strip, w, sh, columns);
     emit_runs(
-        runs,
+        &mut Columns(columns),
         (cov_x, cov_y, sy, sh),
         &mut |r, columns, arena| {
             arena.extend(strip[r * w..][columns].iter().copied().map(raster::texel));
@@ -594,7 +602,7 @@ fn emit_strip_sparse(
 ) -> Result<(), RenderError> {
     sparse_runs(coverage, ends, w, runs);
     emit_runs(
-        runs,
+        runs.as_mut_slice(),
         (cov_x, cov_y, sy, ends.len()),
         &mut |r, columns, arena| {
             let row = &coverage[if r == 0 { 0 } else { ends[r - 1] }..ends[r]];
@@ -619,11 +627,12 @@ fn emit_strip_sparse(
 /// Emits a band's class runs as [`partition`] splits them: a span for
 /// each full segment, a cell for every other, its rows streamed in by
 /// `append_row`. `band` is the grid origin, the band's first row and its
-/// height. A cell's widest full run is its interior.
+/// height. A cell's widest full run, the leftmost of equals, is its
+/// interior.
 #[expect(clippy::cast_possible_truncation)]
 #[expect(clippy::cast_precision_loss)]
-fn emit_runs<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
-    runs: &mut [Run],
+fn emit_runs<R: Runs + ?Sized, F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
+    runs: &mut R,
     band: (f64, f64, usize, usize),
     append_row: &mut F,
     out: &mut PathEmit,
@@ -643,48 +652,51 @@ fn emit_runs<F: FnMut(usize, std::ops::Range<usize>, &mut Vec<u8>)>(
             bottom,
         ]
     };
-    let start_of = |k: usize| if k == 0 { 0 } else { runs[k - 1].end() };
-    let mut k = 0;
-    while k < runs.len() {
-        let start = start_of(k);
-        match runs[k].link() {
-            Link::Skip => {
-                k += 1;
+    let mut at = runs.first();
+    while let Some(head) = at {
+        let (start, head_end) = runs.columns(head);
+        match runs.mark(head).link() {
+            Link::Skip => {}
+            Link::Span => out.spans.push(rect(start, head_end)),
+            Link::Head => {
+                let mut last = head;
+                let mut interior = 0..0;
+                loop {
+                    let columns = runs.columns(last);
+                    if runs.mark(last).class() == Class::Full
+                        && columns.1 - columns.0 > interior.end - interior.start
+                    {
+                        interior = columns.0..columns.1;
+                    }
+                    match runs.next(last) {
+                        Some(next) if runs.mark(next).link() == Link::Cell => last = next,
+                        _ => break,
+                    }
+                }
+                let end = runs.columns(last).1;
+                let interior = if interior.is_empty() {
+                    0..0
+                } else {
+                    (interior.start - start) as usize..(interior.end - start) as usize
+                };
+                make_cell(
+                    append_row,
+                    start as usize,
+                    rect(start, end),
+                    (end - start) as usize,
+                    sh,
+                    interior,
+                    &mut out.cells,
+                    rasters,
+                    arena,
+                    reserve,
+                )?;
+                at = runs.next(last);
                 continue;
             }
-            Link::Span => {
-                out.spans.push(rect(start, runs[k].end()));
-                k += 1;
-                continue;
-            }
-            Link::Head => {}
             Link::Cell => unreachable!("a cell's runs follow its head"),
         }
-        let last = k + runs[k + 1..]
-            .iter()
-            .take_while(|run| run.link() == Link::Cell)
-            .count();
-        let end = runs[last].end();
-        let interior = (k..=last)
-            .filter(|&i| runs[i].class() == Class::Full)
-            .map(|i| start_of(i)..runs[i].end())
-            .max_by_key(|run| (run.end - run.start, std::cmp::Reverse(run.start)))
-            .map_or(0..0, |run| {
-                (run.start - start) as usize..(run.end - start) as usize
-            });
-        make_cell(
-            append_row,
-            start as usize,
-            rect(start, end),
-            (end - start) as usize,
-            sh,
-            interior,
-            &mut out.cells,
-            rasters,
-            arena,
-            reserve,
-        )?;
-        k = last + 1;
+        at = runs.next(head);
     }
     Ok(())
 }
@@ -741,34 +753,22 @@ enum Link {
     Head = 3,
 }
 
-/// A maximal run of equal-class columns in one band, ending at column
-/// [`Run::end`]; it starts where the run before it ends, or at column 0.
-/// The emission keeps one per class change of its widest band, so the
-/// record is one word: the [`Class`] in bits 0–1, the [`Link`] in bits
-/// 2–3, the [`Run::OPENS`] flag in bit 4, and the end column above them.
+/// A run's state in five bits: its [`Class`] in bits 0–1, its [`Link`]
+/// in bits 2–3 and [`Mark::OPENS`] in bit 4.
 #[derive(Clone, Copy, Debug)]
-struct Run(u32);
+struct Mark(u8);
 
-impl Run {
-    /// Bits below the end column.
-    const END_SHIFT: u32 = 5;
+impl Mark {
+    /// The bits a mark uses.
+    const BITS: u32 = 5;
     /// Set by [`partition`] on a run that became the cheapest cell start
     /// so far: the cell that ends at any later run starts at the nearest
     /// run carrying it.
-    const OPENS: u32 = 1 << 4;
+    const OPENS: u8 = 1 << 4;
 
-    /// The record of a run of `class` ending at `end`.
-    fn new(end: u32, class: Class) -> Self {
-        assert!(
-            end < 1 << (u32::BITS - Self::END_SHIFT),
-            "a band's columns fit a run's end"
-        );
-        Self(end << Self::END_SHIFT | class as u32)
-    }
-
-    /// The column the run ends at.
-    const fn end(self) -> u32 {
-        self.0 >> Self::END_SHIFT
+    /// A run of `class` that the partition has not reached.
+    const fn new(class: Class) -> Self {
+        Self(class as u8)
     }
 
     /// The run's class.
@@ -790,19 +790,183 @@ impl Run {
         }
     }
 
-    /// Records what the run became, keeping its end, class and flag.
-    const fn set_link(&mut self, link: Link) {
-        self.0 = self.0 & !0b1100 | (link as u32) << 2;
+    /// The mark with `link`, keeping its class and flag.
+    const fn with_link(self, link: Link) -> Self {
+        Self(self.0 & !0b1100 | (link as u8) << 2)
     }
 
-    /// Whether the run carries [`Run::OPENS`].
+    /// Whether the mark carries [`Mark::OPENS`].
     const fn opens(self) -> bool {
         self.0 & Self::OPENS != 0
     }
 
-    /// Sets [`Run::OPENS`].
-    const fn mark_opens(&mut self) {
-        self.0 |= Self::OPENS;
+    /// The mark with [`Mark::OPENS`].
+    const fn with_opens(self) -> Self {
+        Self(self.0 | Self::OPENS)
+    }
+}
+
+/// A band's class runs, maximal ranges of equal-class columns, as
+/// [`partition`] and [`emit_runs`] walk them. `At` names one run.
+trait Runs {
+    /// A run's position.
+    type At: Copy + PartialEq;
+
+    /// The band's first run.
+    fn first(&self) -> Option<Self::At>;
+    /// The band's last run.
+    fn last(&self) -> Option<Self::At>;
+    /// The run after `at`.
+    fn next(&self, at: Self::At) -> Option<Self::At>;
+    /// The run before `at`.
+    fn prev(&self, at: Self::At) -> Option<Self::At>;
+    /// The run's columns, `(start, end)`.
+    fn columns(&self, at: Self::At) -> (u32, u32);
+    /// The run's mark.
+    fn mark(&self, at: Self::At) -> Mark;
+    /// Replaces the run's mark; its class stays.
+    fn set_mark(&mut self, at: Self::At, mark: Mark);
+}
+
+/// A sparse band's run, ending at column [`Run::end`]: it starts where
+/// the run before it ends, or at column 0. The record is one word, the
+/// end column above the run's [`Mark`].
+#[derive(Clone, Copy, Debug)]
+struct Run(u32);
+
+impl Run {
+    /// The record of a run ending at `end` with `mark`.
+    fn new(end: u32, mark: Mark) -> Self {
+        assert!(
+            end < 1 << (u32::BITS - Mark::BITS),
+            "a band's columns fit a run's end"
+        );
+        Self(end << Mark::BITS | u32::from(mark.0))
+    }
+
+    /// The column the run ends at.
+    const fn end(self) -> u32 {
+        self.0 >> Mark::BITS
+    }
+
+    /// The run's mark.
+    #[expect(clippy::cast_possible_truncation, reason = "the mark is the low bits")]
+    const fn mark(self) -> Mark {
+        Mark(self.0 as u8 & ((1 << Mark::BITS) - 1))
+    }
+}
+
+/// One record per run, `At` its index.
+impl Runs for [Run] {
+    type At = usize;
+
+    fn first(&self) -> Option<usize> {
+        (!self.is_empty()).then_some(0)
+    }
+
+    fn last(&self) -> Option<usize> {
+        self.len().checked_sub(1)
+    }
+
+    fn next(&self, at: usize) -> Option<usize> {
+        (at + 1 < self.len()).then_some(at + 1)
+    }
+
+    fn prev(&self, at: usize) -> Option<usize> {
+        at.checked_sub(1)
+    }
+
+    fn columns(&self, at: usize) -> (u32, u32) {
+        (
+            at.checked_sub(1).map_or(0, |prev| self[prev].end()),
+            self[at].end(),
+        )
+    }
+
+    fn mark(&self, at: usize) -> Mark {
+        self[at].mark()
+    }
+
+    fn set_mark(&mut self, at: usize, mark: Mark) {
+        self[at] = Run::new(self[at].end(), mark);
+    }
+}
+
+/// A dense band's columns, one byte each: every column holds its class,
+/// and a run's first column holds the run's [`Mark`]. `At` is the run's
+/// `(start, end)` columns, and stepping scans to the next class change.
+/// A dense band already pays a byte per column to classify, so its runs
+/// cost no more than the columns themselves.
+struct Columns<'a>(&'a mut [u8]);
+
+impl Columns<'_> {
+    /// The class of column `x`.
+    const fn class(&self, x: usize) -> u8 {
+        self.0[x] & 0b11
+    }
+
+    /// The end of the run starting at column `start`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a band is at most a surface wide"
+    )]
+    fn end_of(&self, start: u32) -> u32 {
+        let class = self.class(start as usize);
+        let rest = &self.0[start as usize + 1..];
+        start + 1 + rest.iter().take_while(|&&c| c & 0b11 == class).count() as u32
+    }
+
+    /// The start of the run ending at column `end`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a band is at most a surface wide"
+    )]
+    fn start_of(&self, end: u32) -> u32 {
+        let class = self.class(end as usize - 1);
+        let before = &self.0[..end as usize - 1];
+        end - 1
+            - before
+                .iter()
+                .rev()
+                .take_while(|&&c| c & 0b11 == class)
+                .count() as u32
+    }
+}
+
+impl Runs for Columns<'_> {
+    type At = (u32, u32);
+
+    fn first(&self) -> Option<(u32, u32)> {
+        (!self.0.is_empty()).then(|| (0, self.end_of(0)))
+    }
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "a band is at most a surface wide"
+    )]
+    fn last(&self) -> Option<(u32, u32)> {
+        let end = self.0.len() as u32;
+        (end > 0).then(|| (self.start_of(end), end))
+    }
+
+    fn next(&self, (_, end): (u32, u32)) -> Option<(u32, u32)> {
+        ((end as usize) < self.0.len()).then(|| (end, self.end_of(end)))
+    }
+
+    fn prev(&self, (start, _): (u32, u32)) -> Option<(u32, u32)> {
+        (start > 0).then(|| (self.start_of(start), start))
+    }
+
+    fn columns(&self, at: (u32, u32)) -> (u32, u32) {
+        at
+    }
+
+    fn mark(&self, (start, _): (u32, u32)) -> Mark {
+        Mark(self.0[start as usize])
+    }
+
+    fn set_mark(&mut self, (start, _): (u32, u32), mark: Mark) {
+        self.0[start as usize] = mark.0;
     }
 }
 
@@ -810,21 +974,22 @@ impl Run {
 /// when it has the same class.
 fn push_run(runs: &mut Vec<Run>, end: u32, class: Class) {
     match runs.last_mut() {
-        Some(run) if run.class() == class => *run = Run::new(end, class),
-        _ => runs.push(Run::new(end, class)),
+        Some(run) if run.mark().class() == class => *run = Run::new(end, run.mark()),
+        _ => runs.push(Run::new(end, Mark::new(class))),
     }
 }
 
-/// Splits a dense band of `w` columns and `sh` rows into class runs.
-fn dense_runs(strip: &[f32], w: usize, sh: usize, runs: &mut Vec<Run>) {
-    runs.clear();
-    let columns = u32::try_from(w).expect("a band is at most a surface wide");
-    for x in 0..columns {
+/// Classifies each column of a dense band of `w` columns and `sh` rows
+/// into `columns`.
+fn dense_columns(strip: &[f32], w: usize, sh: usize, columns: &mut Vec<u8>) {
+    columns.clear();
+    columns.resize(w, 0);
+    for (x, column) in columns.iter_mut().enumerate() {
         let mut state = (true, true);
         for row in 0..sh {
-            state = Class::fold(state, strip[row * w + x as usize]);
+            state = Class::fold(state, strip[row * w + x]);
         }
-        push_run(runs, x + 1, Class::new(state.0, state.1));
+        *column = Mark::new(Class::new(state.0, state.1)).0;
     }
 }
 
@@ -891,19 +1056,21 @@ const INSTANCE_BYTES: u32 = size_of::<Instance>() as u32 * INSTANCE_WEIGHT.0 / I
 /// instance + sh · end_k`, so the cheapest cell ending at `k` starts at
 /// the running minimum of `before_j − sh · start_j` over non-empty runs,
 /// and one pass solves the band. Each run that lowers the minimum
-/// carries [`Run::OPENS`], so a cell ending at `k` starts at the nearest
-/// such run at or before `k`; the backward pass marks each emitted cell
-/// from there.
-fn partition(runs: &mut [Run], sh: usize) {
+/// carries [`Mark::OPENS`], so a cell ending at `k` starts at the
+/// nearest such run at or before `k`; the backward pass marks each
+/// emitted cell from there.
+fn partition<R: Runs + ?Sized>(runs: &mut R, sh: usize) {
     let sh = i64::from(u32::try_from(sh).expect("a band is at most STRIP_H rows"));
     let instance = i64::from(INSTANCE_BYTES);
     // The cheapest cell start so far, as `before_j − sh · start_j`.
     let mut open: Option<i64> = None;
-    // The least byte cost of emitting every run before run `k`, and the
-    // column run `k` starts at.
-    let (mut before, mut start) = (0, 0);
-    for run in runs.iter_mut() {
-        let (cost, link) = if run.class() == Class::Empty {
+    // The least byte cost of emitting every run before the current one.
+    let mut before = 0;
+    let mut at = runs.first();
+    while let Some(run) = at {
+        let (start, end) = runs.columns(run);
+        let mut mark = runs.mark(run);
+        let (cost, link) = if mark.class() == Class::Empty {
             // A cell never starts or ends on a gap.
             (before, Link::Skip)
         } else {
@@ -911,36 +1078,41 @@ fn partition(runs: &mut [Run], sh: usize) {
             let best = match open {
                 Some(best) if best <= here => best,
                 _ => {
-                    run.mark_opens();
+                    mark = mark.with_opens();
                     *open.insert(here)
                 }
             };
-            let cell = best + instance + sh * i64::from(run.end());
+            let cell = best + instance + sh * i64::from(end);
             let span = before + instance;
-            if run.class() == Class::Full && span <= cell {
+            if mark.class() == Class::Full && span <= cell {
                 (span, Link::Span)
             } else {
                 (cell, Link::Cell)
             }
         };
-        run.set_link(link);
-        (before, start) = (cost, run.end());
+        runs.set_mark(run, mark.with_link(link));
+        before = cost;
+        at = runs.next(run);
     }
-    let mut k = runs.len();
-    while k > 0 {
-        let last = k - 1;
-        k = match runs[last].link() {
-            Link::Skip | Link::Span => last,
+    let mut at = runs.last();
+    while let Some(last) = at {
+        let link = runs.mark(last).link();
+        at = match link {
+            Link::Skip | Link::Span => runs.prev(last),
             Link::Cell => {
-                let from = runs[..=last]
-                    .iter()
-                    .rposition(|run| run.opens())
-                    .expect("a cell ends at or after the run that opened it");
-                runs[from].set_link(Link::Head);
-                for run in &mut runs[from + 1..=last] {
-                    run.set_link(Link::Cell);
+                let mut from = last;
+                while !runs.mark(from).opens() {
+                    from = runs
+                        .prev(from)
+                        .expect("a cell ends at or after the run that opened it");
                 }
-                from
+                runs.set_mark(from, runs.mark(from).with_link(Link::Head));
+                let mut run = from;
+                while run != last {
+                    run = runs.next(run).expect("a cell's runs reach its last");
+                    runs.set_mark(run, runs.mark(run).with_link(Link::Cell));
+                }
+                runs.prev(from)
             }
             Link::Head => unreachable!("the forward pass marks no heads"),
         };
@@ -1160,6 +1332,18 @@ pub fn placement(content_hash: u64, transform: Affine, surface: (u32, u32)) -> P
         raster: Affine::new([a, b, c, d, ix + qx, iy + qy]),
         offset: Vec2::new(ix, iy),
     }
+}
+
+/// Each run's end column and class, in order.
+#[cfg(test)]
+fn classes<R: Runs + ?Sized>(runs: &R) -> Vec<(u32, Class)> {
+    let mut out = Vec::new();
+    let mut at = runs.first();
+    while let Some(run) = at {
+        out.push((runs.columns(run).1, runs.mark(run).class()));
+        at = runs.next(run);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1388,11 +1572,10 @@ mod tests {
         for row in coverage.data.as_chunks_mut::<40>().0 {
             row[9] = 6e-14;
         }
-        let mut runs = Vec::new();
-        dense_runs(&coverage.data, coverage.w, STRIP_H, &mut runs);
-        let classes: Vec<_> = runs.iter().map(|run| (run.end(), run.class())).collect();
+        let mut columns = Vec::new();
+        dense_columns(&coverage.data, coverage.w, STRIP_H, &mut columns);
         assert_eq!(
-            classes,
+            classes(&Columns(&mut columns)),
             [(10, Class::Empty), (13, Class::Partial), (40, Class::Empty)]
         );
         let mut arena = Vec::new();
@@ -1506,12 +1689,9 @@ mod emit_eq {
             }
             let mut dense = Vec::new();
             let mut sparse = Vec::new();
-            dense_runs(&strip, w, sh, &mut dense);
+            dense_columns(&strip, w, sh, &mut dense);
             sparse_runs(&runs, &ends, w, &mut sparse);
-            let classes = |runs: &[Run]| -> Vec<_> {
-                runs.iter().map(|run| (run.end(), run.class())).collect()
-            };
-            assert_eq!(classes(&dense), classes(&sparse));
+            assert_eq!(classes(&Columns(&mut dense)), classes(sparse.as_slice()));
             let (mut dp, mut sp) = (PathEmit::default(), PathEmit::default());
             let (mut dr, mut sr, mut da, mut sa) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
             emit_strip(
