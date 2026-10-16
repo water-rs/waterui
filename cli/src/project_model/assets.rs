@@ -1321,10 +1321,11 @@ fn resolve_declarations(declarations: Vec<FontDeclaration>) -> Vec<FontDeclarati
 /// work, not a queue.
 async fn satisfy_declarations<T, Fut>(
     declarations: Vec<FontDeclaration>,
-    satisfy: impl Fn(FontDeclaration) -> Fut,
+    satisfy: impl Fn(FontDeclaration) -> Fut + Sync,
 ) -> Vec<(FontDeclaration, T)>
 where
-    Fut: Future<Output = T>,
+    Fut: Future<Output = T> + Send,
+    T: Send,
 {
     futures_util::stream::iter(resolve_declarations(declarations))
         .map(|decl| {
