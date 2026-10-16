@@ -29,6 +29,7 @@ use crate::render::instance::{
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
+use crate::render::raster;
 
 /// The target a pass draws into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4898,15 +4899,17 @@ impl<'a> Lowering<'a> {
             offset,
         );
         if let Some(pending) = pending {
-            for i in 0..emit.cells.len() {
-                let patch = (
+            // Extending from the exact-size range grows each list at most
+            // once per path, where a push per cell can grow it several times.
+            let patches = (0..emit.cells.len()).map(|i| {
+                (
                     u32::try_from(first + i).expect("instance index fits u32"),
                     pending,
                     u32::try_from(i).expect("cell index fits u32"),
-                );
-                self.emission_patches.push(patch);
-                self.cell_patches.push(patch);
-            }
+                )
+            });
+            self.emission_patches.extend(patches.clone());
+            self.cell_patches.extend(patches);
         }
     }
 
@@ -5097,11 +5100,7 @@ impl<'a> Lowering<'a> {
             let (Ok(w), Ok(h)) = (u32::try_from(coverage.w), u32::try_from(coverage.h)) else {
                 return Err(RenderError::Unsupported(names::PATH_CLIP_TOO_LARGE));
             };
-            let texels: Vec<u8> = coverage
-                .data
-                .iter()
-                .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-                .collect();
+            let texels: Vec<u8> = coverage.data.iter().copied().map(raster::texel).collect();
             let key = if coverage.clipped {
                 pl.key_exact()
             } else {
