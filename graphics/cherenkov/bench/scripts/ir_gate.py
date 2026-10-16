@@ -113,8 +113,14 @@ teardown crashes when another instance layer sits in front of it.
 """
 import argparse, collections, concurrent.futures, ctypes, fnmatch, hashlib, json, os, pathlib, platform, re, selectors, shutil, struct, subprocess, sys, typing
 
-ROOTS = {'lower': ('13lower_content', 'cherenkov_gpu'), 'encode': ('6Engine6encode', 'cherenkov_ad'),
-         'run_transaction': ('15run_transaction', 'cherenkov_record')}
+# Each root as (name suffix, the substrings its symbol must hold).
+# `run_transaction` is generic over its closure, and the bench opens one
+# transaction per frame in `Engine::encode` and one at setup in
+# `Engine::prepare`; whether the compiler keeps the setup instantiation as its
+# own symbol depends on inlining (opt-level "z" folds it into `prepare`, 3
+# does not), so the root is the instantiation whose closure is `encode`'s.
+ROOTS = {'lower': ('13lower_content', ('cherenkov_gpu',)), 'encode': ('6Engine6encode', ('cherenkov_ad',)),
+         'run_transaction': ('15run_transaction', ('cherenkov_record', '6Engine6encode'))}
 # The roots each perf scene runs in steady state. `encode` runs once per frame
 # in every scene. A motion or live scene records its content on the first
 # frame only and later frames open no transaction (the bench's Cherenkov
@@ -136,12 +142,17 @@ PAUSE = 'cherenkov-bench: paused before frame {}'
 CPU_FRAME = 'frame'
 CPU_SCENES = {scene: (CPU_FRAME,) for scene in SCENES}
 # The CPU leg's mangled names (`--demangle=no`, Rust v0 mangling), as
-# (suffix, crate) like ROOTS: the adapter's `submit` closes a bench frame on
-# the main thread, `apply_message::<Raster>` handles one message on the render
-# thread, and a pool worker runs each job from `wait_until_cold`.
-CPU_MARKER = ('6Engine6submit', '16cherenkov_cpu_ad')
-CPU_RENDER = ('13apply_message', '13cherenkov_cpu6Raster')
-CPU_WAITER = ('12WorkerThread15wait_until_cold', '10rayon_core')
+# (suffix, substrings) like ROOTS: the adapter's `submit` closes a bench frame
+# on the main thread, and `apply_message::<Raster>` handles one message on the
+# render thread.
+CPU_MARKER = ('6Engine6submit', ('16cherenkov_cpu_ad',))
+CPU_RENDER = ('13apply_message', ('13cherenkov_cpu6Raster',))
+# The crate whose scheduler dispatches every pool job. Which of its functions
+# Callgrind reports as a job's caller depends on inlining and code layout
+# (`wait_until_cold` at opt-level "z"; at 3, the `Sleep::sleep` instantiation
+# for its closure, which never calls a job itself), so a job's caller is
+# checked by crate, not by name.
+CPU_POOL = '10rayon_core'
 # Every rayon job's entry point: `<StackJob<..> as Job>::execute` and the
 # other job kinds, one function per job type.
 CPU_JOB = '*10rayon_core3job*3Job7execute*'
@@ -529,7 +540,6 @@ class CpuRoots(typing.NamedTuple):
     """The CPU leg's symbols in one binary."""
     marker: str
     render: str
-    waiter: str
     jobs: tuple
 
     def root(self, function):
@@ -570,8 +580,9 @@ def frame_samples(out, prefix, triggers, roots, frames=CPU_SAMPLES):
             if callers or roots.root(function) is None:
                 continue
             if function != roots.render:
-                assert names[a] == roots.waiter, (prefix, number, names[a], function,
-                                                  'a job ran inside another: the CPU leg needs one worker per pool')
+                caller = context(names[a])[0]
+                assert CPU_POOL in caller and roots.root(caller) is None, (
+                    prefix, number, names[a], function, 'a job ran inside another: the CPU leg needs one worker per pool')
             root_ir[number][function] += cost; root_calls[number][function] += ncalls[(a, b)]
         windows[number] = share(names, edge, ncalls, roots.root, SYNC)
         kind, function = triggers[number]
@@ -707,15 +718,15 @@ def symbols_of(binary):
             subprocess.run(['nm', '--defined-only', str(binary)], capture_output=True, text=True, check=True).stdout.splitlines()]
 
 
-def one_symbol(symbols, suffix, crate, tag, what):
-    hits = [s for s in symbols if s.endswith(suffix) and crate in s]
+def one_symbol(symbols, suffix, parts, tag, what):
+    hits = [s for s in symbols if s.endswith(suffix) and all(part in s for part in parts)]
     if not hits:
         # A generic function's symbol keeps the fn name inside its own
         # path, ahead of the `NC`-delimited instantiation suffix
         # (`…Shared<Gpu>E15run_transactionNC<closure>`), or ahead of its
         # generic arguments (`…13apply_messageNtCs…_13cherenkov_cpu6RasterE…`):
         # match the name there instead.
-        hits = list(dict.fromkeys(s for s in symbols if suffix in s.split('NC', 1)[0] and crate in s))
+        hits = list(dict.fromkeys(s for s in symbols if suffix in s.split('NC', 1)[0] and all(part in s for part in parts)))
     if len(hits) != 1:
         raise RuntimeError(f'{tag}: expected one {what} symbol, found {hits}. '
                            'Build with CARGO_PROFILE_RELEASE_DEBUG=1 and CARGO_PROFILE_RELEASE_STRIP=false.')
@@ -726,11 +737,10 @@ def cpu_roots(symbols, tag):
     """The CPU leg's symbols in a binary; none of its roots may be a subtracted function."""
     roots = CpuRoots(marker=one_symbol(symbols, *CPU_MARKER, tag, 'submit'),
                      render=one_symbol(symbols, *CPU_RENDER, tag, 'apply_message'),
-                     waiter=one_symbol(symbols, *CPU_WAITER, tag, 'wait_until_cold'),
                      jobs=tuple(s for s in symbols if fnmatch.fnmatchcase(s, CPU_JOB)))
     if not roots.jobs:
         raise RuntimeError(f'{tag}: no rayon job entry matches {CPU_JOB}')
-    for symbol in (roots.marker, roots.render, roots.waiter, *roots.jobs):
+    for symbol in (roots.marker, roots.render, *roots.jobs):
         if subtracted(symbol, SYNC) is not None:
             raise RuntimeError(f'{tag}: {symbol} is both a root and a subtracted function')
     return roots
@@ -811,7 +821,7 @@ def profile(binary, tag, scene, repo, out, pause_at, warmup, icd=None, phases=No
     prefix = out / f'{tag}-{scene}'
     assert not [p for p in out.glob(prefix.name + '.*') if not p.name.endswith('.progress.log')], f'existing run: {prefix}'
     symbols = symbols_of(binary)
-    roots = {phase: one_symbol(symbols, suffix, crate, tag, phase) for phase, (suffix, crate) in ROOTS.items()}
+    roots = {phase: one_symbol(symbols, suffix, parts, tag, phase) for phase, (suffix, parts) in ROOTS.items()}
     # Each profile owns its loader files; parallel scenes must not rewrite
     # a manifest while another process is loading it.
     layer_dir = out / (prefix.name + '.vk_layer')
