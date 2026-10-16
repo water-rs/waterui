@@ -48,24 +48,31 @@ def chain(function, *callers):
     return "'".join((function, *callers))
 
 
-# Four bench frames. The render thread's call is entered at dump 1 (an
-# earlier one, in flight when instrumentation switched on, returns there);
-# frame 1's job returns only after the frame's `submit` (dump 3), in dump 4.
-# Its allocator, memory-primitive and latch calls land in the dumps between
-# its entry and its return; a call inside the latch wait is part of it.
+# Four bench frames, written the way Callgrind writes them: every dump holds
+# the Ir each call ran since the previous dump, returned or not, and a call's
+# count rides on the first nonzero write after its entry. Dump 1 holds the
+# tail of a render call in flight when instrumentation switched on, and a
+# futex `syscall` the parked worker entered before then, with no caller
+# chain. Frame 1's render call ends in dump 4, whose write carries the count
+# of the call that dump's own trigger enters; frame 1's job runs past the
+# frame's `submit` (dump 3) into dump 4. The allocator, memory-primitive and
+# latch calls under a root land in the dumps of its window; a call inside
+# the latch wait is part of it.
 CPU_RUN = {
-    1: (('before', RENDER), [(RUN, RENDER, 1, 9)]),
-    2: (('before', JOB), [(RENDER, chain(ALLOC, RENDER, RUN), 1, 5)]),
-    3: (('after', MARKER), [(RUN, RENDER, 1, 100), (RENDER, chain(WAIT, RENDER, RUN), 1, 20),
-                            (WAIT, chain(ALLOC, WAIT, RENDER, RUN), 1, 4), (JOB, chain('memcpy', JOB, WAITER), 1, 8)]),
-    4: (('before', RENDER), [(WAITER, JOB, 1, 300), (JOB, chain(LATCH, JOB, WAITER), 1, 6)]),
-    5: (('before', JOB), []),
-    6: (('after', MARKER), [(RUN, RENDER, 1, 110), (WAITER, JOB, 1, 280), (JOB, chain('free', JOB, WAITER), 1, 3)]),
+    1: (('before', RENDER), [(RUN, RENDER, 0, 9), (WAITER, 'syscall', 1, 2)]),
+    2: (('before', JOB), [(RUN, RENDER, 1, 60), (RENDER, chain(ALLOC, RENDER, RUN), 1, 5)]),
+    3: (('after', MARKER), [(RUN, RENDER, 0, 40), (RENDER, chain(WAIT, RENDER, RUN), 1, 20),
+                            (WAIT, chain(ALLOC, WAIT, RENDER, RUN), 1, 4), (WAITER, JOB, 1, 200),
+                            (JOB, chain('memcpy', JOB, WAITER), 1, 8)]),
+    4: (('before', RENDER), [(RUN, RENDER, 1, 7), (WAITER, JOB, 0, 100), (JOB, chain(LATCH, JOB, WAITER), 1, 6)]),
+    5: (('before', JOB), [(RUN, RENDER, 0, 70), (RENDER, chain('free', RENDER, RUN), 1, 3)]),
+    6: (('after', MARKER), [(RUN, RENDER, 0, 40), (WAITER, JOB, 1, 280)]),
     7: (('before', RENDER), []),
-    8: (('before', JOB), []),
-    9: (('after', MARKER), [(RUN, RENDER, 1, 120), (WAITER, JOB, 1, 290)]),
+    8: (('before', JOB), [(RUN, RENDER, 1, 115)]),
+    9: (('after', MARKER), [(RUN, RENDER, 0, 5), (WAITER, JOB, 1, 290)]),
     10: (('before', RENDER), []),
-    11: (('after', MARKER), [(RUN, RENDER, 1, 130)]),
+    11: (('before', JOB), [(RUN, RENDER, 1, 100)]),
+    12: (('after', MARKER), [(RUN, RENDER, 0, 30), (WAITER, JOB, 1, 300)]),
 }
 
 
@@ -202,9 +209,12 @@ class Sampling(unittest.TestCase):
             ir_gate.measure(DATA / 'truncated.1', ROOT)
         self.assertEqual(ir_gate.measure(DATA / 'truncated.1', ROOT)['alloc_ir'], 0)
 
-    def test_unseparated_allocator_fails(self):
-        with self.assertRaises(AssertionError):
-            ir_gate.measure(DATA / 'unseparated.1', ROOT)
+    def test_call_on_an_empty_call_stack_is_charged_to_no_root(self):
+        # Every subtracted function is separated by caller chain, so a call
+        # without one was entered on an empty call stack, before
+        # instrumentation switched on.
+        sample = ir_gate.measure(DATA / 'stackless.1', ROOT)
+        self.assertEqual((sample['ir'], sample['alloc_ir'], sample['allocs']), (20, 0, 0))
 
     def test_leg_builds_its_engine(self):
         self.assertIn('cherenkov', ir_gate.build_args(ir_gate.LEGS['gpu']))
@@ -246,34 +256,42 @@ class CpuFrames(unittest.TestCase):
 
     def test_calls_belong_to_the_frame_of_their_entry(self):
         first, second, third = self.samples(CPU_RUN)
-        self.assertEqual((first['ir'], first['jobs'], first['messages']), (100 + 300, 1, 1))
+        self.assertEqual((first['ir'], first['jobs'], first['messages']), (107 + 300, 1, 1))
         self.assertEqual((first['alloc_ir'], first['allocs']), (5, 1))
         self.assertEqual((first['mem_ir'], first['mem_calls']), (8, 1))
         self.assertEqual((first['sync_ir'], first['sync_calls']), (20 + 6, 2))
-        self.assertEqual(first['rust_ir'], 400 - 5 - 8 - 26)
+        self.assertEqual(first['rust_ir'], 407 - 5 - 8 - 26)
         self.assertEqual((second['ir'], second['alloc_ir'], second['deallocs'], second['rust_ir']), (390, 3, 1, 387))
         self.assertEqual((third['ir'], third['rust_ir']), (410, 410))
 
-    def test_a_lost_return_fails(self):
+    def test_a_call_without_its_dump_fails(self):
         run = dict(CPU_RUN)
-        run[4] = (('before', RENDER), [])
-        with self.assertRaisesRegex(AssertionError, 'never returned'):
+        run[8] = (('before', JOB), [(RUN, RENDER, 2, 115)])
+        with self.assertRaisesRegex(AssertionError, 'entered without its dump'):
             self.samples(run)
 
-    def test_a_return_without_its_entry_fails(self):
+    def test_a_dump_without_its_call_fails(self):
         run = dict(CPU_RUN)
-        run[5] = (('before', RENDER), [])
-        with self.assertRaisesRegex(AssertionError, 'returned without an entry'):
+        run[8] = (('before', JOB), [(RUN, RENDER, 0, 115)])
+        run[11] = (('before', JOB), [(RUN, RENDER, 0, 100)])
+        with self.assertRaisesRegex(AssertionError, 'a dump without its call'):
+            self.samples(run)
+
+    def test_a_sampled_call_running_at_the_last_dump_fails(self):
+        run = dict(CPU_RUN)
+        run[11] = (('after', MARKER), [(RUN, RENDER, 1, 100)])
+        run[12] = (('after', MARKER), [(RUN, RENDER, 0, 30), (WAITER, JOB, 0, 300)])
+        with self.assertRaisesRegex(AssertionError, 'still running at the last dump'):
             self.samples(run)
 
     def test_a_nested_job_fails(self):
         run = dict(CPU_RUN)
-        run[6] = (('after', MARKER), [(RUN, RENDER, 1, 110), (JOB, JOB, 1, 280)])
+        run[6] = (('after', MARKER), [(RUN, RENDER, 0, 40), (JOB, JOB, 1, 280)])
         with self.assertRaisesRegex(AssertionError, 'one worker per pool'):
             self.samples(run)
 
     def test_too_few_frames_fail(self):
-        run = {n: v for n, v in CPU_RUN.items() if n < 11}
+        run = {n: v for n, v in CPU_RUN.items() if n < 10}
         with self.assertRaisesRegex(AssertionError, 'frames closed'):
             self.samples(run)
 

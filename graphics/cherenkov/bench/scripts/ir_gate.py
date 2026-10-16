@@ -268,7 +268,12 @@ def share(names, edge, calls, symbol_of, sync=()):
         kind = subtracted(function, sync)
         if kind is None:
             continue
-        assert callers, (names[b], 'not separated by caller chain: add it to the Callgrind patterns')
+        if not callers:
+            # Every subtracted function is separated by caller chain, so an
+            # empty chain means its thread's call stack was empty: the call
+            # was entered before instrumentation switched on (a thread parked
+            # in a futex wait), on a thread no root call had entered yet.
+            continue
         found = [i for i, caller in enumerate(callers) if symbol_of(caller) is not None]
         if not found:
             assert len(callers) < CALLERS, (names[b], f'caller chain truncated at {CALLERS} without the root')
@@ -365,22 +370,30 @@ def frame_samples(out, prefix, triggers, roots, frames=CPU_SAMPLES):
     """The CPU backend's work per bench frame: frames 1..`frames` after the pause.
 
     `triggers` maps each dump number to its (`before`|`after`, function). A
-    frame is the span after the previous `submit` dump up to its own. Each
-    root call is entered at its `--dump-before` dump and returns in the first
-    later dump that writes its function's root edge; it belongs to the frame
-    of its entry. Its subtracted calls lie in the dumps after its entry up to
-    its return: they return before it does and after it entered.
+    frame is the span after the previous `submit` dump up to its own, and a
+    root call belongs to the frame holding its `--dump-before` dump.
+
+    A dump writes, on every thread, the Ir each call ran since the previous
+    dump, whether or not it has returned, so a call's cost is spread over the
+    dumps from its entry to its return. The call count is no guide to which
+    call that is: it rides on the first nonzero write after the entry, and
+    calls from one call site share that write. The windows are: calls of one
+    root function run one after another (one render thread; one worker per
+    pool, and each job type belongs to one pool), so the root's Ir in the
+    dumps after one entry up to the next entry of the same function is that
+    call's, and so are the subtracted calls under it in those dumps.
     """
+    numbers = sorted(triggers)
     span = {}; frame = 1
-    for number in sorted(triggers):
+    for number in numbers:
         span[number] = frame
         if triggers[number] == ('after', roots.marker):
             frame += 1
     assert frame > frames + 1, (prefix, f'{frame - 1} frames closed; {frames + 1} are needed')
-    pending = collections.defaultdict(collections.deque); entered = set(); returned = []
-    windows = collections.defaultdict(list)
-    for number in sorted(triggers):
+    entries = collections.defaultdict(list); root_ir = {}; root_calls = {}; windows = {}
+    for number in numbers:
         names, edge, ncalls = parse(out / f'{prefix}.{number}')
+        root_ir[number] = collections.Counter(); root_calls[number] = collections.Counter()
         for (a, b), cost in edge.items():
             function, callers = context(names[b])
             if callers or roots.root(function) is None:
@@ -388,35 +401,49 @@ def frame_samples(out, prefix, triggers, roots, frames=CPU_SAMPLES):
             if function != roots.render:
                 assert names[a] == roots.waiter, (prefix, number, names[a], function,
                                                   'a job ran inside another: the CPU leg needs one worker per pool')
-            if pending[function]:
-                first = pending[function].popleft()
-                returned.append({'function': function, 'entry': first, 'return': number, 'ir': cost})
-            else:
-                # Entered before instrumentation switched on: only before
-                # this function's first entry, or a call was lost.
-                assert function not in entered, (prefix, number, function, 'returned without an entry')
+            root_ir[number][function] += cost; root_calls[number][function] += ncalls[(a, b)]
         windows[number] = share(names, edge, ncalls, roots.root, SYNC)
         kind, function = triggers[number]
         if kind == 'before':
             assert roots.root(function) is not None, (prefix, number, function, 'dump-before on a non-root')
-            pending[function].append(number); entered.add(function)
+            entries[function].append(number)
+    # A call that reached no `--dump-before`, or a trigger without a call,
+    # would merge or split windows: the counts written up to each dump never
+    # exceed the entries up to it, and fall short by at most the one entry
+    # whose cost is not written yet.
+    for function in set(entries) | {f for n in numbers for f in root_calls[n]}:
+        written = 0; entered = 0
+        for number in numbers:
+            entered += triggers[number] == ('before', function)
+            written += root_calls[number][function]
+            assert written <= entered, (prefix, number, function, written, entered, 'a call entered without its dump')
+        assert written >= entered - 1, (prefix, function, written, entered, 'a dump without its call')
+    calls = []
+    for function, starts in entries.items():
+        for index, entry in enumerate(starts):
+            last = starts[index + 1] if index + 1 < len(starts) else numbers[-1]
+            window = [n for n in numbers if entry < n <= last]
+            if index + 1 == len(starts) and span[entry] <= frames:
+                # No later entry closes it: it must have finished before the
+                # last dump, which then holds none of its Ir.
+                assert not root_ir[numbers[-1]][function], (prefix, function, entry, 'a sampled call still running at the last dump')
+            calls.append({'function': function, 'entry': entry, 'window': window,
+                          'ir': sum(root_ir[n][function] for n in window)})
     samples = []
     for index in range(1, frames + 1):
-        calls = [c for c in returned if span[c['entry']] == index]
-        unpaired = [(f, n) for f, entries in pending.items() for n in entries if span[n] == index]
-        assert not unpaired, (prefix, index, unpaired, 'calls entered in a sampled frame never returned')
+        frame_calls = [c for c in calls if span[c['entry']] == index]
         sample = collections.Counter({k: 0 for k in ('ir', 'alloc_ir', 'mem_ir', 'mem_calls', 'sync_ir', 'sync_calls', *KINDS)})
-        for call in calls:
+        for call in frame_calls:
+            assert call['ir'] > 0, (prefix, index, call, 'a sampled call ran no instructions')
             sample['ir'] += call['ir']
-            for number in range(call['entry'] + 1, call['return'] + 1):
-                if number in windows:
-                    sample.update(windows[number].get(call['function'], {}))
+            for number in call['window']:
+                sample.update(windows[number].get(call['function'], {}))
         sample = dict(sample)
-        sample['jobs'] = sum(1 for c in calls if c['function'] != roots.render)
-        sample['messages'] = sum(1 for c in calls if c['function'] == roots.render)
+        sample['jobs'] = sum(1 for c in frame_calls if c['function'] != roots.render)
+        sample['messages'] = sum(1 for c in frame_calls if c['function'] == roots.render)
         assert sample['jobs'] and sample['messages'], (prefix, index, sample, 'a sampled frame ran no raster job')
         sample['rust_ir'] = sample['ir'] - sample['alloc_ir'] - sample['mem_ir'] - sample['sync_ir']
-        sample['path'] = f'{prefix}.{max(c["return"] for c in calls)}'
+        sample['path'] = f'{prefix}.{max(c["window"][-1] for c in frame_calls)}'
         samples.append(sample)
     return samples
 
