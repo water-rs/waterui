@@ -167,7 +167,8 @@ pub enum TimestampSupport {
 
 /// The texture format used for intermediate (isolation) render targets.
 ///
-/// The surface itself stays `Rgba16Float` regardless; this only picks the
+/// The surface keeps its own format — `Rgba16Float`, or the `Rgba32Float`
+/// an offscreen target can request — regardless; this only picks the
 /// precision of offscreen layers the compositor reads back in the same
 /// frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

@@ -117,6 +117,12 @@ impl AndroidArch {
 
 /// Arguments for the package command.
 #[derive(ClapArgs, Debug)]
+// CLI flag structs collect booleans by nature; each flag is a documented
+// `--flag`, not structural state.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "every boolean is a documented --flag, not structural state — the shape follows the CLI surface"
+)]
 pub struct Args {
     /// Target platform to package for.
     #[arg(short, long, value_enum)]
@@ -164,6 +170,13 @@ pub struct Args {
     /// Required when packaging Android backend.
     #[arg(long, value_enum, value_delimiter = ',')]
     arch: Vec<AndroidArch>,
+
+    /// Package without accessing the network — the same switch as
+    /// `cargo build --offline`, and `CARGO_NET_OFFLINE` is honoured the same
+    /// way. A declared font missing from the font cache then fails the
+    /// packaging instead of being fetched.
+    #[arg(long)]
+    offline: bool,
 
     /// Skip the confirmation prompt required by experimental backends
     /// (needed in non-interactive environments).
@@ -274,7 +287,7 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
             ManagedBackends::for_platform(lib_platform(args.platform))
         };
     let project = Project::open_for_build(
-        &waterui_cli::toolchain::Host::current(),
+        &waterui_cli::toolchain::Host::current().with_offline(args.offline),
         &project_path,
         managed_backends,
     )

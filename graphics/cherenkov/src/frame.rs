@@ -181,6 +181,10 @@ pub struct Readback {
 }
 
 /// The storage format of an [`Offscreen`] target.
+///
+/// A backend renders into exactly the requested format, or fails surface
+/// creation with [`SurfaceError::UnsupportedFormat`](crate::SurfaceError::UnsupportedFormat)
+/// when the device cannot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum OffscreenFormat {
     /// Linear `Rgba16Float`.

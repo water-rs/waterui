@@ -517,6 +517,7 @@ gap; changing one is a contract change.
 | `AspectRatio` reports the resolved ratio box and hands it to the child as its frame. | `aspectRatio` transforms the proposal but reports the child's answer. | The ratio box is the contract; the child receives it resolved, not re-negotiated. |
 | `Background` places the secondary view over the whole bounds and proposes them. | The secondary view may keep a smaller rigid answer inside the base's size. | Whole-bounds allocation keeps a background flush with what it backs. |
 | `ScrollView` fills the finite cross-axis offer. | A scroll view hugs non-filling content on the cross axis. | One fill rule keeps scroll surfaces flush with their slots on every backend. |
+| A window or navigation page root is proposed the window's content size and fills it. | On macOS, a page whose ideal width is below the window's is placed in a centred column of that width. | One root rule on every backend: content-sized pages are already centred by the scroll's own centring rule, and filling pages keep the whole window. |
 | `overlay(alignment:)` anchors a decoration on the envelope its own guide forms inside the bounds. | A decoration's guides offset it against the base's alignment lines. | Anchoring the decoration's own envelope keeps a badge inside the bounds that a base-anchored offset would cross. |
 
 ## 9. Invariants a change must preserve

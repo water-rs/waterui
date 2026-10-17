@@ -944,7 +944,10 @@ fn fs_shadow(in: VsOut) -> vec4<f32> {
     return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
 }
 
-fn fs_full(in: VsOut) -> vec4<f32> {
+fn fs_full(fragment: VsOut) -> vec4<f32> {
+    // A device-space quad paints, clips and samples at its pixel, never at
+    // a point interpolated across the quad.
+    let in = device_quad_pixel(fragment);
     // The constants every fragment needs arrive as flat varyings; the
     // storage array is read only for kind-specific fields (inner, clip,
     // mask, gradient data).
