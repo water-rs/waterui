@@ -15,6 +15,7 @@ use color_eyre::eyre::{Context as _, Result, bail};
 use object::read::archive::ArchiveFile;
 use object::{File, FileKind, Object, ObjectSection, ObjectSymbol};
 use waterui_assets_planner::BundleMountMeta;
+use waterui_meta::{DIR_SECTION, dir_records};
 
 /// Symbols of one compiled Rust artifact: an rlib/staticlib archive (every
 /// member parsed) or a single object/dylib.
@@ -66,9 +67,11 @@ impl ArtifactSymbols {
         !self.has_symbols
     }
 
-    /// Leaf path segments of the demangled symbol names (text after the
-    /// last `::`, the whole name when it has none) that start with
-    /// `prefix`. Deduplicated and sorted.
+    /// Leaf names the artifact carries that start with `prefix`:
+    /// demangled symbol leaves plus the names of `name`, NUL, `payload`,
+    /// NUL records parked in the `.wmeta` (`__wmeta` on Mach-O) metadata
+    /// directory — which answer on a linked image that keeps no symbol
+    /// table at all, like a PE binary. Deduplicated and sorted.
     ///
     /// Names are demangled with the `{:#}` alternate form so trailing hashes
     /// are dropped; un-mangled names pass through unchanged. Only a name
@@ -91,6 +94,14 @@ impl ArtifactSymbols {
                             .map(str::to_owned)
                     }),
             );
+            for_each_dir_section(&file, |data| {
+                leaves.extend(
+                    dir_records(data)
+                        .filter_map(|record| std::str::from_utf8(record.name).ok())
+                        .filter(|name| name.starts_with(prefix))
+                        .map(str::to_owned),
+                );
+            });
         });
         leaves.into_iter().collect()
     }
@@ -119,17 +130,26 @@ impl ArtifactSymbols {
 
     /// Bytes of a `#[used] static`.
     ///
-    /// Locates the symbol whose demangled leaf equals `leaf`, reads its
-    /// section data from the symbol address, and cuts at the first NUL byte:
-    /// payloads are NUL-terminated by contract because Mach-O symbols carry
-    /// no size.
+    /// Two channels answer: a record named `leaf` in the `.wmeta`
+    /// (`__wmeta` on Mach-O) metadata directory — self-describing, so it
+    /// resolves on a linked image that carries no symbol table — and the
+    /// older spelling, where the symbol whose demangled leaf equals `leaf`
+    /// names the static and its section data is cut at the first NUL byte
+    /// because a Mach-O symbol carries no size.
     ///
     /// # Errors
-    /// Returns an error when no symbol has that leaf or when two different
-    /// definitions exist.
+    /// Returns an error when no record or symbol has that leaf or when two
+    /// different definitions exist.
     pub fn static_bytes(&self, leaf: &str) -> Result<Vec<u8>> {
         let mut payloads = BTreeSet::new();
         for_each_object(&self.data, |file| {
+            for_each_dir_section(&file, |data| {
+                payloads.extend(
+                    dir_records(data)
+                        .filter(|record| record.name == leaf.as_bytes())
+                        .map(|record| record.payload.to_vec()),
+                );
+            });
             for symbol in file.symbols() {
                 let Ok(raw) = symbol.name() else { continue };
                 // A leaf is spelled verbatim in its raw name (see
@@ -143,6 +163,12 @@ impl ArtifactSymbols {
                 let Ok(section) = file.section_by_index(index) else {
                     continue;
                 };
+                // A dir-record static's bytes are the record, not the
+                // payload — the directory pass above already read it.
+                let Ok(name) = section.name() else { continue };
+                if matches!(name, DIR_SECTION | "__wmeta") {
+                    continue;
+                }
                 let Ok(data) = section.data() else { continue };
                 let Ok(offset) = usize::try_from(symbol.address().wrapping_sub(section.address()))
                 else {
@@ -161,7 +187,7 @@ impl ArtifactSymbols {
         });
         let mut payloads = payloads.into_iter();
         let Some(payload) = payloads.next() else {
-            bail!("no symbol with leaf `{leaf}` carries section data in the artifact");
+            bail!("no symbol or metadata record named `{leaf}` carries a payload in the artifact");
         };
         if payloads.next().is_some() {
             bail!("artifact defines `{leaf}` more than once with different payloads");
@@ -175,6 +201,19 @@ impl std::fmt::Debug for ArtifactSymbols {
         f.debug_struct("ArtifactSymbols")
             .field("has_symbols", &self.has_symbols)
             .finish_non_exhaustive()
+    }
+}
+
+/// Invoke `f` on the bytes of every metadata-directory section `file`
+/// carries — `.wmeta` on COFF and ELF, `__wmeta` on Mach-O.
+fn for_each_dir_section<'a>(file: &File<'a>, mut f: impl FnMut(&'a [u8])) {
+    for section in file.sections() {
+        let Ok(name) = section.name() else { continue };
+        if !matches!(name, DIR_SECTION | "__wmeta") {
+            continue;
+        }
+        let Ok(data) = section.data() else { continue };
+        f(data);
     }
 }
 
@@ -262,6 +301,13 @@ mod tests {
                 .expect("static should be present"),
             b"hello"
         );
+        assert_eq!(
+            symbols
+                .static_bytes("waterui_meta_test_dir_probe")
+                .expect("the dir record should be present"),
+            b"dir probe",
+            "a `.wmeta` record answers with its payload field, not the record"
+        );
     }
 
     /// The same fixture built for `wasm32-unknown-unknown`: an rlib there is
@@ -278,8 +324,8 @@ mod tests {
         assert_eq!(previews, ["waterui_preview_meta_static_probe"]);
         assert_eq!(
             symbols.leaves_with_prefix("waterui_meta_"),
-            ["waterui_meta_test_probe"],
-            "the wasm rlib must enumerate the meta static name"
+            ["waterui_meta_test_dir_probe", "waterui_meta_test_probe"],
+            "the wasm rlib must enumerate the meta static names"
         );
     }
 
