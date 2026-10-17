@@ -5536,6 +5536,34 @@ mod tests {
             source.push_str("\nwaterui::include_bundle!(\"bundle\", as = media);\n");
             std::fs::write(&lib_rs, source).expect("write lib.rs");
 
+            // `include_bundle!` is the facade's `assets` feature, which a
+            // plain scaffold intentionally leaves off — the fixture opts in
+            // the way an author does: `features = ["assets"]` on every
+            // `waterui` dependency the generated manifest carries (#1637).
+            let manifest_path = root.join("Cargo.toml");
+            let mut manifest = std::fs::read_to_string(&manifest_path)
+                .expect("read Cargo.toml")
+                .parse::<toml_edit::DocumentMut>()
+                .expect("the generated Cargo.toml parses");
+            fn opt_in_assets(dependencies: &mut toml_edit::Item) {
+                let Some(waterui) = dependencies
+                    .as_table_like_mut()
+                    .and_then(|table| table.get_mut("waterui"))
+                else {
+                    return;
+                };
+                let mut features = toml_edit::Array::new();
+                features.push("assets");
+                waterui["features"] = toml_edit::value(features);
+            }
+            opt_in_assets(&mut manifest["dependencies"]);
+            if let Some(target) = manifest["target"].as_table_mut() {
+                for (_, section) in target.iter_mut() {
+                    opt_in_assets(&mut section["dependencies"]);
+                }
+            }
+            std::fs::write(&manifest_path, manifest.to_string()).expect("write Cargo.toml");
+
             crate::backend::reinit_backend::<crate::hydrolysis::backend::HydrolysisBackend>(
                 &project,
             )
