@@ -78,6 +78,17 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
         let height = request.size.height.max(1.0).round() as u32;
 
         if surface.borrow().is_none() {
+            // Test builds of this renderer — the crate's own `cfg(test)`
+            // targets and `testing`-feature hosts — open their surface
+            // through the test adapter selection so a CI runner whose only
+            // device is a software rasterizer (Windows WARP, llvmpipe) still
+            // answers (#2732). The production build keeps the production
+            // selection.
+            #[cfg(any(test, feature = "testing"))]
+            let offscreen =
+                OffscreenSurface::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm)
+                    .await;
+            #[cfg(not(any(test, feature = "testing")))]
             let offscreen =
                 OffscreenSurface::new(width, height, wgpu::TextureFormat::Rgba8Unorm).await;
             *surface.borrow_mut() = Some(offscreen);
