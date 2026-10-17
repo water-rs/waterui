@@ -55,7 +55,7 @@ impl HydroNativeView for Native<DatePickerConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_date_picker_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -143,7 +143,7 @@ pub fn measure_date_picker_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let config = &render_state.config;
     let metrics = theme.picker_metrics(PickerStyle::Menu);

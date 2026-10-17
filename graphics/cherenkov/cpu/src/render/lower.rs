@@ -15,6 +15,7 @@ use cherenkov::{BlendMode, FillRule, FrameId, GlyphRun, GlyphStyle, ShapeData};
 use cherenkov::{LayerId, RenderError, SurfaceId, SurfaceTree};
 
 use super::filter::{Erased, Registry};
+use super::geometry::{GeometryCache, Resolved};
 use super::prepared::Op;
 use crate::names;
 use crate::render::paint::PaintData;
@@ -65,6 +66,9 @@ pub enum Item {
         paint: PaintData,
         /// The clip in force.
         clip: Option<ClipRef>,
+        /// Whether the winding sweep produced or confirmed `edges`: only
+        /// such geometry is carried to the next lowering of its draw.
+        swept: bool,
     },
     /// A Gaussian-blurred, axis-aligned rounded box.
     Shadow {
@@ -609,6 +613,7 @@ pub struct Lowering<'a, 'b> {
     fonts: &'b mut FxHashMap<u64, super::font::Font>,
     bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
     bitmap_cache: &'b mut super::bitmap::BitmapCache,
+    geometry: &'b mut GeometryCache,
     width: usize,
     height: usize,
     transform: Affine,
@@ -816,21 +821,62 @@ fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
     edges
 }
 
-/// Resolves overlapping windings: `Some` swaps in boundary edges whose
-/// winding is 0 or 1 everywhere, drawn under `NonZero`. `None` keeps the
-/// original edges and rule untouched.
+/// Resolves overlapping windings: edges whose winding can overlap are
+/// replaced by boundary edges whose winding is 0 or 1 everywhere, drawn
+/// under `NonZero`; otherwise the edges and rule are returned untouched.
 pub fn resolve_edges(edges: Vec<Edge>, rule: FillRule) -> (Vec<Edge>, FillRule) {
-    let segments: Vec<(f32, f32, f32, f32)> =
-        edges.iter().map(|e| (e.x0, e.y0, e.x1, e.y1)).collect();
-    cherenkov::lowering::resolve_winding(&segments, rule).map_or((edges, rule), |resolved| {
-        (
-            resolved
-                .into_iter()
-                .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
-                .collect(),
-            FillRule::NonZero,
-        )
-    })
+    cherenkov::lowering::resolve_winding(&edges, rule)
+        .into_resolved()
+        .map_or((edges, rule), |resolved| {
+            (
+                resolved
+                    .into_iter()
+                    .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
+                    .collect(),
+                FillRule::NonZero,
+            )
+        })
+}
+
+/// Offers a draw's swept geometry before its realization is dropped or
+/// rebuilt: a fill or a stroke realized as one swept draw.
+fn offer(geometry: &mut GeometryCache, op: &Op, data: &DeviceData<Vec<Item>>) {
+    let (local, shape, stroke) = match op {
+        Op::Fill { local, shape, .. } => (local, shape, None),
+        Op::Stroke {
+            local,
+            shape,
+            stroke,
+            ..
+        } => (local, shape, Some(stroke)),
+        _ => return,
+    };
+    if let [
+        Item::Draw {
+            edges,
+            rule,
+            swept: true,
+            ..
+        },
+    ] = data.output.as_slice()
+    {
+        geometry.offer(shape, stroke, data.transform * *local, edges, *rule);
+    }
+}
+
+/// Offers the swept geometry of every current realization of `content`,
+/// which is about to be dropped, to the next lowering.
+pub fn harvest(geometry: &mut GeometryCache, content: &ContentData) {
+    let Some((ops, _)) = content.current() else {
+        return;
+    };
+    for (op, realization) in ops.iter().zip(content.realizations()) {
+        if realization.valid
+            && let Some(Emission::Draw(data)) = &realization.data
+        {
+            offer(geometry, op, data);
+        }
+    }
 }
 
 /// The bounding box of `edges` as an integer rect intersected with the
@@ -933,7 +979,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         frame: FrameId,
         fonts: &'b mut FxHashMap<u64, super::font::Font>,
         bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
-        bitmap_cache: &'b mut super::bitmap::BitmapCache,
+        (bitmap_cache, geometry): (&'b mut super::bitmap::BitmapCache, &'b mut GeometryCache),
         level: fearless_simd::Level,
     ) -> Self {
         let (items, anchor_scratch) = buffers;
@@ -949,6 +995,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             fonts,
             bitmap_fonts,
             bitmap_cache,
+            geometry,
             width: size.0 as usize,
             height: size.1 as usize,
             transform: Affine::IDENTITY,
@@ -2144,7 +2191,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
             return Ok(false);
         }
         let mut items = match cache.data.take() {
-            Some(Emission::Draw(data)) => data.output,
+            Some(Emission::Draw(data)) => {
+                // The op is unchanged and only the clip or surface size
+                // moved: its swept geometry still holds.
+                if cache.valid && data.transform == self.transform {
+                    offer(&mut *self.geometry, op, &data);
+                }
+                data.output
+            }
             None => Vec::new(),
             Some(Emission::Clip(_)) => unreachable!("structural changes replace the cache layout"),
         };
@@ -2157,7 +2211,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             FrameId::new(0),
             &mut *self.fonts,
             self.bitmap_fonts,
-            &mut *self.bitmap_cache,
+            (&mut *self.bitmap_cache, &mut *self.geometry),
             self.level,
         );
         compose.width = self.width;
@@ -2222,13 +2276,16 @@ impl<'a, 'b> Lowering<'a, 'b> {
 
     /// `Fill`: a flattened polygon of edges in device space.
     fn fill(&mut self, shape: &ShapeData, paint: &PaintData) {
-        let sm = sigma_max(self.transform).max(1e-12);
-        let tol_u = FLATTEN_TOL / sm;
-        let Some((path, rule)) = shape_outline(shape, tol_u) else {
+        let transform = self.transform;
+        let Some(Resolved { edges, rule, swept }) =
+            self.geometry.resolve(shape, None, transform, || {
+                let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+                let (path, rule) = shape_outline(shape, tol_u)?;
+                Some((flatten_edges(transform * path, FLATTEN_TOL), rule))
+            })
+        else {
             return;
         };
-        let edges = flatten_edges(self.transform * path, FLATTEN_TOL);
-        let (edges, rule) = resolve_edges(edges, rule);
         if edges.is_empty() {
             return;
         }
@@ -2238,47 +2295,52 @@ impl<'a, 'b> Lowering<'a, 'b> {
             return;
         }
         self.items.push(Item::Draw {
-            edges: edges.into(),
+            edges,
             bbox,
             rule,
             paint,
             clip: self.clip.clone(),
+            swept,
         });
     }
 
     /// `Stroke`: `kurbo::stroke` the content-space path, transform,
     /// flatten and fill non-zero — dashes included, like the oracle.
     fn stroke(&mut self, shape: &ShapeData, stroke: &kurbo::Stroke, paint: &PaintData) {
-        let sm = sigma_max(self.transform).max(1e-12);
-        let tol_u = FLATTEN_TOL / sm;
-        let path = match shape {
-            ShapeData::Line(l) => {
-                let mut p = BezPath::new();
-                p.move_to(l.p0);
-                p.line_to(l.p1);
-                p
-            }
-            shape => {
-                let Some((path, _)) = shape_outline(shape, tol_u) else {
-                    return;
+        let transform = self.transform;
+        let Some(Resolved { edges, swept, .. }) =
+            self.geometry.resolve(shape, Some(stroke), transform, || {
+                let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+                let path = match shape {
+                    ShapeData::Line(l) => {
+                        let mut p = BezPath::new();
+                        p.move_to(l.p0);
+                        p.line_to(l.p1);
+                        p
+                    }
+                    shape => shape_outline(shape, tol_u)?.0,
                 };
-                path
-            }
+                let outline = kurbo::stroke(path, stroke, &kurbo::StrokeOpts::default(), tol_u);
+                Some((
+                    flatten_edges(transform * outline, FLATTEN_TOL),
+                    FillRule::NonZero,
+                ))
+            })
+        else {
+            return;
         };
-        let outline = kurbo::stroke(path, stroke, &kurbo::StrokeOpts::default(), tol_u);
-        let edges = flatten_edges(self.transform * outline, FLATTEN_TOL);
-        let (edges, _) = resolve_edges(edges, FillRule::NonZero);
         if edges.is_empty() {
             return;
         }
         let paint = paint.transformed(self.transform.inverse());
         let bbox = bbox_of(&edges, self.width, self.height);
         self.items.push(Item::Draw {
-            edges: edges.into(),
+            edges,
             bbox,
             rule: FillRule::NonZero,
             paint,
             clip: self.clip.clone(),
+            swept,
         });
     }
 

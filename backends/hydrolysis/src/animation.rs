@@ -16,7 +16,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use crate::widget::{RadioIndicatorState, RadioSelectionMotion};
+use crate::theme::{RadioIndicatorState, RadioSelectionMotion};
 use nami::watcher::Context;
 use waterui_core::animation::{Animation, AnimationTrack};
 
@@ -92,7 +92,6 @@ struct AnimatedRadioIndicatorSlot {
 /// current frame's state.
 #[derive(Clone, Debug)]
 pub struct AnimatedScalarHandle {
-    key: AnimationKey,
     state: Rc<RefCell<AnimatedScalarState>>,
     generation: u64,
 }
@@ -134,17 +133,6 @@ impl AnimationKey {
         }
     }
 
-    /// Returns a scalar-slot key for an animation the renderer owns itself
-    /// (no backing signal), identified by a renderer-chosen identity such as
-    /// a node placement.
-    #[must_use]
-    pub const fn renderer_local_scalar(identity: usize) -> Self {
-        Self {
-            scope: AnimationKeyScope::RendererLocalScalar,
-            identity: identity as u64,
-        }
-    }
-
     /// Returns a renderer-owned scalar key scoped by a stable semantic owner
     /// and a per-owner discriminator.
     #[must_use]
@@ -172,7 +160,10 @@ impl AnimationKey {
 
     #[cfg(test)]
     const fn test_scalar(identity: usize) -> Self {
-        Self::renderer_local_scalar(identity)
+        Self {
+            scope: AnimationKeyScope::RendererLocalScalar,
+            identity: identity as u64,
+        }
     }
 
     #[cfg(test)]
@@ -243,11 +234,7 @@ impl AnimationController {
 
         let state = Rc::clone(&slot.state);
         let generation = state.borrow_mut().prepare_generation(observed_value);
-        AnimatedScalarHandle {
-            key,
-            state,
-            generation,
-        }
+        AnimatedScalarHandle { state, generation }
     }
 
     /// Binds the scalar slot for `key` and animates it toward `target` with
@@ -280,11 +267,7 @@ impl AnimationController {
 
         let state = Rc::clone(&slot.state);
         let generation = state.borrow_mut().prepare_target_generation();
-        let handle = AnimatedScalarHandle {
-            key,
-            state,
-            generation,
-        };
+        let handle = AnimatedScalarHandle { state, generation };
         handle.apply_target(target, Some(animation), now);
         handle
     }
@@ -327,7 +310,7 @@ impl AnimationController {
     /// Advances every slot's track to `now` and returns whether any
     /// animation is still running, in which case the renderer must schedule
     /// another redraw frame. Called once per frame with the frame clock.
-    pub fn tick(&mut self, now: Instant) -> bool {
+    pub fn tick(&self, now: Instant) -> bool {
         let mut has_active = false;
         for slot in self.slots.values() {
             if slot.state.borrow_mut().advance(now) {
@@ -371,24 +354,6 @@ impl AnimationController {
             .iter()
             .filter_map(|(key, slot)| slot.state.borrow().is_active().then_some(*key))
             .collect()
-    }
-
-    /// Returns whether any radio-indicator choreography is still in flight.
-    #[must_use]
-    pub fn has_active_radio_indicator(&self) -> bool {
-        self.radio_indicator_slots
-            .values()
-            .any(|slot| slot.state.borrow().is_active())
-    }
-
-    /// Returns whether any repeating/timeline phase slot still requires
-    /// frames at `now`: repeating slots run forever, one-shot timeline slots
-    /// only until their cycle completes.
-    #[must_use]
-    pub fn has_active_repeating(&self, now: Instant) -> bool {
-        self.repeating_slots
-            .values()
-            .any(|slot| slot.repeat || now.saturating_duration_since(slot.started_at) < slot.cycle)
     }
 
     /// Binds the repeating slot for `key` and returns the phase within the
@@ -509,18 +474,6 @@ impl AnimationController {
 }
 
 impl AnimatedScalarHandle {
-    /// Returns the key of the slot this handle is bound to.
-    #[must_use]
-    pub const fn key(&self) -> AnimationKey {
-        self.key
-    }
-
-    /// Returns whether the slot's animation is still in flight.
-    #[must_use]
-    pub fn is_active(&self) -> bool {
-        self.state.borrow().is_active()
-    }
-
     /// Advances the slot's track to `now` and returns the current scalar
     /// value; the renderer samples with the frame clock when drawing.
     #[must_use]
@@ -708,7 +661,7 @@ mod tests {
     use core::time::Duration;
     use std::time::Instant;
 
-    use crate::widget::RadioSelectionMotion;
+    use crate::theme::RadioSelectionMotion;
     use waterui::animation::Animation;
 
     use super::{AnimationController, AnimationKey};

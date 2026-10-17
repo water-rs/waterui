@@ -3,7 +3,7 @@
 //! whole item when the theme answers `Horizontal`.
 
 use super::*;
-use waterui_backend_core::widget::TabItemLayout;
+use crate::theme::TabItemLayout;
 use waterui_core::id::Id;
 
 use waterui_navigation::tab::{Tab, TabsLayout, tab_style};

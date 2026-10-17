@@ -11,10 +11,11 @@ crate-type = ["cdylib"]
 name = "hydrolysis_test_app"
 
 [dependencies]
-hydrolysis = { workspace = true, features = ["accessibility"] }
+# `testing` for `hydrolysis::testing::TestStyle`: the debug app exercises the
+# host, not a style package, so it mounts the in-tree test theme.
+hydrolysis = { workspace = true, features = ["accessibility", "testing"] }
 waterui = { workspace = true, features = ["gpu"] }
 waterui-core.workspace = true
-hydrolysis-m3.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21.1"

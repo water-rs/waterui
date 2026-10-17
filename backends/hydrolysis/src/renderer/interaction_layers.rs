@@ -10,7 +10,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use waterui_backend_core::widget::{InteractionMotion, MAX_PRESS_WAVES, PressWave, PressWaves};
+use crate::theme::{InteractionMotion, MAX_PRESS_WAVES, PressWave, PressWaves};
 
 /// One press ripple wave slot: every press spawns its own wave (Material/the M3 reference
 /// semantics), so rapid re-presses overlap while older waves fade out.

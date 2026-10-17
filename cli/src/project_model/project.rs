@@ -1552,14 +1552,17 @@ impl ProjectDraft {
         &self.project
     }
 
-    /// Scaffold every generated crate a build compiles and seed declared fonts.
+    /// Scaffold the generated crates the mainline backends compile and seed
+    /// their declared fonts. An experimental backend's crate is scaffolded and
+    /// scanned when that backend is built or fetched for, so a broken
+    /// experimental pin never fails project creation.
     ///
     /// # Errors
     /// Returns an error if generated-crate scaffolding, font declaration
     /// scanning, font fetching, or cleanup fails. A failure removes the
     /// project and its managed build-cache container.
     pub async fn finish(self) -> Result<Vec<(String, PathBuf)>, FailToCreateProject> {
-        let outcomes = match crate::seed_font_cache(&self.project).await {
+        let outcomes = match crate::seed_mainline_font_cache(&self.project).await {
             Ok(outcomes) => outcomes,
             Err(crate::SeedFontCacheError::Scaffold(error)) => {
                 return Err(self

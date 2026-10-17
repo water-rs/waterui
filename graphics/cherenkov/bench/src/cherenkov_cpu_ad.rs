@@ -6,6 +6,10 @@
 //! (premultiplied linear Display P3 — the suite's working space end to end).
 //! Readback is f16-rounded by default; `CHERENKOV_CPU_READBACK=f32` keeps the
 //! raw f32s. There is no GPU timestamp source; `gpu_seconds` is always `null`.
+//! Each frame reports the backend's phases (`FrameStats::phases`): `lower`,
+//! `glyph` (glyph resolution) and `shade` (the raster pass). The raster
+//! pool's size is rayon's default, so `RAYON_NUM_THREADS` sets it; the
+//! report's `device.adapter` states it.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -776,6 +780,13 @@ fn register_image(
                 }
             };
             (width, height, rgba, space)
+        }
+        ImageEncoding::BlockCompressed { format, .. } => {
+            return Err(BenchError::Unsupported {
+                engine: Cherenkov::NAME,
+                feature: Feature::ImageCompressed(format),
+                api: Some("compressed image uploads"),
+            });
         }
         ImageEncoding::Rgba16F {
             width,
@@ -1564,6 +1575,7 @@ impl Engine for Cherenkov {
             readback && self.has_motion,
             render_error,
         )?;
+        let phases = self.engine.stats().phases;
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = std::time::Instant::now();
         let image = if readback {
@@ -1621,7 +1633,11 @@ impl Engine for Cherenkov {
         Ok(Submit {
             image,
             gpu: Vec::new(),
-            phases: None,
+            phases: crate::PhaseSample::list(&[
+                ("lower", phases.lower_seconds),
+                ("glyph", phases.glyph_seconds),
+                ("shade", phases.shade_seconds),
+            ]),
             composition: None,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),

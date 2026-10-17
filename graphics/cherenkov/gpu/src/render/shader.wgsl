@@ -22,11 +22,20 @@ const VARIANT_UNION: u32 = 3u;
 const VARIANT_LONG_GRADIENT: u32 = 4u;
 // Every span but the union's: GPU-routed path draws (#2543).
 const VARIANT_CELL: u32 = 5u;
+const VARIANT_IMAGE: u32 = 6u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
 @group(1) @binding(1) var backdrop: texture_2d<f32>;
 @group(1) @binding(2) var image_tex: texture_2d<f32>;
+
+// image-source
+// The sRGB transfer decode of each 8-bit code (`image_storage::transfer_table`).
+struct ImageDecode {
+    linear: array<f32, 256>,
+}
+@group(0) @binding(5) var<storage, read> image_decode: ImageDecode;
+// image-source
 
 // Abramowitz & Stegun 7.1.26, |error| < 1.5e-7.
 fn erf(x: f32) -> f32 {
@@ -270,9 +279,58 @@ fn sweep_t(i: u32, p: vec2<f32>) -> f32 {
     return (theta - start) / span;
 }
 
+// A loaded image texel in the working representation. Only the image
+// variant (and union, which carries everything) converts source texels:
+// the `// image-source` spans are dropped from every other variant, whose
+// image paints all sample working texels (flags 0).
+fn image_working_texel(encoded: vec4<f32>, flags: u32) -> vec4<f32> {
+    // image-source
+    if (flags & 4096u) != 0u { return image_source_texel(encoded, flags); }
+    // image-source
+    return encoded;
+}
+
+// image-source
+// Conversion happens separately at each tap, BEFORE interpolation. In
+// particular neither straight alpha nor encoded premultiplied alpha may be
+// hardware-filtered and subsequently converted to the working representation.
+// Flag bits (`image_storage`): 12 source texels, 13 premultiplied, 14 the
+// transfer function, 15 sRGB primaries, 16 the transfer table.
+fn image_source_texel(encoded: vec4<f32>, flags: u32) -> vec4<f32> {
+    let a = encoded.a;
+    var rgb = encoded.rgb;
+    if (flags & 65536u) != 0u {
+        // A straight 8-bit code: its decode is a table entry.
+        let code = vec3<u32>(round(rgb * 255.0));
+        rgb = vec3<f32>(
+            image_decode.linear[code.r],
+            image_decode.linear[code.g],
+            image_decode.linear[code.b],
+        );
+    } else {
+        if (flags & 8192u) != 0u && a > 0.0 {
+            rgb = min(rgb / a, vec3<f32>(1.0));
+        }
+        if (flags & 16384u) != 0u {
+            rgb = select(pow(max((rgb + 0.055) / 1.055, vec3<f32>(0.0)), vec3<f32>(2.4)), rgb / 12.92, rgb <= vec3<f32>(0.04045));
+        }
+    }
+    if (flags & 32768u) != 0u {
+        rgb = mat3x3<f32>(
+            vec3<f32>(0.822461969, 0.033194199, 0.017082631),
+            vec3<f32>(0.177538031, 0.966805801, 0.072397441),
+            vec3<f32>(0.0, 0.0, 0.910519929)
+        ) * rgb;
+    }
+    let linear = vec4<f32>(rgb * a, a);
+    // Match the previous upload's working-f16 rounding before interpolation.
+    return quantizeToF16(linear);
+}
+// image-source
+
 // Samples `tex` like the oracle's sample_image: texel centres at n + 0.5,
 // coordinate already in image-pixel space after the per-axis extend.
-fn sample_image_tex(tex: texture_2d<f32>, u: f32, v: f32, w: f32, h: f32, bilinear: bool) -> vec4<f32> {
+fn sample_image_tex(tex: texture_2d<f32>, u: f32, v: f32, w: f32, h: f32, bilinear: bool, flags: u32) -> vec4<f32> {
     let dims = vec2<f32>(w, h);
     if bilinear {
         // Clamp the sample coordinate into texel-centre space before the
@@ -281,19 +339,19 @@ fn sample_image_tex(tex: texture_2d<f32>, u: f32, v: f32, w: f32, h: f32, biline
         let lo = vec2<i32>(floor(f));
         let hi = min(lo + 1, vec2<i32>(dims) - 1);
         let t = f - floor(f);
-        let c00 = textureLoad(tex, vec2<i32>(lo.x, lo.y), 0);
-        let c10 = textureLoad(tex, vec2<i32>(hi.x, lo.y), 0);
-        let c01 = textureLoad(tex, vec2<i32>(lo.x, hi.y), 0);
-        let c11 = textureLoad(tex, vec2<i32>(hi.x, hi.y), 0);
+        let c00 = image_working_texel(textureLoad(tex, vec2<i32>(lo.x, lo.y), 0), flags);
+        let c10 = image_working_texel(textureLoad(tex, vec2<i32>(hi.x, lo.y), 0), flags);
+        let c01 = image_working_texel(textureLoad(tex, vec2<i32>(lo.x, hi.y), 0), flags);
+        let c11 = image_working_texel(textureLoad(tex, vec2<i32>(hi.x, hi.y), 0), flags);
         return mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y);
     }
     let xy = clamp(round(vec2<f32>(u, v) - 0.5), vec2<f32>(0.0), dims - 1.0);
-    return textureLoad(tex, vec2<i32>(xy), 0);
+    return image_working_texel(textureLoad(tex, vec2<i32>(xy), 0), flags);
 }
 
 // Image paint: `grad`/`grad2` carry the local→image affine [a b c d e f]
 // and the image size [w, h]; meta_.w packs extend_x | extend_y<<4 |
-// sampling<<8. The extends run in image-pixel space, like the oracle's
+// sampling<<8 and source conversion flags in bits 12–16. The extends run in image-pixel space, like the oracle's
 // eval_image_paint.
 fn paint_image(i: u32, local: vec2<f32>) -> vec4<f32> {
     let g = instances[i].grad;
@@ -312,7 +370,7 @@ fn paint_image(i: u32, local: vec2<f32>) -> vec4<f32> {
     }
     let u = extend_t(tu, ex) * g2.z;
     let v = extend_t(tv, ey) * g2.w;
-    return sample_image_tex(image_tex, u, v, g2.z, g2.w, ((meta_w >> 8u) & 1u) != 0u);
+    return sample_image_tex(image_tex, u, v, g2.z, g2.w, ((meta_w >> 8u) & 1u) != 0u, meta_w);
 }
 
 // Bilinear inverse in f32, solving for v. The f64 oracle solves for u.
@@ -886,7 +944,10 @@ fn fs_shadow(in: VsOut) -> vec4<f32> {
     return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
 }
 
-fn fs_full(in: VsOut) -> vec4<f32> {
+fn fs_full(fragment: VsOut) -> vec4<f32> {
+    // A device-space quad paints, clips and samples at its pixel, never at
+    // a point interpolated across the quad.
+    let in = device_quad_pixel(fragment);
     // The constants every fragment needs arrive as flat varyings; the
     // storage array is read only for kind-specific fields (inner, clip,
     // mask, gradient data).

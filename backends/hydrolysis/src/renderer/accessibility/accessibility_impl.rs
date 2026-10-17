@@ -4,13 +4,13 @@ use super::*;
 use crate::renderer::mount::RetainedScopes;
 
 #[cfg(feature = "accessibility")]
+use crate::theme::InteractionFocusBinding;
+#[cfg(feature = "accessibility")]
 use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
 use std::collections::{BTreeSet, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
-#[cfg(feature = "accessibility")]
-use waterui_backend_core::widget::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
 

@@ -7,6 +7,8 @@
 
 #[path = "generate_corpus/authored.rs"]
 mod authored;
+#[path = "generate_corpus/compressed.rs"]
+mod compressed;
 #[path = "generate_corpus/gradient_search.rs"]
 mod gradient_search;
 #[path = "generate_corpus/text_layout.rs"]
@@ -2549,6 +2551,7 @@ fn run() -> Result<(), SceneError> {
     let out = corpus::corpus_dir(&root);
     let mut ctx = TextContext::new(&corpus::fonts_dir(&root))?;
     let mut corpus = Corpus::new();
+    compressed::generate(&mut corpus);
 
     let white = srgb(0.95, 0.95, 0.95);
     let dark = srgb(0.1, 0.1, 0.12);

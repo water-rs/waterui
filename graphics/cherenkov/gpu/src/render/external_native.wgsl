@@ -15,7 +15,8 @@
 @group(1) @binding(6) var ext_sampler: sampler;
 
 @fragment
-fn fs_external_format(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_external_format(fragment: VsOut) -> @location(0) vec4<f32> {
+    let in = device_quad_pixel(fragment);
     var cov: f32;
     switch in.meta_.x {
         case KIND_SPAN: {

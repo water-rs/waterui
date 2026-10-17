@@ -106,6 +106,10 @@ pub enum ShaderVariant {
     /// [`DrawRange::module`] selects it for GPU-routed ranges, so the
     /// pipelines every other draw uses carry none of the cell-buffer code.
     Cell,
+    /// `Full` plus the per-tap conversion of source image texels: an
+    /// image paint whose texture keeps its source encoding (non-zero
+    /// `image_storage` source flags).
+    Image,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -487,11 +491,11 @@ const GRADIENT_LINEAR_STOPS: u32 = 8;
 
 /// The specialised fragment pipeline `inst` requires: the union variant
 /// for a backdrop member drawing against the group's shared field, the
-/// long-gradient module for a gradient past `GRADIENT_LINEAR_STOPS`,
-/// the uber-shader when it reads rare fields (clip, mask, inner,
-/// strokes, other non-solid paint), the shadow kernel otherwise for
-/// shadows, and the trivial coverage path for solid fills, spans, and
-/// glyphs.
+/// long-gradient module for a gradient past `GRADIENT_LINEAR_STOPS`, the
+/// image variant for an image paint sampling source-encoded texels, the
+/// uber-shader when it reads rare fields (clip, mask, inner, strokes,
+/// other non-solid paint), the shadow kernel otherwise for shadows, and
+/// the trivial coverage path for solid fills, spans, and glyphs.
 const fn variant_of(inst: &Instance) -> ShaderVariant {
     let flags = inst.meta[3] >> 24;
     if (flags & FLAG_UNION) != 0 {
@@ -504,6 +508,13 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
         || inst.meta[1] != PAINT_SOLID
         || matches!(inst.meta[0], KIND_STROKE_OFFSET | KIND_STROKE_DIST)
     {
+        // An image paint is never solid, so every image instance reaches
+        // this branch; testing it here keeps the solid path free of it.
+        // `SOURCE` first: in that order the common path compiles to the
+        // same instructions as without the image variant.
+        if (inst.meta[3] & super::image_storage::SOURCE) != 0 && inst.meta[1] == PAINT_IMAGE {
+            return ShaderVariant::Image;
+        }
         return ShaderVariant::Full;
     }
     if inst.meta[0] == KIND_SHADOW {

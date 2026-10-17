@@ -233,6 +233,7 @@ impl Registry {
             });
             Texture {
                 image: super::GpuImage {
+                    sampling_flags: 0,
                     texture,
                     view,
                     width: key.size.0,

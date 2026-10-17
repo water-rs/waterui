@@ -2,9 +2,9 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::animation::AnimationKey;
+use crate::theme::{InteractionMotion, MAX_PRESS_WAVES, WidgetInteractionState};
 use nami::Signal as _;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
-use waterui_backend_core::widget::{InteractionMotion, MAX_PRESS_WAVES, WidgetInteractionState};
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 
 const INTERACTION_FOCUS_KEY: usize = 0;
@@ -513,12 +513,12 @@ mod tests {
     use super::{InteractionEngine, InteractionKey, WidgetInteractionInput};
     use crate::animation::{AnimationController, AnimationKey};
     use crate::renderer::{InteractionLayerHandles, WaveLayer};
+    use crate::theme::InteractionMotion;
     use crate::time::Instant;
     use core::time::Duration;
     use std::rc::Rc;
     use waterui::animation::Animation;
     use waterui::interaction::InteractionState;
-    use waterui_backend_core::widget::InteractionMotion;
 
     fn motion() -> InteractionMotion {
         InteractionMotion {
@@ -543,7 +543,7 @@ mod tests {
         let mut controller = AnimationController::default();
         let mut bind = |key: usize| {
             controller.bind_scalar_target(
-                AnimationKey::renderer_local_scalar(key),
+                AnimationKey::renderer_local_scalar_with_discriminator(0, key),
                 0.0,
                 Animation::linear(Duration::ZERO),
                 now,

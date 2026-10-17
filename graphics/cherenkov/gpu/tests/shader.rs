@@ -6,16 +6,17 @@ use naga::back::{hlsl, msl, spv};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{Module, front::wgsl};
 
-/// The six engine modules exactly as `build.rs` composed, validated
+/// The seven engine modules exactly as `build.rs` composed, validated
 /// and emitted them — read from `OUT_DIR` so the test exercises the
 /// shipped source rather than a copy of its composition logic.
-const ENGINE_SOURCES: [&str; 6] = [
+const ENGINE_SOURCES: [&str; 7] = [
     include_str!(concat!(env!("OUT_DIR"), "/engine0.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine1.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine2.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine3.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine4.wgsl")),
     include_str!(concat!(env!("OUT_DIR"), "/engine5.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine6.wgsl")),
 ];
 const SHARED: &str = include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl"));
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
@@ -35,9 +36,14 @@ const MSL_VERSION: (u8, u8) = (2, 0);
 fn composed(variant: usize) -> (Module, naga::valid::ModuleInfo) {
     let source = ENGINE_SOURCES[variant];
     let module = wgsl::parse_str(source).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
+    // The capabilities `build.rs` validates every engine module with: the
+    // image-source conversion rounds through `quantizeToF16`.
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
     (module, info)
 }
 
@@ -96,14 +102,20 @@ fn effect_module(name: &str, user: &str) -> (Module, naga::valid::ModuleInfo) {
     let union_text = cherenkov_gpu::backdrop_effect_text(user, true);
     let union_module =
         wgsl::parse_str(&union_text).unwrap_or_else(|e| panic!("{name} (union): {e}"));
-    Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&union_module)
-        .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
+    Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&union_module)
+    .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
     let text = cherenkov_gpu::backdrop_effect_text(user, false);
     let module = wgsl::parse_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     (module, info)
 }
 
@@ -135,7 +147,7 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
 split_test! {
 fn silhouette_shadow_emits() {
     let module = wgsl::parse_str(include_str!("../src/render/shadow.wgsl")).expect("silhouette WGSL");
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32)
         .validate(&module).expect("valid silhouette module");
     effect_emits("silhouette shadow", &module, &info);
 }
@@ -203,7 +215,7 @@ fn standalone_modules_emit() {
         ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32)
             .validate(&module)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         effect_emits(name, &module, &info);
