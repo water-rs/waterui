@@ -330,8 +330,8 @@ impl FrameIndex {
                     fill[b] += 1;
                 }
             }
-            ((item_off.capacity() + item_pool.capacity() + fill.capacity())
-                * size_of::<usize>()) as u64
+            ((item_off.capacity() + item_pool.capacity() + fill.capacity()) * size_of::<usize>())
+                as u64
         };
         let (mut draw_rank, mut groups) = (vec![usize::MAX; items.len()], Vec::new());
         for (i, item) in items.iter().enumerate() {
