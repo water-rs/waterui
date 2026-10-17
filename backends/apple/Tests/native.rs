@@ -89,6 +89,13 @@ fn trials() -> Vec<Trial> {
                     Ok(())
                 },
             ),
+            Trial::test(
+                "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
+                || {
+                    navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
+                    Ok(())
+                },
+            ),
         ]);
         #[cfg(feature = "gpu_surface")]
         {
@@ -1978,14 +1985,25 @@ mod menus {
     }
 }
 
-/// Navigation-chrome trials on `AppKit`: a `.searchable` page on a titled
-/// window rests its field in the titlebar's bottom accessory row, at the
-/// metrics the platform's own `.searchable` presents.
+/// Navigation-chrome trials on `AppKit` against a real titled `NSWindow`: a
+/// `.searchable` page rests its field in the titlebar's bottom accessory
+/// row at the platform's metrics, and a `NavigationSplitView` in a hidden
+/// tab releases the toolbar space its sidebar claims — the same
+/// `navigation::` namespace the `UIKit` cases own on iOS.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod navigation {
-    use cocoa_ui::objc2_app_kit::{NSLayoutAttribute, NSSearchField};
+    use cocoa_ui::objc2_app_kit::{
+        NSLayoutAttribute, NSSearchField, NSSplitView, NSSplitViewController,
+        NSTrackingSeparatorToolbarItem,
+    };
+    use cocoa_ui::{PlatformView, Retained, view};
+    use objc2::ClassType as _;
+    use objc2::runtime::NSObjectProtocol as _;
     use waterui::Str;
-    use waterui::navigation::NavigationView;
+    use waterui::navigation::{
+        NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView, Tab, Tabs,
+    };
     use waterui::prelude::text;
     use waterui::reactive::binding;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
@@ -2063,6 +2081,178 @@ mod navigation {
         assert!(
             (field_center_x - window_center_x).abs() <= 1.0,
             "the platform centres the field in the window: field at {field_center_x}, window at {window_center_x}"
+        );
+    }
+
+    /// The `NSSplitView` mounted anywhere under `root`, depth-first — the
+    /// fixture mounts exactly one.
+    fn split_view_in(root: &PlatformView) -> Option<Retained<NSSplitView>> {
+        for sub in view::subviews(root) {
+            if let Ok(split) = sub.clone().downcast::<NSSplitView>() {
+                return Some(split);
+            }
+            if let Some(found) = split_view_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The `NSSplitViewController` that owns `split_view`, found by walking
+    /// the responder chain up from the view, the way `AppKit` dispatches
+    /// the controller's own actions such as `toggleSidebar:`.
+    fn split_controller(split_view: &NSSplitView) -> Retained<NSSplitViewController> {
+        let mut chain = Vec::new();
+        // SAFETY: `nextResponder` is an ordinary responder-chain read on
+        // the main thread.
+        let mut responder = unsafe { split_view.nextResponder() };
+        while let Some(current) = responder {
+            match current.downcast::<NSSplitViewController>() {
+                Ok(controller) => return controller,
+                Err(current) => {
+                    chain.push(current.class().name().to_string_lossy().into_owned());
+                    // SAFETY: as above.
+                    responder = unsafe { current.nextResponder() };
+                }
+            }
+        }
+        panic!("no NSSplitViewController in the split view's responder chain: {chain:?}");
+    }
+
+    /// Whether the window toolbar carries the split's tracking separator —
+    /// the sidebar chrome a visible split pane offers the window.
+    fn has_tracking_separator(window: &cocoa_ui::appkit::Window) -> bool {
+        window.native().toolbar().is_some_and(|toolbar| {
+            toolbar
+                .items()
+                .iter()
+                .any(|item| item.isKindOfClass(NSTrackingSeparatorToolbarItem::class()))
+        })
+    }
+
+    /// Whether the window toolbar exists and has laid out at least one
+    /// view-backed item — the point where item frames read real positions.
+    fn toolbar_laid_out(window: &cocoa_ui::appkit::Window) -> bool {
+        window.native().toolbar().is_some_and(|toolbar| {
+            toolbar
+                .items()
+                .iter()
+                .filter_map(|item| item.view())
+                .any(|view| view.frame().size.width > 0.0)
+        })
+    }
+
+    /// A `Tabs` whose selected pane is a `NavigationView` page carrying a
+    /// `TopBarLeading` item, while the unselected pane holds a
+    /// `NavigationSplitView`. An expanded `allowsFullHeightLayout` sidebar
+    /// item claims the toolbar's leading region even while its view is
+    /// hidden, so the pane collapses the item to release that space,
+    /// expands it when the pane shows, and — after a user collapse —
+    /// restores the user's own collapse state instead of forcing the
+    /// sidebar open.
+    pub fn a_hidden_tab_split_releases_the_toolbar_sidebar_space() {
+        let tab = binding(0i32);
+        let detail = binding(Some(1_i32));
+        let leaf = resolve::render(Tabs::new(
+            &tab,
+            vec![
+                Tab::new(0i32, "Inbox", move || {
+                    NavigationView::new("Inbox", text("inbox")).navigation_toolbar(
+                        NavigationToolbar::new(vec![NavigationToolbarItem::action(
+                            NavigationToolbarPlacement::TopBarLeading,
+                            "Edit",
+                            || {},
+                        )]),
+                    )
+                }),
+                Tab::container(1i32, "Split", move || {
+                    NavigationSplitView::new(&detail, text("Sidebar"), |id: i32| {
+                        NavigationView::new(format!("Detail {id}"), text("detail"))
+                    })
+                }),
+            ],
+        ));
+        let window = super::mount_and_order_front(leaf.view());
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || toolbar_laid_out(&window)),
+            "the window toolbar laid out its items"
+        );
+        let content = window
+            .native()
+            .contentView()
+            .expect("a titled window has a content view");
+        let split_view = split_view_in(&content).expect("the split pane mounts an NSSplitView");
+        let split = split_controller(&split_view);
+        let sidebar = split
+            .splitViewItems()
+            .firstObject()
+            .expect("the split's first item is the sidebar");
+
+        // A hidden pane contributes no sidebar chrome and no hidden claim
+        // on the titlebar either — collapsing the item is what releases
+        // the space the expanded one reserves.
+        assert!(
+            !has_tracking_separator(&window),
+            "a hidden split's toolbar carries no tracking separator"
+        );
+        assert!(
+            sidebar.isCollapsed(),
+            "the hidden split's sidebar item collapses to release its titlebar claim"
+        );
+
+        // The page's leading item hugs the window's leading edge: with the
+        // claim left standing it sat right of the sidebar — the declared
+        // default sidebar is 240-480 pt wide, so a pushed item lands past
+        // 150.
+        let item_view = window
+            .native()
+            .toolbar()
+            .expect("the window toolbar")
+            .items()
+            .iter()
+            .find_map(|item| item.view())
+            .expect("the leading item hosts a view");
+        let min_x = view::convert_rect(&item_view, view::bounds(&item_view), None)
+            .origin
+            .x;
+        assert!(
+            min_x < 150.0,
+            "the leading toolbar item sits at the window's leading edge — minX {min_x}"
+        );
+
+        // Selecting the split's tab brings its chrome back: the sidebar
+        // expands and the toolbar aligns to it with the tracking
+        // separator.
+        tab.set(1i32);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                !sidebar.isCollapsed() && has_tracking_separator(&window)
+            }),
+            "showing the pane expands the sidebar and aligns the toolbar to it"
+        );
+
+        // Collapse the sidebar the way the toolbar's own toggle does, then
+        // cycle the pane away and back. The user's collapse is the state
+        // to restore — the forced collapse while hidden must not
+        // overwrite it, and the show must not force the sidebar open.
+        // SAFETY: `toggleSidebar:` is the controller's documented sidebar
+        // toggle; a nil sender on the main thread.
+        unsafe { split.toggleSidebar(None) };
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || sidebar.isCollapsed()),
+            "the user's collapse lands on the sidebar item"
+        );
+        tab.set(0i32);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !has_tracking_separator(&window)),
+            "hiding the pane withdraws the sidebar chrome again"
+        );
+        tab.set(1i32);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                sidebar.isCollapsed() && has_tracking_separator(&window)
+            }),
+            "the restored pane keeps the user's collapsed sidebar"
         );
     }
 }
