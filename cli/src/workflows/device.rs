@@ -358,6 +358,7 @@ impl Running {
     /// Launch can fail before any app process exists. The handle still owns
     /// the event channel, and dropping it in that state would report a kill
     /// that was never delivered.
+    #[cfg(target_os = "macos")]
     fn abandon(mut self) {
         self.ended = true;
     }
@@ -3488,6 +3489,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     const SIGINT_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
 
+    #[cfg(target_os = "macos")]
     unsafe extern "C" {
         /// Executable path lookup. `libc`'s wrapper is deprecated in favor of
         /// another crate; this test calls the system function directly.
