@@ -89,6 +89,14 @@ fn trials() -> Vec<Trial> {
                     Ok(())
                 },
             ),
+            Trial::test("split::a_sidebar_list_takes_the_source_list_chrome", || {
+                split::a_sidebar_list_takes_the_source_list_chrome();
+                Ok(())
+            }),
+            Trial::test("split::a_plain_list_keeps_the_regular_chrome", || {
+                split::a_plain_list_keeps_the_regular_chrome();
+                Ok(())
+            }),
         ]);
         #[cfg(feature = "gpu_surface")]
         {
@@ -2063,6 +2071,70 @@ mod navigation {
         assert!(
             (field_center_x - window_center_x).abs() <= 1.0,
             "the platform centres the field in the window: field at {field_center_x}, window at {window_center_x}"
+        );
+    }
+}
+
+/// A `NavigationSplitView` sidebar column is marked `SidebarContent`: the
+/// lists inside take the source-list chrome — clear background over the
+/// split's material and the unemphasised selection pill — while a list
+/// outside the sidebar keeps the regular fill (water-rs/waterui#1495).
+#[cfg(target_os = "macos")]
+mod split {
+    use cocoa_ui::appkit::ListTableView;
+    use cocoa_ui::objc2_app_kit::NSTableViewStyle;
+    use cocoa_ui::{PlatformView, view};
+    use waterui::component::list::{List, ListItem};
+    use waterui::navigation::{NavigationSplitView, NavigationView};
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+
+    use super::resolve;
+
+    /// The `ListTableView` inside `view`'s subtree, depth-first.
+    fn sidebar_table(view: &PlatformView) -> Option<cocoa_ui::Retained<ListTableView>> {
+        let mut stack = vec![view::retain_base(view)];
+        while let Some(view) = stack.pop() {
+            stack.extend(view::subviews(&view));
+            if let Ok(table) = view.downcast::<ListTableView>() {
+                return Some(table);
+            }
+        }
+        None
+    }
+
+    /// The split's sidebar list is the one `set_sidebar` marks — the
+    /// source-list style is what draws the grey selection pill.
+    pub fn a_sidebar_list_takes_the_source_list_chrome() {
+        let selection = binding(Some(0_i32));
+        let leaf = resolve::render(NavigationSplitView::new(
+            &selection,
+            move || {
+                List::content((|| ListItem::new(text("row")),)).selection(&binding(Some(0_usize)))
+            },
+            |_id: i32| NavigationView::new("Detail", text("detail")),
+        ));
+        let table = sidebar_table(leaf.view()).expect("the sidebar mounts a list");
+        assert!(
+            table.is_sidebar(),
+            "the sidebar list draws source-list chrome"
+        );
+        assert_eq!(
+            table.table_view().style(),
+            NSTableViewStyle::SourceList,
+            "the sidebar list takes the source-list style"
+        );
+    }
+
+    /// The same list outside a split keeps the regular table chrome.
+    pub fn a_plain_list_keeps_the_regular_chrome() {
+        let selection = binding(Some(0_usize));
+        let leaf =
+            resolve::render(List::content((|| ListItem::new(text("row")),)).selection(&selection));
+        let table = sidebar_table(leaf.view()).expect("the list mounts a table");
+        assert!(
+            !table.is_sidebar(),
+            "a list outside a sidebar keeps the regular fill"
         );
     }
 }

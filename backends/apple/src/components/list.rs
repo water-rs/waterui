@@ -1866,6 +1866,18 @@ fn wire_controller(
 fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let table = TableView::new(mtm);
+    // A navigation split marks its sidebar column with `SidebarContent`:
+    // the table takes the source-list chrome — clear background over the
+    // split's material, and the unemphasised selection rather than the
+    // accent fill (water-rs/waterui#1495).
+    #[cfg(target_os = "macos")]
+    if ctx
+        .env()
+        .get::<waterui::component::list::SidebarContent>()
+        .is_some()
+    {
+        table.set_sidebar(true);
+    }
     #[cfg(target_os = "ios")]
     let stock_height = {
         table.setSelfSizingInvalidation(
