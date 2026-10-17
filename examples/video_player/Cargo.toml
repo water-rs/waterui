@@ -15,3 +15,4 @@ dev = ["waterui/dynamic_linking"]
 
 [dependencies]
 waterui = { workspace = true, features = ["video", "video-gpu", "gpu", "assets", "snackbar", "highlight", "locale-datetime", "locale-list"] }
+waterui-core = { workspace = true }
