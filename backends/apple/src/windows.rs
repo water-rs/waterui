@@ -615,23 +615,32 @@ mod imp {
     /// inside its level, leaving key status alone; focus restores a
     /// miniaturized window first, makes it key and asks for app
     /// activation — the cooperative `activate` the system may still
-    /// decline, as the handle's docs say.
+    /// decline, as the handle's docs say. The hook holds the window
+    /// weakly: the machine outlives teardown in a `WindowHandle`, and a
+    /// request filed there must no-op rather than order a closed window
+    /// back on screen — the same post-teardown answer the winit hook's
+    /// weak reference gives.
     fn wire_focus_requests(
         declaration: &Window,
         window: &Rc<cocoa_ui::appkit::Window>,
         mtm: MainThreadMarker,
     ) {
         declaration.arm_focus_requests({
-            let window = window.clone();
+            let window = Rc::downgrade(window);
             let application = cocoa_ui::appkit::Application::shared(mtm);
-            move |kind| match kind {
-                FocusRequestKind::Raise => window.order_front(),
-                FocusRequestKind::Focus => {
-                    if window.is_miniaturized() {
-                        window.deminiaturize();
+            move |kind| {
+                let Some(window) = window.upgrade() else {
+                    return;
+                };
+                match kind {
+                    FocusRequestKind::Raise => window.order_front(),
+                    FocusRequestKind::Focus => {
+                        if window.is_miniaturized() {
+                            window.deminiaturize();
+                        }
+                        window.make_key_and_order_front();
+                        application.activate();
                     }
-                    window.make_key_and_order_front();
-                    application.activate();
                 }
             }
         });
@@ -1136,10 +1145,16 @@ mod imp {
         let mut keepalive = KeepAlive::default();
         // `WindowHandle::raise`/`focus`: `UIKit` keeps one primitive —
         // `makeKeyAndVisible` orders the window front and makes it key —
-        // so both requests land on it, as the handle docs say.
+        // so both requests land on it, as the handle docs say. The hook
+        // holds the window weakly: a request filed through a handle that
+        // outlived its scene finds nothing to act on.
         declaration.arm_focus_requests({
-            let window = pending.window.clone();
-            move |_kind| window.makeKeyAndVisible()
+            let window = cocoa_ui::objc2::rc::Weak::from_retained(&pending.window);
+            move |_kind| {
+                if let Some(window) = window.load() {
+                    window.makeKeyAndVisible();
+                }
+            }
         });
         let host: Retained<HostView> = Retained::from(pending.controller.host_view());
 

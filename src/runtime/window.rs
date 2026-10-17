@@ -1244,7 +1244,8 @@ impl WindowHandle {
     ///
     /// Raising does not restore a minimized window — [`Self::restore`]
     /// does — and does not activate the application; [`Self::focus`] does
-    /// both where the platform allows it.
+    /// both where the platform allows it. A handle that outlived its
+    /// window's teardown files into nothing: the request is a no-op.
     ///
     /// # Panics
     ///
@@ -1272,6 +1273,9 @@ impl WindowHandle {
     ///   activation token is required, which only exists when the request
     ///   follows a user gesture — otherwise the request is best-effort.
     /// - **Headless/semantic runners:** unarmed; the call panics.
+    ///
+    /// A handle that outlived its window's teardown files into nothing:
+    /// the request is a no-op.
     ///
     /// # Panics
     ///
