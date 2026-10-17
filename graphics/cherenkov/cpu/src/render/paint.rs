@@ -2,6 +2,8 @@
 //! sampled at the pixel centre mapped by the item's inverse transform into
 //! content space, then premultiplied.
 
+use std::mem::MaybeUninit;
+
 use cherenkov::kurbo::Affine;
 use cherenkov::{ColorStop, Extend, Interpolation, Paint};
 use rustc_hash::FxHashMap;
@@ -224,6 +226,13 @@ fn sample_image(
 
 /// Lowers a `Paint` into [`PaintData`]. `inv` maps device space into the
 /// content space the gradient parameters live in.
+///
+/// # Errors
+/// [`RenderError::Render`] on invalid paint parameters,
+/// [`RenderError::Image`] on a non-invertible image transform or an
+/// unregistered image, [`RenderError::IdenticalRadialCircles`] when an
+/// identical-circles radial repeats or reflects, and
+/// [`RenderError::Unsupported`] for a shader paint.
 #[expect(
     clippy::many_single_char_names,
     reason = "r/g/b/a are the channel names"
@@ -495,6 +504,10 @@ fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2], identical: boo
 }
 
 impl PaintData {
+    /// An image paint over `image` sampled through `transform`
+    /// (image-space to device), `Pad` extend and linear sampling — the
+    /// bitmap present path.
+    #[must_use]
     pub fn bitmap(image: std::sync::Arc<super::image::CpuImage>, transform: Affine) -> Self {
         let mapping = transform.inverse();
         Self::Image(Box::new(ImagePaintData {
@@ -508,6 +521,7 @@ impl PaintData {
     }
 
     /// Apply sampled device placement without resolving or copying gradient stops.
+    #[must_use]
     pub fn transformed(&self, transform: Affine) -> Self {
         let mut paint = self.clone();
         match &mut paint {
@@ -524,6 +538,7 @@ impl PaintData {
 
     /// Evaluates the paint at device-space pixel centre `(dx, dy)`,
     /// returning premultiplied linear Display P3.
+    #[must_use]
     #[expect(
         clippy::cast_precision_loss,
         reason = "image dimensions are bounded by memory budget"
@@ -600,6 +615,163 @@ impl PaintData {
                     [0.0; 4]
                 } else {
                     extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
+                }
+            }
+        }
+    }
+
+    /// Evaluates the run of pixel centres `(x0 + i + 0.5, py + 0.5)` into
+    /// `out`: `out[i] == self.eval(x0 + i + 0.5, py + 0.5)` bit for bit.
+    /// `out` may be uninitialised — every element is written — and is
+    /// returned as the initialised run. Scalar for now; the span shape is
+    /// what the SIMD kernels take over.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel indices and band offsets are far below 2^24"
+    )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    pub fn eval_span<'a>(
+        &self,
+        x0: usize,
+        py: usize,
+        out: &'a mut [MaybeUninit<[f32; 4]>],
+    ) -> &'a mut [[f32; 4]] {
+        for (i, px) in out.iter_mut().enumerate() {
+            px.write(self.eval((x0 + i) as f32 + 0.5, py as f32 + 0.5));
+        }
+        // SAFETY: every element of `out` was just written.
+        unsafe { out.assume_init_mut() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::mem::MaybeUninit;
+    use std::sync::Arc;
+
+    use cherenkov::kurbo::Affine;
+    use cherenkov::{
+        ColorStop, Extend, ImageColorSpace, ImageFormat, ImageId, ImagePattern, ImageUpload,
+        Interpolation, LinearGradient, Paint, RadialGradient, Sampling, SweepGradient,
+        TransformedPaint, WorkingColor,
+    };
+
+    use super::PaintData;
+    use crate::testing::kernels;
+
+    const IMAGE: ImageId = ImageId::new(1);
+
+    fn stops() -> Vec<ColorStop> {
+        [
+            (0.0, [0.9, 0.1, 0.2, 1.0]),
+            (0.35, [0.1, 0.8, 0.3, 1.0]),
+            (0.7, [0.2, 0.3, 0.9, 0.8]),
+            (1.0, [0.05, 0.05, 0.4, 1.0]),
+        ]
+        .into_iter()
+        .map(|(offset, color)| ColorStop {
+            offset,
+            color: WorkingColor::new(color),
+        })
+        .collect()
+    }
+
+    fn linear() -> LinearGradient {
+        let mut gradient = LinearGradient::new((0.0, 0.0), (1024.0, 0.0));
+        gradient.stops = stops();
+        gradient
+    }
+
+    /// A deterministic 64×64 `Rgba8` upload.
+    fn upload() -> ImageUpload {
+        let mut data = Vec::with_capacity(64 * 64 * 4);
+        for y in 0..64u8 {
+            for x in 0..64u8 {
+                data.extend_from_slice(&[x * 4, y * 4, (x + y) * 2, 255]);
+            }
+        }
+        ImageUpload {
+            width: 64,
+            height: 64,
+            data: data.into(),
+            color_space: ImageColorSpace::LinearP3,
+            premultiplied: false,
+            format: ImageFormat::Rgba8,
+        }
+    }
+
+    /// Every paint kind the span table covers, lowered through the real
+    /// `paint_data`/`CpuImage::decode` path a bench uses.
+    fn each_kind() -> Vec<PaintData> {
+        let images = [(IMAGE.raw(), Arc::new(kernels::image(&upload()).unwrap()))];
+        let lower =
+            |paint: &Paint| kernels::paint(paint, Affine::IDENTITY, images.clone()).unwrap();
+        let radial = RadialGradient {
+            start_center: (512.0, 256.0).into(),
+            start_radius: 32.0,
+            end_center: (640.0, 256.0).into(),
+            end_radius: 400.0,
+            stops: stops(),
+            extend: Extend::Pad,
+            interpolation: Interpolation::Working,
+        };
+        let mut identical = radial.clone();
+        identical.end_center = identical.start_center;
+        identical.end_radius = identical.start_radius;
+        let mut sweep = SweepGradient::new((512.0, 256.0), 0.0, std::f64::consts::TAU);
+        sweep.stops = stops();
+        let pattern = |sampling| {
+            Paint::Image(ImagePattern {
+                image: IMAGE,
+                transform: Affine::scale(1024.0 / 64.0),
+                extend_x: Extend::Pad,
+                extend_y: Extend::Pad,
+                sampling,
+            })
+        };
+        vec![
+            lower(&Paint::Solid(WorkingColor::new([0.2, 0.5, 0.9, 1.0]))),
+            lower(&Paint::Solid(WorkingColor::new([0.2, 0.5, 0.9, 0.6]))),
+            lower(&Paint::Linear(linear())),
+            lower(&Paint::Radial(radial)),
+            lower(&Paint::Radial(identical)),
+            lower(&Paint::Sweep(sweep)),
+            lower(&pattern(Sampling::Nearest)),
+            lower(&pattern(Sampling::Linear)),
+            lower(&Paint::Transformed(TransformedPaint::new(
+                Paint::Linear(linear()),
+                Affine::translate((20.0, 5.0)) * Affine::rotate(0.3),
+            ))),
+        ]
+    }
+
+    /// `eval_span` is per-pixel `eval`, bit for bit, over every run of
+    /// length 0–67 starting at offsets 0–3.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel indices and band offsets are far below 2^24"
+    )]
+    #[test]
+    fn eval_span_matches_scalar_eval_bit_for_bit() {
+        for paint in each_kind() {
+            for x0 in 0..4usize {
+                for len in 0..=67usize {
+                    let py = 13usize;
+                    let mut span = vec![MaybeUninit::uninit(); len];
+                    let span = paint.eval_span(x0, py, &mut span);
+                    for (i, px) in span.iter().enumerate() {
+                        assert_eq!(
+                            px.map(f32::to_bits),
+                            paint
+                                .eval((x0 + i) as f32 + 0.5, py as f32 + 0.5)
+                                .map(f32::to_bits),
+                            "paint {paint:?}, run x0={x0} len={len}, pixel {i}"
+                        );
+                    }
                 }
             }
         }

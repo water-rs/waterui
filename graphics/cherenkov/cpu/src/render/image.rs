@@ -4,14 +4,24 @@
 
 use cherenkov::{ImageColorSpace, ImageFormat, ImageUpload, ResourceError, srgb_decode};
 
+/// A registered image decoded into working-space premultiplied texels.
 #[derive(Debug)]
 pub struct CpuImage {
+    /// Texel columns.
     pub width: u32,
+    /// Texel rows.
     pub height: u32,
+    /// `width * height` premultiplied linear Display P3 texels in row order.
     pub pixels: Box<[[f32; 4]]>,
 }
 
 impl CpuImage {
+    /// The decoded texels' heap bytes.
+    ///
+    /// # Panics
+    /// When the texel count does not fit `u64` — unreachable on any
+    /// supported target.
+    #[must_use]
     pub fn bytes(&self) -> u64 {
         u64::try_from(size_of_val(&*self.pixels)).expect("image allocation fits u64")
     }
@@ -20,6 +30,10 @@ impl CpuImage {
     /// domain before transfer/primary conversion, then premultiplied in P3.
     /// `Rgba16F` texels convert f16 -> f64 directly — never through 8 bits —
     /// and keep values outside `[0, 1]`.
+    ///
+    /// # Errors
+    /// [`ResourceError::Image`] when `image` is empty, in a format the CPU
+    /// cannot decode, or its byte length disagrees with its dimensions.
     pub fn decode(image: &ImageUpload) -> Result<Self, ResourceError> {
         let count = Self::validate(image)?;
         let mut pixels = vec![[0.0; 4]; count].into_boxed_slice();
@@ -40,6 +54,10 @@ impl CpuImage {
     /// Checks that `image` can be decoded: nonempty, a CPU-decodable
     /// format, and a byte length matching its dimensions. Returns its
     /// texel count.
+    ///
+    /// # Errors
+    /// [`ResourceError::Image`] when `image` is empty, in a format the CPU
+    /// cannot decode, or its byte length disagrees with its dimensions.
     pub fn validate(image: &ImageUpload) -> Result<usize, ResourceError> {
         if image.width == 0 || image.height == 0 {
             return Err(ResourceError::Image(

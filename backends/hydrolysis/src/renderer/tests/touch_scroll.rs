@@ -22,8 +22,8 @@ use waterui_controls::button::button;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::{Id, SelfId};
 use waterui_layout::frame::Frame;
-use waterui_layout::scroll::scroll;
-use waterui_layout::stack::{VStack, vstack};
+use waterui_layout::scroll::{ScrollController, scroll};
+use waterui_layout::stack::{VStack, hstack, vstack};
 use waterui_navigation::NavigationView;
 use waterui_navigation::tab::{Tab, TabsLayout};
 
@@ -856,4 +856,347 @@ fn the_physics_family_follows_the_browsers_user_agent() {
             "{user_agent}"
         );
     }
+}
+
+// water-rs/waterui#2904 — each scroll view's overscroll effect lives with
+// that scroll view, not with whichever fling last took a single fling slot:
+// a newer claim on the same view ends its fling but lets its stretch relax
+// on its own spring, or — under the rubber band, whose overscroll is the
+// offset itself — takes the offset and clamps it into the extents; a touch,
+// a release or a fling on another scroll view touches neither.
+
+/// The two side-by-side scroll views these cases drive: the left one under
+/// x = `LEFT`, the right one under x = `RIGHT`, each `ROWS` rows tall.
+const LEFT: f32 = 100.0;
+const RIGHT: f32 = 300.0;
+
+fn side_by_side() -> AnyView {
+    let column = |name: &'static str| {
+        let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
+        scroll(VStack::for_each(rows, move |row| {
+            let index = row.into_inner();
+            vstack((text(format!("{name} {index}")),)).size(180.0, ROW_HEIGHT)
+        }))
+    };
+    AnyView::new(hstack((column("Left"), column("Right"))).spacing(0.0))
+}
+
+/// A scroll view driven by `controller`, `ROWS` rows tall.
+fn controlled_stack(controller: &ScrollController<waterui_core::layout::Point>) -> AnyView {
+    let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
+    AnyView::new(
+        scroll(VStack::for_each(rows, |row| {
+            let index = row.into_inner();
+            vstack((text(format!("Row {index}")),)).size(360.0, ROW_HEIGHT)
+        }))
+        .scroll_controller(controller),
+    )
+}
+
+fn offset_at(runtime: &HeadlessRuntime, x: f32) -> f64 {
+    offset_y_at(runtime, x, 300.0).expect("the scroll view must keep its metrics")
+}
+
+fn stretch_y_at(runtime: &HeadlessRuntime, x: f32) -> f64 {
+    runtime
+        .renderer()
+        .scroll_stretch_at(x, 300.0)
+        .expect("the scroll view must keep its target")
+        .y
+}
+
+fn assert_side_by_side(runtime: &HeadlessRuntime) {
+    let left = runtime
+        .renderer()
+        .scroll_metrics_at(LEFT, 300.0)
+        .expect("the left scroll view is under x = LEFT");
+    let right = runtime
+        .renderer()
+        .scroll_metrics_at(RIGHT, 300.0)
+        .expect("the right scroll view is under x = RIGHT");
+    assert!(
+        left.viewport_width <= 200.0 && right.viewport_width <= 200.0 && left.max_y > 0.0,
+        "two scrollable views side by side: {left:?} {right:?}"
+    );
+}
+
+/// Pulls the scroll view under `x` 100 units past its top edge, gives the
+/// drag back 30 of them, and flicks it into the content: the release at
+/// 224 ms flings into the content at 1250 units/s while the pulled edge,
+/// still stretched, relaxes — the fling and the stretch run together.
+fn pull_then_flick(runtime: &mut HeadlessRuntime, start: Instant, x: f32) {
+    for (frame_ms, event) in [
+        (16_u64, touch_down(x, 200.0)),
+        (32, touch_move(x, 215.0)),
+        (48, touch_move(x, 310.0)),
+        (200, touch_move(x, 300.0)),
+        (208, touch_move(x, 290.0)),
+        (216, touch_move(x, 280.0)),
+        (224, touch_up(x, 280.0)),
+    ] {
+        runtime.push_input_event(event);
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame_ms));
+    }
+}
+
+/// Pulls the scroll view under `x` 100 units past its top edge and lets go
+/// of it still at 400 ms.
+fn pull_and_let_go(runtime: &mut HeadlessRuntime, start: Instant, x: f32) {
+    for (frame_ms, event) in [
+        (16_u64, touch_down(x, 200.0)),
+        (32, touch_move(x, 215.0)),
+        (48, touch_move(x, 310.0)),
+        (400, touch_up(x, 310.0)),
+    ] {
+        runtime.push_input_event(event);
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame_ms));
+    }
+}
+
+/// A fast upward fling on the scroll view under `x`, from `from_ms`: down,
+/// three 40-unit moves 16 ms apart, and the release.
+fn fling_up(runtime: &mut HeadlessRuntime, start: Instant, x: f32, from_ms: u64) {
+    runtime.push_input_event(touch_down(x, 500.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(from_ms));
+    for (step, y) in [(1_u64, 460.0_f32), (2, 420.0), (3, 380.0)] {
+        runtime.push_input_event(touch_move(x, y));
+        let _ = runtime.pump_at(false, start + Duration::from_millis(from_ms + step * 16));
+    }
+    runtime.push_input_event(touch_up(x, 380.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(from_ms + 64));
+}
+
+/// A 40-unit pixel wheel scroll into the content over the scroll view
+/// under `x`.
+const fn wheel_into_the_content(x: f32) -> InputEvent {
+    InputEvent::Scroll {
+        x,
+        y: 300.0,
+        dx: 0.0,
+        dy: -40.0,
+        is_line_delta: false,
+    }
+}
+
+/// Pumps 16 ms frames from `from_ms` for 1.44 s and returns the stretch of
+/// the scroll view under `x` after each.
+fn relaxing_stretch(
+    runtime: &mut HeadlessRuntime,
+    start: Instant,
+    from_ms: u64,
+    x: f32,
+) -> Vec<f64> {
+    (1..=90_u64)
+        .map(|frame| {
+            let _ = runtime.pump_at(false, start + Duration::from_millis(from_ms + frame * 16));
+            stretch_y_at(runtime, x)
+        })
+        .collect()
+}
+
+/// The stretch keeps relaxing from where the interruption found it: shown
+/// on the interrupted frame, never growing, and at rest by the end.
+fn assert_relaxes(before: f64, after: f64, rest: &[f64]) {
+    assert!(
+        before > 0.0,
+        "the top edge stretches before the interruption"
+    );
+    assert!(
+        after > 0.0 && after <= before,
+        "the interruption must not drop the stretch: {before} → {after}"
+    );
+    // A request lands on the frame after it is issued, so the frame after
+    // the interruption must still show the stretch too.
+    assert!(
+        rest[0] > 0.0,
+        "the stretch must still relax once the interruption landed: {rest:?}"
+    );
+    let mut relaxing = vec![after];
+    relaxing.extend_from_slice(rest);
+    assert!(
+        relaxing.windows(2).all(|pair| pair[1] <= pair[0]),
+        "it relaxes monotonically: {relaxing:?}"
+    );
+    assert_eq!(rest.last().copied(), Some(0.0), "and comes to rest");
+}
+
+#[test]
+fn a_wheel_scroll_ends_the_fling_but_lets_the_stretch_relax() {
+    let mut runtime = runtime(tall_stack());
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    pull_then_flick(&mut runtime, start, 200.0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(240));
+    let before = stretch_y_at(&runtime, 200.0);
+    assert!(
+        offset_at(&runtime, 200.0) > 0.0,
+        "the flick flings into the content"
+    );
+
+    runtime.push_input_event(wheel_into_the_content(200.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(256));
+    let after = stretch_y_at(&runtime, 200.0);
+    let wheeled = offset_at(&runtime, 200.0);
+    let rest = relaxing_stretch(&mut runtime, start, 256, 200.0);
+
+    assert_relaxes(before, after, &rest);
+    assert!(
+        (offset_at(&runtime, 200.0) - wheeled).abs() < f64::EPSILON,
+        "the wheel owns the offset: the fling it superseded writes no more"
+    );
+    assert!(!runtime.renderer().has_active_touch_fling());
+}
+
+#[test]
+fn a_programmatic_scroll_ends_the_fling_but_lets_the_stretch_relax() {
+    let controller = ScrollController::new(waterui_core::layout::Point::zero());
+    let mut runtime = runtime(controlled_stack(&controller));
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    pull_then_flick(&mut runtime, start, 200.0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(240));
+    let before = stretch_y_at(&runtime, 200.0);
+
+    controller.scroll_to(waterui_core::layout::Point::new(0.0, 500.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(256));
+    let after = stretch_y_at(&runtime, 200.0);
+    let rest = relaxing_stretch(&mut runtime, start, 256, 200.0);
+
+    assert_relaxes(before, after, &rest);
+    assert!(
+        (offset_at(&runtime, 200.0) - 500.0).abs() < f64::EPSILON,
+        "the request owns the offset: the fling it superseded writes no more"
+    );
+    assert!(!runtime.renderer().has_active_touch_fling());
+}
+
+#[test]
+fn another_scroll_views_fling_leaves_a_running_stretch_and_fling_alone() {
+    let mut runtime = runtime(side_by_side());
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    assert_side_by_side(&runtime);
+    pull_then_flick(&mut runtime, start, LEFT);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(240));
+    let before = stretch_y_at(&runtime, LEFT);
+    let flinging = offset_at(&runtime, LEFT);
+
+    // The right scroll view is touched, dragged and flung while the left
+    // one still flings and relaxes.
+    fling_up(&mut runtime, start, RIGHT, 256);
+    let after = stretch_y_at(&runtime, LEFT);
+    assert!(
+        offset_at(&runtime, LEFT) > flinging,
+        "the left fling keeps running through the right one's touch"
+    );
+    let rest = relaxing_stretch(&mut runtime, start, 320, LEFT);
+
+    assert_relaxes(before, after, &rest);
+    assert!(
+        offset_at(&runtime, RIGHT) > 0.0,
+        "the right scroll view flung"
+    );
+    assert!(!runtime.renderer().has_active_touch_fling());
+}
+
+/// The offsets of the scroll view under `x` over 16 ms frames from
+/// `from_ms` for 2.4 s.
+fn settling_offsets(
+    runtime: &mut HeadlessRuntime,
+    start: Instant,
+    from_ms: u64,
+    x: f32,
+) -> Vec<f64> {
+    (1..=150_u64)
+        .map(|frame| {
+            let _ = runtime.pump_at(false, start + Duration::from_millis(from_ms + frame * 16));
+            offset_at(runtime, x)
+        })
+        .collect()
+}
+
+/// Leaves the scroll view under `x` springing back from past its top edge
+/// at 432 ms, and returns that offset.
+fn springing_back(runtime: &mut HeadlessRuntime, start: Instant, x: f32) -> f64 {
+    pull_and_let_go(runtime, start, x);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(416));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(432));
+    let springing = offset_at(runtime, x);
+    assert!(springing < 0.0, "still past the edge: {springing}");
+    springing
+}
+
+#[test]
+fn a_wheel_scroll_takes_a_uikit_bounce_back_into_the_extents() {
+    let mut runtime = uikit_runtime(tall_stack());
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    springing_back(&mut runtime, start, 200.0);
+
+    // The wheel claims the offset the spring held past the edge: it lands
+    // in the extents and stays where the wheel put it.
+    runtime.push_input_event(wheel_into_the_content(200.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(448));
+    let wheeled = offset_at(&runtime, 200.0);
+    assert!(wheeled >= 0.0, "back inside the extents: {wheeled}");
+    let offsets = settling_offsets(&mut runtime, start, 448, 200.0);
+    assert!(
+        offsets
+            .iter()
+            .all(|&offset| (offset - wheeled).abs() < f64::EPSILON),
+        "the superseded spring writes no more: {offsets:?}"
+    );
+    assert!(!runtime.renderer().has_active_touch_fling());
+}
+
+#[test]
+fn a_programmatic_scroll_takes_a_uikit_bounce_back_into_the_extents() {
+    let controller = ScrollController::new(waterui_core::layout::Point::zero());
+    let mut runtime = uikit_runtime(controlled_stack(&controller));
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    springing_back(&mut runtime, start, 200.0);
+
+    controller.scroll_to(waterui_core::layout::Point::new(0.0, 500.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(448));
+    let landed = offset_at(&runtime, 200.0);
+    let offsets = settling_offsets(&mut runtime, start, 448, 200.0);
+    assert!(
+        core::iter::once(landed)
+            .chain(offsets.iter().copied())
+            .all(|offset| (offset - 500.0).abs() < f64::EPSILON),
+        "the request owns the offset; the superseded spring writes no more: {landed} {offsets:?}"
+    );
+    assert!(!runtime.renderer().has_active_touch_fling());
+}
+
+#[test]
+fn another_scroll_views_fling_leaves_a_uikit_bounce_to_settle() {
+    let mut runtime = uikit_runtime(side_by_side());
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    assert_side_by_side(&runtime);
+    let springing = springing_back(&mut runtime, start, LEFT);
+
+    fling_up(&mut runtime, start, RIGHT, 448);
+    let offsets = settling_offsets(&mut runtime, start, 512, LEFT);
+    assert!(
+        offsets[0] > springing && offsets[0] < 0.0,
+        "the left spring keeps returning through the right one's touch: {springing} → {offsets:?}"
+    );
+    assert!(
+        offsets.windows(2).all(|pair| pair[1] >= pair[0]),
+        "it returns monotonically: {offsets:?}"
+    );
+    assert_eq!(
+        offsets.last().copied(),
+        Some(0.0),
+        "it settles exactly on the edge, never left past it"
+    );
+    // The right fling's decay is still running — UIKit's projection of a
+    // 2500 units/s release takes about 4.7 s to come to rest.
+    assert!(
+        offset_at(&runtime, RIGHT) > 0.0,
+        "the right scroll view flung"
+    );
 }
