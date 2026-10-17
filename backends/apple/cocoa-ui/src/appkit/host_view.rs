@@ -14,8 +14,8 @@ use std::rc::Rc;
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::runtime::{ProtocolObject, Sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
     NSView,
@@ -557,6 +557,22 @@ define_class!(
                 }
                 // SAFETY: see the module safety note.
                 unsafe { msg_send![super(self), accessibilityPerformPress] }
+            })
+        }
+
+        // SAFETY: see the module safety note. The override above puts
+        // `AXPress` on every host that is an accessibility element; the
+        // action is allowed only while a press handler is installed, so a
+        // host that is an element for another reason (a role set through
+        // accessibility metadata) advertises no press it cannot perform.
+        #[unsafe(method(isAccessibilitySelectorAllowed:))]
+        fn is_accessibility_selector_allowed_override(&self, selector: Sel) -> bool {
+            guarded("HostView isAccessibilitySelectorAllowed:", || {
+                if selector == sel!(accessibilityPerformPress) {
+                    return self.ivars().accessibility_press.borrow().is_some();
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), isAccessibilitySelectorAllowed: selector] }
             })
         }
 
