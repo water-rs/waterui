@@ -171,10 +171,10 @@ impl Toolchain for LinuxSystemToolchain {
             .iter()
             .filter(|library| resolved_dependencies.contains(library.required_by))
         {
-            if let Some(package) = manager.package_for_native_library(library.module) {
-                if !required_packages.contains(&package) {
-                    required_packages.push(package);
-                }
+            if let Some(package) = manager.package_for_native_library(library.module)
+                && !required_packages.contains(&package)
+            {
+                required_packages.push(package);
             }
         }
         let mut missing_packages = Vec::new();
@@ -203,57 +203,48 @@ impl Toolchain for LinuxSystemToolchain {
     }
 }
 
-/// The package names in the dependency graph the checked project resolves:
-/// the `[[package]]` entries of the `Cargo.lock` nearest the host's working
-/// directory, which a workspace shares across its members.
+/// The package names in the dependency graph the checked project resolves
+/// for this Linux host: what `cargo metadata --filter-platform <host>`
+/// reports in its resolve, run through the host's `cargo`.
 ///
-/// The lockfile is the resolve Cargo already computed, so reading it never
-/// invokes Cargo and never touches the network. A host outside any Cargo
-/// workspace has no graph and resolves to an empty set, which selects no
-/// optional binding; a project that has never been resolved has no lockfile
-/// yet and behaves the same — its first real resolve re-runs the check
-/// against the graph it produces.
+/// The project is the `Water.toml` at the host's working directory, the same
+/// test the doctor's project context applies. A host outside a project has
+/// no graph and resolves to an empty set, which selects no optional binding.
+/// A project whose graph cargo cannot resolve is an error, never an empty
+/// set: an empty graph would silently drop the native libraries it needs.
 async fn resolved_dependency_names(
     host: &Host,
 ) -> Result<BTreeSet<String>, ToolchainError<LinuxSystemPackagesInstallation>> {
-    /// The `name` field of one `[[package]]` entry in a `Cargo.lock`.
-    #[derive(serde::Deserialize)]
-    struct Lockfile {
-        #[serde(default)]
-        package: Vec<LockPackage>,
-    }
-    #[derive(serde::Deserialize)]
-    struct LockPackage {
-        name: String,
-    }
-
-    let mut lockfile = None;
-    for directory in host.cwd().ancestors() {
-        let candidate = directory.join("Cargo.lock");
-        if candidate.is_file() {
-            lockfile = Some(candidate);
-            break;
-        }
-    }
-    let Some(lockfile) = lockfile else {
+    if !smol::fs::metadata(host.cwd().join("Water.toml"))
+        .await
+        .is_ok_and(|metadata| metadata.is_file())
+    {
         return Ok(BTreeSet::new());
-    };
-    let contents = smol::fs::read_to_string(&lockfile).await.map_err(|error| {
+    }
+    let mut command = cargo_metadata::MetadataCommand::new();
+    command
+        .current_dir(host.cwd())
+        .manifest_path(host.cwd().join("Cargo.toml"))
+        .other_options(vec![
+            String::from("--filter-platform"),
+            target_lexicon::Triple::host().to_string(),
+        ]);
+    let metadata = host.cargo_metadata(&command).await.map_err(|error| {
         ToolchainError::unfixable(
-            format!("Failed reading {}: {error}", lockfile.display()),
-            "Ensure the project's `Cargo.lock` is readable, then re-run `water doctor`.",
+            format!("Failed resolving the project's dependency graph: {error}"),
+            "Fix the project's manifest so `cargo metadata` succeeds, then re-run `water doctor`.",
         )
     })?;
-    let parsed: Lockfile = toml::from_str(&contents).map_err(|error| {
-        ToolchainError::unfixable(
-            format!("Failed parsing {}: {error}", lockfile.display()),
-            "Regenerate the lockfile with `cargo metadata` or `cargo check`, then re-run `water doctor`.",
-        )
-    })?;
-    Ok(parsed
-        .package
-        .into_iter()
-        .map(|package| package.name)
+    // Only `--no-deps` omits the resolve, and this command never passes it.
+    let resolve = metadata
+        .resolve
+        .expect("cargo metadata without --no-deps reports a resolve");
+    let resolved: BTreeSet<_> = resolve.nodes.iter().map(|node| &node.id).collect();
+    Ok(metadata
+        .packages
+        .iter()
+        .filter(|package| resolved.contains(&package.id))
+        .map(|package| package.name.to_string())
         .collect())
 }
 
@@ -1346,16 +1337,68 @@ mod host_tests {
         machine
     }
 
-    /// Stage the `Cargo.lock` a project resolves to, naming the crates its
-    /// dependency graph contains.
-    fn stage_lockfile(machine: &TestMachine, crates: &[&str]) {
-        let mut lockfile = String::from("version = 4\n");
-        for name in crates {
-            lockfile.push_str(&format!(
-                "\n[[package]]\nname = \"{name}\"\nversion = \"0.0.0\"\n"
-            ));
-        }
-        machine.file("Cargo.lock", &lockfile);
+    /// Stage the project the machine's working directory holds: a
+    /// `Water.toml`, and a `cargo` whose `metadata` resolves the graph naming
+    /// exactly `crates`.
+    fn stage_project(machine: &TestMachine, crates: &[&str]) {
+        machine.install("cargo");
+        machine.file("Water.toml", "");
+        let id = |name: &str| {
+            format!("registry+https://github.com/rust-lang/crates.io-index#{name}@0.0.0")
+        };
+        let packages: Vec<_> = crates
+            .iter()
+            .map(|name| {
+                serde_json::json!({
+                    "name": name,
+                    "version": "0.0.0",
+                    "id": id(name),
+                    "license": null,
+                    "license_file": null,
+                    "description": null,
+                    "source": null,
+                    "dependencies": [],
+                    "manifest_path": format!("/{name}/Cargo.toml"),
+                    "categories": [],
+                    "keywords": [],
+                    "readme": null,
+                    "repository": null,
+                    "homepage": null,
+                    "documentation": null,
+                    "edition": "2021",
+                    "links": null,
+                    "default_run": null,
+                    "rust_version": null,
+                    "metadata": null,
+                    "features": {},
+                    "targets": [],
+                    "publish": null,
+                    "authors": []
+                })
+            })
+            .collect();
+        let nodes: Vec<_> = crates
+            .iter()
+            .map(|name| {
+                serde_json::json!({
+                    "id": id(name),
+                    "dependencies": [],
+                    "deps": [],
+                    "features": []
+                })
+            })
+            .collect();
+        let metadata = serde_json::json!({
+            "packages": packages,
+            "workspace_members": [],
+            "workspace_default_members": [],
+            "resolve": { "nodes": nodes, "root": null },
+            "target_directory": "/target",
+            "version": 1,
+            "workspace_root": "/",
+            "metadata": null
+        });
+        machine.respond("CARGO_METADATA", &metadata.to_string());
     }
 
     #[test]
@@ -1372,7 +1415,7 @@ mod host_tests {
     #[test]
     fn ok_when_apt_packages_and_library_versions_satisfy_floors() {
         let machine = complete_apt_machine();
-        stage_lockfile(&machine, &["waterui-video", "cros-libva", "libspa"]);
+        stage_project(&machine, &["waterui-video", "cros-libva", "libspa"]);
         let host = machine.host([(
             String::from("WATERUI_FAKE_DPKG_INSTALLED"),
             format!("{APT_PACKAGES} libva-dev libpipewire-0.3-dev"),
@@ -1390,7 +1433,7 @@ mod host_tests {
         for tool in ["apt-get", "dpkg-query", "pkg-config"] {
             machine.install(tool);
         }
-        stage_lockfile(&machine, &["waterui"]);
+        stage_project(&machine, &["waterui"]);
         machine.respond_pkg_config_module("egl", "1.5.0");
         let host = machine.host([(
             String::from("WATERUI_FAKE_DPKG_INSTALLED"),
@@ -1401,12 +1444,51 @@ mod host_tests {
     }
 
     #[test]
+    fn outside_a_project_no_binding_is_required() {
+        // Without a `Water.toml` at the working directory there is no project
+        // graph, even when a `cargo` that would resolve the bindings exists.
+        let machine = TestMachine::new();
+        for tool in ["apt-get", "dpkg-query", "pkg-config"] {
+            machine.install(tool);
+        }
+        stage_project(&machine, &["waterui-video", "cros-libva", "libspa"]);
+        std::fs::remove_file(machine.root().join("Water.toml")).expect("remove Water.toml");
+        machine.respond_pkg_config_module("egl", "1.5.0");
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+            APT_PACKAGES.to_string(),
+        )]);
+        smol::block_on(LinuxSystemToolchain.check(&host))
+            .expect("a host outside a project must not require optional bindings");
+    }
+
+    #[test]
+    fn unresolvable_project_graph_is_unfixable() {
+        // A project whose `cargo metadata` fails (no response staged) is an
+        // error, not an empty graph.
+        let machine = TestMachine::new();
+        for tool in ["apt-get", "dpkg-query", "pkg-config", "cargo"] {
+            machine.install(tool);
+        }
+        machine.file("Water.toml", "");
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+            APT_PACKAGES.to_string(),
+        )]);
+        let result = smol::block_on(LinuxSystemToolchain.check(&host));
+        assert!(
+            matches!(result, Err(ToolchainError::Unfixable(_))),
+            "a failing cargo metadata must be unfixable: {result:?}"
+        );
+    }
+
+    #[test]
     fn selected_binding_with_missing_library_is_fixable() {
         let machine = TestMachine::new();
         for tool in ["apt-get", "dpkg-query", "pkg-config"] {
             machine.install(tool);
         }
-        stage_lockfile(&machine, &["waterui-video", "cros-libva"]);
+        stage_project(&machine, &["waterui-video", "cros-libva"]);
         machine.respond_pkg_config_module("egl", "1.5.0");
         let host = machine.host([(
             String::from("WATERUI_FAKE_DPKG_INSTALLED"),
@@ -1463,7 +1545,7 @@ mod host_tests {
     #[test]
     fn unfixable_when_libva_below_floor() {
         let machine = complete_apt_machine();
-        stage_lockfile(&machine, &["waterui-video", "cros-libva"]);
+        stage_project(&machine, &["waterui-video", "cros-libva"]);
         // Re-stage libva at the Ubuntu 22.04 version: VA-API 1.14 is below
         // the cros-libva floor of 1.19.
         machine.respond_pkg_config_module("libva", "1.14.0");
@@ -1485,7 +1567,7 @@ mod host_tests {
         for tool in ["apt-get", "dpkg-query", "pkg-config"] {
             machine.install(tool);
         }
-        stage_lockfile(&machine, &["waterui-video", "cros-libva", "libspa"]);
+        stage_project(&machine, &["waterui-video", "cros-libva", "libspa"]);
         // libva and egl are staged; libpipewire-0.3 is unknown to pkg-config.
         machine.respond_pkg_config_module("libva", "1.20.0");
         machine.respond_pkg_config_var("libva_version", "2.20.0");
@@ -1574,7 +1656,7 @@ mod host_tests {
         for tool in ["apt-get", "dpkg-query", "pkg-config"] {
             machine.install(tool);
         }
-        stage_lockfile(&machine, &["waterui-video", "cros-libva", "libspa"]);
+        stage_project(&machine, &["waterui-video", "cros-libva", "libspa"]);
         machine.respond_pkg_config_module("libva", "1.14.0");
         machine.respond_pkg_config_var("libva_version", "2.14.0");
         machine.respond_pkg_config_module("egl", "1.5.0");
