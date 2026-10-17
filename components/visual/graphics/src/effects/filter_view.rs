@@ -39,6 +39,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
+use crate::animation::engine_animation;
 use crate::draw::{curve_value, settled, spring_step};
 
 /// Values crossing the render-thread boundary, mirroring the engine's
@@ -64,7 +65,6 @@ pub use filtrate::{FilterImage, LutImage};
 use nami::SignalExt;
 use nami::{Signal, signal::IntoComputed};
 use waterui_core::animation::Animation;
-use waterui_core::easing::EasingCurve;
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
@@ -176,6 +176,7 @@ impl fmt::Debug for ParamGuards {
 
 /// The pixel dimensions of a filtered view's output texture.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[non_exhaustive]
 pub enum OutputSize {
     /// Match the captured input dimensions.
     #[default]
@@ -285,7 +286,7 @@ impl ParamGuards {
             let animation = context
                 .metadata()
                 .try_get::<Animation>()
-                .map(|animation| cherenkov_animation(&animation));
+                .map(|animation| engine_animation(&animation));
             let value = context.into_value();
             target.value.store(value.to_bits(), Ordering::Release);
             target.watchers.for_each(|callback| {
@@ -308,26 +309,6 @@ impl ParamGuards {
 
     fn extend(&mut self, other: Self) {
         self.0.extend(other.0);
-    }
-}
-
-/// Maps the public [`Animation`] onto the engine's execution type through
-/// its `curve()`/`duration()` contract — [`Animation::Default`] resolves
-/// through those accessors to the documented ease-in-out 250 ms.
-fn cherenkov_animation(animation: &Animation) -> crate::draw::Animation {
-    match animation.curve() {
-        EasingCurve::CubicBezier(x1, y1, x2, y2) => {
-            crate::draw::Animation::Curve(crate::draw::Curve::bezier(
-                animation.duration(),
-                f64::from(x1),
-                f64::from(y1),
-                f64::from(x2),
-                f64::from(y2),
-            ))
-        }
-        EasingCurve::Spring { stiffness, damping } => crate::draw::Animation::Spring(
-            crate::draw::Spring::from_physics(f64::from(stiffness), f64::from(damping)),
-        ),
     }
 }
 
@@ -807,6 +788,10 @@ impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
 /// registering it with its engine (`Engine::effect`) — and keeps `guards`
 /// alive as long as the realization.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole filtered view, so a new field must fail their build instead of being ignored"
+)]
 pub struct FilteredView {
     /// The filtered subtree.
     pub content: AnyView,
@@ -2044,8 +2029,9 @@ mod tests {
     use super::{
         AnimationInterpolator, Brightness, ColorStage, FilterLink, FilterParam as _, FilterSignal,
         FilterViewExt as _, FilteredView, GaussianBlur, OutputSize, ParamGuards, Placed,
-        SPRING_LIMIT, SpatialStage, StageCollector, cherenkov_animation,
+        SPRING_LIMIT, SpatialStage, StageCollector,
     };
+    use crate::animation::engine_animation;
     use core::time::Duration;
     use filtrate::Interpolator as _;
     use nami::SignalExt as _;
@@ -2164,6 +2150,12 @@ mod tests {
         ) -> filtrate::EffectRenderResult {
             Ok(false)
         }
+
+        fn retained_memory(&self) -> filtrate::RetainedMemory {
+            filtrate::RetainedMemory::default()
+        }
+
+        fn trim(&mut self) {}
     }
 
     #[cfg(feature = "gpu")]
@@ -2453,7 +2445,7 @@ mod tests {
 
     #[test]
     fn animation_default_resolves_documented_ease_in_out() {
-        let interpolator = AnimationInterpolator(cherenkov_animation(&Animation::Default));
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::Default));
         assert_eq!(interpolator.duration(), Duration::from_millis(250));
         let mid = interpolator.interpolate(0.0, 1.0, Duration::from_millis(125));
         assert!(
@@ -2464,7 +2456,7 @@ mod tests {
 
     #[test]
     fn animation_bezier_preserves_duration_and_shape() {
-        let interpolator = AnimationInterpolator(cherenkov_animation(&Animation::bezier(
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::bezier(
             Duration::from_millis(400),
             0.25,
             0.1,
@@ -2487,8 +2479,7 @@ mod tests {
 
     #[test]
     fn animation_spring_uses_engine_physics() {
-        let interpolator =
-            AnimationInterpolator(cherenkov_animation(&Animation::spring(200.0, 15.0)));
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::spring(200.0, 15.0)));
         assert_eq!(interpolator.duration(), SPRING_LIMIT);
         let early = interpolator.interpolate(0.0, 1.0, Duration::from_millis(30));
         assert!(

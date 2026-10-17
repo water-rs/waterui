@@ -557,7 +557,7 @@ mod platform {
                         view::set_frame(tab.pane.view(), bounds);
                     }
                 } else {
-                    let height = 28.0_f64;
+                    let height = view::fitting_size(chrome.view()).height;
                     view::set_frame(
                         chrome.view(),
                         Rect::new(

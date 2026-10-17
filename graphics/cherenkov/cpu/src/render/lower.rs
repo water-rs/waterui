@@ -15,6 +15,7 @@ use cherenkov::{BlendMode, FillRule, FrameId, GlyphRun, GlyphStyle, ShapeData};
 use cherenkov::{LayerId, RenderError, SurfaceId, SurfaceTree};
 
 use super::filter::{Erased, Registry};
+use super::geometry::{Frame, GeometryCache, Resolved, same_linear};
 use super::prepared::Op;
 use crate::names;
 use crate::render::paint::PaintData;
@@ -36,6 +37,22 @@ pub struct IRect {
     pub y1: i32,
 }
 
+/// A draw's device-space bounding box within its raster target
+/// (x ∈ `[x0, x1)`, y ∈ `[y0, y1)`). A target is at most `MAX_SURFACE`
+/// (16384) texels on a side, so `u16` holds every edge, and the compact box
+/// leaves room in [`Item::Draw`] for its offset without growing [`Item`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawBox {
+    /// Left edge.
+    pub x0: u16,
+    /// Top edge.
+    pub y0: u16,
+    /// Right edge.
+    pub x1: u16,
+    /// Bottom edge.
+    pub y1: u16,
+}
+
 /// A rasterized clip: an integer rect fast path or a full-surface
 /// coverage mask.
 #[derive(Debug, PartialEq)]
@@ -55,16 +72,24 @@ pub type ClipRef = Arc<ClipMask>;
 pub enum Item {
     /// A filled, flattened polygon.
     Draw {
-        /// Directed edges in device space.
+        /// Directed edges in the draw's translation-normalized frame
+        /// ([`Frame`]): device space is the frame moved by `offset`.
         edges: Arc<[Edge]>,
-        /// Device-space bounding box of the edges.
-        bbox: IRect,
+        /// The device position of the frame's origin, added to every edge
+        /// coordinate.
+        offset: [f32; 2],
+        /// Device-space bounding box of the placed edges.
+        bbox: DrawBox,
         /// The fill rule.
         rule: FillRule,
         /// The paint evaluator.
         paint: PaintData,
         /// The clip in force.
         clip: Option<ClipRef>,
+        /// Whether the winding sweep produced or confirmed `edges`: only
+        /// such geometry is offered to the lowering that replaces dropped
+        /// content.
+        swept: bool,
     },
     /// A Gaussian-blurred, axis-aligned rounded box.
     Shadow {
@@ -609,6 +634,7 @@ pub struct Lowering<'a, 'b> {
     fonts: &'b mut FxHashMap<u64, super::font::Font>,
     bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
     bitmap_cache: &'b mut super::bitmap::BitmapCache,
+    geometry: &'b mut GeometryCache,
     width: usize,
     height: usize,
     transform: Affine,
@@ -642,6 +668,8 @@ pub struct Lowering<'a, 'b> {
     local: Option<(LayerId, Affine)>,
     /// Projective layers' images placed in this raster, by layer.
     projected: FxHashMap<LayerId, crate::render::projective::Placed>,
+    /// The host CPU's SIMD level the coverage passes dispatch under.
+    level: fearless_simd::Level,
 }
 
 /// Reusable state for anchor planning and capture emission, owned by the
@@ -814,31 +842,73 @@ fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
     edges
 }
 
-/// Resolves overlapping windings: `Some` swaps in boundary edges whose
-/// winding is 0 or 1 everywhere, drawn under `NonZero`. `None` keeps the
-/// original edges and rule untouched.
+/// Resolves overlapping windings: edges whose winding can overlap are
+/// replaced by boundary edges whose winding is 0 or 1 everywhere, drawn
+/// under `NonZero`; otherwise the edges and rule are returned untouched.
 pub fn resolve_edges(edges: Vec<Edge>, rule: FillRule) -> (Vec<Edge>, FillRule) {
-    let segments: Vec<(f32, f32, f32, f32)> =
-        edges.iter().map(|e| (e.x0, e.y0, e.x1, e.y1)).collect();
-    cherenkov::lowering::resolve_winding(&segments, rule).map_or((edges, rule), |resolved| {
-        (
-            resolved
-                .into_iter()
-                .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
-                .collect(),
-            FillRule::NonZero,
-        )
-    })
+    cherenkov::lowering::resolve_winding(&edges, rule)
+        .into_resolved()
+        .map_or((edges, rule), |resolved| {
+            (
+                resolved
+                    .into_iter()
+                    .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
+                    .collect(),
+                FillRule::NonZero,
+            )
+        })
 }
 
-/// The bounding box of `edges` as an integer rect intersected with the
-/// surface.
+/// Offers a draw's swept geometry before its realization is dropped: a fill
+/// or a stroke realized as one swept draw.
+fn offer(geometry: &mut GeometryCache, op: &Op, data: &DeviceData<Vec<Item>>) {
+    let (local, shape, stroke) = match op {
+        Op::Fill { local, shape, .. } => (local, shape, None),
+        Op::Stroke {
+            local,
+            shape,
+            stroke,
+            ..
+        } => (local, shape, Some(stroke)),
+        _ => return,
+    };
+    if let [
+        Item::Draw {
+            edges,
+            rule,
+            swept: true,
+            ..
+        },
+    ] = data.output.as_slice()
+    {
+        geometry.offer(shape, stroke, data.transform * *local, edges, *rule);
+    }
+}
+
+/// Offers the swept geometry of every current realization of `content`,
+/// which is about to be dropped, to the next lowering.
+pub fn harvest(geometry: &mut GeometryCache, content: &ContentData) {
+    let Some((ops, _)) = content.current() else {
+        return;
+    };
+    for (op, realization) in ops.iter().zip(content.realizations()) {
+        if realization.valid
+            && let Some(Emission::Draw(data)) = &realization.data
+        {
+            offer(geometry, op, data);
+        }
+    }
+}
+
+/// The bounding box of `edges` placed at `offset`, intersected with the
+/// `w` × `h` target.
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "edge coordinates fit i32 on a real surface"
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "clamped to the target, whose sides fit u16 and f32 exactly"
 )]
-fn bbox_of(edges: &[Edge], w: usize, h: usize) -> IRect {
+fn bbox_of(edges: &[Edge], [ox, oy]: [f32; 2], w: usize, h: usize) -> DrawBox {
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for e in edges {
         x0 = x0.min(e.x0.min(e.x1));
@@ -846,11 +916,15 @@ fn bbox_of(edges: &[Edge], w: usize, h: usize) -> IRect {
         x1 = x1.max(e.x0.max(e.x1));
         y1 = y1.max(e.y0.max(e.y1));
     }
-    IRect {
-        x0: (x0.floor() as i32).max(0).min(w as i32),
-        y0: (y0.floor() as i32).max(0).min(h as i32),
-        x1: (x1.ceil() as i32).max(0).min(w as i32),
-        y1: (y1.ceil() as i32).max(0).min(h as i32),
+    // Rounded addition is monotonic, so placing the extrema bounds every
+    // placed coordinate `e + offset`.
+    let (x0, y0, x1, y1) = (x0 + ox, y0 + oy, x1 + ox, y1 + oy);
+    let (w, h) = (w as f32, h as f32);
+    DrawBox {
+        x0: x0.floor().clamp(0.0, w) as u16,
+        y0: y0.floor().clamp(0.0, h) as u16,
+        x1: x1.ceil().clamp(0.0, w) as u16,
+        y1: y1.ceil().clamp(0.0, h) as u16,
     }
 }
 
@@ -920,6 +994,10 @@ fn integer_edges(r: Rect) -> Option<IRect> {
 
 impl<'a, 'b> Lowering<'a, 'b> {
     /// Starts a lowering for a `w` × `h` surface using its output and anchor buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one lowering's inputs travel together"
+    )]
     pub fn new(
         buffers: (&'a mut Vec<Item>, &'a mut AnchorScratch),
         size: (u32, u32),
@@ -927,7 +1005,8 @@ impl<'a, 'b> Lowering<'a, 'b> {
         frame: FrameId,
         fonts: &'b mut FxHashMap<u64, super::font::Font>,
         bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
-        bitmap_cache: &'b mut super::bitmap::BitmapCache,
+        (bitmap_cache, geometry): (&'b mut super::bitmap::BitmapCache, &'b mut GeometryCache),
+        level: fearless_simd::Level,
     ) -> Self {
         let (items, anchor_scratch) = buffers;
         anchor_scratch.clear();
@@ -942,6 +1021,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             fonts,
             bitmap_fonts,
             bitmap_cache,
+            geometry,
             width: size.0 as usize,
             height: size.1 as usize,
             transform: Affine::IDENTITY,
@@ -957,6 +1037,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             layers_composed: 0,
             local: None,
             projected: FxHashMap::default(),
+            level,
         }
     }
 
@@ -2126,7 +2207,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         clip
     }
 
-    /// Reuse coverage until either its source command or device placement changes.
+    /// Reuse coverage until either its source command or device placement
+    /// changes. A fill or stroke whose new placement keeps the linear part
+    /// — a translation, a new clip or surface size — keeps its frame
+    /// geometry and is only placed again.
     fn leaf(&mut self, op: &Op, cache: &mut Realization<Emission>) -> Result<bool, RenderError> {
         if cache.valid
             && let Some(Emission::Draw(data)) = &cache.data
@@ -2135,9 +2219,28 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.items.extend_from_slice(&data.output);
             return Ok(false);
         }
-        let mut items = match cache.data.take() {
-            Some(Emission::Draw(data)) => data.output,
-            None => Vec::new(),
+        let (mut items, carried) = match cache.data.take() {
+            Some(Emission::Draw(data)) => {
+                let carried = match data.output.as_slice() {
+                    [
+                        Item::Draw {
+                            edges, rule, swept, ..
+                        },
+                    ] if cache.valid
+                        && matches!(op, Op::Fill { .. } | Op::Stroke { .. })
+                        && same_linear(data.transform, self.transform) =>
+                    {
+                        Some(Resolved {
+                            edges: edges.clone(),
+                            rule: *rule,
+                            swept: *swept,
+                        })
+                    }
+                    _ => None,
+                };
+                (data.output, carried)
+            }
+            None => (Vec::new(), None),
             Some(Emission::Clip(_)) => unreachable!("structural changes replace the cache layout"),
         };
         items.clear();
@@ -2149,13 +2252,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
             FrameId::new(0),
             &mut *self.fonts,
             self.bitmap_fonts,
-            &mut *self.bitmap_cache,
+            (&mut *self.bitmap_cache, &mut *self.geometry),
+            self.level,
         );
         compose.width = self.width;
         compose.height = self.height;
         compose.transform = self.transform;
         compose.clip = self.clip.clone();
-        compose.realize(op)?;
+        compose.realize(op, carried)?;
         self.glyphs.append(&mut compose.glyphs);
         self.glyphs_rasterized += compose.glyphs_rasterized;
         self.items.extend_from_slice(&items);
@@ -2164,7 +2268,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         Ok(true)
     }
 
-    fn realize(&mut self, op: &Op) -> Result<(), RenderError> {
+    /// Realizes `op` under the current placement. `carried` is the frame
+    /// geometry of a fill's or stroke's previous realization under the
+    /// same linear part, placed instead of flattening again.
+    fn realize(&mut self, op: &Op, carried: Option<Resolved>) -> Result<(), RenderError> {
         match op {
             Op::Fill {
                 local,
@@ -2172,7 +2279,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 paint,
             } => {
                 self.transform *= *local;
-                self.fill(shape, paint);
+                self.fill(shape, paint, carried);
                 Ok(())
             }
             Op::Stroke {
@@ -2182,7 +2289,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 paint,
             } => {
                 self.transform *= *local;
-                self.stroke(shape, stroke, paint);
+                self.stroke(shape, stroke, paint, carried);
                 Ok(())
             }
             Op::Shadow {
@@ -2211,65 +2318,87 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
     }
 
-    /// `Fill`: a flattened polygon of edges in device space.
-    fn fill(&mut self, shape: &ShapeData, paint: &PaintData) {
-        let sm = sigma_max(self.transform).max(1e-12);
-        let tol_u = FLATTEN_TOL / sm;
-        let Some((path, rule)) = shape_outline(shape, tol_u) else {
+    /// `Fill`: a flattened polygon of edges in the shape's frame, placed in
+    /// device space. `carried` replaces flattening and resolving.
+    fn fill(&mut self, shape: &ShapeData, paint: &PaintData, carried: Option<Resolved>) {
+        let transform = self.transform;
+        let frame = Frame::new(shape, None, transform);
+        let resolved = carried.or_else(|| {
+            self.geometry.resolve(shape, None, transform, || {
+                let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+                let (path, rule) = shape_outline(shape, tol_u)?;
+                Some((
+                    flatten_edges(frame.map(frame.anchored(path)), FLATTEN_TOL),
+                    rule,
+                ))
+            })
+        });
+        self.place(&frame, resolved, paint, true);
+    }
+
+    /// `Stroke`: `kurbo::stroke` the content-space path, map it into the
+    /// shape's frame, flatten and fill non-zero — dashes included, like
+    /// the oracle. `carried` replaces stroking, flattening and resolving.
+    fn stroke(
+        &mut self,
+        shape: &ShapeData,
+        stroke: &kurbo::Stroke,
+        paint: &PaintData,
+        carried: Option<Resolved>,
+    ) {
+        let transform = self.transform;
+        let frame = Frame::new(shape, Some(stroke), transform);
+        let resolved = carried.or_else(|| {
+            self.geometry.resolve(shape, Some(stroke), transform, || {
+                let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+                let path = match shape {
+                    ShapeData::Line(l) => {
+                        let mut p = BezPath::new();
+                        p.move_to(l.p0);
+                        p.line_to(l.p1);
+                        p
+                    }
+                    shape => shape_outline(shape, tol_u)?.0,
+                };
+                let outline = kurbo::stroke(
+                    frame.anchored(path),
+                    stroke,
+                    &kurbo::StrokeOpts::default(),
+                    tol_u,
+                );
+                Some((
+                    flatten_edges(frame.map(outline), FLATTEN_TOL),
+                    FillRule::NonZero,
+                ))
+            })
+        });
+        self.place(&frame, resolved, paint, false);
+    }
+
+    /// Places `resolved` frame geometry under the current transform as a
+    /// draw. With `cull`, a draw whose box misses the surface emits
+    /// nothing.
+    fn place(&mut self, frame: &Frame, resolved: Option<Resolved>, paint: &PaintData, cull: bool) {
+        let Some(Resolved { edges, rule, swept }) = resolved else {
             return;
         };
-        let edges = flatten_edges(self.transform * path, FLATTEN_TOL);
-        let (edges, rule) = resolve_edges(edges, rule);
         if edges.is_empty() {
             return;
         }
         let paint = paint.transformed(self.transform.inverse());
-        let bbox = bbox_of(&edges, self.width, self.height);
-        if bbox.x0 >= bbox.x1 || bbox.y0 >= bbox.y1 {
+        let offset = frame.offset;
+        let bbox = bbox_of(&edges, offset, self.width, self.height);
+        if cull && (bbox.x0 >= bbox.x1 || bbox.y0 >= bbox.y1) {
             return;
         }
         self.items.push(Item::Draw {
-            edges: edges.into(),
+            edges,
+            offset,
             bbox,
             rule,
             paint,
             clip: self.clip.clone(),
-        });
-    }
-
-    /// `Stroke`: `kurbo::stroke` the content-space path, transform,
-    /// flatten and fill non-zero — dashes included, like the oracle.
-    fn stroke(&mut self, shape: &ShapeData, stroke: &kurbo::Stroke, paint: &PaintData) {
-        let sm = sigma_max(self.transform).max(1e-12);
-        let tol_u = FLATTEN_TOL / sm;
-        let path = match shape {
-            ShapeData::Line(l) => {
-                let mut p = BezPath::new();
-                p.move_to(l.p0);
-                p.line_to(l.p1);
-                p
-            }
-            shape => {
-                let Some((path, _)) = shape_outline(shape, tol_u) else {
-                    return;
-                };
-                path
-            }
-        };
-        let outline = kurbo::stroke(path, stroke, &kurbo::StrokeOpts::default(), tol_u);
-        let edges = flatten_edges(self.transform * outline, FLATTEN_TOL);
-        let (edges, _) = resolve_edges(edges, FillRule::NonZero);
-        if edges.is_empty() {
-            return;
-        }
-        let paint = paint.transformed(self.transform.inverse());
-        let bbox = bbox_of(&edges, self.width, self.height);
-        self.items.push(Item::Draw {
-            edges: edges.into(),
-            bbox,
-            rule: FillRule::NonZero,
-            paint,
-            clip: self.clip.clone(),
+            swept,
         });
     }
 
@@ -2427,7 +2556,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 rect.height() / f64::from(bitmap.image.height),
             );
         let paint = PaintData::bitmap(Arc::clone(&bitmap.image), image_transform);
-        self.fill(&ShapeData::Rect(rect), &paint);
+        self.fill(&ShapeData::Rect(rect), &paint, None);
         Ok(())
     }
 
@@ -2506,8 +2635,142 @@ pub fn silhouette_bytes(content: &ContentData) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::AnchorScratch;
-    use cherenkov::LayerId;
+    use super::{AnchorScratch, Emission, Item, Lowering, Op, Realization};
+    use crate::render::bitmap::BitmapCache;
+    use crate::render::geometry::GeometryCache;
+    use crate::render::paint::PaintData;
+    use cherenkov::kurbo::{self, Affine, BezPath, Vec2};
+    use cherenkov::{FillRule, FrameId, LayerId, ShapeData};
+    use rustc_hash::FxHashMap;
+    use std::sync::Arc;
+
+    /// A thick zigzag stroke at `at`: its outline overlaps itself at the
+    /// joins, so the winding sweep resolves it.
+    fn zigzag(at: Vec2) -> Op {
+        let mut path = BezPath::new();
+        path.move_to((6.0, 50.0));
+        path.line_to((30.0, 10.0));
+        path.line_to((34.0, 58.0));
+        path.line_to((58.0, 12.0));
+        path.apply_affine(Affine::translate(at));
+        Op::Stroke {
+            local: Affine::IDENTITY,
+            shape: ShapeData::Path {
+                elements: path.into_elements().into(),
+                rule: FillRule::NonZero,
+            },
+            stroke: kurbo::Stroke::new(9.0),
+            paint: PaintData::Solid([0.0, 0.0, 1.0, 1.0]),
+        }
+    }
+
+    /// `edges` as exact words.
+    fn bits(edges: &[super::Edge]) -> Vec<[u32; 4]> {
+        edges
+            .iter()
+            .map(|e| [e.x0, e.y0, e.x1, e.y1].map(f32::to_bits))
+            .collect()
+    }
+
+    /// The single draw `op` realizes into `cache` under `transform` on a
+    /// 64 × 64 target: its frame edges, offset, box and whether it was
+    /// swept.
+    fn realize(
+        op: &Op,
+        transform: Affine,
+        cache: &mut Realization<Emission>,
+    ) -> (Arc<[super::Edge]>, [f32; 2], super::DrawBox, bool) {
+        let (mut items, mut scratch) = (Vec::new(), AnchorScratch::default());
+        let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
+        let (mut bitmaps, mut geometry) = (BitmapCache::new(0), GeometryCache::default());
+        let mut lowering = Lowering::new(
+            (&mut items, &mut scratch),
+            (64, 64),
+            None,
+            FrameId::new(0),
+            &mut fonts,
+            &bitmap_fonts,
+            (&mut bitmaps, &mut geometry),
+            crate::Level::new(),
+        );
+        lowering.transform = transform;
+        lowering.leaf(op, cache).expect("realize");
+        let Some(Emission::Draw(data)) = &cache.data else {
+            unreachable!("a stroke realizes a draw");
+        };
+        let [
+            Item::Draw {
+                edges,
+                offset,
+                bbox,
+                swept,
+                ..
+            },
+        ] = data.output.as_slice()
+        else {
+            unreachable!("the zigzag is one draw");
+        };
+        (edges.clone(), *offset, *bbox, *swept)
+    }
+
+    /// The sweep's absolute epsilon and coordinate-scaled error bound see
+    /// frame coordinates, so the same path resolves to the same geometry
+    /// wherever it sits: at a small offset and around 2^20, translated
+    /// back, the resolved draws are identical.
+    #[test]
+    fn resolved_geometry_does_not_depend_on_where_the_path_sits() {
+        let place = |at: Vec2| {
+            let (edges, offset, _, swept) =
+                realize(&zigzag(at), Affine::IDENTITY, &mut Realization::default());
+            assert!(swept, "the zigzag overlaps at its joins");
+            let back = edges
+                .iter()
+                .map(|e| {
+                    [(e.x0, offset[0], at.x), (e.y0, offset[1], at.y)]
+                        .map(|(v, o, a)| (f64::from(v) + f64::from(o) - a).to_bits())
+                })
+                .collect::<Vec<_>>();
+            (edges, back)
+        };
+        let (near, near_back) = place(Vec2::new(3.25, 7.5));
+        let far_at = Vec2::new(f64::from(1u32 << 20) + 3.25, f64::from(1u32 << 20) + 7.5);
+        let (far, far_back) = place(far_at);
+        assert_eq!(
+            bits(&near),
+            bits(&far),
+            "frame geometry moved with the path"
+        );
+        assert_eq!(near_back, far_back, "translated back, the draws differ");
+    }
+
+    /// A placement that differs only by a translation keeps the
+    /// realization's resolved geometry and places it like a fresh
+    /// realization would; a change of scale resolves again.
+    #[test]
+    fn a_translated_placement_reuses_its_resolved_geometry() {
+        let op = zigzag(Vec2::ZERO);
+        let mut cache = Realization::default();
+        let (first, ..) = realize(&op, Affine::translate((1.25, -3.5)), &mut cache);
+        let moved = Affine::translate((-7.75, 4.0));
+        let (reused, offset, bbox, swept) = realize(&op, moved, &mut cache);
+        assert!(
+            Arc::ptr_eq(&first, &reused),
+            "a translation flattened and resolved the path again"
+        );
+        let fresh = realize(&op, moved, &mut Realization::default());
+        assert_eq!(
+            bits(&fresh.0),
+            bits(&reused),
+            "a fresh realization resolves differently"
+        );
+        assert_eq!((fresh.1, fresh.2, fresh.3), (offset, bbox, swept));
+
+        let (scaled, ..) = realize(&op, Affine::scale(1.5), &mut cache);
+        assert!(
+            !Arc::ptr_eq(&first, &scaled),
+            "a new linear part reused geometry flattened at another scale"
+        );
+    }
 
     #[test]
     fn anchor_scratch_clear_retains_capacity_and_drops_old_links() {

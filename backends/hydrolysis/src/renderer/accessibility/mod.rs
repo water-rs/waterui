@@ -10,6 +10,7 @@ mod remap;
 /// point a pointer can reach (water-rs/hydrolysis#27).
 #[cfg(feature = "accessibility")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AccessibilityActivationPointError {
     /// No node with this id exists in the emitted tree.
     NoNode,

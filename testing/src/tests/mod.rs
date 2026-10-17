@@ -25,7 +25,7 @@ use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
 use waterui_canvas::Canvas;
 use waterui_core::layout::{Point, Rect, Size};
-use waterui_core::{AnyView, Native, Signal, View};
+use waterui_core::{AnyView, ContentLedger, Native, Signal, View};
 
 #[derive(Debug)]
 struct NoopDriver;
@@ -59,6 +59,10 @@ impl RuntimeDriver for NoopDriver {
     fn request_redraw(&mut self) {}
 
     fn clear_ui_focus(&mut self) -> bool {
+        false
+    }
+
+    fn wait_for_local_work(&self, _timeout: Duration) -> bool {
         false
     }
 }
@@ -159,6 +163,7 @@ fn mounted_on<R: RuntimeDriver>(runtime: R, tree: TreeSnapshot) -> SemanticApp<R
         viewport: (0, 0),
         clock: None,
         resources: ResourceSampler::new(),
+        ledger: ContentLedger::new(),
     }
 }
 
@@ -205,6 +210,10 @@ impl RuntimeDriver for EmitThenSettleDriver {
     fn request_redraw(&mut self) {}
 
     fn clear_ui_focus(&mut self) -> bool {
+        false
+    }
+
+    fn wait_for_local_work(&self, _timeout: Duration) -> bool {
         false
     }
 }
@@ -273,6 +282,14 @@ fn semantic_builder_does_not_require_theme_package() {
 mod token_probe {
     use std::time::Duration;
 
+    use hydrolysis::theme::{
+        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
+        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
+        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
+        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
+        TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+        WidgetInteractionState, WidgetTheme,
+    };
     use kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
@@ -286,14 +303,6 @@ mod token_probe {
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
     use waterui::{Color, EasingCurve, Environment, Signal as _, SignalExt as _, View};
-    use waterui_backend_core::widget::{
-        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
-        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
-        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
-        TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
-    };
 
     use crate::Style;
 
@@ -346,6 +355,7 @@ mod token_probe {
                 press_fade_in: Animation::linear(Duration::from_millis(105)),
                 press_fade_out: Animation::linear(Duration::from_millis(375)),
                 press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+                press_shape: Animation::linear(Duration::from_millis(15)),
                 minimum_press_duration: Duration::from_millis(225),
                 touch_delay: Duration::from_millis(150),
             }

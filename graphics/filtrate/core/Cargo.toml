@@ -42,3 +42,13 @@ std = []
 
 [dependencies]
 libm = "0.2"
+
+# The build script renders `space/constants.rs` into the WGSL fragment
+# `space::WGSL` through a typed template.
+[build-dependencies]
+askama = "0.16"
+
+# askama is used only by build.rs (`use askama::Template`), which
+# cargo-machete does not scan for build-dependencies.
+[package.metadata.cargo-machete]
+ignored = ["askama"]

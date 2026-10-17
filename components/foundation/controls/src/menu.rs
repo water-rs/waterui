@@ -86,6 +86,10 @@ impl ShortcutModifiers {
 /// `Character` control character, names a key no press reports, so build
 /// keys through the `From`/`FromStr` conversions that refuse them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each shortcut key form variant by variant; a new shortcut key form must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ShortcutKey {
     /// A key that produces one character. Letters match regardless of case;
     /// Shift is a separate modifier.
@@ -283,10 +287,12 @@ impl core::str::FromStr for ShortcutKey {
 /// A string that is neither a single character nor a W3C named key.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("`{0}` is neither a single character nor a W3C KeyboardEvent.key name")]
+#[non_exhaustive]
 pub struct InvalidShortcutKey(pub String);
 
 /// Keyboard shortcut metadata attached to a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Shortcut {
     /// The key the shortcut fires on.
     pub key: ShortcutKey,
@@ -437,6 +443,7 @@ impl View for Menu {
 /// A destructive command is drawn in the platform's destructive style: red
 /// text on iOS, macOS and Android, and the error colour in drawn menus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum CommandRole {
     /// An ordinary command.
     #[default]
@@ -599,6 +606,7 @@ impl CommandBuilder {
 
 /// A single item inside menu content.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum MenuItem {
     /// A leaf command.
     Command(Command),
@@ -1108,6 +1116,10 @@ impl ResolvedNestedMenu {
 /// Raw menu item config resolved against the environment locale.
 #[doc(hidden)]
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each menu item variant by variant; a new menu item must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ResolvedMenuItem {
     /// A resolved leaf command.
     Command(ResolvedCommand),
@@ -1220,6 +1232,7 @@ impl CloseWindowChord {
 /// [`MenuItem::CloseWindow`] — never both, so it never appears twice.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CloseWindowPlacement {
     /// No declared menu carries `MenuItem::CloseWindow`: the standard
     /// Window menu carries Close, so the close chord works without the
@@ -1247,6 +1260,10 @@ impl_constant!(ResolvedMenuItem);
 /// Raw native popup menu config resolved against the environment locale.
 #[doc(hidden)]
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole resolved menu, so a new field must fail their build instead of being ignored"
+)]
 pub struct ResolvedMenu {
     /// The label view displayed on the menu button.
     pub label: AnyView,

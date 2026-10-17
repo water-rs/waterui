@@ -76,7 +76,7 @@ impl TargetBackend {
     /// Whether the backend is experimental — shipped without full testing
     /// ahead of milestone releases — so selecting it asks for confirmation.
     const fn is_experimental(self) -> bool {
-        matches!(self, Self::Gtk4 | Self::WinUi)
+        self.cli_backend().lib_backend().is_experimental()
     }
 
     /// The shared command-line backend this packaging backend is.
@@ -117,6 +117,12 @@ impl AndroidArch {
 
 /// Arguments for the package command.
 #[derive(ClapArgs, Debug)]
+// CLI flag structs collect booleans by nature; each flag is a documented
+// `--flag`, not structural state.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "every boolean is a documented --flag, not structural state — the shape follows the CLI surface"
+)]
 pub struct Args {
     /// Target platform to package for.
     #[arg(short, long, value_enum)]
@@ -149,6 +155,12 @@ pub struct Args {
     #[arg(long)]
     unsigned: bool,
 
+    /// Hardware UDID of the iOS device the package is provisioned for; the
+    /// embedded development profile is selected — or requested from Xcode —
+    /// to cover that device. Only valid with `--platform ios`.
+    #[arg(long)]
+    device: Option<String>,
+
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
@@ -158,6 +170,13 @@ pub struct Args {
     /// Required when packaging Android backend.
     #[arg(long, value_enum, value_delimiter = ',')]
     arch: Vec<AndroidArch>,
+
+    /// Package without accessing the network — the same switch as
+    /// `cargo build --offline`, and `CARGO_NET_OFFLINE` is honoured the same
+    /// way. A declared font missing from the font cache then fails the
+    /// packaging instead of being fetched.
+    #[arg(long)]
+    offline: bool,
 
     /// Skip the confirmation prompt required by experimental backends
     /// (needed in non-interactive environments).
@@ -268,7 +287,7 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
             ManagedBackends::for_platform(lib_platform(args.platform))
         };
     let project = Project::open_for_build(
-        &waterui_cli::toolchain::Host::current(),
+        &waterui_cli::toolchain::Host::current().with_offline(args.offline),
         &project_path,
         managed_backends,
     )
@@ -287,6 +306,7 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
         args.unsigned,
         args.distribution,
     )?;
+    validate_device_args(args.platform, args.device.as_deref(), args.unsigned)?;
     backend
         .cli_backend()
         .lib_backend()
@@ -317,6 +337,7 @@ async fn prepare_packaging_context(shell: &Shell, args: &Args) -> Result<Option<
     } else {
         DeviceSigning::Automatic
     })
+    .with_device_udid(args.device.clone())
     .with_progress(shell.build_progress());
     let prepared_signing = (lib_platform(args.platform) == LibTargetPlatform::Android)
         .then(|| {
@@ -685,6 +706,28 @@ fn validate_unsigned_args(
     Ok(())
 }
 
+fn validate_device_args(
+    platform: TargetPlatform,
+    device: Option<&str>,
+    unsigned: bool,
+) -> Result<()> {
+    if device.is_none() {
+        return Ok(());
+    }
+    if platform != TargetPlatform::Ios {
+        bail!(
+            "--device only applies to `--platform ios`; {} packages are not provisioned per device",
+            platform_name(platform)
+        );
+    }
+    if unsigned {
+        bail!(
+            "--device cannot combine with --unsigned: an unsigned package embeds no provisioning profile"
+        );
+    }
+    Ok(())
+}
+
 fn validate_arch_args(
     platform: TargetPlatform,
     backend: TargetBackend,
@@ -820,7 +863,7 @@ const fn backend_name(backend: TargetBackend) -> &'static str {
 mod tests {
     use super::{
         AndroidArch, BuildProfile, TargetBackend, TargetPlatform, validate_arch_args,
-        validate_unsigned_args,
+        validate_device_args, validate_unsigned_args,
     };
 
     #[test]
@@ -912,5 +955,28 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn device_arg_applies_to_ios_device_packages_only() {
+        const UDID: &str = "00008140-0000ABCD00112233";
+
+        // A signed iOS package accepts --device; every other platform
+        // rejects it naming the platform.
+        assert!(validate_device_args(TargetPlatform::Ios, Some(UDID), false).is_ok());
+        for (platform, name) in [
+            (TargetPlatform::IosSimulator, "iOS Simulator"),
+            (TargetPlatform::Android, "Android"),
+            (TargetPlatform::Macos, "macOS"),
+        ] {
+            let Err(err) = validate_device_args(platform, Some(UDID), false) else {
+                panic!("{name} must reject --device");
+            };
+            assert!(err.to_string().contains(name), "{err}");
+        }
+        // An unsigned package embeds no profile for --device to steer.
+        assert!(validate_device_args(TargetPlatform::Ios, Some(UDID), true).is_err());
+        // No --device: every platform validates.
+        assert!(validate_device_args(TargetPlatform::Macos, None, false).is_ok());
     }
 }

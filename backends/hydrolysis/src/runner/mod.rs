@@ -63,6 +63,8 @@ pub mod android_executor;
 /// for its tests; dead elsewhere.
 #[cfg(any(target_os = "android", all(test, not(target_arch = "wasm32"))))]
 pub mod android_metrics;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod content_tests;
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod diagnostics;
 /// The `InputConnection` protocol state machine — compiled on Android for the
@@ -362,7 +364,7 @@ pub fn run(app: App, style: impl crate::Style) {
     menu_bar::register_menu_bar(&menu_bar, &env);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
-    let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
+    let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
     ));
@@ -406,8 +408,13 @@ pub fn run(app: App, style: impl crate::Style) {
 /// Propagates panics from `web_runner::run`.
 pub fn run(app: App, style: impl crate::Style) {
     // The page has no stderr, so the default hook's report goes nowhere;
-    // this one sends the message and location to `console.error`.
-    console_error_panic_hook::set_once();
+    // this one sends the message and location to `console.error`, and shows
+    // it on the page: a panic traps the wasm instance, so the app is gone and
+    // the page says why instead of freezing on its last frame.
+    std::panic::set_hook(Box::new(|info| {
+        console_error_panic_hook::hook(info);
+        crate::platform::report_fatal_error(&info.to_string());
+    }));
     init_global_executor();
     web_runner::run(app, style);
 }

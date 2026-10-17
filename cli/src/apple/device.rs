@@ -682,6 +682,7 @@ async fn is_pid_alive(host: &Host, pid: u32) -> bool {
 
 /// Represents an Apple device available to the CLI.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum AppleDevice {
     /// An Apple Simulator device
     Simulator(Box<AppleSimulator>),
@@ -765,6 +766,7 @@ impl Device for AppleDevice {
 ///
 /// Fields are deserialized from `xcrun simctl list devices --json` output
 #[derive(Debug, Deserialize, Clone)]
+#[non_exhaustive]
 pub struct AppleSimulator {
     /// Path to the simulator data directory
     #[serde(rename = "dataPath")]

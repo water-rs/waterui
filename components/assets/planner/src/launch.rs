@@ -18,6 +18,7 @@ use crate::{AssetRole, BundleManifest, HexColor, ThemeConfig};
 /// The launch artwork is not configured here: like the app icon, it is the
 /// single `Launch.*` image at the root of the assets directory.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct LaunchConfig {
     /// Background behind the launch artwork. Defaults to the theme background.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -28,8 +29,21 @@ pub struct LaunchConfig {
     pub background_dark: Option<HexColor>,
 }
 
+impl LaunchConfig {
+    /// A launch section with `background` and, for dark appearance,
+    /// `background_dark`.
+    #[must_use]
+    pub const fn new(background: Option<HexColor>, background_dark: Option<HexColor>) -> Self {
+        Self {
+            background,
+            background_dark,
+        }
+    }
+}
+
 /// The light or dark appearance a launch screen is resolved for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColorScheme {
     /// Light appearance.
     Light,

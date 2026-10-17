@@ -7,6 +7,10 @@
 
 #[path = "generate_corpus/authored.rs"]
 mod authored;
+#[path = "generate_corpus/compressed.rs"]
+mod compressed;
+#[path = "generate_corpus/gradient_search.rs"]
+mod gradient_search;
 #[path = "generate_corpus/text_layout.rs"]
 mod text_layout;
 
@@ -21,10 +25,10 @@ use cherenkov_scene::kurbo::{
 };
 use cherenkov_scene::{
     BackdropEffectSpec, BackdropFilter, BackdropGroup, BlendMode, BlendSpace, Color, ColorSpace,
-    Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, ImageColorSpace,
-    ImageEncoding, ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live, Motion,
-    MotionAnimation, NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash, Sampling,
-    Scene, SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
+    Draw, Extend, FillRule, FilterBlend, Glyph, GlyphRun, GradientStop, Group, GroupItem,
+    ImageColorSpace, ImageEncoding, ImagePaint, LayerBuilder, LayerFilter, LinearGradient, Live,
+    Motion, MotionAnimation, NormalizedCoord, Paint, Projection, RadialGradient, ResourceHash,
+    Sampling, Scene, SceneBuilder, SceneError, Shape, StrokeStyle, SweepGradient,
 };
 use fontique::FontWeight;
 use parley::{
@@ -619,6 +623,68 @@ fn filter_blur_content(l: &mut LayerBuilder<'_>, colors: &FilterColorSet) {
         },
         solid(colors.blur_stroke),
     );
+}
+
+/// A scrolled viewport's content for the overscroll stretch scenes: rows
+/// of bands four pixels tall on an eight-pixel pitch and columns one pixel
+/// wide on a twelve-pixel pitch over `content`, so the stretch shows as
+/// the band pitch growing toward the pulled edge, and a stretched column
+/// as the column pitch doing so.
+fn stretch_grid_content(l: &mut LayerBuilder<'_>, colors: &FilterColorSet, content: Rect) {
+    let bands = [colors.blur_rect, colors.blur_circle, colors.blur_star];
+    let rows = (0_u32..)
+        .map(|row| 8.0_f64.mul_add(f64::from(row), content.y0))
+        .take_while(|&y| y < content.y1);
+    for (y, color) in rows.zip(bands.iter().cycle()) {
+        l.fill(
+            Shape::rect(content.x0, y, content.width(), 4.0),
+            solid(*color),
+        );
+    }
+    let columns = (0_u32..)
+        .map(|column| 12.0_f64.mul_add(f64::from(column), content.x0 + 6.0))
+        .take_while(|&x| x < content.x1);
+    for x in columns {
+        l.fill(
+            Shape::rect(x, content.y0, 1.0, content.height()),
+            solid(colors.blur_stroke),
+        );
+    }
+}
+
+/// A scroll viewport the way a scroll view lowers it: a layer clipped to
+/// `viewport`, scrolled by `offset`, drawn under `transform`, its content
+/// stretched by HWUI's overscroll stretch in the viewport's frame.
+fn stretched_viewport(
+    l: &mut LayerBuilder<'_>,
+    colors: &FilterColorSet,
+    transform: Affine,
+    viewport: Rect,
+    offset: Vec2,
+    stretch: Vec2,
+) {
+    l.layer(|v| {
+        v.transform(transform);
+        v.clip(Shape::rect(
+            viewport.x0,
+            viewport.y0,
+            viewport.width(),
+            viewport.height(),
+        ));
+        v.scroll_offset(offset);
+        v.filter(LayerFilter::OverscrollStretch {
+            frame: transform * Affine::translate(viewport.origin().to_vec2()),
+            size: viewport.size(),
+            stretch,
+        });
+        let content = Rect::new(
+            viewport.x0,
+            viewport.y0,
+            viewport.x1,
+            viewport.y1 + offset.y + 24.0,
+        );
+        stretch_grid_content(v, colors, content);
+    });
 }
 
 fn filter_blend_content(l: &mut LayerBuilder<'_>, colors: &FilterColorSet) {
@@ -2547,6 +2613,7 @@ fn run() -> Result<(), SceneError> {
     let out = corpus::corpus_dir(&root);
     let mut ctx = TextContext::new(&corpus::fonts_dir(&root))?;
     let mut corpus = Corpus::new();
+    compressed::generate(&mut corpus);
 
     let white = srgb(0.95, 0.95, 0.95);
     let dark = srgb(0.1, 0.1, 0.12);
@@ -3077,6 +3144,8 @@ fn run() -> Result<(), SceneError> {
     });
 
     // ---- Gradients ---------------------------------------------------------
+
+    gradient_search::add_corpus(&mut corpus);
 
     let gradient_rect = Shape::rect(8.0, 8.0, 112.0, 112.0);
     for extends in [Extend::Pad, Extend::Repeat, Extend::Reflect, Extend::None] {
@@ -3783,6 +3852,82 @@ fn run() -> Result<(), SceneError> {
         });
     }
 
+    // HWUI's overscroll stretch at Android's largest drawn intensity
+    // (`dampStretchVector` of a full pull, 0.032) on a scrolled viewport.
+    for &(suffix, colors) in &filter_color_variants {
+        corpus.scene(
+            format!("filter-overscroll-stretch-top{suffix}"),
+            128,
+            128,
+            white,
+            |l| {
+                stretched_viewport(
+                    l,
+                    colors,
+                    Affine::IDENTITY,
+                    Rect::new(16.0, 8.0, 112.0, 120.0),
+                    Vec2::new(0.0, 20.0),
+                    Vec2::new(0.0, 0.032),
+                );
+            },
+        );
+    }
+
+    // Exaggerated stretches make the edge weighting visible: the band
+    // pitch grows toward the pulled edge, not uniformly.
+    corpus.scene(
+        "filter-overscroll-stretch-bottom-strong",
+        128,
+        128,
+        white,
+        |l| {
+            stretched_viewport(
+                l,
+                &FILTER_COLORS_P3,
+                Affine::IDENTITY,
+                Rect::new(16.0, 8.0, 112.0, 120.0),
+                Vec2::new(0.0, 20.0),
+                Vec2::new(0.0, -0.4),
+            );
+        },
+    );
+
+    corpus.scene(
+        "filter-overscroll-stretch-both-axes-hdr",
+        128,
+        128,
+        Color::new(ColorSpace::LinearP3, [0.01, 0.012, 0.02, 1.0]),
+        |l| {
+            stretched_viewport(
+                l,
+                &FILTER_COLORS_HDR,
+                Affine::IDENTITY,
+                Rect::new(16.0, 8.0, 112.0, 120.0),
+                Vec2::new(0.0, 20.0),
+                Vec2::new(0.3, -0.2),
+            );
+        },
+    );
+
+    // A rotated, scaled viewport: the warp runs in the viewport's own
+    // frame, along its rotated axes.
+    corpus.scene(
+        "filter-overscroll-stretch-rotated-p3",
+        128,
+        128,
+        white,
+        |l| {
+            stretched_viewport(
+                l,
+                &FILTER_COLORS_P3,
+                rotate_about(0.4, (64.0, 64.0)) * Affine::scale(0.9),
+                Rect::new(24.0, 16.0, 120.0, 128.0),
+                Vec2::new(0.0, 12.0),
+                Vec2::new(0.0, 0.35),
+            );
+        },
+    );
+
     corpus.scene("filter-gaussian-blur-small-sigma", 128, 128, white, |l| {
         l.layer(|group| {
             group.filter(LayerFilter::GaussianBlur { sigma: 0.6 });
@@ -4111,6 +4256,31 @@ fn run() -> Result<(), SceneError> {
             );
         });
     }
+
+    // A wide-gamut stop interpolated in sRGB: Display P3 (0, 0.85, 0.05)
+    // has a negative sRGB red component, so the interpolated encoded value
+    // goes below zero and its decode must stay sign-preserving (#2825).
+    corpus.scene("grad-linear-srgb-negative", 128, 128, white, |l| {
+        l.fill(
+            gradient_rect.clone(),
+            Paint::Linear(LinearGradient {
+                start: Point::new(16.0, 64.0),
+                end: Point::new(112.0, 64.0),
+                stops: vec![
+                    GradientStop {
+                        offset: 0.0,
+                        color: Color::new(ColorSpace::DisplayP3, [0.0, 0.85, 0.05, 1.0]),
+                    },
+                    GradientStop {
+                        offset: 1.0,
+                        color: Color::new(ColorSpace::DisplayP3, [0.9, 0.2, 1.0, 1.0]),
+                    },
+                ],
+                extend: Extend::Pad,
+                interpolation: ColorSpace::Srgb,
+            }),
+        );
+    });
 
     // Images in wide-gamut and half-float encodings. The P3 PNG carries
     // Display-P3-encoded bytes; the f16 blobs are linear P3 straight alpha
@@ -5543,6 +5713,7 @@ fn run() -> Result<(), SceneError> {
 
     let (pw, ph) = (1024u32, 2216u32);
     let mut perf = Corpus::new();
+    gradient_search::add_perf(&mut perf);
 
     // Scrolling UI list: 30 rows, each a shadowed rounded card with an
     // avatar, two text runs and a chevron icon path.
@@ -5749,6 +5920,27 @@ fn run() -> Result<(), SceneError> {
         });
     }
 
+    // A long thin diagonal stroke spanning a 2048x2048 frame: the path's
+    // bounding box covers the whole surface while its coverage hugs the
+    // diagonal, so the rasterizer's working set scales with the box's
+    // width rather than its area.
+    {
+        let mut diag = BezPath::new();
+        diag.move_to((32.0, 32.0));
+        diag.line_to((2016.0, 2016.0));
+        perf.scene("sparse-bbox", 2048, 2048, srgb(0.93, 0.95, 0.90), |l| {
+            winding_pan(l, |pan| {
+                pan.stroke(
+                    Shape::Path { path: diag },
+                    StrokeStyle {
+                        width: 8.0,
+                        ..StrokeStyle::default()
+                    },
+                    solid(srgb(0.35, 0.38, 0.40)),
+                );
+            });
+        });
+    }
     // The map under a smooth pan: a fractional offset per frame for 4 s,
     // then at rest at identity (= the map scene itself). Exercises the
     // path cache's behaviour when the translation's fraction changes
@@ -7351,6 +7543,147 @@ fn run() -> Result<(), SceneError> {
                 });
             });
         }
+    });
+
+    // Filters inside a group blend space (#1979): each cell isolates a
+    // hard black|white edge, crossed by a P3-only bar and an HDR bar, in
+    // a filtered group. The top row's groups composite in sRGB-encoded
+    // space, the bottom row's identical groups in linear space; the left
+    // column blurs, the right column applies a colour matrix. A filter
+    // works in the working space whatever space its group stores, so the
+    // two rows render alike.
+    corpus.scene("filter-group-encoded", 256, 256, srgb(0.5, 0.5, 0.5), |l| {
+        let cell = |x0: f64, y0: f64| {
+            let fill = |shape: Shape, color: Color| {
+                GroupItem::Draw(Draw::Fill {
+                    shape,
+                    rule: FillRule::NonZero,
+                    paint: solid(color),
+                })
+            };
+            vec![
+                fill(
+                    Shape::rect(x0 + 8.0, y0 + 8.0, 56.0, 112.0),
+                    srgb(0.0, 0.0, 0.0),
+                ),
+                fill(
+                    Shape::rect(x0 + 64.0, y0 + 8.0, 56.0, 112.0),
+                    srgb(1.0, 1.0, 1.0),
+                ),
+                fill(
+                    Shape::rect(x0 + 16.0, y0 + 32.0, 96.0, 20.0),
+                    p3(0.0, 0.85, 0.05),
+                ),
+                fill(
+                    Shape::rect(x0 + 16.0, y0 + 76.0, 96.0, 20.0),
+                    hdr(2.5, 2.2, 1.8),
+                ),
+            ]
+        };
+        let tint = LayerFilter::ColorMatrix {
+            matrix: [
+                0.6, 0.3, 0.1, 0.05, //
+                0.1, 0.5, 0.2, 0.0, //
+                0.2, 0.1, 0.9, 0.1,
+            ],
+        };
+        for (y0, blend_space) in [(0.0, BlendSpace::SrgbEncoded), (128.0, BlendSpace::Linear)] {
+            for (x0, filter) in [
+                (0.0, LayerFilter::GaussianBlur { sigma: 4.0 }),
+                (128.0, tint.clone()),
+            ] {
+                l.group(Group {
+                    items: cell(x0, y0),
+                    opacity: 1.0,
+                    blend: BlendMode::Normal,
+                    blend_space,
+                    filter: Some(Box::new(filter)),
+                });
+            }
+        }
+    });
+
+    // sRGB-encoded composites below the root (#2853): a pass-through
+    // level — an opaque child layer or a pass-through linear group —
+    // opens no isolation, so an encoded group inside it blends against
+    // the content beneath, exactly as at the root (top left: inside a
+    // child layer; top right: inside a pass-through group). Bottom left:
+    // an encoded backdrop member nested in a pass-through layer blends
+    // its darkened sample, edge and outer band against the backdrop.
+    // Bottom right: a translucent layer isolates, so its encoded group
+    // composites against the layer's own transparent canvas. A P3-only
+    // bar and an HDR bar cross every cell.
+    corpus.scene_setup("blend-space-nested", 256, 256, white, |b| {
+        b.backdrop_group(BackdropGroup {
+            blend_space: BlendSpace::SrgbEncoded,
+            ..BackdropGroup::new(1, vec![BackdropFilter::GaussianBlur { sigma: 4.0 }], 1.0, 1)
+        });
+        let encoded = |x0: f64, y0: f64| {
+            let fill = |shape: Shape, color: Color| {
+                GroupItem::Draw(Draw::Fill {
+                    shape,
+                    rule: FillRule::NonZero,
+                    paint: solid(color),
+                })
+            };
+            Group {
+                items: vec![
+                    fill(
+                        Shape::rect(x0 + 16.0, y0 + 16.0, 72.0, 72.0),
+                        srgba(0.15, 0.3, 0.85, 0.6),
+                    ),
+                    fill(
+                        Shape::circle(x0 + 80.0, y0 + 80.0, 34.0),
+                        p3(0.0, 0.85, 0.05).with_alpha(0.5),
+                    ),
+                ],
+                opacity: 1.0,
+                blend: BlendMode::Normal,
+                blend_space: BlendSpace::SrgbEncoded,
+                filter: None,
+            }
+        };
+        let l = &mut b.root();
+        backdrop_background(l);
+        l.fill(
+            Shape::rect(0.0, 56.0, 256.0, 16.0),
+            solid(p3(0.0, 0.85, 0.05)),
+        );
+        l.fill(
+            Shape::rect(0.0, 184.0, 256.0, 16.0),
+            solid(hdr(2.5, 2.2, 1.8)),
+        );
+        l.layer(|m| {
+            m.clip(Shape::rect(4.0, 4.0, 120.0, 120.0));
+            m.group(encoded(0.0, 0.0));
+        });
+        l.group(Group {
+            items: vec![GroupItem::Group(encoded(128.0, 0.0))],
+            opacity: 1.0,
+            blend: BlendMode::Normal,
+            blend_space: BlendSpace::Linear,
+            filter: None,
+        });
+        l.layer(|outer| {
+            outer.layer(|m| {
+                m.clip(Shape::RoundedRect(RoundedRect::new(
+                    20.0, 148.0, 108.0, 236.0, 16.0,
+                )));
+                m.backdrop(1);
+                m.backdrop_outer(6.0);
+                m.backdrop_effect(BackdropEffectSpec::ColorMatrix {
+                    matrix: [
+                        0.2, 0.0, 0.0, 0.0, //
+                        0.0, 0.2, 0.0, 0.0, //
+                        0.0, 0.0, 0.2, 0.0,
+                    ],
+                });
+            });
+        });
+        l.layer(|m| {
+            m.opacity(0.85);
+            m.group(encoded(128.0, 128.0));
+        });
     });
 
     // The #211 dense city map: a 1600×1200 frame whose live coverage

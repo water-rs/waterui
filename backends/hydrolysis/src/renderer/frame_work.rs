@@ -37,6 +37,12 @@ pub struct FrameWorkCounters {
     /// flush, theme widget render). The engine calls these content
     /// recordings, and a steady frame drives the count to zero.
     pub(crate) recorded_view_contents: u64,
+    /// Live items recorded into their layers this frame — a widget part's
+    /// engine-realized chrome among them. Each is recorded once, when a
+    /// commit first lists it; the interaction changes that follow move its
+    /// live operands and record nothing. Also counted in
+    /// `recorded_view_contents`.
+    pub(crate) live_recordings: u64,
     /// Retained engine layer mounts this frame.
     pub(crate) layer_creations: u64,
     /// Retained engine layer removals this frame.
@@ -78,6 +84,7 @@ impl FrameWorkCounters {
             ("measure_calls", self.measure_calls),
             ("layout_calls", self.layout_calls),
             ("recorded_view_contents", self.recorded_view_contents),
+            ("live_recordings", self.live_recordings),
             ("layer_creations", self.layer_creations),
             ("layer_removals", self.layer_removals),
             ("font_registrations", self.font_registrations),

@@ -2,12 +2,17 @@
 
 use std::{
     fs,
+    future::Future as _,
     path::Path,
+    pin::pin,
+    task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
 use crate::preview_symbol;
 use hydrolysis::{FontFamilyResolution, HeadlessRuntime, InputEvent, PointerButton, PointerKind};
+use waterui_core::ContentLedger;
+use waterui_core::content_ledger::{ContentError, ContentFailure};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_preview_protocol::run::{
     Alpha, PreviewRunConfig, PreviewRunMode, ScenarioEvent, ScenarioEventKind,
@@ -19,26 +24,49 @@ pub(crate) fn run() {
         .unwrap_or_else(|error| panic!("hydrolysis preview: {error}"));
     match config.mode {
         PreviewRunMode::Image { ref output } => {
-            run_image(output, config.width, config.height);
+            run_image(output, &config);
         }
         PreviewRunMode::Scenario {
             ref output_dir,
             ref captures_ms,
             ref events,
-        } => run_scenario(output_dir, captures_ms, events, config.width, config.height),
+        } => run_scenario(output_dir, captures_ms, events, &config),
         PreviewRunMode::Semantic => panic!(
             "hydrolysis preview: semantic runs require the preview test binary (waterui-preview-test-mode)"
         ),
     }
 }
 
-fn new_runtime(width: f32, height: f32) -> HeadlessRuntime {
+/// A mounted preview: the runtime, the ledger its views owe content to, and
+/// how long a capture waits for that content.
+struct Preview {
+    runtime: HeadlessRuntime,
+    ledger: ContentLedger,
+    content_deadline: Duration,
+}
+
+fn mount(config: &PreviewRunConfig) -> Preview {
+    let ledger = ContentLedger::new();
+    Preview {
+        runtime: new_runtime(config.width, config.height, &ledger),
+        ledger,
+        content_deadline: config.content_deadline(),
+    }
+}
+
+fn new_runtime(width: f32, height: f32, ledger: &ContentLedger) -> HeadlessRuntime {
     // The environment is the application's own composition root: `app(env)`
     // installs the realizations and options the application configures
     // (`waterui_map_gpu::install`, provider options, fonts), and the preview
     // style is constructed alongside exactly as `main` hands its style to
-    // `hydrolysis::run`.
-    let env = preview_symbol::app_environment();
+    // `hydrolysis::run`. On Apple that leaves video to AVPlayer, and this
+    // host is Hydrolysis on every OS, so the self-drawn player is installed
+    // here — otherwise a `VideoPlayer` stays an unbridged native view.
+    // The capture's ledger layers over that environment, so every view the
+    // preview mounts owes its content to this capture.
+    let mut env = preview_symbol::app_environment();
+    waterui::realization::install_video(&mut env);
+    let env = env.extending(ledger.clone());
     let content = AnyViewBuilder::new(preview_symbol::load_preview_view);
     // Previews are read on HiDPI displays, so render at 2x: the layout stays in
     // logical units and only the captured image gets sharper.
@@ -57,8 +85,8 @@ fn new_runtime(width: f32, height: f32) -> HeadlessRuntime {
     .with_scale_factor(PREVIEW_SCALE_FACTOR)
 }
 
-/// Pumps until the frame stops changing and no `spawn_local` work is parked
-/// on a wall-clock wake.
+/// Pumps until the frame stops changing and the views owe the capture no
+/// content.
 ///
 /// A `GpuView`'s `setup` is an async future spawned onto the local executor, so
 /// its pipelines do not exist during the first frame. Capturing immediately
@@ -66,36 +94,30 @@ fn new_runtime(width: f32, height: f32) -> HeadlessRuntime {
 /// window background and nothing else. `rebuilt` is the real readiness signal
 /// here, so pump on it rather than waiting a fixed amount of time.
 ///
-/// Quiescence alone is not the whole story: a `spawn_local` task parked on a
-/// timer or in-flight I/O — a `Photo` fetch, an `avatar` image — holds no
-/// queued runnable, so the runtime cannot see it and reports the frame
-/// settled while the placeholder is still on screen. While
-/// [`waterui::task::outstanding_local_tasks`] reports such work, settling
-/// paces real time — each pump runs whatever the last wake re-queued — until
-/// the task publishes its result or the wall-clock cap elapses.
+/// Quiescence alone is not the whole story: a view whose content arrives
+/// through a load — a `Photo` fetch or decode, an `avatar` image, a
+/// `Suspense` future — holds no queued runnable while the load is in flight,
+/// so the runtime reports the frame settled while the placeholder is still on
+/// screen. While the capture's [`ContentLedger`] reports content owed,
+/// settling blocks on the local executor's wake edge — the load re-queues its
+/// task when it completes — and pumps what arrived. A load that fails, or
+/// content still owed at the run's content deadline, fails the preview naming
+/// the view: a capture of the placeholder would be a wrong preview.
 ///
-/// The virtual instant never moves while pacing: the scene is quiescent, so
+/// The virtual instant never moves while waiting: the scene is quiescent, so
 /// nothing it scheduled needs a frame, and advancing the clock would carry
-/// every animation past the phase the capture asked for. Once a paced pump
-/// changes the tree, settling returns to the rebuild loop so whatever the
-/// change scheduled can run before pacing resumes.
-fn settle(runtime: &mut HeadlessRuntime, at: Instant) {
+/// every animation past the phase the capture asked for. Once a pump changes
+/// the tree, settling returns to the rebuild loop so whatever the change
+/// scheduled can run before waiting resumes.
+fn settle(preview: &mut Preview, at: Instant) {
     /// Pump budget for a frame that never stops rebuilding — a perpetual
     /// animation; bounds pump work, not wall clock.
     const MAX_PUMPS: usize = 64;
-    /// One frame of wall-clock time: the pacing step while local tasks are
-    /// parked.
-    const FRAME: Duration = Duration::from_millis(16);
-    /// Wall-clock budget for work parked on real I/O — mirrors
-    /// `waterui-testing`'s settle cap: long enough for a remote fetch on a
-    /// slow link, bounded so a permanently parked task cannot hang the
-    /// preview.
-    const SETTLE_WALL_CAP: Duration = Duration::from_secs(5);
 
-    let wall_deadline = Instant::now() + SETTLE_WALL_CAP;
+    let deadline = Instant::now() + preview.content_deadline;
     let mut pumps = 0usize;
     loop {
-        if runtime.pump_at(false, at).rebuilt {
+        if preview.runtime.pump_at(false, at).rebuilt {
             pumps += 1;
             assert!(
                 pumps < MAX_PUMPS,
@@ -103,26 +125,50 @@ fn settle(runtime: &mut HeadlessRuntime, at: Instant) {
             );
             continue;
         }
-        // Quiescent but a local task may be parked on a wall-clock wake: give
-        // it real time, then run what it re-queued at the same instant.
+        // Quiescent, but a view may still owe content its load has not
+        // delivered: block until the load re-queues its task, then run it at
+        // the same instant.
         loop {
-            if waterui::task::outstanding_local_tasks() == 0 || Instant::now() >= wall_deadline {
-                return;
+            match poll_settled(&preview.ledger) {
+                Poll::Ready(Ok(())) => return,
+                Poll::Ready(Err(failure)) => content_failed(&ContentError::Failed(failure)),
+                Poll::Pending => {}
             }
-            std::thread::sleep(FRAME);
-            if runtime.pump_at(false, at).rebuilt {
+            let now = Instant::now();
+            if now >= deadline {
+                content_failed(&ContentError::Pending {
+                    outstanding: preview.ledger.outstanding(),
+                    deadline: preview.content_deadline,
+                });
+            }
+            let _ = preview.runtime.wait_for_local_work(deadline - now);
+            if preview.runtime.pump_at(false, at).rebuilt {
                 break;
             }
         }
     }
 }
 
-fn run_image(output_path: &Path, width: f32, height: f32) {
-    let mut runtime = new_runtime(width, height);
+/// Whether the ledger has settled, polled once: settling is driven by the
+/// runtime's pump, so the ledger's own wake is not needed.
+fn poll_settled(ledger: &ContentLedger) -> Poll<Result<(), ContentFailure>> {
+    pin!(ledger.settled()).poll(&mut Context::from_waker(Waker::noop()))
+}
+
+/// Fails the preview with `error` and the cause it carries.
+fn content_failed(error: &ContentError) -> ! {
+    match std::error::Error::source(error) {
+        Some(source) => panic!("hydrolysis preview: {error}: {source}"),
+        None => panic!("hydrolysis preview: {error}"),
+    }
+}
+
+fn run_image(output_path: &Path, config: &PreviewRunConfig) {
+    let mut preview = mount(config);
     let frame_at = Instant::now();
-    let _ = runtime.pump_at(false, frame_at);
-    settle(&mut runtime, frame_at);
-    let result = runtime.pump_at(true, frame_at);
+    let _ = preview.runtime.pump_at(false, frame_at);
+    settle(&mut preview, frame_at);
+    let result = preview.runtime.pump_at(true, frame_at);
     let snapshot = result
         .snapshot
         .unwrap_or_else(|| panic!("hydrolysis preview: static capture produced no snapshot"));
@@ -133,8 +179,7 @@ fn run_scenario(
     output_dir: &Path,
     captures_ms: &[u64],
     events: &[ScenarioEvent],
-    width: f32,
-    height: f32,
+    config: &PreviewRunConfig,
 ) {
     assert!(
         !captures_ms.is_empty(),
@@ -146,24 +191,25 @@ fn run_scenario(
             output_dir.display()
         )
     });
-    let mut runtime = new_runtime(width, height);
+    let mut preview = mount(config);
     let started_at = Instant::now();
-    let _ = runtime.pump_at(false, started_at);
+    let _ = preview.runtime.pump_at(false, started_at);
     let mut event_index = 0usize;
     for capture_ms in captures_ms {
         while event_index < events.len() && events[event_index].at_ms <= *capture_ms {
             let event_at = started_at + Duration::from_millis(events[event_index].at_ms);
-            runtime.push_input_event(input_event(events[event_index]));
-            let _ = runtime.pump_at(false, event_at);
+            preview
+                .runtime
+                .push_input_event(input_event(events[event_index]));
+            let _ = preview.runtime.pump_at(false, event_at);
             event_index += 1;
         }
         let capture_at = started_at + Duration::from_millis(*capture_ms);
-        // Work an interaction spawned — a tap that kicks off a fetch — parks
-        // on wall-clock I/O exactly like mount-time work does, so a capture
-        // settles by the same rule: the tree quiet *and* no parked task
-        // waiting to publish.
-        settle(&mut runtime, capture_at);
-        let result = runtime.pump_at(true, capture_at);
+        // Content an interaction made a view owe — a tap that kicks off a
+        // fetch — is owed to the same ledger mount-time content is, so a
+        // capture settles by the same rule: the tree quiet *and* nothing owed.
+        settle(&mut preview, capture_at);
+        let result = preview.runtime.pump_at(true, capture_at);
         let Some(snapshot) = result.snapshot else {
             panic!("hydrolysis preview: scenario capture at {capture_ms}ms produced no snapshot");
         };
@@ -191,6 +237,10 @@ fn input_event(event: ScenarioEvent) -> InputEvent {
         ScenarioPointerButton::Primary => PointerButton::Primary,
         ScenarioPointerButton::Secondary => PointerButton::Secondary,
         ScenarioPointerButton::Middle => PointerButton::Middle,
+        _ => panic!(
+            "hydrolysis preview: unsupported pointer button {:?}",
+            event.button
+        ),
     };
     match event.kind {
         ScenarioEventKind::PointerMove => InputEvent::PointerMove {
@@ -224,6 +274,10 @@ fn input_event(event: ScenarioEvent) -> InputEvent {
             dy: event.dy,
             is_line_delta: event.is_line_delta,
         },
+        _ => panic!(
+            "hydrolysis preview: unsupported scenario event {:?}",
+            event.kind
+        ),
     }
 }
 

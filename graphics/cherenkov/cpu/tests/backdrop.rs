@@ -504,6 +504,73 @@ fn multi_band_capture_has_no_band_seams() {
     }
 }
 
+/// A blurred group nested in a blurred group's member, the whole scene
+/// translated down by `shift` rows over a backdrop that moves with it.
+fn nested_blur(shift: u16, scale: f32) -> cherenkov::Readback {
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((32, 160), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let scale = cherenkov::CaptureScale::new(scale).expect("in range");
+    let outer = surface.backdrop_group(filtrate::filters::GaussianBlur::new(4.0f32), scale);
+    let inner = surface.backdrop_group(filtrate::filters::GaussianBlur::new(1.5f32), scale);
+    let m1 = surface.layer();
+    let m2 = surface.layer();
+    let dy = f64::from(shift);
+    surface.update(|tx| {
+        // Every row differs, so a band seam shows as a step.
+        tx[surface.root()].content(surface.record(|r| {
+            for y in 0..160_u16 {
+                let k = f32::from((y + 160 - shift) % 160);
+                let y = f64::from(y);
+                r.fill(
+                    Rect::new(0.0, y, 32.0, y + 1.0),
+                    WorkingColor::new([(k * 0.37).fract(), (k * 0.11).fract(), k / 160.0, 1.0]),
+                );
+            }
+        }));
+        tx[surface.root()].push(&m1);
+        tx[&m1]
+            .clip(Rect::new(2.0, 32.0 + dy, 30.0, 112.0 + dy))
+            .backdrop(outer.sample())
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(2.0, 32.0 + dy, 30.0, 112.0 + dy),
+                    WorkingColor::new([0.0, 0.0, 1.0, 0.25]),
+                );
+            }));
+        tx[&m1].push(&m2);
+        tx[&m2]
+            .clip(Rect::new(6.0, 46.0 + dy, 26.0, 98.0 + dy))
+            .backdrop(inner.sample());
+    });
+    engine.render(FrameTime::now()).expect("render");
+    surface.readback().expect("readback")
+}
+
+/// A nested group's capture reads what the enclosing group's member drew
+/// in rows past the band. Moving the scene through every band phase must
+/// not change any pixel: the enclosing capture keeps the rows the nested
+/// capture's window reads, not only its own band's.
+#[test]
+fn nested_blurred_groups_have_no_band_seams() {
+    for (scale, step) in [(1.0, 1), (0.5, 2)] {
+        let base = nested_blur(0, scale);
+        for shift in (step..=16).step_by(usize::from(step)) {
+            let moved = nested_blur(shift, scale);
+            for y in 24..120 {
+                for x in 0..32 {
+                    let (a, b) = (pixel(&base, x, y), pixel(&moved, x, y + usize::from(shift)));
+                    assert!(
+                        a.iter().zip(b).all(|(a, b)| (a - b).abs() <= 1e-5),
+                        "scale {scale}, shift {shift}, pixel ({x}, {y}): {a:?} vs {b:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn capture_memory_is_bounded_by_bands_not_capture_height() {
     let peak = |height: u32| -> u64 {

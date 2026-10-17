@@ -22,6 +22,10 @@ extern crate alloc;
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "closed: one slot per CLDR plural category (zero, one, two, few, many, other)"
+)]
 pub struct PluralForms {
     /// Form for zero items (some languages)
     #[serde(default)]
@@ -89,6 +93,7 @@ impl PluralForms {
 /// ```
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct DualPluralForms {
     /// one + one
     #[serde(default)]
@@ -126,6 +131,7 @@ impl DualPluralForms {
 /// Translation value in TOML file.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
+#[non_exhaustive]
 pub enum TranslationValue {
     /// Simple string translation
     Simple(String),
@@ -191,6 +197,7 @@ impl TranslationFile {
 
 /// Validation error for translation files.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ValidationError {
     /// Invalid plural form for locale.
     InvalidPluralForm {

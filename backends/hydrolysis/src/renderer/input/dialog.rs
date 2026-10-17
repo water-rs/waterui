@@ -31,9 +31,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use crate::theme::ModalInteraction;
 use waterui::Plugin;
 use waterui::dialog::Dialog;
-use waterui_backend_core::widget::ModalInteraction;
 use waterui_core::Environment;
 use waterui_core::handler::shared_action;
 

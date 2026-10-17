@@ -14,6 +14,10 @@ use std::sync::Arc;
 /// SDR, single-scale display, the headless contract `waterui-testing`
 /// drives.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a host describes every field of the frame it presents; a new field must fail its build instead of taking a default"
+)]
 pub struct HydrolysisRenderTarget<'a> {
     /// The adapter the frame's device was requested on; the shared engine is
     /// created against what it can actually run.
@@ -429,7 +433,8 @@ impl HydrolysisRenderer {
         self.core.clear_commit_marks();
         let taken = window.mount.take_stats();
         self.last_mount_stats = mount::layers::census(&roots, taken);
-        self.state.counters.recorded_view_contents += taken.installs;
+        self.state.counters.recorded_view_contents += taken.installs + taken.live_records;
+        self.state.counters.live_recordings += taken.live_records;
         self.state.counters.layer_creations += taken.created;
         self.state.counters.layer_removals += taken.removed;
         let (fonts, images) = window.state.resources.take_registration_stats();

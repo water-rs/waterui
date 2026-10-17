@@ -15,10 +15,11 @@ belong to water-rs/waterui.
 ## Correctness
 
 - **The oracle is the reference.** The corpus (`scenes/corpus`) is rendered
-  against the independent f64 oracle. Every scene on dev keeps bit-identical
-  metrics and PNG bytes across every change that is not meant to change pixels.
-  A change that intends to change pixels (for example #71) must be no worse
-  than dev against the oracle on every scene, and better overall.
+  against the independent f64 oracle, and a change is judged by what a viewer
+  can see. A difference from dev that no eye can perceive is acceptable
+  whatever its cause; a perceptible one is acceptable only where it brings
+  that scene closer to the oracle. Bit-identical output is never a goal in
+  itself.
 - **The scene tree is generated, not committed.** `scenes/corpus`,
   `scenes/perf` and `scenes/fonts` are produced by
   `uv run --python 3.12 --with-requirements scenes/fonts/tools/requirements.txt python scenes/tools/generate.py`
@@ -54,10 +55,17 @@ belong to water-rs/waterui.
 - **Frames** target 120fps: 8.33 ms at p99. 60fps is accepted only where no
   renderer can fit the budget in theory.
 - **CPU-side changes are accepted on deterministic Callgrind instruction
-  counts:** Ir for `lower` and `encode` at the second steady frame of the five
+  counts:** Ir for `lower` and `encode` at the second steady frame of the
   perf scenes, sampled by frame index (`bench/scripts/ir_gate.py`, which runs
-  `measure --pause-at`). The gated Ir excludes the allocator (calls into the
-  Rust allocator shims and the libc malloc family) and the libc memory
+  `measure --pause-at`). Its CPU leg counts the CPU backend's whole frame on
+  the same scenes — the render thread's message handling and every raster job
+  its rayon pools run, at one worker per pool — and also excludes the
+  cross-thread synchronization. CI runs it on every pull request that touches
+  `graphics/cherenkov/`, measured as merged into dev, and by dispatch of
+  `cherenkov-ir.yml` for any revision against its merge base with dev
+  (`-f head=refs/pull/<number>/merge` for a pull request). The gated Ir
+  excludes the allocator (calls into the Rust allocator shims and the libc
+  malloc family) and the libc memory
   primitives (memcpy, memmove, memset, memcmp, bcmp), whose Ir depends on
   buffer addresses: at most +1% per scene against dev, and alloc, realloc,
   dealloc and memory-primitive calls per frame must not rise.
@@ -67,6 +75,18 @@ belong to water-rs/waterui.
   interleaved A/B rounds with per-round results: the Apple M1, the iPad Pro M4
   (Metal) and the Pixel 9 Pro (Vulkan). The iPad's GPU clock is bimodal with
   device state.
+- **Pixel cost comparisons hold the GPU and the measuring CPU at one clock**
+  and check every run's clock residency (`bench/scripts/pixel_compare.py`):
+  the GPU governor's per-process clock moves identical builds by the clock
+  ratio. A scene fails when the change's whole bootstrap interval lies above
+  the limit; otherwise it is decided only when that interval is no wider than
+  the limit. Frame-budget checks run under the default governor.
+  Sub-millisecond scenes are compared by Mali shader-core active cycles
+  (`pixel_compare.py run --gpu-counters`), never by GPU time: their frames
+  are latency-bound, so added work does not add GPU time. CPU-backend
+  comparisons (`pixel_compare.py run --engine cherenkov-cpu`) hold every
+  cluster the workers run on at one clock and are judged on frame and shade
+  time, at one worker and at eight.
 - **Memory is a first-class cost, measured like time.** A cache or retained
   structure has to pay for its memory in measured time or energy. Every
   change reports the steady-state `Engine::memory()` (GPU and CPU) of the five

@@ -27,36 +27,21 @@ pub struct Blur {
 }
 
 impl Blur {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        delivery: super::shaders::ShaderDelivery,
+        format: wgpu::TextureFormat,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("silhouette blur"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
+            entries: &super::layout_entries(super::bindings::SHADOW_GROUP0),
         });
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("silhouette convolution"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shadow.wgsl").into()),
-        });
+        // Passthrough delivery trusts the fixed module's own bounds: the
+        // vertex stage draws 0..3, `texel` checks coordinates against the
+        // logical source size, which is within the scratch texture, and the
+        // uploaded count equals the following tap array's length, capped to
+        // the storage binding limit.
+        let shader = delivery.shadow_module(device);
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("silhouette blur"),
             bind_group_layouts: &[Some(&layout)],

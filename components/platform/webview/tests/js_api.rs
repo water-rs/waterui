@@ -94,6 +94,12 @@ fn the_surface_describes_itself_in_typescript() {
         !declarations.contains("internal"),
         "#[js(skip)] must not appear in the declarations either"
     );
+    // Mirrored values arrive with the page's first pull; the boundary it
+    // awaits before reading them is part of the surface.
+    assert!(
+        declarations.contains("readonly ready: Promise<void>;"),
+        "{declarations}"
+    );
 }
 
 /// `#[js(skip)]` takes a method off the page's surface and changes nothing else

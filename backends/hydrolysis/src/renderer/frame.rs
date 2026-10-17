@@ -421,6 +421,20 @@ impl HydrolysisRenderer {
         }
     }
 
+    /// Lists `source` at this point of the recording node's program as a
+    /// live item drawn in `ctx`'s record space (water-rs/waterui#1433). The
+    /// mount records the source into its own layer the first time a commit
+    /// lists it and keeps that recording while later records list the same
+    /// source, so what changes afterwards reaches the engine only through
+    /// the source's live operands.
+    pub(crate) fn push_live(
+        &mut self,
+        ctx: RenderContext,
+        source: &Rc<dyn crate::renderer::chrome::LiveSource>,
+    ) {
+        self.program().push_live(Rc::clone(source), ctx.local);
+    }
+
     /// Records `core`'s node into its own program (§C): the parent's list
     /// (or the window when none records) gets an `Item::Node`, the node's
     /// frame anchors on the placement that list resolves against, and the

@@ -60,6 +60,13 @@ pub struct Args {
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
+
+    /// Build the inspector app without accessing the network — the same
+    /// switch as `cargo build --offline`, and `CARGO_NET_OFFLINE` is
+    /// honoured the same way. A declared font missing from the font cache
+    /// then fails instead of being fetched.
+    #[arg(long)]
+    offline: bool,
 }
 
 impl Args {
@@ -71,7 +78,7 @@ impl Args {
 
 /// Run the inspector command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
-    let host = waterui_cli::toolchain::Host::current();
+    let host = waterui_cli::toolchain::Host::current().with_offline(args.offline);
     let platform = InspectorPlatform::from(args.platform);
     if args.device.is_some() && platform != InspectorPlatform::Android {
         eyre::bail!("`--device` is supported only with `--platform android`.");
@@ -121,17 +128,14 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         None
     };
 
-    let mut session = launch_inspector_session(
+    let mut session = Box::pin(launch_inspector_session(
         &host,
         &project_path,
         platform,
         android,
-        InspectorLaunchOptions {
-            target_addr: target.to_string(),
-            token: token.clone(),
-        },
+        InspectorLaunchOptions::new(target.to_string(), token.clone()),
         Some(shell.build_progress()),
-    )
+    ))
     .await?;
 
     // Keep the inspector app alive after CLI exits.

@@ -66,10 +66,7 @@ pub use values::{
 };
 
 /// The whole vocabulary.
-pub const CATALOG: CatalogSchema = CatalogSchema {
-    components: &COMPONENTS,
-    modifiers: &MODIFIERS,
-};
+pub const CATALOG: CatalogSchema = CatalogSchema::new(&COMPONENTS, &MODIFIERS);
 
 /// The components every build carries.
 const CORE: [ComponentSchema; 27] = [
@@ -271,12 +268,7 @@ const fn component<A: TsType>(
     summary: &'static str,
     children: ChildrenSlot,
 ) -> ComponentSchema {
-    ComponentSchema {
-        name,
-        summary,
-        attributes: attributes_of(&A::SCHEMA),
-        children,
-    }
+    ComponentSchema::new(name, summary, attributes_of(&A::SCHEMA), children)
 }
 
 /// One modifier entry, taking its value shape from the field of the modifier
@@ -286,11 +278,7 @@ const fn component<A: TsType>(
 /// that [`Modifiers`] does not declare fails const evaluation instead of
 /// reaching JavaScript as a name nothing can apply.
 const fn modifier(name: &'static str, summary: &'static str) -> ModifierSchema {
-    ModifierSchema {
-        name,
-        summary,
-        value: modifier_value(name),
-    }
+    ModifierSchema::new(name, summary, modifier_value(name))
 }
 
 /// The value shape [`Modifiers`] declares for `name`.

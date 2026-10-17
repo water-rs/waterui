@@ -13,6 +13,10 @@ use crate::{android, apple};
 
 /// The platform type of a device based on its identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal handles each capture platform variant by variant"
+)]
 pub enum DevicePlatform {
     /// iOS simulator (UDID format)
     Ios,

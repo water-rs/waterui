@@ -18,6 +18,7 @@ use target_lexicon::{
 /// This enum replaces the old `Platform` trait with a simpler, more explicit model.
 /// Each variant represents a specific target platform that `WaterUI` can build for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TargetPlatform {
     // Apple platforms
     /// macOS (ARM64)
@@ -29,8 +30,8 @@ pub enum TargetPlatform {
     /// Mac Catalyst — the iOS runtime bridged onto macOS
     /// (`aarch64-apple-ios-macabi`). It compiles against the macOS SDK's
     /// `System/iOSSupport` frameworks, not the macOS or iOS SDKs directly.
-    /// Internal to the target model for now; no `water` platform flag
-    /// selects it (#2103).
+    /// `water preview --platform ios` builds its in-process Apple preview
+    /// binary for this target; no other `water` command selects it.
     MacCatalyst,
     /// tvOS (physical device)
     TvOS,
@@ -65,6 +66,10 @@ pub enum TargetPlatform {
 /// Backend types available for building.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal dispatches each backend variant by variant"
+)]
 pub enum TargetBackend {
     /// Apple backend (Xcode, UIKit/AppKit)
     Apple,
@@ -77,6 +82,15 @@ pub enum TargetBackend {
 }
 
 impl TargetBackend {
+    /// Whether the backend is experimental: shipped without full testing
+    /// ahead of milestone releases, and never a prerequisite of a mainline
+    /// build. Apple and Hydrolysis are the mainline backends; GTK4 and `WinUI`
+    /// are experimental.
+    #[must_use]
+    pub const fn is_experimental(&self) -> bool {
+        matches!(self, Self::Gtk4 | Self::WinUi)
+    }
+
     /// The framework scaffold packages the backend's generated crate links —
     /// the names a `framework.json` `scaffold` (or `experimental-packages`)
     /// table keys on. A withheld package means the selected channel cannot
@@ -683,6 +697,7 @@ pub fn ensure_desktop_platform_is_host(
 /// the developer's keychain, while a development package only has to run
 /// where it was built.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum PackageAudience {
     /// A package for the developer's own machine: ad hoc signature on macOS,
     /// a direct-install artifact on Android.
@@ -729,9 +744,10 @@ pub struct PackageOptions {
     device_signing: DeviceSigning,
 
     /// Hardware UDID of the physical Apple device the package targets, when
-    /// packaging for one (`water run`); `None` for a device-agnostic
-    /// `water package`, which skips the profile's `ProvisionedDevices`
-    /// check and provisions with a generic iOS destination.
+    /// packaging for one (`water run`, `water package --device`); `None`
+    /// for a device-agnostic `water package`, which skips the profile's
+    /// `ProvisionedDevices` check and provisions with a generic iOS
+    /// destination.
     device_udid: Option<String>,
 
     /// Whether the package embeds the shared `WaterUI` Rust runtime.
@@ -747,6 +763,7 @@ pub struct PackageOptions {
 
 /// How a build for a physical device is code-signed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum DeviceSigning {
     /// Automatic signing with the developer team resolved on the host.
     #[default]
@@ -765,6 +782,7 @@ pub enum DeviceSigning {
 /// instead of the staged bundle. `water run` selects it in debug mode;
 /// packaging and `--release` runs never do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum WebFrontendMode {
     /// Build the frontend and stage its output into the bundle.
     #[default]
@@ -938,8 +956,8 @@ mod host_support_tests {
             TargetPlatform::MacCatalyst.deployment_target_setting(),
             Some("IPHONEOS_DEPLOYMENT_TARGET")
         );
-        // Packaging answers stay unanswered — Xcode destinations and device
-        // families are #2103's job, so Catalyst fails fast on both.
+        // Catalyst is never packaged — only the preview binary builds for
+        // it — so the Xcode answers stay unanswered and fail fast.
         assert_eq!(TargetPlatform::MacCatalyst.xcode_destination_name(), None);
         assert_eq!(TargetPlatform::MacCatalyst.targeted_device_family(), None);
     }

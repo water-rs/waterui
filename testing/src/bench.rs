@@ -84,23 +84,22 @@ fn run_config_from_env() -> Option<BenchRunConfig> {
         return None;
     }
     let defaults = PerfConfig::default();
-    Some(BenchRunConfig {
-        warmups: warmups.unwrap_or(defaults.warmups),
-        samples: samples.unwrap_or(defaults.samples),
-        repetitions: repetitions.unwrap_or(defaults.repetitions),
-    })
+    Some(BenchRunConfig::new(
+        warmups.unwrap_or(defaults.warmups),
+        samples.unwrap_or(defaults.samples),
+        repetitions.unwrap_or(defaults.repetitions),
+    ))
 }
 
 /// Reads the CLI budget caps from the environment.
 fn budget_caps_from_env() -> BenchBudgets {
-    BenchBudgets {
-        max_p95_us: env_parsed::<u64>(BENCH_MAX_P95_US_ENV),
-        max_mean_us: env_parsed::<u64>(BENCH_MAX_MEAN_US_ENV),
-        max_rebuild_ratio: env_parsed::<f64>(BENCH_MAX_REBUILD_RATIO_ENV),
-        max_scene_layers: env_parsed::<u64>(BENCH_MAX_SCENE_LAYERS_ENV),
-        max_gpu_surface_layers: env_parsed::<u64>(BENCH_MAX_GPU_SURFACE_LAYERS_ENV),
-        max_clip_layers: env_parsed::<u64>(BENCH_MAX_CLIP_LAYERS_ENV),
-    }
+    BenchBudgets::default()
+        .with_max_p95_us(env_parsed::<u64>(BENCH_MAX_P95_US_ENV))
+        .with_max_mean_us(env_parsed::<u64>(BENCH_MAX_MEAN_US_ENV))
+        .with_max_rebuild_ratio(env_parsed::<f64>(BENCH_MAX_REBUILD_RATIO_ENV))
+        .with_max_scene_layers(env_parsed::<u64>(BENCH_MAX_SCENE_LAYERS_ENV))
+        .with_max_gpu_surface_layers(env_parsed::<u64>(BENCH_MAX_GPU_SURFACE_LAYERS_ENV))
+        .with_max_clip_layers(env_parsed::<u64>(BENCH_MAX_CLIP_LAYERS_ENV))
 }
 
 /// Merges attribute budgets with environment caps; the tighter limit wins.
@@ -111,17 +110,16 @@ fn merge_budgets(attribute: BenchBudgets, caps: BenchBudgets) -> BenchBudgets {
             (value, None) | (None, value) => value,
         }
     }
-    BenchBudgets {
-        max_p95_us: tighter(attribute.max_p95_us, caps.max_p95_us),
-        max_mean_us: tighter(attribute.max_mean_us, caps.max_mean_us),
-        max_rebuild_ratio: tighter(attribute.max_rebuild_ratio, caps.max_rebuild_ratio),
-        max_scene_layers: tighter(attribute.max_scene_layers, caps.max_scene_layers),
-        max_gpu_surface_layers: tighter(
+    BenchBudgets::default()
+        .with_max_p95_us(tighter(attribute.max_p95_us, caps.max_p95_us))
+        .with_max_mean_us(tighter(attribute.max_mean_us, caps.max_mean_us))
+        .with_max_rebuild_ratio(tighter(attribute.max_rebuild_ratio, caps.max_rebuild_ratio))
+        .with_max_scene_layers(tighter(attribute.max_scene_layers, caps.max_scene_layers))
+        .with_max_gpu_surface_layers(tighter(
             attribute.max_gpu_surface_layers,
             caps.max_gpu_surface_layers,
-        ),
-        max_clip_layers: tighter(attribute.max_clip_layers, caps.max_clip_layers),
-    }
+        ))
+        .with_max_clip_layers(tighter(attribute.max_clip_layers, caps.max_clip_layers))
 }
 
 /// Panics with a precise message when any measurement exceeds the budgets.

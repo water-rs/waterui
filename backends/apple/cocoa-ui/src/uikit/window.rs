@@ -61,12 +61,29 @@ pub fn main_screen_scale() -> f64 {
 
 /// Whether the application is in the active state —
 /// `UIApplication.shared.applicationState == .active`.
+///
+/// A process that never ran `UIApplicationMain` — a Mac Catalyst preview —
+/// has no `UIApplication`, so nothing in it is active.
 #[must_use]
 /// # Panics
 ///
-/// On a failure to reach `UIApplication.sharedApplication`.
+/// Off the main thread.
 pub fn application_is_active() -> bool {
     let mtm = objc2::MainThreadMarker::new().expect("main thread");
-    objc2_ui_kit::UIApplication::sharedApplication(mtm).applicationState()
-        == objc2_ui_kit::UIApplicationState::Active
+    shared_application(mtm).is_some_and(|application| {
+        application.applicationState() == objc2_ui_kit::UIApplicationState::Active
+    })
+}
+
+/// `UIApplication.sharedApplication`, which is nil in a process that never
+/// ran `UIApplicationMain` — the generated binding asserts non-nil, so the
+/// read goes through a nullable message send.
+pub fn shared_application(
+    _mtm: objc2::MainThreadMarker,
+) -> Option<Retained<objc2_ui_kit::UIApplication>> {
+    use objc2::ClassType;
+    // SAFETY: `+sharedApplication` takes no arguments and answers the
+    // process's application object or nil; the marker proves the main
+    // thread `UIKit` requires.
+    unsafe { objc2::msg_send![objc2_ui_kit::UIApplication::class(), sharedApplication] }
 }

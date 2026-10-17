@@ -1,7 +1,7 @@
 // Cherenkov external-frame tail: the producer plane decode and composite.
 // `shared.wgsl` precedes this file in every build — the consts, instance
-// layout, vertex stage, coverage machinery, clip-mask coverage and
-// `srgb_decode` live there.
+// layout, vertex stage, coverage machinery and clip-mask coverage live
+// there, after the space fragment that supplies `space_srgb_decode`.
 //
 // One instanced quad per external layer samples the retained planes in
 // place — never a copy or a raster fallback — decodes range, matrix and
@@ -68,7 +68,7 @@ struct ExtParams {
 fn ext_decode(c: vec3<f32>, transfer: u32) -> vec3<f32> {
     switch transfer {
         case EXT_T_SRGB: {
-            return srgb_decode(c);
+            return space_srgb_decode(c);
         }
         case EXT_T_709: {
             // BT.1886 reference EOTF — a pure 2.4 power, black level 0:
@@ -136,13 +136,37 @@ fn ext_hlg(rgb: vec3<f32>) -> vec3<f32> {
     return rgb * pow(ys, params.site.z - 1.0);
 }
 
+// The chroma pair (Cb, Cr codes) reconstructed bilinearly at `pos` in
+// chroma texel space (texel j centred at `j + 0.5`): the four nearest
+// texels weighted by the fractional position, each index clamped to the
+// plane like the image sampler. Interpolating codes equals interpolating
+// the normalized components — the normalization is affine. A position
+// on a texel centre takes that texel alone; one a ULP away from a
+// midpoint moves the result by a ULP-sized weight, never by a whole
+// texel, which a nearest pick at the tie would.
+fn ext_chroma_bilinear(pos: vec2<f32>, dims: vec2<f32>) -> vec2<f32> {
+    let u = pos - vec2<f32>(0.5);
+    let base = floor(u);
+    let f = u - base;
+    let hi = vec2<i32>(dims) - 1;
+    let i0 = clamp(vec2<i32>(base), vec2<i32>(0), hi);
+    let i1 = clamp(vec2<i32>(base) + 1, vec2<i32>(0), hi);
+    let c00 = vec2<f32>(textureLoad(ext_uv, i0, 0).xy);
+    let c10 = vec2<f32>(textureLoad(ext_uv, vec2<i32>(i1.x, i0.y), 0).xy);
+    let c01 = vec2<f32>(textureLoad(ext_uv, vec2<i32>(i0.x, i1.y), 0).xy);
+    let c11 = vec2<f32>(textureLoad(ext_uv, i1, 0).xy);
+    return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+}
+
 // The YUV plane decode at frame pixel `px` (pixel centres are at
-// `k + 0.5`): luma at the pixel's own coordinate, chroma at the
-// siting-offset subsampled coordinate — chroma texel j centres at frame
-// position 2j + 0.5 + s, so texel space is `p / 2 + 0.25 - s / 2`.
+// `k + 0.5`): luma at the pixel's own coordinate, chroma reconstructed
+// bilinearly at the siting-offset subsampled coordinate — chroma texel
+// j centres at frame position 2j + 0.5 + s, so texel space is
+// `p / 2 + 0.25 - s / 2`. This is `cherenkov_oracle::yuv::decode`'s
+// reconstruction.
 fn ext_frame_yuv(px: vec2<f32>) -> vec4<f32> {
     let y4 = ext_texel_u32(ext_y, px, params.dims.xy);
-    let c4 = ext_texel_u32(ext_uv,
+    let c = ext_chroma_bilinear(
         px * 0.5 + vec2<f32>(0.25) - params.site.xy * 0.5,
         params.dims.zw);
     // P010 keeps the 10-bit code in the high bits of a 16-bit
@@ -153,8 +177,8 @@ fn ext_frame_yuv(px: vec2<f32>) -> vec4<f32> {
         shift = 64.0;
     }
     let yn = f32(y4.x) / shift * params.norm.x + params.norm.y;
-    let cbn = f32(c4.x) / shift * params.norm.z + params.norm.w;
-    let crn = f32(c4.y) / shift * params.norm.z + params.norm.w;
+    let cbn = c.x / shift * params.norm.z + params.norm.w;
+    let crn = c.y / shift * params.norm.z + params.norm.w;
     let encoded = mat3x3<f32>(params.yuv0.xyz, params.yuv1.xyz,
                               params.yuv2.xyz) * vec3<f32>(yn, cbn, crn);
     let lin = ext_decode(encoded, params.info.y);
@@ -164,7 +188,8 @@ fn ext_frame_yuv(px: vec2<f32>) -> vec4<f32> {
 }
 
 @fragment
-fn fs_external(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_external(fragment: VsOut) -> @location(0) vec4<f32> {
+    let in = device_quad_pixel(fragment);
     var cov: f32;
     switch in.meta_.x {
         case KIND_SPAN: {

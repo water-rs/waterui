@@ -28,7 +28,17 @@
 # The shard measures the release package, never a debug `water run`: the
 # packaged artifact is what users ship, so size, startup, memory, and pixel
 # parity all describe the production binary.
+#
+# Requires bash >= 4.2, asserted below (#2683): the shard keeps background
+# children alive by design — the marker/reference log streams and `water
+# package` — and a builtin write that races a child's exit fails with EINTR
+# under /bin/bash 3.2, whose SIGCHLD handler lacks SA_RESTART.
 set -euo pipefail
+
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  echo "::error::run-e2e-shard.sh needs bash >= 4.2 (found ${BASH_VERSION}); /bin/bash 3.2 lets SIGCHLD interrupt writes with EINTR (#2683)" >&2
+  exit 1
+fi
 
 platform="${PLATFORM:-${1:-}}"
 shard_index="${SHARD_INDEX:-${2:-}}"
@@ -83,14 +93,23 @@ if [[ "${record}" == "1" ]]; then
   mkdir -p "${record_dir}/${platform}"
 fi
 
+# A command substitution, not process substitution: it keeps discovery's exit
+# status (a captured `::error` line would otherwise become an example name),
+# and the shell waits the child out instead of printing while it runs.
+if ! discovered="$("${workspace}/.github/scripts/discover-examples.sh" "${waterui_dir}")"; then
+  printf '%s\n' "${discovered}"
+  exit 1
+fi
+
 all_examples=()
 while IFS= read -r example; do
+  [[ -n "${example}" ]] || continue
   all_examples+=("${example}")
-done < <("${workspace}/.github/scripts/discover-examples.sh" "${waterui_dir}")
+done <<< "${discovered}"
 declare -a shard_examples=()
 
-# The `${arr[@]+...}` form: under the system bash 3.2 an empty array expands to
-# an unbound-variable error, and shards legitimately assign no examples.
+# The `${arr[@]+...}` form: under bash < 4.4 an empty array expands to an
+# unbound-variable error, and shards legitimately assign no examples.
 if [[ -n "${EXAMPLES:-}" ]]; then
   # An explicit list selects exactly those examples; a name that discovery did
   # not find is a typo, not an empty shard, so it fails the run fast.
@@ -191,6 +210,11 @@ if [[ "${platform}" == "macos" ]]; then
     echo "::error::Failed to compile window-id.swift."
     exit 1
   fi
+  if ! swiftc -O -o "${swift_tools_dir}/launch-app" \
+       "${workspace}/.github/scripts/launch-app.swift"; then
+    echo "::error::Failed to compile launch-app.swift."
+    exit 1
+  fi
 fi
 
 # One frame from the current platform target. macOS captures need the pid that
@@ -253,6 +277,10 @@ CAPTURE_DEADLINE_S=90
 # loaded CoreSimulator has answered a benign call in ~30 s, while the stuck
 # pathology behind #1539 measured 250 s.
 CLEANUP_DEADLINE_S=60
+# A LaunchServices openApplication round-trip answers in well under a second
+# on a healthy runner; the bound covers a wedged LaunchServices, not the app's
+# own startup — the liveness check and first-paint marker still cover that.
+LAUNCH_DEADLINE_S=60
 capture_settled() {
   local target="$1"
   local pid="${2:-}"
@@ -388,6 +416,22 @@ simctl_cleanup() {
   return 1
 }
 
+# Sends SIGTERM to a LaunchServices-launched pid and waits for it to actually
+# disappear: launch-app's pid is a launchd child, not this shell's, so `wait`
+# can neither reap nor observe it — `kill -0` is the only liveness signal.
+# Bounded by CLEANUP_DEADLINE_S like the iOS cleanup calls: a SIGTERM-ignoring
+# app must not hang the shard, and its windows must leave the screen before
+# the next capture runs.
+terminate_pid() {
+  local pid="$1"
+  kill "${pid}" 2>/dev/null || true
+  local deadline=$(( SECONDS + CLEANUP_DEADLINE_S ))
+  while kill -0 "${pid}" 2>/dev/null; do
+    (( SECONDS < deadline )) || return 1
+    sleep 0.5
+  done
+}
+
 # ── SwiftUI parity ──────────────────────────────────────────────────────────
 # Examples with a registered twin in backends/apple/Tests/E2EReference are also compared
 # against the twin rendered live by the reference host on the same runner —
@@ -396,9 +440,12 @@ simctl_cleanup() {
 # from Twins.swift so a new twin joins the sweep automatically.
 twin_names=()
 if [[ -f "${reference_dir}/Sources/Twins.swift" ]]; then
+  # A command substitution for the same reason as discovery above.
+  twins="$(sed -n 's/.*case "\([^"]*\)":.*/\1/p' "${reference_dir}/Sources/Twins.swift" | sort -u)"
   while IFS= read -r twin; do
+    [[ -n "${twin}" ]] || continue
     twin_names+=("${twin}")
-  done < <(sed -n 's/.*case "\([^"]*\)":.*/\1/p' "${reference_dir}/Sources/Twins.swift" | sort -u)
+  done <<< "${twins}"
 fi
 
 has_twin() {
@@ -497,10 +544,18 @@ capture_reference() {
       > "${ref_marker_log}" 2>/dev/null &
     local ref_stream_pid=$!
     sleep 1
-    "${reference_app}/Contents/MacOS/E2EReference" \
-      -E2EExample "${example}" -E2ETitle "${title}" \
-      >>"${logs_dir}/${platform}-${example}-ref.log" 2>&1 &
-    local ref_pid=$!
+    # Launched through LaunchServices so the twin is activated — a direct exec
+    # leaves its window non-key. Its stdout/stderr are gone with the direct
+    # exec: the twin logs through Logger, which the stream above captures.
+    local launch_deadline_at ref_pid
+    launch_deadline_at="$("${command_deadline}" deadline --seconds "${LAUNCH_DEADLINE_S}")"
+    if ! ref_pid="$("${command_deadline}" run --label "launch:reference" \
+        --deadline-at "${launch_deadline_at}" --receipt "${receipts_file}" \
+        -- "${swift_tools_dir}/launch-app" "${reference_app}" \
+        -E2EExample "${example}" -E2ETitle "${title}")"; then
+      kill "${ref_stream_pid}" 2>/dev/null || true
+      return 1
+    fi
     local rc=0
     if wait_for_reference_first_paint "${ref_marker_log}"; then
       capture_settled "${target}" "${ref_pid}"
@@ -510,8 +565,7 @@ capture_reference() {
       rc=1
     fi
     kill "${ref_stream_pid}" 2>/dev/null || true
-    kill "${ref_pid}" 2>/dev/null || true
-    wait "${ref_pid}" 2>/dev/null || true
+    terminate_pid "${ref_pid}" || rc=1
     return ${rc}
   fi
 }
@@ -615,42 +669,46 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       -name '*.app' -type d -print -quit 2>/dev/null || true)"
   else
     : > "${run_log}"
-    water package --platform "${package_platform}" --backend apple --release \
-      --path "${example_path}" > "${run_log}" 2>&1 &
-    runner_pid=$!
+    # The package is backgrounded so the wait loop can bound a hung build by
+    # silence rather than duration.
+    {
+      water package --platform "${package_platform}" --backend apple --release \
+        --path "${example_path}" >> "${run_log}" 2>&1 &
+      runner_pid=$!
 
-    # The wait covers `water package`'s cold release build, not just a launch:
-    # without a shared sccache a first-in-shard example compiles for tens of
-    # minutes, and release codegen runs longer than debug. The bound is
-    # therefore on *silence*, not duration — a build that is writing to the log
-    # or running compiler processes is making progress and must not be killed
-    # (#140). A dead runner still short-circuits, and a hard ceiling caps hung
-    # cases.
-    built=0
-    log_size=-1
-    silent_since=${SECONDS}
-    deadline=$((SECONDS + 2700))
-    while (( SECONDS < deadline )); do
-      if ! kill -0 "${runner_pid}" 2>/dev/null; then
-        if wait "${runner_pid}"; then built=1; fi
-        break
-      fi
-      new_size=$(stat -f%z "${run_log}" 2>/dev/null || echo -1)
-      if (( new_size != log_size )); then
-        log_size=${new_size}
-        silent_since=${SECONDS}
-      elif pgrep -f 'xcodebuild|swiftc|swift-frontend|cargo|rustc|clang' >/dev/null 2>&1; then
-        silent_since=${SECONDS}
-      elif (( SECONDS - silent_since > 300 )); then
-        stuck=1
-        break
-      fi
-      sleep 2
-    done
+      # The wait covers `water package`'s cold release build, not just a launch:
+      # without a shared sccache a first-in-shard example compiles for tens of
+      # minutes, and release codegen runs longer than debug. The bound is
+      # therefore on *silence*, not duration — a build that is writing to the log
+      # or running compiler processes is making progress and must not be killed
+      # (#140). A dead runner still short-circuits, and a hard ceiling caps hung
+      # cases.
+      built=0
+      log_size=-1
+      silent_since=${SECONDS}
+      deadline=$((SECONDS + 2700))
+      while (( SECONDS < deadline )); do
+        if ! kill -0 "${runner_pid}" 2>/dev/null; then
+          if wait "${runner_pid}"; then built=1; fi
+          break
+        fi
+        new_size=$(stat -f%z "${run_log}" 2>/dev/null || echo -1)
+        if (( new_size != log_size )); then
+          log_size=${new_size}
+          silent_since=${SECONDS}
+        elif pgrep -f 'xcodebuild|swiftc|swift-frontend|cargo|rustc|clang' >/dev/null 2>&1; then
+          silent_since=${SECONDS}
+        elif (( SECONDS - silent_since > 300 )); then
+          stuck=1
+          break
+        fi
+        sleep 2
+      done
 
-    if (( built == 1 )); then
-      app_path="$(find_packaged_app "${run_log}")"
-    fi
+      if (( built == 1 )); then
+        app_path="$(find_packaged_app "${run_log}")"
+      fi
+    }
   fi
 
   if [[ -n "${app_path}" ]]; then
@@ -706,21 +764,33 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     continue
   fi
 
-  # Launch the packaged release app directly. The log stream attaches BEFORE
+  # Launch the packaged release app. The log stream attaches BEFORE
   # the launch — inside the simulator on iOS, where the app's logd actually
   # lives — so the first-paint marker cannot be lost to an attach race. A
   # missing marker after the grace window is data (the app ran, the marker
   # pipeline broke), not a launch failure.
   stream_pid=""
   app_pid=""
-  exec_name="$(basename "${app_path}" .app)"
   if [[ "${platform}" == "macos" ]]; then
     log stream --predicate 'subsystem == "dev.waterui"' --style compact \
       > "${marker_log}" 2>/dev/null &
     stream_pid=$!
     sleep 1
-    "${app_path}/Contents/MacOS/${exec_name}" >/dev/null 2>&1 &
-    app_pid=$!
+    # The app must come up through LaunchServices: a direct exec leaves it
+    # unactivated, so its window never becomes key (#2636).
+    launch_deadline_at="$("${command_deadline}" deadline --seconds "${LAUNCH_DEADLINE_S}")"
+    if ! app_pid="$("${command_deadline}" run --label "launch:app" \
+        --deadline-at "${launch_deadline_at}" --receipt "${receipts_file}" \
+        -- "${swift_tools_dir}/launch-app" "${app_path}")"; then
+      kill "${stream_pid}" 2>/dev/null || true
+      echo "::error::${example} packaged app failed to launch (${platform})."
+      failures+=("${example}: launch")
+      report+=("| \`${example}\` | launch failed | — | — | ${size_cell} | ${mem_cell} |")
+      printf '  "%s": null,\n' "${example}" >> "${startup_entries}"
+      printf '  "%s": null,\n' "${example}" >> "${memory_entries}"
+      echo "::endgroup::"
+      continue
+    fi
     sleep 1
     if ! kill -0 "${app_pid}" 2>/dev/null; then
       kill "${stream_pid}" 2>/dev/null || true
@@ -799,7 +869,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       simctl_cleanup terminate "${bundle_id}" || failures+=("${example}: cleanup terminate")
       simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
     else
-      kill "${app_pid}" 2>/dev/null || true
+      terminate_pid "${app_pid}" || failures+=("${example}: cleanup terminate")
     fi
     report+=("| \`${example}\` | capture failed | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     printf '  "%s": null,\n' "${example}" >> "${memory_entries}"
@@ -817,7 +887,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       simctl_cleanup terminate "${bundle_id}" || failures+=("${example}: cleanup terminate")
       simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
     else
-      kill "${app_pid}" 2>/dev/null || true
+      terminate_pid "${app_pid}" || failures+=("${example}: cleanup terminate")
     fi
     report+=("| \`${example}\` | no first paint | — | — | ${size_cell} | ${mem_cell} |")
     printf '  "%s": null,\n' "${example}" >> "${memory_entries}"
@@ -852,7 +922,10 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     }
     simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
   else
-    kill "${app_pid}" 2>/dev/null || true
+    terminate_pid "${app_pid}" || {
+      app_terminated=0
+      failures+=("${example}: cleanup terminate")
+    }
   fi
 
   if ! "${swift_tools_dir}/compare-screenshots" content "${shot}"; then
@@ -899,7 +972,7 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
   if has_twin "${example}" && \
      [[ ! -f "${baselines_dir}/${platform}/${example}.parity-skip" ]]; then
     if (( ! app_terminated )); then
-      echo "::error::${example}: parity prerequisite failed — 'simctl terminate' of the example did not succeed, so the reference cannot launch to a clean frontmost state; twin capture not run."
+      echo "::error::${example}: parity prerequisite failed — the example did not terminate, so the reference cannot launch to a clean frontmost state; twin capture not run."
       failures+=("${example}: parity prerequisite")
       report+=("| \`${example}\` (parity) | prerequisite failed (terminate) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
       echo "::endgroup::"

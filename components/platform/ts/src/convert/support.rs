@@ -69,9 +69,9 @@ pub fn field<T: FromJs>(
         .iter()
         .find(|(key, _)| key == name)
         .map_or(&undefined, |(_, value)| value);
-    T::from_js(value, bridge).map_err(|error| JsError {
-        message: format!("{type_name}.{name}: {}", error.message),
-        ..error
+    T::from_js(value, bridge).map_err(|mut error| {
+        error.message = format!("{type_name}.{name}: {}", error.message);
+        error
     })
 }
 
@@ -121,9 +121,9 @@ pub fn element<T: FromJs>(
 ) -> Result<T, JsError> {
     let undefined = JsValue::Undefined;
     let value = items.get(index).unwrap_or(&undefined);
-    T::from_js(value, bridge).map_err(|error| JsError {
-        message: format!("{type_name}::{variant}.{index}: {}", error.message),
-        ..error
+    T::from_js(value, bridge).map_err(|mut error| {
+        error.message = format!("{type_name}::{variant}.{index}: {}", error.message);
+        error
     })
 }
 

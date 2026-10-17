@@ -23,6 +23,11 @@
 //!   absolute difference after a 3×3 box filter) and a magma error heatmap.
 //! - [`yuv`] decodes NV12 and P010 frames into the working space, chroma
 //!   reconstructed bilinearly at its sited position.
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 pub mod blend;
 pub mod clip;

@@ -18,6 +18,7 @@ use crate::SamplerFilter;
 
 /// A runtime value.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Value {
     /// A float scalar (`f32` or `f16`, evaluated as `f32`).
     Float(f32),

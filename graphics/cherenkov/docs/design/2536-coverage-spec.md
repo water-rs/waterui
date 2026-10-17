@@ -173,28 +173,36 @@ are unchanged, so the flattened geometry the kernel integrates is the
 same geometry the CPU route would have produced to within the flattener's
 own tolerance.
 
-**Decision G1 — winding resolves inside the kernels; no intersections
-are solved anywhere.** The GPU route does not run `resolve_winding`, and
-it does not solve segment intersections. Each cell accumulates the signed
-area its segment pieces deposit *and* the signed cover (net winding
-crossing the cell's right edge); a prefix along the strip turns per-cell
-cover into each cell's backdrop winding; the fill-rule fold of section
-1.1 step 7 then maps `backdrop + local area` to coverage. Overlap is
-therefore correct because the accumulated quantity is a true winding
-number per pixel, not a clamped sum of per-contour coverages — the
-failure `resolve_winding` exists to prevent (`lowering.rs:2033`–2047)
-cannot arise, because nothing clamps before the fold.
+**Decision G1 — resolve the fill-rule region analytically inside boundary cells.**
+The GPU route does not run the CPU `resolve_winding` sweep. It flattens
+curves, bins segments into four-row strips and clips their pieces into
+boundary cells. A row prefix of signed crossings seeds winding at each
+cell's lower-left corner. Local left-boundary events recover winding as
+a function of height inside the cell. Local segment intersections divide
+edges into intervals on which the fill-rule transition is constant;
+integrating those exposed boundary intervals gives the analytic area of
+the fill-rule region. Full interior cells need only their winding seed.
+No cell scans the path's unrelated segments. Painting and blending remain
+in the raster pipeline.
+
+Folding an integrated signed area is not equivalent to integrating the
+fill-rule region. As a counterexample, put two identical, same-direction
+contours over the left half of one pixel. The integrated winding is `1`,
+so applying either fill-rule fold afterwards gives coverage `1`. The true
+NonZero coverage is `0.5`, and the true EvenOdd coverage is `0`. Delaying
+the fold does not resolve that discrepancy: the fill rule must be applied
+to the local winding before the area is integrated.
+
+Work scales with segment/strip/cell incidences and local arrangement
+complexity. Boundary-cell intersections are permitted and necessary for
+exact analytic coverage. Arbitrarily dense overlap in a single cell may
+have superlinear arrangement complexity; no worst-case linear guarantee
+is made for such geometry. The measured scaling gates in section 4 remain
+binding, and neither supersampling nor weaker oracle thresholds may be
+used to pass them.
 
 `resolve_winding` stays on the CPU route, unchanged, and keeps its
-`None` fast path so non-overlapping CPU-routed scenes stay
-bit-identical.
-
-*Alternatives considered:* keep the CPU sweep and hand the kernel
-resolved boundary edges (smallest change, but it leaves on the CPU
-exactly the cost #2536 exists to remove, and the sweep's sort dominates
-large self-intersecting paths); run the sweep itself as a GPU pass
-(solves intersections on the GPU, far more complex than area-and-cover
-accumulation and unnecessary once nothing clamps early).
+`None` fast path so non-overlapping CPU-routed scenes stay bit-identical.
 
 ## 3. The shared emission form
 
@@ -260,9 +268,9 @@ CPU never learns how many of either there are.
 
 The WGSL classifier and `path::strip_class`/`path::emit` are two
 implementations of one specification; they are kept in lockstep by the
-route-equivalence gate of section 4.3 threshold 4, which fails on any
-divergence that changes pixels, and by the shared constants being stated
-once here.
+independent polygon-coverage gate of section 4.3 threshold 4, which checks
+the coverage reconstructed by their raster output, and by the shared
+constants being stated once here.
 
 *Alternatives considered:* write the coverage grid to a buffer and run
 the existing CPU `emit` on it (keeps the emission bit-identical, but
@@ -350,15 +358,31 @@ SDR white):
    maxima are concentrated in exactly the geometry a coverage change
    would hit first (`stroke-join-continuous-sharp-round` for `flip_max`,
    `stroke-dash-hdr` for `max_local_error`).
-4. **Route-equivalence gate, stronger than the oracle gate.** For any
-   scene a GPU route accepts, the same scene forced through the CPU
-   sweep must agree with it: `flip_mean <= 0.0005` and
-   `max_local_error <= 0.004` *between the two engine images*. Basis:
-   these are below the smallest oracle-relative values measured
-   (`flip_mean` 0.000705, `max_local_error` 0.000131 are the per-scene
-   floors, and R8 quantization alone is ±0.00196 of coverage), so the
-   bound says the two routes differ by at most quantization-scale noise
-   rather than by a visible amount.
+4. **Independent polygon-coverage gate.** Supply both coverage routes
+   and the independent f64 area oracle with identical finite f32
+   device-space line segments, contour closure and fill rule. Use the
+   line scenes and one fixed canonical polygonization of each curved or
+   stroked geometry. Quantize the oracle's exact region/pixel area with
+   the shared R8 rule. Every GPU coverage byte must differ by at most
+   one from that reference; true full/empty interiors must be exactly
+   255/0. Mathematical cases away from quantization ties remain exact.
+   Compare coverage before paint, blending and target conversion.
+   Report CPU conformance independently; a CPU raster defect is tracked
+   and fixed separately, not reproduced by the GPU kernel. Keep the
+   complete original curved/HDR scene comparisons under thresholds 1–3;
+   direct CPU/GPU painted-image differences are diagnostics.
+
+   This separates polygon integration from differing valid flattenings
+   and HDR amplification. A single R8 step painted with a linear channel
+   of 8 is about 0.0314, so a fixed 0.004 painted-image bound does not
+   express one-byte coverage accuracy. Captured sparse-path geometry at
+   pixel (534,332) has independent area 0.6787482548 (R8=173); the CPU
+   resolver's emitted f32 edges give 0.6787424548 (also 173), while its
+   raster accumulates 0.6927490234 (177). Equivalence to that erroneous
+   result would contradict the true-area contract. The CPU raster defect
+   is tracked in #2665. The independent
+   coverage gate avoids both defects without widening the full-scene
+   oracle thresholds.
 5. **Eye review.** Every GPU-routed scene is reviewed by looking at it
    and at its heatmap, per `AGENTS.md`; the numbers above are a gate,
    not the acceptance criterion.
@@ -367,7 +391,7 @@ SDR white):
 written.** #2536 already states a tolerance contract, and decision C1
 declines bit-identity, so the gate above *is* the acceptance criterion.
 Thresholds 1–3 apply to the corpus scenes that route through the GPU;
-threshold 4 applies between the CPU and GPU images of the same scene;
+threshold 4 applies to identical polygon geometry before paint;
 threshold 5 applies to all of them. Because the GPU route is only
 selected for paths the CPU route handles slowly and the new scenes of
 decision T2 arrive with it, the #2536 PR is a change that intends to
@@ -384,8 +408,8 @@ turn a passing scene into a failing one).
 **Decision T2 — new corpus scenes, plus a `#[cfg(test)]`-only route
 hook.** #2546 adds path scenes large enough that the predicate of
 section 6 selects the GPU route naturally, which is what thresholds 1–3
-measure. Route-equivalence testing (threshold 4) additionally needs the
-*same* scene rendered both ways, so it forces a route through an
+measure. Polygon-coverage testing (threshold 4) additionally needs the
+*same* canonical f32 polygon rendered both ways, so it forces a route through an
 internal hook compiled only under `#[cfg(test)]`. That hook is never
 public API, is not reachable from any released build, and is therefore
 not the implementation switch #2536 forbids — the shipped selection
@@ -492,7 +516,11 @@ unreachable for them:
 So GPU-routed cells live in a per-frame storage buffer: R8 texel values,
 four per `u32`, cells laid out back to back in the compacted order the
 classifier emits, each cell's descriptor carrying its byte offset,
-width, height and `interior` interval. The paint shader reads them
+width, height and `interior` interval. A retained full interior interval
+is implicit: its columns are omitted from each stored row, and fetching
+that interval returns full coverage. This keeps large merged cells from
+turning perimeter-sized coverage into area-sized storage or traffic.
+The paint shader reads the remaining texels
 through a storage-buffer variant of the cell fetch it already does
 against the atlas (`shared.wgsl:188`, `shader.wgsl:819`): same `[0, 1]`
 value, same bilinear-free per-texel addressing, same
@@ -616,7 +644,7 @@ can ask for CPU or GPU coverage.
 - **Hints.** Any hint that exists may only be semantic (large, static,
   dynamic) and the engine may ignore it. **Rendered output must be
   identical with and without any hint**, and the two routes' outputs must
-  agree to within section 4.3 threshold 4. No `PathHint` or volatility
+  conform to the independent coverage gate of section 4.3 threshold 4. No `PathHint` or volatility
   type exists in the tree today; #2536 would introduce it.
 
 **Decision R1 — the predicate depends only on content and scale, and is
@@ -628,7 +656,7 @@ coverage rect follows. Nothing else: not frame history, not the previous
 frame's choice, not a measured timing, not atlas pressure, not whether an
 entry is currently resident. The same path at the same scale therefore
 takes the same route in every frame and in every process, which is what
-makes the route-equivalence gate reproducible.
+makes the polygon-coverage gate reproducible.
 
 There is no hysteresis. A hysteretic predicate is history by
 definition — the same path at the same scale would route differently
@@ -657,10 +685,10 @@ depend on memory pressure.
 | --- | --- |
 | — | No CPU readback anywhere in the route; this decides most of the rest |
 | C1 | `f32` accumulation on the GPU; bit-identity with the CPU route is not the contract |
-| G1 | Winding resolves in-kernel: per-cell area and cover, strip backdrop prefix, fill-rule fold, no intersections solved |
+| G1 | Analytic fill-rule region integration in boundary cells, with local intersections and row-prefix winding seeds |
 | E1 | A second kernel classifies strips and writes compact span/cell lists plus indirect draw arguments |
 | T1 | Tolerance-based acceptance, thresholds 1–5 of section 4.3 |
-| T2 | #2546 adds large corpus scenes; route equivalence uses a `#[cfg(test)]`-only forcing hook |
+| T2 | #2546 adds large corpus scenes; polygon coverage uses a `#[cfg(test)]`-only forcing hook |
 | K1 | Route-tagged keys; a GPU entry never shares a key with a CPU entry |
 | S1 | GPU-routed cells live in a per-frame storage buffer, not the R8 atlas (refines #2536) |
 | R2 | Buffers sized from an exact `O(n)` CPU-side cell bound; above the cap it is `Unsupported`, never a silent fallback |

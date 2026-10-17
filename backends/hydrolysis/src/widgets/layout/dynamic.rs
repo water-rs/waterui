@@ -15,7 +15,7 @@ fn measure_dynamic(
     dynamic: &Dynamic,
     env: &Environment,
     proposal: ProposalSize,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let identity = dynamic.identity();
     state
@@ -79,7 +79,7 @@ impl HydroNativeView for Native<Dynamic> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_dynamic(
             state,
@@ -95,7 +95,7 @@ impl HydroNativeView for Native<Dynamic> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         measure_dynamic(state, view.as_inner(), env, proposal, theme)

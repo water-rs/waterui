@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use waterui_core::view_renderer::{CustomViewRenderer, RenderError, RenderResult, RenderSize};
-use waterui_core::{AnyView, Environment};
+use waterui_core::view_renderer::{CustomViewRenderer, RenderError, RenderRequest, RenderResult};
+use waterui_core::{AnyView, ContentLedger, Environment};
 use waterui_graphics::scene_view::SceneViewMergeToParent;
 
 use crate::platform::{OffscreenSurface, PresentationSurface as _};
@@ -10,9 +10,13 @@ use crate::readback::readback_texture_rgba8;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 
 /// `ViewRenderer` implementation backed by Hydrolysis offscreen rendering.
+///
+/// A capture mounts the view under a fresh [`ContentLedger`] and keeps the
+/// tree mounted while it awaits the content the view owes, re-flushing the
+/// retained tree between passes, then renders it once.
 pub struct HydrolysisViewRenderer {
     surface: Rc<RefCell<Option<OffscreenSurface>>>,
-    theme: Rc<dyn crate::engine::WidgetTheme>,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
     configure_environment: Rc<dyn Fn(&mut Environment)>,
 }
 
@@ -26,7 +30,7 @@ impl core::fmt::Debug for HydrolysisViewRenderer {
 impl HydrolysisViewRenderer {
     #[must_use]
     /// Creates a renderer drawing with `theme`.
-    pub fn new(theme: Rc<dyn crate::engine::WidgetTheme>) -> Self {
+    pub fn new(theme: Rc<dyn crate::theme::WidgetTheme>) -> Self {
         Self {
             surface: Rc::new(RefCell::new(None)),
             theme,
@@ -37,7 +41,7 @@ impl HydrolysisViewRenderer {
     #[must_use]
     /// Creates a renderer whose environment is first configured by `configure_environment`.
     pub fn with_environment(
-        theme: Rc<dyn crate::engine::WidgetTheme>,
+        theme: Rc<dyn crate::theme::WidgetTheme>,
         configure_environment: impl Fn(&mut Environment) + 'static,
     ) -> Self {
         Self {
@@ -56,7 +60,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
     async fn render_to_rgba(
         &self,
         view: AnyView,
-        size: RenderSize,
+        request: RenderRequest,
     ) -> Result<RenderResult, RenderError> {
         let surface = Rc::clone(&self.surface);
         let configure_environment = Rc::clone(&self.configure_environment);
@@ -65,13 +69,13 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
             clippy::cast_possible_truncation,
             reason = "the proposal's width is clamped to at least 1.0 and a display size always fits u32"
         )]
-        let width = size.width.max(1.0).round() as u32;
+        let width = request.size.width.max(1.0).round() as u32;
         #[expect(
             clippy::cast_sign_loss,
             clippy::cast_possible_truncation,
             reason = "the proposal's height is clamped to at least 1.0 and a display size always fits u32"
         )]
-        let height = size.height.max(1.0).round() as u32;
+        let height = request.size.height.max(1.0).round() as u32;
 
         if surface.borrow().is_none() {
             let offscreen =
@@ -106,6 +110,8 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
 
         let mut env = Environment::new().extending(SceneViewMergeToParent);
         configure_environment(&mut env);
+        let ledger = ContentLedger::new();
+        let env = env.extending(ledger.clone());
         let view = crate::renderer::normalize_view_for_render(view, &env);
         let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
         renderer.capture_window_tree(
@@ -116,6 +122,26 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
             kurbo::Affine::IDENTITY,
         );
         renderer.finish_rebuild_frame();
+        // The tree stays mounted while its content arrives: each pass
+        // flushes what resolved content changed into the retained tree —
+        // a decoded photo taking its size — and yields so the tasks the
+        // flush spawned run before the ledger is checked again.
+        ledger
+            .wait(
+                request.content_deadline,
+                waterui::task::sleep(request.content_deadline),
+                || {
+                    renderer.drain_producer_wakes();
+                    let _ = renderer.flush_window_tree(
+                        &env,
+                        bounds,
+                        kurbo::Affine::IDENTITY,
+                        kurbo::Affine::IDENTITY,
+                    );
+                    waterui::task::yield_now()
+                },
+            )
+            .await?;
         crate::engine::engine_await!(renderer.render_scene_to_texture(
             crate::renderer::HydrolysisRenderTarget {
                 adapter: &adapter,
@@ -140,11 +166,7 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
             .map_err(gpu_failure)?;
         surface.present(frame);
 
-        Ok(RenderResult {
-            rgba_data,
-            width,
-            height,
-        })
+        Ok(RenderResult::new(rgba_data, width, height))
     }
 }
 

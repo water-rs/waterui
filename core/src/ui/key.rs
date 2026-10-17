@@ -26,6 +26,7 @@ use crate::{
 /// Backends place it into the handler's environment, so a handler reads it
 /// with [`Use<KeyPress>`](crate::extract::Use).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct KeyPress {
     /// What the key means under the current layout and modifiers.
     pub key: Key,
@@ -37,9 +38,27 @@ pub struct KeyPress {
     pub repeat: bool,
 }
 
+impl KeyPress {
+    /// A press of `key` at `code` with `modifiers` held, an auto-repeat when
+    /// `repeat`.
+    #[must_use]
+    pub const fn new(key: Key, code: Code, modifiers: Modifiers, repeat: bool) -> Self {
+        Self {
+            key,
+            code,
+            modifiers,
+            repeat,
+        }
+    }
+}
+
 /// Whether a key handler consumed a key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "a key handler must say whether it consumed the key"]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed answer: a handler either consumed the key or did not"
+)]
 pub enum KeyHandling {
     /// The key was consumed; it stops bubbling.
     Handled,

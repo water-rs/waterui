@@ -397,9 +397,13 @@ pub fn rasterize_mask(font: &FontData, req: &GlyphReq) -> Result<GlyphMask, Rend
     }
     let mut cov = vec![0.0; w * h];
     for y in 0..h {
-        acc.coverage_row(y, cherenkov::FillRule::NonZero, 0, w, |x, c| {
-            cov[y * w + x] = c;
-        });
+        acc.coverage_into(
+            y,
+            cherenkov::FillRule::NonZero,
+            0,
+            w,
+            &mut cov[y * w..y * w + w],
+        );
     }
     Ok(GlyphMask {
         left,

@@ -559,10 +559,26 @@ define_class!(
     impl TableRowView {
         /// Selection emphasis follows the window's key state: the table
         /// never takes first responder (clicks go to the row content), yet
-        /// a selected row in a key window shows the accent highlight.
+        /// a selected row in a key window shows the accent highlight — but
+        /// never in a source-list table, whose sidebar selection is the
+        /// unemphasised pill the platform draws for a list that cannot
+        /// take focus.
         #[unsafe(method(isEmphasized))]
         fn is_emphasized(&self) -> bool {
-            self.window().is_some_and(|window| window.isKeyWindow())
+            // SAFETY: see the module safety note — the row view walks only
+            // live `NSView` ancestors.
+            let mut ancestor = unsafe { self.superview() };
+            let source_list = loop {
+                let Some(view) = ancestor else {
+                    break false;
+                };
+                if let Some(table) = view.downcast_ref::<NSTableView>() {
+                    break table.style() == NSTableViewStyle::SourceList;
+                }
+                // SAFETY: see the module safety note.
+                ancestor = unsafe { view.superview() };
+            };
+            !source_list && self.window().is_some_and(|window| window.isKeyWindow())
         }
 
         /// Keeps `AppKit`'s row fill, then paints the hairline inside the
@@ -816,9 +832,23 @@ fn index_set(indexes: &[usize]) -> Retained<NSIndexSet> {
 }
 
 impl TableView {
-    /// Applies `deletes` and `inserts` as one update block — `.effectFade`
-    /// when `animated`, no animation otherwise.
-    pub fn apply_row_updates(&self, deletes: &[usize], inserts: &[usize], animated: bool) {
+    /// Applies one update block — `.effectFade` when `animated`, no
+    /// animation otherwise. `AppKit` applies each edit against the rows the
+    /// previous one left, so the block runs in that order: `deletes` are
+    /// removed (indexes before the block), then each `(from, to)` of `moves`
+    /// moves a row within the remaining rows, then `inserts` go in at their
+    /// final positions (indexes after the block).
+    ///
+    /// # Panics
+    ///
+    /// Panics if a move names a row index past `NSInteger::MAX`.
+    pub fn apply_row_updates(
+        &self,
+        deletes: &[usize],
+        moves: &[(usize, usize)],
+        inserts: &[usize],
+        animated: bool,
+    ) {
         let animation = if animated {
             NSTableViewAnimationOptions::EffectFade
         } else {
@@ -827,6 +857,13 @@ impl TableView {
         let table = self.table_view();
         table.beginUpdates();
         table.removeRowsAtIndexes_withAnimation(&index_set(deletes), animation);
+        for &(from, to) in moves {
+            table.moveRowAtIndex_toIndex(
+                from.try_into()
+                    .expect("a table row index fits in NSInteger"),
+                to.try_into().expect("a table row index fits in NSInteger"),
+            );
+        }
         table.insertRowsAtIndexes_withAnimation(&index_set(inserts), animation);
         table.endUpdates();
     }

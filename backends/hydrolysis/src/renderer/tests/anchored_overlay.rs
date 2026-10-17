@@ -21,8 +21,8 @@ use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchoredOverlay, Clamp, Dismissal, EdgeAlignment,
 };
 use waterui_controls::button::button;
-use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
+use waterui_core::{AnyView, View as _};
 use waterui_graphics::Color;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::vstack;
@@ -661,10 +661,12 @@ fn input_during_the_exit_reaches_the_content_underneath() {
     );
 }
 
-/// `is_presented` back to `true` mid-exit keeps the same overlay presented —
-/// the exit is cancelled, not restarted.
+/// `is_presented` back to `true` mid-exit presents a new, independent
+/// instance (layout-spec.md §4.5): the dismissed presentation keeps drawing
+/// its exit beside it, inert, until its own animations finish, then leaves —
+/// the new one is presented at the same placed frame throughout.
 #[test]
-fn re_presenting_mid_exit_keeps_the_overlay_presented() {
+fn re_presenting_mid_exit_enters_a_new_instance_beside_the_exit() {
     let open = Binding::container(true);
     let open_for_view = open.clone();
     let scale = Binding::f32(1.0);
@@ -705,12 +707,119 @@ fn re_presenting_mid_exit_keeps_the_overlay_presented() {
     open.set(true);
     scale.set(1.0);
     let _ = runtime.pump_at(false, start + Duration::from_millis(300));
-    pump_until_settled(&mut runtime);
-
-    let after = presented_frame(&runtime);
     assert_eq!(
-        before, after,
-        "the re-presented overlay keeps the same subtree at the same frame"
+        runtime.anchored_overlay_frames().as_slice(),
+        &[before, before],
+        "mid-exit the dismissed presentation still draws beside the new one"
+    );
+
+    // The exiting instance's scale animation finishes ~1300ms in; it leaves
+    // and the new presentation stays.
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_400));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_416));
+    assert_eq!(
+        runtime.anchored_overlay_frames().as_slice(),
+        &[before],
+        "once the exit finishes only the new presentation remains, at the same frame"
+    );
+}
+
+/// An overlay body declaring `.transition(opacity)` (layout-spec.md §4.5):
+/// presenting runs the insertion, the dismissal removes the content from the
+/// accessibility tree on that frame while the presentation keeps drawing in
+/// its placed frame under the removal clock, and the clock's completion — not
+/// a content animation — ends the exit. A re-present while it runs enters a
+/// new instance beside the leaving one.
+#[test]
+fn an_overlay_body_transition_runs_on_present_and_dismiss() {
+    let open = Binding::container(false);
+    let open_for_view = open.clone();
+    let view = AnyViewBuilder::<AnyView>::new(move || {
+        let open = open_for_view.clone();
+        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
+            AnchoredOverlay::new(&open, || {
+                AnyView::new(
+                    button("inside")
+                        .action(|| {})
+                        .transition(waterui_core::transition::PropertyTransition::opacity())
+                        .animation(Animation::linear(Duration::from_millis(1_000))),
+                )
+            })
+            .edge(AnchorEdge::Bottom)
+            .gap(GAP),
+        ),)))
+    });
+    let mut runtime = runtime(view);
+    pump_until_settled(&mut runtime);
+    let has_inside = |runtime: &mut HeadlessRuntime| {
+        runtime
+            .accessibility_tree()
+            .as_ref()
+            .and_then(|update| find_by_label(update, Role::Button, "inside"))
+            .is_some()
+    };
+
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    open.set(true);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let presented = presented_frame(&runtime);
+    let mid_insertion = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("a mid-insertion frame must be capturable");
+    assert!(
+        has_inside(&mut runtime),
+        "the inserted presentation is in the accessibility tree from its first frame"
+    );
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_100))
+        .snapshot
+        .expect("a settled frame must be capturable");
+    assert!(
+        mid_insertion.rgba8 != settled.rgba8,
+        "halfway through the insertion the overlay is still fading in"
+    );
+
+    open.set(false);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_116));
+    assert!(
+        !has_inside(&mut runtime),
+        "the dismissed presentation leaves the accessibility tree at once"
+    );
+    assert_eq!(
+        runtime.anchored_overlay_frames().as_slice(),
+        &[presented],
+        "the leaving presentation keeps drawing in its placed frame"
+    );
+    let mid_removal = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("a mid-removal frame must be capturable");
+    assert!(
+        mid_removal.rgba8 != settled.rgba8,
+        "halfway through the removal the overlay is fading out"
+    );
+
+    // Re-present mid-removal: a new instance enters beside the leaving one.
+    open.set(true);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_632));
+    assert_eq!(
+        runtime.anchored_overlay_frames().as_slice(),
+        &[presented, presented],
+        "the leaving presentation and the new one both draw"
+    );
+    assert!(
+        has_inside(&mut runtime),
+        "the new presentation is in the accessibility tree"
+    );
+
+    // The removal clock completes ~2116ms in and releases the old instance.
+    let _ = runtime.pump_at(false, start + Duration::from_millis(2_200));
+    assert_eq!(
+        runtime.anchored_overlay_frames().as_slice(),
+        &[presented],
+        "once its removal completes the old presentation is gone"
     );
 }
 

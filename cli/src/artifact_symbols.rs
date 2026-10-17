@@ -20,7 +20,7 @@ use waterui_assets_planner::BundleMountMeta;
 /// member parsed) or a single object/dylib.
 pub struct ArtifactSymbols {
     data: Vec<u8>,
-    names: Vec<String>,
+    has_symbols: bool,
 }
 
 impl ArtifactSymbols {
@@ -33,7 +33,7 @@ impl ArtifactSymbols {
     pub const fn empty() -> Self {
         Self {
             data: Vec::new(),
-            names: Vec::new(),
+            has_symbols: false,
         }
     }
 
@@ -48,46 +48,51 @@ impl ArtifactSymbols {
     pub fn read(path: &Path) -> Result<Self> {
         let data = std::fs::read(path)
             .wrap_err_with(|| format!("failed to read artifact {}", path.display()))?;
-        let mut names = Vec::new();
+        let mut has_symbols = false;
         let mut objects = 0usize;
         for_each_object(&data, |file| {
             objects += 1;
-            names.extend(
-                file.symbols()
-                    .filter_map(|symbol| symbol.name().ok())
-                    .map(demangled_name),
-            );
+            has_symbols |= file.symbols().next().is_some();
         });
         if objects == 0 {
             bail!("{} is not a recognized object or archive", path.display());
         }
-        Ok(Self { data, names })
+        Ok(Self { data, has_symbols })
     }
 
     /// Whether the artifact carried no symbols at all.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.names.is_empty()
+        !self.has_symbols
     }
 
-    /// Demangled symbol names.
+    /// Leaf path segments of the demangled symbol names (text after the
+    /// last `::`, the whole name when it has none) that start with
+    /// `prefix`. Deduplicated and sorted.
     ///
     /// Names are demangled with the `{:#}` alternate form so trailing hashes
-    /// are dropped; un-mangled names pass through unchanged.
-    pub fn names(&self) -> impl Iterator<Item = &str> {
-        self.names.iter().map(String::as_str)
-    }
-
-    /// Leaf path segments (text after the last `::`, the whole name when it
-    /// has none) that start with `prefix`. Deduplicated and sorted.
+    /// are dropped; un-mangled names pass through unchanged. Only a name
+    /// whose raw form contains `prefix` is demangled: both Rust manglings
+    /// spell an identifier's ASCII characters verbatim — a punycoded one
+    /// keeps its ASCII code points in order ahead of the encoded rest — so
+    /// a leaf that starts with an ASCII `prefix` carries it in the raw
+    /// name too.
+    #[must_use]
     pub fn leaves_with_prefix(&self, prefix: &str) -> Vec<String> {
-        self.names()
-            .filter_map(leaf_of)
-            .filter(|leaf| leaf.starts_with(prefix))
-            .map(str::to_owned)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect()
+        let mut leaves = BTreeSet::new();
+        for_each_object(&self.data, |file| {
+            leaves.extend(
+                file.symbols()
+                    .filter_map(|symbol| symbol.name().ok())
+                    .filter(|raw| raw.contains(prefix))
+                    .filter_map(|raw| {
+                        leaf_of(&demangled_name(raw))
+                            .filter(|leaf| leaf.starts_with(prefix))
+                            .map(str::to_owned)
+                    }),
+            );
+        });
+        leaves.into_iter().collect()
     }
 
     /// The bundle-mount metadata a `waterui_meta_bundle_*` static carries.
@@ -127,7 +132,9 @@ impl ArtifactSymbols {
         for_each_object(&self.data, |file| {
             for symbol in file.symbols() {
                 let Ok(raw) = symbol.name() else { continue };
-                if leaf_of(&demangled_name(raw)) != Some(leaf) {
+                // A leaf is spelled verbatim in its raw name (see
+                // `leaves_with_prefix`); only a candidate is demangled.
+                if !raw.contains(leaf) || leaf_of(&demangled_name(raw)) != Some(leaf) {
                     continue;
                 }
                 let Some(index) = symbol.section_index() else {
@@ -166,7 +173,7 @@ impl ArtifactSymbols {
 impl std::fmt::Debug for ArtifactSymbols {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ArtifactSymbols")
-            .field("symbols", &self.names.len())
+            .field("has_symbols", &self.has_symbols)
             .finish_non_exhaustive()
     }
 }
@@ -234,9 +241,12 @@ mod tests {
             "the fixture build must succeed:\n{}",
             String::from_utf8_lossy(&output.stderr)
         );
-        crate::build::app_library_artifact(&output.stdout, &fixture.join("Cargo.toml"))
-            .expect("the artifact scan parses")
-            .expect("cargo reported a library artifact for the fixture")
+        crate::build::app_library_artifact(
+            &crate::build::compiler_artifacts(&output.stdout).expect("cargo messages parse"),
+            &fixture.join("Cargo.toml"),
+        )
+        .expect("the artifact scan parses")
+        .expect("cargo reported a library artifact for the fixture")
     }
 
     #[test]
@@ -266,10 +276,9 @@ mod tests {
         let symbols = ArtifactSymbols::read(&rlib).expect("wasm rlib should parse");
         let previews = symbols.leaves_with_prefix("waterui_preview_");
         assert_eq!(previews, ["waterui_preview_meta_static_probe"]);
-        assert!(
-            symbols
-                .names()
-                .any(|name| name.ends_with("waterui_meta_test_probe")),
+        assert_eq!(
+            symbols.leaves_with_prefix("waterui_meta_"),
+            ["waterui_meta_test_probe"],
             "the wasm rlib must enumerate the meta static name"
         );
     }

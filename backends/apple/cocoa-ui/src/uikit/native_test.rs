@@ -37,7 +37,7 @@ use objc2::{MainThreadMarker, MainThreadOnly};
 use objc2_foundation::NSRunLoop;
 use objc2_ui_kit::UIWindow;
 
-use super::application::{ApplicationHandlers, WindowScene};
+use super::application::{ApplicationHandlers, MenuBuilder, WindowScene};
 use super::window::{Window, application_is_active};
 use super::{ViewController, window_root};
 use crate::callback::guarded;
@@ -78,6 +78,9 @@ macro_rules! native_test_info_plist {
 thread_local! {
     /// The window scene the harness application connected.
     static SCENE: RefCell<Option<WindowScene>> = const { RefCell::new(None) };
+    /// How many times `UIKit` has built the main menu through the harness
+    /// application's `build_menus` handler.
+    static MAIN_MENU_BUILDS: Cell<u32> = const { Cell::new(0) };
 }
 
 /// Runs the trials `arguments` selects inside a launched `UIApplication`
@@ -121,10 +124,20 @@ pub fn run(arguments: Arguments, trials: impl FnOnce() -> Vec<Trial> + 'static) 
             });
             window
         })
+        .build_menus(|_: &MenuBuilder<'_>| {
+            MAIN_MENU_BUILDS.with(|builds| builds.set(builds.get() + 1));
+        })
         .did_finish_launching(move |_| {
             perform_on_main_run_loop(move || run_trials(&arguments, trials, &status_path));
         }),
     )
+}
+
+/// How many times `UIKit` has built the main menu through the harness
+/// application's `build_menus` handler.
+#[must_use]
+pub fn main_menu_builds() -> u32 {
+    MAIN_MENU_BUILDS.with(Cell::get)
 }
 
 /// A hidden window at `frame` in the harness application's window scene.

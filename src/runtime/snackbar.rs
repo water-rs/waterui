@@ -137,6 +137,10 @@ impl View for CloseIcon {
 
 /// Theme tokens used by the snackbar overlay.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
 pub struct SnackbarTheme {
     /// Container fill color.
     pub container_color: Color,
@@ -287,6 +291,7 @@ impl Default for SnackbarTheme {
 
 /// Position for snackbar display.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SnackbarPosition {
     /// Bottom center of the screen (default, Material Design standard).
     #[default]
@@ -639,7 +644,7 @@ impl SnackbarManager {
             snackbar,
         };
 
-        let active = self.state.borrow().active.clone();
+        let mut active = self.state.borrow().active.clone();
 
         // Evict the oldest live snackbar AT THIS PLACEMENT if its stack is
         // already full, so the new one slides in as the oldest fades out.
@@ -727,7 +732,7 @@ impl SnackbarManager {
     }
 
     fn finish_dismissal(&self, id: u64) {
-        let active = self.state.borrow().active.clone();
+        let mut active = self.state.borrow().active.clone();
         let index = active.snapshot().iter().position(|item| item.id == id);
         if let Some(index) = index {
             let _removed = active.remove(index);

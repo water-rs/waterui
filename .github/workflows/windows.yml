@@ -41,8 +41,8 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
-      # Retires superseded generations of only this job's cache family
-      # (cargo-sources-Windows-*) on its own ref, then saves the replacement.
+      # Saves the replacement, then retires the superseded generations of
+      # only this job's cache family (cargo-sources-Windows-*) on its own ref.
       actions: write
     # Windows is the slowest platform and needs additional headroom for cold
     # hosted-runner builds while remaining a hard gate.
@@ -56,7 +56,7 @@ jobs:
       # this is the only Windows lane that resolves the full feature graph
       # (the `--features all`/`--all-features` passes below pull optional-
       # dependency sources the lint lane's default-features clippy never
-      # downloads), so this job owns `cargo-sources-Windows` (retire+save
+      # downloads), so this job owns `cargo-sources-Windows` (save+retire
       # at the bottom). The Windows target archive no longer competes for
       # the budget (#458). Tests still run in every supported shape below.
       # waterui-cli's `artifact_symbols` tests build a wasm32 rlib
@@ -131,14 +131,15 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
-      # Same ordering as the other source writers: retire superseded
-      # generations of this job's own family on this exact ref first, then
-      # save — so the save itself cannot evict a live, unrelated cache.
-      - name: Retire superseded cache generations
+      # Same order as the other cache writers (#2670): sweep the other
+      # purposes' superseded entries, save the replacement once the
+      # headroom check proves it fits next to everything live, and only
+      # then retire the generation it supersedes — so a restorable
+      # `cargo-sources-Windows` exists at every moment.
+      - name: Sweep superseded cache generations
         if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
         uses: ./.github/actions/retire-cargo-caches
         with:
-          families: cargo-sources-${{ runner.os }}-
           primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}
           sweep: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -148,6 +149,15 @@ jobs:
         with:
           operation: save
           primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+          limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Retire superseded cache generations
+        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/retire-cargo-caches
+        with:
+          families: cargo-sources-${{ runner.os }}-
+          primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   # Every crate's own optional features, in its own job so the test tarball
   # above holds one feature variant of the dependency graph instead of two

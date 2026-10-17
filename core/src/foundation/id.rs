@@ -14,7 +14,6 @@
 
 use core::num::NonZeroI32;
 use core::num::TryFromIntError;
-use core::{hash::Hash, ops::Deref};
 
 use crate::{AnyView, View};
 
@@ -42,125 +41,19 @@ impl TryFrom<i32> for Id {
     }
 }
 
-/// Defines an interface for types that can be uniquely identified.
-///
-/// Implementors of this trait can provide a specific ID type and a way to retrieve
-/// the ID from an instance.
-#[diagnostic::on_unimplemented(
-    message = "`{Self}` has no stable WaterUI identity",
-    label = "expected a type implementing `Identifiable`",
-    note = "Collections such as `ForEach` and `List` diff items by id, so each item needs `Identifiable`: derive it with `#[derive(Identifiable)]` and `#[id]` on the identifier field (`use waterui::Identifiable;` — the derive is not in the prelude), for a type you do not own, wrap the value with `.use_id(..)` / `.self_id()`."
-)]
-pub trait Identifiable {
-    /// The type of ID to use, which must implement Hash and Ord traits.
-    type Id: Hash + Ord + Clone;
-
-    /// Retrieves the unique identifier for this instance.
-    fn id(&self) -> Self::Id;
-}
-
-/// A wrapper that provides identity to a value through a function.
-///
-/// This allows attaching identity behavior to any type by providing a function
-/// to extract an ID from the wrapped value.
-#[derive(Debug)]
-pub struct UseId<T, F> {
-    /// The wrapped value
-    value: T,
-    /// Function to extract an ID from the value
-    f: F,
-}
-
-impl<T, F> UseId<T, F> {
-    /// Creates a new [`UseId`] instance wrapping the given value and function.
-    pub const fn new(value: T, f: F) -> Self {
-        Self { value, f }
-    }
-
-    /// Consumes the wrapper and returns the inner value.
-    pub fn into_inner(self) -> T {
-        self.value
-    }
-}
-
-impl<T, F> Deref for UseId<T, F> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.value
-    }
-}
-
-impl<T, F, Id> Identifiable for UseId<T, F>
-where
-    F: Fn(&T) -> Id,
-    Id: Ord + Hash + Clone,
-{
-    type Id = Id;
-
-    /// Applies the stored function to the wrapped value to generate an ID.
-    fn id(&self) -> Self::Id {
-        (self.f)(&self.value)
-    }
-}
-
-/// A wrapper that uses the value itself as its own identifier.
-///
-/// This is useful for types that are already suitable as identifiers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct SelfId<T>(T);
-
-impl<T> SelfId<T> {
-    /// Creates a new [`SelfId`] instance wrapping the given value.
-    pub const fn new(value: T) -> Self {
-        Self(value)
-    }
-    /// Consumes the wrapper and returns the inner value.
-    pub fn into_inner(self) -> T {
-        self.0
-    }
-}
-
-impl<T: Hash + Ord + Clone> Identifiable for SelfId<T> {
-    type Id = T;
-
-    /// Returns a clone of the wrapped value as the identifier.
-    fn id(&self) -> Self::Id {
-        self.0.clone()
-    }
-}
-
-impl<T> Deref for SelfId<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-/// Extension trait that provides convenient methods for making types identifiable.
-pub trait IdentifiableExt: Sized {
-    /// Wraps the value in a [`UseId`] with the provided identification function.
-    fn use_id<F, Id>(self, f: F) -> UseId<Self, F>
-    where
-        F: Fn(&Self) -> Id,
-        Id: Ord + Hash,
-    {
-        UseId { value: self, f }
-    }
-
-    /// Wraps the value in a `SelfId`, making the value serve as its own identifier.
-    fn self_id(self) -> SelfId<Self> {
-        SelfId(self)
-    }
-}
-
-impl<T> IdentifiableExt for T {}
+/// Item identity, shared with `nami`'s collections: a `List` of
+/// [`Identifiable`] items diffs them by id, and so does every view
+/// collection built on it.
+pub use nami::{Identifiable, IdentifiableExt, SelfId, UseId};
 
 /// A view that includes an identifying tag of type T.
 ///
 /// This allows tracking and identification of views within a UI hierarchy.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a tagged view is exactly its tag plus its content; consumers destructure it"
+)]
 pub struct TaggedView<T, V> {
     /// The tag used to identify this view
     pub tag: T,

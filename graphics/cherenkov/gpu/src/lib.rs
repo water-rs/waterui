@@ -22,6 +22,11 @@
 //! });
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 #[cfg(feature = "bench")]
 pub mod bench;
@@ -162,7 +167,8 @@ pub enum TimestampSupport {
 
 /// The texture format used for intermediate (isolation) render targets.
 ///
-/// The surface itself stays `Rgba16Float` regardless; this only picks the
+/// The surface keeps its own format — `Rgba16Float`, or the `Rgba32Float`
+/// an offscreen target can request — regardless; this only picks the
 /// precision of offscreen layers the compositor reads back in the same
 /// frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -178,6 +184,9 @@ pub enum ScratchFormat {
 /// Configuration for the GPU engine.
 #[derive(Clone, Debug)]
 pub struct GpuConfig {
+    /// Per-engine route override for the internal differential harness.
+    #[cfg(test)]
+    pub(crate) force_gpu_coverage: bool,
     /// Uses an existing host device. Handles must share one creation chain.
     /// Device limits and enabled features govern engine capabilities.
     pub device: Option<interop::SharedDevice>,
@@ -229,6 +238,8 @@ pub struct GpuConfig {
 impl Default for GpuConfig {
     fn default() -> Self {
         Self {
+            #[cfg(test)]
+            force_gpu_coverage: false,
             device: None,
             backends: wgpu::Backends::all(),
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -472,6 +483,9 @@ impl Backend for Gpu {
 
 impl Uploads<Rgba8> for Gpu {}
 impl Uploads<Rgba16F> for Gpu {}
+impl Uploads<cherenkov::Astc4x4> for Gpu {}
+impl Uploads<cherenkov::Bc7> for Gpu {}
+impl Uploads<cherenkov::Etc2Rgba> for Gpu {}
 
 // HDR output (#97): `LinearDisplayP3` texture output and window
 // presentation tone-map to the display's `Display::headroom` in the

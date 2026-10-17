@@ -13,6 +13,7 @@ pub const MCP_RUN_CONFIG_ENV: &str = "WATERUI_HYDROLYSIS_MCP_RUN_CONFIG";
 
 /// One headless MCP session of a generated Hydrolysis binary.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct McpRunConfig {
     /// Viewport width in logical units.
     pub width: u32,
@@ -20,6 +21,19 @@ pub struct McpRunConfig {
     pub height: u32,
     /// Display scale factor applied to the runtime.
     pub scale_factor: f64,
+}
+
+impl McpRunConfig {
+    /// A session of a `width` by `height` logical-unit viewport at
+    /// `scale_factor`.
+    #[must_use]
+    pub const fn new(width: u32, height: u32, scale_factor: f64) -> Self {
+        Self {
+            width,
+            height,
+            scale_factor,
+        }
+    }
 }
 
 #[cfg(test)]

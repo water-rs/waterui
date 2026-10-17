@@ -25,6 +25,7 @@ use crate::{
 
 /// Stable local Swift package location consumed by a native host.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct EmbeddedArtifact {
     /// Add this directory as a local package dependency in the native host.
     pub package_path: PathBuf,
@@ -463,19 +464,19 @@ mod tests {
     }
 
     fn resource_manifest(name: &str) -> waterui_assets_planner::BundleManifest {
-        waterui_assets_planner::BundleManifest {
-            crate_root: PathBuf::from("/fixture"),
-            assets_root: PathBuf::from("/fixture/assets"),
-            mounts: Vec::new(),
-            assets: vec![waterui_assets_planner::PlannedAsset {
-                mount: String::new(),
-                source_path: PathBuf::from("/fixture/assets").join(name),
-                relative_path: PathBuf::from(name),
-                logical_path: PathBuf::from(name),
-                kind: waterui_assets_core::AssetKind::Data,
-                role: waterui_assets_planner::AssetRole::Regular,
-            }],
-        }
+        waterui_assets_planner::BundleManifest::new(
+            PathBuf::from("/fixture"),
+            PathBuf::from("/fixture/assets"),
+            Vec::new(),
+            vec![waterui_assets_planner::PlannedAsset::new(
+                String::new(),
+                PathBuf::from("/fixture/assets").join(name),
+                PathBuf::from(name),
+                PathBuf::from(name),
+                waterui_assets_core::AssetKind::Data,
+                waterui_assets_planner::AssetRole::Regular,
+            )],
+        )
     }
 
     #[test]

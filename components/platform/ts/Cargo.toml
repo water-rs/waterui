@@ -92,10 +92,8 @@ waterui-ts-engine-quickjs.workspace = true
 waterui = { path = "../../..", features = ["ts", "media"] }
 # With `ts` on, a session installs the runtime loaded from the bundle
 # `WATERUI_TS_BUNDLE` names; `tests/hosts.rs` and the `bundle_var_*` targets
-# are what hold that contract, and `waterui-preview` with the same feature is
-# the other host that installs it.
+# are what hold that contract.
 waterui-testing = { path = "../../../testing", features = ["ts"] }
-waterui-preview = { path = "../../devtools/preview/runtime", features = ["ts"] }
 # The style the offscreen test mounts run under — the pointer and geometry
 # tests need a rendered session, and a rendered session needs a `Style`.
 hydrolysis-m3.workspace = true

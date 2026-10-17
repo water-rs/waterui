@@ -145,8 +145,9 @@ const fn is_default_levels(levels: &u32) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "filter", content = "value", rename_all = "kebab-case")]
 pub enum BackdropFilter {
-    /// A separable Gaussian blur (filtrate's `GaussianBlur`): kernel radius
-    /// `⌈3σ⌉`, clamp-to-edge sampling at the capture boundary.
+    /// A separable Gaussian blur (filtrate's `GaussianBlur`) of standard
+    /// deviation `sigma`: the Gaussian integrated over each texel,
+    /// clamp-to-edge sampling at the capture boundary.
     GaussianBlur {
         /// The blur's standard deviation in capture texels.
         sigma: f64,

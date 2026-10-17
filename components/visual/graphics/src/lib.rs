@@ -2,6 +2,8 @@
 
 extern crate alloc;
 
+/// The bridge from the framework's animations to the engine's.
+pub mod animation;
 /// Color types and conversion utilities.
 pub mod color;
 #[cfg(feature = "effects")]

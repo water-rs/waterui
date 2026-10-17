@@ -48,11 +48,39 @@
 //! every value with a different one are a cycle, and a cycle is reported with
 //! the binding's identity, not ridden into a stack overflow.
 //!
+//! # Queued delivery, and why the watch is renewed
+//!
+//! The inbound flag covers only the notifications delivered while the apply
+//! runs. nami does not nest deliveries: a notification raised while the
+//! binding is already delivering one — an apply made by the settle loop from
+//! inside the cell's own watch, or from inside any other watcher of the same
+//! binding — is queued and delivered after the round in progress, long after
+//! the flag is lowered. What the cell needs to know about such a notification
+//! is when it was raised, not what it carries: raised before the push that
+//! follows the apply, it is covered by that push; raised after, it is a change
+//! JavaScript has not seen.
+//!
+//! nami draws exactly that line for watcher registrations: a queued
+//! notification goes only to the watchers that were registered when it was
+//! raised and still are when it runs, because a watcher registered in between
+//! has already read the state it describes. So the end of an apply retires
+//! the cell's watch and registers a fresh one, before the binding is read back
+//! for the push. What was raised up to then — the apply's own notification,
+//! and anything a watcher raised in answer while it was delivered inline — is
+//! addressed to the retired registration and never reaches the cell; a change
+//! raised afterwards, including a watcher's answer to the queued notification,
+//! reaches the fresh one and is pushed. Only the outermost of nested applies
+//! renews the watch, since an inner one runs inside the outer one's scope and
+//! the outer one's push covers it.
+//!
 //! Classifying each notification against a remembered pushed value instead,
 //! which this branch did at first, is wrong twice over: a value pushed once
 //! can arrive again later in the same settle and be dropped as an echo, and a
 //! payload carrying a signal or a callback can never be recognised at all,
 //! because a handle crossing back out of JavaScript is a fresh handle.
+//! Counting the queued notifications an apply raised fails the same way the
+//! arithmetic above does; the registration is the one record of "already
+//! read" that nami itself keeps.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -94,7 +122,9 @@ impl Flow {
 /// What each side is currently doing, so neither answers the other.
 #[derive(Debug, Default)]
 struct Echo {
-    /// Raised while an inbound value is being applied to the binding.
+    /// Raised while an inbound value is being applied to the binding. It
+    /// suppresses the notifications delivered during the apply; the ones
+    /// queued behind a delivery in progress are left to the retired watch.
     inbound: Cell<bool>,
     /// Raised while a Rust value is being written into JavaScript, for as long
     /// as that write settles.
@@ -151,49 +181,114 @@ fn push<T: IntoJs>(bridge: &Bridge, source: &JsValue, echo: &Echo, value: T) -> 
     }
 }
 
-/// Applies one inbound value to the binding, without the write bouncing back
-/// out while it is being applied.
-fn apply<T: Clone + 'static>(echo: &Echo, binding: &Binding<T>, value: T) {
-    let _inbound = Raised::new(&echo.inbound);
-    binding.set(value);
+/// What a cell's subscription and its watch share: the binding, the
+/// JavaScript value it is bound to, and the registration that pushes Rust
+/// changes out.
+struct Link<T: 'static> {
+    binding: Binding<T>,
+    source: JsValue,
+    bridge: WeakBridge,
+    echo: Echo,
+    /// The current watch registration, `None` when the flow does not push.
+    ///
+    /// Replaced after every inbound apply, so it always dates from the last
+    /// time the cell read the binding to push it (see the module docs).
+    watch: RefCell<Option<BoxWatcherGuard>>,
 }
 
-/// Pushes the binding's current value, and keeps the two sides talking until
-/// they hold the same one.
-fn settle<T: FromJs + IntoJs + Clone + 'static>(
-    bridge: &Bridge,
-    source: &JsValue,
-    echo: &Echo,
-    binding: &Binding<T>,
-) {
-    for _ in 0..SETTLE_ROUNDS {
-        match push(bridge, source, echo, binding.snapshot()) {
-            // Nothing more to do: either the value stands, or the write
-            // failed and was reported, and JavaScript keeps what it had.
-            None | Some(Settled::Stood) => return,
-            Some(Settled::Changed) => {}
-        }
-        // An effect rewrote it while the write settled, so what JavaScript
-        // holds now is the value both sides must agree on.
-        let settled = match bridge
-            .read_value(source)
-            .and_then(|value| T::from_js(&value, bridge))
-        {
-            Ok(value) => value,
-            Err(error) => {
-                tracing::error!(%error, "reading back the value a JavaScript write settled at failed");
+impl<T: FromJs + IntoJs + Clone + 'static> Link<T> {
+    /// Registers a watch that sees only the notifications raised from now on.
+    ///
+    /// The watch holds the link weakly, because the link owns the guard.
+    fn watch_from_now(self: &Rc<Self>) -> BoxWatcherGuard {
+        let link = Rc::downgrade(self);
+        self.binding.watch(move |_: Context<T>| {
+            // A round snapshots its watchers before it starts, so a cell
+            // dropped by a watcher earlier in the same round is still called
+            // once; there is nothing left to push into.
+            let Some(link) = link.upgrade() else {
                 return;
-            }
-        };
-        apply(echo, binding, settled);
+            };
+            link.changed();
+        })
     }
-    tracing::error!(
-        rounds = SETTLE_ROUNDS,
-        binding = ?binding.identity(),
-        source = kind_of(source),
-        "a bridged value never settled: each side keeps answering the other's value with a \
-         different one"
-    );
+
+    /// The watch: a Rust change JavaScript has not seen yet.
+    fn changed(self: &Rc<Self>) {
+        if self.echo.inbound.get() {
+            // The apply that is running pushes what the binding holds once it
+            // is over, so every change delivered during it — its own, and any
+            // a watcher makes in answer — is covered by that one push.
+            return;
+        }
+        let Some(bridge) = self.bridge.upgrade() else {
+            tracing::debug!("a bridged value changed after its TypeScript runtime was dropped");
+            return;
+        };
+        self.settle(&bridge);
+    }
+
+    /// Applies one inbound value to the binding, so that no notification the
+    /// write raises — delivered during it or queued behind a delivery in
+    /// progress — bounces back out.
+    fn apply(self: &Rc<Self>, value: T) {
+        let outermost = !self.echo.inbound.get();
+        {
+            let _inbound = Raised::new(&self.echo.inbound);
+            self.binding.set(value);
+        }
+        if outermost {
+            self.rewatch();
+        }
+    }
+
+    /// Retires the watch registration and replaces it with one that starts
+    /// now, before the binding is read back for the push that covers the
+    /// apply.
+    fn rewatch(self: &Rc<Self>) {
+        if self.watch.borrow().is_none() {
+            // An inbound-only cell has no watch to renew.
+            return;
+        }
+        // Register first, so the binding is never left without the cell's
+        // watcher; the retired guard is dropped after the slot's borrow ends.
+        let fresh = self.watch_from_now();
+        let retired = self.watch.replace(Some(fresh));
+        drop(retired);
+    }
+
+    /// Pushes the binding's current value, and keeps the two sides talking
+    /// until they hold the same one.
+    fn settle(self: &Rc<Self>, bridge: &Bridge) {
+        for _ in 0..SETTLE_ROUNDS {
+            match push(bridge, &self.source, &self.echo, self.binding.snapshot()) {
+                // Nothing more to do: either the value stands, or the write
+                // failed and was reported, and JavaScript keeps what it had.
+                None | Some(Settled::Stood) => return,
+                Some(Settled::Changed) => {}
+            }
+            // An effect rewrote it while the write settled, so what JavaScript
+            // holds now is the value both sides must agree on.
+            let settled = match bridge
+                .read_value(&self.source)
+                .and_then(|value| T::from_js(&value, bridge))
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(%error, "reading back the value a JavaScript write settled at failed");
+                    return;
+                }
+            };
+            self.apply(settled);
+        }
+        tracing::error!(
+            rounds = SETTLE_ROUNDS,
+            binding = ?self.binding.identity(),
+            source = kind_of(&self.source),
+            "a bridged value never settled: each side keeps answering the other's value with a \
+             different one"
+        );
+    }
 }
 
 /// One JavaScript reactive value bound to one `Binding<T>`.
@@ -202,14 +297,12 @@ fn settle<T: FromJs + IntoJs + Clone + 'static>(
 /// watch guard and the registry entry, so the lifetime of the bridged value is
 /// the lifetime of whatever holds the cell.
 pub struct ReactiveCell<T: 'static> {
-    binding: Binding<T>,
+    link: Rc<Link<T>>,
     bridge: WeakBridge,
     /// The dispose the subscription handed back, called exactly once.
     dispose: RefCell<Option<JsFunction>>,
     /// The registry entry JavaScript notifies through.
     _callback: CallbackHandle,
-    /// The nami watch that pushes Rust changes out.
-    _watch: Option<BoxWatcherGuard>,
 }
 
 impl<T: FromJs + IntoJs + Clone + 'static> ReactiveCell<T> {
@@ -226,76 +319,60 @@ impl<T: FromJs + IntoJs + Clone + 'static> ReactiveCell<T> {
         binding: Binding<T>,
         flow: Flow,
     ) -> Result<Rc<Self>, JsError> {
-        let echo = Rc::new(Echo::default());
+        let link = Rc::new(Link {
+            binding,
+            source,
+            bridge: bridge.downgrade(),
+            echo: Echo::default(),
+            watch: RefCell::new(None),
+        });
 
         let callback = bridge.register_callback({
-            let binding = binding.clone();
-            let echo = Rc::clone(&echo);
-            let source = source.clone();
-            let weak = bridge.downgrade();
+            let link = Rc::clone(&link);
             let two_way = flow.watches();
             move |args: &[JsValue]| {
-                if echo.outbound.get() {
+                if link.echo.outbound.get() {
                     // Our own write, settling. The value it comes to rest at
                     // is read once, after the write returns.
                     return Ok(JsValue::Undefined);
                 }
                 let value = args.first().unwrap_or(&JsValue::Undefined);
-                let bridge = weak.upgrade().ok_or_else(|| {
+                let bridge = link.bridge.upgrade().ok_or_else(|| {
                     JsError::new(
                         "Error",
                         "the TypeScript bridge was dropped while JavaScript was calling into it",
                     )
                 })?;
                 let converted = T::from_js(value, &bridge)?;
-                apply(&echo, &binding, converted);
+                link.apply(converted);
                 if two_way {
                     // What the binding holds now is the answer — the value
                     // may have been filtered, normalized, or replaced by
                     // another watcher — and JavaScript has not seen it. The
                     // push is free when it is the value already there.
-                    settle(&bridge, &source, &echo, &binding);
+                    link.settle(&bridge);
                 }
                 Ok(JsValue::Undefined)
             }
         })?;
-        let dispose = bridge.subscribe(&source, callback.id())?;
+        let dispose = bridge.subscribe(&link.source, callback.id())?;
 
-        let watch = flow.watches().then(|| {
-            let weak = bridge.downgrade();
-            let echo = Rc::clone(&echo);
-            let binding = binding.clone();
-            let source = source;
-            binding.clone().watch(move |_: Context<T>| {
-                if echo.inbound.get() {
-                    // The apply that is running pushes what the binding holds
-                    // once it is over, so every change made during it — its
-                    // own, and any a watcher makes in answer — is covered by
-                    // that one push.
-                    return;
-                }
-                let Some(bridge) = weak.upgrade() else {
-                    tracing::debug!(
-                        "a bridged value changed after its TypeScript runtime was dropped"
-                    );
-                    return;
-                };
-                settle(&bridge, &source, &echo, &binding);
-            })
-        });
+        if flow.watches() {
+            let watch = link.watch_from_now();
+            *link.watch.borrow_mut() = Some(watch);
+        }
 
         Ok(Rc::new(Self {
-            binding,
+            link,
             bridge: bridge.downgrade(),
             dispose: RefCell::new(dispose),
             _callback: callback,
-            _watch: watch,
         }))
     }
 
     /// The nami side of the cell.
-    pub(crate) const fn binding(&self) -> &Binding<T> {
-        &self.binding
+    pub(crate) fn binding(&self) -> &Binding<T> {
+        &self.link.binding
     }
 }
 

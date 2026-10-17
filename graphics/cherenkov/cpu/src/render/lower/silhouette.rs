@@ -1,5 +1,5 @@
 //! Coverage convolution for silhouettes without an analytic shadow form.
-use super::{FLATTEN_TOL, Item, Lowering, coverage_mask, flatten_edges};
+use super::{FLATTEN_TOL, Item, Lowering, coverage_mask, flatten_edges, resolve_edges};
 use crate::names;
 use crate::render::{glyph::GlyphMask, paint::PaintData};
 use cherenkov::lowering::shadow::{capture_padding, gaussian_taps, spread_taps};
@@ -64,10 +64,12 @@ impl Lowering<'_, '_> {
             * self.transform
             * Affine::translate(shadow.offset);
         let edges = flatten_edges(placement * path, FLATTEN_TOL);
+        let (edges, rule) = resolve_edges(edges, rule);
         let mut coverage = coverage_mask(&edges, rule, width, height);
         if shadow.spread != 0.0 {
             let taps = spread_taps([ma, mb, mc, md], shadow.spread, f64::from(i32::MAX))?;
             coverage = convolve(
+                self.level,
                 &coverage,
                 width,
                 height,
@@ -78,6 +80,7 @@ impl Lowering<'_, '_> {
         if shadow.sigma > 0.0 {
             for axis in [[ma, mb], [mc, md]] {
                 coverage = convolve(
+                    self.level,
                     &coverage,
                     width,
                     height,
@@ -116,6 +119,11 @@ impl Lowering<'_, '_> {
     clippy::cast_precision_loss,
     reason = "sampling finite capture coordinates with explicit bounds checks"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn sample(src: &[f32], size: (usize, usize), x: f32, y: f32) -> f32 {
     let (left, top) = (x.floor(), y.floor());
     let (fx, fy) = (x - left, y - top);
@@ -132,26 +140,35 @@ fn sample(src: &[f32], size: (usize, usize), x: f32, y: f32) -> f32 {
 }
 
 #[expect(clippy::cast_precision_loss, reason = "capture coordinates fit f32")]
-fn convolve(src: &[f32], width: usize, height: usize, taps: &[[f32; 3]], mode: u8) -> Vec<f32> {
+fn convolve(
+    level: fearless_simd::Level,
+    src: &[f32],
+    width: usize,
+    height: usize,
+    taps: &[[f32; 3]],
+    mode: u8,
+) -> Vec<f32> {
     use rayon::prelude::*;
     let mut result = vec![0.0; src.len()];
     result
         .par_chunks_mut(width)
         .enumerate()
         .for_each(|(y, row)| {
-            for (x, out) in row.iter_mut().enumerate() {
-                if mode == 2 {
-                    *out = 1.0;
+            fearless_simd::dispatch!(level, _simd => {
+                for (x, out) in row.iter_mut().enumerate() {
+                    if mode == 2 {
+                        *out = 1.0;
+                    }
+                    for &[dx, dy, weight] in taps {
+                        let value = sample(src, (width, height), x as f32 + dx, y as f32 + dy);
+                        *out = match mode {
+                            0 => value.mul_add(weight, *out),
+                            1 => out.max(value),
+                            _ => out.min(value),
+                        };
+                    }
                 }
-                for &[dx, dy, weight] in taps {
-                    let value = sample(src, (width, height), x as f32 + dx, y as f32 + dy);
-                    *out = match mode {
-                        0 => value.mul_add(weight, *out),
-                        1 => out.max(value),
-                        _ => out.min(value),
-                    };
-                }
-            }
+            });
         });
     result
 }

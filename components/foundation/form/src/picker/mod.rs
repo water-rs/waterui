@@ -12,7 +12,7 @@ use nami::signal::IntoComputed;
 use nami::{Binding, Computed};
 use waterui_controls::label::Label;
 use waterui_controls::{IntoLabel, impl_label_style_methods};
-use waterui_core::{Environment, configurable};
+use waterui_core::{Environment, configurable, layout::StretchAxis};
 
 use waterui_core::id::{Id, Mapping, TaggedView};
 use waterui_locale::locale_binding;
@@ -77,22 +77,30 @@ configurable!(
     ///
     /// # Layout Behavior
     ///
-    /// Picker sizes itself to fit its content and never stretches to fill extra space.
-    /// In a stack, it takes only the space it needs.
+    /// A segmented picker takes the width it is offered: it answers the
+    /// proposed width and its intrinsic height, dividing the width into equal
+    /// segments, and answers its intrinsic width when the width is unbounded.
+    /// Every other style (automatic, menu, radio) answers the platform
+    /// control's intrinsic size and never stretches to fill extra space
+    /// (`docs/layout-spec.md` §6).
     //
     // ═══════════════════════════════════════════════════════════════════════════
     // INTERNAL: Layout Contract for Backend Implementers
     // ═══════════════════════════════════════════════════════════════════════════
     //
-
-    // Size: Determined by content and picker style (platform-determined)
-    //
-    // Note: Segmented picker style may use `Horizontal` stretch axis.
+    // - Segmented: stretchAxis `.horizontal`; sizeThatFits answers the
+    //   proposed width (never below the row's intrinsic width) and the
+    //   intrinsic height; the row is divided into equal segments.
+    // - Every other style: stretchAxis `.none`; sizeThatFits answers the
+    //   control's intrinsic size.
+    // - Read the axis from `NativeView::stretch_axis` on the payload; do not
+    //   restate the rule in the backend.
     //
     // ═══════════════════════════════════════════════════════════════════════════
     //
     Picker,
     PickerConfig,
+    |config| config.layout_stretch_axis(),
     resolve | config,
     env | config.resolve(env)
 );
@@ -101,6 +109,15 @@ configurable!(
 pub type PickerItem<T> = TaggedView<T, Text>;
 
 impl PickerConfig {
+    /// `docs/layout-spec.md` §6: a picker is `Horizontal` in the segmented
+    /// style and `None` in every other.
+    const fn layout_stretch_axis(&self) -> StretchAxis {
+        match self.style {
+            PickerStyle::Segmented => StretchAxis::Horizontal,
+            _ => StretchAxis::None,
+        }
+    }
+
     #[must_use]
     fn resolve(mut self, env: &Environment) -> Self {
         self.label = self.label.resolve(env);
@@ -187,4 +204,42 @@ pub fn picker<T: Ord + Clone + 'static>(
     selection: &Binding<T>,
 ) -> Picker {
     Picker::new(label, items, selection)
+}
+
+#[cfg(test)]
+mod tests {
+    use nami::Binding;
+    use waterui_core::layout::StretchAxis;
+    use waterui_core::{NativeView, View};
+    use waterui_text::Text;
+
+    use super::{Picker, PickerStyle, TaggedView};
+
+    /// `docs/layout-spec.md` §3: only the segmented style is `Horizontal`,
+    /// both as the static answer a container reads before `body` and as the
+    /// payload a backend receives.
+    #[test]
+    fn only_the_segmented_style_stretches() {
+        let selection = Binding::i32(0);
+        let cases = [
+            (PickerStyle::Automatic, StretchAxis::None),
+            (PickerStyle::Menu, StretchAxis::None),
+            (PickerStyle::Radio, StretchAxis::None),
+            (PickerStyle::Segmented, StretchAxis::Horizontal),
+        ];
+        for (style, expected) in cases {
+            let picker = Picker::new(
+                "Mode",
+                alloc::vec![TaggedView::new(0, Text::new("One"))],
+                &selection,
+            )
+            .style(style);
+            assert_eq!(View::stretch_axis(&picker), expected, "{style:?} (static)");
+            assert_eq!(
+                NativeView::stretch_axis(&picker.0),
+                expected,
+                "{style:?} (payload)"
+            );
+        }
+    }
 }

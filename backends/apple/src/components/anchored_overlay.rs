@@ -352,6 +352,9 @@ fn present(state: &Rc<OverlayState>) {
 /// the way in and out; the panel takes a screen-space frame.
 #[cfg(target_os = "macos")]
 fn reposition(state: &Rc<OverlayState>) {
+    if state.presentation.borrow().is_none() {
+        return;
+    }
     let Some(parent) = window_of(&state.host) else {
         return;
     };

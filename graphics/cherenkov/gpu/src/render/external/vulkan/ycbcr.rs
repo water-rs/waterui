@@ -3,9 +3,12 @@
 //!
 //! Conversion/layout objects are cached on the shared context by the
 //! complete conversion key — external-format identity (or concrete
-//! format), model, range, component mapping, chroma locations and
-//! filtering — never just by extent. The cache is bounded; a full cache is
-//! an `Unsupported` error rather than an unbounded native allocation.
+//! format), model, range, component mapping and chroma locations — never
+//! just by extent. Chroma is always reconstructed bilinearly at the sited
+//! position (`chromaFilter` `LINEAR`), the decode contract the integer-plane
+//! path and `cherenkov_oracle::yuv` share (#1947). The cache is bounded; a
+//! full cache is an `Unsupported` error rather than an unbounded native
+//! allocation.
 
 use std::sync::{Arc, Weak};
 
@@ -30,7 +33,6 @@ pub struct ConvKey {
     pub mapping: [vk::ComponentSwizzle; 4],
     pub chroma_x: vk::ChromaLocation,
     pub chroma_y: vk::ChromaLocation,
-    pub filter: vk::Filter,
 }
 
 /// A `VkSamplerYcbcrConversion`, the immutable `VkSampler` carrying it, and
@@ -75,7 +77,7 @@ impl Conv {
             })
             .x_chroma_offset(key.chroma_x)
             .y_chroma_offset(key.chroma_y)
-            .chroma_filter(key.filter);
+            .chroma_filter(vk::Filter::LINEAR);
         if key.format == vk::Format::UNDEFINED {
             external = vk::ExternalFormatANDROID::default().external_format(key.external_format);
             info = info.push_next(&mut external);
@@ -87,13 +89,17 @@ impl Conv {
             .map_err(NativeError::from)?;
 
         let mut conv_info = vk::SamplerYcbcrConversionInfo::default().conversion(conversion);
+        // The sampler's filters equal `chromaFilter`, which a format
+        // without `SEPARATE_RECONSTRUCTION_FILTER` requires. Luma is still
+        // the nearest texel: `fs_external_format` samples at the luma texel
+        // centre, where a linear filter weighs that texel alone.
         // SAFETY: `vk_ctx.device` is live and the create info chains
         // `conv_info`, which points at the conversion created above.
         let sampler = unsafe {
             vk_ctx.device.create_sampler(
                 &vk::SamplerCreateInfo::default()
-                    .mag_filter(key.filter)
-                    .min_filter(key.filter)
+                    .mag_filter(vk::Filter::LINEAR)
+                    .min_filter(vk::Filter::LINEAR)
                     .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
                     .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
                     .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
