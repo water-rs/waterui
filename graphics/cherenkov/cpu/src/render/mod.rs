@@ -12,6 +12,9 @@ mod geometry;
 mod glyph;
 mod image;
 mod mesh;
+#[cfg(any(test, feature = "testing"))]
+pub use image::CpuImage;
+#[cfg(not(any(test, feature = "testing")))]
 use image::CpuImage;
 use std::sync::Arc;
 mod lower;
@@ -20,6 +23,17 @@ mod prepared;
 pub mod present;
 mod projective;
 mod raster;
+
+// The `testing` feature's surface: the span kernels and the types their
+// signatures name. `render` is a private module, so nothing is reachable
+// without `crate::testing`'s re-export, which does not exist without the
+// feature.
+#[cfg(any(test, feature = "testing"))]
+pub use lower::{ClipMask, ClipRef};
+#[cfg(any(test, feature = "testing"))]
+pub use paint::{PaintData, paint_data};
+#[cfg(any(test, feature = "testing"))]
+pub use raster::{Accum, ClipRun, Edge, composite_span};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
