@@ -185,8 +185,8 @@ pub fn backdrop_effect_text(user: &str, union: bool) -> Cow<'static, str> {
 }
 
 /// Parses and validates WGSL `text` on the caller thread, with the
-/// capabilities of a core WebGPU device. Errors carry naga's diagnostic
-/// against the text.
+/// engine's capability floor. Errors carry naga's diagnostic against the
+/// text.
 ///
 /// # Errors
 /// [`ResourceError::Shader`] when the text fails to parse or validate.
@@ -196,12 +196,14 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
     // The engine's floor, not the device's capabilities: a user shader has
     // to run on every device the engine supports, so a construct that only
     // a host-supplied `SharedDevice` with extra features could compile is
-    // rejected here, identically on every device. What depends on the
+    // rejected here, identically on every device. The floor is the one
+    // `build.rs` validates the engine modules with, which the composed
+    // module (`quantizeToF16` and all) needs. What depends on the
     // actual device (limits, the driver's compiler) is left to pipeline
     // creation on the render thread, which reports it as a rejection.
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::default(),
+        super::capabilities::ENGINE_CAPABILITIES,
     )
     .validate(&module)
     .map_err(|error| ResourceError::Shader(error.emit_to_string(text)))?;
