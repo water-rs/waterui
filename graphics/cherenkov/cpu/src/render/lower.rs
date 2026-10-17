@@ -2313,7 +2313,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
     /// device space. `carried` replaces flattening and resolving.
     fn fill(&mut self, shape: &ShapeData, paint: &PaintData, carried: Option<Resolved>) {
         let transform = self.transform;
-        let frame = Frame::new(shape, transform);
+        let frame = Frame::new(shape, None, transform);
         let resolved = carried.or_else(|| {
             self.geometry.resolve(shape, None, transform, || {
                 let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
@@ -2338,7 +2338,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         carried: Option<Resolved>,
     ) {
         let transform = self.transform;
-        let frame = Frame::new(shape, transform);
+        let frame = Frame::new(shape, Some(stroke), transform);
         let resolved = carried.or_else(|| {
             self.geometry.resolve(shape, Some(stroke), transform, || {
                 let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);

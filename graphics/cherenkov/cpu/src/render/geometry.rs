@@ -171,64 +171,80 @@ impl GeometryCache {
     }
 }
 
-/// A draw's translation-normalized frame: its shape moved so that the
-/// shape's anchor sits at the origin, then mapped by the linear part of the
-/// device transform. Fill and stroke geometry is outlined, flattened and
-/// winding-resolved in it, so the coordinates the stroker and the sweep see
-/// — and with them the sweep's absolute epsilon and its coordinate-scaled
-/// error bound — depend on the shape and the linear part only, never on
-/// where the shape sits. Device space is the frame moved by
-/// [`Frame::offset`], the anchor's device position, and a placement that
-/// differs only by a translation reuses the geometry exactly.
+/// A draw's translation-normalized frame. Fill and stroke geometry is
+/// outlined, flattened and winding-resolved in it, so the coordinates the
+/// stroker and the sweep see — and with them the sweep's absolute epsilon
+/// and its coordinate-scaled error bound — depend on the shape, the stroke
+/// and the linear part of the device transform only, never on where the
+/// shape sits. Device space is the frame moved by [`Frame::offset`], and a
+/// placement that differs only by a translation reuses the geometry
+/// exactly.
+///
+/// The shape is first moved so that the corner of its box — its bounds,
+/// grown by the stroke's reach — sits at the origin, the space strokes are
+/// outlined in. The linear part then maps it, and an integral shift puts
+/// the mapped box at `1` or more on both axes: like geometry on a surface,
+/// every frame coordinate is positive and away from zero, where the
+/// pre-sweep disjointness proof requires ordinates of at least `2^-6`.
 pub struct Frame {
-    anchor: Vec2,
-    linear: Affine,
-    /// The device position of the frame's origin: the anchor under the
-    /// device transform.
+    corner: Vec2,
+    map: Affine,
+    /// The device position of the frame's origin.
     pub offset: [f32; 2],
 }
 
 impl Frame {
-    /// The frame of `shape` drawn under `transform`.
+    /// The frame of `shape`, stroked by `stroke` when set, drawn under
+    /// `transform`.
     #[expect(clippy::cast_possible_truncation, reason = "geometry is f32")]
-    pub fn new(shape: &ShapeData, transform: Affine) -> Self {
-        let anchor = anchor(shape);
+    pub fn new(shape: &ShapeData, stroke: Option<&kurbo::Stroke>, transform: Affine) -> Self {
+        let reach = stroke.map_or(0.0, stroke_reach);
+        let bounds = shape.bounds().inflate(reach, reach);
+        let corner = bounds.origin().to_vec2();
         let [a, b, c, d, _, _] = transform.as_coeffs();
-        let at = transform * anchor;
+        let linear = Affine::new([a, b, c, d, 0.0, 0.0]);
+        let size = bounds.size();
+        let low = [
+            (size.width, 0.0),
+            (0.0, size.height),
+            (size.width, size.height),
+        ]
+        .into_iter()
+        .map(|p| linear * Point::from(p))
+        .fold(Point::ORIGIN, |m, p| Point::new(m.x.min(p.x), m.y.min(p.y)));
+        let shift = Vec2::new(1.0 - low.x.floor(), 1.0 - low.y.floor());
+        let at = transform * corner.to_point() - shift;
         Self {
-            anchor: anchor.to_vec2(),
-            linear: Affine::new([a, b, c, d, 0.0, 0.0]),
+            corner,
+            map: Affine::translate(shift) * linear,
             offset: [at.x as f32, at.y as f32],
         }
     }
 
-    /// `path`, in shape space, moved so the anchor sits at the origin: the
-    /// space strokes are outlined in.
+    /// `path`, in shape space, moved so the box's corner sits at the
+    /// origin: the space strokes are outlined in.
     pub fn anchored(&self, mut path: BezPath) -> BezPath {
-        path.apply_affine(Affine::translate(-self.anchor));
+        path.apply_affine(Affine::translate(-self.corner));
         path
     }
 
-    /// An anchored `path` mapped into the frame by the linear part.
+    /// An anchored `path` mapped into the frame.
     pub fn map(&self, path: BezPath) -> BezPath {
-        self.linear * path
+        self.map * path
     }
 }
 
-/// A point of `shape` that moves with it: the anchor of its frame.
-fn anchor(shape: &ShapeData) -> Point {
-    match shape {
-        ShapeData::Rect(r) => r.origin(),
-        ShapeData::RoundedRect(r) => r.rect().origin(),
-        ShapeData::Continuous(c) => c.rect.origin(),
-        ShapeData::Circle(c) => c.center,
-        ShapeData::Ellipse(e) => e.center(),
-        ShapeData::Line(l) => l.p0,
-        ShapeData::Path { elements, .. } => elements
-            .iter()
-            .find_map(|el| element_parts(el).1.first().copied())
-            .unwrap_or(Point::ORIGIN),
+/// How far `stroke`'s outline reaches from its centreline: half the width,
+/// times the miter limit for miter joins and `√2` for square caps.
+fn stroke_reach(stroke: &kurbo::Stroke) -> f64 {
+    let mut factor: f64 = 1.0;
+    if stroke.join == kurbo::Join::Miter {
+        factor = factor.max(stroke.miter_limit);
     }
+    if [stroke.start_cap, stroke.end_cap].contains(&kurbo::Cap::Square) {
+        factor = factor.max(std::f64::consts::SQRT_2);
+    }
+    stroke.width * 0.5 * factor
 }
 
 /// Whether `a` and `b` have the same linear part, bit for bit: the frame
