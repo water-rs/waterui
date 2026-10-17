@@ -5495,6 +5495,20 @@ mod tests {
     /// The project resolves the framework from a local checkout — the pinned
     /// revision by default, or `WATERUI_PATH` to exercise a working tree — so
     /// the test builds the same `waterui` commit the crate's git deps pin.
+    /// Turns on the facade's `assets` feature on the `waterui` entry of
+    /// `dependencies`, when that table has one.
+    fn opt_in_assets(dependencies: &mut toml_edit::Item) {
+        let Some(waterui) = dependencies
+            .as_table_like_mut()
+            .and_then(|table| table.get_mut("waterui"))
+        else {
+            return;
+        };
+        let mut features = toml_edit::Array::new();
+        features.push("assets");
+        waterui["features"] = toml_edit::value(features);
+    }
+
     #[test]
     #[ignore = "builds a release app against the enclosing workspace"]
     fn release_build_stages_include_bundle_mounts() {
@@ -5545,17 +5559,6 @@ mod tests {
                 .expect("read Cargo.toml")
                 .parse::<toml_edit::DocumentMut>()
                 .expect("the generated Cargo.toml parses");
-            fn opt_in_assets(dependencies: &mut toml_edit::Item) {
-                let Some(waterui) = dependencies
-                    .as_table_like_mut()
-                    .and_then(|table| table.get_mut("waterui"))
-                else {
-                    return;
-                };
-                let mut features = toml_edit::Array::new();
-                features.push("assets");
-                waterui["features"] = toml_edit::value(features);
-            }
             opt_in_assets(&mut manifest["dependencies"]);
             if let Some(target) = manifest["target"].as_table_mut() {
                 for (_, section) in target.iter_mut() {
