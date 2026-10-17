@@ -1,0 +1,11 @@
+[package]
+name = "waterui-dylib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "waterui_dylib"
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+waterui-dylib-middle = { path = "middle" }

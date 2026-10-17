@@ -79,8 +79,10 @@ fn run(command: &mut Command, what: &str) -> Output {
     output
 }
 
-/// The executable Cargo reported building for `app`'s `--bin` unit.
-fn built_executable(host: &Host, app_dir: &Path) -> PathBuf {
+/// The executable Cargo reported building for `app`'s `--bin` unit, plus
+/// every `dylib` artifact the same invocation reported — the runtime image
+/// set `BuiltTarget::shared_runtime_libraries` carries.
+fn built_executable(host: &Host, app_dir: &Path) -> (PathBuf, Vec<PathBuf>) {
     let mut child = host
         .std_command("cargo")
         .args(["build", "--message-format=json"])
@@ -90,35 +92,63 @@ fn built_executable(host: &Host, app_dir: &Path) -> PathBuf {
         .stderr(Stdio::inherit())
         .spawn()
         .expect("spawn cargo build");
-    let mut stdout = String::new();
+    let mut stdout = Vec::new();
     child
         .stdout
         .take()
         .expect("piped stdout")
-        .read_to_string(&mut stdout)
+        .read_to_end(&mut stdout)
         .expect("read cargo messages");
     let status = child.wait().expect("wait on cargo build");
     assert!(status.success(), "fixture `cargo build` failed: {status}");
+    built_artifacts(&stdout)
+}
 
-    for line in stdout.lines() {
-        let Ok(message) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if message["reason"] != "compiler-artifact" {
-            continue;
-        }
-        let kinds = message["target"]["kind"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        if !kinds.iter().any(|kind| kind == "bin") {
-            continue;
-        }
-        if let Some(executable) = message["executable"].as_str() {
-            return PathBuf::from(executable);
+/// The binary artifact and the dylib file set a captured Cargo
+/// `--message-format=json` stream reports — typed
+/// [`cargo_metadata::Message`] parsing, so a line that fails the decode
+/// surfaces as [`cargo_metadata::Message::TextLine`] and is a hard error,
+/// never a silently skipped field.
+fn built_artifacts(stdout: &[u8]) -> (PathBuf, Vec<PathBuf>) {
+    let mut executable = None;
+    let mut dylibs = Vec::new();
+    for message in cargo_metadata::Message::parse_stream(stdout) {
+        match message.expect("cargo message parses") {
+            cargo_metadata::Message::CompilerArtifact(artifact) => {
+                if artifact
+                    .target
+                    .crate_types
+                    .contains(&cargo_metadata::CrateType::DyLib)
+                {
+                    for filename in &artifact.filenames {
+                        let path = filename.as_std_path();
+                        if matches!(
+                            path.extension().and_then(|extension| extension.to_str()),
+                            Some("so" | "dylib" | "dll")
+                        ) {
+                            dylibs.push(path.to_path_buf());
+                        }
+                    }
+                }
+                if artifact
+                    .target
+                    .kind
+                    .contains(&cargo_metadata::TargetKind::Bin)
+                    && let Some(reported) = &artifact.executable
+                {
+                    executable = Some(reported.as_std_path().to_path_buf());
+                }
+            }
+            cargo_metadata::Message::TextLine(text) => {
+                panic!("unexpected non-JSON output from `cargo build`: {text}");
+            }
+            _ => {}
         }
     }
-    panic!("cargo reported no binary artifact for the fixture")
+    (
+        executable.expect("cargo reported no binary artifact for the fixture"),
+        dylibs,
+    )
 }
 
 /// Whether `name` — a recorded dynamic dependency — is supplied by the
@@ -234,19 +264,57 @@ fn shared_runtime_name(triple: &Triple) -> String {
     }
 }
 
-/// Vendor the fixture `waterui-dylib` crate into a git repository under
-/// `root` — so Cargo hashes the source into every `deps/` file name — and
-/// return its `file://` URL.
+/// The vendored layered-dylib fixture chain: `waterui-dylib` (top) ->
+/// `waterui-dylib-middle` -> `waterui-dylib-foundation`, each a real
+/// `[dylib, rlib]` crate, mirroring the layers the real crate splits into
+/// (water-rs/waterui#1615). Static manifests and sources live under
+/// `tests/fixtures/dylib-chain/`.
+mod chain {
+    pub const TOP_MANIFEST: &str = include_str!("fixtures/dylib-chain/top/Cargo.toml");
+    pub const TOP_LIB: &str = include_str!("fixtures/dylib-chain/top/lib.rs");
+    pub const MIDDLE_MANIFEST: &str = include_str!("fixtures/dylib-chain/middle/Cargo.toml");
+    pub const MIDDLE_LIB: &str = include_str!("fixtures/dylib-chain/middle/lib.rs");
+    pub const FOUNDATION_MANIFEST: &str =
+        include_str!("fixtures/dylib-chain/foundation/Cargo.toml");
+    pub const FOUNDATION_LIB: &str = include_str!("fixtures/dylib-chain/foundation/lib.rs");
+    pub const APP_MAIN: &str = include_str!("fixtures/dylib-chain/app/main.rs");
+    pub const APP_LIB: &str = include_str!("fixtures/dylib-chain/app/lib.rs");
+    pub const APP_CARGO_CONFIG: &str = include_str!("fixtures/dylib-chain/app/cargo-config.toml");
+    pub const APP_WATER: &str = include_str!("fixtures/dylib-chain/app/Water.toml");
+    pub const BACKEND_MANIFEST: &str = include_str!("fixtures/dylib-chain/backend/Cargo.toml");
+    pub const BACKEND_MAIN: &str = include_str!("fixtures/dylib-chain/backend/main.rs");
+}
+
+/// The fixture app's manifest: the only dynamic piece is the vendored
+/// git URL, serialized rather than concatenated.
+fn app_manifest(dylib_url: &str) -> String {
+    toml::to_string(&serde_json::json!({
+        "package": {
+            "name": "app",
+            "version": "0.1.0",
+            "edition": "2021",
+        },
+        "features": { "dev": [] },
+        "dependencies": {
+            "waterui-dylib": { "git": dylib_url },
+        },
+    }))
+    .expect("the fixture manifest serializes")
+}
+
+/// Vendor the layered fixture chain into a git repository under `root` —
+/// so Cargo hashes the source into every `deps/` file name — and return
+/// its `file://` URL.
 fn scaffold_dylib(host: &Host, root: &Path) -> String {
     let dylib_dir = root.join("waterui-dylib");
-    write(
-        &dylib_dir.join("Cargo.toml"),
-        "[package]\nname = \"waterui-dylib\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\nname = \"waterui_dylib\"\ncrate-type = [\"dylib\", \"rlib\"]\n",
-    );
-    write(
-        &dylib_dir.join("src/lib.rs"),
-        "/// Marker the fixture binary calls so the linker keeps the dependency.\npub extern \"C\" fn fixture_marker() -> u8 {\n    42\n}\n",
-    );
+    write(&dylib_dir.join("Cargo.toml"), chain::TOP_MANIFEST);
+    write(&dylib_dir.join("src/lib.rs"), chain::TOP_LIB);
+    let middle = dylib_dir.join("middle");
+    write(&middle.join("Cargo.toml"), chain::MIDDLE_MANIFEST);
+    write(&middle.join("src/lib.rs"), chain::MIDDLE_LIB);
+    let foundation = middle.join("foundation");
+    write(&foundation.join("Cargo.toml"), chain::FOUNDATION_MANIFEST);
+    write(&foundation.join("src/lib.rs"), chain::FOUNDATION_LIB);
     run(
         host.std_command("git")
             .args(["init", "-q"])
@@ -283,26 +351,12 @@ fn scaffold_dylib(host: &Host, root: &Path) -> String {
 fn scaffold_fixture(host: &Host, root: &Path) -> PathBuf {
     let dylib_url = scaffold_dylib(host, root);
     let app_dir = root.join("app");
-    write(
-        &app_dir.join("Cargo.toml"),
-        &format!(
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\nwaterui-dylib = {{ git = \"{dylib_url}\" }}\n"
-        ),
-    );
-    write(
-        &app_dir.join("src/main.rs"),
-        "fn main() {\n    // A referenced symbol keeps the `DT_NEEDED` the link would\n    // otherwise drop under `--as-needed`.\n    assert_eq!(waterui_dylib::fixture_marker(), 42);\n}\n",
-    );
-    write(
-        &app_dir.join(".cargo/config.toml"),
-        "[build]\nrustflags = [\"-Cprefer-dynamic\"]\n",
-    );
+    write(&app_dir.join("Cargo.toml"), &app_manifest(&dylib_url));
+    write(&app_dir.join("src/main.rs"), chain::APP_MAIN);
+    write(&app_dir.join(".cargo/config.toml"), chain::APP_CARGO_CONFIG);
     // The CLI opens a Water project; the resolve consults it for the
     // project's toolchain (which the fallback libstd lookup needs).
-    write(
-        &app_dir.join("Water.toml"),
-        "[package]\nname = \"app\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
-    );
+    write(&app_dir.join("Water.toml"), chain::APP_WATER);
     app_dir
 }
 
@@ -315,41 +369,37 @@ fn scaffold_run_fixture(host: &Host, root: &Path) -> (PathBuf, PathBuf) {
     let dylib_url = scaffold_dylib(host, root);
 
     let app_dir = root.join("app");
-    write(
-        &app_dir.join("Cargo.toml"),
-        &format!(
-            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[features]\ndev = []\n\n[dependencies]\nwaterui-dylib = {{ git = \"{dylib_url}\" }}\n"
-        ),
-    );
-    write(
-        &app_dir.join("src/lib.rs"),
-        "/// Entry point the generated backend's `main` calls.\npub fn run() {\n    // A referenced symbol keeps the `DT_NEEDED` the link would\n    // otherwise drop under `--as-needed`.\n    assert_eq!(waterui_dylib::fixture_marker(), 42);\n}\n",
-    );
-    write(
-        &app_dir.join("Water.toml"),
-        "[package]\nname = \"app\"\nbundle_identifier = \"dev.waterui.fixture\"\n",
-    );
+    write(&app_dir.join("Cargo.toml"), &app_manifest(&dylib_url));
+    write(&app_dir.join("src/lib.rs"), chain::APP_LIB);
+    write(&app_dir.join("Water.toml"), chain::APP_WATER);
 
     let backend_dir = root.join("backend");
-    write(
-        &backend_dir.join("Cargo.toml"),
-        "[package]\nname = \"backend\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[dependencies]\napp = { path = \"../app\" }\n\n[workspace]\n",
-    );
-    write(
-        &backend_dir.join("src/main.rs"),
-        "fn main() {\n    app::run();\n}\n",
-    );
+    write(&backend_dir.join("Cargo.toml"), chain::BACKEND_MANIFEST);
+    write(&backend_dir.join("src/main.rs"), chain::BACKEND_MAIN);
     (app_dir, backend_dir)
+}
+
+/// Assert `dist` contains every non-system library `executable`'s dynamic
+/// records name AND every non-system library each reported runtime image
+/// records — a layer's own dependencies name its children, so reading only
+/// the executable's section would miss a transitive image the top never
+/// names.
+fn assert_dist_satisfies_chain(executable: &Path, images: &[PathBuf], dist: &Path) {
+    let needed = needed_shared_libraries(executable).expect("read dynamic dependencies");
+    assert!(
+        needed.iter().any(|name| name.contains("waterui_dylib")),
+        "fixture binary records no waterui_dylib dependency: {needed:?}"
+    );
+    assert_dist_satisfies_needed(executable, dist);
+    for image in images {
+        assert_dist_satisfies_needed(image, dist);
+    }
 }
 
 /// Assert every non-system dynamic dependency `executable` records exists in
 /// `dist` under exactly the recorded file name.
 fn assert_dist_satisfies_needed(executable: &Path, dist: &Path) {
     let needed = needed_shared_libraries(executable).expect("read dynamic dependencies");
-    assert!(
-        needed.iter().any(|name| name.contains("waterui_dylib")),
-        "fixture binary records no waterui_dylib dependency: {needed:?}"
-    );
     for name in &needed {
         if is_system_library(name) {
             continue;
@@ -428,7 +478,12 @@ fn packaged_binary_finds_every_shared_library_it_records() {
         let root = temporary.path();
         let app_dir = scaffold_fixture(&host, root);
 
-        let executable = built_executable(&host, &app_dir);
+        let (executable, dylibs) = built_executable(&host, &app_dir);
+        assert!(
+            dylibs.len() >= 3,
+            "the fixture's top -> middle -> foundation chain must report every \
+             dylib image: {dylibs:?}"
+        );
         let profile_dir = app_dir.join("target/debug");
         let triple = Triple::host();
         let shared_runtime = profile_dir.join(shared_runtime_name(&triple));
@@ -445,6 +500,7 @@ fn packaged_binary_finds_every_shared_library_it_records() {
             executable: Some(SharedExecutable::unlocked(executable.clone())),
             entry_binary: None,
             shared_runtime: Some(shared_runtime),
+            shared_runtime_libraries: dylibs.clone(),
             app_library: None,
             cef_helper: None,
         };
@@ -461,7 +517,7 @@ fn packaged_binary_finds_every_shared_library_it_records() {
             .await
             .expect("stage shared libraries");
 
-        assert_dist_satisfies_needed(&executable, &dist);
+        assert_dist_satisfies_chain(&executable, &dylibs, &dist);
         assert_staged_binary_runs(&host, &executable, &dist);
     });
 }
@@ -593,9 +649,12 @@ fn an_unchanged_build_leaves_the_binary_artifact_untouched() {
 /// target directory.
 fn bump_vendored_dylib(host: &Host, root: &Path, backend_dir: &Path) {
     let dylib_dir = root.join("waterui-dylib");
+    let mut manifest: toml::Table =
+        toml::from_str(chain::TOP_MANIFEST).expect("fixture manifest parses");
+    manifest["package"]["version"] = toml::Value::String("0.2.0".to_owned());
     write(
         &dylib_dir.join("Cargo.toml"),
-        "[package]\nname = \"waterui-dylib\"\nversion = \"0.2.0\"\nedition = \"2021\"\n\n[lib]\nname = \"waterui_dylib\"\ncrate-type = [\"dylib\", \"rlib\"]\n",
+        &toml::to_string(&manifest).expect("fixture manifest serializes"),
     );
     run(
         host.std_command("git")
@@ -630,6 +689,29 @@ fn needed_name_file(recorded_name: &str) -> String {
         .next()
         .unwrap_or(recorded_name)
         .to_owned()
+}
+
+/// The `waterui_dylib` family file names the packaged artifact and the
+/// runtime's top image record, sorted and deduplicated — the full image set
+/// a staging must leave: the app's direct records plus every layer the top
+/// image loads (water-rs/waterui#1615).
+/// The `waterui_dylib` family file names the packaged artifact AND every
+/// reported runtime image's own dynamic section records, sorted and
+/// deduplicated — the full image set a staging must leave.
+fn recorded_waterui_names(artifact: &Path, images: &[PathBuf]) -> Vec<String> {
+    let mut names: Vec<String> = needed_shared_libraries(artifact)
+        .expect("artifact needed")
+        .into_iter()
+        .chain(images.iter().flat_map(|image| {
+            needed_shared_libraries(image)
+                .unwrap_or_else(|error| panic!("image needed at {}: {error}", image.display()))
+        }))
+        .filter(|name| name.contains("waterui_dylib"))
+        .map(|name| needed_name_file(&name))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 /// The shared libraries a directory holds for `waterui_dylib`, sorted — the
@@ -677,25 +759,20 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
             .await
             .expect("first fixture build");
         let runtime_dir = built.profile_dir.clone();
+        // Read the records first: staging sweeps the uplifted copy the
+        // reported path names, so the top image's own section is gone after.
+        let first_waterui =
+            recorded_waterui_names(&built.artifact, &built.shared_runtime_libraries);
         RustDynamicLibraries::resolve(&built, &triple, &project)
             .await
             .expect("resolve first shared libraries")
             .stage(&runtime_dir)
             .await
             .expect("stage first runtime");
-        let first_waterui: Vec<String> = needed_shared_libraries(&built.artifact)
-            .expect("first needed")
-            .into_iter()
-            .filter(|name| name.contains("waterui_dylib"))
-            .collect();
         assert_eq!(
             staged_waterui_names(&runtime_dir).as_slice(),
-            first_waterui
-                .iter()
-                .map(|name| needed_name_file(name))
-                .collect::<Vec<_>>()
-                .as_slice(),
-            "first stage must leave exactly the recorded runtime name"
+            first_waterui.as_slice(),
+            "first stage must leave exactly the recorded runtime image set"
         );
 
         bump_vendored_dylib(&host, root, &backend_dir);
@@ -708,11 +785,8 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
             .build_binary("backend", false)
             .await
             .expect("rebuild after dylib bump");
-        let rebuilt_needed: Vec<String> = needed_shared_libraries(&rebuilt.artifact)
-            .expect("rebuilt needed")
-            .into_iter()
-            .filter(|name| name.contains("waterui_dylib"))
-            .collect();
+        let rebuilt_needed =
+            recorded_waterui_names(&rebuilt.artifact, &rebuilt.shared_runtime_libraries);
         assert_ne!(
             first_waterui, rebuilt_needed,
             "the fixture must change the recorded dylib name"
@@ -726,12 +800,8 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
 
         assert_eq!(
             staged_waterui_names(&runtime_dir).as_slice(),
-            rebuilt_needed
-                .iter()
-                .map(|name| needed_name_file(name))
-                .collect::<Vec<_>>()
-                .as_slice(),
-            "restaging must replace the stale hashed runtime with the recorded one"
+            rebuilt_needed.as_slice(),
+            "restaging must replace the stale hashed runtime images with the recorded set"
         );
         assert_binary_runs_in_place(
             &host,
@@ -741,4 +811,15 @@ fn restaging_replaces_a_stale_hashed_shared_runtime() {
             &runtime_dir,
         );
     });
+}
+
+/// A line that fails Cargo's `compiler-artifact` JSON decode surfaces as
+/// `Message::TextLine` — `built_artifacts` must fail on it, not skip it,
+/// before a valid artifact: silently skipping malformed output would hide
+/// exactly the corruption this parser exists to catch.
+#[test]
+#[should_panic(expected = "unexpected non-JSON output from `cargo build`: not json")]
+fn built_artifacts_rejects_malformed_cargo_output() {
+    let malformed = b"not json\n".to_vec();
+    let _ = built_artifacts(&malformed);
 }
