@@ -24,7 +24,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
@@ -746,6 +746,34 @@ pub fn first_button(view: &objc2_ui_kit::UIView) -> Option<Retained<UIButton>> {
         }
     }
     None
+}
+
+/// Mirrors `button`'s enabled state onto `item`.
+///
+/// Seeds `isEnabled` from the button's current value, then keeps the item
+/// in step through the button's enabled handler. The handler holds the
+/// item weakly — the item's action already retains the button, so a
+/// strong hold back would cycle.
+///
+/// # Panics
+///
+/// When `button` is not a [`CocoaUiButton`]: every `UIButton` this crate
+/// constructs is the subclass, so a plain `UIButton` found in rendered
+/// content means an invariant was broken somewhere else.
+///
+/// [`CocoaUiButton`]: crate::uikit::button::CocoaUiButton
+pub fn mirror_enabled(button: &UIButton, item: &UIBarButtonItem) {
+    item.setEnabled(button.isEnabled());
+    let button = button
+        .downcast_ref::<crate::uikit::button::CocoaUiButton>()
+        .expect("every `UIButton` cocoa-ui constructs is a `CocoaUiButton`");
+    let weak = Weak::new(item);
+    button.set_enabled_handler(move |enabled| {
+        let Some(item) = weak.load() else {
+            return;
+        };
+        item.setEnabled(enabled);
+    });
 }
 
 /// A `UIBarButtonItem` drawing `image` inside the bar's chrome — the symbol

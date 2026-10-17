@@ -388,7 +388,8 @@ mod platform {
         /// item is hosted as the item's custom view. The title signal feeds
         /// `accessibilityLabel`.
         fn button(&self, item: &BarItem, keep: &mut KeepAlive) -> Retained<UIBarButtonItem> {
-            let action = first_button(item.leaf.view()).map(|button| {
+            let button = first_button(item.leaf.view());
+            let action = button.clone().map(|button| {
                 Rc::new(move || {
                     button.sendActionsForControlEvents(UIControlEvents::PrimaryActionTriggered);
                 }) as Rc<dyn Fn()>
@@ -430,6 +431,12 @@ mod platform {
                         })
                 }
             };
+            // A bar item the chrome draws follows the button's enabled
+            // state — the programmatic `sendActions` the action runs
+            // ignores `isEnabled`, so the bar item is what disables it.
+            if let Some(button) = &button {
+                cocoa_ui::uikit::mirror_enabled(button, &object);
+            }
             if let Some(title) = item.title.clone() {
                 let object = object.clone();
                 keep.bind(&title, move |title| {

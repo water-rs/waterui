@@ -7134,10 +7134,13 @@ mod navigation {
     use cocoa_ui::uikit::{NavContentController, NavPage};
     use cocoa_ui::{PlatformView, Retained, view};
     use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::toggle::toggle;
     use waterui::component::{ButtonStyle, button};
+    use waterui::icon::SystemIcon;
     use waterui::navigation::{
         NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
-        NavigationView,
+        NavigationView, ToolbarItemIcon,
     };
     use waterui::prelude::text;
     use waterui::reactive::binding;
@@ -7206,6 +7209,27 @@ mod navigation {
                 a_text_toolbar_button_draws_its_title();
                 Ok(())
             }),
+            libtest_mimic::Trial::test(
+                "navigation::a_text_toolbar_item_follows_its_button_disabled_state",
+                || {
+                    a_text_toolbar_item_follows_its_button_disabled_state();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_symbol_toolbar_item_follows_its_button_disabled_state",
+                || {
+                    a_symbol_toolbar_item_follows_its_button_disabled_state();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_checkbox_toolbar_item_follows_its_disabled_state",
+                || {
+                    a_checkbox_toolbar_item_follows_its_disabled_state();
+                    Ok(())
+                },
+            ),
         ]
     }
 
@@ -7262,6 +7286,111 @@ mod navigation {
 
         title.set(Str::from("Done"));
         assert_eq!(bar_item_title(&leading), "Done");
+    }
+
+    /// A leading text button's bar item follows the button's `disabled`
+    /// state: `sendActions` ignores `isEnabled`, so the bar item is what
+    /// the bar disables — it must start disabled and re-enable with the
+    /// button.
+    fn a_text_toolbar_item_follows_its_button_disabled_state() {
+        let disabled = binding(true);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::TopBarLeading,
+                    button("Save")
+                        .style(ButtonStyle::Plain)
+                        .disabled(disabled.clone()),
+                )],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let leading = top
+            .navigationItem()
+            .leftBarButtonItems()
+            .expect("the leading text button is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            !leading.isEnabled(),
+            "the bar item starts disabled with the button"
+        );
+        disabled.set(false);
+        assert!(
+            leading.isEnabled(),
+            "the bar item follows the button back to enabled"
+        );
+    }
+
+    /// A trailing symbol item follows the same rule: the bar-drawn item
+    /// tracks the content button's `disabled` state.
+    fn a_symbol_toolbar_item_follows_its_button_disabled_state() {
+        let disabled = binding(true);
+        let mut item = NavigationToolbarItem::new(
+            NavigationToolbarPlacement::TopBarTrailing,
+            button("Save")
+                .style(ButtonStyle::Plain)
+                .disabled(disabled.clone()),
+        );
+        item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("checkmark")));
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root"))
+                .navigation_toolbar(NavigationToolbar::new(vec![item])),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the trailing symbol item is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            !trailing.isEnabled(),
+            "the bar item starts disabled with the button"
+        );
+        disabled.set(false);
+        assert!(
+            trailing.isEnabled(),
+            "the bar item follows the button back to enabled"
+        );
+    }
+
+    /// The enabled mirror does not depend on the content being a `button`:
+    /// a checkbox toggle's control is a `UIButton` in the leaf's subtree,
+    /// so the item's icon follows its `disabled` state like any other.
+    fn a_checkbox_toolbar_item_follows_its_disabled_state() {
+        let disabled = binding(true);
+        let checked = binding(false);
+        let mut item = NavigationToolbarItem::new(
+            NavigationToolbarPlacement::TopBarTrailing,
+            toggle("Done", &checked)
+                .checkbox()
+                .disabled(disabled.clone()),
+        );
+        item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("checkmark")));
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root"))
+                .navigation_toolbar(NavigationToolbar::new(vec![item])),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the trailing icon item is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            !trailing.isEnabled(),
+            "the bar item starts disabled with the checkbox"
+        );
+        disabled.set(false);
+        assert!(
+            trailing.isEnabled(),
+            "the bar item follows the checkbox back to enabled"
+        );
     }
 
     /// The root page's intent is recorded in `set_page` while

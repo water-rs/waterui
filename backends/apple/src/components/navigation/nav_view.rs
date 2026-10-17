@@ -265,7 +265,8 @@ mod platform {
         env: &waterui::Environment,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem> {
         let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
-        let action = cocoa_ui::uikit::first_button(item.leaf.view()).map(|button| {
+        let leaf_button = cocoa_ui::uikit::first_button(item.leaf.view());
+        let action = leaf_button.clone().map(|button| {
             alloc::rc::Rc::new(move || {
                 button.sendActionsForControlEvents(
                     cocoa_ui::objc2_ui_kit::UIControlEvents::PrimaryActionTriggered,
@@ -311,6 +312,12 @@ mod platform {
                     })
             }
         };
+        // A bar item the chrome draws follows the button's enabled state —
+        // the programmatic `sendActions` the action runs ignores
+        // `isEnabled`, so the bar item is what disables it.
+        if let Some(leaf_button) = &leaf_button {
+            cocoa_ui::uikit::mirror_enabled(leaf_button, &button);
+        }
         if let Some(title) = &item.title {
             keep.bind(title, {
                 let button = button.clone();
