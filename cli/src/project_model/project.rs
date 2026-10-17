@@ -2511,7 +2511,7 @@ async fn resolve_cargo_layout(
     cargo_layout_from(
         host,
         &application_manifest,
-        framework,
+        framework.as_ref(),
         &metadata,
         water_lock.as_deref(),
     )
@@ -2562,7 +2562,7 @@ impl Fact for CargoLayoutFact {
         cargo_layout_from(
             scope.host(),
             &application_manifest,
-            self.framework.clone(),
+            self.framework.as_ref(),
             &metadata,
             water_lock.as_deref(),
         )
@@ -2575,15 +2575,16 @@ impl Fact for CargoLayoutFact {
 fn cargo_layout_from(
     host: &Host,
     application_manifest: &Path,
-    framework: Option<ResolvedFramework>,
+    framework: Option<&ResolvedFramework>,
     metadata: &cargo_metadata::Metadata,
     water_lock: Option<&[u8]>,
 ) -> eyre::Result<CargoLayout> {
     validate_resolved_cli(host, metadata)?;
-    if let Some(framework) = framework
-        && let Some(lockfile) = water_lock
-    {
-        framework.validate_dependencies(metadata, lockfile)?;
+    if let Some(framework) = framework {
+        framework.validate_public_api_dependencies(metadata)?;
+        if let Some(lockfile) = water_lock {
+            framework.validate_dependencies(metadata, lockfile)?;
+        }
     }
 
     let root_package = package_at_manifest(metadata, application_manifest)?;

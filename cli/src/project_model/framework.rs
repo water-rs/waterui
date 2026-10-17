@@ -1105,6 +1105,131 @@ impl ResolvedFramework {
         Ok(())
     }
 
+    /// Fail when a crate the framework re-exports in its public API resolves
+    /// beside the framework's own copy: the project declares it directly at
+    /// a requirement — or a source — cargo could not unify, so the graph
+    /// keeps two packages of one name and every type they share stops
+    /// matching at the framework boundary. Cargo reports that split as
+    /// hundreds of type errors that never name a version; it is reported
+    /// here instead, while the resolved graph is still the CLI's to read
+    /// (#1933).
+    ///
+    /// The re-exported set is the framework's own fact:
+    /// `[package.metadata.waterui].reexported-dependencies` maps each crate
+    /// name to the facade path its re-export answers at. A selection
+    /// resolved before the key existed carries no table and declares
+    /// nothing.
+    ///
+    /// # Errors
+    /// Returns an error naming each split crate's project dependency entry,
+    /// the version the framework resolves, and the facade re-export to
+    /// depend on instead.
+    pub(crate) fn validate_public_api_dependencies(
+        &self,
+        metadata: &cargo_metadata::Metadata,
+    ) -> Result<()> {
+        /// The `[package.metadata.waterui]` key mapping each crate the
+        /// facade re-exports to the facade path the re-export answers at.
+        const KEY: &str = "reexported-dependencies";
+        let Some(resolve) = &metadata.resolve else {
+            // `cargo metadata --no-deps` answers no resolve to walk —
+            // there is no graph to check.
+            return Ok(());
+        };
+        let reexported: BTreeMap<&str, &str> = self
+            .metadata
+            .get(KEY)
+            .and_then(toml::Value::as_table)
+            .map(|table| {
+                table
+                    .iter()
+                    .filter_map(|(name, path)| path.as_str().map(|path| (name.as_str(), path)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        if reexported.is_empty() {
+            return Ok(());
+        }
+        let packages: BTreeMap<_, _> = metadata
+            .packages
+            .iter()
+            .map(|package| (package.id.clone(), package))
+            .collect();
+        let nodes: BTreeMap<_, _> = resolve
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), node))
+            .collect();
+        // The `waterui` facade's dependency closure is the framework side
+        // of the boundary: every package it reaches resolves at the
+        // version the framework carries, on every channel — path, git and
+        // registry sources alike.
+        let mut closure = BTreeSet::new();
+        let mut pending: Vec<_> = resolve
+            .nodes
+            .iter()
+            .filter(|node| packages[&node.id].name.as_str() == "waterui")
+            .map(|node| node.id.clone())
+            .collect();
+        while let Some(id) = pending.pop() {
+            if !closure.insert(id.clone()) {
+                continue;
+            }
+            pending.extend(nodes[&id].dependencies.iter().cloned());
+        }
+        let mut conflicts = BTreeSet::new();
+        for node in &resolve.nodes {
+            let package = packages[&node.id];
+            // A split the project can hit is an edge from one of its own
+            // crates — workspace members and path dependencies carry no
+            // source — to a copy outside the facade's closure. A registry
+            // or git package carrying an older copy inside its own build
+            // never meets the framework's types.
+            if closure.contains(&node.id) || package.source.is_some() {
+                continue;
+            }
+            for dep in &node.deps {
+                let target = packages[&dep.pkg];
+                let Some(facade_path) = reexported.get(target.name.as_str()) else {
+                    continue;
+                };
+                if closure.contains(&dep.pkg) {
+                    continue;
+                }
+                // A build-dependency edge feeds a build script's own
+                // graph; its types never meet the framework's.
+                if !dep.dep_kinds.is_empty()
+                    && dep
+                        .dep_kinds
+                        .iter()
+                        .all(|kind| kind.kind == cargo_metadata::DependencyKind::Build)
+                {
+                    continue;
+                }
+                // The facade's closure carrying none of the crate means
+                // the selected features leave the re-export out — the
+                // project's copy is the only one.
+                let carried: BTreeSet<String> = closure
+                    .iter()
+                    .map(|id| packages[id])
+                    .filter(|candidate| candidate.name == target.name)
+                    .map(|candidate| candidate.version.to_string())
+                    .collect();
+                if carried.is_empty() {
+                    continue;
+                }
+                conflicts.insert(reexported_conflict(package, target, facade_path, &carried));
+            }
+        }
+        if !conflicts.is_empty() {
+            bail!(
+                "the project splits crates the framework re-exports in its public API: {}",
+                conflicts.into_iter().collect::<Vec<_>>().join("; ")
+            );
+        }
+        Ok(())
+    }
+
     /// The error a project resolving none of its selected framework source
     /// hits: the resolution carried the framework repository at another
     /// revision, or at no git revision at all. Name the selected revision,
@@ -1325,6 +1450,7 @@ impl ResolvedFramework {
                 )
             })?;
         validate_resolved_cli(host, &metadata)?;
+        self.validate_public_api_dependencies(&metadata)?;
         if !allow_new {
             for package in &metadata.packages {
                 if package.source.is_some()
@@ -1892,6 +2018,50 @@ const fn same_caret_family(base: &semver::Version, candidate: &semver::Version) 
         return true;
     }
     base.minor == candidate.minor && (base.minor > 0 || base.patch == candidate.patch)
+}
+
+/// The conflict line a split re-exported crate reports: the project's
+/// dependency entry as its manifest declares it, the copy it resolved
+/// beside the framework's `carried` versions, and the facade re-export
+/// the crate answers at.
+fn reexported_conflict(
+    package: &cargo_metadata::Package,
+    target: &cargo_metadata::Package,
+    facade_path: &str,
+    carried: &BTreeSet<String>,
+) -> String {
+    let entry = package
+        .dependencies
+        .iter()
+        .find(|dependency| dependency.name == target.name.as_str())
+        .map_or_else(
+            || target.name.to_string(),
+            |dependency| {
+                dependency.rename.as_ref().map_or_else(
+                    || format!("{} = \"{}\"", dependency.name, dependency.req),
+                    |rename| {
+                        format!(
+                            "{rename} = {{ package = \"{}\", version = \"{}\" }}",
+                            dependency.name, dependency.req
+                        )
+                    },
+                )
+            },
+        );
+    format!(
+        "`{entry}` in `{}` resolves `{}` {} beside the framework's {} — \
+         use the facade's re-export `{facade_path}` or match the framework's \
+         `{}` version",
+        package.name,
+        target.name,
+        target.version,
+        carried
+            .iter()
+            .map(|version| format!("`{}` {version}", target.name))
+            .collect::<Vec<_>>()
+            .join(", "),
+        target.name,
+    )
 }
 
 /// A framework's canonical lock as its source holds it — a local checkout's
@@ -4068,6 +4238,215 @@ mod tests {
                 include_bytes!("../../tests/fixtures/dev_channel/Water.lock"),
             )
             .expect("a fresh dev-channel resolution replaces no locked package");
+    }
+
+    /// A fixture package row — `(name, version, id, source,
+    /// declared-dependencies)` — where `source` `None` spells a workspace
+    /// member or path package, the project's own crates.
+    type SplitPackage<'a> = (
+        &'a str,
+        &'a str,
+        &'a str,
+        Option<&'a str>,
+        Vec<(&'a str, &'a str)>,
+    );
+
+    /// A `cargo metadata` graph fixture for the re-export split check:
+    /// `packages` as `(name, version, id, source, declared-dependencies)`
+    /// rows, `edges` mapping each node id to its resolved `(name, pkg)`
+    /// dep edges, and `build_edges` marking edges that carry only the
+    /// `build` dep-kind.
+    fn split_graph_metadata(
+        packages: Vec<SplitPackage<'_>>,
+        edges: Vec<(&str, Vec<(&str, &str)>)>,
+        build_edges: &[(&str, &str)],
+    ) -> cargo_metadata::Metadata {
+        let registry = "registry+https://github.com/rust-lang/crates.io-index";
+        let packages: Vec<_> = packages
+            .into_iter()
+            .map(|(name, version, id, source, dependencies)| {
+                serde_json::json!({
+                    "name": name,
+                    "version": version,
+                    "id": id,
+                    "source": source,
+                    "dependencies": dependencies
+                        .iter()
+                        .map(|(name, req)| serde_json::json!({
+                            "name": name,
+                            "source": registry,
+                            "req": req,
+                            "kind": null,
+                            "optional": false,
+                            "uses_default_features": true,
+                            "features": [],
+                            "target": null,
+                            "rename": null,
+                            "registry": null,
+                            "path": null
+                        }))
+                        .collect::<Vec<_>>(),
+                    "targets": [],
+                    "features": {},
+                    "manifest_path": "/project/Cargo.toml",
+                    "edition": "2024"
+                })
+            })
+            .collect();
+        let nodes: Vec<_> = edges
+            .into_iter()
+            .map(|(id, deps)| {
+                serde_json::json!({
+                    "id": id,
+                    "deps": deps
+                        .iter()
+                        .map(|(name, pkg)| serde_json::json!({
+                            "name": name,
+                            "pkg": pkg,
+                            "dep_kinds": [{
+                                "kind": if build_edges.contains(&(id, *pkg)) {
+                                    "build"
+                                } else {
+                                    "normal"
+                                },
+                                "target": null
+                            }]
+                        }))
+                        .collect::<Vec<_>>(),
+                    "dependencies": deps
+                        .iter()
+                        .map(|(_, pkg)| pkg)
+                        .collect::<Vec<_>>(),
+                    "features": []
+                })
+            })
+            .collect();
+        serde_json::from_value::<cargo_metadata::Metadata>(serde_json::json!({
+            "version": 1,
+            "packages": packages,
+            "workspace_members": [],
+            "resolve": {"nodes": nodes, "root": null},
+            "workspace_root": "/project",
+            "target_directory": "/project/target",
+            "workspace_metadata": {}
+        }))
+        .unwrap()
+    }
+
+    /// A project that declares a crate the facade re-exports resolves a
+    /// second copy beside the framework's own when the requirements are
+    /// semver-incompatible; the error names the project's dependency
+    /// entry, the framework's version and the facade re-export (#1933).
+    #[test]
+    fn a_split_reexported_dependency_names_the_entry_and_the_reexport() {
+        let mut framework = dev_framework();
+        framework.metadata.insert(
+            "reexported-dependencies".to_owned(),
+            toml::toml! { nami = "waterui::reactive" }.into(),
+        );
+        let registry = "registry+https://github.com/rust-lang/crates.io-index";
+        let waterui = format!(
+            "git+{}?rev={}#waterui@0.5.2",
+            framework_repository(),
+            'a'.to_string().repeat(40)
+        );
+        let metadata = |app_nami: &str, app_req: &str| {
+            split_graph_metadata(
+                vec![
+                    ("app", "0.1.0", "app", None, vec![("nami", app_req)]),
+                    ("waterui", "0.5.2", &waterui, Some("git"), vec![]),
+                    ("nami", "0.13.0", "nami-13", Some(registry), vec![]),
+                    ("nami", "0.11.2", "nami-11", Some(registry), vec![]),
+                    ("nami", "0.10.0", "nami-10", Some(registry), vec![]),
+                    ("dep-lib", "1.0.0", "dep-lib", Some(registry), vec![]),
+                ],
+                vec![
+                    ("app", vec![("nami", app_nami)]),
+                    (&waterui, vec![("nami", "nami-13")]),
+                    // A third-party crate carrying its own older nami is an
+                    // internal copy — it never meets the framework's types.
+                    ("dep-lib", vec![("nami", "nami-10")]),
+                    ("nami-13", vec![]),
+                    ("nami-11", vec![]),
+                    ("nami-10", vec![]),
+                ],
+                &[],
+            )
+        };
+        let error = framework
+            .validate_public_api_dependencies(&metadata("nami-11", "^0.11.1"))
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("nami = \"^0.11.1\""), "{message}");
+        assert!(message.contains("0.11.2"), "{message}");
+        assert!(message.contains("0.13.0"), "{message}");
+        assert!(message.contains("waterui::reactive"), "{message}");
+        assert!(
+            !message.contains("dep-lib"),
+            "a third-party's internal copy is not the project's error: {message}"
+        );
+        // An edge resolving to the package the framework carries is the
+        // unified graph cargo produces for a compatible requirement.
+        framework
+            .validate_public_api_dependencies(&metadata("nami-13", "^0.13"))
+            .expect("a requirement unifying with the framework's copy splits nothing");
+    }
+
+    /// The re-export check fires only where the split reaches project code:
+    /// a second copy reachable solely through a sourced dependency is that
+    /// dependency's own build, and a build-only edge feeds a build script's
+    /// graph — neither meets the framework's types.
+    #[test]
+    fn a_reexported_dependency_split_outside_project_code_is_ignored() {
+        let mut framework = dev_framework();
+        framework.metadata.insert(
+            "reexported-dependencies".to_owned(),
+            toml::toml! { nami = "waterui::reactive" }.into(),
+        );
+        let registry = "registry+https://github.com/rust-lang/crates.io-index";
+        let waterui = format!(
+            "git+{}?rev={}#waterui@0.5.2",
+            framework_repository(),
+            'a'.to_string().repeat(40)
+        );
+        let metadata = split_graph_metadata(
+            vec![
+                ("app", "0.1.0", "app", None, vec![("nami", "^0.11.1")]),
+                ("waterui", "0.5.2", &waterui, Some("git"), vec![]),
+                ("nami", "0.13.0", "nami-13", Some(registry), vec![]),
+                ("nami", "0.11.2", "nami-11", Some(registry), vec![]),
+            ],
+            vec![
+                ("app", vec![("nami", "nami-11")]),
+                (&waterui, vec![("nami", "nami-13")]),
+                ("nami-13", vec![]),
+                ("nami-11", vec![]),
+            ],
+            // The app's edge is build-only: a build script's own nami.
+            &[("app", "nami-11")],
+        );
+        framework
+            .validate_public_api_dependencies(&metadata)
+            .expect("a build-only edge feeds no app-facing types");
+        // A selection resolved before the key existed declares nothing.
+        framework.metadata.remove("reexported-dependencies");
+        framework
+            .validate_public_api_dependencies(&split_graph_metadata(
+                vec![
+                    ("app", "0.1.0", "app", None, vec![("nami", "^0.11.1")]),
+                    ("waterui", "0.5.2", &waterui, Some("git"), vec![]),
+                    ("nami", "0.13.0", "nami-13", Some(registry), vec![]),
+                    ("nami", "0.11.2", "nami-11", Some(registry), vec![]),
+                ],
+                vec![
+                    ("app", vec![("nami", "nami-11")]),
+                    (&waterui, vec![("nami", "nami-13")]),
+                    ("nami-13", vec![]),
+                    ("nami-11", vec![]),
+                ],
+                &[],
+            ))
+            .expect("a selection without the key carries no re-export set");
     }
 
     /// A project whose resolution carries none of the selected framework
