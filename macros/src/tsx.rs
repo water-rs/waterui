@@ -333,7 +333,10 @@ mod tests {
         // The resolved path is rendered with the host's separators, so the
         // expected suffix is joined the same way rather than spelled with `/`.
         let resolved = Path::new("src").join("promo.tsx");
-        assert!(message.contains(&resolved.display().to_string()), "{message}");
+        assert!(
+            message.contains(&resolved.display().to_string()),
+            "{message}"
+        );
     }
 
     #[test]
