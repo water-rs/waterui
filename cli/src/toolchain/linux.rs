@@ -1,5 +1,7 @@
 //! Linux system package toolchain checks.
 
+use std::collections::BTreeSet;
+
 use crate::{
     toolchain::{Host, Installation, Toolchain, ToolchainError, UnfixableToolchain},
     utils::CommandError,
@@ -159,16 +161,31 @@ impl Toolchain for LinuxSystemToolchain {
             ));
         };
 
-        let required_packages = manager.required_packages();
+        // Which optional native bindings the project's resolved dependency
+        // graph selects. Their development packages are required only when
+        // the graph pulls the binding crate in — a plain project does not
+        // select `cros-libva`, so it must not be told to install `libva`.
+        let resolved_dependencies = resolved_dependency_names(host).await?;
+        let mut required_packages = manager.required_packages().to_vec();
+        for library in VERSIONED_NATIVE_LIBRARIES
+            .iter()
+            .filter(|library| resolved_dependencies.contains(library.required_by))
+        {
+            if let Some(package) = manager.package_for_native_library(library.module) {
+                if !required_packages.contains(&package) {
+                    required_packages.push(package);
+                }
+            }
+        }
         let mut missing_packages = Vec::new();
-        for &package in required_packages {
+        for &package in &required_packages {
             let installed = manager
                 .check_installed(host, package)
                 .await
                 .map_err(|error| {
                     ToolchainError::unfixable(
                         format!("Failed checking Linux package `{package}`: {error}"),
-                        manager.install_hint(&required_packages_to_owned(required_packages)),
+                        manager.install_hint(&required_packages_to_owned(&required_packages)),
                     )
                 })?;
             if !installed {
@@ -182,8 +199,62 @@ impl Toolchain for LinuxSystemToolchain {
             ));
         }
 
-        check_native_libraries(host, manager).await
+        check_native_libraries(host, manager, &resolved_dependencies).await
     }
+}
+
+/// The package names in the dependency graph the checked project resolves:
+/// the `[[package]]` entries of the `Cargo.lock` nearest the host's working
+/// directory, which a workspace shares across its members.
+///
+/// The lockfile is the resolve Cargo already computed, so reading it never
+/// invokes Cargo and never touches the network. A host outside any Cargo
+/// workspace has no graph and resolves to an empty set, which selects no
+/// optional binding; a project that has never been resolved has no lockfile
+/// yet and behaves the same — its first real resolve re-runs the check
+/// against the graph it produces.
+async fn resolved_dependency_names(
+    host: &Host,
+) -> Result<BTreeSet<String>, ToolchainError<LinuxSystemPackagesInstallation>> {
+    /// The `name` field of one `[[package]]` entry in a `Cargo.lock`.
+    #[derive(serde::Deserialize)]
+    struct Lockfile {
+        #[serde(default)]
+        package: Vec<LockPackage>,
+    }
+    #[derive(serde::Deserialize)]
+    struct LockPackage {
+        name: String,
+    }
+
+    let mut lockfile = None;
+    for directory in host.cwd().ancestors() {
+        let candidate = directory.join("Cargo.lock");
+        if candidate.is_file() {
+            lockfile = Some(candidate);
+            break;
+        }
+    }
+    let Some(lockfile) = lockfile else {
+        return Ok(BTreeSet::new());
+    };
+    let contents = smol::fs::read_to_string(&lockfile).await.map_err(|error| {
+        ToolchainError::unfixable(
+            format!("Failed reading {}: {error}", lockfile.display()),
+            "Ensure the project's `Cargo.lock` is readable, then re-run `water doctor`.",
+        )
+    })?;
+    let parsed: Lockfile = toml::from_str(&contents).map_err(|error| {
+        ToolchainError::unfixable(
+            format!("Failed parsing {}: {error}", lockfile.display()),
+            "Regenerate the lockfile with `cargo metadata` or `cargo check`, then re-run `water doctor`.",
+        )
+    })?;
+    Ok(parsed
+        .package
+        .into_iter()
+        .map(|package| package.name)
+        .collect())
 }
 
 /// The C toolchain every native Linux build invokes.
@@ -290,7 +361,6 @@ impl LinuxPackageManager {
                 "libwayland-dev",
                 "wayland-protocols",
                 "libasound2-dev",
-                "libva-dev",
                 "libgbm-dev",
                 "libxcb1-dev",
                 "libclang-dev",
@@ -307,7 +377,6 @@ impl LinuxPackageManager {
                 "wayland-devel",
                 "wayland-protocols-devel",
                 "alsa-lib-devel",
-                "libva-devel",
                 "mesa-libgbm-devel",
                 "libxcb-devel",
                 "clang-devel",
@@ -323,7 +392,6 @@ impl LinuxPackageManager {
                 "wayland",
                 "wayland-protocols",
                 "alsa-lib",
-                "libva",
                 "mesa",
                 "libxcb",
                 "clang",
@@ -344,7 +412,6 @@ impl LinuxPackageManager {
                 "wayland-devel",
                 "wayland-protocols-devel",
                 "alsa-devel",
-                "libva-devel",
                 // Tumbleweed renamed Mesa's split packages: gbm dropped the
                 // `Mesa-` prefix while EGL kept it (`Mesa-libEGL-devel`).
                 "libgbm-devel",
@@ -361,7 +428,6 @@ impl LinuxPackageManager {
                 "wayland-dev",
                 "wayland-protocols",
                 "alsa-lib-dev",
-                "libva-dev",
                 "mesa-dev",
                 "libxcb-dev",
                 "clang-dev",
@@ -458,7 +524,12 @@ struct VersionedNativeLibrary {
     version_axis: &'static str,
     /// Lowest version of `version_axis` the Rust binding compiles against.
     minimum_version: &'static str,
-    /// Crate that imposes the floor.
+    /// Crate that imposes the floor. The requirement applies only when this
+    /// crate is in the checked project's resolved dependency graph — an
+    /// optional binding a project never selects cannot fail that project's
+    /// build, so the doctor must not demand the native library for it
+    /// (a plain project does not select `cros-libva` and must not be told
+    /// to install `libva`).
     required_by: &'static str,
     /// Version of that crate the floor was read from; `crate_versions_match_lockfile`
     /// keeps it honest against the workspace lockfile.
@@ -607,6 +678,7 @@ impl VersionedNativeLibrary {
 async fn check_native_libraries(
     host: &Host,
     manager: LinuxPackageManager,
+    resolved_dependencies: &BTreeSet<String>,
 ) -> Result<(), ToolchainError<LinuxSystemPackagesInstallation>> {
     if !pkg_config_available(host).await {
         return Err(ToolchainError::unfixable(
@@ -617,7 +689,10 @@ async fn check_native_libraries(
 
     let mut missing_packages = Vec::new();
     let mut outdated = None;
-    for &library in VERSIONED_NATIVE_LIBRARIES {
+    for &library in VERSIONED_NATIVE_LIBRARIES
+        .iter()
+        .filter(|library| resolved_dependencies.contains(library.required_by))
+    {
         let package = manager.package_for_native_library(library.module);
         let status = probe_native_library(host, library).await.map_err(|error| {
             ToolchainError::unfixable(
@@ -1164,6 +1239,13 @@ mod tests {
         )
         .expect("the framework lockfile is UTF-8");
         for library in VERSIONED_NATIVE_LIBRARIES {
+            // The floor's crate is conditional: a binding the workspace's
+            // default resolve does not select is absent from the lockfile,
+            // and no entry can pin it. The assertion applies whenever the
+            // resolve does select it.
+            if !lockfile.contains(&format!("name = \"{}\"", library.required_by)) {
+                continue;
+            }
             let entry = format!(
                 "name = \"{}\"\nversion = \"{}\"\n",
                 library.required_by, library.required_by_version
@@ -1183,7 +1265,6 @@ mod tests {
         assert!(required.contains(&"gtk4-devel"));
         assert!(required.contains(&"pango-devel"));
         assert!(required.contains(&"wayland-devel"));
-        assert!(required.contains(&"libva-devel"));
         assert!(required.contains(&"mesa-libgbm-devel"));
         assert!(required.contains(&"libxcb-devel"));
         assert!(required.contains(&"alsa-lib-devel"));
@@ -1247,7 +1328,7 @@ mod host_tests {
     use crate::toolchain::{Toolchain, ToolchainError};
 
     const APT_PACKAGES: &str = "build-essential pkg-config libgtk-4-dev libpango1.0-dev libwayland-dev \
-         wayland-protocols libasound2-dev libva-dev libgbm-dev libxcb1-dev \
+         wayland-protocols libasound2-dev libgbm-dev libxcb1-dev \
          libclang-dev libfontconfig-dev ca-certificates";
 
     /// A machine whose apt package set is complete and whose pkg-config
@@ -1265,6 +1346,18 @@ mod host_tests {
         machine
     }
 
+    /// Stage the `Cargo.lock` a project resolves to, naming the crates its
+    /// dependency graph contains.
+    fn stage_lockfile(machine: &TestMachine, crates: &[&str]) {
+        let mut lockfile = String::from("version = 4\n");
+        for name in crates {
+            lockfile.push_str(&format!(
+                "\n[[package]]\nname = \"{name}\"\nversion = \"0.0.0\"\n"
+            ));
+        }
+        machine.file("Cargo.lock", &lockfile);
+    }
+
     #[test]
     fn unfixable_without_package_manager() {
         let machine = TestMachine::new();
@@ -1279,12 +1372,57 @@ mod host_tests {
     #[test]
     fn ok_when_apt_packages_and_library_versions_satisfy_floors() {
         let machine = complete_apt_machine();
+        stage_lockfile(&machine, &["waterui-video", "cros-libva", "libspa"]);
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+            format!("{APT_PACKAGES} libva-dev libpipewire-0.3-dev"),
+        )]);
+        smol::block_on(LinuxSystemToolchain.check(&host))
+            .expect("complete apt package set must satisfy the check");
+    }
+
+    #[test]
+    fn unselected_bindings_require_no_native_library() {
+        // A plain project's resolved graph selects neither `cros-libva` nor
+        // `libspa`: the host reports no libva or libpipewire module and the
+        // check must still pass instead of demanding an unused VA-API stack.
+        let machine = TestMachine::new();
+        for tool in ["apt-get", "dpkg-query", "pkg-config"] {
+            machine.install(tool);
+        }
+        stage_lockfile(&machine, &["waterui"]);
+        machine.respond_pkg_config_module("egl", "1.5.0");
         let host = machine.host([(
             String::from("WATERUI_FAKE_DPKG_INSTALLED"),
             APT_PACKAGES.to_string(),
         )]);
         smol::block_on(LinuxSystemToolchain.check(&host))
-            .expect("complete apt package set must satisfy the check");
+            .expect("a graph without the optional bindings must not require libva or pipewire");
+    }
+
+    #[test]
+    fn selected_binding_with_missing_library_is_fixable() {
+        let machine = TestMachine::new();
+        for tool in ["apt-get", "dpkg-query", "pkg-config"] {
+            machine.install(tool);
+        }
+        stage_lockfile(&machine, &["waterui-video", "cros-libva"]);
+        machine.respond_pkg_config_module("egl", "1.5.0");
+        let host = machine.host([(
+            String::from("WATERUI_FAKE_DPKG_INSTALLED"),
+            APT_PACKAGES.to_string(),
+        )]);
+        let Err(ToolchainError::Fixable(installation)) =
+            smol::block_on(LinuxSystemToolchain.check(&host))
+        else {
+            panic!(
+                "a missing libva module for a selected cros-libva must map to an installable package"
+            );
+        };
+        assert_eq!(
+            installation.missing_packages(),
+            &[String::from("libva-dev")]
+        );
     }
 
     #[test]
@@ -1301,8 +1439,9 @@ mod host_tests {
         };
         assert_eq!(installation.package_manager_name(), "apt-get");
         let missing = installation.missing_packages();
-        assert!(missing.iter().any(|package| package == "libva-dev"));
+        assert!(missing.iter().any(|package| package == "libgbm-dev"));
         assert!(!missing.iter().any(|package| package == "libgtk-4-dev"));
+        assert!(!missing.iter().any(|package| package == "libva-dev"));
     }
 
     #[test]
@@ -1324,13 +1463,14 @@ mod host_tests {
     #[test]
     fn unfixable_when_libva_below_floor() {
         let machine = complete_apt_machine();
+        stage_lockfile(&machine, &["waterui-video", "cros-libva"]);
         // Re-stage libva at the Ubuntu 22.04 version: VA-API 1.14 is below
         // the cros-libva floor of 1.19.
         machine.respond_pkg_config_module("libva", "1.14.0");
         machine.respond_pkg_config_var("libva_version", "2.14.0");
         let host = machine.host([(
             String::from("WATERUI_FAKE_DPKG_INSTALLED"),
-            APT_PACKAGES.to_string(),
+            format!("{APT_PACKAGES} libva-dev"),
         )]);
         let result = smol::block_on(LinuxSystemToolchain.check(&host));
         assert!(
@@ -1345,13 +1485,14 @@ mod host_tests {
         for tool in ["apt-get", "dpkg-query", "pkg-config"] {
             machine.install(tool);
         }
+        stage_lockfile(&machine, &["waterui-video", "cros-libva", "libspa"]);
         // libva and egl are staged; libpipewire-0.3 is unknown to pkg-config.
         machine.respond_pkg_config_module("libva", "1.20.0");
         machine.respond_pkg_config_var("libva_version", "2.20.0");
         machine.respond_pkg_config_module("egl", "1.5.0");
         let host = machine.host([(
             String::from("WATERUI_FAKE_DPKG_INSTALLED"),
-            APT_PACKAGES.to_string(),
+            format!("{APT_PACKAGES} libva-dev"),
         )]);
         let Err(ToolchainError::Fixable(installation)) =
             smol::block_on(LinuxSystemToolchain.check(&host))
@@ -1433,12 +1574,13 @@ mod host_tests {
         for tool in ["apt-get", "dpkg-query", "pkg-config"] {
             machine.install(tool);
         }
+        stage_lockfile(&machine, &["waterui-video", "cros-libva", "libspa"]);
         machine.respond_pkg_config_module("libva", "1.14.0");
         machine.respond_pkg_config_var("libva_version", "2.14.0");
         machine.respond_pkg_config_module("egl", "1.5.0");
         let host = machine.host([(
             String::from("WATERUI_FAKE_DPKG_INSTALLED"),
-            APT_PACKAGES.to_string(),
+            format!("{APT_PACKAGES} libva-dev"),
         )]);
         let Err(ToolchainError::Fixable(installation)) =
             smol::block_on(LinuxSystemToolchain.check(&host))
