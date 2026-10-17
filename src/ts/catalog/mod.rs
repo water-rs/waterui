@@ -44,8 +44,8 @@ mod values;
 use suiteki::Str;
 use waterui_ts::schema::{
     CatalogSchema, ChildrenSlot, ComponentSchema, ModifierSchema, RuntimePart, TsType, TypeSchema,
-    attributes_of, catalog_encoded_len, contract_hash, encode_catalog, encode_runtime_half,
-    payload, runtime_half_encoded_len,
+    attributes_of, catalog_encoded_len, contract_hash, dir_entry, encode_catalog,
+    encode_runtime_half, payload, runtime_half_encoded_len,
 };
 
 #[cfg(feature = "media")]
@@ -319,18 +319,25 @@ const ENCODED: [u8; catalog_encoded_len(&CATALOG) + 1] = encode_catalog(&CATALOG
 /// The encoded catalog, read back by `water components --json` and by the
 /// `.d.ts` generator.
 ///
-/// `#[used]` keeps the item in the object file and the rlib, so the CLI
-/// enumerates it by its `waterui_meta_` prefix and cuts the section data at
-/// the first NUL — a Mach-O symbol carries no size. The debug gate is what
-/// keeps a shipped application free of it.
+/// `#[used]` parks it in the `.wmeta` (`__DATA,__wmeta` on Apple) metadata
+/// directory as a `name`, NUL, `payload`, NUL record, so the CLI and tests
+/// recover it by record name — never by symbol, because a linked image need
+/// not carry a symbol table at all (a PE keeps none). The debug gate is
+/// what keeps a shipped application free of it.
 #[cfg(debug_assertions)]
 #[used]
+#[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
+#[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
 #[expect(
     non_upper_case_globals,
-    reason = "tooling enumerates the symbol by its `waterui_meta_` prefix, so the name is the \
+    reason = "tooling names the record by its `waterui_meta_` item name, so the name is the \
               contract"
 )]
-pub static waterui_meta_ts_catalog: [u8; catalog_encoded_len(&CATALOG) + 1] = ENCODED;
+pub static waterui_meta_ts_catalog: [u8; CATALOG_RECORD_LEN] =
+    dir_entry::<CATALOG_RECORD_LEN>(b"waterui_meta_ts_catalog", CATALOG_ENCODED);
+
+/// The record's length: the name, NUL, the encoded catalog, NUL.
+const CATALOG_RECORD_LEN: usize = b"waterui_meta_ts_catalog".len() + ENCODED.len() + 1;
 
 /// The encoded catalog without its terminator: the exact bytes the CLI
 /// recovers from the artifact.
@@ -353,20 +360,27 @@ const CATALOG_HALF: [u8; runtime_half_encoded_len(RuntimePart::Catalog, CATALOG_
 ///
 /// The CLI combines it with `waterui_meta_ts_runtime_library` from the
 /// runtime crate's rlib into the fingerprint a bundle manifest carries.
-/// Emitted on the same terms as [`waterui_meta_ts_catalog`]: `#[used]` keeps
-/// it in the rlib, the NUL ends it, and the debug gate keeps it out of a
-/// shipped application.
+/// Emitted on the same terms as [`waterui_meta_ts_catalog`]: `#[used]` parks
+/// a self-describing record in the `.wmeta` metadata directory, and the
+/// debug gate keeps it out of a shipped application.
 #[cfg(debug_assertions)]
 #[used]
+#[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
+#[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
 #[expect(
     non_upper_case_globals,
-    reason = "tooling enumerates the symbol by its `waterui_meta_` prefix, so the name is the \
+    reason = "tooling names the record by its `waterui_meta_` item name, so the name is the \
               contract"
 )]
-pub static waterui_meta_ts_runtime_catalog: [u8; runtime_half_encoded_len(
-    RuntimePart::Catalog,
-    CATALOG_HASH,
-) + 1] = CATALOG_HALF;
+pub static waterui_meta_ts_runtime_catalog: [u8; RUNTIME_CATALOG_RECORD_LEN] =
+    dir_entry::<RUNTIME_CATALOG_RECORD_LEN>(
+        b"waterui_meta_ts_runtime_catalog",
+        CATALOG_HALF_ENCODED,
+    );
+
+/// The record's length: the name, NUL, the encoded half, NUL.
+const RUNTIME_CATALOG_RECORD_LEN: usize =
+    b"waterui_meta_ts_runtime_catalog".len() + CATALOG_HALF.len() + 1;
 
 /// The encoded catalog half without its terminator: the exact bytes the CLI
 /// recovers from the artifact.
