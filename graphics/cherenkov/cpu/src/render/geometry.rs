@@ -180,8 +180,8 @@ impl GeometryCache {
 /// placement that differs only by a translation reuses the geometry
 /// exactly.
 ///
-/// The shape is first moved so that the corner of its box — its bounds,
-/// grown by the stroke's reach — sits at the origin, the space strokes are
+/// The shape is first moved so that the corner of its box — its bounds or a
+/// path's control box, grown by the stroke's reach — sits at the origin, the space strokes are
 /// outlined in. The linear part then maps it, and an integral shift puts
 /// the mapped box at `1` or more on both axes: like geometry on a surface,
 /// every frame coordinate is positive and away from zero, where the
@@ -199,7 +199,7 @@ impl Frame {
     #[expect(clippy::cast_possible_truncation, reason = "geometry is f32")]
     pub fn new(shape: &ShapeData, stroke: Option<&kurbo::Stroke>, transform: Affine) -> Self {
         let reach = stroke.map_or(0.0, stroke_reach);
-        let bounds = shape.bounds().inflate(reach, reach);
+        let bounds = control_bounds(shape).inflate(reach, reach);
         let corner = bounds.origin().to_vec2();
         let [a, b, c, d, _, _] = transform.as_coeffs();
         let linear = Affine::new([a, b, c, d, 0.0, 0.0]);
@@ -232,6 +232,18 @@ impl Frame {
     pub fn map(&self, path: BezPath) -> BezPath {
         self.map * path
     }
+}
+
+/// A box containing `shape`: a path's control box, which holds its curves
+/// without solving for their extrema, or the shape's own bounds.
+fn control_bounds(shape: &ShapeData) -> kurbo::Rect {
+    let ShapeData::Path { elements, .. } = shape else {
+        return shape.bounds();
+    };
+    let mut points = elements.iter().flat_map(|el| element_parts(el).1);
+    points.next().map_or(kurbo::Rect::ZERO, |first| {
+        points.fold(kurbo::Rect::from_points(first, first), |r, p| r.union_pt(p))
+    })
 }
 
 /// How far `stroke`'s outline reaches from its centreline: half the width,
