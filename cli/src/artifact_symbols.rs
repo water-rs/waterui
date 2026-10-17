@@ -1,10 +1,10 @@
 //! Symbols embedded in compiled Rust artifacts.
 //!
-//! Procedural macros report metadata to the CLI through `#[used] static` items
-//! whose mangled names carry a `waterui_meta_*` leaf, and through plain exports
-//! such as `waterui_preview_*`. Both are recovered here by enumerating the
-//! artifact's symbol table, which is ground truth: macros, cfgs, and generics
-//! are already resolved in it. The artifact is the one the target build just
+//! Procedural macros report metadata to the CLI through `waterui_meta_*`
+//! records in the `.wmeta` metadata directory, and through plain exports such
+//! as `waterui_preview_*`. The records are read from the directory section,
+//! the exports by enumerating the artifact's symbol table; both are ground
+//! truth, because macros, cfgs, and generics are already resolved in them. The artifact is the one the target build just
 //! produced — [`crate::build::BuiltTarget::app_library`] — never a separate
 //! host-profile compile.
 
@@ -120,7 +120,7 @@ impl ArtifactSymbols {
     /// Returns an error when the static is missing or its payload does not
     /// decode.
     pub fn bundle_mount_meta(&self, leaf: &str) -> Result<BundleMountMeta> {
-        let mut meta = BundleMountMeta::from_payload(&self.static_bytes(leaf)?)?;
+        let mut meta = BundleMountMeta::from_payload(&self.meta_record(leaf)?)?;
         meta.path = dunce::simplified(&meta.path).to_path_buf();
         meta.project = meta
             .project
@@ -128,19 +128,15 @@ impl ArtifactSymbols {
         Ok(meta)
     }
 
-    /// Bytes of a `#[used] static`.
-    ///
-    /// Two channels answer: a record named `leaf` in the `.wmeta`
-    /// (`__wmeta` on Mach-O) metadata directory — self-describing, so it
-    /// resolves on a linked image that carries no symbol table — and the
-    /// older spelling, where the symbol whose demangled leaf equals `leaf`
-    /// names the static and its section data is cut at the first NUL byte
-    /// because a Mach-O symbol carries no size.
+    /// The payload of the metadata-directory record named `leaf`: a
+    /// `name`, NUL, `payload`, NUL record parked in the `.wmeta` (`__wmeta`
+    /// on Mach-O) section. A record names itself, so it resolves on a
+    /// linked image that carries no symbol table.
     ///
     /// # Errors
-    /// Returns an error when no record or symbol has that leaf or when two
-    /// different definitions exist.
-    pub fn static_bytes(&self, leaf: &str) -> Result<Vec<u8>> {
+    /// Returns an error when no record has that name or when two records
+    /// with that name carry different payloads.
+    pub fn meta_record(&self, leaf: &str) -> Result<Vec<u8>> {
         let mut payloads = BTreeSet::new();
         for_each_object(&self.data, |file| {
             for_each_dir_section(&file, |data| {
@@ -150,44 +146,10 @@ impl ArtifactSymbols {
                         .map(|record| record.payload.to_vec()),
                 );
             });
-            for symbol in file.symbols() {
-                let Ok(raw) = symbol.name() else { continue };
-                // A leaf is spelled verbatim in its raw name (see
-                // `leaves_with_prefix`); only a candidate is demangled.
-                if !raw.contains(leaf) || leaf_of(&demangled_name(raw)) != Some(leaf) {
-                    continue;
-                }
-                let Some(index) = symbol.section_index() else {
-                    continue;
-                };
-                let Ok(section) = file.section_by_index(index) else {
-                    continue;
-                };
-                // A dir-record static's bytes are the record, not the
-                // payload — the directory pass above already read it.
-                let Ok(name) = section.name() else { continue };
-                if matches!(name, DIR_SECTION | "__wmeta") {
-                    continue;
-                }
-                let Ok(data) = section.data() else { continue };
-                let Ok(offset) = usize::try_from(symbol.address().wrapping_sub(section.address()))
-                else {
-                    continue;
-                };
-                if let Some(bytes) = data.get(offset..) {
-                    payloads.insert(
-                        bytes
-                            .split(|byte| *byte == 0)
-                            .next()
-                            .unwrap_or_default()
-                            .to_vec(),
-                    );
-                }
-            }
         });
         let mut payloads = payloads.into_iter();
         let Some(payload) = payloads.next() else {
-            bail!("no symbol or metadata record named `{leaf}` carries a payload in the artifact");
+            bail!("no metadata record named `{leaf}` in the artifact");
         };
         if payloads.next().is_some() {
             bail!("artifact defines `{leaf}` more than once with different payloads");
@@ -289,7 +251,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_meta_statics_and_exports_from_built_rlib() {
+    fn reads_meta_records_and_exports_from_built_rlib() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meta_static");
         let rlib = built_lib_fixture(&fixture, &[]);
         let symbols = ArtifactSymbols::read(&rlib).expect("rlib should parse");
@@ -297,13 +259,7 @@ mod tests {
         assert_eq!(previews, ["waterui_preview_meta_static_probe"]);
         assert_eq!(
             symbols
-                .static_bytes("waterui_meta_test_probe")
-                .expect("static should be present"),
-            b"hello"
-        );
-        assert_eq!(
-            symbols
-                .static_bytes("waterui_meta_test_dir_probe")
+                .meta_record("waterui_meta_test_dir_probe")
                 .expect("the dir record should be present"),
             b"dir probe",
             "a `.wmeta` record answers with its payload field, not the record"
@@ -324,7 +280,7 @@ mod tests {
         assert_eq!(previews, ["waterui_preview_meta_static_probe"]);
         assert_eq!(
             symbols.leaves_with_prefix("waterui_meta_"),
-            ["waterui_meta_test_dir_probe", "waterui_meta_test_probe"],
+            ["waterui_meta_test_dir_probe"],
             "the wasm rlib must enumerate the meta static names"
         );
     }
