@@ -885,9 +885,6 @@ impl AndroidSession {
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&*style));
         let theme: Rc<dyn WidgetTheme> = style;
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-        ));
         let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
         let shortcuts = env
@@ -920,6 +917,18 @@ impl AndroidSession {
             jni_env,
             bridge.host_view.clone(),
         )?;
+
+        // The capture service mounts its subtree under a snapshot of the
+        // assembled environment — the theme tokens, hooks and font
+        // collection a window's subtree resolves — so it must be installed
+        // last (water-rs/waterui#2703).
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::new(
+                Rc::clone(&theme),
+                env.clone(),
+                FontFamilyResolution::Lenient,
+            ),
+        ));
 
         let mut windows = VecDeque::from(windows);
         let window = windows
