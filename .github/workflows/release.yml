@@ -82,14 +82,18 @@ jobs:
             case ${#n} in
               1) echo "1/$n" ;;
               2) echo "2/$n" ;;
-              3) echo "3/${n:0:1}/$n" ;;
+              # The index lays a three-character name under its second
+              # character (`abc` -> `3/b/abc`).
+              3) echo "3/${n:1:1}/$n" ;;
               *) echo "${n:0:2}/${n:2:2}/$n" ;;
             esac
           }
           unclaimed=()
           for name in "${managed[@]}"; do
+            # `|| true` keeps a dead network from killing the step through
+            # `set -e` before the code check below can name the failed probe.
             code="$(curl -sL --retry 10 -o /dev/null -w '%{http_code}' \
-              "https://index.crates.io/$(index_path "$name")")"
+              "https://index.crates.io/$(index_path "$name")" || true)"
             if [[ "$code" == 404 ]]; then
               unclaimed+=("$name")
             elif [[ "$code" != 2* ]]; then
