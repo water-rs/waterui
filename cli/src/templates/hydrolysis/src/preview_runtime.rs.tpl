@@ -59,9 +59,14 @@ fn new_runtime(width: f32, height: f32, ledger: &ContentLedger) -> HeadlessRunti
     // installs the realizations and options the application configures
     // (`waterui_map_gpu::install`, provider options, fonts), and the preview
     // style is constructed alongside exactly as `main` hands its style to
-    // `hydrolysis::run`. The capture's ledger layers over it, so every view
-    // the preview mounts owes its content to this capture.
-    let env = preview_symbol::app_environment().extending(ledger.clone());
+    // `hydrolysis::run`. On Apple that leaves video to AVPlayer, and this
+    // host is Hydrolysis on every OS, so the self-drawn player is installed
+    // here — otherwise a `VideoPlayer` stays an unbridged native view.
+    // The capture's ledger layers over that environment, so every view the
+    // preview mounts owes its content to this capture.
+    let mut env = preview_symbol::app_environment();
+    waterui::realization::install_video(&mut env);
+    let env = env.extending(ledger.clone());
     let content = AnyViewBuilder::new(preview_symbol::load_preview_view);
     // Previews are read on HiDPI displays, so render at 2x: the layout stays in
     // logical units and only the captured image gets sharper.
@@ -232,6 +237,10 @@ fn input_event(event: ScenarioEvent) -> InputEvent {
         ScenarioPointerButton::Primary => PointerButton::Primary,
         ScenarioPointerButton::Secondary => PointerButton::Secondary,
         ScenarioPointerButton::Middle => PointerButton::Middle,
+        _ => panic!(
+            "hydrolysis preview: unsupported pointer button {:?}",
+            event.button
+        ),
     };
     match event.kind {
         ScenarioEventKind::PointerMove => InputEvent::PointerMove {
@@ -265,6 +274,10 @@ fn input_event(event: ScenarioEvent) -> InputEvent {
             dy: event.dy,
             is_line_delta: event.is_line_delta,
         },
+        _ => panic!(
+            "hydrolysis preview: unsupported scenario event {:?}",
+            event.kind
+        ),
     }
 }
 
