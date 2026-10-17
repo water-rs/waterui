@@ -287,6 +287,8 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
 /// the path comes from `Water.toml`'s `[package].assets_path` (default
 /// `assets/`). The generated `assets` module is the main bundle: it keeps an
 /// empty path prefix and is the only mount that can claim the `AppIcon` role.
+///
+/// Requires the `assets` feature of the `waterui` crate.
 pub fn assets(input: TokenStream) -> TokenStream {
     if !proc_macro2::TokenStream::from(input).is_empty() {
         return compile_error("assets!() does not accept arguments", Span::call_site());
@@ -307,6 +309,8 @@ pub fn assets(input: TokenStream) -> TokenStream {
 /// static so the CLI stages the directory at package time without scanning
 /// sources. The path is resolved against `CARGO_MANIFEST_DIR` at expansion
 /// time.
+///
+/// Requires the `assets` feature of the `waterui` crate.
 pub fn include_bundle(input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(input as IncludeBundleArgs);
     let path_span = args.path.span();
@@ -540,6 +544,8 @@ pub fn include_web(input: TokenStream) -> TokenStream {
 ///
 /// Local paths are relative to the packaged asset root. Native handles take
 /// a `ResourceContext` for loading; image/video views obtain it from their environment.
+///
+/// Requires the `assets` feature of the `waterui` crate.
 pub fn asset(input: TokenStream) -> TokenStream {
     let input = parse_macro_input!(input as AssetInput);
     let waterui = match waterui_crate_path() {
