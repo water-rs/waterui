@@ -136,6 +136,7 @@ waterui-assets-planner = { workspace = true, features = ["font-declarations"] }
 waterui-preview-protocol.workspace = true
 waterui-inspector-protocol.workspace = true
 waterui-mcp-protocol.workspace = true
+waterui-meta.workspace = true
 aither-core = "0.4"
 aither-mcp = { version = "0.4", default-features = false, features = ["server"] }
 # Decodes the base64 image payloads a `tools/call` response carries back from
