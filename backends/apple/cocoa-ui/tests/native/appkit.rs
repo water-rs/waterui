@@ -84,7 +84,66 @@ pub fn trials() -> Vec<Trial> {
             a_detached_capture_renders_and_teardown_stays_clean
         ),
         case!("capture", a_hidden_capture_renders_without_revealing),
+        case!(
+            "appkit::accessibility",
+            a_frame_provider_projects_the_answer_rect_until_detached
+        ),
     ])
+}
+
+/// A view stretched to its assigned frame must be able to announce a
+/// different rect to assistive technology: the provider answers the
+/// response rect in the view's own coordinate space, the accessibility
+/// frame projects it to screen space, and dropping the guard restores
+/// the view's own reported frame — its native frame never changed.
+fn a_frame_provider_projects_the_answer_rect_until_detached() {
+    use cocoa_ui::objc2_app_kit::NSAccessibility;
+    let mtm = marker();
+    let window = Window::new(
+        mtm,
+        Rect::new(5000.0, 5000.0, 300.0, 300.0),
+        WindowStyle::empty(),
+    );
+    let content = NSView::new(mtm);
+    content.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(300.0, 300.0)));
+    window.native().setContentView(Some(&content));
+
+    // The stretched view: a 160×160 assignment whose view only answers
+    // 8×8 — the `.size(8,8)` case the provider exists for.
+    let child = NSView::new(mtm);
+    child.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(160.0, 160.0)));
+    content.addSubview(&child);
+    let own = child.accessibilityFrame();
+
+    let guard = cocoa_ui::accessibility::set_frame_provider(&child, |_view| {
+        Some(Rect::new(76.0, 76.0, 8.0, 8.0))
+    });
+    let projected = child.accessibilityFrame();
+    let expected = cocoa_ui::objc2_app_kit::NSAccessibilityFrameInView(
+        &child,
+        NSRect::new(NSPoint::new(76.0, 76.0), NSSize::new(8.0, 8.0)),
+    );
+    assert_eq!(
+        projected, expected,
+        "the provider's rect must reach the announced frame"
+    );
+
+    // The providerless sibling of the same class still reports its own
+    // frame — the override's no-provider path dispatches to what the
+    // class answered before.
+    let sibling = NSView::new(mtm);
+    sibling.setFrame(NSRect::new(NSPoint::new(4.0, 5.0), NSSize::new(20.0, 30.0)));
+    content.addSubview(&sibling);
+    let sibling_frame = sibling.accessibilityFrame();
+    let sibling_expected = cocoa_ui::objc2_app_kit::NSAccessibilityFrameInView(
+        &sibling,
+        NSRect::new(NSPoint::ZERO, NSSize::new(20.0, 30.0)),
+    );
+    assert_eq!(sibling_frame, sibling_expected);
+
+    // Detached: the view reports its own frame again.
+    drop(guard);
+    assert_eq!(child.accessibilityFrame(), own);
 }
 
 /// The extended linear Display-P3 constructor must land in that space —
