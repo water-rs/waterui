@@ -309,9 +309,7 @@ impl RenderNode {
                         .borrow_mut()
                         .layout(renderer, &node.env, safe_area, proposal, size);
                 }
-                node.child
-                    .borrow()
-                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+                node.flush_content(renderer, ctx, env);
             }
             Self::Retain(node) => node
                 .child
@@ -440,6 +438,13 @@ impl RenderNode {
                     }
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
+                    }
+                    WrapperEffect::Transition(declaration) => {
+                        // The owning site paints the transition around its
+                        // whole instance; the declaration itself draws through.
+                        declaration.assert_owned();
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
@@ -768,9 +773,13 @@ impl RenderNode {
                         );
                         let viewport = renderer.current_placement();
                         viewport.set_content_offset(-offset);
-                        renderer
-                            .program()
-                            .begin_inner(viewport_rect, offset, Rc::clone(&viewport));
+                        let stretch = renderer.scroll_stretch(&handle, viewport_rect);
+                        renderer.program().begin_inner(
+                            viewport_rect,
+                            offset,
+                            stretch,
+                            Rc::clone(&viewport),
+                        );
                         let world = renderer.record_world(content_ctx.local);
                         renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
                             bounds: lazy_viewport,
@@ -976,6 +985,10 @@ impl RenderNode {
                         } else {
                             node.child.emit_accessibility(renderer, child_env);
                         }
+                    }
+                    WrapperEffect::Transition(declaration) => {
+                        declaration.assert_owned();
+                        node.child.emit_accessibility(renderer, child_env);
                     }
                     _ => node.child.emit_accessibility(renderer, child_env),
                 }

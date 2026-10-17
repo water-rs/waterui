@@ -464,9 +464,7 @@ impl HydrolysisRenderer {
         });
 
         if matches!(effect.gesture, Gesture::Tap(_))
-            && let Some(style) = env
-                .get::<waterui_backend_core::widget::InteractionStyle>()
-                .cloned()
+            && let Some(style) = env.get::<crate::theme::InteractionStyle>().cloned()
         {
             let interaction_key = InteractionKey::for_rc(&effect.action, 0);
             let (interaction, press_slot, _) = renderer.bind_control_interaction_target(
@@ -662,6 +660,9 @@ impl HydrolysisRenderer {
             }
             Event::HoverMove => {
                 let captured_env = env.clone();
+                // The dispatcher hands `point` in the registration's local
+                // space — the space `bounds` is in — so the view-relative
+                // location is the offset from the view's own origin.
                 renderer.register_hover_move_target(interaction_key, bounds, move |point, env| {
                     let hover_event = HoverEvent::new(waterui_core::layout::Point::new(
                         crate::num_cast::f64_as_f32(point.x)
@@ -739,7 +740,8 @@ impl HydrolysisRenderer {
                 is_presented: value.is_presented.clone(),
                 placed_edge: value.placed_edge.clone(),
                 env: env.clone(),
-                content: Rc::clone(&value.content),
+                builder: value.builder.clone(),
+                presentations: Rc::clone(&value.presentations),
                 marker: Rc::clone(&value.marker),
             });
         render_content(renderer);

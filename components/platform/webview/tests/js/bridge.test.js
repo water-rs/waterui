@@ -11,9 +11,8 @@
 //     unreachable from a page for as long as the feature had existed;
 //   * integers past 2^53 lost their low bits in both directions.
 //
-// Each of those is one assertion here. Run with `bun test` from the repository
-// root; this is deliberately not wired into CI, so run it yourself when you
-// touch anything under `src/js/`.
+// Each of those is one assertion here. Cargo does not execute the injected
+// JavaScript, so run `bun test` on this directory whenever `src/js/` changes.
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -105,14 +104,27 @@ describe("invoke", () => {
   });
 });
 
+/// Declares `fields` — `[key, value, writable]` — and applies the first reply
+/// carrying their values, which is what makes a document ready.
+function seedReply(page, fields) {
+  const changes = {};
+  for (const [key, value, writable] of fields) {
+    page.__wateruiState.declare(key, writable);
+    changes[key] = { v: value, e: 0, w: writable };
+  }
+  page.__wateruiState.apply(changes);
+}
+
 describe("mirrored state", () => {
   let page;
   let sent;
   let waterui;
   beforeEach(() => {
     ({ page, sent, waterui } = loadPage());
-    page.__wateruiState.define("theme", "light", 0, true);
-    page.__wateruiState.define("doubled", 4, 0, false);
+    seedReply(page, [
+      ["theme", "light", true],
+      ["doubled", 4, false],
+    ]);
   });
 
   // `bridge.js` used to freeze `waterui`, which made `state.js` throw while
@@ -168,13 +180,122 @@ describe("mirrored state", () => {
     expect(seen).toEqual(["dark", "sepia"]);
   });
 
+  // Unsubscribe owns a registration, not a callback slot: deliveries run
+  // over a snapshot, so cancel or subscribe inside a call never reorders
+  // what this notification still owes.
+  describe.each([["local"], ["patch"]])("watcher ownership (%s)", (mode) => {
+    const change = (value) => {
+      if (mode === "local") {
+        waterui.state.theme = value;
+      } else {
+        page.__wateruiState.apply({ theme: { v: value, e: 1, w: true } });
+      }
+    };
+
+    test("a watcher that unsubscribes itself stops only its own calls", () => {
+      const seen = [];
+      const stopA = waterui.watch("theme", (value) => {
+        seen.push(["A", value]);
+        stopA();
+      });
+      waterui.watch("theme", (value) => seen.push(["B", value]));
+      waterui.watch("theme", (value) => seen.push(["C", value]));
+
+      change("dark");
+      change("sepia");
+      expect(seen).toEqual([
+        ["A", "dark"],
+        ["B", "dark"],
+        ["C", "dark"],
+        ["B", "sepia"],
+        ["C", "sepia"],
+      ]);
+    });
+
+    test("cancelling a later watcher before its turn skips only it", () => {
+      const seen = [];
+      let stopB;
+      waterui.watch("theme", (value) => {
+        seen.push(["A", value]);
+        // Idempotent: the second call is a no-op, not a fresh removal.
+        stopB();
+        stopB();
+      });
+      stopB = waterui.watch("theme", (value) => seen.push(["B", value]));
+      waterui.watch("theme", (value) => seen.push(["C", value]));
+
+      change("dark");
+      // A registration cancelled mid-delivery must not be invoked, and
+      // removing it must not move a still-active callback past the loop.
+      expect(seen).toEqual([
+        ["A", "dark"],
+        ["C", "dark"],
+      ]);
+      change("sepia");
+      expect(seen).toEqual([
+        ["A", "dark"],
+        ["C", "dark"],
+        ["A", "sepia"],
+        ["C", "sepia"],
+      ]);
+    });
+
+    test("a watcher registered during a notification starts on the next one", () => {
+      const seen = [];
+      let added = false;
+      waterui.watch("theme", (value) => {
+        seen.push(["A", value]);
+        if (!added) {
+          added = true;
+          waterui.watch("theme", (next) => seen.push(["B", next]));
+        }
+      });
+      change("dark");
+      // A registration made inside a delivery belongs to the next one.
+      expect(seen).toEqual([["A", "dark"]]);
+      change("sepia");
+      expect(seen).toEqual([
+        ["A", "dark"],
+        ["A", "sepia"],
+        ["B", "sepia"],
+      ]);
+      change("third");
+      expect(seen).toEqual([
+        ["A", "dark"],
+        ["A", "sepia"],
+        ["B", "sepia"],
+        ["A", "third"],
+        ["B", "third"],
+      ]);
+    });
+
+    test("two handles on the same callback unsubscribe independently", () => {
+      const seen = [];
+      const callback = (value) => seen.push(value);
+      const stopFirst = waterui.watch("theme", callback);
+      const stopSecond = waterui.watch("theme", callback);
+
+      change("dark");
+      expect(seen).toEqual(["dark", "dark"]);
+
+      stopFirst();
+      stopFirst(); // already inactive — not a second removal
+      change("sepia");
+      expect(seen).toEqual(["dark", "dark", "sepia"]);
+
+      stopSecond();
+      change("third");
+      expect(seen).toEqual(["dark", "dark", "sepia"]);
+    });
+  });
+
   // A patch used to hand watchers the raw wire value while the mirror held the
   // revived one, so `waterui.state.id` was a BigInt and the watcher argument
   // was `{__wateruiBigInt: "…"}` — arithmetic in a watcher silently operated on
   // an object.
   test("a watcher receives the same revived value the mirror holds", () => {
     const BIG = "9007199254740993";
-    page.__wateruiState.define("id", 1, 0, true);
+    page.__wateruiState.apply({ id: { v: 1, e: 0, w: true } });
     let observed;
     waterui.watch("id", (value) => {
       observed = value;
@@ -184,10 +305,10 @@ describe("mirrored state", () => {
     expect(observed).toBe(waterui.state.id);
   });
 
-  // A document that loaded while a navigation was already in flight can miss
-  // the seed entirely. A patch has to be able to define the key, or every read
-  // of that key throws for the life of the page.
-  test("a patch defines a key the document never saw seeded", () => {
+  // A reply is self-sufficient: a key the document never saw declared still
+  // gets its property, or every read of that key throws for the life of the
+  // page.
+  test("a patch defines a key the document never saw declared", () => {
     expect(() => waterui.state.locale).toThrow(ReferenceError);
     page.__wateruiState.apply({ locale: { v: "en", e: 3, w: true } });
     expect(waterui.state.locale).toBe("en");
@@ -203,6 +324,76 @@ describe("mirrored state", () => {
     expect(() => {
       waterui.state.derived = 9;
     }).toThrow(TypeError);
+  });
+});
+
+// No value is part of injected text: a document holds nothing until its
+// first reply, and says so rather than making a value up.
+describe("the ready boundary", () => {
+  let page;
+  let sent;
+  let waterui;
+  beforeEach(() => {
+    ({ page, sent, waterui } = loadPage());
+    page.__wateruiState.declare("theme", true);
+    page.__wateruiState.declare("doubled", false);
+  });
+
+  test("a declared key cannot be read or assigned before the first reply", () => {
+    expect(() => waterui.state.theme).toThrow("waterui.ready");
+    expect(() => {
+      waterui.state.theme = "dark";
+    }).toThrow("waterui.ready");
+    expect(sent).toHaveLength(0);
+    // Read-only stays the first thing a derived key says.
+    expect(() => {
+      waterui.state.doubled = 9;
+    }).toThrow(TypeError);
+  });
+
+  test("an unknown key is still refused, not deferred", () => {
+    expect(() => waterui.state.thmee).toThrow(ReferenceError);
+    expect(() => waterui.watch("thmee", () => {})).toThrow(ReferenceError);
+  });
+
+  test("the first reply makes every key readable and resolves `ready`", async () => {
+    let settled = false;
+    waterui.ready.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    page.__wateruiState.apply({
+      theme: { v: "light", e: 0, w: true },
+      doubled: { v: 4, e: 0, w: false },
+    });
+    await waterui.ready;
+    expect(settled).toBe(true);
+    expect(waterui.state.theme).toBe("light");
+    expect(waterui.state.doubled).toBe(4);
+  });
+
+  test("a watcher registered before the first reply hears its value", () => {
+    const seen = [];
+    waterui.watch("theme", (value) => {
+      // Every value of the reply has landed before any watcher runs.
+      seen.push([value, waterui.state.doubled]);
+    });
+    page.__wateruiState.apply({
+      theme: { v: "light", e: 0, w: true },
+      doubled: { v: 4, e: 0, w: false },
+    });
+    expect(seen).toEqual([["light", 4]]);
+  });
+
+  test("`ready` cannot be replaced by page script", () => {
+    const ready = waterui.ready;
+    expect(() => {
+      "use strict";
+      waterui.ready = Promise.resolve();
+    }).toThrow(TypeError);
+    expect(waterui.ready).toBe(ready);
   });
 });
 
@@ -346,7 +537,7 @@ describe("pulling mirrored state", () => {
     return { page, sent, pageshow, reported };
   }
 
-  /// Runs the seed `StateRegistry::seed_script` renders for `data`.
+  /// Runs the seed `StateDeclarations::seed_script` renders for `data`.
   const seed = (page, data) =>
     new Function("globalThis", `${source("seed.js")}(${JSON.stringify(data)});`)(page);
 
@@ -355,24 +546,40 @@ describe("pulling mirrored state", () => {
   const answer = (page, envelope, cursor, changes) =>
     page.__wateruiResolve(envelope.id, true, { json: { cursor, changes } });
 
-  test("the seed defines every key and pulls from its cursor", () => {
+  test("the seed declares every key, carries no value, and pulls for every key", async () => {
     const { page, sent } = loadPulledPage();
-    seed(page, {
-      rules: ["https://app.waterui.dev"],
-      cursor: 4,
-      fields: [["count", { v: 7, e: 4, w: true }]],
-    });
+    seed(page, { rules: ["https://app.waterui.dev"], fields: [["count", true]] });
+    expect(Object.keys(page.waterui.state)).toEqual(["count"]);
+    expect(() => page.waterui.state.count).toThrow("waterui.ready");
+    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([{ since: null }]);
+
+    answer(page, pulls(sent)[0], 4, { count: { v: 7, e: 4, w: true } });
+    await page.waterui.ready;
     expect(page.waterui.state.count).toBe(7);
-    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([{ since: 4 }]);
+    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([
+      { since: null },
+      { since: 4 },
+    ]);
+  });
+
+  test("a document with no keys is ready without pulling", async () => {
+    const { page, sent } = loadPulledPage();
+    seed(page, { rules: ["https://app.waterui.dev"], fields: [] });
+    await page.waterui.ready;
+    expect(sent).toEqual([]);
+  });
+
+  test("a failed first pull rejects `ready` instead of inventing values", async () => {
+    const { page, sent } = loadPulledPage();
+    seed(page, { rules: ["*"], fields: [["count", true]] });
+    page.__wateruiResolve(pulls(sent)[0].id, false, { message: "no state here" });
+    await expect(page.waterui.ready).rejects.toThrow("no state here");
+    expect(() => page.waterui.state.count).toThrow("waterui.ready");
   });
 
   test("the seed does nothing in a document outside the rules", () => {
     const { page, sent } = loadPulledPage("https://www.google.com");
-    seed(page, {
-      rules: ["https://app.waterui.dev"],
-      cursor: 4,
-      fields: [["count", { v: 7, e: 4, w: true }]],
-    });
+    seed(page, { rules: ["https://app.waterui.dev"], fields: [["count", true]] });
     expect(Object.keys(page.waterui.state)).toEqual([]);
     expect(sent).toEqual([]);
   });
@@ -380,61 +587,77 @@ describe("pulling mirrored state", () => {
   test("the seed does nothing in a sub-frame, even of an admitted origin", () => {
     const { page, sent } = loadPulledPage();
     page.top = {};
-    seed(page, { rules: ["*"], cursor: 0, fields: [["count", { v: 1, e: 0, w: true }]] });
+    seed(page, { rules: ["*"], fields: [["count", true]] });
     expect(Object.keys(page.waterui.state)).toEqual([]);
     expect(sent).toEqual([]);
   });
 
   test("local files are admitted by protocol, every origin by `*`", () => {
     const local = loadPulledPage("file:///tmp/index.html");
-    seed(local.page, { rules: ["file:"], cursor: 0, fields: [["n", { v: 1, e: 0, w: false }]] });
-    expect(local.page.waterui.state.n).toBe(1);
+    seed(local.page, { rules: ["file:"], fields: [["n", false]] });
+    expect(Object.keys(local.page.waterui.state)).toEqual(["n"]);
 
     const any = loadPulledPage("https://anywhere.example");
-    seed(any.page, { rules: ["*"], cursor: 0, fields: [["n", { v: 2, e: 0, w: false }]] });
-    expect(any.page.waterui.state.n).toBe(2);
+    seed(any.page, { rules: ["*"], fields: [["n", false]] });
+    expect(Object.keys(any.page.waterui.state)).toEqual(["n"]);
   });
+
+  /// Seeds `count` and answers the first pull with `value` at `cursor`.
+  async function readyAt(page, sent, cursor, value) {
+    seed(page, { rules: ["*"], fields: [["count", true]] });
+    answer(page, pulls(sent)[0], cursor, { count: { v: value, e: cursor, w: true } });
+    await page.waterui.ready;
+  }
 
   test("a reply applies its changes and the next pull asks from its cursor", async () => {
     const { page, sent } = loadPulledPage();
-    seed(page, { rules: ["*"], cursor: 0, fields: [["count", { v: 0, e: 0, w: true }]] });
+    await readyAt(page, sent, 0, 0);
     const seen = [];
     page.waterui.watch("count", (value) => seen.push(value));
 
-    answer(page, pulls(sent)[0], 3, { count: { v: 5, e: 3, w: true } });
+    answer(page, pulls(sent)[1], 3, { count: { v: 5, e: 3, w: true } });
     await flush();
     expect(page.waterui.state.count).toBe(5);
     expect(seen).toEqual([5]);
-    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([{ since: 0 }, { since: 3 }]);
+    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([
+      { since: null },
+      { since: 0 },
+      { since: 3 },
+    ]);
   });
 
   test("an empty reply, sent when a navigation starts, pulls again from the same cursor", async () => {
     const { page, sent } = loadPulledPage();
-    seed(page, { rules: ["*"], cursor: 2, fields: [["count", { v: 0, e: 2, w: true }]] });
-    answer(page, pulls(sent)[0], 2, {});
+    await readyAt(page, sent, 2, 0);
+    answer(page, pulls(sent)[1], 2, {});
     await flush();
-    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([{ since: 2 }, { since: 2 }]);
+    expect(pulls(sent).map((envelope) => envelope.json)).toEqual([
+      { since: null },
+      { since: 2 },
+      { since: 2 },
+    ]);
   });
 
   test("a watcher that throws is reported and stops neither the others nor the loop", async () => {
     const { page, sent, reported } = loadPulledPage();
-    seed(page, { rules: ["*"], cursor: 0, fields: [["count", { v: 0, e: 0, w: true }]] });
+    await readyAt(page, sent, 0, 0);
     const seen = [];
     page.waterui.watch("count", () => {
       throw new Error("broken watcher");
     });
     page.waterui.watch("count", (value) => seen.push(value));
 
-    answer(page, pulls(sent)[0], 1, { count: { v: 1, e: 1, w: true } });
+    answer(page, pulls(sent)[1], 1, { count: { v: 1, e: 1, w: true } });
     await flush();
     expect(reported.map((error) => error.message)).toEqual(["broken watcher"]);
     expect(seen).toEqual([1]);
 
-    answer(page, pulls(sent)[1], 2, { count: { v: 2, e: 2, w: true } });
+    answer(page, pulls(sent)[2], 2, { count: { v: 2, e: 2, w: true } });
     await flush();
     expect(page.waterui.state.count).toBe(2);
     expect(seen).toEqual([1, 2]);
     expect(pulls(sent).map((envelope) => envelope.json)).toEqual([
+      { since: null },
       { since: 0 },
       { since: 1 },
       { since: 2 },
@@ -443,27 +666,29 @@ describe("pulling mirrored state", () => {
 
   test("a back/forward-cache restore asks for every key and ignores the old loop", async () => {
     const { page, sent, pageshow } = loadPulledPage();
-    seed(page, { rules: ["*"], cursor: 1, fields: [["count", { v: 1, e: 1, w: true }]] });
-    const frozen = pulls(sent)[0];
+    await readyAt(page, sent, 1, 1);
+    const frozen = pulls(sent)[1];
 
     pageshow(false);
-    expect(pulls(sent)).toHaveLength(1);
+    expect(pulls(sent)).toHaveLength(2);
 
     pageshow(true);
-    const restored = pulls(sent)[1];
+    const restored = pulls(sent)[2];
     expect(restored.json).toEqual({ since: null });
+    // The restored document still holds the values it was frozen with.
+    expect(page.waterui.state.count).toBe(1);
 
     // The frozen document's pull is answered late; it belongs to a loop that
     // no longer runs, so it changes nothing and asks for nothing.
     answer(page, frozen, 2, { count: { v: 2, e: 2, w: true } });
     await flush();
     expect(page.waterui.state.count).toBe(1);
-    expect(pulls(sent)).toHaveLength(2);
+    expect(pulls(sent)).toHaveLength(3);
 
     answer(page, restored, 3, { count: { v: 3, e: 3, w: true } });
     await flush();
     expect(page.waterui.state.count).toBe(3);
-    expect(pulls(sent)[2].json).toEqual({ since: 3 });
+    expect(pulls(sent)[3].json).toEqual({ since: 3 });
   });
 });
 
@@ -474,8 +699,8 @@ describe("integers a JavaScript number cannot hold", () => {
   let waterui;
   beforeEach(() => ({ page, sent, waterui } = loadPage()));
 
-  test("survive being seeded, patched, and written back", () => {
-    page.__wateruiState.define("id", { __wateruiBigInt: BIG }, 0, true);
+  test("survive the first reply, a patch, and being written back", () => {
+    seedReply(page, [["id", { __wateruiBigInt: BIG }, true]]);
     expect(waterui.state.id).toBe(BigInt(BIG));
 
     page.__wateruiState.apply({ id: { v: { __wateruiBigInt: "123456789012345678" }, e: 1 } });
@@ -494,7 +719,7 @@ describe("integers a JavaScript number cannot hold", () => {
   // Tagging follows the value, so ordinary numbers must stay ordinary or page
   // arithmetic breaks on values that were never at risk.
   test("leave ordinary numbers alone", async () => {
-    page.__wateruiState.define("small", 42, 0, true);
+    seedReply(page, [["small", 42, true]]);
     expect(waterui.state.small).toBe(42);
 
     const reply = waterui.invoke("count");

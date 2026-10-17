@@ -124,7 +124,7 @@ impl HydroNativeView for Native<TableConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_table_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -135,7 +135,7 @@ fn measure_table_intrinsic(
     table: &TableConfig,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let columns = state.measure_signal(&table.columns);
     if columns.is_empty() {
@@ -164,7 +164,7 @@ fn measure_table_intrinsic(
 pub fn table_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
-    theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
     state: &Rc<RefCell<TableRenderState>>,
     env: &Environment,
 ) {
@@ -427,7 +427,7 @@ pub fn measure_table_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     ViewDimensions::new(measure_table_intrinsic(table, state, env, theme))
 }
@@ -589,9 +589,11 @@ pub fn render_table_parts(
         );
         let viewport_placement = renderer.current_placement();
         viewport_placement.set_content_offset(-offset);
+        let stretch = renderer.scroll_stretch(&handle, surface_viewport);
         renderer.program().begin_inner(
             surface_viewport,
             offset,
+            stretch,
             std::rc::Rc::clone(&viewport_placement),
         );
         // The cells record at `viewport.origin + content`: the content's local

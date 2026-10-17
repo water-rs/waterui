@@ -20,9 +20,6 @@ pub const VERTEX: u8 = 1;
 /// Fragment stage bit in [`Entry::stages`].
 pub const FRAGMENT: u8 = 2;
 /// Compute stage bit in [`Entry::stages`].
-///
-/// Used by `build.rs`; the crate itself has no compute pipelines.
-#[allow(dead_code)]
 pub const COMPUTE: u8 = 4;
 
 /// Resource kind of one binding.
@@ -32,8 +29,13 @@ pub enum Kind {
     Uniform,
     /// A read-only storage buffer.
     StorageRead,
+    /// A read-write storage buffer.
+    Storage,
     /// A sampled `texture_2d<f32>`.
-    Texture,
+    Texture {
+        /// Whether a filtering sampler may bind it.
+        filterable: bool,
+    },
     /// A sampled `texture_2d<u32>` (external frame planes are code-bearing
     /// uint textures the shader decodes itself).
     TextureUint,
@@ -83,13 +85,30 @@ impl Entry {
         }
     }
 
+    const fn storage(binding: u32, stages: u8) -> Self {
+        Self {
+            binding,
+            stages,
+            kind: Kind::Storage,
+            dynamic_offset: false,
+            min_size: 0,
+        }
+    }
+
     const fn texture(binding: u32) -> Self {
         Self {
             binding,
             stages: FRAGMENT,
-            kind: Kind::Texture,
+            kind: Kind::Texture { filterable: true },
             dynamic_offset: false,
             min_size: 0,
+        }
+    }
+
+    const fn texture_unfilterable(binding: u32) -> Self {
+        Self {
+            kind: Kind::Texture { filterable: false },
+            ..Self::texture(binding)
         }
     }
 
@@ -115,16 +134,28 @@ impl Entry {
 }
 
 /// Group 0 of the engine pipelines (`shader.wgsl`): the per-pass globals
-/// window, the instance and gradient-stop buffers and the glyph atlas.
-/// Backdrop union member records ride in the stops buffer, so the group
-/// stays fixed at four entries.
+/// window, the instance and gradient-stop buffers, the glyph atlas, the
+/// GPU coverage cell buffer of issue #2543 and the image transfer table.
+/// Backdrop union member records ride in the stops buffer. The cell buffer
+/// and the table are fragment storage like the stops, so neither needs a
+/// new device capability.
 pub const ENGINE_GROUP0: &[Entry] = &[
     // One 32-byte Globals window; the dynamic offset selects the pass's slot.
     Entry::uniform(0, VERTEX | FRAGMENT, true, 32),
     Entry::storage_read(1, VERTEX | FRAGMENT),
     Entry::storage_read(2, FRAGMENT),
     Entry::texture(3),
+    // The frame's GPU-coverage cell texels (issue #2543): a storage
+    // buffer the fragment stage reads instead of the atlas for
+    // FLAG_CELL_BUFFER instances.
+    Entry::storage_read(4, FRAGMENT),
+    // The sRGB transfer decode table of natively stored 8-bit images.
+    Entry::storage_read(IMAGE_DECODE_BINDING, FRAGMENT),
 ];
+
+/// The `ENGINE_GROUP0` binding of the image transfer decode table
+/// (`image_decode` in `shader.wgsl`).
+pub const IMAGE_DECODE_BINDING: u32 = 5;
 
 /// Group 1 of the engine pipelines: the textures a composite or paint
 /// samples — composite source, blend backdrop, image paint, clip mask.
@@ -196,11 +227,40 @@ pub const REDUCE_GROUP0: &[Entry] = &[
     Entry::texture(1),
 ];
 
+/// The space conversion pipeline's single group (`space_convert.wgsl`):
+/// the texture it converts.
+pub const SPACE_CONVERT_GROUP0: &[Entry] = &[Entry::texture(0)];
+
 /// The engine pipelines' two groups, in declaration order.
 ///
 /// Used by `build.rs`; the crate addresses the groups directly.
 #[allow(dead_code)]
 pub const ENGINE_GROUPS: &[&[Entry]] = &[ENGINE_GROUP0, ENGINE_GROUP1];
+
+/// The GPU coverage kernels' single group (`coverage.wgsl`, issue
+/// #2543): per-frame compute input, coverage scratch, the emitted cell
+/// texels, the frame instance buffer's tail and the indirect argument
+/// buffer.
+///
+/// Used by `build.rs`; the crate builds the layout from `COVERAGE_GROUP0`
+/// directly.
+pub const COVERAGE_GROUP0: &[Entry] = &[
+    Entry::uniform(0, COMPUTE, true, 80),
+    Entry::storage_read(1, COMPUTE),
+    Entry::storage(2, COMPUTE),
+    Entry::storage(3, COMPUTE),
+    Entry::storage(4, COMPUTE),
+    Entry::storage(5, COMPUTE),
+    Entry::storage(6, COMPUTE),
+    Entry::storage(7, COMPUTE),
+    Entry::storage_read(8, COMPUTE),
+];
+
+/// The coverage pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const COVERAGE_GROUPS: &[&[Entry]] = &[COVERAGE_GROUP0];
 /// The present pipeline's group list.
 ///
 /// Used by `build.rs`; the crate addresses the group directly.
@@ -255,6 +315,22 @@ pub const RESOLVE_GROUPS: &[&[Entry]] = &[RESOLVE_GROUP0];
 /// Used by `build.rs`; the crate addresses the group directly.
 #[allow(dead_code)]
 pub const REDUCE_GROUPS: &[&[Entry]] = &[REDUCE_GROUP0];
+
+/// The space conversion pipeline's group list.
+///
+/// Used by `build.rs`; the crate addresses the group directly.
+#[allow(dead_code)]
+pub const SPACE_CONVERT_GROUPS: &[&[Entry]] = &[SPACE_CONVERT_GROUP0];
+
+/// Silhouette convolution: unfilterable source and the uploaded kernel.
+pub const SHADOW_GROUP0: &[Entry] = &[
+    Entry::texture_unfilterable(0),
+    Entry::storage_read(1, FRAGMENT),
+];
+
+/// The silhouette convolution's single bind group.
+#[allow(dead_code)]
+pub const SHADOW_GROUPS: &[&[Entry]] = &[SHADOW_GROUP0];
 
 /// Group 1 of the Vulkan native external-frame module: `EXTERNAL_GROUP1`
 /// plus the designated texture/sampler pair at bindings 5–6 that the
@@ -323,7 +399,7 @@ pub fn metal_plan(groups: &[&[Entry]], stage: u8) -> StagePlan {
     let mut needs_sizes = false;
     for (group, entries) in groups.iter().enumerate() {
         for entry in *entries {
-            if entry.kind == Kind::StorageRead {
+            if matches!(entry.kind, Kind::StorageRead | Kind::Storage) {
                 needs_sizes |= entry.stages & stage != 0;
             }
             if entry.stages & stage == 0 {
@@ -331,11 +407,11 @@ pub fn metal_plan(groups: &[&[Entry]], stage: u8) -> StagePlan {
             }
             let mut target = Target::default();
             match entry.kind {
-                Kind::Uniform | Kind::StorageRead => {
+                Kind::Uniform | Kind::StorageRead | Kind::Storage => {
                     target.buffer = Some(buffers);
                     buffers += 1;
                 }
-                Kind::Texture | Kind::TextureUint => {
+                Kind::Texture { .. } | Kind::TextureUint => {
                     target.texture = Some(textures);
                     textures += 1;
                 }

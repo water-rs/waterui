@@ -1,9 +1,9 @@
+use crate::theme::NavigationMotion;
 use waterui::navigation::{
     AnyNavigationTransition, NavigationTransitionDirection,
     NavigationTransitionFrame as ResolvedNavigationTransitionFrame, NavigationTransitionLayer,
     RetainedNavigationTransition,
 };
-use waterui_backend_core::widget::NavigationMotion;
 
 /// How a transition presents its two pages this frame.
 pub enum NavigationPresentation {
@@ -83,18 +83,20 @@ fn material_shared_axis_x_frame(
     let incoming_opacity =
         ((progress - fade_through_threshold) / (1.0 - fade_through_threshold)).clamp(0.0, 1.0);
 
-    ResolvedNavigationTransitionFrame {
-        outgoing: NavigationTransitionLayer {
-            offset_x: direction * slide_fraction * progress,
-            opacity: outgoing_opacity,
-            ..NavigationTransitionLayer::IDENTITY
-        },
-        incoming: NavigationTransitionLayer {
-            offset_x: -direction * slide_fraction * (1.0 - progress),
-            opacity: incoming_opacity,
-            ..NavigationTransitionLayer::IDENTITY
-        },
-    }
+    ResolvedNavigationTransitionFrame::new(
+        NavigationTransitionLayer::new(
+            direction * slide_fraction * progress,
+            0.0,
+            1.0,
+            outgoing_opacity,
+        ),
+        NavigationTransitionLayer::new(
+            -direction * slide_fraction * (1.0 - progress),
+            0.0,
+            1.0,
+            incoming_opacity,
+        ),
+    )
 }
 
 pub fn interpolate_rect(from: kurbo::Rect, to: kurbo::Rect, progress: f64) -> kurbo::Rect {

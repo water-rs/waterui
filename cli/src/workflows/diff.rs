@@ -10,6 +10,7 @@ use image::{ImageBuffer, Rgba, RgbaImage};
 
 /// Bounding box of changed region.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct BoundingBox {
     /// Minimum X coordinate.
     pub min_x: u32,
@@ -37,6 +38,7 @@ impl BoundingBox {
 
 /// Result of comparing two images.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct DiffResult {
     /// Whether any pixels changed.
     pub changed: bool,

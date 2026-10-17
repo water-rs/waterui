@@ -191,7 +191,7 @@ let open = binding(false);
 button("Options")
     .action({ let open = open.clone(); move || open.toggle() })
     .anchored_overlay(
-        AnchoredOverlay::new(&open, popover_body())   // AnyView content, measured at ideal size
+        AnchoredOverlay::new(&open, move || popover_body()) // a fresh view per presentation
             .edge(AnchorEdge::Top)                     // Top / Bottom / Leading / Trailing
             .alignment(EdgeAlignment::Center)          // Start / Center / End along the edge
             .gap(4.0)                                  // points away from the anchor
@@ -203,8 +203,10 @@ button("Options")
 
 Leading/trailing follow the layout direction; `Start`/`End` are leading/trailing along
 the top and bottom edges and top/bottom along the leading and trailing edges. Unlike
-`.context_menu`, the overlay takes arbitrary `impl View` content — this is the popover
-primitive (the M3 tooltip rides it: top edge, center, 4 pt gap, flip, 2 pt clamp).
+`.context_menu`, the overlay takes a `move ||` builder producing arbitrary `impl View`
+content — every presentation calls it, so state shared between presentations lives in
+`Binding`s the caller owns and the builder captures. This is the popover primitive (the
+M3 tooltip rides it: top edge, center, 4 pt gap, flip, 2 pt clamp).
 
 ## Scrolling
 
@@ -453,7 +455,7 @@ Lazy::hstack(ForEach::new(records.clone(), row))
 
 List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
-    .on_delete(|ListDelete(i), s: AppState| { let _ = s.rows.remove(i); })
+    .on_delete(|ListDelete(i), mut s: AppState| { let _ = s.rows.remove(i); })
     .on_move(|ListMove(m), s: AppState| { /* m.from(), m.to() */ })
     .scroll_controller(&controller)
 ```
@@ -462,15 +464,19 @@ List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
 `AppState` is an owned `#[state]` type (SKILL.md rule 3), so handlers take it bare.
 
 For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
-modifiers, `VStack`/`HStack` have `for_each` too, and `collection_transition` animates
-membership changes (insert/remove fade and collapse along the stack axis):
+modifiers, `VStack`/`HStack` have `for_each` too; membership animation is declared per row
+with `.transition(...)` plus `.animation(...)` (a removed row's ghost holds its slot
+while it fades). `.transition(...)` must be the outermost modifier of the row — or of a
+`when`/`watch` branch, or of the conditional itself; one beneath `.padding()`, `.frame()`
+or any other modifier is never picked up and panics, so put it last:
 
 ```rust
-use waterui::layout::collection_transition;
 use waterui::layout::stack::VStack;
 
+let row_view = |row: Row| text(row.title)
+    .transition(PropertyTransition::opacity())
+    .animation(Animation::ease_in_out(Duration::from_millis(250)));
 let drawer = VStack::for_each(rows.clone(), row_view).spacing(4.0);
-collection_transition(drawer, Animation::ease_in_out(Duration::from_millis(250)))
 ```
 
 Heterogeneous / sectioned static content — rows are *builders*, so the list can rebuild a
@@ -493,10 +499,11 @@ List::content((
 `ListItem` modifiers: `.deletable(signal)`, `.section(section)`. Selection lives on the
 list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
 `.multi_selection(&Binding<BTreeSet<V::Id>>)` on both `List` and `ListBuilder`; for
-`List::content` rows `V::Id` is `SelfId<usize>`, for `List::for_each` it is
-`Identifiable::Id`. At most one mode per list: a later call replaces an earlier one.
-`List::for_each` requires `C::Item: Identifiable`; `List::content` takes the structural
-tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
+`List::content` rows `V::Id` is the row index (`usize`), for `List::for_each` it is the
+collection's id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`, the index for an
+array or static slice. At most one mode per list: a later call replaces an earlier one.
+`List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
+structural tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
 
 A row whose content sits under `.disabled(true)` is inert to selection the way a

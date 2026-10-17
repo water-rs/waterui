@@ -13,7 +13,7 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::TableProvider;
 use skrifa::raw::types::F2Dot14;
 
-use crate::render::raster::Raster;
+use crate::render::raster::{self, Raster};
 use cherenkov::RenderError;
 
 /// Initial atlas edge length.
@@ -686,14 +686,22 @@ impl Atlas {
     /// claimed spans — and no full-size CPU shadow of the atlas is
     /// kept to assemble them (#169 A3). Each shelf's `base` marks where
     /// the commit started writing.
+    ///
+    /// The batch moves in: its texel arenas are copied into GPU staging
+    /// and dropped with the call, and the emptied container comes back
+    /// for the next commit to refill — only its list capacities are
+    /// retained (#2671).
     pub fn upload_committed(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        cells: &CellWrites,
-    ) {
+        mut cells: CellWrites,
+    ) -> CellWrites {
         if cells.is_empty() {
-            return;
+            // A commit can stage an arena without placing a cell from it
+            // (a failed lowering, an empty batch); it still ends here.
+            cells.clear();
+            return cells;
         }
         self.ensure_storage(device);
         let n = self.layout.shelves.len();
@@ -785,6 +793,8 @@ impl Atlas {
                 Some((x0, shelf.y, w, h)),
             );
         }
+        cells.clear();
+        cells
     }
 
     /// The placement decision a pending batch's dry run supports
@@ -1048,7 +1058,8 @@ impl Atlas {
                 }
                 PendingRaster::MaskTexture { .. }
                 | PendingRaster::Colr { .. }
-                | PendingRaster::Bitmap { .. } => {}
+                | PendingRaster::Bitmap { .. }
+                | PendingRaster::GpuPath { .. } => {}
             }
         }
     }
@@ -1252,7 +1263,7 @@ impl Atlas {
         let hit = self.get(&key).is_some();
         self.begin_commit(&[]);
         let out = self.place_glyph(key, left, top, w, h, texels.to_vec(), &mut uploads);
-        self.upload_committed(device, queue, &uploads);
+        let _ = self.upload_committed(device, queue, uploads);
         if !hit && w == 0 {
             crate::diag::atlas_cell(device, (0, 0, 0, 0));
         }
@@ -1421,7 +1432,7 @@ impl Atlas {
         let mut uploads = CellWrites::default();
         self.begin_commit(&[]);
         let out = self.place_mask(key, mask, w, h, texels.to_vec(), &mut uploads);
-        self.upload_committed(device, queue, &uploads);
+        let _ = self.upload_committed(device, queue, uploads);
         out
     }
 
@@ -1639,6 +1650,13 @@ impl Atlas {
     /// Bands never overlap in y within a page, so the scan hits at
     /// most once; shelves from dead-band splits sit at any index, so
     /// the search is a filter rather than a binary search.
+    ///
+    /// Kept out of line: the commit's pin walk calls the hint check
+    /// from four nested loops, and inlined there at opt-level 3 the
+    /// scan's position counter is spilled to the stack, so every shelf
+    /// pays a store-to-load round trip (#2852). In its own frame the
+    /// counter stays in a register.
+    #[inline(never)]
     fn shelf_hit(&self, y: u32, x: u32) -> Option<u32> {
         let page = y / self.size;
         self.layout
@@ -2011,11 +2029,11 @@ pub struct CellWrite {
 /// owned raster per glyph or mask write.
 ///
 /// An arena's bytes are consumed by [`Atlas::upload_committed`], which
-/// copies them into the upload ring's GPU staging — so the arenas live
-/// inside this container until the commit's upload has run, then every
-/// buffer is dropped: nothing is retained across commits, and CPU
-/// buffers never alias the ring's in-flight staging copies, whose
-/// lifetime is the ring's (see `upload.rs`).
+/// copies them into the upload ring's GPU staging — the batch moves
+/// into the upload and comes back emptied, so no arena survives it:
+/// only the container's list capacities are retained across commits,
+/// and CPU buffers never alias the ring's in-flight staging copies,
+/// whose lifetime is the ring's (see `upload.rs`).
 #[derive(Default)]
 pub struct CellWrites {
     /// Texel arenas the staged `texels` ranges index.
@@ -2026,7 +2044,8 @@ pub struct CellWrites {
 
 impl CellWrites {
     /// Moves `arena` in and returns its index for [`CellWrite::arena`].
-    /// The buffer is dropped by the next `clear`.
+    /// The buffer is dropped when the commit's upload consumes the
+    /// batch.
     pub fn push_arena(&mut self, arena: Vec<u8>) -> u32 {
         let idx = u32::try_from(self.arenas.len()).expect("commit arenas fit u32");
         self.arenas.push(arena);
@@ -2059,9 +2078,20 @@ impl CellWrites {
         self.arenas.clear();
     }
 
-    /// Heap bytes the staged arenas retain.
-    pub fn heap_bytes(&self) -> u64 {
+    /// Heap bytes the staged arena buffers alone retain — the ranges
+    /// the commit's writes index, without the list capacities below.
+    fn arena_heap_bytes(&self) -> u64 {
         self.arenas.iter().map(Vec::capacity).sum::<usize>() as u64
+    }
+
+    /// Heap bytes the container owns: the staged arenas plus the
+    /// `cells` and `arenas` list capacities an emptied container keeps
+    /// at their peak for the next commit to refill — retained for the
+    /// engine's life until a trim replaces the container (#2711).
+    pub fn heap_bytes(&self) -> u64 {
+        (self.cells.capacity() * size_of::<CellWrite>()
+            + self.arenas.capacity() * size_of::<Vec<u8>>()) as u64
+            + self.arena_heap_bytes()
     }
 
     /// The cell's `w` × `h` texel bytes.
@@ -2095,7 +2125,10 @@ impl PendingRaster {
         match self {
             Self::Glyph { w, .. } | Self::Mask { w, .. } => usize::from(*w > 0),
             Self::Path { cells, .. } => cells.len(),
-            Self::MaskTexture { .. } | Self::Colr { .. } | Self::Bitmap { .. } => 0,
+            Self::MaskTexture { .. }
+            | Self::Colr { .. }
+            | Self::Bitmap { .. }
+            | Self::GpuPath { .. } => 0,
         }
     }
 }
@@ -2185,6 +2218,27 @@ pub enum PendingRaster {
         height: u32,
         /// Premultiplied linear-P3 f16 texels.
         texels: Vec<u8>,
+    },
+    /// A path routed to the GPU coverage kernels (issue #2543, decision
+    /// S3): the lowering recorded its curve elements, fill rule, device
+    /// transform and template instance — the CPU never flattened it and
+    /// nothing is rasterized or stored in the atlas. The record joins
+    /// the frame's compute input at apply time.
+    GpuPath {
+        /// `FillRule` as the kernel's `rule` field (0 non-zero,
+        /// 1 even-odd).
+        rule: u32,
+        /// Local → device transform the kernels apply.
+        raster: kurbo::Affine,
+        /// The target surface size the grid bounds clip to.
+        surface: (u32, u32),
+        /// The instance template `classify` copies per emitted span or
+        /// cell — the same bytes `replay` would stamp.
+        template: Box<crate::render::instance::Instance>,
+        /// Curve elements encoded for the compute input buffer.
+        elements: Vec<crate::render::path::GpuElement>,
+        /// Decision R2's bound over those elements.
+        bound: crate::render::path::GpuBound,
     },
 }
 
@@ -2334,7 +2388,8 @@ fn rasterize_texels(
     }
     // Overlapping contours resolve to the union's boundary edges, like
     // `path::rasterize`: `None` keeps the glyph bit-identical.
-    let resolved = cherenkov::lowering::resolve_winding(&segments, cherenkov::FillRule::NonZero);
+    let resolved = cherenkov::lowering::resolve_winding(&segments, cherenkov::FillRule::NonZero)
+        .into_resolved();
     let segments = resolved.as_deref().unwrap_or(&segments);
     let left = bbox.x0.floor() as i32 - 1;
     let top = bbox.y0.floor() as i32 - 1;
@@ -2350,10 +2405,7 @@ fn rasterize_texels(
         raster.draw_line(x0 - ox, y0 - oy, x1 - ox, y1 - oy);
     }
     let coverage = raster.coverage();
-    let texels: Vec<u8> = coverage
-        .iter()
-        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-        .collect();
+    let texels: Vec<u8> = coverage.iter().copied().map(raster::texel).collect();
     Ok(Some(CellRaster {
         left,
         top,
@@ -3171,7 +3223,65 @@ mod tests {
                 writes.push_arena(vec![0xAB; 256]);
             }
             writes.clear();
-            assert_eq!(writes.heap_bytes(), 0);
+            // `clear` empties the staged arenas; the list capacities
+            // stay for reuse, so `heap_bytes` still counts them.
+            assert_eq!(writes.arena_heap_bytes(), 0);
         }
+    }
+
+    /// The upload consumes its batch: the arenas it copied into GPU
+    /// staging are dropped with the call, so the container the renderer
+    /// keeps across the idle span that follows — the emptied shell the
+    /// next commit refills — retains no source-arena bytes (#2671).
+    #[test]
+    fn upload_releases_the_source_arenas() {
+        let Some((device, queue)) = device_and_queue() else {
+            return;
+        };
+        let mut atlas = Atlas::new(&device, u64::MAX);
+        let key = GlyphKey {
+            font: 7,
+            glyph: 3,
+            size_bits: (16.0f32 * 64.0).to_bits(),
+            subpixel: 0,
+            matrix: [
+                1.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                1.0f32.to_bits(),
+            ],
+            coords_hash: 0,
+        };
+        let mut writes = CellWrites::default();
+        atlas.begin_commit(&[]);
+        assert!(
+            atlas
+                .place_glyph(key, 0, 0, 4, 4, vec![0xAB; 16], &mut writes)
+                .is_some()
+        );
+        assert!(writes.heap_bytes() > 0);
+        let writes = atlas.upload_committed(&device, &queue, writes);
+        assert_eq!(
+            writes.arena_heap_bytes(),
+            0,
+            "no source-arena capacity outlives the upload"
+        );
+        assert!(writes.is_empty(), "the returned shell stages nothing");
+        // The emptied shell keeps its `cells`/`arenas` list capacities
+        // for the next commit — `heap_bytes` reports them (#2711).
+        assert!(
+            writes.heap_bytes() > 0,
+            "the reusable list capacity is retained by design"
+        );
+
+        // An arena staged without a placed cell ends with the upload too.
+        let mut writes = writes;
+        writes.push_arena(vec![0xCD; 64]);
+        let writes = atlas.upload_committed(&device, &queue, writes);
+        assert_eq!(
+            writes.arena_heap_bytes(),
+            0,
+            "a cell-less arena is not retained"
+        );
     }
 }

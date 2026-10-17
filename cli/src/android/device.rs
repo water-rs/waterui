@@ -3,7 +3,7 @@ use smol::channel::{Receiver, Sender};
 use smol::io::AsyncWriteExt;
 use smol::spawn;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-use tracing::{debug, error};
+use tracing::debug;
 
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
@@ -166,6 +166,10 @@ impl AndroidDevice {
 /// The Android target a command runs on when the user names none: a
 /// connected device, or an AVD to boot.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal launches each Android target kind variant by variant"
+)]
 pub enum AndroidTarget {
     /// A device `adb` already reports as connected.
     Device(AndroidDevice),
@@ -424,6 +428,7 @@ impl AndroidCandidate {
 
 /// What [`AndroidTarget::select`] decided for a command.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct AndroidSelection {
     /// A `remembered` id that named no candidate — it was dropped before
     /// the decision, and is reported for the caller to warn about; the
@@ -447,6 +452,10 @@ impl AndroidSelection {
 
 /// The decision an [`AndroidSelection`] carries.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal acts on each device decision variant by variant"
+)]
 pub enum AndroidDecision {
     /// One target — an explicit `--device`, a still-present remembered
     /// device, or the single candidate.
@@ -492,12 +501,6 @@ async fn run_on_android(
         reverse_dev_server_port(host, adb, device_id, port).await?;
     }
 
-    // The preview support app listens on the device's loopback; `adb forward`
-    // maps each candidate host port onto it so the CLI can reach the server.
-    for port in options.forward_tcp_ports() {
-        forward_device_port(host, adb, device_id, *port).await?;
-    }
-
     install_android_artifact(host, adb, device_id, artifact.path()).await?;
     let pid = launch_android_app_with_environment(
         host,
@@ -510,14 +513,6 @@ async fn run_on_android(
     .await?;
 
     let (mut running, sender, control) = Running::new();
-    if !options.forward_tcp_ports().is_empty() {
-        running.retain(RemoveForwardsOnDrop {
-            host: host.clone(),
-            adb: adb.clone(),
-            device_id: device_id.to_string(),
-            ports: options.forward_tcp_ports().to_vec(),
-        });
-    }
 
     let logcat = spawn_android_runtime_tasks(AndroidRuntimeTaskContext {
         host,
@@ -733,94 +728,6 @@ fn build_android_start_args(
         "shell".to_string(),
         command,
     ])
-}
-
-/// `adb -s <device> forward tcp:<port> tcp:<port>` maps a host loopback port
-/// onto the device's loopback, where a preview support app listens.
-async fn forward_device_port(
-    host: &Host,
-    adb: &Adb,
-    device_id: &str,
-    port: u16,
-) -> Result<(), FailToRun> {
-    // A previous session may have left a mapping behind; `adb forward` refuses
-    // to rebind a taken host port, so clear it first. Removing a mapping that
-    // does not exist is a reported error, which is expected and ignored.
-    let _ = host
-        .command(adb.path())
-        .args([
-            "-s",
-            device_id,
-            "forward",
-            "--remove",
-            &format!("tcp:{port}"),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await;
-
-    let output = host
-        .command(adb.path())
-        .args([
-            "-s",
-            device_id,
-            "forward",
-            &format!("tcp:{port}"),
-            &format!("tcp:{port}"),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|error| FailToRun::Launch(eyre!("Failed to run `adb forward`: {error}")))?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    Err(FailToRun::Launch(eyre!(
-        "`adb forward tcp:{port} tcp:{port}` failed:\n{}\n{}",
-        String::from_utf8_lossy(&output.stdout).trim(),
-        String::from_utf8_lossy(&output.stderr).trim(),
-    )))
-}
-
-/// Removes the `adb forward` mappings a run created when it is dropped.
-struct RemoveForwardsOnDrop {
-    host: Host,
-    adb: Adb,
-    device_id: String,
-    ports: Vec<u16>,
-}
-
-impl Drop for RemoveForwardsOnDrop {
-    fn drop(&mut self) {
-        let host = self.host.clone();
-        let adb = self.adb.clone();
-        let device_id = self.device_id.clone();
-        let ports = self.ports.clone();
-        let spawn_result = std::thread::Builder::new()
-            .name("waterui-android-forward-remove".to_string())
-            .spawn(move || {
-                for port in ports {
-                    let _ = host
-                        .std_command(adb.path())
-                        .args([
-                            "-s",
-                            &device_id,
-                            "forward",
-                            "--remove",
-                            &format!("tcp:{port}"),
-                        ])
-                        .output();
-                }
-            });
-
-        if let Err(error) = spawn_result {
-            error!("Failed to spawn adb forward cleanup thread: {error}");
-        }
-    }
 }
 
 /// `adb -s <device> reverse tcp:<port> tcp:<port>` before the app launches,

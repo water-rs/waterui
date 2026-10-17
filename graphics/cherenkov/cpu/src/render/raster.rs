@@ -17,6 +17,7 @@ use rustc_hash::FxHashMap;
 use std::ops::Range;
 
 use cherenkov::FillRule;
+use cherenkov::lowering::scanline::{EdgeX, RowWalk, walk_rows};
 
 use crate::render::lower::{
     BoxClip, CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect,
@@ -25,6 +26,7 @@ use crate::render::lower::{
 use crate::render::paint::PaintData;
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
+use filtrate_core::space::{from_srgb, to_srgb};
 use filtrate_core::{CpuFilterError, CpuImage, WorkingSpace};
 
 /// Rows per rasterization band.
@@ -141,14 +143,17 @@ struct CaptureRows {
     levels: [(usize, usize); cherenkov::CaptureLevels::MAX as usize],
 }
 
-/// The rows capture `item` covers for the surface band `band` of a
-/// surface `w × h`, `None` when the band samples none of it.
+/// The rows capture `item` covers when its members' samples are read
+/// over the device rows `need` of a surface `w × h`, `None` when those
+/// rows sample none of it.
 ///
-/// The device rows are the union's rows within the capture's reach of
-/// the band. The item list's last capture, when its members displace
-/// their reads, keeps only the rows its members' taps reach
-/// ([`sample_rows`]); earlier captures keep every device row, because
-/// later captures read the rows their members draw. A 1:1 capture keeps
+/// `need` is the surface band, widened for a top-level capture by the
+/// window of every later top-level capture this band runs that reads
+/// the rows this group's members draw ([`top_captures`]). The device
+/// rows are the union's rows within the capture's reach of `need`. The
+/// item list's last capture, when its members displace their reads,
+/// keeps only the rows its members' taps reach ([`sample_rows`]); any
+/// other capture keeps every device row. A 1:1 capture keeps
 /// exactly the sampled device rows, and its window is them `± apron`. A reduced capture keeps the texel rows the
 /// sampled rows' bilinear taps at `(y + ½)·s − ½` reach, plus
 /// [`SAMPLE_MARGIN`], within the region; its window is the device rows
@@ -162,10 +167,10 @@ struct CaptureRows {
 fn capture_rows(
     item: &CaptureItem,
     items: &[Item],
-    band: (usize, usize),
+    need: (usize, usize),
     (width, h): (usize, usize),
 ) -> Option<CaptureRows> {
-    let (mut k0, mut k1) = kept_rows(&item.union, item.reach, band, h);
+    let (mut k0, mut k1) = kept_rows(&item.union, item.reach, need, h);
     let device = (k0, k1);
     if item.displaced
         && items.iter().rev().find_map(|item| match item {
@@ -173,7 +178,7 @@ fn capture_rows(
             _ => None,
         }) == Some(item.group)
     {
-        let sampled = sample_rows(items, 0..items.len(), item.group, band, (width, h));
+        let sampled = sample_rows(items, 0..items.len(), item.group, need, (width, h));
         k0 = k0.max(sampled.0);
         k1 = k1.min(sampled.1);
     }
@@ -330,6 +335,10 @@ fn sample_rows(
 /// This band's captures by backdrop group id.
 type Captures = FxHashMap<u64, Capture>;
 
+/// The rows of each top-level capture item this band serves, by item
+/// index, in item order (see [`top_captures`]).
+type TopCaptures = Vec<(usize, Option<CaptureRows>)>;
+
 /// Per-band state shared across the recursive `run` calls.
 struct FrameCtx<'a> {
     /// The surface band rows `[y0, y1)` this run derives from.
@@ -338,6 +347,9 @@ struct FrameCtx<'a> {
     h: usize,
     /// The band's captured backdrops.
     captures: &'a mut Captures,
+    /// The band's top-level capture rows; captures inside filter scopes
+    /// are planned against the surface band by the scope's own run.
+    top: &'a [(usize, Option<CaptureRows>)],
 }
 
 impl Meter {
@@ -429,6 +441,12 @@ pub struct Edge {
     pub y1: f32,
 }
 
+impl From<Edge> for (f32, f32, f32, f32) {
+    fn from(e: Edge) -> Self {
+        (e.x0, e.y0, e.x1, e.y1)
+    }
+}
+
 /// A signed-area accumulation buffer over a band of `h` rows.
 ///
 /// Columns are indexed `x + 1`, so column 0 collects every deposit at
@@ -503,15 +521,28 @@ impl Accum {
 
     /// Accumulates the signed area of the segment `(x0,y0)-(x1,y1)`, where
     /// `y` is band-local (`0..h`).
+    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        walk_rows(Line {
+            acc: self,
+            p: [x0, y0, x1, y1],
+        });
+    }
+
+    /// [`Self::draw_line`] with every row boundary evaluated from the
+    /// segment's origin by `E` ([`cherenkov::lowering::scanline`]), never
+    /// by advancing an absolute x row by row.
+    #[inline(always)]
     #[expect(
+        clippy::inline_always,
         clippy::similar_names,
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::suboptimal_flops,
-        reason = "a direct port of font-rs's scanline area accounting"
+        reason = "inlined into `walk_rows`' instantiation for `E`; a direct port of \
+                  font-rs's scanline area accounting"
     )]
-    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+    fn accumulate<E: EdgeX>(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
         if (y0 - y1).abs() <= f32::EPSILON {
             return;
         }
@@ -520,16 +551,14 @@ impl Accum {
         } else {
             (-1.0, x1, y1, x0, y0)
         };
-        let dxdy = (x1 - x0) / (y1 - y0);
-        let mut x = x0;
-        if y0 < 0.0 {
-            x -= y0 * dxdy;
-        }
+        let line = E::new((x1 - x0) / (y1 - y0), x0);
+        let mut x = if y0 < 0.0 { line.at(-y0) } else { x0 };
         let y_start = y0.max(0.0) as usize;
         let y_end = self.h.min((y1.ceil() as usize).min(self.h));
         for y in y_start..y_end {
-            let dy = ((y + 1) as f32).min(y1) - (y as f32).max(y0);
-            let xnext = x + dxdy * dy;
+            let bottom = ((y + 1) as f32).min(y1);
+            let dy = bottom - (y as f32).max(y0);
+            let xnext = line.at(bottom - y0);
             let d = dy * dir;
             let (xa, xb) = if x < xnext { (x, xnext) } else { (xnext, x) };
             let xa_floor = xa.floor();
@@ -596,6 +625,23 @@ impl Accum {
                 f(x, cov);
             }
         }
+    }
+}
+
+/// One [`Accum::draw_line`] call, run by [`walk_rows`].
+struct Line<'a> {
+    acc: &'a mut Accum,
+    p: [f32; 4],
+}
+
+impl RowWalk for Line<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    #[expect(clippy::inline_always, reason = "see `RowWalk::walk`")]
+    fn walk<E: EdgeX>(self) {
+        let [x0, y0, x1, y1] = self.p;
+        self.acc.accumulate::<E>(x0, y0, x1, y1);
     }
 }
 
@@ -1107,31 +1153,23 @@ fn shade(
     scratch.buffers.meter.reset();
     slice.fill(clear);
     let surface = (y0, y0 + bh);
-    // The top-level captures this band serves (captures inside filter
-    // scopes are handled by the scope's own windowed run). A surface that
-    // used no backdrop group cannot contain a `Capture`, so the scan is
-    // skipped outright.
-    let mut last_capture = None;
-    let mut window = surface;
-    if has_backdrop {
-        let mut i = 0;
-        while i < items.len() {
-            match &items[i] {
-                Item::PushFilter { end, .. } => {
-                    i = usize::try_from(*end).unwrap_or(items.len());
-                    continue;
-                }
-                Item::Capture(capture) => {
-                    if let Some(rows) = capture_rows(capture, items, surface, (w, h)) {
-                        last_capture = Some(i);
-                        window = (window.0.min(rows.window.0), window.1.max(rows.window.1));
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-    }
+    // A surface that used no backdrop group cannot contain a `Capture`,
+    // so the scan is skipped outright.
+    let top = if has_backdrop {
+        top_captures(items, surface, (w, h))
+    } else {
+        TopCaptures::new()
+    };
+    let window = top
+        .iter()
+        .filter_map(|(_, rows)| rows.as_ref())
+        .fold(surface, |window, rows| {
+            (window.0.min(rows.window.0), window.1.max(rows.window.1))
+        });
+    let last_capture = top
+        .iter()
+        .rev()
+        .find_map(|(i, rows)| rows.as_ref().map(|_| *i));
     let coverage = std::mem::take(&mut scratch.coverage);
     let result = if let Some(last) = last_capture {
         shade_windowed(
@@ -1143,10 +1181,10 @@ fn shade(
             h,
             (window, last),
             coverage,
-            scratch,
+            (scratch, &top),
         )
     } else {
-        shade_plain(items, slice, w, surface, h, coverage, scratch)
+        shade_plain(items, slice, w, surface, h, coverage, (scratch, &top))
     };
     for plane in scratch.stack.drain(..) {
         scratch.buffers.give_color(plane.buf);
@@ -1162,6 +1200,53 @@ fn shade(
     result
 }
 
+/// Plans the top-level captures (captures inside filter scopes are
+/// planned by the scope's own windowed run) for the surface band
+/// `surface`, last to first. A later capture reads the rows its window
+/// covers, including what this group's members drew there when one of
+/// them samples before that capture's item; such a capture's window
+/// widens the rows this capture covers past the band.
+fn top_captures(items: &[Item], surface: (usize, usize), size: (usize, usize)) -> TopCaptures {
+    // (capture item, its group, the first item sampling the group)
+    let mut plan: Vec<(usize, u64, usize)> = Vec::new();
+    let mut scope_end = 0;
+    for (i, item) in items.iter().enumerate() {
+        match item {
+            Item::PushFilter { end, .. } if i >= scope_end => {
+                scope_end = usize::try_from(*end).unwrap_or(items.len());
+            }
+            Item::Capture(capture) if i >= scope_end => {
+                plan.push((i, capture.group, usize::MAX));
+            }
+            Item::Sample { group, .. } => {
+                if let Some((_, _, first)) = plan
+                    .iter_mut()
+                    .find(|(_, g, first)| g == group && *first == usize::MAX)
+                {
+                    *first = i;
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut top: TopCaptures = plan.iter().map(|&(i, _, _)| (i, None)).collect();
+    for k in (0..plan.len()).rev() {
+        let (i, _, first) = plan[k];
+        let need = top[k + 1..]
+            .iter()
+            .filter(|(j, _)| first < *j)
+            .filter_map(|(_, rows)| rows.as_ref())
+            .fold(surface, |need, rows| {
+                (need.0.min(rows.window.0), need.1.max(rows.window.1))
+            });
+        let Item::Capture(capture) = &items[i] else {
+            unreachable!("only capture items are planned");
+        };
+        top[k].1 = capture_rows(capture, items, need, size);
+    }
+    top
+}
+
 /// The band's pass with no capture: `run` over the caller's slice.
 fn shade_plain(
     items: &[Item],
@@ -1170,7 +1255,7 @@ fn shade_plain(
     surface: (usize, usize),
     h: usize,
     coverage: Vec<f32>,
-    scratch: &mut Scratch,
+    (scratch, top): (&mut Scratch, &[(usize, Option<CaptureRows>)]),
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, y1) = surface;
     let mut acc = Accum::with_buffer(w, y1 - y0, coverage);
@@ -1191,6 +1276,7 @@ fn shade_plain(
             surface,
             h,
             captures: &mut scratch.captures,
+            top,
         },
     );
     scratch.coverage = acc.into_buffer();
@@ -1218,7 +1304,7 @@ fn shade_windowed(
     h: usize,
     ((win0, win1), last): ((usize, usize), usize),
     coverage: Vec<f32>,
-    scratch: &mut Scratch,
+    (scratch, top): (&mut Scratch, &[(usize, Option<CaptureRows>)]),
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, y1) = surface;
     let bh = y1 - y0;
@@ -1244,6 +1330,7 @@ fn shade_windowed(
             surface,
             h,
             captures: &mut scratch.captures,
+            top,
         },
     );
     if first_pass.is_ok() {
@@ -1282,6 +1369,7 @@ fn shade_windowed(
             surface,
             h,
             captures: &mut scratch.captures,
+            top,
         },
     );
     scratch.coverage = acc.into_buffer();
@@ -1447,11 +1535,21 @@ fn run(
         match &items[i] {
             Item::Draw {
                 edges,
+                offset,
                 bbox,
                 rule,
                 paint,
                 clip,
-            } => band.draw(acc, stack, edges, *bbox, *rule, paint, clip.as_ref()),
+                swept: _,
+            } => band.draw(
+                acc,
+                stack,
+                (edges, *offset),
+                *bbox,
+                *rule,
+                paint,
+                clip.as_ref(),
+            ),
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
                 space: *space,
@@ -1527,7 +1625,7 @@ fn run(
                     buffers.give_color(window);
                     return Err(error);
                 }
-                if let Err(error) = apply_filter(filter, &mut window, top, (band.w, h)) {
+                if let Err(error) = apply_filter(filter, &mut window, *space, top, (band.w, h)) {
                     buffers.give_color(window);
                     return Err(error);
                 }
@@ -1543,7 +1641,11 @@ fn run(
                 ));
             }
             Item::Capture(capture) => {
-                if let Some(rows) = capture_rows(capture, items, ctx.surface, (band.w, h)) {
+                let rows = match ctx.top.iter().find(|(j, _)| *j == i) {
+                    Some((_, rows)) => *rows,
+                    None => capture_rows(capture, items, ctx.surface, (band.w, h)),
+                };
+                if let Some(rows) = rows {
                     capture_band(band, stack.as_slice(), buffers, ctx, capture, rows)?;
                 }
             }
@@ -1592,23 +1694,39 @@ fn run(
     Ok(())
 }
 
+/// Runs `filter` over `pixels` stored in `space`. A filter works in the
+/// linear working space whatever space its scope stores: sRGB-encoded
+/// pixels are decoded before it and encoded again after it.
 fn apply_filter(
     (filter, params): &FrameFilter,
     pixels: &mut [[f32; 4]],
+    space: cherenkov::BlendSpace,
     top: usize,
     size: (usize, usize),
 ) -> Result<(), cherenkov::RenderError> {
+    let encoded = space == cherenkov::BlendSpace::SrgbEncoded;
+    if encoded {
+        from_srgb(pixels);
+    }
     filter
         .apply(
             params,
             &WorkingSpace::LINEAR_DISPLAY_P3,
-            &mut CpuImage { pixels, top, size },
+            &mut CpuImage {
+                pixels: &mut *pixels,
+                top,
+                size,
+            },
         )
         .map_err(|error| match error {
             CpuFilterError::GpuImage { .. } => {
                 cherenkov::RenderError::Unsupported(crate::names::FILTER_GPU_IMAGE)
             }
-        })
+        })?;
+    if encoded {
+        to_srgb(pixels);
+    }
+    Ok(())
 }
 
 /// Runs one backdrop group's capture for this band: copies the device
@@ -1699,7 +1817,7 @@ fn capture_band(
         flat
     };
     if let Some(filter) = &item.filter {
-        apply_filter(filter, &mut canvas, win0 - ry0, (rw, ry1 - ry0))?;
+        apply_filter(filter, &mut canvas, space, win0 - ry0, (rw, ry1 - ry0))?;
     }
     let kept_rows = kept1 - kept0;
     let mut buf = buffers.take_color(rw * kept_rows);
@@ -1951,7 +2069,8 @@ struct Band<'a> {
 }
 
 impl Band<'_> {
-    /// Rasterizes one draw item into the top isolation buffer.
+    /// Rasterizes one draw item — its frame edges placed at `offset` —
+    /// into the top isolation buffer.
     #[expect(
         clippy::cast_precision_loss,
         clippy::too_many_arguments,
@@ -1961,8 +2080,8 @@ impl Band<'_> {
         &mut self,
         acc: &mut Accum,
         stack: &mut Vec<Plane>,
-        edges: &[Edge],
-        bbox: crate::render::lower::IRect,
+        (edges, [ox, oy]): (&[Edge], [f32; 2]),
+        bbox: crate::render::lower::DrawBox,
         rule: FillRule,
         paint: &PaintData,
         clip: Option<&ClipRef>,
@@ -1970,34 +2089,30 @@ impl Band<'_> {
         let bh = self.fb.len() / self.w;
         // Band-intersect the device-space bounding box.
         let (y_lo, y_hi) = (
-            usize::try_from(bbox.y0)
-                .unwrap_or(0)
-                .saturating_sub(self.y0)
-                .min(bh),
-            usize::try_from(bbox.y1)
-                .unwrap_or(0)
-                .saturating_sub(self.y0)
-                .min(bh),
+            usize::from(bbox.y0).saturating_sub(self.y0).min(bh),
+            usize::from(bbox.y1).saturating_sub(self.y0).min(bh),
         );
         if y_lo >= y_hi {
             return;
         }
         let (x_lo, x_hi) = (
-            usize::try_from(bbox.x0).unwrap_or(0).min(self.w),
-            usize::try_from(bbox.x1).unwrap_or(0).min(self.w),
+            usize::from(bbox.x0).min(self.w),
+            usize::from(bbox.x1).min(self.w),
         );
         // Only the item's bbox columns participate: clear and deposit
         // inside the guard window `x_lo .. x_hi + 1`.
         acc.set_window(x_lo, x_hi);
         acc.clear_range(y_lo, y_hi);
+        // The frame's origin relative to the band's top row.
+        let dy = oy - self.y0 as f32;
         for e in edges {
             // Only edges crossing the band deposit anything.
-            let ey0 = e.y0 - self.y0 as f32;
-            let ey1 = e.y1 - self.y0 as f32;
+            let ey0 = e.y0 + dy;
+            let ey1 = e.y1 + dy;
             if ey0.max(ey1) < 0.0 || ey0.min(ey1) >= bh as f32 {
                 continue;
             }
-            acc.draw_line(e.x0, ey0, e.x1, ey1);
+            acc.draw_line(e.x0 + ox, ey0, e.x1 + ox, ey1);
         }
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
         for y in y_lo..y_hi {
@@ -2465,7 +2580,77 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::reduce_rows;
+    use super::{Accum, Edge, coverage_mask, reduce_rows};
+    use cherenkov::FillRule;
+
+    /// The long edges of water-rs/waterui#2665 against the independent f64
+    /// area of the same polygon: through one accumulator over the whole
+    /// height, as glyph masks rasterize, and through the 16-row bands of
+    /// a coverage mask, in both directions and under both fill rules.
+    #[test]
+    fn tall_edges_agree_with_independent_pixel_area() {
+        let cases = [
+            (
+                [(900.0_f32, 0.0_f32), (512.0, 900.0), (900.0, 900.0)],
+                (598_u16, 699_u16),
+            ),
+            (
+                [
+                    (689.4518, 1.803_737_2),
+                    (532.2187, 337.7357),
+                    (668.394_17, 2.898_188_6),
+                ],
+                (534, 332),
+            ),
+        ];
+        let size = 901;
+        for (vertices, pixel) in cases {
+            let (px, py) = (usize::from(pixel.0), usize::from(pixel.1));
+            for reverse in [false, true] {
+                let mut reference = cherenkov_oracle::coverage::Coverage::new(1, 1);
+                let mut edges = Vec::new();
+                for i in 0..vertices.len() {
+                    let (mut a, mut b) = (vertices[i], vertices[(i + 1) % vertices.len()]);
+                    if reverse {
+                        std::mem::swap(&mut a, &mut b);
+                    }
+                    edges.push(Edge {
+                        x0: a.0,
+                        y0: a.1,
+                        x1: b.0,
+                        y1: b.1,
+                    });
+                    reference.add_line(
+                        f64::from(a.0) - f64::from(pixel.0),
+                        f64::from(a.1) - f64::from(pixel.1),
+                        f64::from(b.0) - f64::from(pixel.0),
+                        f64::from(b.1) - f64::from(pixel.1),
+                    );
+                }
+                let expected = reference.finish(cherenkov_scene::FillRule::NonZero)[0];
+                for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                    let mut acc = Accum::new(size, size);
+                    for e in &edges {
+                        acc.draw_line(e.x0, e.y0, e.x1, e.y1);
+                    }
+                    let mut whole = 0.0;
+                    acc.coverage_row(py, rule, 0, size, |x, c| {
+                        if x == px {
+                            whole = c;
+                        }
+                    });
+                    let banded = coverage_mask(&edges, rule, size, size)[py * size + px];
+                    for (route, actual) in [("whole", whole), ("banded", banded)] {
+                        let actual = f64::from(actual);
+                        assert!(
+                            (actual - expected).abs() < 0.0002,
+                            "{route} {rule:?} reverse={reverse} ({px},{py}): {actual} versus {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     /// Texel `(x, y)` of the source level: every channel varies, alpha
     /// included.

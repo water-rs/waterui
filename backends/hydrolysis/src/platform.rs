@@ -247,6 +247,7 @@ impl DeviceLoss {
 
 /// Input button mapped from a platform pointer event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PointerButton {
     /// The primary button — the left button for right-handed mice.
     Primary,
@@ -264,6 +265,7 @@ pub enum PointerButton {
 
 /// Physical pointer source reported by the platform.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PointerKind {
     /// A mouse pointer.
     Mouse,
@@ -275,6 +277,10 @@ pub enum PointerKind {
 
 /// Input key state mapped from a platform keyboard event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a key is pressed or released"
+)]
 pub enum KeyState {
     /// The button or contact is down.
     Pressed,
@@ -289,6 +295,7 @@ pub enum KeyState {
 /// and `physical_code` instead — the W3C UI Events pair, which is what GPU
 /// surfaces receive and what the browser engines will move to.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum KeyCode {
     /// A printable character key, as the layout resolved it.
     Character(String),
@@ -326,6 +333,10 @@ impl KeyCode {
 // than an evolving state machine, so per-flag bools are the honest shape.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "mirrors the fixed four-flag modifier set"
+)]
 pub struct Modifiers {
     /// Whether a Shift modifier was held.
     pub shift: bool,
@@ -361,6 +372,7 @@ impl From<keyboard_types::Modifiers> for Modifiers {
 
 /// IME purpose for the focused text input target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TextInputPurpose {
     /// Plain single-line text.
     Normal,
@@ -379,6 +391,7 @@ pub use waterui_backend_core::input::TouchPhase;
 /// and speed is in logical units — the space [`InputEvent`] pointer
 /// positions already arrive in.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct TouchScrollConfig {
     /// How far a touch may travel from its down point before a scroll view
     /// claims the gesture — the platform's scaled touch slop, in logical
@@ -390,39 +403,405 @@ pub struct TouchScrollConfig {
     /// The release speed a fling starts at at most, in logical units per
     /// second.
     pub max_fling_velocity: f32,
-    /// The deceleration model and the coefficients the platform defines for
-    /// it.
-    pub fling: FlingDeceleration,
+    /// The scroll physics family: how a fling decelerates and what an edge
+    /// does to a drag or fling that reaches it.
+    pub physics: ScrollPhysics,
 }
 
 impl TouchScrollConfig {
-    /// Android's density-1 defaults — `ViewConfiguration`'s constants
-    /// normalized to logical units, not the scaled values a host reports
-    /// at runtime. Tests drive them through the host's
-    /// `touch_scroll_config` seam so a touch drag claims scroll views the
-    /// way it does on device.
+    /// The Android `OverScroller` model with Android 12's stretch edges, at
+    /// density 1 — `ViewConfiguration`'s constants normalized to logical
+    /// units, not the scaled values the Android host reports at runtime.
+    ///
+    /// This is what non-Apple hosts that publish no touch-scroll
+    /// parameters of their own — the browser window, the winit desktop
+    /// windows, offscreen surfaces — report through
+    /// [`PlatformWindow::touch_scroll_config`], so a touch drag scrolls
+    /// on every host. Tests drive it through the same seam.
     #[must_use]
     pub fn android_default() -> Self {
         Self {
             touch_slop: 10.0,
             min_fling_velocity: 50.0,
             max_fling_velocity: 8_000.0,
-            fling: FlingDeceleration {
-                physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
-                friction: 0.015,
-            },
+            physics: ScrollPhysics::android(
+                SplineDeceleration {
+                    physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
+                    friction: 0.015,
+                },
+                EdgeStretch::android(1.0),
+            ),
+        }
+    }
+
+    /// The `UIScrollView` model: [`ScrollPhysics::uikit`]'s exponential
+    /// decay and rubber band.
+    ///
+    /// The gesture thresholds — slop and the fling velocity bounds — are
+    /// [`Self::android_default`]'s density-1 values: `UIKit` documents no
+    /// counterparts for its pan recognizer, so only the physics differ.
+    #[must_use]
+    pub fn uikit_default() -> Self {
+        Self {
+            physics: ScrollPhysics::uikit(),
+            ..Self::android_default()
+        }
+    }
+
+    /// The parameters for a host on `platform` that publishes none of its
+    /// own: Apple systems scroll as `UIScrollView` does, every other
+    /// system as Android's `OverScroller` does.
+    #[must_use]
+    pub fn for_platform(platform: ScrollPlatform) -> Self {
+        match platform {
+            ScrollPlatform::Apple => Self::uikit_default(),
+            ScrollPlatform::Other => Self::android_default(),
         }
     }
 }
 
-/// The fling's deceleration model: Android `OverScroller`'s spline.
+/// The system family whose scroll physics a host without parameters of its
+/// own reproduces — see [`TouchScrollConfig::for_platform`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the selection is binary by definition: Apple systems or not; a new family is a new physics, which must fail every match"
+)]
+pub enum ScrollPlatform {
+    /// iOS, iPadOS, macOS and the other Apple systems.
+    Apple,
+    /// Every other system.
+    Other,
+}
+
+impl ScrollPlatform {
+    /// The system native Hydrolysis is compiled for: Apple by its compile
+    /// target's vendor.
+    #[must_use]
+    pub const fn native() -> Self {
+        if cfg!(target_vendor = "apple") {
+            Self::Apple
+        } else {
+            Self::Other
+        }
+    }
+
+    /// The system a browser's `navigator.userAgent` names: Apple when it
+    /// names an iPhone, an iPad, or a Mac — iPadOS Safari reports itself as
+    /// `Macintosh` by default ("Request Desktop Website", on since iPadOS
+    /// 13), so `Macintosh` covers both.
+    #[must_use]
+    pub fn from_user_agent(user_agent: &str) -> Self {
+        if ["iPhone", "iPad", "Macintosh"]
+            .iter()
+            .any(|name| user_agent.contains(name))
+        {
+            Self::Apple
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// One scroll physics family, carried as a whole so a host selects it in
+/// one choice: the fling's deceleration and the edge's overscroll effect.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct ScrollPhysics {
+    /// How a released fling decelerates.
+    pub deceleration: FlingDeceleration,
+    /// What a drag or a fling that reaches a content edge does there.
+    pub overscroll: Overscroll,
+}
+
+impl ScrollPhysics {
+    /// Android's `OverScroller` spline with `coefficients`, and Android
+    /// 12's `stretch` edges — the edge effect Material 3 adopts.
+    #[must_use]
+    pub const fn android(coefficients: SplineDeceleration, stretch: EdgeStretch) -> Self {
+        Self {
+            deceleration: FlingDeceleration::OverScrollerSpline(coefficients),
+            overscroll: Overscroll::Stretch(stretch),
+        }
+    }
+
+    /// `UIScrollView`'s exponential decay at
+    /// `UIScrollView.DecelerationRate.normal` and its rubber-band edges.
+    #[must_use]
+    pub const fn uikit() -> Self {
+        Self {
+            deceleration: FlingDeceleration::ExponentialDecay(ExponentialDecay::NORMAL),
+            overscroll: Overscroll::RubberBand(RubberBand::UIKIT),
+        }
+    }
+}
+
+/// A fling's deceleration model.
+///
+/// The physics family is a `Copy` value every input dispatch carries across
+/// [`PlatformWindow::touch_scroll_config`], so the models are variants of a
+/// closed set rather than trait objects.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum FlingDeceleration {
+    /// Android `OverScroller`'s spline.
+    OverScrollerSpline(SplineDeceleration),
+    /// `UIScrollView`'s exponential velocity decay.
+    ExponentialDecay(ExponentialDecay),
+}
+
+/// `UIScrollView`'s deceleration: the velocity decays by a constant factor
+/// every millisecond — `v(t) = v0 · rate^t`, `t` in ms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct ExponentialDecay {
+    /// The velocity factor per millisecond.
+    pub rate_per_ms: f64,
+}
+
+impl ExponentialDecay {
+    /// `UIScrollView.DecelerationRate.normal` — Apple Developer
+    /// Documentation, `UIScrollView.DecelerationRate`: the default rate,
+    /// whose `rawValue` `UIKit` reports as 0.998. Its reading as the velocity
+    /// factor per millisecond, and the projection `v0/1000 · rate/(1 −
+    /// rate)` built on it, are WWDC 2018 session 803, "Designing Fluid
+    /// Interfaces".
+    /// Measured on an iPad Pro 13-inch (M4) under iPadOS 26.5: 20 flings of
+    /// a `UIScrollView` released at 0.34 to 3.9 pt/ms decay at 0.998006
+    /// ± 0.000004 per millisecond, fitted to their `contentOffset` per
+    /// frame.
+    pub const NORMAL: Self = Self { rate_per_ms: 0.998 };
+}
+
+/// What a drag or fling that reaches a content edge does there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub enum Overscroll {
+    /// The offset stops at the edge: a drag pushing past it moves nothing,
+    /// a fling ends on it.
+    Clamped,
+    /// `UIScrollView`'s rubber band: a drag past the edge moves with
+    /// resistance, and a release or a fling past it springs back.
+    RubberBand(RubberBand),
+    /// Android 12's stretch: the offset stays on the edge and the content
+    /// stretches toward it — pulled by a drag past it, kicked by a fling
+    /// that reaches it, and relaxing on release.
+    Stretch(EdgeStretch),
+}
+
+/// Android 12's stretch edge effect — AOSP
+/// `frameworks/base/core/java/android/widget/EdgeEffect.java` with
+/// `TYPE_STRETCH`, the edge effect every Android 12+ scrolling container
+/// draws by default.
+///
+/// The effect keeps a pull distance per edge, as a fraction of the
+/// viewport's length along the axis (`mDistance`), that a drag past the
+/// edge adds to (`onPullDistance`), a fling reaching the edge kicks
+/// (`onAbsorb`) and a release lets relax (`onRelease`) on an underdamped
+/// spring (`updateSpring`). The distance becomes a stretch intensity
+/// (`dampStretchVector`) that scales the content away from the edge.
+///
+/// The spring's constants are unitless or per second; the take-over and
+/// rest thresholds are in physical pixels on Android and are carried here
+/// in logical units — [`Self::android`] divides them by the density.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct EdgeStretch {
+    /// The relaxing spring's natural angular frequency, in rad/s —
+    /// `NATURAL_FREQUENCY`.
+    pub natural_frequency: f64,
+    /// The relaxing spring's damping ratio, below 1 — `DAMPING_RATIO`.
+    pub damping_ratio: f64,
+    /// What a fling's speed at the edge is multiplied by to start the
+    /// spring — `ON_ABSORB_VELOCITY_ADJUSTMENT`.
+    pub absorb_velocity_scale: f64,
+    /// The stretch intensity's linear share per unit of pull —
+    /// `LINEAR_STRETCH_INTENSITY`.
+    pub linear_intensity: f64,
+    /// The stretch intensity's exponential share at full pull —
+    /// `EXP_STRETCH_INTENSITY`.
+    pub exponential_intensity: f64,
+    /// The pull over which the exponential share builds up —
+    /// `SCROLL_DIST_AFFECTED_BY_EXP_STRETCH`.
+    pub exponential_distance: f64,
+    /// The speed a relaxing stretch close to rest finishes at linearly, in
+    /// logical units per second — `LINEAR_VELOCITY_TAKE_OVER`.
+    pub linear_take_over_velocity: f64,
+    /// The stretch, in logical units, under which a relaxing spring this
+    /// slow finishes linearly — `LINEAR_DISTANCE_TAKE_OVER`.
+    pub linear_take_over_distance: f64,
+    /// The spring speed under which it counts as at rest, in logical units
+    /// per second — `VELOCITY_THRESHOLD`.
+    pub rest_velocity: f64,
+    /// The stretch, in logical units, under which a slow spring counts as
+    /// at rest — `VALUE_THRESHOLD`.
+    pub rest_distance: f64,
+}
+
+impl EdgeStretch {
+    /// AOSP `EdgeEffect`'s constants (Android 12, `android12-release`) on a
+    /// display of `density` physical pixels per logical unit: its pixel
+    /// thresholds — 200 px/s and 8 px for the linear take-over, 0.01 px/s
+    /// and 0.001 px for rest — divided by `density`.
+    #[must_use]
+    pub const fn android(density: f64) -> Self {
+        Self {
+            natural_frequency: 24.657,
+            damping_ratio: 0.98,
+            absorb_velocity_scale: 13.0,
+            linear_intensity: 0.016,
+            exponential_intensity: 0.016,
+            exponential_distance: 0.33,
+            linear_take_over_velocity: 200.0 / density,
+            linear_take_over_distance: 8.0 / density,
+            rest_velocity: 0.01 / density,
+            rest_distance: 0.001 / density,
+        }
+    }
+}
+
+/// `UIScrollView`'s rubber band: the resistance a drag past an edge meets,
+/// the return a release past it makes, and the bounce a fling that reaches
+/// it makes.
+///
+/// The return and the bounce are different motions, measured separately:
+/// see [`ReleaseReturn`] and [`EdgeBounce`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct RubberBand {
+    /// The resistance `c` in `(1 − 1 / (x·c/d + 1)) · d` — the band's
+    /// slope at the edge.
+    pub coefficient: f64,
+    /// How a release past the edge returns onto it.
+    pub release: ReleaseReturn,
+    /// How a fling that reaches the edge bounces past it and back.
+    pub bounce: EdgeBounce,
+}
+
+impl RubberBand {
+    /// `UIScrollView`'s band. Neither the formula nor `c = 0.55` is Apple
+    /// documentation: both are reverse-engineered from `UIScrollView`'s
+    /// behaviour (Grant Paul's 2013 derivation, the form every UIKit-feel
+    /// reimplementation reproduces), with `d` the viewport's dimension
+    /// along the axis. Measured on an iPad Pro 13-inch (M4) under iPadOS
+    /// 26.5, from the `contentOffset` of `UIScrollView` drags held past the
+    /// top edge, the form fits with `c` = 0.5495 and `d` the viewport's
+    /// height within 0.14 pt rms.
+    pub const UIKIT: Self = Self {
+        coefficient: 0.55,
+        release: ReleaseReturn::UIKIT,
+        bounce: EdgeBounce::UIKIT,
+    };
+}
+
+/// The return onto an edge from a release past it.
+///
+/// For a release `x0` past the edge at velocity `v` — the release velocity
+/// `scrollViewWillEndDragging` reports, which is the finger's, not the
+/// banded offset's — the displacement from the edge `t` seconds later is
+/// `x(t) = (x0 + v·t) · e^(−ω·t)`, with `ω = 2π / response`: a critically
+/// damped spring whose initial velocity is `v − ω·x0` rather than `v`, so
+/// even a still release leaves at speed.
+///
+/// A release moving toward the content reaches the edge at `t_c = −x0 /
+/// v`, where `x0 + v·t` vanishes, and does not stop there: from the edge
+/// the offset decelerates into the content as a fling does, starting at
+/// `v · e^(−ω_h·t_c)`, with `ω_h = 2π / handover_response`. A slow release
+/// reaches the edge with no speed left and rests on it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct ReleaseReturn {
+    /// The period `2π / ω` of the decay rate `ω`, in seconds.
+    pub response: f64,
+    /// The period `2π / ω_h` of the rate `ω_h` that sets the velocity a
+    /// release moving toward the content crosses the edge with, in seconds.
+    pub handover_response: f64,
+}
+
+impl ReleaseReturn {
+    /// `UIScrollView`'s return. `UIKit` documents none of it. Measured on
+    /// an iPad Pro 13-inch (M4) under iPadOS 26.5, at 120 Hz: 25 releases
+    /// 46 to 329 pt past the top edge of a `UIScrollView`, each fitted
+    /// from its `contentOffset` per frame and its `scrollViewWillEndDragging`
+    /// velocity with no other free parameter. `ω` = 10.12 rad/s fits them
+    /// within 0.34 pt rms and predicts held-out releases within 0.37 pt
+    /// rms; a spring that starts at the release velocity instead misses
+    /// them by 9.6 pt rms. On the same device, 36 releases 42 to 184 pt
+    /// past the top edge while the finger moved back toward the content,
+    /// at release velocities of 60 to 2140 pt/s — matching the finger's
+    /// speed, not the band's slope of it: the 19 that come to rest on the
+    /// edge follow the same `ω` within 0.92 pt rms, and the 17 that cross
+    /// it decelerate inside at 0.99800 per ms, the fling's rate, from
+    /// `v · e^(−ω_h·t_c)`. `ω_h` = 14.04 rad/s fits all 36 within 6.7 pt
+    /// rms over runs of up to 800 pt; one `ω` for the whole run misses the
+    /// releases that stop on the edge by 7.8 pt rms.
+    pub const UIKIT: Self = Self {
+        response: 0.621,
+        handover_response: 0.4476,
+    };
+}
+
+/// The bounce of a fling that reaches an edge: the spring starts on the
+/// edge at [`Self::entry_velocity_scale`] times the deceleration's velocity
+/// there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct EdgeBounce {
+    /// The spring that carries the offset past the edge and back onto it.
+    pub spring: SpringBack,
+    /// The share of the fling's velocity at the edge that the spring
+    /// starts with.
+    pub entry_velocity_scale: f64,
+}
+
+impl EdgeBounce {
+    /// `UIScrollView`'s bounce. `UIKit` documents none of it. Measured on
+    /// an iPad Pro 13-inch (M4) under iPadOS 26.5, at 120 Hz: 10 flings
+    /// that reach the top edge of a `UIScrollView` at 358 to 2470 pt/s,
+    /// their `contentOffset` per frame past the edge fitted from the
+    /// moment the decay crosses it. A critically damped spring with `ω` =
+    /// 10.98 rad/s, started at 0.9645 of the crossing velocity, fits them
+    /// within 0.23 pt rms; with the damping ratio free the fit gives 1.005.
+    pub const UIKIT: Self = Self {
+        spring: SpringBack {
+            response: 0.572,
+            damping_ratio: 1.0,
+        },
+        entry_velocity_scale: 0.9645,
+    };
+}
+
+/// A damped spring returning the offset onto an edge.
+///
+/// It is parameterised by response and damping ratio — `SwiftUI`'s
+/// `Spring(response:dampingRatio:)` parameterisation: natural angular
+/// frequency `ω0 = 2π / response`, damping ratio `ζ`. For a displacement
+/// `x0` from the edge and velocity `v0` at its start (`t = 0`):
+///
+/// - `ζ = 1`: `x(t) = (x0 + (v0 + ω0·x0)·t) · e^(−ω0·t)`
+/// - `ζ > 1`: `x(t) = c1·e^(r1·t) + c2·e^(r2·t)`, with
+///   `r1,2 = −ω0·(ζ ∓ √(ζ² − 1))`, `c1 = (v0 − r2·x0) / (r1 − r2)`,
+///   `c2 = x0 − c1`
+/// - `ζ < 1`: `x(t) = e^(−ζ·ω0·t) · (x0·cos(ωd·t) + (v0 + ζ·ω0·x0)/ωd ·
+///   sin(ωd·t))`, with `ωd = ω0·√(1 − ζ²)`
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct SpringBack {
+    /// The undamped period, in seconds: `ω0 = 2π / response`.
+    pub response: f64,
+    /// The damping ratio `ζ`: 1 is critical, above 1 overdamped.
+    pub damping_ratio: f64,
+}
+
+/// Android `OverScroller`'s spline coefficients.
 ///
 /// The spline's math is ported
 /// (`frameworks/base/core/java/android/widget/OverScroller.java`,
 /// `SplineScroller`); the platform computes the coefficients for its own
 /// display and feel.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FlingDeceleration {
+#[non_exhaustive]
+pub struct SplineDeceleration {
     /// `SplineScroller`'s `mPhysicalCoeff` — the physical-pixel acceleration
     /// scale the spline's distance and duration derive from, in logical
     /// units per second².
@@ -434,6 +813,7 @@ pub struct FlingDeceleration {
 
 /// Focused text-input area used for IME activation and candidate-window placement.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct TextInputState {
     /// Left edge of the input field, in logical points.
     pub x: f64,
@@ -453,6 +833,7 @@ pub struct TextInputState {
 
 /// Input events emitted by a windowing backend.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum InputEvent {
     /// A pointer button pressed or a contact started.
     PointerDown {
@@ -660,6 +1041,10 @@ pub enum InputEvent {
 
 /// Which screen edge a system back gesture started from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a back gesture starts from the left edge, the right edge, or no edge"
+)]
 pub enum BackEdge {
     /// The gesture started at the leading edge.
     Left,
@@ -679,6 +1064,7 @@ pub enum BackEdge {
 /// [`BackEdge::None`], or, on a platform that has no progress to report,
 /// deliver `Invoked` alone.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum BackNavigation {
     /// The platform began a predictive back gesture from `edge`.
     Started {
@@ -698,6 +1084,7 @@ pub enum BackNavigation {
 
 /// Errors raised by surface acquisition/presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SurfaceError {
     /// Surface acquisition timed out waiting for the next frame.
     Timeout,
@@ -728,6 +1115,7 @@ impl std::error::Error for SurfaceError {}
 /// A frame acquired from a host-presented surface, such as
 /// [`OffscreenSurface::acquire`].
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum SurfaceFrame {
     /// An offscreen render target: the frame already lives in a texture.
     Offscreen {
@@ -888,6 +1276,10 @@ pub struct EngineWindowTarget<'a> {
 /// in the session environment so an update re-lays out through the ordinary
 /// input path; hosts with no unsafe regions simply never install one.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "environment newtype over the window's safe-area binding"
+)]
 pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// The window's *keyboard* region in logical units.
@@ -904,6 +1296,10 @@ pub struct WindowSafeArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>
 /// whose bottom touches it extends through it and scrolls a focused field
 /// clear of the keyboard band (layout-spec.md §7.1).
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "environment newtype over the window's keyboard-area binding"
+)]
 pub struct WindowKeyboardArea(pub nami::Binding<waterui_layout::padding::EdgeInsets>);
 
 /// Asserts the app's `Window::frame` binding carries finite components on
@@ -1054,18 +1450,18 @@ pub trait PlatformWindow: 'static {
     fn is_occluded(&self) -> bool {
         false
     }
-    /// The window's touch-drag scroll gesture parameters, when the host
-    /// delivers touch input: the platform's own slop, fling velocity bounds
-    /// and deceleration coefficients, by value — the renderer carries no
-    /// defaults for them.
+    /// The window's touch-drag scroll gesture parameters: the platform's
+    /// own slop, fling velocity bounds and deceleration coefficients, by
+    /// value — the renderer carries no defaults for them.
     ///
-    /// The default `None` is for platforms with no platform-published
-    /// touch-gesture parameters to carry — a host that cannot source the
-    /// values reports none rather than inventing them, and a touch drag
-    /// then never claims a scroll view.
-    fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
-        None
-    }
+    /// Every host returns the values its touch input runs under; a host
+    /// that publishes no parameters of its own reports
+    /// [`TouchScrollConfig::for_platform`] for the system it runs on.
+    /// `None` is only the window
+    /// that genuinely cannot have them yet — the Android host before its
+    /// first metrics push — and a `PointerKind::Touch` press arriving
+    /// while it holds is a host bug the renderer panics on.
+    fn touch_scroll_config(&self) -> Option<TouchScrollConfig>;
     /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, state: Option<TextInputState>);
     /// Sets the cursor image the window displays.
@@ -1105,6 +1501,19 @@ pub trait GpuSurfaceWindow: PlatformWindow {
     /// asking. A target with no compositor blur keeps this default no-op.
     fn set_blur_behind(&mut self, blur: bool) {
         let _ = blur;
+    }
+
+    /// Whether the host matches chrome of its own to the colour the
+    /// content paints along the window's top edge. When it does, the
+    /// runner reports that colour for every presented frame through
+    /// [`Self::set_top_edge_color`]; otherwise it never computes it.
+    const SAMPLES_TOP_EDGE: bool = false;
+
+    /// The colour the presented frame shows along the window's top edge
+    /// ([`HydrolysisRenderer::top_edge_color`](crate::renderer::HydrolysisRenderer::top_edge_color)),
+    /// reported when [`Self::SAMPLES_TOP_EDGE`] is set.
+    fn set_top_edge_color(&mut self, color: waterui_graphics::draw::WorkingColor) {
+        let _ = color;
     }
 }
 
@@ -2345,6 +2754,13 @@ impl PlatformWindow for OffscreenWindow {
         self.scale_factor
     }
 
+    /// An offscreen surface publishes no touch-gesture parameters of its
+    /// own; its logical units are unscaled points — density 1 — so it
+    /// reports the density-1 model of the system it is compiled for.
+    fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
+        Some(TouchScrollConfig::for_platform(ScrollPlatform::native()))
+    }
+
     /// Pushes the focused text input's state to the platform IME.
     fn sync_text_input_state(&mut self, _state: Option<TextInputState>) {}
 
@@ -2400,7 +2816,7 @@ mod winit_impl {
     use super::{
         CursorStyle, DeviceLoss, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers,
         PlatformWindow, PointerButton, PointerKind, RedrawHandle, TextInputPurpose, TextInputState,
-        TouchPhase, enabled_window_buttons, validated_window_frame,
+        TouchPhase, TouchScrollConfig, enabled_window_buttons, validated_window_frame,
     };
     #[cfg(not(target_os = "macos"))]
     use super::{SurfaceError, SurfaceFrame, SurfaceProvider, reclaim_device};
@@ -4542,6 +4958,16 @@ mod winit_impl {
                 .map(|millihertz| f64::from(millihertz) / 1000.0)
         }
 
+        /// winit publishes no touch-gesture parameters, and its logical
+        /// points are density-1 units, so the window reports the density-1
+        /// model of the system it is compiled for — `UIScrollView`'s on
+        /// Apple targets, Android's `OverScroller` elsewhere.
+        fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
+            Some(TouchScrollConfig::for_platform(
+                crate::platform::ScrollPlatform::native(),
+            ))
+        }
+
         /// Pushes the focused text input's state to the platform IME.
         fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
             let scale_factor = self.window.scale_factor();
@@ -5711,6 +6137,8 @@ pub use web_impl::ExportedBrowserWindow as BrowserWindow;
     any(feature = "video", feature = "webview-system")
 ))]
 pub use web_impl::OcclusionShields;
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+pub use web_impl::report_fatal_error;
 #[cfg(all(target_arch = "wasm32", feature = "web", feature = "video"))]
 pub use web_impl::yield_wheel;
 

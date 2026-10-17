@@ -26,10 +26,28 @@ pub use executor_core::spawn;
 pub use executor_core::spawn_local;
 pub use native_executor::sleep;
 
+/// Yields once to the executor driving the current task.
+///
+/// The task is rescheduled behind the work already queued — the tasks a
+/// lifecycle hook or a layout pass just spawned run before it resumes.
+pub async fn yield_now() {
+    let mut yielded = false;
+    core::future::poll_fn(|cx| {
+        if yielded {
+            core::task::Poll::Ready(())
+        } else {
+            yielded = true;
+            cx.waker().wake_by_ref();
+            core::task::Poll::Pending
+        }
+    })
+    .await;
+}
+
 mod runtime_guard;
 
 pub use runtime_guard::{
     MainThreadStallProbeConfig, MonitoredLocalExecutor, RefreshRate, RuntimeProbe, TaskPollSample,
     monitored_local_executor, monitored_local_executor_with_config,
-    monitored_local_executor_with_probes, outstanding_local_tasks,
+    monitored_local_executor_with_probes,
 };

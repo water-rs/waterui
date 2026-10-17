@@ -1,9 +1,10 @@
 use std::path::Path;
 use std::rc::Rc;
 
+use hydrolysis::theme::WidgetTheme;
 use hydrolysis::{
     FontFamilyResolution, HydrolysisRenderer, OffscreenGpuContext, OffscreenWindow, Style,
-    WidgetTheme, readback_texture_rgba8,
+    readback_texture_rgba8,
 };
 use waterui::graphics::SceneViewMergeToParent;
 use waterui::graphics::WorkingColor;
@@ -15,6 +16,7 @@ use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 
 /// RGBA8 frame captured from a headless hydrolysis render pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Snapshot {
     /// Frame width in pixels.
     pub width: u32,

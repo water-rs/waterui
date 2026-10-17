@@ -467,7 +467,7 @@ pub struct TextContextMenuOverlay {
     pub(crate) dismiss_state: nami::Binding<WindowState>,
     /// The widget theme the overlay was opened under: submenu windows draw
     /// with the same menu metrics and surface treatment.
-    pub(crate) theme: Rc<dyn crate::engine::WidgetTheme>,
+    pub(crate) theme: Rc<dyn crate::theme::WidgetTheme>,
     pub(crate) env: Environment,
 }
 
@@ -2297,12 +2297,12 @@ impl SemanticCore {
         // `KeyPress` rebuilt from the `KeyCode` — the winit/semantic paths
         // carry real `logical_key`/`physical_code` and call
         // `handle_key_press` instead.
-        let press = KeyPress {
-            key: key.to_w3c_key(),
-            code: keyboard_types::Code::Unidentified,
-            modifiers: modifiers.into(),
-            repeat: false,
-        };
+        let press = KeyPress::new(
+            key.to_w3c_key(),
+            keyboard_types::Code::Unidentified,
+            modifiers.into(),
+            false,
+        );
         self.handle_key_press(key, modifiers, env, &press) != KeyPressOutcome::Ignored
     }
 

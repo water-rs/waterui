@@ -1378,20 +1378,6 @@ void water_wpe_page_get_cookies(
         async);
 }
 
-/* One text form for every JavaScript result, matching the GTK and CEF backends:
- * a string comes back bare, anything else as JSON. `jsc_value_to_json` quotes a
- * string, which is why WPE alone used to report `"WaterUI"` where the others
- * reported `WaterUI`. */
-static char *water_wpe_value_to_text(JSCValue *value)
-{
-    if (jsc_value_is_string(value))
-        return jsc_value_to_string(value);
-    if (jsc_value_is_null(value) || jsc_value_is_undefined(value))
-        return g_strdup("null");
-    char *json = jsc_value_to_json(value, 0);
-    return json ? json : jsc_value_to_string(value);
-}
-
 /* Reports one finished evaluation and consumes `async`, `value` and `error`.
  * Exactly one of `value` and `error` is set, as GLib's async convention
  * requires. */
@@ -1411,7 +1397,20 @@ static void water_wpe_javascript_complete(
         g_free(async);
         return;
     }
-    char *text = water_wpe_value_to_text(value);
+    /* Both paths evaluate scripts that encode their answer in the page -- the
+     * raw path through `raw_evaluation`, the awaited one through the shared
+     * wrapper's envelope -- so the value is a string, reported as it is.
+     * Anything else means the script broke that contract, and it is reported
+     * as a failure rather than re-encoded here. */
+    if (!jsc_value_is_string(value)) {
+        static const char message[] =
+            "the script evaluated to a value that is not the string it must answer";
+        async->callback(async->user_data, false, message, sizeof message - 1);
+        g_object_unref(value);
+        g_free(async);
+        return;
+    }
+    char *text = jsc_value_to_string(value);
     async->callback(async->user_data, true, text, strlen(text));
     g_free(text);
     g_object_unref(value);

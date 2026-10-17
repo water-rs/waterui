@@ -117,6 +117,7 @@ const fn nibble(digit: u8) -> Option<u8> {
 
 /// Why hexadecimal text could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum HexError {
     /// The text is not the width the type requires.
     #[error("expected {expected} hexadecimal digits, found {found} characters")]
@@ -189,6 +190,10 @@ pub type SignatureBytes = HexBytes<64>;
 /// is text in the document because it is 64 bits wide and JSON numbers are
 /// not reliably that.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "newtype over the contract's `u64` hash"
+)]
 pub struct ContractHash(pub u64);
 
 impl core::fmt::Display for ContractHash {
@@ -217,6 +222,7 @@ impl<'de> serde::Deserialize<'de> for ContractHash {
 /// Where the bundle file is, how long it is, and what it hashes to.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct BundleFile {
     /// The bundle's location, relative to the manifest's own URL.
     pub url: String,
@@ -235,6 +241,7 @@ pub struct BundleFile {
 /// the canonical form the module documentation spells out.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct BundleManifest {
     /// The bundle version. A larger number is newer: the loader prefers the
     /// newest verified bundle, and a published bundle is only ever preferred
@@ -295,6 +302,7 @@ impl BundleManifest {
 /// A manifest as published for download: the manifest and its signature.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct SignedManifest {
     /// The manifest the signature covers.
     pub manifest: BundleManifest,

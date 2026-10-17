@@ -16,9 +16,19 @@ use web_sys::{
 
 use super::{
     CursorStyle, GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow,
-    PointerButton, PointerKind, PresentationSurface as _, TextInputPurpose, TextInputState,
-    WindowState, WuiWindow,
+    PointerButton, PointerKind, PresentationSurface as _, ScrollPlatform, TextInputPurpose,
+    TextInputState, TouchScrollConfig, WindowState, WuiWindow,
 };
+
+/// The touch-scroll physics of the system `window`'s browser runs on, as
+/// its `navigator.userAgent` names it.
+fn touch_scroll_config_for(window: &BrowserHostWindow) -> TouchScrollConfig {
+    let user_agent = window
+        .navigator()
+        .user_agent()
+        .expect("hydrolysis web platform: navigator.userAgent unavailable");
+    TouchScrollConfig::for_platform(ScrollPlatform::from_user_agent(&user_agent))
+}
 
 #[derive(Clone, Copy)]
 struct PendingResize {
@@ -59,7 +69,11 @@ impl BrowserSurface {
         clippy::future_not_send,
         reason = "the future runs on the browser main thread via spawn_local; wgpu handles' Send bound varies with Cargo feature unification"
     )]
-    pub async fn new(root: HtmlElement, width: u32, height: u32) -> Self {
+    pub async fn new(
+        root: HtmlElement,
+        width: u32,
+        height: u32,
+    ) -> Result<Self, BrowserGpuUnavailable> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         // Every adapter a browser hands out presents to a canvas, so the
         // request names no surface: the engine creates its canvases on
@@ -72,9 +86,7 @@ impl BrowserSurface {
                 apply_limit_buckets: false,
             })
             .await
-            .expect(
-                "hydrolysis web surface: browser WebGPU adapter unavailable; ensure WebGPU is enabled",
-            );
+            .map_err(BrowserGpuUnavailable::NoAdapter)?;
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -82,7 +94,7 @@ impl BrowserSurface {
                 ..Default::default()
             })
             .await
-            .expect("hydrolysis web surface: failed to request WebGPU device");
+            .map_err(BrowserGpuUnavailable::NoDevice)?;
         let context_id = super::next_gpu_context_id();
         let shared_device = cherenkov_gpu::interop::SharedDevice {
             instance,
@@ -92,7 +104,7 @@ impl BrowserSurface {
         };
         let device_loss = crate::platform::DeviceLoss::observe(shared_device, context_id);
 
-        Self {
+        Ok(Self {
             adapter,
             device,
             queue,
@@ -100,7 +112,43 @@ impl BrowserSurface {
             root,
             size: (width.max(1), height.max(1)),
             engine_window: None,
-        }
+        })
+    }
+}
+
+/// Why the page cannot host a Hydrolysis window: Hydrolysis renders through
+/// WebGPU, and this browser does not provide it.
+#[derive(Debug, thiserror::Error)]
+pub enum BrowserGpuUnavailable {
+    #[error("This browser does not provide WebGPU, which this app needs to render.")]
+    NoAdapter(#[source] wgpu::RequestAdapterError),
+    #[error("This browser refused to open a WebGPU device, which this app needs to render.")]
+    NoDevice(#[source] wgpu::RequestDeviceError),
+}
+
+/// The event the page's bootstrap shows as its startup error: the runtime
+/// cannot run, and `detail` says why.
+const FATAL_ERROR_EVENT: &str = "waterui:fatal-error";
+
+/// Tells the page that the app cannot run, as a bubbling
+/// `waterui:fatal-error` event on the root element whose `detail` is
+/// `message`; the page replaces itself with that message.
+///
+/// The panic hook calls this too, so it reports what it can and never
+/// panics: a page missing its root or refusing the event leaves only the
+/// console report the hook has already made.
+pub fn report_fatal_error(message: &str) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let target: EventTarget = document
+        .get_element_by_id(ROOT_ID)
+        .map_or_else(|| document.into(), Into::into);
+    let init = web_sys::CustomEventInit::new();
+    init.set_bubbles(true);
+    init.set_detail(&wasm_bindgen::JsValue::from_str(message));
+    if let Ok(event) = web_sys::CustomEvent::new_with_event_init_dict(FATAL_ERROR_EVENT, &init) {
+        let _ = target.dispatch_event(&event);
     }
 }
 
@@ -188,6 +236,11 @@ pub struct BrowserWindow {
     /// the one it needs.
     schedule_frame: Rc<dyn Fn()>,
     current_cursor_style: CursorStyle,
+    /// The touch-scroll physics of the system the browser runs on, read
+    /// once from `navigator.userAgent`.
+    touch_scroll_config: TouchScrollConfig,
+    /// The page background last matched to the app's top edge.
+    top_edge_color: Option<waterui_graphics::draw::WorkingColor>,
     /// Held for its lifetime: the observer keeps reporting only while
     /// both halves are alive.
     _intersection_observer: (
@@ -215,11 +268,20 @@ impl BrowserWindow {
     /// When the page exposes no window, document, root or input element
     /// the host cannot function, so the constructor panics naming the
     /// missing object rather than failing the first paint later.
+    ///
+    /// # Errors
+    ///
+    /// [`BrowserGpuUnavailable`] when the browser provides no WebGPU
+    /// adapter or device: the page cannot host a window at all, and the
+    /// caller reports that to the page.
     #[expect(
         clippy::future_not_send,
         reason = "the future runs on the browser main thread via spawn_local; wasm32 is single-threaded so !Send state never crosses a thread"
     )]
-    pub async fn new(schedule_frame: Rc<dyn Fn()>, occlusion_wake: Rc<dyn Fn()>) -> Self {
+    pub async fn new(
+        schedule_frame: Rc<dyn Fn()>,
+        occlusion_wake: Rc<dyn Fn()>,
+    ) -> Result<Self, BrowserGpuUnavailable> {
         let browser_window =
             web_sys::window().expect("hydrolysis web platform: browser window unavailable");
         let document = browser_window
@@ -228,12 +290,13 @@ impl BrowserWindow {
         let root = find_or_create_root(&document);
         prepare_root(&root);
         let ime_input = find_or_create_ime_input(&document);
-        let safe_area_probe = create_safe_area_probe(&document);
-        let safe_area = nami::binding(read_safe_area(&browser_window, &safe_area_probe));
+        let viewport = Viewport::new(&document);
+        let safe_area = nami::binding(viewport.fit(&browser_window, &root));
         let pending_events = Rc::new(RefCell::new(Vec::new()));
         let redraw_requested = Rc::new(Cell::new(false));
         let scale_factor = Rc::new(Cell::new(browser_window.device_pixel_ratio()));
         let pending_resize = Rc::new(Cell::new(None));
+        let touch_scroll_config = touch_scroll_config_for(&browser_window);
 
         let initial_resize = measure_root(&browser_window, &root);
         pending_resize.set(Some(initial_resize));
@@ -243,33 +306,46 @@ impl BrowserWindow {
         });
 
         let surface =
-            BrowserSurface::new(root.clone(), initial_resize.width, initial_resize.height).await;
+            BrowserSurface::new(root.clone(), initial_resize.width, initial_resize.height).await?;
 
         let mut listeners = register_listeners(
-            &browser_window,
             &root,
             &ime_input,
             pending_events.clone(),
             redraw_requested.clone(),
-            scale_factor.clone(),
-            pending_resize.clone(),
             schedule_frame.clone(),
         );
-        // A hidden page's rAF callback never fires, so the wake also
-        // pulls the occlusion report into the pump synchronously — the
-        // hide must be learned here, or the pump could never log it.
-        // A rotation or a toolbar showing or hiding moves the insets; the
-        // binding re-lays the window out only when they actually changed.
+        // A rotation or a toolbar showing or hiding moves the viewport: the
+        // root is refitted before it is measured, and the safe-area binding
+        // re-lays the window out only when the insets actually changed.
         listeners.push(add_event_listener(browser_window.as_ref(), "resize", {
             let browser_window = browser_window.clone();
+            let root = root.clone();
             let safe_area = safe_area.clone();
+            let scale_factor = scale_factor.clone();
+            let pending_resize = pending_resize.clone();
+            let pending_events = pending_events.clone();
+            let redraw_requested = redraw_requested.clone();
+            let schedule_frame = schedule_frame.clone();
             move |_event| {
-                let insets = read_safe_area(&browser_window, &safe_area_probe);
+                let insets = viewport.fit(&browser_window, &root);
                 if insets != safe_area.snapshot() {
                     safe_area.set(insets);
                 }
+                let resize = measure_root(&browser_window, &root);
+                scale_factor.set(resize.scale_factor);
+                pending_resize.set(Some(resize));
+                pending_events.borrow_mut().push(InputEvent::Resize {
+                    width: resize.width,
+                    height: resize.height,
+                });
+                redraw_requested.set(true);
+                schedule_frame();
             }
         }));
+        // A hidden page's rAF callback never fires, so the wake also
+        // pulls the occlusion report into the pump synchronously — the
+        // hide must be learned here, or the pump could never log it.
         listeners.push(add_event_listener(document.as_ref(), "visibilitychange", {
             let occlusion_wake = occlusion_wake.clone();
             move |_event| occlusion_wake()
@@ -298,7 +374,7 @@ impl BrowserWindow {
             (observer, callback)
         };
 
-        Self {
+        Ok(Self {
             host_window: browser_window,
             document,
             root,
@@ -313,9 +389,11 @@ impl BrowserWindow {
             safe_area,
             schedule_frame,
             current_cursor_style: CursorStyle::Arrow,
+            touch_scroll_config,
+            top_edge_color: None,
             _intersection_observer: intersection_observer,
             _listeners: listeners,
-        }
+        })
     }
 
     /// Tells the page that the first frame is on screen, as a bubbling
@@ -426,6 +504,15 @@ impl PlatformWindow for BrowserWindow {
         self.scale_factor.get()
     }
 
+    /// The browser publishes no touch-gesture parameters, and CSS pixels
+    /// are the window's density-1 logical units, so it reports the
+    /// density-1 model of the system its user agent names —
+    /// `UIScrollView`'s on Apple systems, Android's `OverScroller`
+    /// elsewhere.
+    fn touch_scroll_config(&self) -> Option<TouchScrollConfig> {
+        Some(self.touch_scroll_config)
+    }
+
     fn sync_text_input_state(&mut self, state: Option<TextInputState>) {
         if let Some(state) = state {
             self.ime_input.set_type(match state.purpose {
@@ -470,6 +557,43 @@ impl GpuSurfaceWindow for BrowserWindow {
     fn surface(&mut self) -> &mut BrowserSurface {
         &mut self.surface
     }
+
+    /// The page background is what a mobile browser shows behind its
+    /// status bar: iOS Safari fills that band with the background of the
+    /// page when no fixed header covers the top edge, and never draws page
+    /// content there while the page is unscrolled. Matching the page
+    /// background to the app's top edge makes the band continue the app.
+    const SAMPLES_TOP_EDGE: bool = true;
+
+    fn set_top_edge_color(&mut self, color: waterui_graphics::draw::WorkingColor) {
+        if self.top_edge_color == Some(color) {
+            return;
+        }
+        self.top_edge_color = Some(color);
+        let [r, g, b, a] =
+            peniko::color::AlphaColor::<waterui_graphics::draw::LinearDisplayP3>::new(
+                color.components,
+            )
+            .convert::<peniko::color::DisplayP3>()
+            .components;
+        let css = format!("color(display-p3 {r} {g} {b} / {a})");
+        let html = self
+            .document
+            .document_element()
+            .expect("hydrolysis web platform: document has no root element")
+            .dyn_into::<HtmlElement>()
+            .expect("hydrolysis web platform: the document element is not an HTML element");
+        let body = self
+            .document
+            .body()
+            .expect("hydrolysis web platform: document body unavailable");
+        for element in [&html, &body] {
+            element
+                .style()
+                .set_property("background-color", &css)
+                .expect("hydrolysis web platform: failed to set the page background");
+        }
+    }
 }
 
 /// The id of the page's root element, which the CLI's page template carries.
@@ -488,20 +612,6 @@ fn find_or_create_root(document: &Document) -> HtmlElement {
         .dyn_into::<HtmlElement>()
         .expect("hydrolysis web platform: created node is not an HTML element");
     root.set_id(ROOT_ID);
-    let style = root.style();
-    // The layout viewport exactly: `100vh` is taller than the visible area on
-    // mobile browsers, which makes the page itself pannable under the root.
-    for (property, value) in [
-        ("display", "block"),
-        ("position", "fixed"),
-        ("inset", "0"),
-        ("width", "100%"),
-        ("height", "100%"),
-    ] {
-        style
-            .set_property(property, value)
-            .expect("hydrolysis web platform: failed to style the root element");
-    }
     document
         .body()
         .expect("hydrolysis web platform: document body unavailable")
@@ -510,11 +620,16 @@ fn find_or_create_root(document: &Document) -> HtmlElement {
     root
 }
 
-/// Makes the page's root element the runtime's input surface, whether the
-/// page supplied it or the runtime created it. The engine's canvases inside
-/// it take no pointer events, so input over engine content lands on the root
+/// Makes the page's root element the runtime's surface, whether the page
+/// supplied it or the runtime created it. The engine's canvases inside it
+/// take no pointer events, so input over engine content lands on the root
 /// itself.
 ///
+/// - Geometry: anchored to the page's top-left corner and as wide as the
+///   layout viewport; [`Viewport::fit`] sets its height. It is positioned
+///   absolutely, never `fixed`: a browser that composites page content
+///   under its own toolbars clips a fixed element to the visible viewport,
+///   while document content extends beneath them.
 /// - `touch-action: none`: Hydrolysis recognizes every gesture itself, so
 ///   the browser must never claim a touch for panning or zooming; when it
 ///   does, it cancels the pointer (`pointercancel` instead of `pointerup`)
@@ -525,75 +640,128 @@ fn find_or_create_root(document: &Document) -> HtmlElement {
 fn prepare_root(root: &HtmlElement) {
     root.set_tab_index(0);
     let style = root.style();
-    for (property, value) in [("touch-action", "none"), ("outline", "none")] {
+    for (property, value) in [
+        ("display", "block"),
+        ("position", "absolute"),
+        ("left", "0"),
+        ("top", "0"),
+        ("width", "100%"),
+        ("height", "100%"),
+        ("touch-action", "none"),
+        ("outline", "none"),
+    ] {
         style
             .set_property(property, value)
             .expect("hydrolysis web platform: failed to style the root element");
     }
 }
 
-/// A hidden element whose padding resolves the page's
-/// `env(safe-area-inset-*)`. CSS environment variables have no script API,
-/// so the probe's computed padding is how the host reads the safe area.
-fn create_safe_area_probe(document: &Document) -> HtmlElement {
-    let probe = document
-        .create_element("div")
-        .expect("hydrolysis web platform: failed to create the safe-area probe")
-        .dyn_into::<HtmlElement>()
-        .expect("hydrolysis web platform: created node is not an HTML element");
-    probe
-        .set_attribute("aria-hidden", "true")
-        .expect("hydrolysis web platform: failed to hide the safe-area probe");
-    let style = probe.style();
-    for (property, value) in [
-        ("position", "fixed"),
-        ("inset", "0"),
-        ("visibility", "hidden"),
-        ("pointer-events", "none"),
-        (
-            "padding",
-            "env(safe-area-inset-top) env(safe-area-inset-right) \
-             env(safe-area-inset-bottom) env(safe-area-inset-left)",
-        ),
-    ] {
-        style
-            .set_property(property, value)
-            .expect("hydrolysis web platform: failed to style the safe-area probe");
-    }
-    document
-        .body()
-        .expect("hydrolysis web platform: document body unavailable")
-        .append_child(&probe)
-        .expect("hydrolysis web platform: failed to append the safe-area probe");
-    probe
+/// The page's viewport as the runtime lays the window out in it: a hidden
+/// probe whose computed style resolves what has no script API —
+/// `env(safe-area-inset-*)` as its padding, the large and small viewport
+/// heights (`100lvh`, `100svh`) as its minimum and maximum height.
+struct Viewport {
+    probe: HtmlElement,
 }
 
-/// The page's safe area in CSS pixels, which are the window's logical units.
-fn read_safe_area(
-    browser_window: &BrowserHostWindow,
-    probe: &HtmlElement,
-) -> waterui_layout::padding::EdgeInsets {
-    let style = browser_window
-        .get_computed_style(probe)
-        .expect("hydrolysis web platform: failed to compute the safe-area probe style")
-        .expect("hydrolysis web platform: the safe-area probe has no computed style");
-    let inset = |property: &str| -> f32 {
-        let value = style
-            .get_property_value(property)
-            .expect("hydrolysis web platform: failed to read a safe-area inset");
-        value
-            .strip_suffix("px")
-            .and_then(|pixels| pixels.parse::<f32>().ok())
-            .unwrap_or_else(|| {
-                panic!("hydrolysis web platform: safe-area {property} resolved to {value:?}, not a pixel length")
-            })
-    };
-    waterui_layout::padding::EdgeInsets::new(
-        inset("padding-top"),
-        inset("padding-bottom"),
-        inset("padding-left"),
-        inset("padding-right"),
-    )
+impl Viewport {
+    fn new(document: &Document) -> Self {
+        let probe = document
+            .create_element("div")
+            .expect("hydrolysis web platform: failed to create the viewport probe")
+            .dyn_into::<HtmlElement>()
+            .expect("hydrolysis web platform: created node is not an HTML element");
+        probe
+            .set_attribute("aria-hidden", "true")
+            .expect("hydrolysis web platform: failed to hide the viewport probe");
+        let style = probe.style();
+        for (property, value) in [
+            ("position", "fixed"),
+            ("left", "0"),
+            ("top", "0"),
+            ("width", "0"),
+            ("visibility", "hidden"),
+            ("pointer-events", "none"),
+            (
+                "padding",
+                "env(safe-area-inset-top) env(safe-area-inset-right) \
+                 env(safe-area-inset-bottom) env(safe-area-inset-left)",
+            ),
+            ("min-height", "100lvh"),
+            ("max-height", "100svh"),
+        ] {
+            style
+                .set_property(property, value)
+                .expect("hydrolysis web platform: failed to style the viewport probe");
+        }
+        document
+            .body()
+            .expect("hydrolysis web platform: document body unavailable")
+            .append_child(&probe)
+            .expect("hydrolysis web platform: failed to append the viewport probe");
+        Self { probe }
+    }
+
+    /// Sizes `root` for the viewport as it is now and returns the window's
+    /// safe area, in CSS pixels — the window's logical units.
+    ///
+    /// A browser whose toolbars retract over the page — the large viewport
+    /// taller than the small one — composites page content beneath them:
+    /// iOS Safari draws document content under its floating bottom toolbar.
+    /// The root then reaches past the bottom of the visible viewport by the
+    /// height of the browser's own chrome (`outerHeight − innerHeight`), so
+    /// the app paints under the toolbar, and that extension joins the
+    /// bottom inset, so its content still lays out inside the visible
+    /// viewport. The browser reports only the chrome's total, not how it
+    /// splits above and below the page, so the extension can run past the
+    /// screen's bottom edge by the chrome above the page; that part is
+    /// painted and never shown. A browser with fixed chrome — every desktop
+    /// browser — reports equal viewports and gets no extension.
+    fn fit(
+        &self,
+        browser_window: &BrowserHostWindow,
+        root: &HtmlElement,
+    ) -> waterui_layout::padding::EdgeInsets {
+        let style = browser_window
+            .get_computed_style(&self.probe)
+            .expect("hydrolysis web platform: failed to compute the viewport probe style")
+            .expect("hydrolysis web platform: the viewport probe has no computed style");
+        let length = |property: &str| -> f64 {
+            let value = style
+                .get_property_value(property)
+                .expect("hydrolysis web platform: failed to read a viewport probe length");
+            value
+                .strip_suffix("px")
+                .and_then(|pixels| pixels.parse::<f64>().ok())
+                .unwrap_or_else(|| {
+                    panic!("hydrolysis web platform: viewport probe {property} resolved to {value:?}, not a pixel length")
+                })
+        };
+        let extension = if length("min-height") > length("max-height") {
+            let dimension = |value: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>,
+                             name: &str| {
+                value
+                    .unwrap_or_else(|_| panic!("hydrolysis web platform: failed to query {name}"))
+                    .as_f64()
+                    .unwrap_or_else(|| panic!("hydrolysis web platform: {name} is not numeric"))
+            };
+            (dimension(browser_window.outer_height(), "outerHeight")
+                - dimension(browser_window.inner_height(), "innerHeight"))
+            .max(0.0)
+        } else {
+            0.0
+        };
+        root.style()
+            .set_property("height", &format!("calc(100% + {extension}px)"))
+            .expect("hydrolysis web platform: failed to size the root element");
+        let inset = |property: &str| crate::num_cast::f64_as_f32(length(property));
+        waterui_layout::padding::EdgeInsets::new(
+            inset("padding-top"),
+            crate::num_cast::f64_as_f32(length("padding-bottom") + extension),
+            inset("padding-left"),
+            inset("padding-right"),
+        )
+    }
 }
 
 fn find_or_create_ime_input(document: &Document) -> HtmlInputElement {
@@ -680,7 +848,6 @@ fn measure_root(browser_window: &BrowserHostWindow, root: &HtmlElement) -> Pendi
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 #[expect(
     clippy::too_many_lines,
     reason = "the listener registration enumerates every DOM event hook once; the length is the enumeration, not logic"
@@ -690,20 +857,15 @@ fn measure_root(browser_window: &BrowserHostWindow, root: &HtmlElement) -> Pendi
     reason = "the shared Rc state is moved into listener closures; borrowing would fight the closure 'static bounds"
 )]
 fn register_listeners(
-    browser_window: &BrowserHostWindow,
     root: &HtmlElement,
     ime_input: &HtmlInputElement,
     pending_events: Rc<RefCell<Vec<InputEvent>>>,
     redraw_requested: Rc<Cell<bool>>,
-    scale_factor: Rc<Cell<f64>>,
-    pending_resize: Rc<Cell<Option<PendingResize>>>,
     schedule_frame: Rc<dyn Fn()>,
 ) -> Vec<Closure<dyn FnMut(Event)>> {
     let mut listeners = Vec::new();
     let composing = Rc::new(Cell::new(false));
     let suppress_next_input = Rc::new(Cell::new(false));
-    let browser_window_target: EventTarget =
-        <BrowserHostWindow as AsRef<EventTarget>>::as_ref(browser_window).clone();
     let root_target: EventTarget = <HtmlElement as AsRef<EventTarget>>::as_ref(root).clone();
     let ime_input_target: EventTarget =
         <HtmlInputElement as AsRef<EventTarget>>::as_ref(ime_input).clone();
@@ -762,31 +924,6 @@ fn register_listeners(
             redraw_requested.set(true);
             schedule_frame();
         }));
-    }
-
-    {
-        let browser_window = browser_window.clone();
-        let root = root.clone();
-        let pending_events = pending_events.clone();
-        let redraw_requested = redraw_requested.clone();
-        // The original `scale_factor`/`pending_resize` move straight into
-        // this closure — nothing after the block needs their Rc handle.
-        let schedule_frame = schedule_frame.clone();
-        listeners.push(add_event_listener(
-            &browser_window_target,
-            "resize",
-            move |_event| {
-                let resize = measure_root(&browser_window, &root);
-                scale_factor.set(resize.scale_factor);
-                pending_resize.set(Some(resize));
-                pending_events.borrow_mut().push(InputEvent::Resize {
-                    width: resize.width,
-                    height: resize.height,
-                });
-                redraw_requested.set(true);
-                schedule_frame();
-            },
-        ));
     }
 
     {

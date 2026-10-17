@@ -246,15 +246,15 @@ fn expand_mount(mount: &str, root: PathBuf, span: Span) -> TokenStream2 {
     }
     let body = emit_module(&waterui, &bundle, &node, true);
 
-    let meta = BundleMountMeta {
-        mount: if main {
+    let meta = BundleMountMeta::new(
+        if main {
             "assets".to_string()
         } else {
             mount.to_string()
         },
-        path: root,
-        project: None,
-    };
+        root,
+        None,
+    );
     let meta_ident = syn_ident(&meta.record_name());
     let record = meta.to_record();
     let record_len = record.len();
@@ -476,11 +476,7 @@ pub fn include_web(input: TokenStream) -> TokenStream {
         Err(error) => return error.into_compile_error().into(),
     };
 
-    let meta = BundleMountMeta {
-        mount: WEB_MOUNT.to_string(),
-        path: out,
-        project: Some(root.clone()),
-    };
+    let meta = BundleMountMeta::new(WEB_MOUNT.to_string(), out, Some(root.clone()));
     let meta_ident = syn_ident(&meta.record_name());
     let record = meta.to_record();
     let record_len = record.len();

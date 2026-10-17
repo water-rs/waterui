@@ -4,13 +4,13 @@ use super::*;
 use crate::renderer::mount::RetainedScopes;
 
 #[cfg(feature = "accessibility")]
+use crate::theme::InteractionFocusBinding;
+#[cfg(feature = "accessibility")]
 use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
 use std::collections::{BTreeSet, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
-#[cfg(feature = "accessibility")]
-use waterui_backend_core::widget::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
 
@@ -346,7 +346,12 @@ pub enum AccessibilityActionTarget {
     /// navigation between rows is built on these actions
     /// (water-rs/waterui#1223).
     ListRow {
+        /// The row's index in the list's row set.
         index: usize,
+        /// The row's position in the list's extent index: removal ghosts
+        /// still holding their slots (layout-spec.md §4.5) shift it past
+        /// `index`.
+        position: usize,
         handle: ScrollHandle,
         extents: Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
         /// §7.1's touched-edge extension the list's handle was rebound with:
@@ -1520,6 +1525,7 @@ impl SemanticCore {
             }
             AccessibilityActionTarget::ListRow {
                 index,
+                position,
                 handle,
                 extents,
                 extension,
@@ -1528,7 +1534,7 @@ impl SemanticCore {
             } => match action {
                 AccessibilityAction::Focus => {
                     self.scroll_list_row_into_view(
-                        index,
+                        position,
                         &handle,
                         &extents,
                         extension,
@@ -1550,9 +1556,13 @@ impl SemanticCore {
                         clicked
                     }
                 }
-                AccessibilityAction::ScrollIntoView => {
-                    self.scroll_list_row_into_view(index, &handle, &extents, extension, target_node)
-                }
+                AccessibilityAction::ScrollIntoView => self.scroll_list_row_into_view(
+                    position,
+                    &handle,
+                    &extents,
+                    extension,
+                    target_node,
+                ),
                 _ => panic!("hydrolysis accessibility list row does not support action {action:?}"),
             },
         };
@@ -1772,7 +1782,7 @@ impl SemanticCore {
     #[cfg(feature = "accessibility")]
     pub(crate) fn scroll_list_row_into_view(
         &self,
-        index: usize,
+        position: usize,
         handle: &ScrollHandle,
         extents: &Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
         extension: crate::renderer::EdgeOffsets,
@@ -1780,8 +1790,8 @@ impl SemanticCore {
     ) -> bool {
         let metrics = handle.metrics();
         let extents = extents.borrow();
-        let row_start = extents.offset_of(index);
-        let row_end = extents.offset_of(index + 1);
+        let row_start = extents.offset_of(position);
+        let row_end = extents.offset_of(position + 1);
         // The rebound viewport covers the §7.1 extension into the avoided
         // bands; the reveal resolves against the laid-out frame's window —
         // a screen-reader focus move must not land a row under the band.

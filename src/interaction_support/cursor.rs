@@ -82,6 +82,7 @@ impl_constant!(CursorStyle);
 /// - **iPadOS**: Supported with external trackpad via `UIPointerStyle`
 /// - **Android**: Supported on API 24+ via `View.pointerIcon`
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct Cursor {
     /// The cursor style to display, can be reactive.
     pub style: Computed<CursorStyle>,

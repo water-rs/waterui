@@ -27,6 +27,8 @@ pub struct Categories {
     pub colr: u64,
     /// Decoded bitmap glyph images.
     pub bitmaps: u64,
+    /// The swept-geometry cache's table and any geometry only it holds.
+    pub geometry: u64,
     /// Projective layers' retained local images and mip chains.
     pub projective: u64,
 }
@@ -41,6 +43,7 @@ impl Categories {
             + self.glyphs
             + self.colr
             + self.bitmaps
+            + self.geometry
             + self.projective
     }
 }

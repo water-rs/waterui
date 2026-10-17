@@ -4,6 +4,7 @@ use waterui_text::{IntoText, Text};
 
 /// Search field configuration rendered inside navigation chrome.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct NavigationSearch {
     /// Caller-owned query binding.
     pub text: Binding<Str>,

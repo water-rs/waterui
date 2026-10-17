@@ -1,0 +1,94 @@
+name: Cherenkov CPU instructions
+
+# The Callgrind instruction-count gate `graphics/cherenkov/AGENTS.md`
+# requires for CPU-side engine changes, in two legs that run in parallel:
+# the GPU engine's lower/encode on Lavapipe, and the CPU backend's frame at
+# one worker per rayon pool. It runs on every pull request that
+# touches the engine, and by dispatch for any pair of revisions. The
+# baseline is the merge base of `base` and `head`. A pull request is
+# measured as merged into dev, against the dev commit it merges into, so a
+# branch that predates a dev fix the gate host needs is still measurable:
+#   gh workflow run cherenkov-ir.yml -f head=refs/pull/<number>/merge
+# It reports the result and is not a required check.
+on:
+  workflow_dispatch:
+    inputs:
+      head:
+        description: Candidate revision (SHA, branch, or refs/pull/<number>/merge)
+        required: true
+        type: string
+      base:
+        description: Baseline revision; the gate measures against its merge base with head
+        required: false
+        default: origin/dev
+        type: string
+  pull_request:
+    branches: [dev]
+    paths:
+      - graphics/cherenkov/**
+      - .github/workflows/cherenkov-ir.yml
+
+permissions:
+  contents: read
+
+jobs:
+  instructions:
+    name: instructions (${{ matrix.leg }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [gpu, cpu]
+    # A newer push to the same pull request supersedes the running measurement.
+    concurrency:
+      group: cherenkov-ir-${{ matrix.leg }}-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: true
+    timeout-minutes: 60
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache: "false"
+      - uses: ./.github/actions/cargo-sources
+      - uses: ./.github/actions/setup-linux-deps
+        with:
+          gpu: ${{ matrix.leg == 'gpu' }}
+          extra-packages: valgrind
+      # Every measurement script's unit suite: the gate's cover both legs,
+      # and the layer's test needs the Vulkan headers only the GPU leg
+      # installs.
+      - name: Test the measurement scripts and the gate's Vulkan layer
+        if: matrix.leg == 'gpu'
+        run: python3 -m unittest discover -s graphics/cherenkov/bench/scripts -p 'test_*.py'
+      - uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
+      - name: Build, profile and compare
+        timeout-minutes: 45
+        env:
+          # A pull request's merge commit is measured against its first
+          # parent, the dev commit it merges into.
+          IR_BASE: ${{ inputs.base || format('{0}^1', github.sha) }}
+          IR_HEAD: ${{ inputs.head || github.sha }}
+        run: >-
+          python3 graphics/cherenkov/bench/scripts/ir_gate.py ab --leg ${{ matrix.leg }}
+          --base "$IR_BASE" --head "$IR_HEAD"
+          --work "$RUNNER_TEMP/cherenkov-ir" --out ir-results
+      - name: Summarize
+        if: always() && hashFiles('ir-results/comparison.md') != ''
+        run: cat ir-results/comparison.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve provenance and every collected profile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cherenkov-ir-${{ matrix.leg }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ir-results/
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 30

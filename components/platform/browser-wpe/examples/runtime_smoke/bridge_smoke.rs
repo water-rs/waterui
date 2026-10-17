@@ -295,9 +295,12 @@ fn install_probe_handler(page: &SmokePage, calls: Arc<Mutex<Vec<String>>>) {
 }
 
 /// Runs `body` as an async page function and returns its JSON result.
+///
+/// The awaited path answers only strings — the engine's value is never
+/// re-encoded — so the page encodes the value `body` returns.
 pub fn await_page_script(page: &SmokePage, body: &str, deadline: Instant) -> serde_json::Value {
     let script_page = page.clone();
-    let body = body.to_owned();
+    let body = format!("return JSON.stringify(await (async () => {{ {body} }})());");
     let result = page
         .block_on(
             async move { script_page.call_async_javascript(&body).await },

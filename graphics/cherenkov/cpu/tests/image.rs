@@ -191,3 +191,43 @@ fn rgba16f_upload_keeps_hdr_and_wide_gamut() {
         assert!((g_ - w).abs() < 1e-2, "{got:?} vs premultiplied HDR red");
     }
 }
+
+/// A premultiplied sRGB-encoded `Rgba16F` texel whose straight red sits
+/// below the encoded knee decodes odd through zero: `[-0.125, 0.25, 0,
+/// 0.25]` un-premultiplies to `[-0.5, 1, 0]` at alpha 0.25, and the
+/// working texel is the oracle's, not the linear-segment decode (#2843).
+#[test]
+fn srgb_rgba16f_upload_decodes_negative_components_odd() {
+    let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
+    let image = engine
+        .image(
+            ImageData::<cherenkov::Rgba16F>::new(1, 1, f16_px([-0.125, 0.25, 0.0, 0.25]))
+                .expect("data")
+                .color_space(ImageColorSpace::Srgb)
+                .premultiplied(),
+        )
+        .expect("image");
+    let surface = engine
+        .surface(Offscreen::new((4, 4), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.image(image.id(), Rect::new(0.0, 0.0, 4.0, 4.0), Sampling::Nearest);
+        }));
+    });
+    engine.render(FrameTime::now()).expect("render");
+    let pixels = surface.readback().expect("pixels").pixels;
+    // The oracle's working value of the same texel: premultiplied
+    // [-0.125, 0.25, 0, 0.25] is straight [-0.5, 1, 0] at alpha 0.25.
+    let want = cherenkov_oracle::color::to_working(&cherenkov_scene::Color::new(
+        cherenkov_scene::ColorSpace::Srgb,
+        [-0.5, 1.0, 0.0, 0.25],
+    ));
+    // The dyadic texel is exact in f16, so the engine's f64 decode -> f32
+    // store differs from the f64 oracle only by rounding — the 1e-2
+    // channel tolerance of the f16 test above.
+    let got = pixels[0];
+    for (g, w) in got.iter().zip(want) {
+        assert!((f64::from(*g) - w).abs() < 1e-2, "{got:?} vs {want:?}");
+    }
+}

@@ -63,6 +63,10 @@ const MORPH_FRAGMENT: &str = include_str!("shaders/morph.wgsl");
 /// All coordinates are normalized (0.0-1.0) and scale with view bounds.
 /// Native backends convert these to absolute coordinates based on view size.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each path command variant by variant; a new path command must fail their build instead of falling into a wildcard arm"
+)]
 pub enum PathCommand {
     /// Move to a position without drawing.
     MoveTo {
@@ -209,6 +213,7 @@ pub trait Shape {
 
 /// A circle inscribed in the view bounds.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Circle;
 
 impl Shape for Circle {
@@ -232,6 +237,7 @@ impl Shape for Circle {
 
 /// An ellipse that fills the view bounds.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Ellipse;
 
 impl Shape for Ellipse {
@@ -255,6 +261,7 @@ impl Shape for Ellipse {
 
 /// A capsule (pill) shape.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Capsule;
 
 impl Shape for Capsule {
@@ -296,6 +303,7 @@ impl Shape for Capsule {
 
 /// A rectangle with uniform corner radius.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct RoundedRectangle {
     /// Corner radius (normalized, 0.0-0.5 range).
     pub corner_radius: f32,
@@ -387,6 +395,7 @@ impl Shape for RoundedRectangle {
 
 /// A rectangle with independent corner radii.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct UnevenRoundedRectangle {
     /// Top-leading corner radius (normalized).
     pub top_leading: f32,
@@ -504,6 +513,7 @@ impl Shape for UnevenRoundedRectangle {
 /// shape resizes, which is the whole point: spec radii stay constant however
 /// tall or wide the surface ends up.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct FixedRoundedRectangle {
     /// Corner radius in logical points.
     pub corner_radius: f32,
@@ -552,6 +562,7 @@ impl Shape for FixedRoundedRectangle {
 /// is a length in points, used where a spec names per-corner values — a modal
 /// panel's trailing corners, say.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct FixedUnevenRoundedRectangle {
     /// Top-leading corner radius in logical points.
     pub top_leading: f32,
@@ -619,6 +630,7 @@ impl Shape for FixedUnevenRoundedRectangle {
 
 /// A simple rectangle with sharp corners.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(clippy::exhaustive_structs, reason = "field-less shape used by name")]
 pub struct Rectangle;
 
 impl Shape for Rectangle {
@@ -776,6 +788,10 @@ impl MetadataKey for ClipShape {}
 
 /// The kind of shape for backend rendering optimization.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends render each shape kind with its own native primitive, variant by variant; a new kind must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ShapeKind {
     /// Rectangle with sharp corners.
     #[default]
@@ -832,6 +848,7 @@ pub enum ShapeKind {
 
 /// Resolved shape payload rendered directly by native backends.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ResolvedShape {
     /// Shape kind for backend-side optimization.
     pub kind: ShapeKind,
@@ -845,6 +862,7 @@ waterui_core::raw_view!(ResolvedShape, waterui_core::layout::StretchAxis::Both);
 
 /// Resolved morphing shape payload rendered directly by capable backends.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct ResolvedMorphShape {
     /// Source shape kind.
     pub from: ShapeKind,
@@ -927,6 +945,7 @@ impl FilledShape {
 
 /// Configuration for shape morph animations.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct MorphAnimation {
     /// Duration of one forward morph cycle.
     pub duration: Duration,

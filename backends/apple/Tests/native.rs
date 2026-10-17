@@ -82,6 +82,13 @@ fn trials() -> Vec<Trial> {
                     Ok(())
                 },
             ),
+            Trial::test(
+                "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
+                || {
+                    navigation::a_searchable_page_rests_its_field_in_the_titlebar_row();
+                    Ok(())
+                },
+            ),
         ]);
         #[cfg(feature = "gpu_surface")]
         {
@@ -177,8 +184,16 @@ fn base_trials() -> Vec<Trial> {
             resolve::stepper_leaves_follow_the_stretch_rule();
             Ok(())
         }),
+        Trial::test("resolve::picker_leaves_follow_the_stretch_rule", || {
+            resolve::picker_leaves_follow_the_stretch_rule();
+            Ok(())
+        }),
         Trial::test("resolve::toggle_rows_place_the_control_by_kind", || {
             resolve::toggle_rows_place_the_control_by_kind();
+            Ok(())
+        }),
+        Trial::test("resolve::a_label_leaves_8pt_between_icon_and_title", || {
+            resolve::a_label_leaves_8pt_between_icon_and_title();
             Ok(())
         }),
         Trial::test(
@@ -725,13 +740,15 @@ mod leaf {
 mod resolve {
     use waterui::Str;
     use waterui::ViewExt as _;
-    use waterui::component::form::picker::{PickerItem, picker};
+    use waterui::component::form::picker::{PickerItem, PickerStyle, picker};
     use waterui::component::form::secure::{Secure, SecureField};
+    use waterui::component::label::label;
     use waterui::component::slider::slider;
     use waterui::component::stepper::stepper;
     use waterui::component::text_field::TextField;
     use waterui::component::toggle::Toggle;
     use waterui::filter::Opacity;
+    use waterui::icon::SystemIcon;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
@@ -1035,6 +1052,61 @@ mod resolve {
         }
     }
 
+    /// `docs/layout-spec.md` §3 and §6: a segmented picker is `Horizontal`
+    /// and answers the proposed width; every other style answers its
+    /// intrinsic size.
+    pub fn picker_leaves_follow_the_stretch_rule() {
+        let selection = binding(0_i32);
+        let items = || -> Vec<PickerItem<i32>> {
+            vec![
+                waterui::text!("One").tag(0),
+                waterui::text!("Two").tag(1),
+                waterui::text!("Three").tag(2),
+            ]
+        };
+        let cases = [
+            (
+                "segmented",
+                picker("Mode", items(), &selection).segmented(),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "menu",
+                picker("Mode", items(), &selection).style(PickerStyle::Menu),
+                StretchAxis::None,
+            ),
+        ];
+        for (name, picker, axis) in cases {
+            let leaf = render(picker);
+            assert_eq!(leaf.layout().stretch_axis(), axis, "{name}: stretch axis");
+            let intrinsic = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+            assert!(
+                intrinsic.width < 300.0,
+                "{name}: intrinsic width {} must be narrower than the offer",
+                intrinsic.width
+            );
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), None))
+                .size;
+            let expected = if axis == StretchAxis::Horizontal {
+                300.0_f32
+            } else {
+                intrinsic.width
+            };
+            assert_eq!(
+                offered.width.to_bits(),
+                expected.to_bits(),
+                "{name}: width under a 300 pt offer"
+            );
+            assert_eq!(
+                offered.height.to_bits(),
+                intrinsic.height.to_bits(),
+                "{name}: height stays intrinsic"
+            );
+        }
+    }
+
     /// A switch row puts the label at the leading edge and the switch at
     /// the trailing edge of the full width; a checkbox row reads box first,
     /// then the label `LABEL_SPACING` after it.
@@ -1093,6 +1165,38 @@ mod resolve {
                 );
             }
         }
+    }
+
+    /// water-rs/waterui#1101: a semantic label leaves 8 pt between its
+    /// icon and its title — the `SwiftUI` `Label` and Material 3 default
+    /// the composition reproduces on every backend.
+    pub fn a_label_leaves_8pt_between_icon_and_title() {
+        let leaf = render(label("Play").icon(SystemIcon::new("play.fill")));
+        let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        let row = leaf.view();
+        cocoa_ui::view::set_frame(
+            row,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(row);
+        // The leaf's host view wraps the hstack's own host view, whose
+        // subviews are the icon and the title in one coordinate space.
+        let stack = cocoa_ui::view::subviews(row);
+        assert_eq!(stack.len(), 1, "the label leaf hosts one stack view");
+        let subviews = cocoa_ui::view::subviews(&stack[0]);
+        assert_eq!(
+            subviews.len(),
+            2,
+            "an icon label holds the icon and the title"
+        );
+        let icon = cocoa_ui::view::frame(&subviews[0]);
+        let title = cocoa_ui::view::frame(&subviews[1]);
+        // Auto Layout snaps frames to the backing scale's pixel grid.
+        let gap = title.origin.x - (icon.origin.x + icon.size.width);
+        assert!(
+            (gap - 8.0).abs() < 0.5,
+            "icon-to-title gap — expected 8 pt, got {gap}"
+        );
     }
 }
 
@@ -1874,6 +1978,95 @@ mod menus {
     }
 }
 
+/// Navigation-chrome trials on `AppKit`: a `.searchable` page on a titled
+/// window rests its field in the titlebar's bottom accessory row, at the
+/// metrics the platform's own `.searchable` presents.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod navigation {
+    use cocoa_ui::objc2_app_kit::{NSLayoutAttribute, NSSearchField};
+    use waterui::Str;
+    use waterui::navigation::NavigationView;
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    use super::{leaf, mtm, resolve};
+
+    /// The platform's `.searchable` on a titled window without a sidebar
+    /// installs a bottom titlebar accessory row 38 pt tall, the field 28 pt
+    /// tall at 41 % of the window's width, centred, drawn in the 11 pt
+    /// system font. The assertions read the row's live `AppKit` objects so
+    /// each metric — attribute, height, font, size, centring — is checked
+    /// the way the platform's row was measured.
+    pub fn a_searchable_page_rests_its_field_in_the_titlebar_row() {
+        let mtm = mtm();
+        let query = binding(Str::from(""));
+        let page = resolve::render(
+            NavigationView::new("Title", text("body")).searchable(&query, "Search mail"),
+        );
+        let window = leaf::attach(mtm, page.view());
+        // The platform's reference window: the metrics were measured at an
+        // 800 pt window.
+        window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 800.0, 600.0), false);
+        window.order_front();
+        let native = window.native();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                native.titlebarAccessoryViewControllers().count() == 1
+            }),
+            "the searchable page must install exactly one titlebar accessory"
+        );
+        let accessory = native.titlebarAccessoryViewControllers().objectAtIndex(0);
+        assert_eq!(
+            accessory.layoutAttribute(),
+            NSLayoutAttribute::Bottom,
+            "the platform pins the search row to the titlebar's bottom"
+        );
+        accessory.view().layoutSubtreeIfNeeded();
+        let row = accessory.view().frame();
+        assert_eq!(
+            row.size.height.to_bits(),
+            38.0_f64.to_bits(),
+            "the platform's search row is 38 pt tall"
+        );
+        let field = accessory
+            .view()
+            .subviews()
+            .iter()
+            .find_map(|sub| sub.downcast::<NSSearchField>().ok())
+            .expect("the accessory row hosts an NSSearchField");
+        assert_eq!(
+            field
+                .font()
+                .expect("the field carries a font")
+                .pointSize()
+                .to_bits(),
+            11.0_f64.to_bits(),
+            "the platform's .searchable row draws the field at 11 pt"
+        );
+        let frame = field.frame();
+        assert!(
+            (frame.size.height - 28.0).abs() <= 1.0,
+            "the platform's field is 28 pt tall, got {}",
+            frame.size.height
+        );
+        let window_width = native.frame().size.width;
+        let expected_width = 0.41 * window_width;
+        assert!(
+            (frame.size.width - expected_width).abs() <= 1.0,
+            "the platform's field spans 41 % of the window's width, got {}",
+            frame.size.width
+        );
+        let in_window = field.convertRect_toView(field.bounds(), None);
+        let field_center_x = in_window.origin.x + in_window.size.width / 2.0;
+        let window_center_x = window_width / 2.0;
+        assert!(
+            (field_center_x - window_center_x).abs() <= 1.0,
+            "the platform centres the field in the window: field at {field_center_x}, window at {window_center_x}"
+        );
+    }
+}
+
 /// GPU-surface ownership regression coverage (#1725): a real mounted
 /// `SceneView` — production `build_surface`, `SurfaceState`,
 /// `SceneRenderer`/`SceneEngine` — driven through the capturable
@@ -2367,7 +2560,7 @@ mod gpu_surface {
             GpuRuntime, HostedLayerError, install_service, scene_engine,
         };
         use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderError, RenderSize, ViewRenderer};
+        use waterui_core::view_renderer::{RenderError, RenderRequest, ViewRenderer};
         use waterui_graphics::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
@@ -2402,7 +2595,10 @@ mod gpu_surface {
             30.0,
             renderer.render(
                 AnyView::new(fixture_scene_view()),
-                RenderSize::new(64.0, 64.0),
+                RenderRequest::new(
+                    waterui_core::layout::Size::new(64.0, 64.0),
+                    std::time::Duration::from_secs(10),
+                ),
             ),
         ) else {
             return Err(
@@ -2438,7 +2634,7 @@ mod gpu_surface {
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
         use waterui_apple::native_test_support::view_renderer::{GpuRuntime, install_service};
         use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderSize, ViewRenderer};
+        use waterui_core::view_renderer::{RenderRequest, ViewRenderer};
 
         let (_runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
@@ -2456,7 +2652,10 @@ mod gpu_surface {
             30.0,
             renderer.render(
                 AnyView::new(fixture_scene_view()),
-                RenderSize::new(64.0, 64.0),
+                RenderRequest::new(
+                    waterui_core::layout::Size::new(64.0, 64.0),
+                    std::time::Duration::from_secs(10),
+                ),
             ),
         )
         .map_err(|error| format!("a render over the healthy GPU child resolves Ok: {error}"))?;
@@ -5482,7 +5681,7 @@ mod owner_lifetimes {
         // afterwards names a real retainer, not a pooled autorelease.
         let mut env = resolve::env();
         let track = binding(String::from("first"));
-        let items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
         // The theme `Foreground` slot backs every unstyled chunk — the
         // `label_leaf` default watcher this fix touches. Reinstall it
         // from a binding the test keeps, so a live update is reachable.
@@ -7241,25 +7440,32 @@ mod navigation {
 /// bridge — a mock of the handle's own bookkeeping would merely restate it.
 #[cfg(feature = "webview")]
 mod webview {
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     use libtest_mimic::Trial;
-    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, block_on_main, pump_main_until};
+    use waterui_apple::native_test_support::{block_on_main, pump_main_until};
     use waterui_webview::{
         AnyWebViewHandle, BackendEvent, BridgeOrigins, JsReply, OriginPolicy, ScriptInjectionTime,
-        Url, WebViewEvent,
+        Url, UserScript, WatcherGuard, WebViewConfig, WebViewEvent,
     };
 
     use super::mtm;
 
-    /// The bound the whole mirrored-state conformance scenario gets.
+    /// The bound every wait on the real engine gets: a navigation, an
+    /// evaluation, or a whole conformance scenario.
     ///
-    /// The case walks several real navigations across two server origins —
-    /// each a full load cycle through `WebKit`'s web and network processes —
-    /// so its bound covers the scenario, not the single main-queue drain
-    /// [`MAIN_QUEUE_DEADLINE`] gives one deferred piece of work.
-    const MIRRORED_STATE_SCENARIO_DEADLINE: f64 = 180.0;
+    /// Each of these crosses `WebKit`'s web content, GPU and network
+    /// processes, and a view's first navigation launches them. On a freshly
+    /// created simulator — which CI provisions for every run — that launch
+    /// competes with the device's own first-boot work and with the suite's
+    /// other test processes, so it takes seconds to tens of seconds — not
+    /// the few run-loop turns the main-queue drain bound
+    /// [`MAIN_QUEUE_DEADLINE`](waterui_apple::native_test_support::MAIN_QUEUE_DEADLINE)
+    /// gives one deferred piece of work. Every wait still ends on the
+    /// engine's own completion signal; this only bounds how long a stuck
+    /// engine is given.
+    const ENGINE_DEADLINE: f64 = 180.0;
 
     pub fn trials() -> Vec<Trial> {
         vec![
@@ -7284,61 +7490,97 @@ mod webview {
         ]
     }
 
+    /// What a view reported about its loads: every event, in order, and how
+    /// many loads finished. The guard keeps the record subscribed.
+    struct Loads {
+        finished: Rc<Cell<u32>>,
+        events: Rc<RefCell<Vec<String>>>,
+        _guard: WatcherGuard,
+    }
+
+    impl Loads {
+        fn watch(handle: &AnyWebViewHandle) -> Self {
+            let finished = Rc::new(Cell::new(0_u32));
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let guard = handle.watch({
+                let finished = Rc::clone(&finished);
+                let events = Rc::clone(&events);
+                move |event| {
+                    if matches!(event, BackendEvent::Event(WebViewEvent::Loaded)) {
+                        finished.set(finished.get() + 1);
+                    }
+                    events.borrow_mut().push(format!("{event:?}"));
+                }
+            });
+            Self {
+                finished,
+                events,
+                _guard: guard,
+            }
+        }
+    }
+
     /// Navigates to `destination` and waits for the engine to report the
     /// load finished — delegate callbacks arrive on the main run loop,
-    /// which `pump_main_until` turns.
-    fn navigate(handle: &AnyWebViewHandle, destination: &str, loaded: &Rc<Cell<u32>>) {
-        let before = loaded.get();
+    /// which `pump_main_until` turns. A load that fails, or is cancelled by
+    /// a navigation policy, reports an error event; that ends the wait, and
+    /// the failure names every event the view reported.
+    fn navigate(handle: &AnyWebViewHandle, destination: &str, loads: &Loads) {
+        let before = loads.finished.get();
+        let reported = loads.events.borrow().len();
+        let failed = || {
+            loads.events.borrow()[reported..]
+                .iter()
+                .any(|event| event.contains("Error"))
+        };
         let url: Url = destination
             .parse()
             .unwrap_or_else(|error| panic!("{destination} must parse: {error}"));
         handle.go_to(&url);
+        let settled = pump_main_until(ENGINE_DEADLINE, || {
+            loads.finished.get() > before || failed()
+        });
         assert!(
-            pump_main_until(MAIN_QUEUE_DEADLINE, || loaded.get() > before),
-            "the engine never finished loading {destination}"
+            settled && !failed(),
+            "the engine never finished loading {destination}; it reported {:?}",
+            &loads.events.borrow()[reported..]
         );
     }
 
     /// The `typeof` of every global the bridge installs, evaluated in the
     /// document currently loaded — `waterui`, the `__wateruiEval` wrapper
     /// and the `__wateruiState` store from the document-start script, plus
-    /// the `__wateruiProbe` the case itself injects, riding the same keyed
-    /// `inject_script` the mirrored-state seed does. The probe answers an
+    /// the `__wateruiProbe` the case itself injects, riding the creation-time
+    /// scripts the mirrored-state seed is one of. The probe answers an
     /// array, whose reply is its JSON encoding on every engine.
-    fn bridge_globals(handle: &AnyWebViewHandle) -> String {
-        block_on_main(
-            MAIN_QUEUE_DEADLINE,
+    fn bridge_globals(handle: &AnyWebViewHandle) -> Vec<String> {
+        let globals = block_on_main(
+            ENGINE_DEADLINE,
             handle.run_javascript(
                 "[typeof waterui, typeof __wateruiEval, typeof __wateruiState, typeof __wateruiProbe]",
             ),
         )
-        .unwrap_or_else(|error| panic!("the globals probe must evaluate: {error}"))
-        .to_string()
+        .unwrap_or_else(|error| panic!("the globals probe must evaluate: {error}"));
+        serde_json::from_str(&globals).unwrap_or_else(|error| {
+            panic!("the globals probe answered {globals}, not a string array: {error}")
+        })
     }
 
-    /// A document outside the admission policy must receive none of the
-    /// bridge: no `waterui` object, no `__wateruiEval`, no `__wateruiState`,
-    /// and none of the keyed injections the state seed is one of.
-    ///
-    /// The first leg loads under `BridgeOrigins::Any` so the globals are
-    /// expected present — without it, a build that simply never installed
-    /// anything would pass too. Both legs load `data:` documents, so the
-    /// policy is the only difference between them. The first is not
-    /// `about:blank`: a fresh view's first `about:blank` navigation reuses
-    /// the initial empty document, which runs no document-start script.
-    fn a_non_admitted_document_gets_no_bridge_globals() {
-        let webview = waterui_apple::native_test_support::webview::open(mtm());
+    /// A view created under `origins` with the probe script and a handler,
+    /// and the record of its loads.
+    fn probed_view(origins: BridgeOrigins) -> (AnyWebViewHandle, Loads) {
+        let initial: Url = "https://waterui.dev".parse().expect("parses");
+        let webview = waterui_apple::native_test_support::webview::controller(mtm()).open_with(
+            WebViewConfig::default()
+                .with_bridge_origins(OriginPolicy::new(origins, &initial))
+                .with_scripts(vec![UserScript::new(
+                    "waterui:test-probe",
+                    "globalThis.__wateruiProbe = true;",
+                    ScriptInjectionTime::DocumentStart,
+                )]),
+        );
         let handle = webview.handle().clone();
-
-        let loaded = Rc::new(Cell::new(0_u32));
-        let _events = handle.watch({
-            let loaded = Rc::clone(&loaded);
-            move |event| {
-                if matches!(event, BackendEvent::Event(WebViewEvent::Loaded)) {
-                    loaded.set(loaded.get() + 1);
-                }
-            }
-        });
+        let loads = Loads::watch(&handle);
 
         handle.add_handler(
             "noop",
@@ -7346,29 +7588,36 @@ mod webview {
                 Box::pin(async { Ok(JsReply::Json(b"null".to_vec())) })
             }),
         );
-        handle.inject_script(
-            "waterui:test-probe",
-            "globalThis.__wateruiProbe = true;",
-            ScriptInjectionTime::DocumentStart,
-        );
+        (handle, loads)
+    }
 
-        let initial: Url = "https://waterui.dev".parse().expect("parses");
-        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Any, &initial));
-        navigate(&handle, "data:text/html,admitted", &loaded);
+    /// A document outside the admission policy must receive none of the
+    /// bridge: no `waterui` object, no `__wateruiEval`, no `__wateruiState`,
+    /// and none of the creation-time scripts the state seed is one of.
+    ///
+    /// The first view is created under `BridgeOrigins::Any` so the globals
+    /// are expected present — without it, a build that simply never
+    /// installed anything would pass too. Both views load `data:` documents,
+    /// so the policy is the only difference between them. Neither is
+    /// `about:blank`: a fresh view's first `about:blank` navigation reuses
+    /// the initial empty document, which runs no document-start script.
+    fn a_non_admitted_document_gets_no_bridge_globals() {
+        let (admitting, loads) = probed_view(BridgeOrigins::Any);
+        navigate(&admitting, "data:text/html,admitted", &loads);
         assert_eq!(
-            bridge_globals(&handle),
-            r#"["object","function","object","boolean"]"#,
+            bridge_globals(&admitting),
+            ["object", "function", "object", "boolean"],
             "an admitted document must receive the whole bridge"
         );
 
         // The default policy — only the origin the view was opened at —
-        // admits nothing a `data:` document could report, so the next
-        // navigation must leave the page with no bridge at all.
-        handle.set_bridge_origins(OriginPolicy::new(BridgeOrigins::Initial, &initial));
-        navigate(&handle, "data:text/plain,elsewhere", &loaded);
+        // admits nothing a `data:` document could report, so the document
+        // must be left with no bridge at all.
+        let (refusing, loads) = probed_view(BridgeOrigins::Initial);
+        navigate(&refusing, "data:text/plain,elsewhere", &loads);
         assert_eq!(
-            bridge_globals(&handle),
-            r#"["undefined","undefined","undefined","undefined"]"#,
+            bridge_globals(&refusing),
+            ["undefined", "undefined", "undefined", "undefined"],
             "a document outside the admission policy must get no bridge globals"
         );
     }
@@ -7380,19 +7629,10 @@ mod webview {
     fn raw_evaluation_answers_json() {
         let webview = waterui_apple::native_test_support::webview::open(mtm());
         let handle = webview.handle().clone();
-
-        let loaded = Rc::new(Cell::new(0_u32));
-        let _events = handle.watch({
-            let loaded = Rc::clone(&loaded);
-            move |event| {
-                if matches!(event, BackendEvent::Event(WebViewEvent::Loaded)) {
-                    loaded.set(loaded.get() + 1);
-                }
-            }
-        });
-        navigate(&handle, "data:text/html,conformance", &loaded);
+        let loads = Loads::watch(&handle);
+        navigate(&handle, "data:text/html,conformance", &loads);
         block_on_main(
-            MAIN_QUEUE_DEADLINE,
+            ENGINE_DEADLINE,
             waterui_webview::conformance::raw_evaluation_answers_json(async |script| {
                 handle.run_javascript(script).await
             }),
@@ -7418,7 +7658,7 @@ mod webview {
         );
         let controller = waterui_apple::native_test_support::webview::controller(mtm());
         block_on_main(
-            MIRRORED_STATE_SCENARIO_DEADLINE,
+            ENGINE_DEADLINE,
             waterui_webview::conformance::mirrored_state_reaches_only_admitted_documents(
                 &controller,
             ),

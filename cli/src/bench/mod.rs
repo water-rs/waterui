@@ -37,6 +37,7 @@ fn absolute_path(host: &crate::toolchain::Host, path: &Path) -> PathBuf {
 
 /// One `water bench` invocation.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct BenchRunOptions {
     /// Directory of the project or crate whose benches run.
     pub path: PathBuf,
@@ -52,8 +53,31 @@ pub struct BenchRunOptions {
     pub budget_caps: BenchBudgets,
 }
 
+impl BenchRunOptions {
+    /// Options running the benchmarks of the project at `path` that match
+    /// `filter`, sampled per `config`, writing reports to `report_dir` and
+    /// failing past `budget_caps`.
+    #[must_use]
+    pub const fn new(
+        path: PathBuf,
+        filter: Option<String>,
+        config: BenchRunConfig,
+        report_dir: Option<PathBuf>,
+        budget_caps: BenchBudgets,
+    ) -> Self {
+        Self {
+            path,
+            filter,
+            config,
+            report_dir,
+            budget_caps,
+        }
+    }
+}
+
 /// Outcome of one bench suite run.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct BenchSuiteRun {
     /// Collected reports, sorted by crate then bench name.
     pub reports: Vec<BenchReport>,

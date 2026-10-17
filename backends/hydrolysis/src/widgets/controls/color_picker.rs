@@ -63,7 +63,7 @@ impl HydroNativeView for Native<ColorPickerConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_color_picker_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -183,7 +183,7 @@ pub fn measure_color_picker_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let input_metrics = theme.input_field_metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
@@ -226,7 +226,7 @@ fn measure_color_picker_intrinsic(
     color_picker: &ColorPickerConfig,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let input_metrics = theme.input_field_metrics();
     let label_size = measure_label_intrinsic(&color_picker.label, state, env, theme);

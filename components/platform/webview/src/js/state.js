@@ -4,11 +4,18 @@
 // properties — `app.state.theme` costs nothing and never crosses the boundary.
 // Writes go the other way through the bridge.
 //
-// Rust never sends state unasked. The seed defines every key and hands `start`
-// the cursor its values are current at; from then on the document keeps one
-// `__wateruiPullState` call open, and Rust answers it once something changed
-// after that cursor. The answer is a reply to this document's own call, so the
+// Rust never sends state unasked, and no value is ever part of injected text.
+// The seed declares every key and starts the loop; the document's first
+// `__wateruiPullState` call asks for every value, and from then on it keeps one
+// call open, which Rust answers once something changed after the cursor the
+// last reply named. The answer is a reply to this document's own call, so the
 // engine delivers it here or nowhere.
+//
+// Until the first reply lands the document holds no value, and it does not
+// pretend to: `waterui.ready` is the boundary. Reading or assigning a key
+// before it resolves throws rather than producing a default, `undefined`, or
+// a value fetched synchronously; watching a declared key is allowed, and the
+// watcher hears the first values when they arrive.
 //
 // Keys are fixed when the web view is created, so each is a real property rather
 // than a Proxy trap. The Proxy exists only to reject unknown keys: a typo like
@@ -28,17 +35,48 @@
   var watchers = Object.create(null);
   var target = Object.create(null);
 
+  // The ready boundary: settled by the first reply, rejected when the first
+  // pull fails. A page that never awaits it still hears of that failure
+  // through `waterui.onerror`, so the rejection is not also reported as an
+  // unhandled one.
+  var ready = false;
+  var settleReady;
+  var failReady;
+  var readyPromise = new Promise(function (resolve, reject) {
+    settleReady = resolve;
+    failReady = reject;
+  });
+  readyPromise.catch(function () {});
+
+  function becomeReady() {
+    if (!ready) {
+      ready = true;
+      settleReady();
+    }
+  }
+
+  function notReady(key) {
+    return new Error(
+      "WaterUI state '" + key + "' has no value before `waterui.ready` resolves"
+    );
+  }
+
   // A watcher is page code. One that throws is reported like any uncaught
   // error, and neither stops the watchers after it nor the pull loop that
-  // delivers every later change.
+  // delivers every later change. Deliveries iterate a snapshot, so what a
+  // watcher does inside its own call never reorders this notification.
   function notify(key, value) {
     var list = watchers[key];
     if (list === undefined) {
       return;
     }
-    for (var index = 0; index < list.length; index += 1) {
+    var snapshot = list.slice();
+    for (var index = 0; index < snapshot.length; index += 1) {
+      if (!snapshot[index].active) {
+        continue;
+      }
       try {
-        list[index](value);
+        snapshot[index].callback(value);
       } catch (error) {
         globalThis.reportError(error);
       }
@@ -67,6 +105,9 @@
         if (loop !== generation) {
           return;
         }
+        if (!ready) {
+          failReady(error);
+        }
         if (globalThis.waterui.onerror) {
           globalThis.waterui.onerror(error);
         }
@@ -82,13 +123,15 @@
 
   globalThis.__wateruiState = {
     // Declares a key. `writable` false means the page may read but not assign.
-    define: function (key, value, epoch, writable) {
-      mirror[key] = globalThis.__wateruiBigInts.revive(value);
-      epochs[key] = epoch;
+    // A declared key has no value until the first reply.
+    declare: function (key, writable) {
       Object.defineProperty(target, key, {
         enumerable: true,
         configurable: true,
         get: function () {
+          if (!ready) {
+            throw notReady(key);
+          }
           return mirror[key];
         },
         set: function (next) {
@@ -96,6 +139,9 @@
             throw new TypeError(
               "WaterUI state '" + key + "' is read-only; it is derived in Rust"
             );
+          }
+          if (!ready) {
+            throw notReady(key);
           }
           // Update locally first so a read in the same turn is consistent, then
           // send. Rust answers with the authoritative value, which may differ.
@@ -111,42 +157,54 @@
       });
     },
 
-    // Starts pulling from `since`, the cursor the seed's values are current at.
-    start: function (since) {
+    // Starts the pull loop. A document with no keys has nothing to pull, so
+    // it is ready at once.
+    start: function (pulls) {
+      if (!pulls) {
+        becomeReady();
+        return;
+      }
       if (!started) {
         started = true;
-        // A document restored from the back/forward cache runs no seed, and
-        // holds the state it had when it was frozen; it asks for every key.
+        // A document restored from the back/forward cache holds the state it
+        // had when it was frozen; it asks for every key again.
         globalThis.addEventListener("pageshow", function (event) {
           if (event.persisted) {
             restart(null);
           }
         });
       }
-      restart(since);
+      restart(null);
     },
 
     // Applies the keys one reply carries.
+    //
+    // Every value lands before any watcher runs, and the first reply makes
+    // the document ready before its watchers run, so a watcher that reads a
+    // sibling key sees this reply's value rather than a not-ready error.
     apply: function (changes) {
+      var delivered = [];
       for (var key in changes) {
         if (!Object.prototype.hasOwnProperty.call(changes, key)) {
           continue;
         }
         var entry = changes[key];
-        // A reply is self-sufficient: a key the document never saw seeded
+        // A reply is self-sufficient: a key the document never saw declared
         // still gets its property defined here, rather than being left with a
         // mirror whose keys throw on every read.
         if (!(key in target)) {
-          globalThis.__wateruiState.define(key, entry.v, entry.e, entry.w);
-          continue;
+          globalThis.__wateruiState.declare(key, entry.w);
         }
-        var value = globalThis.__wateruiBigInts.revive(entry.v);
-        mirror[key] = value;
-        epochs[key] = entry.e;
         // The revived value, not the wire form. A watcher used to be handed
         // `{__wateruiBigInt: "…"}` while `waterui.state.x` held the BigInt, so
         // arithmetic inside a watcher silently operated on an object.
-        notify(key, value);
+        mirror[key] = globalThis.__wateruiBigInts.revive(entry.v);
+        epochs[key] = entry.e;
+        delivered.push(key);
+      }
+      becomeReady();
+      for (var index = 0; index < delivered.length; index += 1) {
+        notify(delivered[index], mirror[delivered[index]]);
       }
     },
   };
@@ -172,18 +230,29 @@
     enumerable: true,
   });
 
+  // Resolves once the document holds every value — the first reply landed —
+  // and rejects when the first pull fails.
+  Object.defineProperty(globalThis.waterui, "ready", {
+    value: readyPromise,
+    enumerable: true,
+  });
+
   Object.defineProperty(globalThis.waterui, "watch", {
     value: function (key, callback) {
       if (!(key in target)) {
         throw new ReferenceError("unknown WaterUI state key '" + key + "'");
       }
       var list = watchers[key] || (watchers[key] = []);
-      list.push(callback);
+      var registration = { callback: callback, active: true };
+      list.push(registration);
+      // A handle owns exactly its registration: `active` is the one source
+      // of truth, so a repeat call cannot remove a sibling's record.
       return function () {
-        var index = list.indexOf(callback);
-        if (index >= 0) {
-          list.splice(index, 1);
+        if (!registration.active) {
+          return;
         }
+        registration.active = false;
+        list.splice(list.indexOf(registration), 1);
       };
     },
     enumerable: true,

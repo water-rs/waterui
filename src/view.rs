@@ -1179,7 +1179,7 @@ pub trait ViewExt: View + Sized {
     ///         let open = open.clone();
     ///         move || open.set(true)
     ///     })
-    ///     .anchored_overlay(AnchoredOverlay::new(&open, text!("Popover")).edge(AnchorEdge::Bottom));
+    ///     .anchored_overlay(AnchoredOverlay::new(&open, move || text!("Popover")).edge(AnchorEdge::Bottom));
     /// ```
     fn anchored_overlay(
         self,

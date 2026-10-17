@@ -42,6 +42,7 @@ mod render;
 mod signals;
 #[cfg(test)]
 pub mod tests;
+mod top_edge;
 mod tree;
 mod views;
 
@@ -61,6 +62,9 @@ pub use recording::assert_well_formed_image;
 pub use recording::{Glyph, GlyphRun, Recording, working_color};
 pub use tree::safe_area::{
     ChromeBar, Edge, EdgeOffsets, SafeAreaLayout, ScrollSurfaceArea, grow_rect,
+};
+pub use tree::transition::{
+    TransitionPaint, flush_transitioned, record_blurred, transition_transform,
 };
 pub use tree::*;
 pub use views::*;
@@ -186,9 +190,6 @@ use waterui_text::{Text, TextConfig};
 use waterui_webview::WebView;
 
 use crate::animation::{AnimatedScalarHandle, AnimationController, AnimationKey};
-use crate::engine::{
-    RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
-};
 use crate::gesture::GestureEngine;
 use crate::platform::{
     KeyCode, Modifiers, PointerButton, PointerKind, TextInputPurpose, TextInputState, TouchPhase,
@@ -196,6 +197,9 @@ use crate::platform::{
 #[cfg(feature = "accessibility")]
 use crate::scroll::ScrollHandle;
 use crate::text::SessionTextEngine;
+use crate::theme::{
+    RadioIndicatorState, RadioSelectionMotion, TextCaretMotion, TextContextMenuMetrics,
+};
 use crate::time::Instant;
 use crate::widgets::inset_rect;
 
@@ -570,7 +574,7 @@ pub struct HydrolysisRenderer {
     core: SemanticCore,
     /// The widget theme the runtime's style supplies to layout and encode.
     /// Never installed into the environment: build and patch cannot reach it.
-    theme: Rc<dyn crate::engine::WidgetTheme>,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
     window_bounds: kurbo::Rect,
     /// The transform the window's root content is flushed under: logical layout
     /// units onto the target's physical pixel grid. Stored alongside
@@ -1744,21 +1748,6 @@ impl SemanticCore {
         );
     }
 
-    /// Runs `f` with accessibility-node registration suppressed. For a control
-    /// whose own node already carries an internal sub-view's semantics (a merged
-    /// label, a numeric value): emitting that sub-view inside this scope keeps it
-    /// visual-only, so the control stays a single accessibility node instead of
-    /// double-exposing its label as a separate node.
-    #[cfg(feature = "accessibility")]
-    pub(crate) fn with_suppressed_accessibility<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R {
-        #[cfg(feature = "accessibility")]
-        self.push_accessibility_suppression();
-        let result = f(self);
-        #[cfg(feature = "accessibility")]
-        self.pop_accessibility_suppression();
-        result
-    }
-
     /// The modifier snapshot the window last reported — pointer targets read
     /// it at commit time because pointer events carry no modifier state of
     /// their own (toggle and Shift range selection).
@@ -1889,7 +1878,7 @@ impl HydrolysisRenderer {
     /// collection under `family_resolution`.
     #[must_use]
     pub fn new(
-        theme: Rc<dyn crate::engine::WidgetTheme>,
+        theme: Rc<dyn crate::theme::WidgetTheme>,
         family_resolution: FontFamilyResolution,
     ) -> Self {
         Self::with_engine(theme, SessionTextEngine::system(family_resolution))
@@ -1900,7 +1889,7 @@ impl HydrolysisRenderer {
     /// `family_resolution`.
     #[must_use]
     pub fn with_fonts(
-        theme: Rc<dyn crate::engine::WidgetTheme>,
+        theme: Rc<dyn crate::theme::WidgetTheme>,
         fonts: &waterui_text::FontCollection,
         family_resolution: FontFamilyResolution,
     ) -> Self {
@@ -1913,7 +1902,7 @@ impl HydrolysisRenderer {
     /// A renderer drawing with `theme`, shaping through `text` — the
     /// session's text engine the runner built it with.
     pub(crate) fn with_engine(
-        theme: Rc<dyn crate::engine::WidgetTheme>,
+        theme: Rc<dyn crate::theme::WidgetTheme>,
         text: SessionTextEngine,
     ) -> Self {
         let frame_instant = Instant::now();
@@ -1947,7 +1936,7 @@ impl HydrolysisRenderer {
 
     /// The widget theme layout and encode draw with. Returned as a cloned
     /// `Rc` so callers may hold it across further `&mut self` calls.
-    pub(crate) fn theme(&self) -> Rc<dyn crate::engine::WidgetTheme> {
+    pub(crate) fn theme(&self) -> Rc<dyn crate::theme::WidgetTheme> {
         Rc::clone(&self.theme)
     }
 

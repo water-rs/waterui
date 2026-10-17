@@ -31,6 +31,7 @@ use super::program::{
 };
 use super::target::LayerTarget;
 use crate::renderer::ProducerWake;
+use crate::renderer::recording::{LoweredResources, SolidRect};
 
 /// The liveness token of one node's layers: parents list children by
 /// `(LayerId, Weak<LayerToken>)`, so a dropped child is told apart from a
@@ -124,7 +125,10 @@ fn write_props<T: LayerTarget>(
 pub struct RunLayer {
     key: RunKey,
     layer: Option<Layer>,
-    held: Option<HeldResources>,
+    held: Option<LoweredResources>,
+    /// The single-colour rectangles the run's recording fills, in the
+    /// parent's content space — what a top-edge sample composes.
+    solid: Box<[SolidRect]>,
     /// The run's recording, kept for the tests' window-space readback.
     #[cfg(test)]
     recording: Option<crate::renderer::recording::Recording>,
@@ -1027,8 +1031,9 @@ fn commit_material<T: LayerTarget>(
     }
 }
 
-/// Lowers a scroll node's inner layer — clipped to the viewport and offset
-/// by its `ScrollOffset` — or retires it when the node has none.
+/// Lowers a scroll node's inner layer — clipped to the viewport, offset by
+/// its `ScrollOffset` and stretched by its overscroll stretch — or retires
+/// it when the node has none.
 fn lower_inner<T: LayerTarget>(
     cx: &mut CommitCx<'_, '_, '_, T>,
     layers: &mut NodeLayers,
@@ -1050,7 +1055,15 @@ fn lower_inner<T: LayerTarget>(
             inner_layer,
             inner_props,
             LayerProps {
-                clip: Some(ShapeData::of(&inner.viewport)),
+                // The clip sits in the layer's own space, which the
+                // stretch maps into the parent's: the inverse stretch of
+                // the viewport lands exactly on the viewport, so only the
+                // content stretches. The stretch is an axis-aligned scale,
+                // whose image of a rectangle is a rectangle.
+                clip: Some(ShapeData::of(
+                    &inner.stretch.inverse().transform_rect_bbox(inner.viewport),
+                )),
+                transform: inner.stretch,
                 scroll: inner.offset,
                 ..LayerProps::DEFAULT
             },
@@ -1521,6 +1534,7 @@ fn lower_run<T: LayerTarget>(
             key,
             layer: None,
             held: None,
+            solid: Box::default(),
             #[cfg(test)]
             recording: None,
         },
@@ -1533,6 +1547,7 @@ fn lower_run<T: LayerTarget>(
     } else if run.layer.is_none() {
         run.layer = Some(cx.layer());
     }
+    run.solid = recording.solid_rects();
     #[cfg(test)]
     {
         run.recording = Some(recording.clone());
@@ -1691,23 +1706,31 @@ fn reconcile<T: LayerTarget>(
 }
 
 /// What [`visit`] reports while walking the mounted layers.
-#[cfg(test)]
 pub trait LayerVisitor {
     /// A node's frame: `world` is its content space in window points,
     /// `alphas` the opacities below one on the way down (its own included).
     fn node(&mut self, _layers: &NodeLayers, _world: kurbo::Affine, _alphas: &[f32]) {}
     /// A recorded run, painted in `world`.
+    #[cfg(test)]
     fn run(&mut self, _world: kurbo::Affine, _recording: &crate::renderer::recording::Recording) {}
+    /// The single-colour rectangles a run fills
+    /// ([`Recording::solid_rects`](crate::renderer::recording::Recording::solid_rects)),
+    /// painted in `world` under `alphas`.
+    fn solid_rects(&mut self, _world: kurbo::Affine, _alphas: &[f32], _rects: &[SolidRect]) {}
     /// A layer's clip opens around its content, in the layer's own space
     /// `world` (before its scroll offset).
     fn open_clip(&mut self, _world: kurbo::Affine, _clip: &ShapeData) {}
     /// Closes the clip [`Self::open_clip`] opened.
     fn close_clip(&mut self) {}
+    /// A layer's filter opens around its content: what the content paints
+    /// reaches the target only through the filter.
+    fn open_filter(&mut self) {}
+    /// Closes the filter [`Self::open_filter`] opened.
+    fn close_filter(&mut self) {}
 }
 
 /// Walks the committed layers under `roots` in paint order, composing each
 /// layer's props the way the engine does.
-#[cfg(test)]
 pub fn visit(roots: &[Rc<NodeCell>], visitor: &mut dyn LayerVisitor) {
     let mut alphas = Vec::new();
     for cell in roots {
@@ -1720,12 +1743,41 @@ pub fn visit(roots: &[Rc<NodeCell>], visitor: &mut dyn LayerVisitor) {
     }
 }
 
-#[cfg(test)]
 fn props_world(parent: kurbo::Affine, props: &LayerProps) -> kurbo::Affine {
     parent * props.transform * kurbo::Affine::translate(-props.scroll)
 }
 
-#[cfg(test)]
+/// Opens `props`' opacity, clip and filter around `content`, which receives
+/// the layer's content space, and closes them after it.
+fn with_props(
+    parent: kurbo::Affine,
+    props: &LayerProps,
+    alphas: &mut Vec<f32>,
+    visitor: &mut dyn LayerVisitor,
+    content: impl FnOnce(kurbo::Affine, &mut Vec<f32>, &mut dyn LayerVisitor),
+) {
+    let faded = props.opacity < 1.0;
+    if faded {
+        alphas.push(props.opacity);
+    }
+    if let Some(clip) = &props.clip {
+        visitor.open_clip(parent * props.transform, clip);
+    }
+    if props.filter.is_some() {
+        visitor.open_filter();
+    }
+    content(props_world(parent, props), alphas, visitor);
+    if props.filter.is_some() {
+        visitor.close_filter();
+    }
+    if props.clip.is_some() {
+        visitor.close_clip();
+    }
+    if faded {
+        alphas.pop();
+    }
+}
+
 fn visit_node(
     retained: &NodeRetained,
     parent: kurbo::Affine,
@@ -1736,39 +1788,36 @@ fn visit_node(
     let Some(layers) = guard.as_ref() else {
         return;
     };
-    let world = props_world(parent, &layers.frame_props);
-    let faded = layers.frame_props.opacity < 1.0;
-    if faded {
-        alphas.push(layers.frame_props.opacity);
-    }
-    let clip = open_clip(parent, &layers.frame_props, visitor);
-    visitor.node(layers, world, alphas);
-    visit_list(
-        layers,
-        &layers.runs,
-        &layers.committed,
-        world,
+    with_props(
+        parent,
+        &layers.frame_props,
         alphas,
         visitor,
+        |world, alphas, visitor| {
+            visitor.node(layers, world, alphas);
+            visit_list(
+                layers,
+                &layers.runs,
+                &layers.committed,
+                world,
+                alphas,
+                visitor,
+            );
+        },
     );
-    if clip {
-        visitor.close_clip();
-    }
-    if faded {
-        alphas.pop();
-    }
 }
 
-#[cfg(test)]
-fn open_clip(parent: kurbo::Affine, props: &LayerProps, visitor: &mut dyn LayerVisitor) -> bool {
-    let Some(clip) = &props.clip else {
-        return false;
-    };
-    visitor.open_clip(parent * props.transform, clip);
-    true
+fn visit_run(run: &RunLayer, world: kurbo::Affine, alphas: &[f32], visitor: &mut dyn LayerVisitor) {
+    #[cfg(test)]
+    if let Some(recording) = &run.recording {
+        visitor.run(world, recording);
+    }
+    visitor.solid_rects(world, alphas, &run.solid);
 }
 
-#[cfg(test)]
+/// One list in paint order: the run drawn into the list's own content
+/// first, then each committed layer — a run layer, a child node, the
+/// scroll content or a scope — in its stacking order.
 fn visit_list(
     layers: &NodeLayers,
     runs: &[RunLayer],
@@ -1777,10 +1826,8 @@ fn visit_list(
     alphas: &mut Vec<f32>,
     visitor: &mut dyn LayerVisitor,
 ) {
-    for run in runs {
-        if let Some(recording) = &run.recording {
-            visitor.run(world, recording);
-        }
+    for run in runs.iter().filter(|run| run.layer.is_none()) {
+        visit_run(run, world, alphas, visitor);
     }
     for (id, token) in committed {
         let Some(token) = token.upgrade() else {
@@ -1792,43 +1839,41 @@ fn visit_list(
             }
             continue;
         }
-        if let Some((layer, props)) = &layers.inner
+        if let Some(run) = runs
+            .iter()
+            .find(|run| run.layer.as_ref().is_some_and(|layer| layer.id() == *id))
+        {
+            visit_run(run, world, alphas, visitor);
+        } else if let Some((layer, props)) = &layers.inner
             && layer.id() == *id
         {
-            let inner = props_world(world, props);
-            let clip = open_clip(world, props, visitor);
-            visit_list(
-                layers,
-                &layers.inner_runs,
-                &layers.inner_committed,
-                inner,
-                alphas,
-                visitor,
-            );
-            if clip {
-                visitor.close_clip();
-            }
+            with_props(world, props, alphas, visitor, |inner, alphas, visitor| {
+                visit_list(
+                    layers,
+                    &layers.inner_runs,
+                    &layers.inner_committed,
+                    inner,
+                    alphas,
+                    visitor,
+                );
+            });
         } else if let Some(scope) = layers.scopes.iter().find(|scope| scope.layer.id() == *id) {
-            let inner = props_world(world, &scope.props);
-            let faded = scope.props.opacity < 1.0;
-            if faded {
-                alphas.push(scope.props.opacity);
-            }
-            let clip = open_clip(world, &scope.props, visitor);
-            visit_list(
-                layers,
-                &scope.runs,
-                &scope.committed,
-                inner,
+            with_props(
+                world,
+                &scope.props,
                 alphas,
                 visitor,
+                |inner, alphas, visitor| {
+                    visit_list(
+                        layers,
+                        &scope.runs,
+                        &scope.committed,
+                        inner,
+                        alphas,
+                        visitor,
+                    );
+                },
             );
-            if clip {
-                visitor.close_clip();
-            }
-            if faded {
-                alphas.pop();
-            }
         }
     }
 }

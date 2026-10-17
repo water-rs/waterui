@@ -342,6 +342,7 @@ impl IntoWindowIcon for Binding<Option<WindowIcon>> {
 /// live handle — monitor geometry read elsewhere stays authoritative in the
 /// backend that produced it.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Monitor {
     /// Bounds in the global logical coordinate space window frames use.
     pub frame: Rect,
@@ -354,8 +355,32 @@ pub struct Monitor {
     pub name: Option<Str>,
 }
 
+impl Monitor {
+    /// A display spanning `frame`, of which `visible_frame` is free of
+    /// desktop chrome, at `scale_factor` physical pixels per logical point,
+    /// named `name` when the platform reports one.
+    #[must_use]
+    pub const fn new(
+        frame: Rect,
+        visible_frame: Rect,
+        scale_factor: f64,
+        name: Option<Str>,
+    ) -> Self {
+        Self {
+            frame,
+            visible_frame,
+            scale_factor,
+            name,
+        }
+    }
+}
+
 /// Which monitor a window is placed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends resolve each monitor selector variant by variant; a new selector must fail their build instead of falling into a wildcard arm"
+)]
 pub enum MonitorSelector {
     /// The platform's primary display (macOS: the one carrying the menu bar).
     #[default]
@@ -372,6 +397,7 @@ pub enum MonitorSelector {
 /// The backend resolves `monitor` each time the window is shown, calls `place`
 /// with the result, and writes the returned rect into `Window::frame` before
 /// the window becomes visible.
+#[non_exhaustive]
 pub struct WindowPlacement {
     /// The monitor a backend resolves before calling `place`.
     pub monitor: MonitorSelector,
@@ -397,6 +423,10 @@ impl Debug for WindowPlacement {
 /// doing — a drop-down terminal is the canonical case: it overlays focused
 /// work and takes the keyboard only when its policy says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each activation policy variant by variant on every desktop platform"
+)]
 pub enum Activation {
     /// Showing the window activates the app and focuses the window.
     #[default]
@@ -413,6 +443,10 @@ pub enum Activation {
 /// state binding represents a window that has not yet been shown. Setting
 /// the binding to [`Self::Normal`] is what triggers the window to open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window state variant by variant; a new window state must fail their build instead of falling into a wildcard arm"
+)]
 pub enum WindowState {
     /// The window is in its normal state.
     Normal,
@@ -430,6 +464,10 @@ pub enum WindowState {
 
 /// Where a window stacks relative to other applications' windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window level variant by variant; a new window level must fail their build instead of falling into a wildcard arm"
+)]
 pub enum WindowLevel {
     /// The window stacks with other windows as focus moves between them.
     #[default]
@@ -442,6 +480,10 @@ impl_constant!(WindowLevel);
 
 /// How urgently a window asks for the user's attention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each attention request variant by variant; a new attention request must fail their build instead of falling into a wildcard arm"
+)]
 pub enum UserAttention {
     /// Something the user may want to look at: a finished task, a mention.
     Informational,
@@ -453,6 +495,10 @@ pub enum UserAttention {
 
 /// The visual style of a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window style variant by variant; a new window style must fail their build instead of falling into a wildcard arm"
+)]
 pub enum WindowStyle {
     /// Standard window with title bar and controls.
     #[default]
@@ -479,6 +525,7 @@ pub enum WindowStyle {
 ///
 /// [`Material`](Self::Material) is described on the variant.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub enum WindowBackground {
     /// Opaque background in the theme's [`Background`] colour.
     #[default]
@@ -547,6 +594,10 @@ impl From<WindowBackground> for Binding<WindowBackground> {
 /// concrete colour to paint behind the content, or the material to realize
 /// at the window.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window background variant by variant; a new window background must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ResolvedWindowBackground {
     /// Paint this colour behind the window's content. An opacity below one
     /// asks for a translucent window. [`WindowBackground::Opaque`] resolves

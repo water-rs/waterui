@@ -20,12 +20,13 @@ use waterui::component::list::{List, ListItem};
 use waterui::component::text;
 use waterui::prelude::ContextMenu;
 use waterui::{AnyView, ViewExt as _};
+use waterui_backend_core::View;
 use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
 use waterui_core::Native;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::{Id, SelfId};
-use waterui_layout::collection_transition::collection_transition;
+use waterui_core::transition::PropertyTransition;
 use waterui_layout::frame::Frame;
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::scroll::scroll;
@@ -729,7 +730,7 @@ fn a_list_row_inside_a_pushed_navigation_page_is_hit_below_the_stack_offset() {
 #[test]
 fn a_collection_entry_mid_transition_is_hit_at_its_single_offset_position() {
     let tapped = Rc::new(Cell::new(None));
-    let list: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let mut list: Membership<SelfId<u64>> = Membership::from(vec![SelfId::new(0), SelfId::new(1)]);
     let builder = {
         let list = list.clone();
         let tapped = tapped.clone();
@@ -738,16 +739,13 @@ fn a_collection_entry_mid_transition_is_hit_at_its_single_offset_position() {
             let collection = VStack::for_each(list.clone(), move |item: SelfId<u64>| {
                 let id = *item;
                 let tapped = tapped.clone();
-                AnyView::new(
-                    vstack((text(format!("Item {id}")),))
-                        .size(120.0, 40.0)
-                        .on_tap(move || tapped.set(Some(id))),
-                )
+                vstack((text(format!("Item {id}")),))
+                    .size(120.0, 40.0)
+                    .on_tap(move || tapped.set(Some(id)))
+                    .transition(PropertyTransition::opacity())
+                    .animation(Animation::linear(Duration::from_millis(1_000)))
             });
-            AnyView::new(collection_transition(
-                collection,
-                Animation::linear(Duration::from_millis(1_000)),
-            ))
+            AnyView::new(collection)
         })
     };
     let mut runtime = runtime(builder);

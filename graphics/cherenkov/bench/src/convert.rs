@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_encode, to_working};
+use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_decode, srgb_encode, to_working};
 use cherenkov_scene::{
     BlendMode, Color, ColorSpace, Draw, Extend, Feature, FillRule, ImagePaint, Item, Layer,
     NormalizedCoord, Paint, ResourceHash, Scene, Shape, StrokeStyle,
@@ -896,16 +896,6 @@ pub fn rgba8_to_working(width: u32, height: u32, rgba8: &[u8]) -> cherenkov_orac
     img
 }
 
-/// sRGB transfer-function decode (inverse of `srgb_encode`).
-#[must_use]
-fn srgb_decode(e: f64) -> f64 {
-    if e <= 0.04045 {
-        e / 12.92
-    } else {
-        ((e + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 /// IEEE 754 binary16 → `f32`, used by the skia-vulkan/`RGBAF16` readback.
 #[must_use]
 #[expect(
@@ -1450,10 +1440,13 @@ mod front {
         })
     }
 
-    /// A scene group → one scoped [`Op::Group`] of member ops.
+    /// A scene group → one scoped [`Op::Group`] of member ops. `filter`
+    /// registers a group's filter with the engine and returns its id; the
+    /// caller keeps the registration alive while the ops are drawn.
     ///
     /// # Errors
-    /// [`BenchError`] on an unregistered resource or an unsupported feature.
+    /// [`BenchError`] on an unregistered resource, a filter `filter`
+    /// cannot register, or an unsupported feature.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "group opacity is f32 at the engine boundary"
@@ -1464,21 +1457,28 @@ mod front {
         images: &HashMap<(ResourceHash, cherenkov_scene::ImageEncoding), cherenkov::ImageId>,
         blobs: &Blobs,
         front: &Front,
+        filter: &mut dyn FnMut(
+            &cherenkov_scene::LayerFilter,
+        ) -> Result<cherenkov::FilterId, BenchError>,
     ) -> Result<Op, BenchError> {
         let mut ops = Vec::with_capacity(group.items.len());
         for item in &group.items {
             ops.push(match item {
                 cherenkov_scene::GroupItem::Draw(d) => op(d, fonts, images, blobs, front)?,
                 cherenkov_scene::GroupItem::Group(inner) => {
-                    group_op(inner, fonts, images, blobs, front)?
+                    group_op(inner, fonts, images, blobs, front, filter)?
                 }
             });
         }
+        let mut engine_group = cherenkov::Group::new()
+            .opacity(group.opacity as f32)
+            .blend(engine_blend(group.blend))
+            .blend_space(engine_blend_space(group.blend_space));
+        if let Some(scene_filter) = group.filter.as_deref() {
+            engine_group = engine_group.filter(filter(scene_filter)?);
+        }
         Ok(Op::Group {
-            group: cherenkov::Group::new()
-                .opacity(group.opacity as f32)
-                .blend(engine_blend(group.blend))
-                .blend_space(engine_blend_space(group.blend_space)),
+            group: engine_group,
             ops,
         })
     }

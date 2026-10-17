@@ -335,7 +335,8 @@ pub fn passthrough_content(view: &AnyView) -> Option<&AnyView> {
         Background,
         Selected,
         NavigationTransitionSource,
-        NavigationTransitionDestination
+        NavigationTransitionDestination,
+        waterui_core::transition::TransitionSpec
     );
     passthrough_ignorable_metadata_content!(
         MaterialBackground,
@@ -505,7 +506,8 @@ fn normalize_layout_view_with_budget(
         DropDestination,
         Background,
         NavigationTransitionSource,
-        NavigationTransitionDestination
+        NavigationTransitionDestination,
+        waterui_core::transition::TransitionSpec
     );
     // Label/role/children stay plain passthrough here: they are
     // nearest-consumer metadata — the leaf that emits the semantic node reads
@@ -654,7 +656,7 @@ pub fn estimate_layout_intrinsic<'a>(
     children: impl IntoIterator<Item = &'a AnyView>,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let state = RefCell::new(state);
     let children: Vec<&AnyView> = children.into_iter().collect();
@@ -676,7 +678,7 @@ pub fn interaction_focus_ring(
     env: &Environment,
     layer_bounds: kurbo::Rect,
     layer_radii: kurbo::RoundedRectRadii,
-    style: &waterui_backend_core::widget::InteractionStyle,
+    style: &crate::theme::InteractionStyle,
     state: waterui_core::interaction::InteractionState,
 ) -> Option<(
     kurbo::Rect,

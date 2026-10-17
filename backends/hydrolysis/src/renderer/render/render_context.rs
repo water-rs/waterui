@@ -16,6 +16,7 @@ use waterui_text::styled::StyledStr;
 /// node-local rect plus the node's `Placement`, which
 /// resolves them in window space.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct RenderContext {
     /// The transform placing the widget's local drawing space in the scene.
     pub local: kurbo::Affine,
@@ -174,7 +175,7 @@ impl<'a> WidgetRenderContext<'a> {
 
     /// The renderer-owned widget theme, cloned out as an `Rc` so callers can
     /// hold it without borrowing the context across a `&mut` renderer call.
-    pub(crate) fn theme(&self) -> std::rc::Rc<dyn crate::engine::WidgetTheme> {
+    pub(crate) fn theme(&self) -> std::rc::Rc<dyn crate::theme::WidgetTheme> {
         self.renderer.theme()
     }
 

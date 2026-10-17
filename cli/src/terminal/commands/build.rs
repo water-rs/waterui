@@ -71,6 +71,12 @@ impl TargetArch {
 
 /// Arguments for the build command.
 #[derive(ClapArgs, Debug)]
+// CLI flag structs collect booleans by nature; each flag is a documented
+// `--flag`, not structural state.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "every boolean is a documented --flag, not structural state — the shape follows the CLI surface"
+)]
 pub struct Args {
     /// Target platform to build for.
     #[arg(short, long, value_enum)]
@@ -92,6 +98,13 @@ pub struct Args {
     /// builds apply by default to backends whose per-frame cost is high.
     #[arg(long, conflicts_with = "release")]
     debug: bool,
+
+    /// Build without accessing the network — the same switch as
+    /// `cargo build --offline`, and `CARGO_NET_OFFLINE` is honoured the same
+    /// way. A declared font missing from the font cache then fails the build
+    /// instead of being fetched.
+    #[arg(long)]
+    offline: bool,
 
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
@@ -293,16 +306,12 @@ async fn prepare_build_context(shell: &Shell, args: &Args) -> Result<Option<Buil
         args.backend.map(TargetBackend::lib_backend),
     )?);
     validate_backend_args(args, backend)?;
-    // Hydrolysis on Android opens no managed backend crate: its runtime is
-    // the Hydrolysis launcher crate `ensure_generated_backend` produces.
-    let managed_backends =
-        if (args.platform, backend) == (TargetPlatform::Android, TargetBackend::Hydrolysis) {
-            ManagedBackends::NONE
-        } else {
-            ManagedBackends::for_platform(lib_platform(args.platform))
-        };
+    // A build opens only the managed backend it builds with: a Hydrolysis
+    // build — on Android or a desktop — compiles the Hydrolysis launcher
+    // crate `ensure_generated_backend` produces, never the Apple backend.
+    let managed_backends = ManagedBackends::for_backend(backend.lib_backend());
     let project = Project::open_for_build(
-        &waterui_cli::toolchain::Host::current(),
+        &waterui_cli::toolchain::Host::current().with_offline(args.offline),
         &project_path,
         managed_backends,
     )

@@ -1,6 +1,6 @@
-//! The two hosts that mount a `tsx!` view outside an application — a
-//! `waterui-testing` session and the `water preview` support app — with the
-//! bundle `WATERUI_TS_BUNDLE` names.
+//! The hosts that mount a `tsx!` view outside an application — a
+//! `waterui-testing` session and a host that scopes the runtime to the
+//! view's own subtree — with the bundle `WATERUI_TS_BUNDLE` names.
 //!
 //! Every test here configures the variable first, through `support/bundle.rs`,
 //! which does for this binary what `water test` does for a crate. The targets
@@ -16,7 +16,9 @@ use nami::Binding;
 use waterui::app::App;
 use waterui::tsx;
 use waterui_core::{AnyView, Environment};
-use waterui_preview::with_configured_runtime;
+#[path = "support/host_view.rs"]
+mod host_view;
+use host_view::with_configured_runtime;
 use waterui_testing::{Style, UiBuilder, ui};
 use waterui_ts::schema::TsProps;
 
@@ -83,26 +85,26 @@ fn ts_a_test_session_mounts_a_tsx_view(ui: UiBuilder) {
 }
 
 #[test]
-fn ts_a_preview_render_installs_the_runtime_for_the_view() {
-    // The preview support app has a view it loaded from a dylib and the
-    // environment its backend gave it, and nothing else: the runtime rides in
-    // the view's own subtree environment. The view is mounted through
-    // `mount_app`, which runs the application's environment verbatim and
-    // installs nothing of its own — `mount` would install the runtime the
-    // variable names into the session and hide an unwrapped view — so the
-    // labels in the tree come from the runtime the subtree carries and from
-    // nothing else.
+fn ts_a_host_scoped_render_installs_the_runtime_for_the_view() {
+    // A host that renders a view outside the application has the view and
+    // the environment its backend gave it, and nothing else: the runtime
+    // rides in the view's own subtree environment. The view is mounted
+    // through `mount_app`, which runs the application's environment verbatim
+    // and installs nothing of its own — `mount` would install the runtime
+    // the variable names into the session and hide an unwrapped view — so
+    // the labels in the tree come from the runtime the subtree carries and
+    // from nothing else.
     bundle::configure(PromoProps::CONTRACT_HASH);
     let dismissed = Rc::new(Cell::new(false));
-    // The support app's environment carries its backend's theme, which the
-    // module reads its colours from; the session's theme stands in.
+    // The host's environment carries its backend's theme, which the module
+    // reads its colours from; the session's theme stands in.
     let mut environment = Environment::new();
     hydrolysis_m3::Material3::defaults().install_tokens(&mut environment);
     let view = with_configured_runtime(
         &environment,
         AnyView::new(promo(Binding::container(3), &dismissed)),
     )
-    .unwrap_or_else(|error| panic!("installing the runtime for the preview: {error}"));
+    .unwrap_or_else(|error| panic!("installing the runtime for the view: {error}"));
 
     // A view crosses once, so the builder hands it over exactly once.
     let view = RefCell::new(Some(view));

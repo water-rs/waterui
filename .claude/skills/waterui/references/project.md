@@ -96,8 +96,8 @@ Generated projects carry a `dev` feature that forwards to `waterui/dynamic_linki
 dev = ["waterui/dynamic_linking"]
 ```
 
-Keep it. `dynamic_linking` builds the app as a dylib against a shared framework copy,
-which is what `water preview` and the fast dev loop link against — the difference between
+Keep it. `dynamic_linking` links the app against a shared framework runtime,
+which is what `water preview` and the fast dev loop reuse — the difference between
 a seconds-scale and a minutes-scale edit-to-render cycle. Every compiled example in the
 WaterUI repository declares exactly this stanza; a hand-added crate that omits it gets
 cold static builds and a preview pipeline that cannot load it. It is a build strategy,
@@ -246,6 +246,7 @@ water run --native-logs                # include native platform logs too — no
 
 water build <target>                   # compile the Rust library for a platform
 water package                          # package the production (release) build; --debug for an unoptimized one
+water package --platform ios --device <udid>  # provision the package for a specific device
 water devices                          # list simulators and devices
 water doctor                           # check the toolchain
 water clean

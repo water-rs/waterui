@@ -270,6 +270,7 @@ impl State<'_> {
                             opacity: f64::from(group.opacity),
                             blend: blend(group.blend),
                             blend_space: blend_space(group.blend_space),
+                            filter: None,
                         }));
                     } else if group.blend_space == EngineBlendSpace::Linear {
                         // A group carrying layers cannot sit in `GroupItem`;

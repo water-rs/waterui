@@ -1,15 +1,15 @@
+use super::edge_stretch::{ScrollStretch, linear_stretch};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::platform::Overscroll;
+use crate::theme::{InteractionFocusBinding, ModalInteraction, WidgetInteractionState};
 use nami::Signal as _;
 use std::path::PathBuf;
 use waterui::Url;
 use waterui::drag_drop::{DragPayload, Files};
 use waterui::gesture::PointerButton as WuiPointerButton;
-use waterui_backend_core::gesture::LONG_PRESS_SLOP;
-use waterui_backend_core::widget::{
-    InteractionFocusBinding, ModalInteraction, WidgetInteractionState,
-};
+use waterui_backend_core::gesture::{GesturePlacement, LONG_PRESS_SLOP};
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::ScrollUnit;
 use waterui_layout::scroll::Axis as ScrollAxis;
@@ -182,6 +182,11 @@ pub struct CursorTarget {
 #[derive(Clone)]
 pub struct HoverTarget {
     pub(crate) bounds: kurbo::Rect,
+    /// Maps a window hit-test point into the registration's local space —
+    /// the inverse of the region's resolved hit transform, rewritten at
+    /// materialization like `bounds`. `on_move` receives points through it,
+    /// so a handler under any transform reads its own coordinates.
+    pub(crate) to_local: kurbo::Affine,
     pub slot: HoverSlot,
     /// Replayable state-layer handles for the widget owning this target, so
     /// hover feedback animates without a structural rebuild.
@@ -263,6 +268,8 @@ pub type PointerAction =
     Rc<RefCell<dyn FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool>>;
 pub type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
 pub type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
+/// A hover-move handler; the point is in the registration's local space
+/// (the space of the `bounds` it registered), never window space.
 pub type HoverMoveAction = Rc<RefCell<dyn FnMut(kurbo::Point, &Environment) -> bool>>;
 pub type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
 
@@ -279,6 +286,11 @@ pub enum KeyboardActivation {
     /// presentation there is no pressed affordance to hold.
     Semantic,
 }
+
+/// The panic a touch press raises when the platform window reported no
+/// [`crate::platform::TouchScrollConfig`].
+const NO_TOUCH_SCROLL_CONFIG: &str =
+    "hydrolysis: a touch press arrived but the platform window reported no touch_scroll_config";
 
 // The flags track independent input facts (composition in flight, window
 // blur, an armed press); they are orthogonal bits, not states to sequence,
@@ -382,8 +394,9 @@ pub struct HitTestState {
     pub(crate) pointer_press_origin: Option<kurbo::Point>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
     /// The host's touch-drag scroll parameters, pushed by the runner each
-    /// input dispatch — `None` on platforms that carry none, where a
-    /// [`PointerKind::Touch`] drag never claims a scroll view.
+    /// input dispatch — `None` only while the host cannot have them yet,
+    /// a state a [`PointerKind::Touch`] press panics on rather than
+    /// skipping the gesture.
     pub(crate) touch_scroll_config: Option<crate::platform::TouchScrollConfig>,
     /// The touch-drag scroll gesture's in-flight claim, kept across frames
     /// like `active_pointer` — driven only by `PointerKind::Touch`
@@ -531,10 +544,7 @@ impl SemanticCore {
         let mut staged_occlusions: Vec<Staged<NativeViewOcclusion>> = Vec::new();
         let mut staged_platform: Vec<StagedPlatform> = Vec::new();
         let mut staged_back: Vec<Staged<crate::renderer::NavigationBackTarget>> = Vec::new();
-        let mut modal: Option<(
-            mount::PaintOrder,
-            waterui_backend_core::widget::ModalInteraction,
-        )> = None;
+        let mut modal: Option<(mount::PaintOrder, crate::theme::ModalInteraction)> = None;
 
         for cell in self.retained.owners() {
             let mut slot = cell.registrations.borrow_mut();
@@ -557,12 +567,22 @@ impl SemanticCore {
 
             for entry in &regs.gesture_regions {
                 if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
+                    // Events leave the engine in the region's own space,
+                    // origin at its top-left: the inverse of the hit chain,
+                    // then the region's offset within its node.
+                    let to_local = kurbo::Affine::translate(-entry.region.local.origin().to_vec2())
+                        * entry.region.placement.resolved_transform(true).inverse();
+                    let target = &entry.payload.target;
                     orders.push(entry.order.clone());
                     staged_gestures.push(Staged {
                         entry_order: entry.order.clone(),
                         payload: mount::RegisteredGesture {
                             owner: entry.payload.owner.clone(),
-                            target: entry.payload.target.clone(),
+                            target: target.with_placement_depth_and_group(
+                                GesturePlacement::new(resolved.rect, to_local),
+                                target.depth,
+                                target.group_id,
+                            ),
                             owners: entry.payload.owners.clone(),
                         },
                         window: resolved.rect,
@@ -623,6 +643,7 @@ impl SemanticCore {
                 if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
                     let mut payload = entry.payload.clone();
                     payload.bounds = resolved.rect;
+                    payload.to_local = entry.region.placement.resolved_transform(true).inverse();
                     orders.push(entry.order.clone());
                     staged_hover.push(Staged {
                         entry_order: entry.order.clone(),
@@ -832,11 +853,7 @@ impl SemanticCore {
         targets.clear();
         for staged in staged_gestures {
             let order = rank(&staged.entry_order);
-            let mut target = staged.payload.target.with_bounds_depth_and_group(
-                staged.window,
-                staged.payload.target.depth,
-                staged.payload.target.group_id,
-            );
+            let mut target = staged.payload.target;
             target.order = order;
             self.gesture_engine.register_existing_target(target);
             gesture_regions.push(crate::renderer::GestureRegion {
@@ -1208,7 +1225,7 @@ impl HitTestState {
             if contains
                 && dispatch_move
                 && let Some(on_move) = target.on_move.as_mut()
-                && (on_move.borrow_mut())(point, env)
+                && (on_move.borrow_mut())(target.to_local * point, env)
             {
                 sync.chrome_keys.push(target.slot.key.clone());
             }
@@ -2209,7 +2226,8 @@ impl HydrolysisRenderer {
             target.sink.pointer_button(false, button, position);
             self.hit_test.active_pointer = None;
             self.hit_test.active_pointer_button = None;
-            self.hit_test.touch_scroll = TouchScrollGesture::Idle;
+            let at = self.frame_instant();
+            self.abandon_touch_scroll(at);
             return true;
         }
         let at = self.frame_instant();
@@ -3569,7 +3587,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         self.hit_test.pointer_press_origin = None;
-        self.hit_test.touch_scroll = TouchScrollGesture::Idle;
+        refresh_requested |= self.abandon_touch_scroll(at);
         refresh_requested |= self.cancel_active_drag(env);
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         self.hit_test.interaction.mark_press_clear(&press_clear);
@@ -3691,6 +3709,19 @@ impl HydrolysisRenderer {
             .map(|target| target.handle.metrics())
     }
 
+    /// The stretch intensities of the scroll view under `(x, y)` — `None`
+    /// while no scroll target covers it.
+    #[cfg(test)]
+    pub(crate) fn scroll_stretch_at(&self, x: f32, y: f32) -> Option<kurbo::Vec2> {
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
+        self.hit_test
+            .scroll_targets
+            .iter()
+            .rev()
+            .find(|target| target.bounds.contains(point))
+            .map(|target| self.touch_stretch(target.handle.cache_key()))
+    }
+
     /// Handles a trackpad pan at `(x, y)` with deltas and a touch phase.
     pub fn handle_trackpad_pan(
         &mut self,
@@ -3727,17 +3758,108 @@ impl HydrolysisRenderer {
     /// Arms the touch-scroll claim for a `PointerKind::Touch` sequence: a
     /// running fling stops where it is, and the new press watches for a
     /// slop crossing while its press still lands on the content under it.
+    ///
+    /// # Panics
+    /// Panics when the platform window reported no `touch_scroll_config`:
+    /// delivering touch input without the gesture's parameters is a host
+    /// bug, not a scroll-disabled platform.
     fn arm_touch_scroll(&mut self, point: kurbo::Point, button: PointerButton, at: Instant) {
-        self.hit_test.touch_fling = None;
-        self.hit_test.touch_scroll =
-            if button == PointerButton::Primary && self.hit_test.touch_scroll_config.is_some() {
-                TouchScrollGesture::Pending(TouchScrollPending {
-                    origin: point,
-                    tracker: VelocityTracker::new(at, point),
-                })
-            } else {
-                TouchScrollGesture::Idle
-            };
+        assert!(
+            self.hit_test.touch_scroll_config.is_some(),
+            "{NO_TOUCH_SCROLL_CONFIG}"
+        );
+        // The touch stops a running fling where it is — its stretch held
+        // too; the pending press holds it until the sequence shows whether
+        // a drag takes it over.
+        let caught = self.hit_test.touch_fling.take().map(|mut fling| {
+            fling.catch();
+            fling
+        });
+        if button == PointerButton::Primary {
+            self.hit_test.touch_scroll = TouchScrollGesture::Pending(TouchScrollPending {
+                origin: point,
+                tracker: VelocityTracker::new(at, point),
+                caught,
+            });
+        } else {
+            self.hit_test.touch_scroll = TouchScrollGesture::Idle;
+            if let Some(caught) = caught {
+                self.let_go_caught_fling(&caught, at);
+            }
+        }
+    }
+
+    /// Lets go of a fling a touch down caught, from rest: an offset it
+    /// held past an edge springs back; otherwise its gesture ends where it
+    /// stopped. Returns whether that needs a frame.
+    fn let_go_caught_fling(&mut self, caught: &TouchFling, at: Instant) -> bool {
+        let key = caught.handle().cache_key();
+        let config = self
+            .hit_test
+            .touch_scroll_config
+            .expect(NO_TOUCH_SCROLL_CONFIG);
+        let release = caught.let_go(&config, at);
+        self.apply_touch_release(key, release)
+    }
+
+    /// Installs what a released touch claim on the scroll view `key` names
+    /// turned into: its fling runs; an end that clamped the offset marks
+    /// the view's owner. Returns whether that needs a frame.
+    fn apply_touch_release(&mut self, key: usize, release: TouchRelease) -> bool {
+        match release {
+            TouchRelease::Fling(fling) => {
+                self.hit_test.touch_fling = Some(*fling);
+                true
+            }
+            TouchRelease::Ended { moved } => {
+                if moved && let Some(owner) = self.try_scroll_target_owner(key) {
+                    SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
+                }
+                moved
+            }
+        }
+    }
+
+    /// Ends the touch-scroll gesture without a fling — the sequence was
+    /// cancelled, or handed to a surface that owns its input: a claimed
+    /// drag is let go from rest, so an offset it pulled past an edge
+    /// springs back, and a caught fling is let go the same way. Returns
+    /// whether that needs a frame.
+    fn abandon_touch_scroll(&mut self, at: Instant) -> bool {
+        let gesture = core::mem::replace(&mut self.hit_test.touch_scroll, TouchScrollGesture::Idle);
+        match gesture {
+            TouchScrollGesture::Dragging(drag) => {
+                self.release_touch_drag(&drag, kurbo::Vec2::ZERO, at)
+            }
+            TouchScrollGesture::Pending(pending) => pending
+                .caught
+                .is_some_and(|caught| self.let_go_caught_fling(&caught, at)),
+            TouchScrollGesture::Idle => false,
+        }
+    }
+
+    /// Releases a claimed drag at `finger_velocity`: the fling it earns, or
+    /// the end of its gesture. Returns whether that needs a frame.
+    fn release_touch_drag(
+        &mut self,
+        drag: &TouchScrollDrag,
+        finger_velocity: kurbo::Vec2,
+        at: Instant,
+    ) -> bool {
+        let config = self
+            .hit_test
+            .touch_scroll_config
+            .expect(NO_TOUCH_SCROLL_CONFIG);
+        let key = drag.handle.cache_key();
+        let release = TouchFling::release(
+            &drag.handle,
+            &drag.claim,
+            finger_velocity,
+            &config,
+            drag.stretch.clone(),
+            at,
+        );
+        self.apply_touch_release(key, release)
     }
 
     /// Drives the touch-drag scroll gesture for a `PointerKind::Touch`
@@ -3759,11 +3881,7 @@ impl HydrolysisRenderer {
                 drag.tracker.record(at, point);
                 // The offset moves opposite the finger: a drag up pushes it
                 // down into the content.
-                let changed = drag.handle.apply_gesture_delta(
-                    &drag.claim,
-                    drag.last.x - point.x,
-                    drag.last.y - point.y,
-                );
+                let changed = drag.scroll_by(drag.last.x - point.x, drag.last.y - point.y, at);
                 drag.last = point;
                 let owner = drag.owner.clone();
                 self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
@@ -3781,23 +3899,47 @@ impl HydrolysisRenderer {
                 } else {
                     (displacement_y, false)
                 };
-                let slop = self
+                // A `Pending` gesture exists only where the press armed it
+                // — with a config present — so a missing one here is the
+                // host retracting its parameters mid-sequence.
+                let config = self
                     .hit_test
                     .touch_scroll_config
-                    .map_or(0.0, |config| f64::from(config.touch_slop));
+                    .expect(NO_TOUCH_SCROLL_CONFIG);
+                let slop = f64::from(config.touch_slop);
                 if dominant.abs() <= slop {
                     self.hit_test.touch_scroll = TouchScrollGesture::Pending(pending);
                     return false;
                 }
-                if self.hit_test.active_embedded_target.is_some() {
+                let claimant = if self.hit_test.active_embedded_target.is_some() {
                     // The press landed on a surface that owns its input; a
                     // scroll view never steals a sequence from it.
-                    return false;
-                }
-                let Some((handle, owner)) =
-                    self.touch_scroll_claimant(pending.origin, displacement_x, displacement_y)
-                else {
-                    return false;
+                    None
+                } else {
+                    self.touch_scroll_claimant(
+                        pending.origin,
+                        displacement_x,
+                        displacement_y,
+                        config.physics.overscroll,
+                    )
+                };
+                // A caught fling is taken over only by a drag of its own
+                // scroll view — whose claim catches the offset where it
+                // stands, and which carries on the stretch it held; any
+                // other outcome lets it go again from rest.
+                let (taken_over, caught) = match pending.caught.take() {
+                    Some(caught)
+                        if claimant.as_ref().is_some_and(|(handle, _)| {
+                            caught.handle().cache_key() == handle.cache_key()
+                        }) =>
+                    {
+                        (Some(caught), None)
+                    }
+                    caught => (None, caught),
+                };
+                let released = caught.is_some_and(|caught| self.let_go_caught_fling(&caught, at));
+                let Some((handle, owner)) = claimant else {
+                    return released;
                 };
                 // The claim steals the sequence: the content's press is
                 // cancelled — never completed — through the same teardown a
@@ -3813,15 +3955,25 @@ impl HydrolysisRenderer {
                     kurbo::Point::new(pending.origin.x, pending.origin.y + slop.copysign(dominant))
                 };
                 let claim = handle.begin_gesture();
-                let changed =
-                    handle.apply_gesture_delta(&claim, anchor.x - point.x, anchor.y - point.y);
-                self.hit_test.touch_scroll = TouchScrollGesture::Dragging(TouchScrollDrag {
+                let stretch = match config.physics.overscroll {
+                    Overscroll::Stretch(stretch) => Some(
+                        taken_over
+                            .and_then(TouchFling::into_stretch)
+                            .unwrap_or_else(|| ScrollStretch::new(stretch)),
+                    ),
+                    Overscroll::Clamped | Overscroll::RubberBand(_) => None,
+                };
+                let mut drag = TouchScrollDrag {
                     handle,
                     claim,
                     owner: owner.clone(),
                     last: point,
                     tracker: pending.tracker,
-                });
+                    overscroll: config.physics.overscroll,
+                    stretch,
+                };
+                let changed = drag.scroll_by(anchor.x - point.x, anchor.y - point.y, at);
+                self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
                 if changed {
                     SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
                 }
@@ -3834,15 +3986,35 @@ impl HydrolysisRenderer {
     /// The innermost scroll view under the touch-down point able to move
     /// along the drag's dominant axis and direction — the claimant of a
     /// past-slop touch drag. Newest-registered first, the same hit order
-    /// [`Self::handle_scroll`] walks.
+    /// [`Self::handle_scroll`] walks. Under rubber-band and stretch edges
+    /// a view with any room along the axis claims the drag whatever its
+    /// offset — a drag at an edge toward it bands past it, as
+    /// `UIScrollView` with `bounces` does, or stretches it, as
+    /// `ScrollView` claims any drag past the slop; under clamped edges only
+    /// room left in the drag's direction claims it.
     fn touch_scroll_claimant(
         &self,
         origin: kurbo::Point,
         displacement_x: f64,
         displacement_y: f64,
+        overscroll: Overscroll,
     ) -> Option<(crate::scroll::ScrollHandle, Weak<crate::renderer::NodeCell>)> {
         const EPSILON: f64 = 0.000_01;
         let dominant_x = displacement_x.abs() > displacement_y.abs();
+        let bounces = !matches!(overscroll, Overscroll::Clamped);
+        // Whether an axis at `offset` within `0..=max` can move the way the
+        // finger's `displacement` pushes it. The finger's sign flips into
+        // the offset's: a drag up (negative displacement) pushes the offset
+        // toward its max.
+        let able = |displacement: f64, offset: f64, max: f64| {
+            if bounces {
+                max > EPSILON
+            } else if displacement > 0.0 {
+                offset > EPSILON
+            } else {
+                offset < max - EPSILON
+            }
+        };
         self.hit_test
             .scroll_targets
             .iter()
@@ -3852,28 +4024,17 @@ impl HydrolysisRenderer {
                     return None;
                 }
                 let metrics = target.handle.metrics();
-                // The finger's sign flips into the offset's: a drag up
-                // (dy < 0) pushes the offset toward its max, so the view
-                // can claim only while that room remains.
-                let able = match (target.handle.axis(), dominant_x) {
+                let claims = match (target.handle.axis(), dominant_x) {
                     (ScrollAxis::Horizontal | ScrollAxis::All, true) => {
-                        if displacement_x > 0.0 {
-                            metrics.offset_x > EPSILON
-                        } else {
-                            metrics.offset_x < metrics.max_x - EPSILON
-                        }
+                        able(displacement_x, metrics.offset_x, metrics.max_x)
                     }
                     (ScrollAxis::Vertical | ScrollAxis::All, false) => {
-                        if displacement_y > 0.0 {
-                            metrics.offset_y > EPSILON
-                        } else {
-                            metrics.offset_y < metrics.max_y - EPSILON
-                        }
+                        able(displacement_y, metrics.offset_y, metrics.max_y)
                     }
                     (ScrollAxis::Horizontal, false) | (ScrollAxis::Vertical, true) => false,
                     _ => panic!("scroll axis variant is not supported by hydrolysis"),
                 };
-                able.then(|| (target.handle.clone(), target.owner.clone()))
+                claims.then(|| (target.handle.clone(), target.owner.clone()))
             })
     }
 
@@ -3883,21 +4044,18 @@ impl HydrolysisRenderer {
     /// changed something the frame must show.
     fn finish_touch_scroll(&mut self, at: Instant) -> bool {
         let gesture = core::mem::replace(&mut self.hit_test.touch_scroll, TouchScrollGesture::Idle);
-        let TouchScrollGesture::Dragging(drag) = gesture else {
-            return false;
-        };
-        let Some(config) = self.hit_test.touch_scroll_config else {
-            return false;
-        };
-        let fling = TouchFling::start(
-            drag.handle,
-            drag.claim,
-            drag.tracker.velocity(at),
-            &config,
-            at,
-        );
-        self.hit_test.touch_fling = fling;
-        self.hit_test.touch_fling.is_some()
+        match gesture {
+            TouchScrollGesture::Dragging(drag) => {
+                let velocity = drag.tracker.velocity(at);
+                self.release_touch_drag(&drag, velocity, at)
+            }
+            // A tap on a moving scroll view stops it and lets it go: an
+            // offset caught past an edge springs back from rest.
+            TouchScrollGesture::Pending(pending) => pending
+                .caught
+                .is_some_and(|caught| self.let_go_caught_fling(&caught, at)),
+            TouchScrollGesture::Idle => false,
+        }
     }
 }
 
@@ -4346,7 +4504,7 @@ impl HydrolysisRenderer {
             );
         if env
             .get::<ModalInteraction>()
-            .is_some_and(waterui_backend_core::widget::ModalInteraction::is_active)
+            .is_some_and(crate::theme::ModalInteraction::is_active)
         {
             press_slot.modal = true;
             self.register_modal_scope(env);
@@ -4373,6 +4531,7 @@ impl HydrolysisRenderer {
                 HoverTarget {
                     owner: Weak::new(),
                     bounds,
+                    to_local: kurbo::Affine::IDENTITY,
                     slot: hover_slot,
                     handles: Some(Rc::clone(&handles)),
                     on_enter: None,
@@ -4647,6 +4806,7 @@ impl SemanticCore {
             HoverTarget {
                 owner: Weak::new(),
                 bounds,
+                to_local: kurbo::Affine::IDENTITY,
                 slot,
                 handles,
                 on_enter,
@@ -4776,12 +4936,50 @@ impl SemanticCore {
         self.hit_test.touch_fling.is_some()
     }
 
+    /// The stretch intensities the scroll view keyed `key` shows: those of
+    /// the touch drag, the caught fling or the running fling that owns it
+    /// — zero when none does.
+    pub(crate) fn touch_stretch(&self, key: usize) -> kurbo::Vec2 {
+        let owns = |fling: &&TouchFling| fling.handle().cache_key() == key;
+        let gesture = match &self.hit_test.touch_scroll {
+            TouchScrollGesture::Dragging(drag) if drag.handle.cache_key() == key => {
+                drag.stretch.as_ref()
+            }
+            TouchScrollGesture::Pending(pending) => pending
+                .caught
+                .as_ref()
+                .filter(owns)
+                .and_then(TouchFling::stretch),
+            TouchScrollGesture::Dragging(_) | TouchScrollGesture::Idle => None,
+        };
+        gesture
+            .or_else(|| {
+                self.hit_test
+                    .touch_fling
+                    .as_ref()
+                    .filter(owns)
+                    .and_then(TouchFling::stretch)
+            })
+            .map_or(kurbo::Vec2::ZERO, ScrollStretch::vector)
+    }
+
+    /// The render-time stretch of the scroll view `handle` over its
+    /// `viewport`: the transform its content layer composes with, in the
+    /// viewport's space — the identity while nothing stretches it.
+    pub(crate) fn scroll_stretch(
+        &self,
+        handle: &crate::scroll::ScrollHandle,
+        viewport: kurbo::Rect,
+    ) -> kurbo::Affine {
+        linear_stretch(self.touch_stretch(handle.cache_key()), viewport)
+    }
+
     /// Advances a running touch fling to `now`; returns whether its write
     /// or its continuation needs another frame. The offset write marks
     /// the fling's `ScrollTarget` owner — looked up through the registry —
     /// not the root.
     pub(crate) fn tick_touch_scroll(&mut self, now: Instant) -> bool {
-        let Some(fling) = self.hit_test.touch_fling.take() else {
+        let Some(mut fling) = self.hit_test.touch_fling.take() else {
             return false;
         };
         // A fling whose scroll view no registered target holds any more

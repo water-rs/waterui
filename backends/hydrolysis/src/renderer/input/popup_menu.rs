@@ -1,6 +1,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::theme::{ButtonMetrics, InteractionStyle, PickerMetrics};
 use crate::widgets::controls::button::ListRowChrome;
 use core::ops::RangeInclusive;
 use core::time::Duration;
@@ -8,7 +9,6 @@ use nami::Signal;
 use waterui::form::Calendar;
 use waterui::shape::{FixedRoundedRectangle, RoundedRectangle, ShapeExt as _};
 use waterui::theme::color::Surface;
-use waterui_backend_core::widget::{ButtonMetrics, InteractionStyle, PickerMetrics};
 use waterui_controls::button::ButtonStyle;
 use waterui_controls::label::LabelDisplayMode;
 use waterui_controls::menu::Shortcut;
@@ -350,7 +350,7 @@ fn popup_menu_command_row(
 
 /// A row's trailing shortcut hint in the theme's menu-label treatment: the
 /// borderless-button label font the row's own label resolves through
-/// [`crate::engine::WidgetTheme::button_label_font`] — label-large in the
+/// [`crate::theme::WidgetTheme::button_label_font`] — label-large in the
 /// Material mapping — over the muted (on-surface-variant) colour, dimmed
 /// with the row's label when the command is disabled. The drawn row and
 /// [`SemanticCore::popup_menu_text_metrics`] share it so the two cannot
@@ -358,7 +358,7 @@ fn popup_menu_command_row(
 fn shortcut_hint_styled(
     shortcut: &Shortcut,
     disabled: bool,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> StyledStr {
     let mut styled = StyledStr::plain(shortcut.to_string()).foreground({
         let color = Color::new(waterui::theme::color::MutedForeground);
@@ -390,7 +390,7 @@ pub fn popup_menu_content(
     text: PopupMenuTextMetrics,
     popup_origin: LayoutPoint,
     width: f64,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> AnyView {
     let mut rows = Vec::with_capacity(nodes.len());
     let mut row_top = metrics.vertical_padding;
@@ -524,7 +524,7 @@ pub fn popup_menu_window(
     depth: usize,
     metrics: TextContextMenuMetrics,
     text: PopupMenuTextMetrics,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> (Window, Binding<WindowState>) {
     let state = Binding::container(WindowState::Normal);
     let (width, height) = popup_menu_size(&nodes, metrics, &text);
@@ -1283,7 +1283,7 @@ impl SemanticCore {
         nodes: &[PopupMenuNode],
         metrics: TextContextMenuMetrics,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> PopupMenuTextMetrics {
         let row_inset = metrics.horizontal_padding;
         let mut max_row_text_width = 0.0_f64;
@@ -1339,7 +1339,7 @@ impl SemanticCore {
         origin: LayoutPoint,
         metrics: TextContextMenuMetrics,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> bool {
         if nodes.is_empty() {
             return false;

@@ -81,6 +81,10 @@ pub const DIALOG_ACKNOWLEDGE_LABEL_KEY: &str = "waterui.dialog.acknowledge";
 /// more than one fails at render. The first `Default` action is the primary
 /// one and is bound to `Return` on platforms with a hardware Return key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each dialog role variant by variant; a new dialog role must fail their build instead of falling into a wildcard arm"
+)]
 pub enum DialogRole {
     /// An ordinary confirmation action (`Save`, `Paste`). The first declared
     /// one is the primary action.

@@ -176,11 +176,12 @@ impl Default for HydrolysisBackend {
 impl Backend for HydrolysisBackend {
     const DEFAULT_PATH: &'static str = "hydrolysis";
 
-    // The build cache lives in the repository `target/`; the lockfile is
-    // dependency state, not generated content, and survives regeneration so
-    // resolved versions stay stable across template updates. The `.seed`
-    // copy records which application lockfile last seeded it, so it is
-    // preserved on the same grounds.
+    // The build cache lives in the shared `~/.water/build_cache/target`,
+    // not inside the backend; the lockfile is dependency state, not
+    // generated content, and survives regeneration so resolved versions
+    // stay stable across template updates. The `.seed` copy records which
+    // application lockfile last seeded it, so it is preserved on the same
+    // grounds.
     const CACHE_PATHS: &'static [&'static str] = &[
         "Cargo.lock",
         templates::LOCKFILE_SEED,

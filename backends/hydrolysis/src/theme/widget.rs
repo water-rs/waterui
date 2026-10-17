@@ -1,0 +1,1795 @@
+//! The widget chrome half of the theme contract: [`WidgetTheme`] and the
+//! token tables, state snapshots and presentation plugins it names.
+
+use cherenkov_record::{MaterialRegistry, Paint, Recorder};
+use core::time::Duration;
+use kurbo::{BezPath, Point, Rect, RoundedRectRadii};
+use nami::signal::IntoComputed;
+use waterui_controls::toggle::ToggleStyle;
+use waterui_controls::{ControlSize, button::ButtonStyle};
+use waterui_core::EasingCurve;
+use waterui_core::animation::Animation;
+use waterui_core::handler::SharedAction;
+use waterui_core::interaction::{InteractionState, StateValue};
+use waterui_core::plugin::Plugin;
+use waterui_core::{Binding, Computed, Signal};
+use waterui_form::picker::PickerStyle;
+use waterui_graphics::WorkingColor;
+use waterui_graphics::color::Color;
+use waterui_text::font::Font;
+
+/// Button layout metrics.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct ButtonMetrics {
+    /// Horizontal content padding.
+    pub padding_x: f64,
+    /// Vertical content padding.
+    pub padding_y: f64,
+    /// Minimum button width.
+    pub min_width: f64,
+    /// Minimum button height.
+    pub min_height: f64,
+}
+
+impl ButtonMetrics {
+    /// Create button layout metrics.
+    #[must_use]
+    pub const fn new(padding_x: f64, padding_y: f64, min_width: f64, min_height: f64) -> Self {
+        Self {
+            padding_x,
+            padding_y,
+            min_width,
+            min_height,
+        }
+    }
+}
+
+/// Backend-neutral presentation for a semantic interactive surface whose visual
+/// chrome is composed by its content view.
+///
+/// Installing this plugin on a `Button` or tappable view keeps the control's
+/// input, keyboard, focus, and accessibility semantics while allowing theme
+/// packages to supply exact state-layer geometry and colors for composed
+/// controls such as icon buttons, FABs, chips, and navigation destinations.
+#[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct InteractionStyle {
+    /// Layout metrics used by the semantic button wrapper.
+    pub metrics: ButtonMetrics,
+    /// State-layer and ripple color.
+    pub state_layer_color: Color,
+    /// State-layer clipping radii, per interaction state — a list item's
+    /// shape morphs from 8 to 12 to 16 as it is hovered and pressed.
+    pub state_layer_radii: StateValue<RoundedRectRadii>,
+    /// Optional fixed state-layer width.
+    pub state_layer_width: Option<f64>,
+    /// Optional fixed state-layer height.
+    pub state_layer_height: Option<f64>,
+    /// Horizontal alignment of a fixed state layer in the hit bounds.
+    pub state_layer_alignment_x: f64,
+    /// Vertical alignment of a fixed state layer in the hit bounds.
+    pub state_layer_alignment_y: f64,
+    /// Label color for semantic text labels, per interaction state; `None`
+    /// leaves the label's own color.
+    pub label_color: StateValue<Option<Color>>,
+    /// The ring drawn around the state layer while the control shows
+    /// keyboard focus; `None` draws none.
+    pub focus_ring: Option<FocusRing>,
+    /// Whether this pointer action participates in keyboard focus traversal.
+    pub keyboard_focusable: bool,
+}
+
+/// A focus indicator drawn around an interactive control while it shows
+/// keyboard focus ([`InteractionState::FOCUSED`]).
+///
+/// The ring follows the state layer's shape, grown outward by `offset`, so it
+/// matches the control's current corner radii.
+#[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct FocusRing {
+    /// Ring color.
+    pub color: Color,
+    /// Stroke width.
+    pub width: f64,
+    /// Gap between the state layer's edge and the ring's inner edge.
+    pub offset: f64,
+}
+
+impl InteractionStyle {
+    /// Creates an interaction presentation with transparent semantic-button
+    /// chrome and no label-color override.
+    #[must_use]
+    pub fn new(
+        metrics: ButtonMetrics,
+        state_layer_color: impl Into<Color>,
+        state_layer_radii: impl Into<RoundedRectRadii>,
+    ) -> Self {
+        Self {
+            metrics,
+            state_layer_color: state_layer_color.into(),
+            state_layer_radii: StateValue::new(state_layer_radii.into()),
+            state_layer_width: None,
+            state_layer_height: None,
+            state_layer_alignment_x: 0.5,
+            state_layer_alignment_y: 0.5,
+            label_color: StateValue::new(None),
+            focus_ring: None,
+            keyboard_focusable: true,
+        }
+    }
+
+    /// Uses a fixed state-layer size aligned within the semantic hit bounds.
+    #[must_use]
+    pub const fn fixed_state_layer(
+        mut self,
+        width: f64,
+        height: f64,
+        alignment_x: f64,
+        alignment_y: f64,
+    ) -> Self {
+        self.state_layer_width = Some(width);
+        self.state_layer_height = Some(height);
+        self.state_layer_alignment_x = alignment_x;
+        self.state_layer_alignment_y = alignment_y;
+        self
+    }
+
+    /// Resolves the state-layer drawing bounds inside the semantic hit bounds.
+    #[must_use]
+    pub fn state_layer_bounds(&self, hit_bounds: Rect) -> Rect {
+        let width = self
+            .state_layer_width
+            .unwrap_or_else(|| hit_bounds.width())
+            .min(hit_bounds.width());
+        let height = self
+            .state_layer_height
+            .unwrap_or_else(|| hit_bounds.height())
+            .min(hit_bounds.height());
+        let x0 = (hit_bounds.width() - width)
+            .mul_add(self.state_layer_alignment_x.clamp(0.0, 1.0), hit_bounds.x0);
+        let y0 = (hit_bounds.height() - height)
+            .mul_add(self.state_layer_alignment_y.clamp(0.0, 1.0), hit_bounds.y0);
+        Rect::new(x0, y0, x0 + width, y0 + height)
+    }
+
+    /// Sets the state-layer clipping radii per interaction state.
+    #[must_use]
+    pub fn state_layer_radii(mut self, radii: StateValue<RoundedRectRadii>) -> Self {
+        self.state_layer_radii = radii;
+        self
+    }
+
+    /// Sets enabled and disabled label colors for semantic text labels.
+    #[must_use]
+    pub fn label_colors(self, enabled: impl Into<Color>, disabled: impl Into<Color>) -> Self {
+        self.label_color(
+            StateValue::new(Some(enabled.into()))
+                .when(InteractionState::DISABLED, Some(disabled.into())),
+        )
+    }
+
+    /// Sets the label color for semantic text labels per interaction state.
+    #[must_use]
+    pub fn label_color(mut self, color: StateValue<Option<Color>>) -> Self {
+        self.label_color = color;
+        self
+    }
+
+    /// Draws `ring` around the state layer while the control shows keyboard
+    /// focus.
+    #[must_use]
+    pub fn focus_ring(mut self, ring: FocusRing) -> Self {
+        self.focus_ring = Some(ring);
+        self
+    }
+
+    /// Returns the label color for `state`.
+    #[must_use]
+    pub fn resolved_label_color(&self, state: InteractionState) -> Option<Color> {
+        self.label_color.resolve(state).clone()
+    }
+
+    /// Keeps the interaction pointer-only, for modal scrims and similar layers.
+    #[must_use]
+    pub const fn pointer_only(mut self) -> Self {
+        self.keyboard_focusable = false;
+        self
+    }
+}
+
+impl Plugin for InteractionStyle {}
+
+/// Publishes whether an interactive subtree owns keyboard focus.
+#[derive(Debug, Clone)]
+pub struct InteractionFocusBinding {
+    focused: Binding<bool>,
+    escape_action: Option<SharedAction>,
+}
+
+impl InteractionFocusBinding {
+    /// Creates a focus observer backed by component-owned state.
+    #[must_use]
+    pub fn new(focused: &Binding<bool>) -> Self {
+        Self {
+            focused: focused.clone(),
+            escape_action: None,
+        }
+    }
+
+    /// Handles Escape while this interactive subtree owns keyboard focus.
+    #[must_use]
+    pub fn escape_action(mut self, action: SharedAction) -> Self {
+        self.escape_action = Some(action);
+        self
+    }
+
+    /// Returns the component-owned focus state.
+    #[must_use]
+    pub const fn focused(&self) -> &Binding<bool> {
+        &self.focused
+    }
+
+    /// Returns the configured Escape action.
+    #[must_use]
+    pub const fn escape_action_handle(&self) -> Option<&SharedAction> {
+        self.escape_action.as_ref()
+    }
+}
+
+impl Plugin for InteractionFocusBinding {}
+
+/// Marks a subtree as a modal interaction scope.
+#[derive(Debug, Clone)]
+pub struct ModalInteraction {
+    active: Computed<bool>,
+    close_on_escape: bool,
+    escape_action: SharedAction,
+}
+
+impl ModalInteraction {
+    /// Creates a modal scope with an optional Escape-key action.
+    #[must_use]
+    pub fn new(close_on_escape: bool, escape_action: SharedAction) -> Self {
+        Self {
+            active: Computed::constant(true),
+            close_on_escape,
+            escape_action,
+        }
+    }
+
+    /// Controls whether the modal scope currently traps interaction.
+    #[must_use]
+    pub fn active(mut self, active: impl IntoComputed<bool>) -> Self {
+        self.active = active.into_computed();
+        self
+    }
+
+    /// Whether this modal scope currently traps interaction.
+    #[must_use]
+    pub fn is_active(&self) -> bool {
+        self.active.snapshot()
+    }
+
+    /// Whether Escape should dispatch the modal action.
+    #[must_use]
+    pub const fn close_on_escape(&self) -> bool {
+        self.close_on_escape
+    }
+
+    /// Dispatches the modal Escape action.
+    pub fn handle_escape(&self, env: &waterui_core::Environment) {
+        self.escape_action.call(env);
+    }
+}
+
+impl Plugin for ModalInteraction {}
+
+/// Maximum number of press ripple waves tracked concurrently per widget.
+///
+/// Every press spawns its own wave (Material semantics), so rapid
+/// re-presses overlap: older waves keep fading while the newest grows. A wave
+/// lives for at most its grow plus fade-out duration (a few hundred
+/// milliseconds), so this bound sits well above what any human click rate can
+/// keep alive; when it is exceeded the oldest wave's slot is recycled.
+pub const MAX_PRESS_WAVES: usize = 4;
+
+/// One in-flight press ripple wave.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "state snapshot the renderer fills field by field for style packages to draw from; a new field must fail the renderer's build rather than be left unset"
+)]
+pub struct PressWave {
+    /// Absolute logical-unit origin of the press that spawned this wave.
+    /// `None` centers the wave in the target (synthetic/keyboard presses).
+    pub origin: Option<Point>,
+    /// Animated grow progress in the 0.0..=1.0 range.
+    pub progress: f32,
+    /// Animated wave opacity sampled by the renderer.
+    pub opacity: f32,
+}
+
+/// The press ripple waves currently visible on a widget, ordered oldest to
+/// newest.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct PressWaves {
+    waves: [Option<PressWave>; MAX_PRESS_WAVES],
+}
+
+impl PressWaves {
+    /// No visible press waves.
+    pub const EMPTY: Self = Self {
+        waves: [None; MAX_PRESS_WAVES],
+    };
+
+    /// Appends a wave as the newest entry, recycling the oldest slot when the
+    /// set is full.
+    pub fn push(&mut self, wave: PressWave) {
+        if let Some(slot) = self.waves.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(wave);
+            return;
+        }
+        self.waves.rotate_left(1);
+        self.waves[MAX_PRESS_WAVES - 1] = Some(wave);
+    }
+
+    /// Iterates the visible waves from oldest to newest.
+    pub fn iter(&self) -> impl Iterator<Item = PressWave> + '_ {
+        self.waves.iter().filter_map(|wave| *wave)
+    }
+
+    /// Whether no wave is visible.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.waves.iter().all(Option::is_none)
+    }
+
+    /// The most recently spawned wave.
+    #[must_use]
+    pub fn latest(&self) -> Option<PressWave> {
+        self.waves.iter().rev().find_map(|wave| *wave)
+    }
+
+    /// Maps every wave origin, e.g. from window space into a widget-local
+    /// frame.
+    pub fn map_origins(&mut self, mut map: impl FnMut(Point) -> Point) {
+        for wave in self.waves.iter_mut().flatten() {
+            wave.origin = wave.origin.map(&mut map);
+        }
+    }
+}
+
+/// Interactive state snapshot for widget chrome.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "state snapshot the renderer fills field by field for style packages to draw from; a new field must fail the renderer's build rather than be left unset"
+)]
+pub struct WidgetInteractionState {
+    /// The widget's interaction flags for this frame — hovered, pressed,
+    /// keyboard-focus-visible, dragged, selected, disabled — resolved by the
+    /// renderer's bookkeeping. Themes read it to resolve [`StateValue`]
+    /// fields directly. When [`InteractionState::DISABLED`] is set the widget
+    /// renders its inactive appearance and the renderer suppresses hover,
+    /// press, and focus, so the remaining flags stay at rest.
+    pub state: InteractionState,
+    /// Animated focus affordance progress in the 0.0..=1.0 range.
+    pub focus_progress: f32,
+    /// Animated state-layer opacity sampled by the renderer.
+    pub state_layer_opacity: f32,
+    /// Animated physical-press progress in the 0.0..=1.0 range: moves
+    /// towards 1 while the widget is physically pressed and towards 0 on
+    /// release, with `InteractionMotion::press_shape` in both directions.
+    /// Themes drive state-dependent shape morphs from it; unlike a ripple
+    /// wave it plays backwards on release.
+    pub press_progress: f32,
+    /// The press ripple waves currently visible on the widget: one per press,
+    /// so rapid re-presses overlap while older waves fade out.
+    pub press_waves: PressWaves,
+}
+
+impl WidgetInteractionState {
+    /// No active interaction state.
+    pub const NONE: Self = Self {
+        state: InteractionState::empty(),
+        focus_progress: 0.0,
+        state_layer_opacity: 0.0,
+        press_progress: 0.0,
+        press_waves: PressWaves::EMPTY,
+    };
+}
+
+/// Motion policy for interactive widget chrome.
+#[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct InteractionMotion {
+    /// Hover state-layer opacity.
+    pub hover_opacity: f32,
+    /// Focus state-layer opacity.
+    pub focus_opacity: f32,
+    /// Pressed state-layer opacity.
+    pub pressed_opacity: f32,
+    /// Dragged state-layer opacity.
+    pub dragged_opacity: f32,
+    /// Animation used when hover appears.
+    pub hover_enter: Animation,
+    /// Animation used when hover disappears.
+    pub hover_exit: Animation,
+    /// Animation used when focus appears.
+    pub focus_enter: Animation,
+    /// Animation used when focus disappears.
+    pub focus_exit: Animation,
+    /// Animation used when the press layer fades in.
+    pub press_fade_in: Animation,
+    /// Animation used when the press layer fades out.
+    pub press_fade_out: Animation,
+    /// Animation used when the pressed ripple grows from origin to final size.
+    pub press_grow: Animation,
+    /// Animation used for `WidgetInteractionState::press_progress` in both
+    /// directions.
+    pub press_shape: Animation,
+    /// Minimum amount of time a press must remain visible.
+    pub minimum_press_duration: Duration,
+    /// Touch delay before showing a press ripple.
+    pub touch_delay: Duration,
+}
+
+/// Motion policy for progress indicators.
+#[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct ProgressMotion {
+    /// Animation used for linear determinate value changes.
+    pub linear_determinate: Animation,
+    /// Animation used for circular determinate value changes.
+    pub circular_determinate: Animation,
+    /// Full cycle duration for linear indeterminate progress.
+    pub linear_indeterminate_cycle: Duration,
+    /// Full cycle duration for circular indeterminate progress.
+    pub circular_indeterminate_cycle: Duration,
+    /// Full cycle duration for the loading indicator.
+    ///
+    /// The indicator runs two beats at once — it morphs on one and rotates on
+    /// another — and they do not divide each other, so this is the period over
+    /// which both come back into phase. It is long, which is the point: the
+    /// animation never visibly repeats.
+    pub loading_cycle: Duration,
+}
+
+/// Motion policy for radio selection indicators.
+#[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct RadioSelectionMotion {
+    /// Animation used when the selected inner dot grows.
+    pub inner_grow: Animation,
+    /// Animation used when the inner dot fades in or out.
+    pub inner_opacity: Animation,
+    /// Animation used when the outer ring changes between selected and
+    /// unselected colors.
+    pub outer_color: Animation,
+}
+
+/// Animated visual state for a radio indicator.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "state snapshot the renderer fills field by field for style packages to draw from; a new field must fail the renderer's build rather than be left unset"
+)]
+pub struct RadioIndicatorState {
+    /// Whether the radio option is currently selected semantically.
+    pub selected: bool,
+    /// Progress from unselected outer-ring color to selected outer-ring color.
+    pub outer_selected_progress: f32,
+    /// Inner dot radius progress in the 0.0..=1.0 range.
+    pub inner_scale: f32,
+    /// Inner dot opacity in the 0.0..=1.0 range.
+    pub inner_opacity: f32,
+}
+
+/// Motion policy for text input carets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct TextCaretMotion {
+    /// Full fade cycle duration.
+    pub fade_cycle_duration: Duration,
+    /// Time between caret animation redraws.
+    pub frame_interval: Duration,
+    /// Minimum opacity at the dimmest point of the fade cycle.
+    pub min_opacity: f32,
+}
+
+/// Motion policy for backend-rendered navigation transitions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct NavigationMotion {
+    /// Duration for a complete navigation transition.
+    pub transition_duration: Duration,
+    /// Easing applied to programmatic navigation progress.
+    pub transition_easing: EasingCurve,
+    /// Absolute travel distance for the Material shared-axis X pattern.
+    pub shared_axis_slide_distance: f64,
+    /// Progress at which the outgoing layer has faded out and the incoming
+    /// layer begins fading in.
+    pub fade_through_threshold: f32,
+}
+
+/// Toggle layout metrics.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct ToggleMetrics {
+    /// Toggle control width.
+    pub width: f64,
+    /// Toggle control height.
+    pub height: f64,
+    /// Spacing between label and toggle control.
+    pub label_spacing: f64,
+}
+
+impl ToggleMetrics {
+    /// Create toggle layout metrics.
+    #[must_use]
+    pub const fn new(width: f64, height: f64, label_spacing: f64) -> Self {
+        Self {
+            width,
+            height,
+            label_spacing,
+        }
+    }
+}
+
+/// Which of a stepper's two buttons is being drawn.
+///
+/// A stepper is a pair, and Material joins a pair into one silhouette: the two
+/// far ends are fully round while the corners either side of the seam are
+/// tucked in. A theme cannot tell those apart from bounds alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: a stepper has a decrement end and an increment end"
+)]
+pub enum StepperEnd {
+    /// The decrement button, at the leading end.
+    Decrement,
+    /// The increment button, at the trailing end.
+    Increment,
+}
+
+/// Stepper layout metrics.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct StepperMetrics {
+    /// Minimum size for each stepper button.
+    pub button_min_size: f64,
+    /// Maximum size for each stepper button.
+    pub button_max_size: f64,
+    /// Preferred size for each stepper button.
+    pub button_intrinsic_size: f64,
+    /// Spacing between stepper buttons.
+    pub button_spacing: f64,
+    /// Spacing between label and buttons.
+    pub label_spacing: f64,
+}
+
+impl StepperMetrics {
+    /// Create stepper layout metrics.
+    #[must_use]
+    pub const fn new(
+        button_min_size: f64,
+        button_max_size: f64,
+        button_intrinsic_size: f64,
+        button_spacing: f64,
+        label_spacing: f64,
+    ) -> Self {
+        Self {
+            button_min_size,
+            button_max_size,
+            button_intrinsic_size,
+            button_spacing,
+            label_spacing,
+        }
+    }
+}
+
+/// Text input layout metrics.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct InputFieldMetrics {
+    /// Height reserved for the input label.
+    pub label_height: f64,
+    /// Minimum input field width.
+    pub min_width: f64,
+    /// Minimum input field height.
+    pub min_height: f64,
+    /// Horizontal text inset.
+    pub horizontal_inset: f64,
+    /// Vertical text inset.
+    pub vertical_inset: f64,
+}
+
+impl InputFieldMetrics {
+    /// Create text input layout metrics.
+    #[must_use]
+    pub const fn new(
+        label_height: f64,
+        min_width: f64,
+        min_height: f64,
+        horizontal_inset: f64,
+        vertical_inset: f64,
+    ) -> Self {
+        Self {
+            label_height,
+            min_width,
+            min_height,
+            horizontal_inset,
+            vertical_inset,
+        }
+    }
+}
+
+/// Layout metrics for backend-rendered context menus.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct TextContextMenuMetrics {
+    /// One-line menu row height.
+    pub row_height: f64,
+    /// Horizontal text inset.
+    pub horizontal_padding: f64,
+    /// Vertical text inset.
+    pub vertical_padding: f64,
+    /// Minimum menu width.
+    pub min_width: f64,
+    /// Maximum menu width.
+    pub max_width: f64,
+    /// Estimated width used before text layout is available.
+    pub width_per_char: f64,
+    /// Menu container corner radius.
+    pub corner_radius: f64,
+    /// Horizontal inset for separators.
+    pub separator_horizontal_inset: f64,
+    /// Separator thickness.
+    pub separator_thickness: f64,
+}
+
+/// Picker layout metrics.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct PickerMetrics {
+    /// Minimum picker width.
+    pub min_width: f64,
+    /// Minimum picker height.
+    pub min_height: f64,
+    /// Horizontal picker inset.
+    pub horizontal_inset: f64,
+    /// Vertical picker inset.
+    pub vertical_inset: f64,
+    /// Gap between an external picker label and the picker field.
+    pub label_spacing: f64,
+    /// Space reserved for picker indicators.
+    pub indicator_space: f64,
+    /// Radio indicator diameter.
+    pub radio_indicator_size: f64,
+    /// Gap between a radio indicator and its label.
+    pub radio_label_spacing: f64,
+    /// Gap between radio picker rows.
+    pub radio_row_spacing: f64,
+    /// Vertical gap above popup menu rows.
+    pub popup_top_spacing: f64,
+    /// Popup menu row minimum height.
+    pub popup_row_height: f64,
+    /// Popup menu corner radius.
+    pub popup_corner_radius: f64,
+    /// Minimum width of one segmented-picker segment, including its
+    /// `horizontal_inset` padding on both sides (M3 `ButtonDefaults.MinWidth`
+    /// is 58dp per segment; unused by non-segmented styles).
+    pub segment_min_width: f64,
+}
+
+/// Slider layout metrics.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct SliderMetrics {
+    /// Horizontal slider inset.
+    pub horizontal_inset: f64,
+    /// Gap between slider labels and track.
+    pub horizontal_spacing: f64,
+    /// Vertical spacing around the track.
+    pub vertical_spacing: f64,
+    /// Minimum track width.
+    pub min_track_width: f64,
+    /// Track height.
+    pub track_height: f64,
+    /// Width of the handle. A theme whose handle is a bar rather than a circle
+    /// sets this independently of [`Self::handle_height`].
+    pub handle_width: f64,
+    /// Height of the handle, which also sets the control row's height.
+    pub handle_height: f64,
+}
+
+impl SliderMetrics {
+    /// Create slider layout metrics.
+    #[must_use]
+    pub const fn new(
+        horizontal_inset: f64,
+        horizontal_spacing: f64,
+        vertical_spacing: f64,
+        min_track_width: f64,
+        track_height: f64,
+        handle_width: f64,
+        handle_height: f64,
+    ) -> Self {
+        Self {
+            horizontal_inset,
+            horizontal_spacing,
+            vertical_spacing,
+            min_track_width,
+            track_height,
+            handle_width,
+            handle_height,
+        }
+    }
+
+    /// Horizontal room the handle needs beyond each end of the track, so it
+    /// stays inside the control at either extreme.
+    #[must_use]
+    pub const fn handle_overhang(&self) -> f64 {
+        self.handle_width / 2.0
+    }
+}
+
+/// Layout metrics of the value indicator a slider shows above its thumb while
+/// the thumb is dragged.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct SliderValueIndicatorMetrics {
+    /// Horizontal padding inside the bubble around the value text.
+    pub padding_x: f64,
+    /// Vertical padding inside the bubble around the value text.
+    pub padding_y: f64,
+    /// Gap between the top of the thumb and the bottom of the bubble.
+    pub thumb_gap: f64,
+    /// Smallest bubble width regardless of how narrow the label is.
+    pub min_width: f64,
+    /// Smallest bubble height regardless of how short the label is.
+    pub min_height: f64,
+}
+
+impl SliderValueIndicatorMetrics {
+    /// Create value indicator metrics.
+    #[must_use]
+    pub const fn new(
+        padding_x: f64,
+        padding_y: f64,
+        thumb_gap: f64,
+        min_width: f64,
+        min_height: f64,
+    ) -> Self {
+        Self {
+            padding_x,
+            padding_y,
+            thumb_gap,
+            min_width,
+            min_height,
+        }
+    }
+}
+
+/// Progress indicator layout metrics.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct ProgressMetrics {
+    /// Height reserved for labels.
+    pub label_height: f64,
+    /// Offset from label baseline to the linear bar.
+    pub bar_top_offset: f64,
+    /// Linear progress bar height.
+    pub bar_height: f64,
+    /// Horizontal inset for the linear bar.
+    pub bar_horizontal_inset: f64,
+    /// Gap above the value label.
+    pub value_label_top_spacing: f64,
+    /// Minimum linear track width.
+    pub min_track_width: f64,
+    /// Circular progress diameter. For the loading style this is the
+    /// container's side, and `loading_indicator_size` the shape drawn in it.
+    pub circular_diameter: f64,
+    /// Circular progress stroke width.
+    pub circular_stroke_width: f64,
+    /// Side of the morphing shape inside a loading indicator's container.
+    pub loading_indicator_size: f64,
+}
+
+impl ProgressMetrics {
+    /// Create linear progress layout metrics.
+    #[must_use]
+    pub const fn linear(
+        label_height: f64,
+        bar_top_offset: f64,
+        bar_height: f64,
+        bar_horizontal_inset: f64,
+        value_label_top_spacing: f64,
+        min_track_width: f64,
+    ) -> Self {
+        Self {
+            label_height,
+            bar_top_offset,
+            bar_height,
+            bar_horizontal_inset,
+            value_label_top_spacing,
+            min_track_width,
+            circular_diameter: 0.0,
+            circular_stroke_width: 0.0,
+            loading_indicator_size: 0.0,
+        }
+    }
+
+    /// Create circular progress layout metrics.
+    #[must_use]
+    pub const fn circular(circular_diameter: f64, circular_stroke_width: f64) -> Self {
+        Self {
+            label_height: 0.0,
+            bar_top_offset: 0.0,
+            bar_height: 0.0,
+            bar_horizontal_inset: 0.0,
+            value_label_top_spacing: 0.0,
+            min_track_width: 0.0,
+            circular_diameter,
+            circular_stroke_width,
+            loading_indicator_size: 0.0,
+        }
+    }
+
+    /// Create loading-indicator layout metrics.
+    #[must_use]
+    pub const fn loading(container_size: f64, indicator_size: f64) -> Self {
+        Self {
+            label_height: 0.0,
+            bar_top_offset: 0.0,
+            bar_height: 0.0,
+            bar_horizontal_inset: 0.0,
+            value_label_top_spacing: 0.0,
+            min_track_width: 0.0,
+            circular_diameter: container_size,
+            circular_stroke_width: 0.0,
+            loading_indicator_size: indicator_size,
+        }
+    }
+}
+
+/// How a tab bar lays out each item's icon and label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each tab item arrangement variant by variant; a new tab item arrangement must fail their build instead of falling into a wildcard arm"
+)]
+pub enum TabItemLayout {
+    /// The icon above the label, the indicator behind the icon: the compact
+    /// bar of a narrow window.
+    Vertical,
+    /// The icon beside the label, the indicator behind both: the bar of a
+    /// medium-width window, where items have room to spread.
+    Horizontal,
+}
+
+/// Layout metrics for tab containers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct TabsMetrics {
+    /// Tab bar height.
+    pub bar_height: f64,
+    /// Minimum width for one tab button.
+    pub button_min_width: f64,
+    /// Horizontal label inset inside one tab button.
+    pub button_horizontal_inset: f64,
+    /// Selected tab active indicator height.
+    pub active_indicator_height: f64,
+    /// Selected tab active indicator corner radius.
+    pub active_indicator_radius: f64,
+    /// Gap between a tab item's icon and its label: vertical space when the
+    /// icon sits above the label, horizontal space when it sits beside it.
+    pub icon_label_spacing: f64,
+}
+
+impl TabsMetrics {
+    /// Create tab layout metrics.
+    #[must_use]
+    pub const fn new(
+        bar_height: f64,
+        button_min_width: f64,
+        button_horizontal_inset: f64,
+        active_indicator_height: f64,
+        active_indicator_radius: f64,
+        icon_label_spacing: f64,
+    ) -> Self {
+        Self {
+            bar_height,
+            button_min_width,
+            button_horizontal_inset,
+            active_indicator_height,
+            active_indicator_radius,
+            icon_label_spacing,
+        }
+    }
+}
+
+/// Layout metrics for lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct ListMetrics {
+    /// Minimum one-line row height.
+    pub one_line_row_height: f64,
+    /// Horizontal content inset.
+    pub horizontal_inset: f64,
+    /// Vertical content inset.
+    pub vertical_inset: f64,
+    /// Divider leading inset.
+    pub divider_leading_inset: f64,
+    /// Divider trailing inset.
+    pub divider_trailing_inset: f64,
+    /// Width of the row move affordance.
+    pub move_control_width: f64,
+    /// Width of the row delete affordance.
+    pub delete_control_width: f64,
+    /// Gap between trailing row affordances.
+    pub trailing_control_spacing: f64,
+    /// Vertical inset for trailing row affordances.
+    pub trailing_control_vertical_inset: f64,
+    /// Height reserved above a row that opens a titled section.
+    pub section_header_height: f64,
+    /// Height reserved below the last row of a section that has a footer.
+    pub section_footer_height: f64,
+}
+
+/// Row metrics for lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct ListRowMetrics {
+    /// Minimum one-line row height.
+    pub one_line_row_height: f64,
+    /// Horizontal content inset.
+    pub horizontal_inset: f64,
+    /// Vertical content inset.
+    pub vertical_inset: f64,
+}
+
+impl ListRowMetrics {
+    /// Create list row layout metrics.
+    #[must_use]
+    pub const fn new(one_line_row_height: f64, horizontal_inset: f64, vertical_inset: f64) -> Self {
+        Self {
+            one_line_row_height,
+            horizontal_inset,
+            vertical_inset,
+        }
+    }
+}
+
+/// Divider metrics for lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct ListDividerMetrics {
+    /// Divider leading inset.
+    pub leading_inset: f64,
+    /// Divider trailing inset.
+    pub trailing_inset: f64,
+}
+
+impl ListDividerMetrics {
+    /// Create list divider layout metrics.
+    #[must_use]
+    pub const fn new(leading_inset: f64, trailing_inset: f64) -> Self {
+        Self {
+            leading_inset,
+            trailing_inset,
+        }
+    }
+}
+
+/// Trailing control metrics for lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct ListTrailingControlMetrics {
+    /// Width of the row move affordance.
+    pub move_width: f64,
+    /// Width of the row delete affordance.
+    pub delete_width: f64,
+    /// Gap between trailing row affordances.
+    pub spacing: f64,
+    /// Vertical inset for trailing row affordances.
+    pub vertical_inset: f64,
+}
+
+impl ListTrailingControlMetrics {
+    /// Create list trailing control layout metrics.
+    #[must_use]
+    pub const fn new(
+        move_width: f64,
+        delete_width: f64,
+        spacing: f64,
+        vertical_inset: f64,
+    ) -> Self {
+        Self {
+            move_width,
+            delete_width,
+            spacing,
+            vertical_inset,
+        }
+    }
+}
+
+impl ListMetrics {
+    /// Create list layout metrics.
+    #[must_use]
+    pub const fn new(
+        row: ListRowMetrics,
+        divider: ListDividerMetrics,
+        trailing_controls: ListTrailingControlMetrics,
+        sections: ListSectionMetrics,
+    ) -> Self {
+        Self {
+            one_line_row_height: row.one_line_row_height,
+            horizontal_inset: row.horizontal_inset,
+            vertical_inset: row.vertical_inset,
+            divider_leading_inset: divider.leading_inset,
+            divider_trailing_inset: divider.trailing_inset,
+            move_control_width: trailing_controls.move_width,
+            delete_control_width: trailing_controls.delete_width,
+            trailing_control_spacing: trailing_controls.spacing,
+            trailing_control_vertical_inset: trailing_controls.vertical_inset,
+            section_header_height: sections.header_height,
+            section_footer_height: sections.footer_height,
+        }
+    }
+}
+
+/// Section chrome metrics for lists.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct ListSectionMetrics {
+    /// Height reserved above a row that opens a titled section.
+    pub header_height: f64,
+    /// Height reserved below the last row of a section that has a footer.
+    pub footer_height: f64,
+}
+
+impl ListSectionMetrics {
+    /// Create list section chrome metrics.
+    #[must_use]
+    pub const fn new(header_height: f64, footer_height: f64) -> Self {
+        Self {
+            header_height,
+            footer_height,
+        }
+    }
+}
+
+/// Layout metrics for dividers.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct DividerMetrics {
+    /// Divider stroke thickness.
+    pub thickness: f64,
+}
+
+impl DividerMetrics {
+    /// Create divider layout metrics.
+    #[must_use]
+    pub const fn new(thickness: f64) -> Self {
+        Self { thickness }
+    }
+}
+
+/// Layout metrics for badges.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct BadgeMetrics {
+    /// Diameter of a small dot badge.
+    pub small_size: f64,
+    /// Height and minimum width of a large labeled badge.
+    pub large_size: f64,
+    /// Horizontal padding inside a large labeled badge.
+    pub large_horizontal_padding: f64,
+    /// Inset of the badge's leading edge from the content's trailing edge for
+    /// a small badge. Renderers place the badge's leading edge at
+    /// `trailing_edge - small_offset_x` in left-to-right layout and mirror it
+    /// to the leading edge in right-to-left layout.
+    pub small_offset_x: f64,
+    /// Downward overlap of the badge's bottom edge past the content's top edge
+    /// for a small badge: the badge's bottom sits at `top + small_offset_y`.
+    pub small_offset_y: f64,
+    /// Inset of the badge's leading edge from the content's trailing edge for
+    /// a large badge; mirrors to the leading edge in right-to-left layout.
+    pub large_offset_x: f64,
+    /// Downward overlap of the badge's bottom edge past the content's top edge
+    /// for a large badge: the badge's bottom sits at `top + large_offset_y`.
+    pub large_offset_y: f64,
+}
+
+impl BadgeMetrics {
+    /// Create badge layout metrics.
+    #[must_use]
+    pub const fn new(
+        small_size: f64,
+        large_size: f64,
+        large_horizontal_padding: f64,
+        small_offset_x: f64,
+        small_offset_y: f64,
+        large_offset_x: f64,
+        large_offset_y: f64,
+    ) -> Self {
+        Self {
+            small_size,
+            large_size,
+            large_horizontal_padding,
+            small_offset_x,
+            small_offset_y,
+            large_offset_x,
+            large_offset_y,
+        }
+    }
+}
+
+/// Layout metrics for navigation bars.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct NavigationMetrics {
+    /// Automatic title-mode bar height.
+    pub automatic_bar_height: f64,
+    /// Inline title-mode bar height.
+    pub inline_bar_height: f64,
+    /// Medium title-mode bar height.
+    pub medium_bar_height: f64,
+    /// Large title-mode bar height.
+    pub large_bar_height: f64,
+    /// Navigation title slot height for inline bars.
+    pub inline_title_height: f64,
+    /// Navigation title slot height for medium bars.
+    pub medium_title_height: f64,
+    /// Navigation title slot height for large bars.
+    pub large_title_height: f64,
+    /// Title leading inset when no leading bar item is present.
+    pub title_leading_inset: f64,
+    /// Title trailing inset when no trailing bar item is present.
+    pub title_trailing_inset: f64,
+    /// Bottom inset for large navigation titles.
+    pub large_title_bottom_inset: f64,
+    /// Horizontal leading/trailing bar inset.
+    pub horizontal_inset: f64,
+    /// Gap between title and adjacent items.
+    pub item_spacing: f64,
+    /// Search field height.
+    pub search_height: f64,
+    /// Vertical search inset.
+    pub search_vertical_inset: f64,
+    /// Navigation back button size.
+    pub back_button_size: f64,
+    /// Navigation back button leading inset.
+    pub back_button_leading_inset: f64,
+    /// Navigation back button top inset.
+    pub back_button_top_inset: f64,
+}
+
+/// Layout metrics for backend-rendered tables.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
+pub struct TableMetrics {
+    /// Minimum table column width.
+    pub min_column_width: f64,
+    /// Horizontal padding added to measured cell content.
+    pub cell_horizontal_padding: f64,
+    /// Inset used when placing header and row cell content.
+    pub cell_vertical_inset: f64,
+    /// Header row height.
+    pub header_height: f64,
+    /// Data row height.
+    pub row_height: f64,
+    /// Table outline width.
+    pub outline_width: f64,
+}
+
+/// The widget chrome a style package supplies to Hydrolysis.
+///
+/// Hydrolysis lays out every widget it renders from the theme's metrics,
+/// animates it with the theme's motion policies, and records its chrome by
+/// calling the theme's `draw_*` methods with the widget's bounds and the
+/// renderer-resolved [`WidgetInteractionState`]. Every draw method records
+/// into a `cherenkov-record` [`Recorder`], the render-target-neutral
+/// vocabulary every Hydrolysis render target consumes, so a theme never
+/// names a render engine. A theme becomes a runnable style by also
+/// implementing [`Style`](crate::Style).
+pub trait WidgetTheme {
+    /// Return motion policy for interactive widget chrome.
+    fn interaction_motion(&self) -> InteractionMotion;
+    /// Return motion policy for progress indicators.
+    fn progress_motion(&self) -> ProgressMotion;
+    /// Return motion policy for text input carets.
+    fn text_caret_motion(&self) -> TextCaretMotion;
+    /// Return motion policy for navigation transitions.
+    fn navigation_motion(&self) -> NavigationMotion;
+
+    /// Declare the theme's backdrop materials in `registry`: both the
+    /// backdrop shaders ([`MaterialShader`] keys, each with its
+    /// [`BackdropShaderSource`]) and the capture classes ([`CaptureClass`]
+    /// keys, each with its [`MaterialCapture`] group parameters) that the
+    /// theme's chrome names when it records a backdrop material with
+    /// [`Recorder::backdrop_material`].
+    ///
+    /// [`MaterialShader`]: cherenkov_record::MaterialShader
+    /// [`BackdropShaderSource`]: cherenkov_record::BackdropShaderSource
+    /// [`CaptureClass`]: cherenkov_record::CaptureClass
+    /// [`MaterialCapture`]: cherenkov_record::MaterialCapture
+    ///
+    /// The contract a backend that realizes backdrop materials follows: it
+    /// calls this once, before it draws any chrome, and keeps the
+    /// registry; it registers every shader with each engine it attaches
+    /// and creates material groups from the capture classes. The theme
+    /// holds no engine handles. The default registers nothing, which is
+    /// right for a theme that records no backdrop material.
+    fn register_backdrop_shaders(&self, _registry: &mut MaterialRegistry) {}
+
+    /// Return metrics for a button style.
+    fn button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics;
+    /// Return metrics for a button whose label presents only its icon.
+    ///
+    /// Resolved by the backend when the label's own configuration — its
+    /// display-mode preference resolved against the environment — is
+    /// `IconOnly`. A theme's icon button lays out at its minimum touch
+    /// target with no text padding, so its bounds are also its hit area;
+    /// the chrome draws the smaller icon-button container centred inside
+    /// them. The default returns the text-button metrics, so a theme with
+    /// no icon-button presentation is unchanged.
+    fn icon_button_metrics(&self, style: ButtonStyle, size: ControlSize) -> ButtonMetrics {
+        self.button_metrics(style, size)
+    }
+    /// Optional button label foreground override. `disabled` selects the
+    /// inactive label color (e.g. Material's on-surface at 38%).
+    fn button_label_color(&self, _style: ButtonStyle, _disabled: bool) -> Option<Color> {
+        None
+    }
+    /// Optional button label font override.
+    fn button_label_font(&self, _style: ButtonStyle) -> Option<Font> {
+        None
+    }
+    /// Content alpha for labels accompanying a disabled control (Material's
+    /// 38% disabled-content token). Backends dim a disabled control's label
+    /// views with this alpha.
+    fn disabled_content_alpha(&self) -> f32 {
+        0.38
+    }
+    /// Draw button chrome for a style. `state` carries the disabled flag so
+    /// themes can render the inactive container. `icon_only` marks a button
+    /// whose label resolved to `IconOnly`: the bounds are the theme's touch
+    /// target and the chrome draws the icon-button container centred inside
+    /// them rather than filling them.
+    fn draw_button_chrome(
+        &self,
+        recorder: &mut Recorder,
+        bounds: Rect,
+        style: ButtonStyle,
+        icon_only: bool,
+        state: WidgetInteractionState,
+    );
+    /// Draw the button state layer for a style. `icon_only` selects the
+    /// icon-button layer geometry — centred inside the touch-target bounds —
+    /// for a button whose label resolved to `IconOnly`.
+    fn draw_button_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _style: ButtonStyle,
+        _icon_only: bool,
+        _state: WidgetInteractionState,
+    ) {
+    }
+    /// Draw a state layer supplied by a composed semantic control.
+    fn draw_interaction_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _radii: RoundedRectRadii,
+        _color: WorkingColor,
+        _state: WidgetInteractionState,
+    ) {
+    }
+
+    /// Return metrics for a toggle style.
+    fn toggle_metrics(&self, style: ToggleStyle) -> ToggleMetrics;
+    /// Return the default animation for toggle value changes.
+    fn toggle_value_animation(&self) -> Animation;
+    /// Draw switch-style toggle chrome. `progress` is the animated 0..=1
+    /// value and `selected` is the toggle's current target, so staged
+    /// choreography (e.g. a thumb icon that enters late and exits early) can
+    /// tell which direction the animation is heading.
+    fn draw_toggle_switch(
+        &self,
+        recorder: &mut Recorder,
+        bounds: Rect,
+        progress: f32,
+        selected: bool,
+        state: WidgetInteractionState,
+    );
+    /// Draw switch-style toggle state layer.
+    fn draw_toggle_switch_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _progress: f32,
+        _selected: bool,
+        _state: WidgetInteractionState,
+    ) {
+    }
+    /// Draw checkbox-style toggle chrome. `state` carries the disabled flag
+    /// so themes can render the inactive container.
+    fn draw_toggle_checkbox(
+        &self,
+        recorder: &mut Recorder,
+        bounds: Rect,
+        progress: f32,
+        state: WidgetInteractionState,
+    );
+    /// Draw checkbox-style toggle state layer.
+    fn draw_toggle_checkbox_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _progress: f32,
+        _state: WidgetInteractionState,
+    ) {
+    }
+
+    /// Return stepper metrics.
+    fn stepper_metrics(&self) -> StepperMetrics;
+    /// Draw one stepper button.
+    ///
+    /// `end` says which of the pair this is, because a theme may join them into
+    /// one silhouette whose outer corners differ from the seam between them.
+    fn draw_stepper_button(
+        &self,
+        recorder: &mut Recorder,
+        bounds: Rect,
+        end: StepperEnd,
+        state: WidgetInteractionState,
+    );
+    /// Draw a stepper decrement icon.
+    fn draw_stepper_decrement_icon(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw a stepper increment icon.
+    fn draw_stepper_increment_icon(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw one stepper button state layer.
+    fn draw_stepper_button_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _end: StepperEnd,
+        _state: WidgetInteractionState,
+    ) {
+    }
+
+    /// Return text input metrics.
+    fn input_field_metrics(&self) -> InputFieldMetrics;
+    /// Return the placeholder text color.
+    fn input_placeholder_color(&self) -> Color;
+    /// Return the text selection fill brush.
+    fn input_selection_paint(&self) -> Paint;
+    /// Return the caret brush for the current caret opacity.
+    fn input_caret_paint(&self, opacity: f32) -> Paint;
+    /// Draw text input chrome.
+    fn draw_input_field(
+        &self,
+        recorder: &mut Recorder,
+        bounds: Rect,
+        state: WidgetInteractionState,
+    );
+    /// Draw text input state layer.
+    fn draw_input_field_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _state: WidgetInteractionState,
+    ) {
+    }
+    /// Return text context menu metrics.
+    fn text_context_menu_metrics(&self) -> TextContextMenuMetrics;
+    /// Draw text context menu panel.
+    fn draw_text_context_menu_panel(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw text context menu separator.
+    fn draw_text_context_menu_separator(&self, recorder: &mut Recorder, bounds: Rect);
+
+    /// Return picker metrics for a style.
+    fn picker_metrics(&self, style: PickerStyle) -> PickerMetrics;
+    /// Return the motion policy for radio picker selection changes.
+    fn radio_selection_motion(&self) -> RadioSelectionMotion;
+    /// Draw the picker indicator.
+    fn draw_picker_indicator(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw picker field state layer.
+    fn draw_picker_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _state: WidgetInteractionState,
+    ) {
+    }
+    /// Draw the picker popup container.
+    fn draw_picker_popup(&self, recorder: &mut Recorder, popup_rect: Rect);
+    /// Draw one picker popup row background.
+    fn draw_picker_popup_row_background(
+        &self,
+        recorder: &mut Recorder,
+        row_rect: Rect,
+        selected: bool,
+    );
+    /// Draw one picker popup row state layer.
+    fn draw_picker_popup_row_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _row_rect: Rect,
+        _selected: bool,
+        _state: WidgetInteractionState,
+    ) {
+    }
+    /// Draw a picker separator.
+    fn draw_picker_separator(&self, recorder: &mut Recorder, separator: Rect);
+    /// Draw a radio picker indicator.
+    fn draw_radio_indicator(
+        &self,
+        recorder: &mut Recorder,
+        center: Point,
+        radius: f64,
+        state: RadioIndicatorState,
+    );
+    /// Draw radio picker state layer.
+    fn draw_radio_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _center: Point,
+        _radius: f64,
+        _selected: bool,
+        _state: WidgetInteractionState,
+    ) {
+    }
+    /// Optional segmented picker label foreground override.
+    fn segmented_picker_label_color(&self, _selected: bool) -> Option<Color> {
+        None
+    }
+    /// Draw segmented picker container and dividers.
+    fn draw_segmented_picker_container(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _segment_count: usize,
+    ) {
+    }
+    /// Draw one segmented picker segment background.
+    fn draw_segmented_picker_segment(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _selected: bool,
+        _is_first: bool,
+        _is_last: bool,
+    ) {
+    }
+    /// Draw one segmented picker state layer. `is_first`/`is_last` select the
+    /// item-shape radii the layer must be clipped to: the first item rounds
+    /// its leading side, the last its trailing side, middle items are square.
+    fn draw_segmented_picker_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _selected: bool,
+        _is_first: bool,
+        _is_last: bool,
+        _state: WidgetInteractionState,
+    ) {
+    }
+
+    /// Return slider metrics for the given control size.
+    fn slider_metrics(&self, size: ControlSize) -> SliderMetrics;
+    /// Draw slider track chrome for a control of `size`. `state` carries the
+    /// disabled flag so themes can render the inactive track.
+    fn draw_slider_track(
+        &self,
+        recorder: &mut Recorder,
+        track_rect: Rect,
+        fill_rect: Rect,
+        size: ControlSize,
+        state: WidgetInteractionState,
+    );
+    /// Draw slider thumb chrome for a control of `size`.
+    fn draw_slider_thumb(
+        &self,
+        recorder: &mut Recorder,
+        center: Point,
+        radius: f64,
+        size: ControlSize,
+        state: WidgetInteractionState,
+    );
+    /// Draw slider thumb state layer.
+    fn draw_slider_thumb_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _center: Point,
+        _radius: f64,
+        _size: ControlSize,
+        _state: WidgetInteractionState,
+    ) {
+    }
+    /// Return the layout metrics of the value indicator shown above the thumb
+    /// while the slider is dragged.
+    fn slider_value_indicator_metrics(&self) -> SliderValueIndicatorMetrics;
+    /// Return the value indicator's label foreground color.
+    fn slider_value_indicator_color(&self) -> Color;
+    /// Return the value indicator's label font.
+    fn slider_value_indicator_font(&self) -> Font;
+    /// Draw the value indicator's chrome behind its label. `bounds` is the
+    /// bubble rect the renderer laid out above the thumb.
+    fn draw_slider_value_indicator(&self, recorder: &mut Recorder, bounds: Rect);
+
+    /// Return progress indicator metrics.
+    fn progress_metrics(&self, style: ProgressIndicatorStyle) -> ProgressMetrics;
+    /// Draw the linear progress track.
+    ///
+    /// `active_end` is the x the active indicator reaches, or `None` while the
+    /// indicator is indeterminate. Material's Expressive linear indicator leaves
+    /// a gap between the active bar and the track and marks the track's end with
+    /// a stop indicator, so the track cannot be drawn without knowing where the
+    /// active portion stops.
+    fn draw_progress_linear_track(
+        &self,
+        recorder: &mut Recorder,
+        bounds: Rect,
+        active_end: Option<f64>,
+    );
+    /// Draw the linear progress fill.
+    fn draw_progress_linear_fill(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw the linear indeterminate progress indicator.
+    fn draw_progress_linear_indeterminate(
+        &self,
+        recorder: &mut Recorder,
+        bounds: Rect,
+        elapsed: Duration,
+        four_color: bool,
+    );
+    /// Draw the circular progress track.
+    ///
+    /// `active_turns` is how much of the circle the active arc covers (`0.0..=1.0`),
+    /// or `None` while the indicator is indeterminate. As with the linear bar,
+    /// Material's Expressive circular indicator separates track from indicator by
+    /// `TrackActiveSpace`, so the track needs to know where the active arc ends.
+    fn draw_progress_circular_track(
+        &self,
+        recorder: &mut Recorder,
+        center: Point,
+        radius: f64,
+        width: f64,
+        active_turns: Option<f64>,
+    );
+    /// Draw the circular progress fill path.
+    fn draw_progress_circular_fill(&self, recorder: &mut Recorder, path: &BezPath, width: f64);
+    /// Draw the loading indicator at `elapsed` into its cycle.
+    ///
+    /// `bounds` is the container; the theme insets the shape itself.
+    fn draw_progress_loading(
+        &self,
+        recorder: &mut Recorder,
+        bounds: Rect,
+        elapsed: Duration,
+        four_color: bool,
+    );
+    /// Draw the circular indeterminate progress indicator.
+    fn draw_progress_circular_indeterminate(
+        &self,
+        recorder: &mut Recorder,
+        center: Point,
+        radius: f64,
+        width: f64,
+        elapsed: Duration,
+        four_color: bool,
+    );
+
+    /// Return navigation bar layout metrics.
+    fn navigation_metrics(&self) -> NavigationMetrics;
+    /// Draw a navigation bar background.
+    fn draw_navigation_bar(&self, recorder: &mut Recorder, bounds: Rect, background: &Paint);
+    /// Draw a navigation bar separator.
+    fn draw_navigation_bar_separator(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw a navigation back button.
+    fn draw_navigation_back_button(&self, recorder: &mut Recorder, bounds: Rect);
+
+    /// How the tab bar lays out its items when the bar itself is
+    /// `bar_width` wide and holds `item_count` items. `bar_width` is the
+    /// bar's own extent, not the tab container's: a sidebar strip passes its
+    /// strip width. Themes without a horizontal layout keep the default.
+    fn tabs_item_layout(&self, bar_width: f64, item_count: usize) -> TabItemLayout {
+        let _ = (bar_width, item_count);
+        TabItemLayout::Vertical
+    }
+    /// Return tabs layout metrics for items laid out as `layout`.
+    fn tabs_metrics(&self, layout: TabItemLayout) -> TabsMetrics;
+    /// Draw a tabs bar.
+    ///
+    /// `surface` is the bar's surface already extended through the safe-area
+    /// regions of every edge it touches.
+    fn draw_tabs_bar(&self, recorder: &mut Recorder, surface: Rect);
+    /// Draw a tabs bar divider.
+    ///
+    /// `divider` is the bar's inner edge: the top row of a bottom bar, the
+    /// trailing column of a sidebar strip.
+    fn draw_tabs_bar_divider(&self, recorder: &mut Recorder, divider: Rect);
+    /// Draw the selected tab highlight of an item laid out as `layout`.
+    fn draw_tabs_highlight(&self, recorder: &mut Recorder, bounds: Rect, layout: TabItemLayout);
+    /// Draw the state layer of a tab button whose item is laid out as
+    /// `layout`.
+    fn draw_tabs_button_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _selected: bool,
+        _state: WidgetInteractionState,
+        _layout: TabItemLayout,
+    ) {
+    }
+
+    /// Draw a scroll indicator.
+    fn draw_scroll_indicator(&self, recorder: &mut Recorder, bounds: Rect);
+
+    /// Return divider layout metrics.
+    fn divider_metrics(&self) -> DividerMetrics;
+    /// Draw a divider.
+    fn draw_divider(&self, recorder: &mut Recorder, bounds: Rect);
+
+    /// Return badge layout metrics.
+    fn badge_metrics(&self) -> BadgeMetrics;
+    /// Return badge label foreground color.
+    fn badge_label_color(&self) -> Color;
+    /// Return badge label font.
+    fn badge_label_font(&self) -> Font;
+    /// Draw a small dot badge.
+    fn draw_badge_small(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw a large labeled badge.
+    fn draw_badge_large(&self, recorder: &mut Recorder, bounds: Rect);
+
+    /// Return list layout metrics.
+    fn list_metrics(&self) -> ListMetrics;
+    /// Draw a list row background.
+    fn draw_list_row_background(&self, recorder: &mut Recorder, bounds: Rect, alternate: bool);
+    /// Draw a list move affordance.
+    fn draw_list_move_control(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw a list move affordance state layer.
+    fn draw_list_move_control_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _state: WidgetInteractionState,
+    ) {
+    }
+    /// Draw a list delete affordance.
+    fn draw_list_delete_control(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw a list delete affordance state layer.
+    fn draw_list_delete_control_state_layer(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _state: WidgetInteractionState,
+    ) {
+    }
+    /// Draw the background revealed behind a row that is being swiped away.
+    ///
+    /// `progress` runs `0.0..=1.0` toward the dismiss threshold, and
+    /// `toward_start` is `true` while the row travels toward the leading edge,
+    /// so a theme can anchor its icon on the side the row is uncovering.
+    fn draw_list_swipe_dismiss_background(
+        &self,
+        _recorder: &mut Recorder,
+        _bounds: Rect,
+        _progress: f64,
+        _toward_start: bool,
+    ) {
+    }
+    /// Draw the lifted treatment for a row being dragged to a new position.
+    fn draw_list_row_lifted(&self, _recorder: &mut Recorder, _bounds: Rect, _elevation: f64) {}
+    /// Draw a list separator.
+    fn draw_list_separator(&self, recorder: &mut Recorder, bounds: Rect);
+
+    /// Return table layout metrics.
+    fn table_metrics(&self) -> TableMetrics;
+    /// Draw a table background.
+    fn draw_table_background(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw a table header background.
+    fn draw_table_header_background(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw a table cell border.
+    fn draw_table_cell_border(&self, recorder: &mut Recorder, bounds: Rect);
+    /// Draw a table column separator.
+    fn draw_table_column_separator(&self, recorder: &mut Recorder, from: Point, to: Point);
+}
+
+/// Progress indicator visual style understood by backend theme packages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every style package draws each progress style variant by variant"
+)]
+pub enum ProgressIndicatorStyle {
+    /// Horizontal linear indicator.
+    Linear,
+    /// Circular indicator.
+    Circular,
+    /// Material's morphing loading indicator.
+    Loading,
+}

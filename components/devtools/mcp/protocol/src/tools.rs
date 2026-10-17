@@ -89,6 +89,7 @@ pub trait ToolDispatch: Send + Sync + 'static {
 /// state without acting.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SnapshotArgs {
     /// `text` (default) renders indented node lines; `json` renders the full
     /// node tree as JSON.
@@ -98,6 +99,10 @@ pub struct SnapshotArgs {
 /// Output format for the `snapshot` tool.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the server renders each snapshot format variant by variant"
+)]
 pub enum SnapshotFormat {
     /// Indented text lines, one per node.
     #[default]
@@ -109,6 +114,7 @@ pub enum SnapshotFormat {
 /// Criteria matching nodes by their accessibility properties.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct SelectorArgs {
     /// Role name as `snapshot` prints it: `button`, `text_input`,
     /// `scroll_view`, …
@@ -149,6 +155,7 @@ pub struct SelectorArgs {
 /// nothing matches.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct FindArgs {
     /// The match criteria, inlined into the tool arguments.
     #[serde(flatten)]
@@ -158,6 +165,7 @@ pub struct FindArgs {
 /// Perform a semantic accessibility action on a node, then return the settled
 /// tree. Prefer this over `pointer` — it works regardless of layout.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ActArgs {
     /// Target node id from a `snapshot` or `find` line (`#42` → `42`).
     /// Required for every action except `clear_focus`, which is app-level and
@@ -179,6 +187,10 @@ pub struct ActArgs {
 /// The accessibility actions `act` can dispatch.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the server dispatches each accessibility action variant by variant"
+)]
 pub enum ActAction {
     /// Activate the node — a click or tap.
     Click,
@@ -239,6 +251,7 @@ impl ActAction {
 /// `snapshot` output — or fractions of a node's bounds when
 /// `node`/`to_node` anchor them.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct PointerArgs {
     /// Which pointer event to dispatch.
     pub kind: PointerKind,
@@ -289,6 +302,10 @@ pub struct PointerArgs {
 /// The pointer events `pointer` can dispatch.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the server dispatches each pointer kind variant by variant"
+)]
 pub enum PointerKind {
     /// Primary down+up at the point.
     Tap,
@@ -313,6 +330,7 @@ pub enum PointerKind {
 /// The unit a `scroll` pointer event's `dx`/`dy` deltas are measured in.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum ScrollUnit {
     /// Logical pixels (default) — a smooth wheel or trackpad pan.
     #[default]
@@ -323,6 +341,7 @@ pub enum ScrollUnit {
 
 /// Press a key — press, then release — then return the settled tree.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct KeyArgs {
     /// A single character (`"a"`, `" "`), or a W3C named key: `Enter`, `Tab`,
     /// `Escape`, `Backspace`, `Delete`, `ArrowLeft`, `ArrowRight`, `ArrowUp`,
@@ -350,6 +369,7 @@ pub struct KeyArgs {
 /// cancel are available to `waterui-testing` callers as
 /// `queue_hover_files_at` and `queue_cancel_files_hover`.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct DropFilesArgs {
     /// Absolute file paths to drop — one hovered-then-dropped pair per path,
     /// in order; the destination receives all of them as one `Files`
@@ -372,8 +392,38 @@ pub struct DropFilesArgs {
     pub settle: Option<bool>,
 }
 
+impl DropFilesArgs {
+    /// Drops `paths` at `x`,`y` in logical pixels, unanchored, settling
+    /// afterwards.
+    #[must_use]
+    pub const fn new(paths: Vec<PathBuf>, x: f32, y: f32) -> Self {
+        Self {
+            paths,
+            x,
+            y,
+            node: None,
+            settle: None,
+        }
+    }
+
+    /// Anchors `x`/`y` as fractions of the bounds of `node`.
+    #[must_use]
+    pub const fn with_node(mut self, node: u64) -> Self {
+        self.node = Some(node);
+        self
+    }
+
+    /// Sets whether the runtime settles before the tool returns.
+    #[must_use]
+    pub const fn with_settle(mut self, settle: bool) -> Self {
+        self.settle = Some(settle);
+        self
+    }
+}
+
 /// Type text into the focused text input, then return the settled tree.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct TypeTextArgs {
     /// The text to insert.
     pub text: String,
@@ -389,6 +439,7 @@ pub struct TypeTextArgs {
 /// `snapshot`.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct WaitArgs {
     /// Fulfilled once a matching node exists.
     pub exists: Option<ExpectArgs>,
@@ -408,6 +459,7 @@ pub struct WaitArgs {
 /// A selector plus an optional inversion flag.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct ExpectArgs {
     /// The match criteria, inlined into the tool arguments.
     #[serde(flatten)]
@@ -421,6 +473,7 @@ pub struct ExpectArgs {
 
 /// A selector plus the value a matching node must reach.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ValueEqArgs {
     /// The match criteria, inlined into the tool arguments.
     #[serde(flatten)]
@@ -437,6 +490,7 @@ pub struct ValueEqArgs {
 /// The capture is itself a pump: every `screenshot` advances the virtual
 /// animation clock by one 16ms frame.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct ScreenshotArgs {}
 
 /// Relaunch the app from scratch and return the fresh tree; state resets.
@@ -445,6 +499,7 @@ pub struct ScreenshotArgs {}
 /// edit → `restart` → `snapshot` is the development loop. Node ids from
 /// before the restart no longer refer to live nodes.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[non_exhaustive]
 pub struct RestartArgs {}
 
 /// Advance the virtual animation clock by `duration_ms`, then report whether
@@ -456,6 +511,7 @@ pub struct RestartArgs {}
 /// in fixed 16ms frames regardless of host scheduling.
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(default)]
+#[non_exhaustive]
 pub struct AdvanceArgs {
     /// Virtual milliseconds to advance; defaults to one frame (16ms). `0`
     /// polls the current animation status without pumping.

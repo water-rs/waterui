@@ -35,7 +35,7 @@ CRATES = (
     "cherenkov-scene", "cherenkov-shader", "cherenkov-bench",
     "filtrate", "filtrate-core", "filtrate-derive",
     "waterui-controls", "waterui-text", "waterui-graphics", "waterui-media",
-    "waterui-locale", "waterui-preview", "waterui-preview-protocol",
+    "waterui-locale", "waterui-preview-protocol",
     "waterui-testing", "waterui-ts", "waterui-ts-engine-jsc",
     "waterui-macros", "waterui-assets-macros", "waterui-url",
 )
@@ -73,7 +73,7 @@ SIM_GROUPS = (
     (
         "devtools",
         (
-            "waterui-preview", "waterui-preview-protocol",
+            "waterui-preview-protocol",
             "waterui-ts", "waterui-ts-engine-jsc",
             "waterui-macros", "waterui-assets-macros", "waterui-url",
         ),

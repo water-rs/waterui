@@ -176,6 +176,7 @@ impl fmt::Debug for ParamGuards {
 
 /// The pixel dimensions of a filtered view's output texture.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[non_exhaustive]
 pub enum OutputSize {
     /// Match the captured input dimensions.
     #[default]
@@ -301,10 +302,8 @@ impl ParamGuards {
         Reactive(slot)
     }
 
-    /// Keeps a subscription that is not a bound signal: the watcher guard a
-    /// `filtrate` `watch_param`/`watch_animated` binding returns.
-    #[cfg(feature = "gpu")]
-    fn keep(&mut self, guard: WatchGuard) {
+    /// Retains a UI-side subscription until this filtered view is dropped.
+    pub fn retain(&mut self, guard: impl Any) {
         self.0.push(Box::new(guard));
     }
 
@@ -809,6 +808,10 @@ impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
 /// registering it with its engine (`Engine::effect`) — and keeps `guards`
 /// alive as long as the realization.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole filtered view, so a new field must fail their build instead of being ignored"
+)]
 pub struct FilteredView {
     /// The filtered subtree.
     pub content: AnyView,
@@ -913,7 +916,7 @@ impl<V: View> WithEffect<V, filtrate::ShaderEffect> {
         let param = self.guards.bind(value);
         let (effect, guard) = self.effect.watch_param(&param);
         self.effect = effect;
-        self.guards.keep(guard);
+        self.guards.retain(guard);
         self
     }
 
@@ -925,7 +928,7 @@ impl<V: View> WithEffect<V, filtrate::ShaderEffect> {
         let flag = self.guards.bind(animated.into_computed().map(f32::from));
         let (effect, guard) = self.effect.watch_animated(&flag);
         self.effect = effect;
-        self.guards.keep(guard);
+        self.guards.retain(guard);
         self
     }
 }
@@ -2166,6 +2169,12 @@ mod tests {
         ) -> filtrate::EffectRenderResult {
             Ok(false)
         }
+
+        fn retained_memory(&self) -> filtrate::RetainedMemory {
+            filtrate::RetainedMemory::default()
+        }
+
+        fn trim(&mut self) {}
     }
 
     #[cfg(feature = "gpu")]
