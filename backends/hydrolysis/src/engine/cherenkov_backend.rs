@@ -151,6 +151,28 @@ cfg_async_fn! {
             pipeline_cache: pipeline_cache_path(adapter),
             ..cherenkov_gpu::GpuConfig::default()
         };
+        // A DX12 adapter without the DXC runtime dies inside engine init:
+        // wgpu falls back to FXC, which cannot compile the engine's
+        // shader-model-6 shaders, and the abort surfaces as a dead render
+        // thread rather than the missing tool (#1713). Adapter selection
+        // already ranks such an adapter behind any backend that can
+        // compile; arriving here means nothing else answered, so the
+        // failure names the requirement instead of the thread.
+        #[cfg(windows)]
+        {
+            let info = adapter.get_info();
+            assert!(
+                info.backend != wgpu::Backend::Dx12
+                    || crate::platform::dxc_runtime_available(),
+                "hydrolysis renderer: the DirectX 12 adapter '{}' cannot create \
+                 the Cherenkov engine because the DXC shader-compiler runtime is \
+                 not resolvable — dxcompiler.dll and dxil.dll must sit beside \
+                 this executable or on PATH (`water doctor` installs dxc, and \
+                 `water run` stages the pair beside the binary); set \
+                 WGPU_BACKEND=vulkan to run this build through Vulkan instead",
+                info.name
+            );
+        }
         let engine = Rc::new(
             engine_await!(GpuEngine::new(config))
                 .expect("hydrolysis renderer: failed to create the Cherenkov engine"),
