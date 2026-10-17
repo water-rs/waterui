@@ -4,7 +4,10 @@
 //! JDK/Kotlin toolchain resolution, the ABI model, and the Gradle wrapper
 //! invocation the Hydrolysis app and embedded library builds drive.
 
+use std::io::{Read as _, Seek as _};
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
+use std::time::SystemTime;
 
 use eyre::{self, WrapErr as _, bail};
 use smol::{fs, unblock};
@@ -33,10 +36,14 @@ fn gradle_cmd(
 }
 
 /// Run the Gradle wrapper inside `backend_path` on `tasks`, wiring the JDK
-/// and SDK the toolchain resolves plus any corporate proxy properties, and
-/// bail with the captured output when the build fails. The shared tail of
-/// every Gradle invocation the CLI drives — app packaging and the embedded
-/// library's assemble/publish alike.
+/// and SDK the toolchain resolves plus any corporate proxy properties.
+///
+/// A failing build reports the process status and both captured streams.
+/// When those streams carry no Gradle failure — the wrapper banner alone,
+/// which is what a client that exits before forwarding the build result
+/// prints — the report adds the failure excerpt from the daemon log written
+/// during this invocation, or the head of a JVM crash log written beside
+/// the project. The shared tail of every Gradle invocation the CLI drives.
 pub(crate) async fn run_gradle_tasks(
     host: &Host,
     backend_path: &Path,
@@ -78,19 +85,307 @@ pub(crate) async fn run_gradle_tasks(
     }
     apply_gradle_proxy_env(host, &mut cmd)?;
 
+    // Captured before the process starts so a daemon log from an earlier
+    // build — still the newest file when this client writes none — is not
+    // reported as this failure.
+    let started = SystemTime::now();
     let output = cmd.output().await?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
         bail!(
-            "Gradle build failed in {}:\n{}\n{}",
-            backend_path.display(),
-            stdout.trim(),
-            stderr.trim()
+            "{}",
+            gradle_failure_report(host, backend_path, started, &output).await
         );
     }
     Ok(())
+}
+
+/// Bytes read from the end of a daemon or crash log. The failure is written
+/// last; earlier debug logging is not part of the report.
+const GRADLE_LOG_TAIL_BYTES: u64 = 256 * 1024;
+
+/// Non-metadata lines kept from a `FAILURE:` block.
+const GRADLE_FAILURE_EXCERPT_LINES: usize = 80;
+
+/// `[ERROR]` / `Exception in thread` lines kept when a daemon log has no
+/// `FAILURE:` block.
+const GRADLE_ERROR_EXCERPT_LINES: usize = 40;
+
+/// Lines kept from the head of a JVM crash log.
+const JVM_CRASH_EXCERPT_LINES: usize = 30;
+
+const GRADLE_FAILURE_HEADER: &str = "FAILURE: Build failed with an exception.";
+
+/// Markers a Gradle console uses for the build result. The wrapper banner
+/// and the configuration-cache notice contain none of them.
+const GRADLE_FAILURE_MARKERS: &[&str] = &["FAILURE:", "* What went wrong:", "BUILD FAILED"];
+
+const DAEMON_METADATA_MARKERS: &[&str] = &[
+    " [DEBUG] ",
+    " [INFO] ",
+    " [ERROR] ",
+    " [WARN] ",
+    " [LIFECYCLE] ",
+    " [TRACE] ",
+];
+
+fn append_block(message: &mut String, text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    message.push('\n');
+    message.push_str(text);
+}
+
+fn exit_status_summary(status: ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        if let Some(signal) = status.signal() {
+            return format!("killed by signal {signal}");
+        }
+    }
+    status.code().map_or_else(
+        || format!("status {status}"),
+        |code| format!("exit code {code}"),
+    )
+}
+
+/// `GRADLE_USER_HOME` when the host sets it, otherwise `$HOME/.gradle` —
+/// the directory the Gradle client and this report both read.
+fn gradle_user_home(host: &Host) -> Option<PathBuf> {
+    if let Some(configured) = host.env_string("GRADLE_USER_HOME") {
+        let configured = configured.trim();
+        if !configured.is_empty() {
+            return Some(PathBuf::from(configured));
+        }
+    }
+    host.home_dir().map(|home| home.join(".gradle"))
+}
+
+fn gradle_output_has_failure(stdout: &str, stderr: &str) -> bool {
+    GRADLE_FAILURE_MARKERS
+        .iter()
+        .any(|marker| stdout.contains(marker) || stderr.contains(marker))
+}
+
+/// A timestamped daemon-log line (`2024-... [DEBUG] ...`), as opposed to the
+/// plain `FAILURE:` block Gradle copies into the same file.
+fn is_daemon_metadata_line(line: &str) -> bool {
+    line.as_bytes().first().is_some_and(u8::is_ascii_digit)
+        && DAEMON_METADATA_MARKERS
+            .iter()
+            .any(|marker| line.contains(marker))
+}
+
+fn daemon_failure_excerpt(log: &str) -> Option<String> {
+    let lines: Vec<&str> = log.lines().collect();
+    if let Some(start) = lines
+        .iter()
+        .rposition(|line| !is_daemon_metadata_line(line) && line.contains(GRADLE_FAILURE_HEADER))
+    {
+        return nonempty(&capped_join(
+            lines[start..]
+                .iter()
+                .copied()
+                .filter(|line| !is_daemon_metadata_line(line)),
+            GRADLE_FAILURE_EXCERPT_LINES,
+        ));
+    }
+    let errors = lines
+        .iter()
+        .copied()
+        .filter(|line| line.contains(" [ERROR] ") || line.contains("Exception in thread"));
+    nonempty(&tail_join(errors, GRADLE_ERROR_EXCERPT_LINES))
+}
+
+fn capped_join<'a>(lines: impl Iterator<Item = &'a str>, cap: usize) -> String {
+    lines.take(cap).collect::<Vec<_>>().join("\n")
+}
+
+fn tail_join<'a>(lines: impl Iterator<Item = &'a str>, cap: usize) -> String {
+    let lines: Vec<&str> = lines.collect();
+    let start = lines.len().saturating_sub(cap);
+    lines[start..].join("\n")
+}
+
+fn nonempty(text: &str) -> Option<String> {
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+fn read_log_tail(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.file_type().is_file() {
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    let length = metadata.len();
+    let truncated = length > GRADLE_LOG_TAIL_BYTES;
+    if truncated {
+        file.seek(std::io::SeekFrom::Start(length - GRADLE_LOG_TAIL_BYTES))
+            .ok()?;
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    if truncated && let Some(split) = bytes.iter().position(|byte| *byte == b'\n') {
+        bytes = bytes.split_off(split + 1);
+    }
+    Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn is_daemon_log_name(name: &str) -> bool {
+    name.starts_with("daemon-") && name.ends_with(".out.log")
+}
+
+fn is_crash_log_name(name: &str) -> bool {
+    name.starts_with("hs_err_pid")
+        && Path::new(name)
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("log"))
+}
+
+fn newest_matching_file(
+    dir: &Path,
+    started: SystemTime,
+    matches: fn(&str) -> bool,
+) -> Option<(SystemTime, PathBuf)> {
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !matches(name) {
+            continue;
+        }
+        let Ok(metadata) = entry.metadata() else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let Ok(modified) = metadata.modified() else {
+            continue;
+        };
+        if modified < started {
+            continue;
+        }
+        if best.as_ref().is_none_or(|(when, _)| modified > *when) {
+            best = Some((modified, entry.path()));
+        }
+    }
+    best
+}
+
+fn newest_daemon_log(gradle_home: &Path, started: SystemTime) -> Option<PathBuf> {
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    let versions = std::fs::read_dir(gradle_home.join("daemon")).ok()?;
+    for version in versions.flatten() {
+        let Ok(file_type) = version.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        consider(
+            &mut best,
+            newest_matching_file(&version.path(), started, is_daemon_log_name),
+        );
+    }
+    best.map(|(_, path)| path)
+}
+
+fn crash_log_dirs(host: &Host, backend_path: &Path, gradle_home: Option<&Path>) -> Vec<PathBuf> {
+    let mut dirs = vec![host.cwd().to_path_buf(), backend_path.to_path_buf()];
+    if let Some(home) = gradle_home {
+        dirs.push(home.to_path_buf());
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+fn newest_crash_log(dirs: &[PathBuf], started: SystemTime) -> Option<PathBuf> {
+    let mut best: Option<(SystemTime, PathBuf)> = None;
+    for dir in dirs {
+        consider(
+            &mut best,
+            newest_matching_file(dir, started, is_crash_log_name),
+        );
+    }
+    best.map(|(_, path)| path)
+}
+
+fn consider(best: &mut Option<(SystemTime, PathBuf)>, candidate: Option<(SystemTime, PathBuf)>) {
+    let Some((modified, path)) = candidate else {
+        return;
+    };
+    if best.as_ref().is_none_or(|(when, _)| modified > *when) {
+        *best = Some((modified, path));
+    }
+}
+
+/// The daemon log's failure block, or the head of a JVM crash log, when the
+/// captured console does not already contain one. `None` when this
+/// invocation wrote neither.
+fn gradle_failure_attachment(
+    gradle_home: Option<&Path>,
+    crash_dirs: &[PathBuf],
+    started: SystemTime,
+) -> Option<String> {
+    if let Some(home) = gradle_home
+        && let Some(path) = newest_daemon_log(home, started)
+        && let Some(text) = read_log_tail(&path)
+        && let Some(excerpt) = daemon_failure_excerpt(&text)
+    {
+        return Some(format!(
+            "Gradle daemon log ({}):\n{excerpt}",
+            path.display()
+        ));
+    }
+    let path = newest_crash_log(crash_dirs, started)?;
+    let excerpt = crash_excerpt(&read_log_tail(&path)?)?;
+    Some(format!("JVM crash log ({}):\n{excerpt}", path.display()))
+}
+
+fn crash_excerpt(text: &str) -> Option<String> {
+    nonempty(&capped_join(text.lines(), JVM_CRASH_EXCERPT_LINES))
+}
+
+async fn gradle_failure_report(
+    host: &Host,
+    backend_path: &Path,
+    started: SystemTime,
+    output: &std::process::Output,
+) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mut message = format!(
+        "Gradle build failed in {} ({}):",
+        backend_path.display(),
+        exit_status_summary(output.status),
+    );
+    append_block(&mut message, &stdout);
+    append_block(&mut message, &stderr);
+    // The pipes are the console Gradle actually wrote. They are complete:
+    // a normal failure puts `FAILURE:` on stderr. This branch is the other
+    // exit — banner and configuration-cache notice, no build result — whose
+    // diagnostic is in the daemon log (or a JVM crash log) instead.
+    if gradle_output_has_failure(&stdout, &stderr) {
+        return message;
+    }
+    let gradle_home = gradle_user_home(host);
+    let crash_dirs = crash_log_dirs(host, backend_path, gradle_home.as_deref());
+    let attachment =
+        unblock(move || gradle_failure_attachment(gradle_home.as_deref(), &crash_dirs, started))
+            .await;
+    if let Some(attachment) = attachment {
+        message.push('\n');
+        append_block(&mut message, &attachment);
+    }
+    message
 }
 
 fn apply_gradle_proxy_env(host: &Host, cmd: &mut smol::process::Command) -> eyre::Result<()> {
@@ -772,7 +1067,14 @@ fn elf_needs_libcxx(data: &[u8]) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::elf_needs_libcxx;
+    use std::fmt::Write as _;
+    use std::path::{Path, PathBuf};
+
+    use super::{
+        daemon_failure_excerpt, elf_needs_libcxx, gradle_output_has_failure, gradle_user_home,
+        read_log_tail,
+    };
+    use crate::toolchain::Host;
 
     #[test]
     fn elf_needs_libcxx_rejects_non_elf_data() {
@@ -783,5 +1085,386 @@ mod tests {
         assert_eq!(elf_needs_libcxx(b"not an elf"), None);
         assert_eq!(elf_needs_libcxx(&[]), None);
         assert_eq!(elf_needs_libcxx(&[0x7f, b'E', b'L', b'F']), None);
+    }
+
+    #[test]
+    fn gradle_user_home_prefers_the_configured_directory() {
+        let host =
+            Host::new(Vec::<PathBuf>::new(), None::<(&str, &str)>).with_home("/home/fixture");
+        assert_eq!(
+            gradle_user_home(&host).as_deref(),
+            Some(Path::new("/home/fixture/.gradle"))
+        );
+        let configured = host.with_env("GRADLE_USER_HOME", "/gradle/home");
+        assert_eq!(
+            gradle_user_home(&configured).as_deref(),
+            Some(Path::new("/gradle/home"))
+        );
+        let blank = host.with_env("GRADLE_USER_HOME", "  ");
+        assert_eq!(
+            gradle_user_home(&blank).as_deref(),
+            Some(Path::new("/home/fixture/.gradle"))
+        );
+    }
+
+    #[test]
+    fn gradle_output_has_failure_ignores_the_wrapper_banner() {
+        // The nightly Android package failure prints this and nothing else.
+        let banner = "\
+Fetching distribution.
+Downloading https://services.gradle.org/distributions/gradle-9.7.1-bin.zip
+Welcome to Gradle 9.7.1!
+Starting a Gradle Daemon (subsequent builds will be faster)
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.7.1/userguide/configuration_cache_enabling.html
+";
+        assert!(!gradle_output_has_failure(banner, ""));
+        assert!(gradle_output_has_failure(
+            "",
+            "* What went wrong:\n> from-stderr"
+        ));
+        assert!(gradle_output_has_failure("BUILD FAILED in 2s", ""));
+    }
+
+    #[test]
+    fn daemon_failure_excerpt_keeps_the_failure_and_drops_metadata() {
+        let log = "\
+2026-10-16T13:39:45.000+0000 [DEBUG] [org.gradle.launcher.daemon.server.Daemon] noise
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+> sdk-location-missing
+
+2026-10-16T13:39:45.100+0000 [INFO] [org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter] interleaved
+* Try:
+> Run with --stacktrace option to get the stack trace.
+2026-10-16T13:39:46.000+0000 [DEBUG] [org.gradle.launcher.daemon.server.Daemon] after
+";
+        let excerpt = daemon_failure_excerpt(log).expect("failure block");
+        assert!(excerpt.contains("sdk-location-missing"), "{excerpt}");
+        assert!(excerpt.contains("* Try:"), "{excerpt}");
+        assert!(
+            excerpt.starts_with("FAILURE: Build failed with an exception."),
+            "{excerpt}"
+        );
+        assert!(!excerpt.contains("[DEBUG]"), "{excerpt}");
+        assert!(!excerpt.contains("[INFO]"), "{excerpt}");
+    }
+
+    #[test]
+    fn daemon_failure_excerpt_ignores_a_header_copied_into_a_debug_line() {
+        let log = "\
+FAILURE: Build failed with an exception.
+> the-real-one
+2026-10-16T13:39:45.000+0000 [DEBUG] [org.gradle] FAILURE: Build failed with an exception.
+";
+        let excerpt = daemon_failure_excerpt(log).expect("the plain failure block");
+        assert!(excerpt.contains("the-real-one"), "{excerpt}");
+        assert!(!excerpt.contains("[DEBUG]"), "{excerpt}");
+    }
+
+    #[test]
+    fn daemon_failure_excerpt_falls_back_to_the_last_error_lines() {
+        let mut log = String::new();
+        for index in 0..50 {
+            let _ = writeln!(
+                log,
+                "2026-10-16T13:39:45.000+0000 [ERROR] [org.gradle] error-{index}"
+            );
+        }
+        log.push_str("2026-10-16T13:39:46.000+0000 [DEBUG] [org.gradle] hidden\n");
+        let excerpt = daemon_failure_excerpt(&log).expect("error lines");
+        let kept: Vec<&str> = excerpt.lines().collect();
+        assert_eq!(kept.len(), 40, "{excerpt}");
+        assert!(kept[0].ends_with("error-10"), "{}", kept[0]);
+        assert!(kept[39].ends_with("error-49"), "{}", kept[39]);
+        assert!(!excerpt.contains("[DEBUG]"), "{excerpt}");
+    }
+
+    #[test]
+    fn daemon_failure_excerpt_is_empty_without_a_failure() {
+        assert_eq!(daemon_failure_excerpt("Welcome to Gradle 9.7.1!\n"), None);
+    }
+
+    #[test]
+    fn daemon_failure_excerpt_caps_the_block() {
+        let mut log = String::from("FAILURE: Build failed with an exception.\n");
+        for index in 0..100 {
+            let _ = writeln!(log, "line-{index}");
+        }
+        let excerpt = daemon_failure_excerpt(&log).expect("capped block");
+        assert!(excerpt.contains("line-78"), "{excerpt}");
+        assert!(!excerpt.contains("line-79"), "{excerpt}");
+    }
+
+    #[test]
+    fn read_log_tail_keeps_a_short_log_and_drops_a_split_first_line() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let short = dir.path().join("short.log");
+        std::fs::write(
+            &short,
+            "FAILURE: Build failed with an exception.\n> cause\n",
+        )
+        .expect("write the short log");
+        assert_eq!(
+            read_log_tail(&short).as_deref(),
+            Some("FAILURE: Build failed with an exception.\n> cause\n")
+        );
+
+        let long = dir.path().join("long.log");
+        let mut contents = vec![b'A'; usize::try_from(super::GRADLE_LOG_TAIL_BYTES).unwrap() + 32];
+        contents[40] = b'\n';
+        contents[41] = b'K';
+        std::fs::write(&long, &contents).expect("write the long log");
+        let text = read_log_tail(&long).expect("tail");
+        assert!(text.starts_with('K'), "{text:?}");
+        assert!(!text.starts_with('A'), "{text:?}");
+    }
+
+    /// The nightly "CLI fresh user / Android" failure: Gradle exits non-zero
+    /// having printed only the wrapper banner, and the `FAILURE:` block is in
+    /// the daemon log written during that invocation.
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_reports_the_daemon_log_when_the_console_has_none() {
+        const SCRIPT: &str = r#"#!/bin/sh
+set -eu
+PATH=/bin:/usr/bin
+export PATH
+gradle_home="${GRADLE_USER_HOME:-$HOME/.gradle}"
+mkdir -p "$gradle_home/daemon/9.7.1"
+cat > "$gradle_home/daemon/9.7.1/daemon-99.out.log" <<'EOF'
+2026-10-16T13:39:45.000+0000 [DEBUG] [org.gradle.launcher.daemon.server.Daemon] noise that must not be reported
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+> sdk-location-missing
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+BUILD FAILED in 1s
+2026-10-16T13:39:46.000+0000 [DEBUG] [org.gradle.launcher.daemon.server.Daemon] after
+EOF
+cat <<'EOF'
+Fetching distribution.
+Downloading https://services.gradle.org/distributions/gradle-9.7.1-bin.zip
+Welcome to Gradle 9.7.1!
+Starting a Gradle Daemon (subsequent builds will be faster)
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.7.1/userguide/configuration_cache_enabling.html
+EOF
+exit 1
+"#;
+        let fixture = GradleRun::new(SCRIPT);
+        plant_old_log(
+            &fixture.home.join(".gradle/daemon/9.7.1/daemon-1.out.log"),
+            "\
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+> stale-cause
+",
+        );
+        let report = fixture.failure();
+        assert_mentions(&report, "exit code 1");
+        assert_mentions(&report, "Welcome to Gradle 9.7.1!");
+        assert_mentions(&report, "Consider enabling configuration cache");
+        assert_mentions(&report, "sdk-location-missing");
+        assert_mentions(&report, "daemon-99.out.log");
+        assert_omits(&report, "stale-cause");
+        assert_omits(&report, "[DEBUG]");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_ignores_a_daemon_log_from_before_the_run() {
+        const SCRIPT: &str = r"#!/bin/sh
+set -eu
+PATH=/bin:/usr/bin
+export PATH
+cat <<'EOF'
+Welcome to Gradle 9.7.1!
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.7.1/userguide/configuration_cache_enabling.html
+EOF
+exit 1
+";
+        let fixture = GradleRun::new(SCRIPT);
+        plant_old_log(
+            &fixture.home.join(".gradle/daemon/9.7.1/daemon-1.out.log"),
+            "\
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+> stale-cause
+",
+        );
+        let report = fixture.failure();
+        assert_mentions(&report, "exit code 1");
+        assert_mentions(&report, "Welcome to Gradle 9.7.1!");
+        assert_omits(&report, "stale-cause");
+        assert_omits(&report, "Gradle daemon log");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_prefers_the_console_failure() {
+        const SCRIPT: &str = r#"#!/bin/sh
+set -eu
+PATH=/bin:/usr/bin
+export PATH
+mkdir -p "$HOME/.gradle/daemon/9.7.1"
+cat > "$HOME/.gradle/daemon/9.7.1/daemon-7.out.log" <<'EOF'
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+> from-the-daemon
+EOF
+printf '%s\n' 'Welcome to Gradle 9.7.1!'
+cat >&2 <<'EOF'
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+> from-stderr
+EOF
+exit 1
+"#;
+        let report = GradleRun::new(SCRIPT).failure();
+        assert_mentions(&report, "exit code 1");
+        assert_mentions(&report, "from-stderr");
+        assert_omits(&report, "from-the-daemon");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_reports_a_jvm_crash_log() {
+        const SCRIPT: &str = r"#!/bin/sh
+set -eu
+PATH=/bin:/usr/bin
+export PATH
+cat > hs_err_pid4242.log <<'EOF'
+# A fatal error has been detected by the Java Runtime Environment: the-jvm-crash
+EOF
+printf '%s\n' 'Welcome to Gradle 9.7.1!'
+exit 1
+";
+        let fixture = GradleRun::new(SCRIPT);
+        plant_old_log(
+            &fixture.home.join(".gradle/daemon/9.7.1/daemon-1.out.log"),
+            "\
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+> stale-daemon-cause
+",
+        );
+        plant_old_log(
+            &fixture.project.join("hs_err_pid1.log"),
+            "# stale-jvm-crash\n",
+        );
+        let report = fixture.failure();
+        assert_mentions(&report, "exit code 1");
+        assert_mentions(&report, "the-jvm-crash");
+        assert_mentions(&report, "JVM crash log");
+        assert_mentions(&report, "hs_err_pid4242.log");
+        assert_omits(&report, "stale-daemon-cause");
+        assert_omits(&report, "stale-jvm-crash");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_reports_the_killing_signal() {
+        const SCRIPT: &str = "#!/bin/sh\nkill -KILL $$\n";
+        let report = GradleRun::new(SCRIPT).failure();
+        assert_mentions(&report, "killed by signal 9");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_status_summary_names_a_code_and_a_signal() {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        let code = std::process::ExitStatus::from_raw(1 << 8);
+        assert_eq!(super::exit_status_summary(code), "exit code 1");
+        let signal = std::process::ExitStatus::from_raw(9);
+        assert_eq!(super::exit_status_summary(signal), "killed by signal 9");
+    }
+
+    #[cfg(unix)]
+    struct GradleRun {
+        _root: tempfile::TempDir,
+        project: PathBuf,
+        home: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl GradleRun {
+        fn new(script: &str) -> Self {
+            let root = tempfile::tempdir().expect("create the gradle fixture");
+            let project = root.path().join("android");
+            let home = root.path().join("home");
+            std::fs::create_dir_all(project.join("gradle/wrapper")).expect("wrapper directory");
+            std::fs::write(project.join("gradle/wrapper/gradle-wrapper.jar"), [])
+                .expect("wrapper jar");
+            std::fs::create_dir_all(&home).expect("home");
+            write_executable(&project.join("gradlew"), script);
+            Self {
+                _root: root,
+                project,
+                home,
+            }
+        }
+
+        fn failure(&self) -> String {
+            let host = Host::new(Vec::<PathBuf>::new(), None::<(&str, &str)>)
+                .with_home(self.home.clone())
+                .with_cwd(self.project.clone());
+            let error = smol::block_on(super::run_gradle_tasks(
+                &host,
+                &self.project,
+                &["assembleDebug"],
+                &[],
+            ))
+            .expect_err("the gradle wrapper must fail");
+            format!("{error}")
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create the script directory");
+        }
+        std::fs::write(path, body).expect("write the script");
+        let mut permissions = std::fs::metadata(path)
+            .expect("stat the script")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("mark the script executable");
+    }
+
+    #[cfg(unix)]
+    fn plant_old_log(path: &Path, contents: &str) {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create the log directory");
+        }
+        std::fs::write(path, contents).expect("write the log");
+        filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(0, 0))
+            .expect("backdate the log");
+    }
+
+    #[cfg(unix)]
+    fn assert_mentions(report: &str, needle: &str) {
+        assert!(
+            report.contains(needle),
+            "report should contain {needle:?}:\n{report}"
+        );
+    }
+
+    #[cfg(unix)]
+    fn assert_omits(report: &str, needle: &str) {
+        assert!(
+            !report.contains(needle),
+            "report should omit {needle:?}:\n{report}"
+        );
     }
 }
