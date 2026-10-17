@@ -291,15 +291,8 @@ mod tests {
     #[test]
     fn release_rlib_carries_no_meta_statics() {
         let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/meta_static");
-        let status = crate::toolchain::Host::current()
-            .std_command("cargo")
-            .args(["build", "--lib", "--release"])
-            .current_dir(&fixture)
-            .status()
-            .expect("cargo build --release runs");
-        assert!(status.success(), "the release fixture build must succeed");
-        let symbols = ArtifactSymbols::read(&fixture.join("target/release/libmeta_static.rlib"))
-            .expect("release rlib should parse");
+        let rlib = built_lib_fixture(&fixture, &["--release"]);
+        let symbols = ArtifactSymbols::read(&rlib).expect("release rlib should parse");
         assert!(
             symbols.leaves_with_prefix("waterui_meta_").is_empty(),
             "a release rlib must not carry waterui_meta_* statics"
