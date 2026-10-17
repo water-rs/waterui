@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::fmt;
 use std::rc::Rc;
 
+use waterui::ContentLedger;
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::grid::{grid as layout_grid, row as grid_row};
@@ -25,7 +26,6 @@ use waterui::video::{
     MediaItem, MediaItemId, PlaybackSession, PlayerController, Playlist, Url, VideoPlayer,
 };
 use waterui::widget::condition::when;
-use waterui_core::ContentLedger;
 
 /// A selectable video source.
 #[derive(Clone, Copy)]

@@ -11943,7 +11943,6 @@ name = "video-player-example"
 version = "0.1.0"
 dependencies = [
  "waterui",
- "waterui-core",
 ]
 
 [[package]]
