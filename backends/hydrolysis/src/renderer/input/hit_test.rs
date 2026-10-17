@@ -3,7 +3,9 @@ use super::edge_stretch::{ScrollStretch, linear_stretch};
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::platform::Overscroll;
-use crate::theme::{InteractionFocusBinding, ModalInteraction, WidgetInteractionState};
+use crate::theme::{
+    InteractionFocusBinding, InteractionMotion, ModalInteraction, WidgetInteractionState,
+};
 use nami::Signal as _;
 use std::path::PathBuf;
 use waterui::Url;
@@ -99,6 +101,10 @@ pub struct GestureRegion {
 #[derive(Clone)]
 pub struct PointerTarget {
     pub bounds: kurbo::Rect,
+    /// Window space to the space of the bounds the target registered,
+    /// resolved when the target stages — where a press lands in the
+    /// widget's own space.
+    pub(crate) to_local: kurbo::Affine,
     pub(crate) captures_drag: bool,
     pub(crate) depth: usize,
     pub(crate) order: usize,
@@ -146,8 +152,12 @@ pub struct ScrollbarDrag {
 pub struct PendingPointerPress {
     pub slot: PressSlot,
     pub(crate) origin: kurbo::Point,
+    /// The press point in the target's registered space.
+    pub(crate) local_origin: kurbo::Point,
     pub(crate) starts_at: Instant,
-    pub(crate) chrome_state_dependent: bool,
+    /// What the press marks its owner with once it starts
+    /// ([`InteractionLayerHandles::repaint`]).
+    pub(crate) repaint: Option<Dirty>,
 }
 
 /// An armed press-and-hold on a `.context_menu` region — the context-menu
@@ -559,6 +569,7 @@ impl SemanticCore {
                 if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
                     let mut payload = entry.payload.clone();
                     payload.bounds = resolved.rect;
+                    payload.to_local = entry.region.placement.resolved_transform(true).inverse();
                     orders.push(entry.order.clone());
                     staged_pointer.push(Staged {
                         entry_order: entry.order.clone(),
@@ -1202,15 +1213,19 @@ impl HitTestState {
             if contains != slot_hovering {
                 self.interaction.set_hovering(&target.slot, contains);
                 let mut chrome = false;
+                let mut repaint = true;
                 if let Some(handles) = &target.handles {
                     // Replayable state layer: the hover alpha animates through
                     // its retained draw, no structural rebuild needed unless
                     // the widget's chrome samples interaction state directly.
+                    // Engine-realized chrome took the change as live operands:
+                    // nothing in the tree changed, and the engine surface wakes
+                    // the host for the frame that animates them.
                     handles.set_hovering(contains, now);
-                    if handles.chrome_state_dependent() {
-                        chrome = true;
-                    } else {
-                        sync.visual_changed = true;
+                    match handles.repaint() {
+                        Some(bits) if bits == Dirty::LAYOUT => chrome = true,
+                        Some(_) => sync.visual_changed = true,
+                        None => repaint = false,
                     }
                 }
                 if contains {
@@ -1222,7 +1237,7 @@ impl HitTestState {
                 }
                 if chrome {
                     sync.chrome_keys.push(target.slot.key.clone());
-                } else {
+                } else if repaint {
                     sync.paint_keys.push(target.slot.key.clone());
                 }
             }
@@ -2080,34 +2095,37 @@ impl HydrolysisRenderer {
             self.set_keyboard_focus_for_press(keyboard_key, point);
             refresh_requested |= self.set_focused_text_input(None);
             if let Some(slot) = target.press_slot.as_ref() {
-                let chrome_state_dependent = target
+                let repaint = target
                     .interaction
                     .as_ref()
-                    .is_some_and(|handles| handles.chrome_state_dependent());
+                    .map_or(Some(Dirty::PAINT), |handles| handles.repaint());
                 let touch_delay = target
                     .interaction
                     .as_ref()
                     .map_or(Duration::ZERO, |handles| handles.touch_delay());
+                let local_origin = target.to_local * point;
                 if pointer_kind == PointerKind::Mouse || touch_delay.is_zero() {
-                    self.hit_test.interaction.begin_press(slot, point, at);
-                    visual_changed = true;
+                    self.hit_test
+                        .interaction
+                        .begin_press(slot, point, Some(local_origin), at);
+                    // An engine-realized chrome's press is live operands only.
+                    visual_changed |= repaint.is_some();
                 } else {
                     self.hit_test.pending_pointer_press = Some(PendingPointerPress {
                         slot: slot.clone(),
                         origin: point,
+                        local_origin,
                         starts_at: at
                             .checked_add(touch_delay)
                             .expect("hydrolysis pointer press start time overflow"),
-                        chrome_state_dependent,
+                        repaint,
                     });
                 }
                 self.hit_test.active_press_bounds = Some(target.bounds);
                 self.hit_test.active_press_origin = Some(point);
-                if chrome_state_dependent && visual_changed {
-                    SemanticCore::mark_owner(&target.owner, Dirty::LAYOUT);
-                    refresh_requested = true;
-                } else if visual_changed {
-                    SemanticCore::mark_owner(&target.owner, Dirty::PAINT);
+                if let Some(bits) = repaint.filter(|_| visual_changed) {
+                    SemanticCore::mark_owner(&target.owner, bits);
+                    refresh_requested |= bits == Dirty::LAYOUT;
                 }
             }
             tracing::trace!(
@@ -2243,16 +2261,16 @@ impl HydrolysisRenderer {
             changed |= self.finish_touch_scroll(at);
         }
         if let Some(pending) = self.hit_test.pending_pointer_press.take() {
-            self.hit_test
-                .interaction
-                .begin_press(&pending.slot, pending.origin, at);
-            let bits = if pending.chrome_state_dependent {
-                Dirty::LAYOUT
-            } else {
-                Dirty::PAINT
-            };
-            self.mark_key_owner(&pending.slot.key, bits);
-            changed = true;
+            self.hit_test.interaction.begin_press(
+                &pending.slot,
+                pending.origin,
+                Some(pending.local_origin),
+                at,
+            );
+            if let Some(bits) = pending.repaint {
+                self.mark_key_owner(&pending.slot.key, bits);
+                changed = true;
+            }
         }
         if let Some(target) = self.hit_test.active_pointer_target.take()
             && target.bounds.contains(point)
@@ -2690,6 +2708,57 @@ impl SemanticCore {
         changed
     }
 
+    /// Marks both ends of a keyboard-focus move: the owner focus left drops
+    /// its focus visuals, the one it reached takes them. An owner whose
+    /// chrome is engine-realized takes the change as live operands instead
+    /// (water-rs/waterui#1433).
+    fn mark_focus_owners(
+        &mut self,
+        previous_focus: Option<InteractionKey>,
+        visible: bool,
+        #[cfg(feature = "accessibility")] node: Option<AccessibilityNodeId>,
+    ) {
+        // An owner whose chrome is engine-realized takes the change as live
+        // operands instead (water-rs/waterui#1433).
+        let left_owner = core::mem::take(&mut self.hit_test.keyboard_focus_owner);
+        let mut arrived_live = false;
+        if let Some(key) = self.hit_test.keyboard_focus.clone() {
+            // A semantic-only focusable (the semantic runtime registers no
+            // hit targets) is owned by the cell that emitted its node.
+            let owner = self.try_key_owner(&key);
+            #[cfg(feature = "accessibility")]
+            let owner = owner.or_else(|| node.and_then(|node| self.live_node_owner(node)));
+            let owner = owner
+                .unwrap_or_else(|| panic!("hydrolysis renderer: focused key {key:?} has no owner"));
+            arrived_live = self.show_live_focus(&key, visible);
+            if !arrived_live {
+                Self::mark_owner(&owner, Dirty::LAYOUT);
+            }
+            self.hit_test.keyboard_focus_owner = owner;
+        }
+        // Focus that stayed on its key changed only visibility: the arriving
+        // end above already handled the owner.
+        let left_live = previous_focus
+            .filter(|key| self.hit_test.keyboard_focus.as_ref() != Some(key))
+            .map_or(arrived_live, |key| self.show_live_focus(&key, false));
+        if !left_live {
+            Self::mark_owner(&left_owner, Dirty::LAYOUT);
+        }
+    }
+
+    /// Shows or hides focus on `key`'s engine-realized chrome; `false` when
+    /// its chrome is not engine-realized and its owner must re-render.
+    fn show_live_focus(&self, key: &InteractionKey, visible: bool) -> bool {
+        self.hit_test
+            .interaction
+            .handles_for_key(key)
+            .filter(|handles| handles.repaint().is_none())
+            .is_some_and(|handles| {
+                handles.set_focus_visible(visible);
+                true
+            })
+    }
+
     pub(crate) fn set_keyboard_focus_impl(
         &mut self,
         focus: Option<InteractionKey>,
@@ -2721,6 +2790,7 @@ impl SemanticCore {
             return false;
         }
         let leaving = self.focused_candidate_order();
+        let previous_focus = self.hit_test.keyboard_focus.clone();
         if self.hit_test.keyboard_focus != focus || node_changed {
             // A `.focused` lens on the field still holding the caret is owned
             // by the text machinery: semantic focus moving to a non-text node
@@ -2792,19 +2862,10 @@ impl SemanticCore {
         // focus visuals, the one it reached takes them. The leaving owner
         // was captured when focus arrived, so a target removed since still
         // resolves (a dead owner has nothing left to wake).
-        let left_owner = core::mem::take(&mut self.hit_test.keyboard_focus_owner);
-        if let Some(key) = self.hit_test.keyboard_focus.clone() {
-            // A semantic-only focusable (the semantic runtime registers no
-            // hit targets) is owned by the cell that emitted its node.
-            let owner = self.try_key_owner(&key);
-            #[cfg(feature = "accessibility")]
-            let owner = owner.or_else(|| node.and_then(|node| self.live_node_owner(node)));
-            let owner = owner
-                .unwrap_or_else(|| panic!("hydrolysis renderer: focused key {key:?} has no owner"));
-            Self::mark_owner(&owner, Dirty::LAYOUT);
-            self.hit_test.keyboard_focus_owner = owner;
-        }
-        Self::mark_owner(&left_owner, Dirty::LAYOUT);
+        #[cfg(feature = "accessibility")]
+        self.mark_focus_owners(previous_focus, visible, node);
+        #[cfg(not(feature = "accessibility"))]
+        self.mark_focus_owners(previous_focus, visible);
         // The transition itself is window bookkeeping — same split as
         // `set_focused_text_input_key`: the key's owner takes the focus
         // visuals, the context takes the deadline and binding writes.
@@ -3378,18 +3439,15 @@ impl SemanticCore {
         if let Some(slot) = target.press_slot.as_ref() {
             self.hit_test
                 .interaction
-                .begin_press(slot, origin, self.frame_instant());
+                .begin_press(slot, origin, None, self.frame_instant());
         }
-        let bits = if target
+        if let Some(bits) = target
             .interaction
             .as_ref()
-            .is_some_and(|handles| handles.chrome_state_dependent())
+            .map_or(Some(Dirty::PAINT), |handles| handles.repaint())
         {
-            Dirty::LAYOUT
-        } else {
-            Dirty::PAINT
-        };
-        Self::mark_owner(&target.owner, bits);
+            Self::mark_owner(&target.owner, bits);
+        }
         self.hit_test.active_keyboard_target = Some(target);
         true
     }
@@ -3617,8 +3675,9 @@ impl HydrolysisRenderer {
             hit_test.interaction.set_hovering(&target.slot, false);
             let paint = target.handles.as_ref().is_some_and(|handles| {
                 handles.set_hovering(false, at);
-                hover_visual_changed = true;
-                true
+                let repaint = handles.repaint().is_some();
+                hover_visual_changed |= repaint;
+                repaint
             });
             let chrome = target
                 .on_exit
@@ -4161,6 +4220,7 @@ impl SemanticCore {
         let key_handlers = self.snapshot_key_handlers();
         self.register_retained(
             PointerTarget {
+                to_local: kurbo::Affine::IDENTITY,
                 owner: Weak::new(),
                 bounds,
                 captures_drag,
@@ -4210,6 +4270,7 @@ impl SemanticCore {
         let anchor = self.current_placement();
         self.register_retained_at(
             PointerTarget {
+                to_local: kurbo::Affine::IDENTITY,
                 owner: Weak::new(),
                 bounds,
                 captures_drag: false,
@@ -4318,6 +4379,7 @@ impl SemanticCore {
         let key_handlers = self.snapshot_key_handlers();
         self.register_retained(
             PointerTarget {
+                to_local: kurbo::Affine::IDENTITY,
                 owner: Weak::new(),
                 bounds,
                 captures_drag: true,
@@ -4423,7 +4485,7 @@ impl HydrolysisRenderer {
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        self.bind_interaction_target_with_focus(key, bounds, env, None, false)
+        self.bind_interaction_target_with_focus(key, bounds, env, None, false, None)
     }
 
     /// Binds an interaction target for a control that supports the disabled
@@ -4441,7 +4503,30 @@ impl HydrolysisRenderer {
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled)
+        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, None)
+    }
+
+    /// Binds the interaction target of a control whose chrome is
+    /// engine-realized ([`LiveChrome`](crate::renderer::chrome::LiveChrome),
+    /// water-rs/waterui#1433), steered with `motion`. Hover, press and focus
+    /// changes move the chrome's live operands — the caller attaches it to
+    /// the returned handles — and mark nothing, so they neither re-render
+    /// nor repaint the control. A control under an `InteractionReport`
+    /// still re-renders on each change: the report's binding is written at
+    /// bind time.
+    pub(crate) fn bind_live_chrome_target(
+        &mut self,
+        key: InteractionKey,
+        bounds: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+        motion: InteractionMotion,
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
+        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, Some(motion))
     }
 
     pub(crate) fn bind_focused_control_interaction_target(
@@ -4462,6 +4547,7 @@ impl HydrolysisRenderer {
             env,
             Some(InteractionFocus::visible(focused)),
             disabled,
+            None,
         )
     }
 
@@ -4476,6 +4562,7 @@ impl HydrolysisRenderer {
         env: &Environment,
         focus: Option<InteractionFocus>,
         disabled: bool,
+        live_motion: Option<InteractionMotion>,
     ) -> (
         WidgetInteractionState,
         PressSlot,
@@ -4507,7 +4594,8 @@ impl HydrolysisRenderer {
             // the control was disabled does not resurface on re-enable.
             self.hit_test.interaction.set_hovering(&hover_slot, false);
         }
-        let motion = self.theme().interaction_motion();
+        let live = live_motion.is_some();
+        let motion = live_motion.unwrap_or_else(|| self.theme().interaction_motion());
         let now = self.frame_instant();
         let (mut state, mut press_slot, handles) =
             self.core.hit_test.interaction.bind_widget_state(
@@ -4542,11 +4630,14 @@ impl HydrolysisRenderer {
         state.state = flags;
         self.hit_test.interaction.set_reported_state(&key, flags);
         self.claim_interaction_reports(env, flags);
-        // Every widget that binds an interaction target draws its hover/focus/press
-        // state layers from the sampled state each flush, so its chrome is
-        // state-dependent by construction: a press or hover change must schedule a
-        // re-flush (not just a re-present of the stale scene).
-        handles.mark_chrome_state_dependent();
+        // A widget that draws its hover/focus/press state layers from the
+        // sampled state each flush is state-dependent by construction: a press
+        // or hover change must schedule a re-flush (not just a re-present of
+        // the stale scene). Engine-realized chrome is not, unless a report
+        // binding needs the bind-time write.
+        if !live || env.get::<InteractionReport>().is_some() {
+            handles.mark_chrome_state_dependent();
+        }
         if !disabled {
             self.core.register_retained(
                 HoverTarget {
@@ -4688,6 +4779,7 @@ impl SemanticCore {
         let key_handlers = self.snapshot_key_handlers();
         self.register_retained(
             PointerTarget {
+                to_local: kurbo::Affine::IDENTITY,
                 owner: Weak::new(),
                 bounds,
                 captures_drag: false,
@@ -4722,6 +4814,7 @@ impl SemanticCore {
         let key_handlers = self.snapshot_key_handlers();
         self.register_retained(
             PointerTarget {
+                to_local: kurbo::Affine::IDENTITY,
                 owner: Weak::new(),
                 bounds,
                 captures_drag: true,
