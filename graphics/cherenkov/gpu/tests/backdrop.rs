@@ -850,16 +850,25 @@ fn shader_effect_reads_the_recording_scale() -> Result<(), Box<dyn std::error::E
     assert_pixel(pixel(&one, 11, 20), [1.0, 0.0, 0.0, 1.0], 1e-3);
     assert_pixel(pixel(&one, 12, 20), [0.0, 0.0, 0.0, 1.0], 1e-3);
     assert_pixel(pixel(&one, 4, 20), [0.0, 0.0, 1.0, 1.0], 1e-3);
+    // The doubled device pixels must match the logical ones up to one f16
+    // step, not bit-exactly: how `own_sdf / scale` rounds into the LinearF16
+    // store is the adapter's own choice, and the Windows adapters land one
+    // step off the others (#2725): 0.9995117 is 1 - 2^-11, the f16 value
+    // just below 1.0. The 0.001 bound admits two such steps below 1.0 and
+    // one above it, where the spacing is 2^-10.
     for y in 0..64 {
         for x in 0..64 {
             for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                assert_eq!(
-                    pixel(&two, 2 * x + dx, 2 * y + dy),
-                    pixel(&one, x, y),
-                    "device pixel ({}, {}) at scale 2 against logical pixel ({x}, {y})",
-                    2 * x + dx,
-                    2 * y + dy,
-                );
+                let actual = pixel(&two, 2 * x + dx, 2 * y + dy);
+                let expected = pixel(&one, x, y);
+                for (a, e) in actual.iter().zip(expected) {
+                    assert!(
+                        (a - e).abs() <= 0.001,
+                        "device pixel ({}, {}) at scale 2 against logical pixel ({x}, {y}): {actual:?} vs {expected:?}",
+                        2 * x + dx,
+                        2 * y + dy,
+                    );
+                }
             }
         }
     }
