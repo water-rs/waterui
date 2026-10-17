@@ -330,13 +330,22 @@ mod tests {
             .expect_err("the fixture does not exist");
         let message = error.to_string();
         assert!(message.contains("./promo.tsx"), "{message}");
-        assert!(message.contains("src/promo.tsx"), "{message}");
+        // The resolved path is rendered with the host's separators, so the
+        // expected suffix is joined the same way rather than spelled with `/`.
+        let resolved = Path::new("src").join("promo.tsx");
+        assert!(
+            message.contains(&resolved.display().to_string()),
+            "{message}"
+        );
     }
 
     #[test]
     fn an_absolute_path_is_refused() {
         let caller = manifest().join("src/tsx.rs");
-        let error = module_id(&literal("/etc/hosts"), &caller, manifest())
+        // The manifest path is absolute on every host; `/etc/hosts` is not —
+        // Windows reads it as drive-relative.
+        let absolute = manifest().join("src/lib.rs");
+        let error = module_id(&literal(&absolute.to_string_lossy()), &caller, manifest())
             .expect_err("a module is named relative to its mount site");
         assert!(error.to_string().contains("absolute"), "{error}");
     }
