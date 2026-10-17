@@ -89,6 +89,28 @@ fn trials() -> Vec<Trial> {
                     Ok(())
                 },
             ),
+            Trial::test(
+                "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
+                || {
+                    navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics",
+                || {
+                    navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics();
+                    Ok(())
+                },
+            ),
+            Trial::test("split::a_sidebar_list_takes_the_source_list_chrome", || {
+                split::a_sidebar_list_takes_the_source_list_chrome();
+                Ok(())
+            }),
+            Trial::test("split::a_plain_list_keeps_the_regular_chrome", || {
+                split::a_plain_list_keeps_the_regular_chrome();
+                Ok(())
+            }),
         ]);
         #[cfg(feature = "gpu_surface")]
         {
@@ -190,6 +212,10 @@ fn base_trials() -> Vec<Trial> {
         }),
         Trial::test("resolve::toggle_rows_place_the_control_by_kind", || {
             resolve::toggle_rows_place_the_control_by_kind();
+            Ok(())
+        }),
+        Trial::test("resolve::a_label_leaves_8pt_between_icon_and_title", || {
+            resolve::a_label_leaves_8pt_between_icon_and_title();
             Ok(())
         }),
         Trial::test(
@@ -738,11 +764,13 @@ mod resolve {
     use waterui::ViewExt as _;
     use waterui::component::form::picker::{PickerItem, PickerStyle, picker};
     use waterui::component::form::secure::{Secure, SecureField};
+    use waterui::component::label::label;
     use waterui::component::slider::slider;
     use waterui::component::stepper::stepper;
     use waterui::component::text_field::TextField;
     use waterui::component::toggle::Toggle;
     use waterui::filter::Opacity;
+    use waterui::icon::SystemIcon;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
@@ -1159,6 +1187,38 @@ mod resolve {
                 );
             }
         }
+    }
+
+    /// water-rs/waterui#1101: a semantic label leaves 8 pt between its
+    /// icon and its title — the `SwiftUI` `Label` and Material 3 default
+    /// the composition reproduces on every backend.
+    pub fn a_label_leaves_8pt_between_icon_and_title() {
+        let leaf = render(label("Play").icon(SystemIcon::new("play.fill")));
+        let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        let row = leaf.view();
+        cocoa_ui::view::set_frame(
+            row,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(row);
+        // The leaf's host view wraps the hstack's own host view, whose
+        // subviews are the icon and the title in one coordinate space.
+        let stack = cocoa_ui::view::subviews(row);
+        assert_eq!(stack.len(), 1, "the label leaf hosts one stack view");
+        let subviews = cocoa_ui::view::subviews(&stack[0]);
+        assert_eq!(
+            subviews.len(),
+            2,
+            "an icon label holds the icon and the title"
+        );
+        let icon = cocoa_ui::view::frame(&subviews[0]);
+        let title = cocoa_ui::view::frame(&subviews[1]);
+        // Auto Layout snaps frames to the backing scale's pixel grid.
+        let gap = title.origin.x - (icon.origin.x + icon.size.width);
+        assert!(
+            (gap - 8.0).abs() < 0.5,
+            "icon-to-title gap — expected 8 pt, got {gap}"
+        );
     }
 }
 
@@ -1940,14 +2000,27 @@ mod menus {
     }
 }
 
-/// Navigation-chrome trials on `AppKit`: a `.searchable` page on a titled
-/// window rests its field in the titlebar's bottom accessory row, at the
-/// metrics the platform's own `.searchable` presents.
+/// Navigation-chrome trials on `AppKit` against a real titled `NSWindow`: a
+/// `.searchable` page rests its field in the titlebar's bottom accessory
+/// row at the platform's metrics, a `NavigationSplitView` in a hidden tab
+/// releases the toolbar space its sidebar claims, and the toolbar tab
+/// picker uses the system extra-large metrics — the same `navigation::`
+/// namespace the `UIKit` cases own on iOS.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod navigation {
-    use cocoa_ui::objc2_app_kit::{NSLayoutAttribute, NSSearchField};
+    use cocoa_ui::appkit::{Segment, SegmentedControl};
+    use cocoa_ui::objc2_app_kit::{
+        NSControlSize, NSLayoutAttribute, NSSearchField, NSSegmentDistribution, NSSegmentStyle,
+        NSSegmentedControl, NSSplitView, NSSplitViewController, NSTrackingSeparatorToolbarItem,
+    };
+    use cocoa_ui::{PlatformView, Retained, view};
+    use objc2::ClassType as _;
+    use objc2::runtime::NSObjectProtocol as _;
     use waterui::Str;
-    use waterui::navigation::NavigationView;
+    use waterui::navigation::{
+        NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView, Tab, Tabs,
+    };
     use waterui::prelude::text;
     use waterui::reactive::binding;
     use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
@@ -2025,6 +2098,333 @@ mod navigation {
         assert!(
             (field_center_x - window_center_x).abs() <= 1.0,
             "the platform centres the field in the window: field at {field_center_x}, window at {window_center_x}"
+        );
+    }
+
+    /// The `NSSplitView` mounted anywhere under `root`, depth-first — the
+    /// fixture mounts exactly one.
+    fn split_view_in(root: &PlatformView) -> Option<Retained<NSSplitView>> {
+        for sub in view::subviews(root) {
+            if let Ok(split) = sub.clone().downcast::<NSSplitView>() {
+                return Some(split);
+            }
+            if let Some(found) = split_view_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The `NSSplitViewController` that owns `split_view`, found by walking
+    /// the responder chain up from the view, the way `AppKit` dispatches
+    /// the controller's own actions such as `toggleSidebar:`.
+    fn split_controller(split_view: &NSSplitView) -> Retained<NSSplitViewController> {
+        let mut chain = Vec::new();
+        // SAFETY: `nextResponder` is an ordinary responder-chain read on
+        // the main thread.
+        let mut responder = unsafe { split_view.nextResponder() };
+        while let Some(current) = responder {
+            match current.downcast::<NSSplitViewController>() {
+                Ok(controller) => return controller,
+                Err(current) => {
+                    chain.push(current.class().name().to_string_lossy().into_owned());
+                    // SAFETY: as above.
+                    responder = unsafe { current.nextResponder() };
+                }
+            }
+        }
+        panic!("no NSSplitViewController in the split view's responder chain: {chain:?}");
+    }
+
+    /// Whether the window toolbar carries the split's tracking separator —
+    /// the sidebar chrome a visible split pane offers the window.
+    fn has_tracking_separator(window: &cocoa_ui::appkit::Window) -> bool {
+        window.native().toolbar().is_some_and(|toolbar| {
+            toolbar
+                .items()
+                .iter()
+                .any(|item| item.isKindOfClass(NSTrackingSeparatorToolbarItem::class()))
+        })
+    }
+
+    /// Whether the window toolbar exists and has laid out at least one
+    /// view-backed item — the point where item frames read real positions.
+    fn toolbar_laid_out(window: &cocoa_ui::appkit::Window) -> bool {
+        window.native().toolbar().is_some_and(|toolbar| {
+            toolbar
+                .items()
+                .iter()
+                .filter_map(|item| item.view())
+                .any(|view| view.frame().size.width > 0.0)
+        })
+    }
+
+    /// A `Tabs` whose selected pane is a `NavigationView` page carrying a
+    /// `TopBarLeading` item, while the unselected pane holds a
+    /// `NavigationSplitView`. An expanded `allowsFullHeightLayout` sidebar
+    /// item claims the toolbar's leading region even while its view is
+    /// hidden, so the pane collapses the item to release that space,
+    /// expands it when the pane shows, and — after a user collapse —
+    /// restores the user's own collapse state instead of forcing the
+    /// sidebar open.
+    pub fn a_hidden_tab_split_releases_the_toolbar_sidebar_space() {
+        let tab = binding(0i32);
+        let detail = binding(Some(1_i32));
+        let leaf = resolve::render(Tabs::new(
+            &tab,
+            vec![
+                Tab::new(0i32, "Inbox", move || {
+                    NavigationView::new("Inbox", text("inbox")).navigation_toolbar(
+                        NavigationToolbar::new(vec![NavigationToolbarItem::action(
+                            NavigationToolbarPlacement::TopBarLeading,
+                            "Edit",
+                            || {},
+                        )]),
+                    )
+                }),
+                Tab::container(1i32, "Split", move || {
+                    NavigationSplitView::new(&detail, text("Sidebar"), |id: i32| {
+                        NavigationView::new(format!("Detail {id}"), text("detail"))
+                    })
+                }),
+            ],
+        ));
+        let window = super::mount_and_order_front(leaf.view());
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || toolbar_laid_out(&window)),
+            "the window toolbar laid out its items"
+        );
+        let content = window
+            .native()
+            .contentView()
+            .expect("a titled window has a content view");
+        let split_view = split_view_in(&content).expect("the split pane mounts an NSSplitView");
+        let split = split_controller(&split_view);
+        let sidebar = split
+            .splitViewItems()
+            .firstObject()
+            .expect("the split's first item is the sidebar");
+
+        // A hidden pane contributes no sidebar chrome and no hidden claim
+        // on the titlebar either — collapsing the item is what releases
+        // the space the expanded one reserves.
+        assert!(
+            !has_tracking_separator(&window),
+            "a hidden split's toolbar carries no tracking separator"
+        );
+        assert!(
+            sidebar.isCollapsed(),
+            "the hidden split's sidebar item collapses to release its titlebar claim"
+        );
+
+        // The page's leading item hugs the window's leading edge: with the
+        // claim left standing it sat right of the sidebar — the declared
+        // default sidebar is 240-480 pt wide, so a pushed item lands past
+        // 150.
+        let item_view = window
+            .native()
+            .toolbar()
+            .expect("the window toolbar")
+            .items()
+            .iter()
+            .find_map(|item| item.view())
+            .expect("the leading item hosts a view");
+        let min_x = view::convert_rect(&item_view, view::bounds(&item_view), None)
+            .origin
+            .x;
+        assert!(
+            min_x < 150.0,
+            "the leading toolbar item sits at the window's leading edge — minX {min_x}"
+        );
+
+        // Selecting the split's tab brings its chrome back: the sidebar
+        // expands and the toolbar aligns to it with the tracking
+        // separator.
+        tab.set(1i32);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                !sidebar.isCollapsed() && has_tracking_separator(&window)
+            }),
+            "showing the pane expands the sidebar and aligns the toolbar to it"
+        );
+
+        // Collapse the sidebar the way the toolbar's own toggle does, then
+        // cycle the pane away and back. The user's collapse is the state
+        // to restore — the forced collapse while hidden must not
+        // overwrite it, and the show must not force the sidebar open.
+        // SAFETY: `toggleSidebar:` is the controller's documented sidebar
+        // toggle; a nil sender on the main thread.
+        unsafe { split.toggleSidebar(None) };
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || sidebar.isCollapsed()),
+            "the user's collapse lands on the sidebar item"
+        );
+        tab.set(0i32);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !has_tracking_separator(&window)),
+            "hiding the pane withdraws the sidebar chrome again"
+        );
+        tab.set(1i32);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                sidebar.isCollapsed() && has_tracking_separator(&window)
+            }),
+            "the restored pane keeps the user's collapsed sidebar"
+        );
+    }
+
+    /// The toolbar tab picker is the system one: an extra-large segmented
+    /// control whose segments fill equally. Joining the unified toolbar
+    /// narrows that control below the size it reports while free, and the
+    /// item follows the intrinsic size rather than freezing the free one.
+    /// The window stays unordered; the metrics were read that way.
+    pub fn a_toolbar_tab_picker_uses_the_extra_large_metrics() {
+        let mtm = mtm();
+        let pane = binding(0i32);
+        let labels = ["Inbox", "Library", "Gallery", "Settings"];
+        let leaf = resolve::render(Tabs::new(
+            &pane,
+            labels
+                .iter()
+                .enumerate()
+                .map(|(index, label)| {
+                    let title = (*label).to_string();
+                    let id = i32::try_from(index).expect("the four tabs fit in i32");
+                    Tab::new(id, *label, move || {
+                        NavigationView::new(title.clone(), text(title.clone()))
+                    })
+                })
+                .collect(),
+        ));
+        let window = leaf::attach(mtm, leaf.view());
+        window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 700.0, 520.0), false);
+
+        let free = SegmentedControl::new(mtm);
+        free.set_segments(
+            &labels
+                .iter()
+                .map(|label| Segment {
+                    label: label.to_string(),
+                    enabled: true,
+                    ..Segment::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+        let free_size = free.fitting_size();
+
+        let laid_out = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            toolbar_segmented(&window).is_some_and(|control| {
+                let bounds = control.bounds().size;
+                bounds.height > free_size.height - 0.5 && bounds.width + 8.0 < free_size.width
+            })
+        });
+        assert!(
+            laid_out,
+            "the toolbar tab picker adopts the unified-toolbar metrics"
+        );
+
+        let control = toolbar_segmented(&window).expect("the toolbar hosts the tab picker");
+        assert_eq!(control.controlSize(), NSControlSize::ExtraLarge);
+        assert_eq!(
+            control.segmentDistribution(),
+            NSSegmentDistribution::FillEqually
+        );
+        assert_eq!(control.segmentStyle(), NSSegmentStyle::Automatic);
+        let bounds = control.bounds().size;
+        let intrinsic = control.intrinsicContentSize();
+        assert!(
+            (bounds.width - intrinsic.width).abs() < 0.5,
+            "the item follows the intrinsic width {} rather than a frozen fitting size {}",
+            intrinsic.width,
+            bounds.width
+        );
+        assert!(
+            (bounds.height - intrinsic.height).abs() < 0.5
+                && (bounds.height - free_size.height).abs() < 0.5,
+            "the picker is the extra-large height"
+        );
+
+        let frame = view::convert_rect(&control, view::bounds(&control), None);
+        let center = frame.origin.x + frame.size.width / 2.0;
+        assert!(
+            (center - 350.0).abs() < 4.0,
+            "the picker stays centred in the 700 pt window, centre {center}"
+        );
+    }
+
+    /// The segmented control the window toolbar is hosting, when it has one.
+    fn toolbar_segmented(
+        window: &cocoa_ui::appkit::Window,
+    ) -> Option<Retained<NSSegmentedControl>> {
+        window.native().toolbar().and_then(|toolbar| {
+            toolbar.items().iter().find_map(|item| {
+                item.view()
+                    .and_then(|view| view.downcast::<NSSegmentedControl>().ok())
+            })
+        })
+    }
+}
+
+/// A `NavigationSplitView` sidebar column is marked `SidebarContent`: the
+/// lists inside take the source-list chrome — clear background over the
+/// split's material and the unemphasised selection pill — while a list
+/// outside the sidebar keeps the regular fill (water-rs/waterui#1495).
+#[cfg(target_os = "macos")]
+mod split {
+    use cocoa_ui::appkit::ListTableView;
+    use cocoa_ui::objc2_app_kit::NSTableViewStyle;
+    use cocoa_ui::{PlatformView, view};
+    use waterui::component::list::{List, ListItem};
+    use waterui::navigation::{NavigationSplitView, NavigationView};
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+
+    use super::resolve;
+
+    /// The `ListTableView` inside `view`'s subtree, depth-first.
+    fn sidebar_table(view: &PlatformView) -> Option<cocoa_ui::Retained<ListTableView>> {
+        let mut stack = vec![view::retain_base(view)];
+        while let Some(view) = stack.pop() {
+            stack.extend(view::subviews(&view));
+            if let Ok(table) = view.downcast::<ListTableView>() {
+                return Some(table);
+            }
+        }
+        None
+    }
+
+    /// The split's sidebar list is the one `set_sidebar` marks — the
+    /// source-list style is what draws the grey selection pill.
+    pub fn a_sidebar_list_takes_the_source_list_chrome() {
+        let selection = binding(Some(0_i32));
+        let leaf = resolve::render(NavigationSplitView::new(
+            &selection,
+            move || {
+                List::content((|| ListItem::new(text("row")),)).selection(&binding(Some(0_usize)))
+            },
+            |_id: i32| NavigationView::new("Detail", text("detail")),
+        ));
+        let table = sidebar_table(leaf.view()).expect("the sidebar mounts a list");
+        assert!(
+            table.is_sidebar(),
+            "the sidebar list draws source-list chrome"
+        );
+        assert_eq!(
+            table.table_view().style(),
+            NSTableViewStyle::SourceList,
+            "the sidebar list takes the source-list style"
+        );
+    }
+
+    /// The same list outside a split keeps the regular table chrome.
+    pub fn a_plain_list_keeps_the_regular_chrome() {
+        let selection = binding(Some(0_usize));
+        let leaf =
+            resolve::render(List::content((|| ListItem::new(text("row")),)).selection(&selection));
+        let table = sidebar_table(leaf.view()).expect("the list mounts a table");
+        assert!(
+            !table.is_sidebar(),
+            "a list outside a sidebar keeps the regular fill"
         );
     }
 }

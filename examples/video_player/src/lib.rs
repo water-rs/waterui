@@ -11,6 +11,11 @@
 //! WaterUI's self-rendered pipeline (`GpuContentView` + `waterkit-codec`), depending
 //! on the selected backend/runtime policy.
 
+use std::cell::RefCell;
+use std::fmt;
+use std::rc::Rc;
+
+use waterui::ContentLedger;
 use waterui::app::App;
 use waterui::color::Srgb;
 use waterui::prelude::grid::{grid as layout_grid, row as grid_row};
@@ -20,6 +25,7 @@ use waterui::reactive::binding;
 use waterui::video::{
     MediaItem, MediaItemId, PlaybackSession, PlayerController, Playlist, Url, VideoPlayer,
 };
+use waterui::widget::condition::when;
 
 /// A selectable video source.
 #[derive(Clone, Copy)]
@@ -145,24 +151,85 @@ pub fn demo() -> impl View {
     )
 }
 
-/// Static preview frame — keeps `water preview` and Hydrolysis perf tests off the network.
+/// Real player for the first sample URL.
+///
+/// The capture waits until the player reports ready, so the image shows the
+/// player, its controls, and its first frame.
 #[preview]
 fn video_player_preview() -> impl View {
-    let selected = Binding::usize(0);
-    let status: Binding<Str> = binding("Preview ready");
-    let is_buffering = binding(false);
-    let frame = zstack((
-        Srgb::BLACK,
-        vstack((
-            text("Video Preview").title().foreground(Srgb::WHITE),
-            text("Static preview frame")
-                .caption()
-                .foreground(Srgb::WHITE.with_opacity(0.8)),
-        ))
-        .spacing(12.0),
-    ));
-    player_shell(frame, selected.computed(), status, is_buffering, None)
+    PreviewPlayer
 }
+
+/// The player a preview mounts, opened from [`SAMPLES`] rather than a stand-in.
+struct PreviewPlayer;
+
+impl View for PreviewPlayer {
+    fn body(self, env: &Environment) -> impl View {
+        let url = Url::parse(SAMPLES[0].url).expect("sample URL should be valid");
+        let status: Binding<Str> = binding("Opening");
+        let owed = Rc::new(RefCell::new(ContentLedger::owe::<Self>(
+            env,
+            url.as_str().to_owned(),
+        )));
+        let player = VideoPlayer::new(PlaybackSession::new(Playlist::single(url)))
+            .show_controls(true)
+            .content_mode(video::ContentMode::Fit)
+            .on_event({
+                let status = status.clone();
+                move |event| match event {
+                    video::Event::ReadyToPlay => {
+                        if let Some(owed) = owed.borrow_mut().take() {
+                            owed.fulfil();
+                        }
+                        status.set(Str::from_static("Ready"));
+                    }
+                    video::Event::Error { message } => {
+                        if let Some(owed) = owed.borrow_mut().take() {
+                            owed.fail(PlaybackFailed(message.clone()));
+                        }
+                        status.set(format!("Error: {message}").into());
+                    }
+                    video::Event::Buffering => {
+                        status.set(Str::from_static("Buffering..."));
+                    }
+                    video::Event::BufferingEnded => {
+                        status.set(Str::from_static("Ready"));
+                    }
+                    video::Event::PlaybackStateChanged { playing } => {
+                        status.set(if playing {
+                            Str::from_static("Playing")
+                        } else {
+                            Str::from_static("Paused")
+                        });
+                    }
+                    _ => {}
+                }
+            });
+
+        // The buffering overlay is a repeating animation. A capture cannot
+        // settle while one is mounted, so the preview leaves it off and
+        // reports buffering through the status line.
+        player_shell(
+            player,
+            Binding::usize(0).computed(),
+            status,
+            binding(false),
+            None,
+        )
+    }
+}
+
+/// Playback error reported to a capture when the sample fails to open.
+#[derive(Debug)]
+struct PlaybackFailed(String);
+
+impl fmt::Display for PlaybackFailed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PlaybackFailed {}
 
 /// Shared layout: title, player with a buffering overlay, status line, and source pills.
 fn player_shell(
@@ -175,10 +242,13 @@ fn player_shell(
     let title = selected.clone().map(|index| SAMPLES[index].title);
     let profile = selected.clone().map(|index| SAMPLES[index].profile);
 
-    let buffering_overlay = vstack((loading(), text("Buffering...").foreground(Srgb::WHITE)))
-        .spacing(12.0)
-        .background(Srgb::BLACK.with_opacity(0.8))
-        .visible(is_buffering.clone());
+    // Mount the indicator only while buffering. `.visible(false)` would keep
+    // the indeterminate animation running, and a capture cannot settle on it.
+    let buffering_overlay = when(is_buffering.clone(), || {
+        vstack((loading(), text("Buffering...").foreground(Srgb::WHITE)))
+            .spacing(12.0)
+            .background(Srgb::BLACK.with_opacity(0.8))
+    });
 
     let source_grid = playlist.map(|(controller, ids)| {
         layout_grid(

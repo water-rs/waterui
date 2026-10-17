@@ -26,12 +26,13 @@ use super::backdrop::{
 use super::cell::NodeCell;
 use super::placement::Placement;
 use super::program::{
-    ChromeMaterial, InnerProgram, Item, MaterialRequest, ProducerContent, Program, RunKey,
-    SceneContentSource, ScopeKey, ScopeProps,
+    ChromeMaterial, InnerProgram, Item, LiveItem, MaterialRequest, ProducerContent, Program,
+    RunKey, SceneContentSource, ScopeKey, ScopeProps,
 };
 use super::stretch::{ShownStretch, StretchFilter};
 use super::target::LayerTarget;
 use crate::renderer::ProducerWake;
+use crate::renderer::chrome::LiveSource;
 use crate::renderer::recording::{LoweredResources, SolidRect};
 
 /// The liveness token of one node's layers: parents list children by
@@ -158,6 +159,8 @@ pub struct ScopeLayer {
     /// The `ChromeMaterial` member layers inside the scope, in program
     /// order.
     members: Vec<MemberLayer>,
+    /// The live layers inside the scope, in program order.
+    lives: Vec<LiveLayer>,
     /// The anchor layers the scope's items lower — the same retention
     /// and registration contract the node's own list has. The `Rc`
     /// pins the scope's cell, so its `BackdropScope::Scoped` address
@@ -190,6 +193,18 @@ pub struct MemberLayer {
     membership: Option<MaterialMembership>,
 }
 
+/// A live item's layer (water-rs/waterui#1433): the content its source
+/// recorded, kept by the item's ordinal. The source is recorded once; a
+/// commit that lists the same source again only re-places the layer.
+pub struct LiveLayer {
+    ordinal: u32,
+    layer: Layer,
+    /// The transform last written to the layer.
+    transform: kurbo::Affine,
+    /// The source the layer's content was recorded from.
+    source: Option<Rc<dyn LiveSource>>,
+}
+
 /// A node's retained layers.
 pub struct NodeLayers {
     token: Rc<LayerToken>,
@@ -213,6 +228,10 @@ pub struct NodeLayers {
     members: Vec<MemberLayer>,
     /// The member layers of the scroll node's inner list.
     inner_members: Vec<MemberLayer>,
+    /// The live layers of the node's own item list.
+    lives: Vec<LiveLayer>,
+    /// The live layers of the scroll node's inner list.
+    inner_lives: Vec<LiveLayer>,
     scopes: Vec<ScopeLayer>,
     committed: Committed,
     inner_committed: Committed,
@@ -372,6 +391,8 @@ pub struct MountStats {
     pub scene_segments: u32,
     /// Live GPU-content installs.
     pub gpu_content: u32,
+    /// Live items recorded: a source a commit listed for the first time.
+    pub live_records: u64,
     /// Live frames carrying a filter.
     pub filtered: u32,
     /// Live clipped layers.
@@ -462,7 +483,15 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
         for member in scope.members {
             self.retire_member(member);
         }
+        for live in scope.lives {
+            self.retire_live(live);
+        }
         self.retire_layer(scope.layer);
+    }
+
+    fn retire_live(&mut self, live: LiveLayer) {
+        self.retire_layer(live.layer);
+        self.graveyard.push(Box::new(live.source));
     }
 
     fn retire_member(&mut self, member: MemberLayer) {
@@ -482,6 +511,8 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
             inner_runs,
             members,
             inner_members,
+            lives,
+            inner_lives,
             scopes,
             anchors,
             anchor_keys,
@@ -502,6 +533,9 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
         }
         for member in members.into_iter().chain(inner_members) {
             self.retire_member(member);
+        }
+        for live in lives.into_iter().chain(inner_lives) {
+            self.retire_live(live);
         }
         for scope in scopes {
             self.retire_scope(scope);
@@ -724,6 +758,10 @@ fn census_runs(runs: &[RunLayer], stats: &mut MountStats) {
     }
 }
 
+fn census_lives(lives: &[LiveLayer], stats: &mut MountStats) {
+    stats.scene_layers += u32::try_from(lives.len()).expect("live layer count fits u32");
+}
+
 fn census_children(
     committed: &Committed,
     own: &Rc<LayerToken>,
@@ -763,6 +801,8 @@ fn census_node(retained: &NodeRetained, depth: u32, stats: &mut MountStats) {
     }
     census_runs(&layers.runs, stats);
     census_runs(&layers.inner_runs, stats);
+    census_lives(&layers.lives, stats);
+    census_lives(&layers.inner_lives, stats);
     census_children(&layers.committed, &layers.token, depth, stats);
     if let Some((_, props)) = &layers.inner {
         let inner = census_clip(props.clip.is_some(), depth, stats);
@@ -771,6 +811,7 @@ fn census_node(retained: &NodeRetained, depth: u32, stats: &mut MountStats) {
     for scope in &layers.scopes {
         let inner = census_clip(scope.props.clip.is_some(), depth, stats);
         census_runs(&scope.runs, stats);
+        census_lives(&scope.lives, stats);
         census_children(&scope.committed, &layers.token, inner, stats);
     }
 }
@@ -867,6 +908,8 @@ pub fn commit_cell<T: LayerTarget>(
                 inner_runs: Vec::new(),
                 members: Vec::new(),
                 inner_members: Vec::new(),
+                lives: Vec::new(),
+                inner_lives: Vec::new(),
                 scopes: Vec::new(),
                 committed: Vec::new(),
                 inner_committed: Vec::new(),
@@ -1028,6 +1071,7 @@ fn lower_program<T: LayerTarget>(
         &mut layers.anchor_keys,
         &mut layers.runs,
         &mut layers.members,
+        &mut layers.lives,
         &mut scopes_old,
         &mut scopes_new,
         &mut layers.committed,
@@ -1141,6 +1185,7 @@ fn lower_inner<T: LayerTarget>(
             &mut layers.inner_anchor_keys,
             &mut layers.inner_runs,
             &mut layers.inner_members,
+            &mut layers.inner_lives,
             scopes_old,
             scopes_new,
             &mut layers.inner_committed,
@@ -1165,6 +1210,9 @@ fn lower_inner<T: LayerTarget>(
         }
         for member in std::mem::take(&mut layers.inner_members) {
             cx.retire_member(member);
+        }
+        for live in std::mem::take(&mut layers.inner_lives) {
+            cx.retire_live(live);
         }
         layers.inner_committed.clear();
     }
@@ -1369,6 +1417,8 @@ enum Slot {
     Scope(usize),
     /// A `ChromeMaterial` member layer: the index into `members`.
     Member(usize),
+    /// A live item's layer: the index into `lives`.
+    Live(usize),
     Node(Rc<NodeCell>),
     /// A `.material_group()` anchor item's layer, indexing `anchors`.
     Anchor(usize),
@@ -1407,6 +1457,7 @@ fn lower_list<T: LayerTarget>(
     anchor_keys: &mut Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
     runs: &mut Vec<RunLayer>,
     members: &mut Vec<MemberLayer>,
+    lives: &mut Vec<LiveLayer>,
     scopes_old: &mut Vec<ScopeLayer>,
     scopes_new: &mut Vec<ScopeLayer>,
     committed: &mut Committed,
@@ -1424,6 +1475,7 @@ fn lower_list<T: LayerTarget>(
     let mut old_anchors = std::mem::take(anchors);
     let mut old_runs = std::mem::take(runs);
     let mut members_old = std::mem::take(members);
+    let mut lives_old = std::mem::take(lives);
     let had_own = old_runs.iter().any(|run| run.layer.is_none());
     let mut own_used = false;
     let keys: Vec<_> = items.iter().map(Item::key).collect();
@@ -1451,6 +1503,10 @@ fn lower_list<T: LayerTarget>(
             Item::Chrome(chrome) => {
                 let at = lower_chrome(cx, chrome, &mut members_old, members, token, canvas);
                 slots.push(Slot::Member(at));
+            }
+            Item::Live(live) => {
+                let at = lower_live(cx, live, &mut lives_old, lives);
+                slots.push(Slot::Live(at));
             }
             Item::Anchor(cell) => {
                 // A plain, empty layer at the scope's paint position —
@@ -1490,6 +1546,9 @@ fn lower_list<T: LayerTarget>(
     for member in members_old {
         cx.retire_member(member);
     }
+    for live in lives_old {
+        cx.retire_live(live);
+    }
     // Anchor items the last lowering carried but this one does not:
     // their registrations released at the top, and their layers leave
     // `wants` — the reconcile detaches them from the parent's child
@@ -1499,7 +1558,7 @@ fn lower_list<T: LayerTarget>(
     }
 
     commit_list_slots(
-        cx, parent, leading, &slots, anchors, runs, members, scopes_new, committed, token,
+        cx, parent, leading, &slots, anchors, runs, members, lives, scopes_new, committed, token,
     );
 }
 
@@ -1519,6 +1578,7 @@ fn commit_list_slots<T: LayerTarget>(
     anchors: &[(Rc<NodeCell>, Layer)],
     runs: &[RunLayer],
     members: &[MemberLayer],
+    lives: &[LiveLayer],
     scopes_new: &[ScopeLayer],
     committed: &mut Committed,
     token: &Rc<LayerToken>,
@@ -1564,6 +1624,15 @@ fn commit_list_slots<T: LayerTarget>(
             }
             Slot::Member(at) => {
                 let layer = &members[*at].layer;
+                Want {
+                    id: layer.id(),
+                    token: own.clone(),
+                    layer,
+                    attached: None,
+                }
+            }
+            Slot::Live(at) => {
+                let layer = &lives[*at].layer;
                 Want {
                     id: layer.id(),
                     token: own.clone(),
@@ -1631,6 +1700,48 @@ fn lower_run<T: LayerTarget>(
     run
 }
 
+/// Lowers one live item, kept by its ordinal across commits; returns its
+/// index in `lives`. The layer records the item's source only when it is
+/// not the source the layer already holds — a node re-recording around an
+/// unchanged source leaves its content, and every live operand bound into
+/// it, untouched.
+fn lower_live<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    item: &LiveItem,
+    lives_old: &mut Vec<LiveLayer>,
+    lives: &mut Vec<LiveLayer>,
+) -> usize {
+    let mut live = lives_old
+        .iter()
+        .position(|live| live.ordinal == item.ordinal)
+        .map_or_else(
+            || LiveLayer {
+                ordinal: item.ordinal,
+                layer: cx.layer(),
+                transform: kurbo::Affine::IDENTITY,
+                source: None,
+            },
+            |at| lives_old.remove(at),
+        );
+    if live.transform != item.transform {
+        cx.tx[&live.layer].transform(item.transform);
+        live.transform = item.transform;
+    }
+    let recorded = live
+        .source
+        .as_ref()
+        .is_some_and(|source| Rc::ptr_eq(source, &item.source));
+    if !recorded {
+        cx.tx[&live.layer].record(|recorder| item.source.record(recorder));
+        cx.stats.live_records += 1;
+        if let Some(old) = live.source.replace(Rc::clone(&item.source)) {
+            cx.graveyard.push(Box::new(old));
+        }
+    }
+    lives.push(live);
+    lives.len() - 1
+}
+
 /// Lowers one scope, kept by its key across commits; returns its index in
 /// `scopes_new`.
 fn lower_scope<T: LayerTarget>(
@@ -1652,6 +1763,7 @@ fn lower_scope<T: LayerTarget>(
                 props: LayerProps::DEFAULT,
                 runs: Vec::new(),
                 members: Vec::new(),
+                lives: Vec::new(),
                 anchors: Vec::new(),
                 anchor_keys: Vec::new(),
                 committed: Vec::new(),
@@ -1674,6 +1786,7 @@ fn lower_scope<T: LayerTarget>(
         layer,
         runs,
         members,
+        lives,
         committed,
         anchors,
         anchor_keys,
@@ -1688,6 +1801,7 @@ fn lower_scope<T: LayerTarget>(
         anchor_keys,
         runs,
         members,
+        lives,
         scopes_old,
         scopes_new,
         committed,

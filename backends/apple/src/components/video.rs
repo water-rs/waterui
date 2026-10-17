@@ -101,6 +101,10 @@ const fn gravity(mode: ContentMode) -> VideoGravity {
         ContentMode::Fit => VideoGravity::ResizeAspect,
         ContentMode::Fill => VideoGravity::ResizeAspectFill,
         ContentMode::Stretch => VideoGravity::Resize,
+        // `ContentMode` is non-exhaustive. A variant this realization does not
+        // map has to fail here; a wildcard that guessed a gravity would ship
+        // the wrong picture. The message stays a literal: this function is const.
+        _ => panic!("apple video: unsupported content mode"),
     }
 }
 
@@ -110,6 +114,7 @@ const fn leaf_stretch_axis(mode: ContentMode) -> StretchAxis {
     match mode {
         ContentMode::Fit => StretchAxis::Horizontal,
         ContentMode::Fill | ContentMode::Stretch => StretchAxis::Both,
+        _ => panic!("apple video: unsupported content mode"),
     }
 }
 
@@ -138,6 +143,7 @@ fn measure(mode: ContentMode, source: Option<Size>, proposal: ProposalSize) -> V
             proposal.width.unwrap_or(FALLBACK_WIDTH),
             proposal.height.unwrap_or(FALLBACK_HEIGHT),
         )),
+        other => panic!("apple video: unsupported content mode {other:?}"),
     }
 }
 
@@ -523,6 +529,9 @@ impl State {
                      select the WaterKit self-drawn video realization"
                 );
             }
+            // `PlaybackPowerPolicy` is non-exhaustive. An unknown requirement
+            // must not fall through into the platform-managed path.
+            other => panic!("apple video: unsupported playback power policy {other:?}"),
         }
         if self.playback_policy.realtime {
             self.player

@@ -18,6 +18,11 @@ fn cbrt(x: f32) -> f32 {
     x.cbrt()
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn srgb_to_oklab(rgb: [f32; 3]) -> [f32; 3] {
     let l_ = cbrt(0.412_221_47f32.mul_add(
         rgb[0],
@@ -38,6 +43,11 @@ fn srgb_to_oklab(rgb: [f32; 3]) -> [f32; 3] {
     ]
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn oklab_to_srgb(lab: [f32; 3]) -> [f32; 3] {
     let l_ = 0.396_337_78f32.mul_add(lab[1], 0.215_803_76f32.mul_add(lab[2], lab[0]));
     let m_ = (-0.105_561_35f32).mul_add(lab[1], (-0.063_854_17f32).mul_add(lab[2], lab[0]));
@@ -58,6 +68,11 @@ fn in_gamut(rgb: [f32; 3]) -> bool {
 
 /// The cubic and its two derivatives of an sRGB channel along the `L=1`
 /// saturation ray, evaluated at `s`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn sat_eval(s: f32, w: [f32; 3], kl: [f32; 3]) -> [f32; 3] {
     let l_ = s.mul_add(kl[0], 1.0);
     let m_ = s.mul_add(kl[1], 1.0);
@@ -83,6 +98,10 @@ fn sat_eval(s: f32, w: [f32; 3], kl: [f32; 3]) -> [f32; 3] {
 /// All three channel surfaces are solved and the smallest converged root
 /// wins: the reference's fitted hue partition is a ~1e-6-sensitive coin
 /// flip at the sRGB vertex hues across `f32`/`f64`.
+// `const` items keep `clippy::inline_always` from firing here; the
+// attribute is still required so the pixel loop compiles under the
+// dispatched CPU level.
+#[inline(always)]
 fn max_saturation(a: f32, b: f32) -> f32 {
     // Per channel: five polynomial coefficients, then the LMS->sRGB
     // channel weights.
@@ -145,6 +164,11 @@ fn max_saturation(a: f32, b: f32) -> f32 {
 }
 
 /// The sRGB cusp `(L, C)` of the hue slice — `ok_color.h`'s `find_cusp`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn cusp(a: f32, b: f32) -> (f32, f32) {
     let s = max_saturation(a, b);
     let rgb = oklab_to_srgb([1.0, s * a, s * b]);
@@ -155,6 +179,11 @@ fn cusp(a: f32, b: f32) -> (f32, f32) {
 /// Intersects the segment `(l0, 0)` → `(l1, c1)` with the gamut boundary
 /// — `ok_color.h`'s `find_gamut_intersection`.
 #[allow(clippy::similar_names, clippy::many_single_char_names)] // mirror ok_color.h
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn gamut_intersection(a: f32, b: f32, l1: f32, c1: f32, l0: f32, cusp: (f32, f32)) -> f32 {
     let (cusp_l, cusp_c) = cusp;
     let mut t;
@@ -213,6 +242,11 @@ fn gamut_intersection(a: f32, b: f32, l1: f32, c1: f32, l0: f32, cusp: (f32, f32
 /// the cusp's as the colour recedes. Hue is preserved exactly; a final
 /// clamp absorbs the triangle approximation's residual.
 #[allow(clippy::many_single_char_names)] // l/a/b/c mirror OKLab notation
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn gamut_map(rgb: [f32; 3]) -> [f32; 3] {
     if in_gamut(rgb) {
         return rgb;
@@ -247,6 +281,11 @@ fn gamut_map(rgb: [f32; 3]) -> [f32; 3] {
 }
 
 /// Euclidean distance in `OKLab` — `ΔE_OK`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn delta_e_ok(a: [f32; 3], b: [f32; 3]) -> f32 {
     let d0 = a[0] - b[0];
     let d1 = a[1] - b[1];
@@ -257,6 +296,11 @@ fn delta_e_ok(a: [f32; 3], b: [f32; 3]) -> f32 {
 /// The presentation tone-map shoulder (`f32` twin of `oracle::tone`) —
 /// identity on `[0, 1]`, then highlights compress smoothly towards the
 /// headroom `h`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn tone(x: f32, h: f32) -> f32 {
     if x <= 1.0 {
         return x;
@@ -269,6 +313,11 @@ fn tone(x: f32, h: f32) -> f32 {
 /// One pixel's tone map (#97): scale every channel by the shoulder's
 /// value at the maximum channel — a per-pixel scalar, so hue and
 /// saturation are preserved. `max ≤ 1` returns the input bit-for-bit.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn tone_map(headroom: f32, rgb: [f32; 3]) -> [f32; 3] {
     let m = rgb[0].max(rgb[1]).max(rgb[2]);
     if m.partial_cmp(&1.0) != Some(std::cmp::Ordering::Greater) {
@@ -292,22 +341,24 @@ fn tone_map(headroom: f32, rgb: [f32; 3]) -> [f32; 3] {
     clippy::cast_sign_loss,
     reason = "gamut-mapped channels are in [0,1]; the unorm-8 store rounds"
 )]
-pub fn present_srgb8(headroom: f32, pixels: &[[f32; 4]]) -> Vec<u8> {
-    let target = headroom.min(1.0);
-    let mut out = Vec::with_capacity(pixels.len() * 4);
-    for &[r, g, b, a] in pixels {
-        let straight = if a > 0.0 {
-            tone_map(target, [r / a, g / a, b / a])
-        } else {
-            [0.0; 3]
-        };
-        let mapped = gamut_map(transform(&P3_TO_SRGB, straight));
-        for c in mapped {
-            out.push((srgb_encode(c) * a * 255.0).round() as u8);
+pub fn present_srgb8(level: fearless_simd::Level, headroom: f32, pixels: &[[f32; 4]]) -> Vec<u8> {
+    fearless_simd::dispatch!(level, _simd => {
+        let target = headroom.min(1.0);
+        let mut out = Vec::with_capacity(pixels.len() * 4);
+        for &[r, g, b, a] in pixels {
+            let straight = if a > 0.0 {
+                tone_map(target, [r / a, g / a, b / a])
+            } else {
+                [0.0; 3]
+            };
+            let mapped = gamut_map(transform(&P3_TO_SRGB, straight));
+            for c in mapped {
+                out.push((srgb_encode(c) * a * 255.0).round() as u8);
+            }
+            out.push((a.clamp(0.0, 1.0) * 255.0).round() as u8);
         }
-        out.push((a.clamp(0.0, 1.0) * 255.0).round() as u8);
-    }
-    out
+        out
+    })
 }
 
 /// Presents premultiplied working-space pixels to an extended linear
@@ -316,8 +367,12 @@ pub fn present_srgb8(headroom: f32, pixels: &[[f32; 4]]) -> Vec<u8> {
 /// The CPU twin of `present.wgsl`'s `OutputColor::LinearDisplayP3` path:
 /// unpremultiply, tone-map to the display `headroom`, re-premultiply.
 #[must_use]
-pub fn present_linear_p3(headroom: f32, pixels: &[[f32; 4]]) -> Vec<[f32; 4]> {
-    pixels
+pub fn present_linear_p3(
+    level: fearless_simd::Level,
+    headroom: f32,
+    pixels: &[[f32; 4]],
+) -> Vec<[f32; 4]> {
+    fearless_simd::dispatch!(level, _simd => pixels
         .iter()
         .map(|&[r, g, b, a]| {
             // The tone map scales straight rgb by a scalar, so premultiplied
@@ -334,5 +389,5 @@ pub fn present_linear_p3(headroom: f32, pixels: &[[f32; 4]]) -> Vec<[f32; 4]> {
             let s = tone(m, headroom) / m;
             [r * s, g * s, b * s, a]
         })
-        .collect()
+        .collect())
 }

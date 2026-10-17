@@ -16,6 +16,7 @@ use waterui_graphics::draw::ShapeData;
 
 use super::cell::NodeCell;
 use super::placement::Placement;
+use crate::renderer::chrome::LiveSource;
 use crate::renderer::recording::Recording;
 
 /// A widget-internal scope's identity: a literal role and an item (a row
@@ -36,6 +37,9 @@ pub enum ItemKey {
     /// A `ChromeMaterial` member layer, identified by its material
     /// ordinal in the node's record (water-rs/waterui#1788).
     Chrome(u32),
+    /// A [`LiveItem`]'s layer, identified by its live ordinal in the
+    /// node's record.
+    Live(u32),
 }
 
 impl PartialEq for ItemKey {
@@ -43,7 +47,7 @@ impl PartialEq for ItemKey {
         match (self, other) {
             (Self::Anchor(a), Self::Anchor(b)) | (Self::Node(a), Self::Node(b)) => Rc::ptr_eq(a, b),
             (Self::Scope(a), Self::Scope(b)) => a == b,
-            (Self::Chrome(a), Self::Chrome(b)) => a == b,
+            (Self::Chrome(a), Self::Chrome(b)) | (Self::Live(a), Self::Live(b)) => a == b,
             _ => false,
         }
     }
@@ -88,6 +92,20 @@ pub struct ChromeMaterial {
     pub visible: bool,
 }
 
+/// Content recorded once into its own layer and kept across records
+/// (water-rs/waterui#1433): a [`LiveSource`] whose operands are signals,
+/// so its later changes reach the engine without another recording.
+#[derive(Clone)]
+pub struct LiveItem {
+    /// The item's ordinal among the node's live items: its mount key.
+    pub ordinal: u32,
+    /// What the layer records. The mount re-records only when the item at
+    /// this ordinal names a different source.
+    pub source: Rc<dyn LiveSource>,
+    /// The layer's transform in its parent layer's space.
+    pub transform: kurbo::Affine,
+}
+
 /// One entry of a layer's ordered content.
 pub enum Item {
     /// A `.material_group()` scope's anchor: a plain, empty layer the
@@ -99,6 +117,7 @@ pub enum Item {
     Run(Recording),
     Node(Rc<NodeCell>),
     Chrome(ChromeMaterial),
+    Live(LiveItem),
     Scope {
         key: ScopeKey,
         props: ScopeProps,
@@ -115,6 +134,7 @@ impl Item {
             Self::Run(_) => None,
             Self::Node(cell) => Some(ItemKey::Node(Rc::clone(cell))),
             Self::Chrome(chrome) => Some(ItemKey::Chrome(chrome.ordinal)),
+            Self::Live(live) => Some(ItemKey::Live(live.ordinal)),
             Self::Scope { key, .. } => Some(ItemKey::Scope(*key)),
         }
     }
@@ -231,6 +251,8 @@ pub struct ProgramBuilder {
     /// How many `ChromeMaterial` items the record pushed: the next
     /// material's ordinal.
     chromes: u32,
+    /// How many live items the record pushed: the next one's ordinal.
+    lives: u32,
 }
 
 impl ProgramBuilder {
@@ -243,6 +265,7 @@ impl ProgramBuilder {
             inner_anchor: None,
             keys: FxHashSet::default(),
             chromes: 0,
+            lives: 0,
         }
     }
 
@@ -311,6 +334,18 @@ impl ProgramBuilder {
         }));
     }
 
+    /// Appends a live item drawn at `transform` — the record-space
+    /// transform of its content, like a run's drawing.
+    pub(crate) fn push_live(&mut self, source: Rc<dyn LiveSource>, transform: kurbo::Affine) {
+        let ordinal = self.lives;
+        self.lives += 1;
+        self.items_mut().push(Item::Live(LiveItem {
+            ordinal,
+            source,
+            transform,
+        }));
+    }
+
     /// Opens a named scope. A key repeated within one record panics.
     pub(crate) fn open_scope(
         &mut self,
@@ -353,10 +388,14 @@ impl ProgramBuilder {
         if scope.origin != kurbo::Affine::IDENTITY {
             let into_scope = scope.origin.inverse();
             for item in &mut scope.items {
-                if let Item::Run(run) = item {
-                    let mut moved = Recording::new();
-                    moved.append(run, into_scope);
-                    *run = moved;
+                match item {
+                    Item::Run(run) => {
+                        let mut moved = Recording::new();
+                        moved.append(run, into_scope);
+                        *run = moved;
+                    }
+                    Item::Live(live) => live.transform = into_scope * live.transform,
+                    _ => {}
                 }
             }
         }

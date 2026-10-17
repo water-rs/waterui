@@ -12,6 +12,11 @@
 //!   [`RadioIndicatorState`];
 //! - the motion and metric token tables a theme returns, such as
 //!   [`InteractionMotion`], [`ProgressMotion`] and [`ButtonMetrics`];
+//! - the engine-provided chrome primitives a theme describes interactive
+//!   chrome with instead of drawing it — [`Surface`], [`CornerShape`],
+//!   [`Elevation`], [`StateLayer`], [`PressFeedback`] and
+//!   [`FocusIndicator`], bundled per widget part as [`Chrome`] — which
+//!   Hydrolysis records once and animates through live operands;
 //! - the presentation plugins a style package installs on composed controls:
 //!   [`InteractionStyle`], [`InteractionFocusBinding`],
 //!   [`ModalInteraction`], and the [`IconOnlyButtonLabel`] marker the
@@ -38,10 +43,15 @@
 //! type scale. A `Style` may overwrite any of them, and the application
 //! overwrites both.
 
+mod chrome;
 mod widget;
 
+pub use chrome::{
+    Border, Chrome, CornerShape, Corners, Elevation, FocusIndicator, PressFeedback, Ripple,
+    StateLayer, Surface,
+};
 pub use widget::{
-    BadgeMetrics, ButtonMetrics, DividerMetrics, FocusRing, InputFieldMetrics,
+    BadgeMetrics, ButtonMetrics, ButtonSpec, DividerMetrics, FocusRing, InputFieldMetrics,
     InteractionFocusBinding, InteractionMotion, InteractionStyle, ListDividerMetrics, ListMetrics,
     ListRowMetrics, ListSectionMetrics, ListTrailingControlMetrics, MAX_PRESS_WAVES,
     ModalInteraction, NavigationMetrics, NavigationMotion, PickerMetrics, PressWave, PressWaves,

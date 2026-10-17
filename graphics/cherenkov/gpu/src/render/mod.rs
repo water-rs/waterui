@@ -2,6 +2,7 @@
 
 mod bindings;
 mod bitmap;
+mod capabilities;
 mod colr;
 mod composite;
 pub mod composition;
@@ -11151,6 +11152,20 @@ mod tests {
             move || polls.next().expect("scripted poll"),
             move || retired.next().expect("scripted frontier"),
         )
+    }
+
+    /// A registered backdrop effect validates through the same path as a
+    /// material registration: the composed module calls `quantizeToF16`,
+    /// which needs the engine's capability floor at runtime as in `build.rs`.
+    #[test]
+    fn backdrop_effect_registration_validates() {
+        let source = cherenkov::BackdropShaderSource::wgsl(
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                return backdrop_sample(px.p);
+            }",
+        );
+        GpuRenderer::validate_backdrop_shader(&source)
+            .expect("a minimal backdrop effect passes runtime validation");
     }
 
     #[test]

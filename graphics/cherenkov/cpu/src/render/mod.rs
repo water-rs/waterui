@@ -12,6 +12,9 @@ mod geometry;
 mod glyph;
 mod image;
 mod mesh;
+#[cfg(any(test, feature = "testing"))]
+pub use image::CpuImage;
+#[cfg(not(any(test, feature = "testing")))]
 use image::CpuImage;
 use std::sync::Arc;
 mod lower;
@@ -20,6 +23,17 @@ mod prepared;
 pub mod present;
 mod projective;
 mod raster;
+
+// The `testing` feature's surface: the span kernels and the types their
+// signatures name. `render` is a private module, so nothing is reachable
+// without `crate::testing`'s re-export, which does not exist without the
+// feature.
+#[cfg(any(test, feature = "testing"))]
+pub use lower::{ClipMask, ClipRef};
+#[cfg(any(test, feature = "testing"))]
+pub use paint::{PaintData, paint_data};
+#[cfg(any(test, feature = "testing"))]
+pub use raster::{Accum, ClipRun, Edge, composite_span};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -104,6 +118,9 @@ impl SurfaceState {
 /// [`Renderer`] implementation.
 pub struct RasterRenderer {
     pool: rayon::ThreadPool,
+    /// The host CPU's SIMD level, detected once at construction: the
+    /// level every hot pass is dispatched under.
+    level: fearless_simd::Level,
     surfaces: FxHashMap<SurfaceId, SurfaceState>,
     pub(super) filters: filter::Registry,
     fonts: FxHashMap<u64, font::Font>,
@@ -157,6 +174,7 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
             (
                 RasterRenderer {
                     pool,
+                    level: fearless_simd::Level::new(),
                     surfaces: FxHashMap::default(),
                     filters: filter::Registry::default(),
                     fonts: FxHashMap::default(),
@@ -795,17 +813,19 @@ impl RasterRenderer {
         let [r, g, b, a] = sf.clear.components;
         let clear = [r * a, g * a, b * a, a];
         let pool = &self.pool;
+        let level = self.level;
         let peak = std::sync::atomic::AtomicU64::new(0);
         let has_backdrop = !surf.groups.is_empty();
         let shade_at = cherenkov::Instant::now();
         let (draws, edges) = match &mut surf.output {
             Output::F32(fb) => pool.install(|| {
-                raster::render_bands(&items, clear, fb, w, h, Some(&peak), has_backdrop)
+                raster::render_bands(level, &items, clear, fb, w, h, Some(&peak), has_backdrop)
             })?,
             Output::F16(out) => pool.install(|| {
-                raster::render_bands_f16(&items, clear, out, w, h, Some(&peak), has_backdrop)
+                raster::render_bands_f16(level, &items, clear, out, w, h, Some(&peak), has_backdrop)
             })?,
             Output::Stream { format, sink, emit } => raster::render_bands_stream(
+                level,
                 &items,
                 clear,
                 (w, h),
@@ -871,6 +891,7 @@ impl RasterRenderer {
                 &mut self.fonts,
                 &self.bitmap_fonts,
                 (&mut self.bitmap_cache, &mut self.geometry),
+                self.level,
             );
             lowering.project(local, projected);
             let result = lowering.run(id, sf.tree, &mut caches, &self.images);
@@ -900,6 +921,10 @@ impl RasterRenderer {
     /// animating.
     /// Returns the images placed directly in the surface, and the filters
     /// and groups the local images use.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keeps plan lookup, realization and budget accounting together"
+    )]
     fn realize_projective(
         &mut self,
         sf: &cherenkov::SurfaceFrame<'_>,
@@ -960,7 +985,16 @@ impl RasterRenderer {
                 let mut base = vec![[0.0_f32; 4]; w * h];
                 let has_backdrop = !local_used.groups.is_empty();
                 let (draws, edges) = self.pool.install(|| {
-                    raster::render_bands(&items, [0.0; 4], &mut base, w, h, None, has_backdrop)
+                    raster::render_bands(
+                        self.level,
+                        &items,
+                        [0.0; 4],
+                        &mut base,
+                        w,
+                        h,
+                        None,
+                        has_backdrop,
+                    )
                 })?;
                 stats.draws += draws;
                 stats.instances += edges;

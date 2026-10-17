@@ -14,6 +14,7 @@
 use arrayvec::ArrayVec;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+use std::mem::MaybeUninit;
 use std::ops::Range;
 
 use cherenkov::FillRule;
@@ -36,6 +37,11 @@ pub const BAND_H: usize = 16;
 /// rows' bilinear taps reach, on each side: a tap that float rounding
 /// moves across a texel boundary still lands on a kept row.
 pub const SAMPLE_MARGIN: usize = 1;
+
+/// The run length one span paint evaluation covers: a longer run is
+/// evaluated and composited in `SPAN_CHUNK`-pixel pieces against one
+/// stack-resident buffer.
+const SPAN_CHUNK: usize = 64;
 
 /// One worker's reusable raster and filter buffers.
 ///
@@ -164,7 +170,13 @@ struct CaptureRows {
     clippy::cast_precision_loss,
     reason = "rows are bounded by the surface height and clamped before the conversions"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn capture_rows(
+    level: fearless_simd::Level,
     item: &CaptureItem,
     items: &[Item],
     need: (usize, usize),
@@ -178,7 +190,7 @@ fn capture_rows(
             _ => None,
         }) == Some(item.group)
     {
-        let sampled = sample_rows(items, 0..items.len(), item.group, need, (width, h));
+        let sampled = sample_rows_at(level, items, 0..items.len(), item.group, need, (width, h));
         k0 = k0.max(sampled.0);
         k1 = k1.min(sampled.1);
     }
@@ -258,12 +270,33 @@ fn capture_rows(
 /// walk carries each enclosing filter's expanded draw window. Displaced
 /// reads use the same field and coordinate evaluation as compositing;
 /// plain reads need only their draw-row interval.
+/// `sample_rows` exactly once per dispatched CPU level, like [`run_at`].
+#[inline(never)]
+fn sample_rows_at(
+    level: fearless_simd::Level,
+    items: &[Item],
+    range: Range<usize>,
+    group: u64,
+    band: (usize, usize),
+    (w, h): (usize, usize),
+) -> (usize, usize) {
+    fearless_simd::dispatch!(level, _simd => {
+        sample_rows(level, items, range, group, band, (w, h))
+    })
+}
+
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "sample coordinates are finite and clamped to surface rows"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn sample_rows(
+    level: fearless_simd::Level,
     items: &[Item],
     range: Range<usize>,
     group: u64,
@@ -276,7 +309,8 @@ fn sample_rows(
         match &items[i] {
             Item::PushFilter { end, apron, .. } => {
                 let end = *end as usize;
-                let nested = sample_rows(
+                let nested = sample_rows_at(
+                    level,
                     items,
                     i + 1..end,
                     group,
@@ -341,6 +375,8 @@ type TopCaptures = Vec<(usize, Option<CaptureRows>)>;
 
 /// Per-band state shared across the recursive `run` calls.
 struct FrameCtx<'a> {
+    /// The dispatched CPU level; each recursive `run` re-dispatches under it.
+    level: fearless_simd::Level,
     /// The surface band rows `[y0, y1)` this run derives from.
     surface: (usize, usize),
     /// The surface height.
@@ -469,11 +505,13 @@ pub struct Accum {
 
 impl Accum {
     /// A zeroed accumulator of `w` × `h` cells.
+    #[must_use]
     pub fn new(w: usize, h: usize) -> Self {
         Self::with_buffer(w, h, Vec::new())
     }
 
     /// An accumulator of `w` × `h` cells on a reused zeroed buffer.
+    #[must_use]
     pub fn with_buffer(w: usize, h: usize, mut a: Vec<f32>) -> Self {
         a.clear();
         a.resize((w + 2) * h, 0.0);
@@ -487,6 +525,7 @@ impl Accum {
     }
 
     /// Releases the cell buffer for pooling.
+    #[must_use]
     pub fn into_buffer(self) -> Vec<f32> {
         self.a
     }
@@ -598,33 +637,64 @@ impl Accum {
     }
 
     /// Folds band-local row `y` into per-pixel coverage under `rule`,
-    /// calling `f(x, coverage)` for each pixel `x0..x1`.
+    /// writing the coverage of columns `x0..min(x1, w)` into `out` —
+    /// zeros included, so callers split the row into runs by sign.
     ///
     /// The prefix sum starts at guard column `x0` and the coverage of
-    /// pixel `x` is the sum through column `x + 1`.
-    pub fn coverage_row(
-        &self,
-        y: usize,
-        rule: FillRule,
-        x0: usize,
-        x1: usize,
-        mut f: impl FnMut(usize, f32),
-    ) {
+    /// pixel `x` is the sum through column `x + 1`. `out` holds at least
+    /// `min(x1, w) - x0` elements.
+    ///
+    /// # Panics
+    /// When `out` is shorter than `min(x1, w) - x0` elements.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    pub fn coverage_into(&self, y: usize, rule: FillRule, x0: usize, x1: usize, out: &mut [f32]) {
         let row = y * (self.w + 2);
         let mut acc = self.a[row + x0];
         for x in x0..x1.min(self.w) {
             acc += self.a[row + x + 1];
-            let cov = match rule {
+            out[x - x0] = match rule {
                 FillRule::NonZero => acc.abs().min(1.0),
                 FillRule::EvenOdd => {
                     let m = acc.rem_euclid(2.0);
                     if m > 1.0 { 2.0 - m } else { m }
                 }
             };
-            if cov > 0.0 {
-                f(x, cov);
-            }
         }
+    }
+
+    /// [`coverage_into`](Self::coverage_into) writing back into the
+    /// accumulation cells it consumed: the coverage of columns
+    /// `x0..min(x1, w)` — computed by the same prefix sum with the same
+    /// expressions — lands in the row's cells `x0 + 1..min(x1, w) + 1`,
+    /// each written after that cell has been added to the running sum.
+    ///
+    /// The row's window columns are consumed and must be cleared by
+    /// [`clear_range`](Self::clear_range) before the next accumulation.
+    /// Every column it reads or writes lies in `cmin..=cmax` once
+    /// [`set_window(x0, x1)`](Self::set_window) is set.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    pub fn coverage_in_place(&mut self, y: usize, rule: FillRule, x0: usize, x1: usize) -> &[f32] {
+        let row = y * (self.w + 2);
+        let mut acc = self.a[row + x0];
+        for x in x0..x1.min(self.w) {
+            acc += self.a[row + x + 1];
+            self.a[row + x + 1] = match rule {
+                FillRule::NonZero => acc.abs().min(1.0),
+                FillRule::EvenOdd => {
+                    let m = acc.rem_euclid(2.0);
+                    if m > 1.0 { 2.0 - m } else { m }
+                }
+            };
+        }
+        &self.a[row + x0 + 1..=row + x1.min(self.w)]
     }
 }
 
@@ -653,6 +723,11 @@ impl RowWalk for Line<'_> {
     clippy::suboptimal_flops,
     reason = "the A&S formula and its coefficients are cited verbatim"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn erf(x: f32) -> f32 {
     let s = x.signum();
     let a = x.abs();
@@ -718,6 +793,11 @@ fn top<'a>(
 }
 
 /// `src_over` composite of premultiplied `src` onto `dst`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn src_over(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
     let inv = 1.0 - src[3];
     [
@@ -730,6 +810,11 @@ fn src_over(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
 
 /// A 3×4 premultiplied colour matrix on `s` (filtrate `ColorMatrix`
 /// layout): `dot(row, s)` per channel, alpha passes through.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn color_matrix(m: &[f32; 12], s: [f32; 4]) -> [f32; 4] {
     [
         s[0].mul_add(m[0], s[1].mul_add(m[1], s[2].mul_add(m[2], s[3] * m[3]))),
@@ -748,6 +833,11 @@ fn color_matrix(m: &[f32; 12], s: [f32; 4]) -> [f32; 4] {
     clippy::cast_precision_loss,
     reason = "pixels stay well below f32's integer bound"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn sdf_sample(
     capture: &Capture,
     sdf: &SdfEffect,
@@ -787,6 +877,11 @@ fn sdf_sample(
 /// The refracted read point of pixel `(px, py)` given the field's
 /// distance and unit normal there: `SdfKind::Refraction`'s displacement.
 #[expect(clippy::cast_precision_loss, reason = "pixel coordinates are small")]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn refracted(
     (d, nx, ny): (f32, f32, f32),
     depth: f32,
@@ -805,6 +900,11 @@ fn refracted(
 /// by capture planning and member compositing: the union field when the
 /// member is in a union, the SDF effect's own clip distance otherwise.
 #[expect(clippy::cast_precision_loss, reason = "pixel coordinates are small")]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn sample_field(
     effect: &SampleEffect,
     union: Option<&UnionSample>,
@@ -837,6 +937,10 @@ fn sample_field(
 /// hard step only where `|∇d₂ − ∇d_i| < 1e-6` (coincident shapes), an
 /// exact `f_i == 0` tie going to the earliest member in paint order.
 /// The same math as `union_field` in the GPU's `union.wgsl`, in f32.
+// `const` items keep `clippy::inline_always` from firing here; the
+// attribute is still required so the pixel loop compiles under the
+// dispatched CPU level.
+#[inline(always)]
 fn union_field_at(
     union: &crate::render::lower::UnionSample,
     x: f32,
@@ -910,6 +1014,11 @@ fn union_field_at(
 }
 
 /// The Euclidean length of `(x, y)` — WGSL's `length`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn length(x: f32, y: f32) -> f32 {
     x.mul_add(x, y * y).sqrt()
 }
@@ -919,6 +1028,11 @@ fn length(x: f32, y: f32) -> f32 {
 /// mapped into box-local space by `inv`, the box's distance and outward
 /// normal evaluated there, the normal mapped back by `inv`'s transpose
 /// and normalised, and the distance divided by the same stretch.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn box_sdf_at(clip: &BoxClip, x: f32, y: f32) -> (f32, f32, f32) {
     let m = &clip.inv;
     let (px, py) = (
@@ -938,6 +1052,11 @@ fn box_sdf_at(clip: &BoxClip, x: f32, y: f32) -> (f32, f32, f32) {
     clippy::cast_precision_loss,
     reason = "pixels stay well below f32's integer bound"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn pixel_sample(capture: &Capture, px: usize, py: usize, crow: usize) -> [f32; 4] {
     if capture.scale.is_full() {
         capture.buf[crow + px - capture.x0]
@@ -955,6 +1074,11 @@ fn pixel_sample(capture: &Capture, px: usize, py: usize, crow: usize) -> [f32; 4
     clippy::cast_precision_loss,
     reason = "the coordinates are clamped into the capture first"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn capture_sample(capture: &Capture, x: f32, y: f32) -> [f32; 4] {
     let s = capture.scale.get();
     let fx = (x.mul_add(s, -(capture.x0 as f32)) - 0.5).clamp(0.0, capture.w as f32 - 1.0);
@@ -993,6 +1117,11 @@ fn capture_sample(capture: &Capture, x: f32, y: f32) -> [f32; 4] {
     clippy::cast_precision_loss,
     reason = "the coordinates are clamped into the capture first"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn capture_sample_at(capture: &Capture, x: f32, y: f32, k: u32) -> [f32; 4] {
     if k == 0 {
         return capture_sample(capture, x, y);
@@ -1042,6 +1171,11 @@ fn capture_sample_at(capture: &Capture, x: f32, y: f32, k: u32) -> [f32; 4] {
     clippy::cast_precision_loss,
     reason = "the level is clamped into the pyramid first"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn capture_sample_level(capture: &Capture, x: f32, y: f32, level: f32) -> [f32; 4] {
     let n = capture.levels.len() as u32 + 1;
     let lc = level.clamp(0.0, (n - 1) as f32);
@@ -1077,6 +1211,11 @@ fn member(px: [f32; 4], space: cherenkov::BlendSpace) -> [f32; 4] {
 /// Composite `src` onto `dst` blending in `space`: each operand converts
 /// from its storage space, the blend applies, and the result lands back
 /// in the destination's storage space.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn composite(
     mode: cherenkov::BlendMode,
     space: cherenkov::BlendSpace,
@@ -1094,6 +1233,118 @@ fn composite(
         space,
         dst_space,
     )
+}
+
+/// The clip-coverage source of one run on a device row: [`clip_cov`]
+/// sampled per pixel column from the run's first column `x0` on.
+#[derive(Clone, Copy, Debug)]
+pub struct ClipRun<'a> {
+    clip: Option<&'a ClipRef>,
+    /// The coverage mask's stride (the surface width).
+    w: usize,
+    /// The run's first device column.
+    x0: usize,
+    /// The run's device row.
+    py: usize,
+}
+
+impl<'a> ClipRun<'a> {
+    /// The clip source of the run `x0..` on device row `py`.
+    #[must_use]
+    pub const fn new(clip: Option<&'a ClipRef>, w: usize, x0: usize, py: usize) -> Self {
+        Self { clip, w, x0, py }
+    }
+
+    /// The clip coverage of the run's `i`th pixel.
+    fn at(&self, i: usize) -> f32 {
+        clip_cov(self.clip, self.w, self.x0 + i, self.py)
+    }
+}
+
+/// Calls `f(start, end)` for each maximal run of positive coverage in
+/// `cov`, `start`/`end` indexing into it.
+fn nonzero_runs(cov: &[f32], mut f: impl FnMut(usize, usize)) {
+    let mut x = 0;
+    while x < cov.len() {
+        if cov[x] <= 0.0 || cov[x].is_nan() {
+            x += 1;
+            continue;
+        }
+        let start = x;
+        x += 1;
+        while x < cov.len() && cov[x] > 0.0 {
+            x += 1;
+        }
+        f(start, x);
+    }
+}
+
+/// Composites a run of evaluated `src` pixels over `dst`.
+///
+/// One pixel is `src_over(dst, member(src * cov * cc, space))`, `cc` the
+/// run's clip coverage, pixels with `cc <= 0.0` untouched: a draw's
+/// per-pixel expression, unchanged. `dst`, `src` and `cov` are the same
+/// length.
+///
+/// # Panics
+/// When `dst`, `src` and `cov` are not the same length.
+pub fn composite_span(
+    dst: &mut [[f32; 4]],
+    src: &[[f32; 4]],
+    cov: &[f32],
+    clip: ClipRun<'_>,
+    space: cherenkov::BlendSpace,
+) {
+    assert_eq!(dst.len(), src.len(), "composite run length mismatch");
+    assert_eq!(src.len(), cov.len(), "composite run length mismatch");
+    for (i, d) in dst.iter_mut().enumerate() {
+        let cc = clip.at(i);
+        if cc <= 0.0 {
+            continue;
+        }
+        *d = src_over(*d, member(src[i].map(|v| v * cov[i] * cc), space));
+    }
+}
+
+/// Shades the nonzero runs of `cov` over `dst`: coverage index `i`
+/// covers device column `x0 + i` on device row `py`, so a run `r0..r1`
+/// shades `dst[x0 + r0..x0 + r1]`. Each run is paint-evaluated and
+/// composited in `SPAN_CHUNK`-pixel pieces against `src`, the
+/// stack-resident chunk.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row context travels together"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn composite_runs(
+    dst: &mut [[f32; 4]],
+    cov: &[f32],
+    x0: usize,
+    py: usize,
+    w: usize,
+    paint: &PaintData,
+    clip: Option<&ClipRef>,
+    space: cherenkov::BlendSpace,
+    src: &mut [MaybeUninit<[f32; 4]>],
+) {
+    nonzero_runs(cov, |r0, r1| {
+        let mut x = r0;
+        while x < r1 {
+            let n = (r1 - x).min(SPAN_CHUNK);
+            composite_span(
+                &mut dst[x0 + x..x0 + x + n],
+                paint.eval_span(x0 + x, py, &mut src[..n]),
+                &cov[x..x + n],
+                ClipRun::new(clip, w, x0 + x, py),
+                space,
+            );
+            x += n;
+        }
+    });
 }
 
 /// `(draws, edges)` stats for an item list.
@@ -1135,7 +1386,13 @@ fn kept_rows(union: &IRect, reach: usize, band: (usize, usize), h: usize) -> (us
     clippy::too_many_arguments,
     reason = "the band context travels together"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn shade(
+    level: fearless_simd::Level,
     items: &[Item],
     clear: [f32; 4],
     slice: &mut [[f32; 4]],
@@ -1156,7 +1413,7 @@ fn shade(
     // A surface that used no backdrop group cannot contain a `Capture`,
     // so the scan is skipped outright.
     let top = if has_backdrop {
-        top_captures(items, surface, (w, h))
+        top_captures(level, items, surface, (w, h))
     } else {
         TopCaptures::new()
     };
@@ -1173,6 +1430,7 @@ fn shade(
     let coverage = std::mem::take(&mut scratch.coverage);
     let result = if let Some(last) = last_capture {
         shade_windowed(
+            level,
             items,
             clear,
             slice,
@@ -1184,7 +1442,16 @@ fn shade(
             (scratch, &top),
         )
     } else {
-        shade_plain(items, slice, w, surface, h, coverage, (scratch, &top))
+        shade_plain(
+            level,
+            items,
+            slice,
+            w,
+            surface,
+            h,
+            coverage,
+            (scratch, &top),
+        )
     };
     for plane in scratch.stack.drain(..) {
         scratch.buffers.give_color(plane.buf);
@@ -1206,7 +1473,12 @@ fn shade(
 /// covers, including what this group's members drew there when one of
 /// them samples before that capture's item; such a capture's window
 /// widens the rows this capture covers past the band.
-fn top_captures(items: &[Item], surface: (usize, usize), size: (usize, usize)) -> TopCaptures {
+fn top_captures(
+    level: fearless_simd::Level,
+    items: &[Item],
+    surface: (usize, usize),
+    size: (usize, usize),
+) -> TopCaptures {
     // (capture item, its group, the first item sampling the group)
     let mut plan: Vec<(usize, u64, usize)> = Vec::new();
     let mut scope_end = 0;
@@ -1242,13 +1514,23 @@ fn top_captures(items: &[Item], surface: (usize, usize), size: (usize, usize)) -
         let Item::Capture(capture) = &items[i] else {
             unreachable!("only capture items are planned");
         };
-        top[k].1 = capture_rows(capture, items, need, size);
+        top[k].1 = capture_rows(level, capture, items, need, size);
     }
     top
 }
 
 /// The band's pass with no capture: `run` over the caller's slice.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
+)]
 fn shade_plain(
+    level: fearless_simd::Level,
     items: &[Item],
     slice: &mut [[f32; 4]],
     w: usize,
@@ -1265,7 +1547,8 @@ fn shade_plain(
         y0,
         space: cherenkov::BlendSpace::Linear,
     };
-    let result = run(
+    let result = run_at(
+        level,
         items,
         0..items.len(),
         &mut band,
@@ -1273,6 +1556,7 @@ fn shade_plain(
         &mut scratch.stack,
         &mut scratch.buffers,
         &mut FrameCtx {
+            level,
             surface,
             h,
             captures: &mut scratch.captures,
@@ -1295,7 +1579,13 @@ fn shade_plain(
     clippy::too_many_arguments,
     reason = "the band's captured state travels together"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn shade_windowed(
+    level: fearless_simd::Level,
     items: &[Item],
     clear: [f32; 4],
     slice: &mut [[f32; 4]],
@@ -1319,7 +1609,8 @@ fn shade_windowed(
         y0: win0,
         space: cherenkov::BlendSpace::Linear,
     };
-    let first_pass = run(
+    let first_pass = run_at(
+        level,
         items,
         0..last + 1,
         &mut band,
@@ -1327,6 +1618,7 @@ fn shade_windowed(
         &mut scratch.stack,
         &mut scratch.buffers,
         &mut FrameCtx {
+            level,
             surface,
             h,
             captures: &mut scratch.captures,
@@ -1358,7 +1650,8 @@ fn shade_windowed(
         y0,
         space: cherenkov::BlendSpace::Linear,
     };
-    let result = run(
+    let result = run_at(
+        level,
         items,
         last + 1..items.len(),
         &mut band,
@@ -1366,6 +1659,7 @@ fn shade_windowed(
         &mut scratch.stack,
         &mut scratch.buffers,
         &mut FrameCtx {
+            level,
             surface,
             h,
             captures: &mut scratch.captures,
@@ -1381,7 +1675,12 @@ fn shade_windowed(
 /// Each worker reuses its coverage, isolation and filter-window buffers.
 /// The transient pixel bound is `workers × (band + Σ filter windows at the
 /// deepest nesting)`, with each window sized `w × (bh + 2·apron)`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
+)]
 pub fn render_bands(
+    level: fearless_simd::Level,
     items: &[Item],
     clear: [f32; 4],
     fb: &mut [[f32; 4]],
@@ -1395,6 +1694,7 @@ pub fn render_bands(
         .enumerate()
         .try_for_each_init(Scratch::new, |scratch, (band, slice)| {
             shade(
+                level,
                 items,
                 clear,
                 slice,
@@ -1411,7 +1711,12 @@ pub fn render_bands(
 
 /// Rasterizes into `out`, converting each finished band to `f16`. Shading
 /// runs at full `f32`; the store rounds once, at the output boundary.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
+)]
 pub fn render_bands_f16(
+    level: fearless_simd::Level,
     items: &[Item],
     clear: [f32; 4],
     out: &mut [[half::f16; 4]],
@@ -1426,6 +1731,7 @@ pub fn render_bands_f16(
         .try_for_each_init(Scratch::new, |scratch, (band, out_slice)| {
             let mut band_px = scratch.buffers.take_color(out_slice.len());
             let result = shade(
+                level,
                 items,
                 clear,
                 &mut band_px,
@@ -1456,6 +1762,7 @@ pub fn render_bands_f16(
     reason = "the band context travels together"
 )]
 pub fn render_bands_stream(
+    level: fearless_simd::Level,
     items: &[Item],
     clear: [f32; 4],
     size: (usize, usize),
@@ -1473,6 +1780,7 @@ pub fn render_bands_stream(
     while y0 < h {
         let bh = (h - y0).min(BAND_H);
         if let Err(error) = shade(
+            level,
             items,
             clear,
             &mut band_px[..w * bh],
@@ -1515,10 +1823,37 @@ const fn slice_len(w: usize, bh: usize) -> usize {
     w * bh
 }
 
+/// `run` exactly once per dispatched CPU level: the band passes and
+/// `run`'s own recursion enter through this boundary, so `run`'s
+/// `#[inline(always)]` body exists once per level rather than once per
+/// call site.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
+)]
+#[inline(never)]
+fn run_at(
+    level: fearless_simd::Level,
+    items: &[Item],
+    range: Range<usize>,
+    band: &mut Band<'_>,
+    acc: &mut Accum,
+    stack: &mut Vec<Plane>,
+    buffers: &mut Buffers,
+    ctx: &mut FrameCtx<'_>,
+) -> Result<(), cherenkov::RenderError> {
+    fearless_simd::dispatch!(level, _simd => run(items, range, band, acc, stack, buffers, ctx))
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "keeps ordered item processing and recursive filter scopes together"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn run(
     items: &[Item],
     range: Range<usize>,
@@ -1535,12 +1870,21 @@ fn run(
         match &items[i] {
             Item::Draw {
                 edges,
+                offset,
                 bbox,
                 rule,
                 paint,
                 clip,
                 swept: _,
-            } => band.draw(acc, stack, edges, *bbox, *rule, paint, clip.as_ref()),
+            } => band.draw(
+                acc,
+                stack,
+                (edges, *offset),
+                *bbox,
+                *rule,
+                paint,
+                clip.as_ref(),
+            ),
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
                 space: *space,
@@ -1597,7 +1941,8 @@ fn run(
                     };
                     let mut filter_acc = Accum::with_buffer(band.w, bottom - top, coverage);
                     let mut filter_stack = Vec::new();
-                    let result = run(
+                    let result = run_at(
+                        ctx.level,
                         items,
                         i + 1..scope_end,
                         &mut filter_band,
@@ -1634,7 +1979,7 @@ fn run(
             Item::Capture(capture) => {
                 let rows = match ctx.top.iter().find(|(j, _)| *j == i) {
                     Some((_, rows)) => *rows,
-                    None => capture_rows(capture, items, ctx.surface, (band.w, h)),
+                    None => capture_rows(ctx.level, capture, items, ctx.surface, (band.w, h)),
                 };
                 if let Some(rows) = rows {
                     capture_band(band, stack.as_slice(), buffers, ctx, capture, rows)?;
@@ -1731,6 +2076,11 @@ fn apply_filter(
     clippy::cast_sign_loss,
     reason = "device spans of texels inside the surface are small and non-negative"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn capture_band(
     band: &Band<'_>,
     stack: &[Plane],
@@ -1930,6 +2280,11 @@ fn reduce_rows(
 /// looked-through level is `Normal`-blended and stored in the root's
 /// linear space (layers never sit inside an encoded group scope), so
 /// each composites source-over.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn flatten(
     band: &Band<'_>,
     stack: &[Plane],
@@ -2010,6 +2365,11 @@ fn taps(i: usize, s: f64, end: usize) -> impl Iterator<Item = (usize, f32)> {
 /// area-weighted mean of the device pixels under its span clipped to
 /// `extent` — rows across first into `across` (`from`'s rows × `width`),
 /// then down.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn resolve(
     from: Resolved<'_>,
     (across, out): (&mut [[f32; 4]], &mut [[f32; 4]]),
@@ -2060,18 +2420,24 @@ struct Band<'a> {
 }
 
 impl Band<'_> {
-    /// Rasterizes one draw item into the top isolation buffer.
+    /// Rasterizes one draw item — its frame edges placed at `offset` —
+    /// into the top isolation buffer.
     #[expect(
         clippy::cast_precision_loss,
         clippy::too_many_arguments,
         reason = "pixel indices and band offsets are far below 2^24"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     fn draw(
         &mut self,
         acc: &mut Accum,
         stack: &mut Vec<Plane>,
-        edges: &[Edge],
-        bbox: crate::render::lower::IRect,
+        (edges, [ox, oy]): (&[Edge], [f32; 2]),
+        bbox: crate::render::lower::DrawBox,
         rule: FillRule,
         paint: &PaintData,
         clip: Option<&ClipRef>,
@@ -2079,48 +2445,48 @@ impl Band<'_> {
         let bh = self.fb.len() / self.w;
         // Band-intersect the device-space bounding box.
         let (y_lo, y_hi) = (
-            usize::try_from(bbox.y0)
-                .unwrap_or(0)
-                .saturating_sub(self.y0)
-                .min(bh),
-            usize::try_from(bbox.y1)
-                .unwrap_or(0)
-                .saturating_sub(self.y0)
-                .min(bh),
+            usize::from(bbox.y0).saturating_sub(self.y0).min(bh),
+            usize::from(bbox.y1).saturating_sub(self.y0).min(bh),
         );
         if y_lo >= y_hi {
             return;
         }
         let (x_lo, x_hi) = (
-            usize::try_from(bbox.x0).unwrap_or(0).min(self.w),
-            usize::try_from(bbox.x1).unwrap_or(0).min(self.w),
+            usize::from(bbox.x0).min(self.w),
+            usize::from(bbox.x1).min(self.w),
         );
         // Only the item's bbox columns participate: clear and deposit
         // inside the guard window `x_lo .. x_hi + 1`.
         acc.set_window(x_lo, x_hi);
         acc.clear_range(y_lo, y_hi);
+        // The frame's origin relative to the band's top row.
+        let dy = oy - self.y0 as f32;
         for e in edges {
             // Only edges crossing the band deposit anything.
-            let ey0 = e.y0 - self.y0 as f32;
-            let ey1 = e.y1 - self.y0 as f32;
+            let ey0 = e.y0 + dy;
+            let ey1 = e.y1 + dy;
             if ey0.max(ey1) < 0.0 || ey0.min(ey1) >= bh as f32 {
                 continue;
             }
-            acc.draw_line(e.x0, ey0, e.x1, ey1);
+            acc.draw_line(e.x0 + ox, ey0, e.x1 + ox, ey1);
         }
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
+        let mut src = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
         for y in y_lo..y_hi {
             let py = self.y0 + y;
-            acc.coverage_row(y, rule, x_lo, x_hi, |x, cov| {
-                let cc = clip_cov(clip, self.w, x, py);
-                if cc <= 0.0 {
-                    return;
-                }
-                let src = paint
-                    .eval(x as f32 + 0.5, py as f32 + 0.5)
-                    .map(|v| v * cov * cc);
-                dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
-            });
+            let cov = acc.coverage_in_place(y, rule, x_lo, x_hi);
+            let row = y * self.w;
+            composite_runs(
+                &mut dst[row..],
+                cov,
+                x_lo,
+                py,
+                self.w,
+                paint,
+                clip,
+                space,
+                &mut src,
+            );
         }
     }
 
@@ -2137,6 +2503,11 @@ impl Band<'_> {
                   flat-row test is intentionally exact and the quadrature \
                   weights mirror the reference formula"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     fn shadow(
         &mut self,
         stack: &mut Vec<Plane>,
@@ -2321,6 +2692,11 @@ impl Band<'_> {
         clippy::too_many_arguments,
         reason = "one sample item's fields plus the band's plane stack"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     fn sample(
         &mut self,
         capture: &Capture,
@@ -2406,9 +2782,13 @@ impl Band<'_> {
     #[expect(
         clippy::cast_possible_wrap,
         clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         reason = "mask coordinates and pixel indices are small"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     fn glyph(
         &mut self,
         stack: &mut Vec<Plane>,
@@ -2440,24 +2820,25 @@ impl Band<'_> {
         if y_lo >= y_hi || x_lo >= x_hi {
             return;
         }
+        let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
+        let mut src = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
         for y in y_lo..y_hi {
             let py = self.y0 + y;
             let row = usize::try_from(py as i32 - my0).unwrap_or(0) * mask.w as usize;
-            for x in x_lo..x_hi {
-                let cc = clip_cov(clip, self.w, x, py);
-                if cc <= 0.0 {
-                    continue;
-                }
-                let cov = mask.cov[row + usize::try_from(x as i32 - mx0).unwrap_or(0)];
-                if cov <= 0.0 {
-                    continue;
-                }
-                let src = paint
-                    .eval(x as f32 + 0.5, py as f32 + 0.5)
-                    .map(|v| v * cov * cc);
-                let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
-                dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
-            }
+            // The mask columns under `x_lo..x_hi`, indexed `x - mx0`.
+            let m_lo = usize::try_from(x_lo as i32 - mx0).unwrap_or(0);
+            let cov = &mask.cov[row + m_lo..row + m_lo + (x_hi - x_lo)];
+            composite_runs(
+                &mut dst[y * self.w..],
+                cov,
+                x_lo,
+                py,
+                self.w,
+                paint,
+                clip,
+                space,
+                &mut src,
+            );
         }
     }
 
@@ -2469,6 +2850,11 @@ impl Band<'_> {
         clippy::cast_precision_loss,
         reason = "pixel indices are far below 2^53"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     fn project(&mut self, stack: &mut [Plane], item: &super::lower::ProjectItem) {
         let bh = self.fb.len() / self.w;
         let [x0, y0, x1, y1] = item.placed.bounds.map(|v| v as usize);
@@ -2498,6 +2884,11 @@ impl Band<'_> {
     /// which is its declared `blend_space` for a semantic level or the
     /// parent's for a pass-through one — members already composited in
     /// it.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     fn composite_isolate(
         &mut self,
         scratch: &[[f32; 4]],
@@ -2564,9 +2955,7 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
                 acc.draw_line(e.x0, ey0, e.x1, ey1);
             }
             for y in 0..bh {
-                acc.coverage_row(y, rule, 0, w, |x, cov| {
-                    slice[y * w + x] = cov;
-                });
+                acc.coverage_into(y, rule, 0, w, &mut slice[y * w..y * w + w]);
             }
         });
     mask
@@ -2627,12 +3016,9 @@ mod tests {
                     for e in &edges {
                         acc.draw_line(e.x0, e.y0, e.x1, e.y1);
                     }
-                    let mut whole = 0.0;
-                    acc.coverage_row(py, rule, 0, size, |x, c| {
-                        if x == px {
-                            whole = c;
-                        }
-                    });
+                    let mut row = vec![0.0; size];
+                    acc.coverage_into(py, rule, 0, size, &mut row);
+                    let whole = row[px];
                     let banded = coverage_mask(&edges, rule, size, size)[py * size + px];
                     for (route, actual) in [("whole", whole), ("banded", banded)] {
                         let actual = f64::from(actual);
