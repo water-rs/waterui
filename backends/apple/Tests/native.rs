@@ -112,6 +112,7 @@ fn trials() -> Vec<Trial> {
                 Ok(())
             }),
         ]);
+        tests.extend(gesture_ax::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -8217,5 +8218,94 @@ mod webview {
                 &controller,
             ),
         );
+    }
+}
+
+/// `AppKit` accessibility coverage for gestures — regression tests for
+/// water-rs/waterui#1490. `NSClickGestureRecognizer` gives an `on_tap`
+/// view no assistive affordance, so the wrapper the gesture renders must
+/// itself be an element answering `accessibilityPerformPress` — the
+/// `AXPress` action `AppKit` puts on an element whose class overrides it.
+#[cfg(target_os = "macos")]
+mod gesture_ax {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::objc2::runtime::ProtocolObject;
+    use cocoa_ui::objc2::{msg_send, sel};
+    use cocoa_ui::objc2_app_kit::NSAccessibility;
+    use waterui::ViewExt as _;
+    use waterui::prelude::text;
+
+    use super::{resolve, trial_each};
+
+    /// What an assistive client gets for `press` — the answer
+    /// `accessibilityPerformPress` returns.
+    fn perform_press(view: &PlatformView) -> bool {
+        // SAFETY: `accessibilityPerformPress` answers a `BOOL`.
+        unsafe { msg_send![view, accessibilityPerformPress] }
+    }
+
+    /// Whether the element offers `AXPress` to an assistive client.
+    fn press_allowed(view: &PlatformView) -> bool {
+        // SAFETY: `isAccessibilitySelectorAllowed:` takes a selector and
+        // answers a `BOOL`.
+        unsafe { msg_send![view, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)] }
+    }
+
+    /// The gesture's `HostView` is an element whose press runs the tap's
+    /// action.
+    fn a_tap_gesture_answers_accessibility_perform_press() {
+        let pressed = Rc::new(Cell::new(0u32));
+        let leaf = resolve::render({
+            let pressed = Rc::clone(&pressed);
+            text("tap").on_tap(move || pressed.set(pressed.get() + 1))
+        });
+        let host = leaf.view();
+        let element = ProtocolObject::<dyn NSAccessibility>::from_ref(host);
+        assert!(
+            element.isAccessibilityElement(),
+            "the tap host must sit in the accessibility tree"
+        );
+        assert!(press_allowed(host), "the tap host must offer AXPress");
+        assert!(perform_press(host), "the tap host must handle a press");
+        assert_eq!(pressed.get(), 1, "the press must run the tap's action");
+    }
+
+    /// A long-press host claims no `AXPress`: a press does not stand in
+    /// for a hold.
+    fn a_long_press_gesture_keeps_the_default_press_answer() {
+        let pressed = Rc::new(Cell::new(0u32));
+        let leaf = resolve::render({
+            let pressed = Rc::clone(&pressed);
+            text("hold").on_long_press_gesture(500, move || {
+                pressed.set(pressed.get() + 1);
+            })
+        });
+        let host = leaf.view();
+        assert!(
+            !press_allowed(host),
+            "a long-press host must not offer AXPress"
+        );
+        assert!(
+            !perform_press(host),
+            "a long-press host must not claim a press"
+        );
+        assert_eq!(pressed.get(), 0);
+    }
+
+    /// The `gesture_ax::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        trial_each(vec![
+            (
+                "gesture_ax::a_tap_gesture_answers_accessibility_perform_press".to_owned(),
+                Box::new(a_tap_gesture_answers_accessibility_perform_press),
+            ),
+            (
+                "gesture_ax::a_long_press_gesture_keeps_the_default_press_answer".to_owned(),
+                Box::new(a_long_press_gesture_keeps_the_default_press_answer),
+            ),
+        ])
     }
 }
