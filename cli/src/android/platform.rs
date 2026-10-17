@@ -5,6 +5,7 @@
 //! invocation the Hydrolysis app and embedded library builds drive.
 
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 
 use eyre::{self, WrapErr as _, bail};
 use smol::{fs, unblock};
@@ -33,10 +34,10 @@ fn gradle_cmd(
 }
 
 /// Run the Gradle wrapper inside `backend_path` on `tasks`, wiring the JDK
-/// and SDK the toolchain resolves plus any corporate proxy properties, and
-/// bail with the captured output when the build fails. The shared tail of
-/// every Gradle invocation the CLI drives — app packaging and the embedded
-/// library's assemble/publish alike.
+/// and SDK the toolchain resolves plus any corporate proxy properties.
+///
+/// A failing build reports the process status and both captured streams.
+/// The shared tail of every Gradle invocation the CLI drives.
 pub(crate) async fn run_gradle_tasks(
     host: &Host,
     backend_path: &Path,
@@ -81,16 +82,43 @@ pub(crate) async fn run_gradle_tasks(
     let output = cmd.output().await?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        bail!(
-            "Gradle build failed in {}:\n{}\n{}",
-            backend_path.display(),
-            stdout.trim(),
-            stderr.trim()
-        );
+        bail!("{}", gradle_failure_report(backend_path, &output));
     }
     Ok(())
+}
+
+fn append_block(message: &mut String, text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    message.push('\n');
+    message.push_str(text);
+}
+
+fn exit_status_summary(status: ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        if let Some(signal) = status.signal() {
+            return format!("killed by signal {signal}");
+        }
+    }
+    status.code().map_or_else(
+        || format!("status {status}"),
+        |code| format!("exit code {code}"),
+    )
+}
+
+fn gradle_failure_report(backend_path: &Path, output: &std::process::Output) -> String {
+    let mut message = format!(
+        "Gradle build failed in {} ({}):",
+        backend_path.display(),
+        exit_status_summary(output.status),
+    );
+    append_block(&mut message, &String::from_utf8_lossy(&output.stdout));
+    append_block(&mut message, &String::from_utf8_lossy(&output.stderr));
+    message
 }
 
 fn apply_gradle_proxy_env(host: &Host, cmd: &mut smol::process::Command) -> eyre::Result<()> {
@@ -772,7 +800,12 @@ fn elf_needs_libcxx(data: &[u8]) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::path::{Path, PathBuf};
+
     use super::elf_needs_libcxx;
+    #[cfg(unix)]
+    use crate::toolchain::Host;
 
     #[test]
     fn elf_needs_libcxx_rejects_non_elf_data() {
@@ -783,5 +816,113 @@ mod tests {
         assert_eq!(elf_needs_libcxx(b"not an elf"), None);
         assert_eq!(elf_needs_libcxx(&[]), None);
         assert_eq!(elf_needs_libcxx(&[0x7f, b'E', b'L', b'F']), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_reports_the_killing_signal() {
+        const SCRIPT: &str = "#!/bin/sh\nkill -KILL $$\n";
+        let report = GradleRun::new(SCRIPT).failure();
+        assert_mentions(&report, "killed by signal 9");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_reports_the_status_and_both_streams() {
+        const SCRIPT: &str = r"#!/bin/sh
+set -eu
+PATH=/bin:/usr/bin
+export PATH
+cat <<'EOF'
+Fetching distribution.
+Downloading https://services.gradle.org/distributions/gradle-9.7.1-bin.zip
+Welcome to Gradle 9.7.1!
+Starting a Gradle Daemon (subsequent builds will be faster)
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.7.1/userguide/configuration_cache_enabling.html
+EOF
+cat >&2 <<'EOF'
+* What went wrong:
+> from-stderr
+EOF
+exit 3
+";
+        let report = GradleRun::new(SCRIPT).failure();
+        assert_mentions(&report, "exit code 3");
+        assert_mentions(&report, "Welcome to Gradle 9.7.1!");
+        assert_mentions(&report, "from-stderr");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_status_summary_names_a_code_and_a_signal() {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        let code = std::process::ExitStatus::from_raw(1 << 8);
+        assert_eq!(super::exit_status_summary(code), "exit code 1");
+        let signal = std::process::ExitStatus::from_raw(9);
+        assert_eq!(super::exit_status_summary(signal), "killed by signal 9");
+    }
+
+    #[cfg(unix)]
+    struct GradleRun {
+        _root: tempfile::TempDir,
+        project: PathBuf,
+        home: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl GradleRun {
+        fn new(script: &str) -> Self {
+            let root = tempfile::tempdir().expect("create the gradle fixture");
+            let project = root.path().join("android");
+            let home = root.path().join("home");
+            std::fs::create_dir_all(project.join("gradle/wrapper")).expect("wrapper directory");
+            std::fs::write(project.join("gradle/wrapper/gradle-wrapper.jar"), [])
+                .expect("wrapper jar");
+            std::fs::create_dir_all(&home).expect("home");
+            write_executable(&project.join("gradlew"), script);
+            Self {
+                _root: root,
+                project,
+                home,
+            }
+        }
+
+        fn failure(&self) -> String {
+            let host = Host::new(Vec::<PathBuf>::new(), None::<(&str, &str)>)
+                .with_home(self.home.clone())
+                .with_cwd(self.project.clone());
+            let error = smol::block_on(super::run_gradle_tasks(
+                &host,
+                &self.project,
+                &["assembleDebug"],
+                &[],
+            ))
+            .expect_err("the gradle wrapper must fail");
+            format!("{error}")
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create the script directory");
+        }
+        std::fs::write(path, body).expect("write the script");
+        let mut permissions = std::fs::metadata(path)
+            .expect("stat the script")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("mark the script executable");
+    }
+
+    #[cfg(unix)]
+    fn assert_mentions(report: &str, needle: &str) {
+        assert!(
+            report.contains(needle),
+            "report should contain {needle:?}:\n{report}"
+        );
     }
 }
