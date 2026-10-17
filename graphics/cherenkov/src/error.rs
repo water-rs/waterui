@@ -44,9 +44,16 @@ pub enum SurfaceError {
     /// The target kind is not drawable by this backend.
     #[error("unsupported surface target: {0}")]
     UnsupportedTarget(String),
-    /// The requested [`OffscreenFormat`] is not renderable by this backend.
-    #[error("unsupported offscreen format: {0:?}")]
-    UnsupportedFormat(OffscreenFormat),
+    /// The requested [`OffscreenFormat`] is not renderable on this device.
+    /// A backend never substitutes another format for the one requested.
+    #[error("unsupported offscreen format {format:?}: the device lacks {missing}")]
+    UnsupportedFormat {
+        /// The requested format.
+        format: OffscreenFormat,
+        /// The device capabilities the format needs and the device lacks,
+        /// in the backend's own names.
+        missing: String,
+    },
     /// A zero-size surface cannot hold a target.
     #[error("surface size must be non-zero")]
     ZeroSize,

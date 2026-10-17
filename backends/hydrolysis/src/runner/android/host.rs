@@ -551,10 +551,13 @@ impl PlatformWindow for AndroidHostWindow {
             max_fling_velocity: crate::num_cast::f64_as_f32(
                 f64::from(metrics.max_fling_velocity_px) / density,
             ),
-            fling: crate::platform::FlingDeceleration {
-                physical_coeff: physical_coeff_px / density,
-                friction: metrics.scroll_friction,
-            },
+            physics: crate::platform::ScrollPhysics::android(
+                crate::platform::SplineDeceleration {
+                    physical_coeff: physical_coeff_px / density,
+                    friction: metrics.scroll_friction,
+                },
+                crate::platform::EdgeStretch::android(density),
+            ),
         })
     }
 

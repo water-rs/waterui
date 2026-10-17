@@ -340,7 +340,7 @@ impl Label {
                 text: text.into_text(),
                 icon: None,
                 icon_position: IconPosition::Leading,
-                spacing: Computed::constant(6.0),
+                spacing: Computed::constant(8.0),
                 font: None,
             },
             display_mode: LabelDisplayMode::Automatic,
