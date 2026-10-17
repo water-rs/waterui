@@ -141,6 +141,32 @@ fn a_frame_provider_projects_the_answer_rect_until_detached() {
     );
     assert_eq!(sibling_frame, sibling_expected);
 
+    // A subclass instance reaches the override through inheritance:
+    // `HostView` defines no `accessibilityFrame` of its own, so a
+    // providerless one answers with the recorded `NSView` implementation
+    // found by the superclass walk — and a provider registered on it
+    // resolves by instance address all the same.
+    let host = HostView::new(mtm, Rect::new(10.0, 10.0, 40.0, 50.0));
+    content.addSubview(&host);
+    let host_own = host.accessibilityFrame();
+    let host_expected = cocoa_ui::objc2_app_kit::NSAccessibilityFrameInView(
+        &host,
+        NSRect::new(NSPoint::ZERO, NSSize::new(40.0, 50.0)),
+    );
+    assert_eq!(host_own, host_expected);
+
+    let host_guard = cocoa_ui::accessibility::set_frame_provider(&host, |_view| {
+        Some(Rect::new(4.0, 4.0, 8.0, 8.0))
+    });
+    let host_projected = host.accessibilityFrame();
+    let host_projected_expected = cocoa_ui::objc2_app_kit::NSAccessibilityFrameInView(
+        &host,
+        NSRect::new(NSPoint::new(4.0, 4.0), NSSize::new(8.0, 8.0)),
+    );
+    assert_eq!(host_projected, host_projected_expected);
+    drop(host_guard);
+    assert_eq!(host.accessibilityFrame(), host_own);
+
     // Detached: the view reports its own frame again.
     drop(guard);
     assert_eq!(child.accessibilityFrame(), own);
