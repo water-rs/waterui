@@ -703,3 +703,12 @@ waterui-math = { git = "https://github.com/water-rs/math", branch = "dev" }
 # `dev` implements 0.5's (water-rs/suiteki#29). Drop once a release carries
 # it.
 suiteki = { git = "https://github.com/water-rs/suiteki", branch = "dev" }
+# `homedir` (via axoupdater) and `clipboard-rs` (via waterkit-clipboard) pin
+# `windows` 0.61 and 0.59 — both inside gpu-allocator's `>=0.58, <=0.62`
+# range, so any relock can settle gpu-allocator on a different `windows`
+# than wgpu-hal's and split the ID3D12 types at the dx12 boundary
+# (#2797). The forks carry only the `windows = "0.62"` requirement bump
+# (homedir also renames `Error::from_win32` to `from_thread`); drop the pins
+# once releases admit 0.62.
+homedir = { git = "https://github.com/water-rs/homedir", rev = "75387a804aa00cd2cc5b6222cbc0bcb2f3c74c57" }
+clipboard-rs = { git = "https://github.com/water-rs/clipboard-rs", rev = "34e8ca41b5e132672e22eb29ca2ae081ffbb3121" }
