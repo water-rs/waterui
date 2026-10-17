@@ -192,6 +192,10 @@ fn base_trials() -> Vec<Trial> {
             resolve::toggle_rows_place_the_control_by_kind();
             Ok(())
         }),
+        Trial::test("resolve::a_label_leaves_8pt_between_icon_and_title", || {
+            resolve::a_label_leaves_8pt_between_icon_and_title();
+            Ok(())
+        }),
         Trial::test(
             "picture::a_laid_out_picture_rasterizes_at_its_bounds",
             || {
@@ -738,11 +742,13 @@ mod resolve {
     use waterui::ViewExt as _;
     use waterui::component::form::picker::{PickerItem, PickerStyle, picker};
     use waterui::component::form::secure::{Secure, SecureField};
+    use waterui::component::label::label;
     use waterui::component::slider::slider;
     use waterui::component::stepper::stepper;
     use waterui::component::text_field::TextField;
     use waterui::component::toggle::Toggle;
     use waterui::filter::Opacity;
+    use waterui::icon::SystemIcon;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
@@ -1159,6 +1165,38 @@ mod resolve {
                 );
             }
         }
+    }
+
+    /// water-rs/waterui#1101: a semantic label leaves 8 pt between its
+    /// icon and its title — the `SwiftUI` `Label` and Material 3 default
+    /// the composition reproduces on every backend.
+    pub fn a_label_leaves_8pt_between_icon_and_title() {
+        let leaf = render(label("Play").icon(SystemIcon::new("play.fill")));
+        let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        let row = leaf.view();
+        cocoa_ui::view::set_frame(
+            row,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(row);
+        // The leaf's host view wraps the hstack's own host view, whose
+        // subviews are the icon and the title in one coordinate space.
+        let stack = cocoa_ui::view::subviews(row);
+        assert_eq!(stack.len(), 1, "the label leaf hosts one stack view");
+        let subviews = cocoa_ui::view::subviews(&stack[0]);
+        assert_eq!(
+            subviews.len(),
+            2,
+            "an icon label holds the icon and the title"
+        );
+        let icon = cocoa_ui::view::frame(&subviews[0]);
+        let title = cocoa_ui::view::frame(&subviews[1]);
+        // Auto Layout snaps frames to the backing scale's pixel grid.
+        let gap = title.origin.x - (icon.origin.x + icon.size.width);
+        assert!(
+            (gap - 8.0).abs() < 0.5,
+            "icon-to-title gap — expected 8 pt, got {gap}"
+        );
     }
 }
 
