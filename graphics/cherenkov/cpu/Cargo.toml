@@ -15,6 +15,7 @@ testing = []
 [dependencies]
 arrayvec = "0.7"
 cherenkov = { path = ".." }
+fearless_simd = "0.4"
 filtrate-core = { path = "../../filtrate/core" }
 kurbo = "0.13"
 skrifa = "0.44"

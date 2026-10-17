@@ -130,6 +130,11 @@ pub const fn affine_f32(t: Affine) -> [f32; 6] {
 }
 
 /// Applies `[a, b, c, d, e, f]` to `(x, y)`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 const fn apply(m: [f32; 6], x: f32, y: f32) -> (f32, f32) {
     (
         m[0].mul_add(x, m[2].mul_add(y, m[4])),
@@ -175,6 +180,11 @@ fn stops(stops: &[ColorStop], interpolation: Interpolation) -> std::sync::Arc<[S
     clippy::cast_precision_loss,
     reason = "u/v/w/h/x/y are the natural names; texel coordinates are clamped before indexing"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn sample_image(
     img: &super::image::CpuImage,
     u: f32,
@@ -374,6 +384,11 @@ fn extra_paint(
 }
 
 /// Applies `extend` to `t`; `None` outside `[0, 1]` is transparent.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn extend_t(t: f32, extend: Extend) -> Option<f32> {
     match extend {
         Extend::Pad => Some(t.clamp(0.0, 1.0)),
@@ -402,6 +417,11 @@ fn to_premul(c: [f32; 4], interpolation: Interpolation) -> [f32; 4] {
 }
 
 /// Evaluates `stops` at `t`, returning premultiplied linear P3.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn eval_stops(stops: &[Stop], t: f32, interpolation: Interpolation) -> [f32; 4] {
     let Some(first) = stops.first() else {
         return [0.0; 4];
@@ -440,6 +460,11 @@ fn eval_stops(stops: &[Stop], t: f32, interpolation: Interpolation) -> [f32; 4] 
 /// when there is none. Identical circles give `-∞` on and inside the circle
 /// and `+∞` outside, as the oracle's `radial_t` does.
 #[allow(clippy::many_single_char_names)] // quadratic notation mirrors the spec
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2], identical: bool) -> f32 {
     let (px, py) = (px - centres[0], py - centres[1]);
     let (r0, dr) = (radii[0], radii[1] - radii[0]);
@@ -518,6 +543,11 @@ impl PaintData {
         clippy::cast_precision_loss,
         reason = "image dimensions are bounded by memory budget"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     pub fn eval(&self, dx: f32, dy: f32) -> [f32; 4] {
         match self {
             Self::Transformed(inner, inverse) => {
@@ -599,6 +629,11 @@ impl PaintData {
         clippy::cast_precision_loss,
         reason = "pixel indices and band offsets are far below 2^24"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     pub fn eval_span<'a>(
         &self,
         x0: usize,

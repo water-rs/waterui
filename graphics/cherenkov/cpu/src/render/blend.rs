@@ -24,6 +24,11 @@ pub const fn is_destructive(mode: BlendMode) -> bool {
     )
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn lum(c: [f32; 3]) -> f32 {
     0.11f32.mul_add(c[2], 0.59f32.mul_add(c[1], 0.3 * c[0]))
 }
@@ -32,6 +37,11 @@ fn sat(c: [f32; 3]) -> f32 {
     c[0].max(c[1]).max(c[2]) - c[0].min(c[1]).min(c[2])
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn clip_color(c: [f32; 3]) -> [f32; 3] {
     let l = lum(c);
     let n = c[0].min(c[1]).min(c[2]);
@@ -50,6 +60,11 @@ fn clip_color(c: [f32; 3]) -> [f32; 3] {
     c
 }
 
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn set_lum(c: [f32; 3], l: f32) -> [f32; 3] {
     let d = l - lum(c);
     clip_color([c[0] + d, c[1] + d, c[2] + d])
@@ -80,6 +95,11 @@ fn set_sat(c: [f32; 3], s: f32) -> [f32; 3] {
 }
 
 /// The blend function `B(Cb, Cs)` for one channel pair, separable modes.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn blend_channel(mode: BlendMode, cb: f32, cs: f32) -> f32 {
     match mode {
         BlendMode::Multiply => cb * cs,
@@ -141,6 +161,11 @@ fn blend_channel(mode: BlendMode, cb: f32, cs: f32) -> f32 {
 /// so a fully transparent source leaves the backdrop unchanged, and
 /// [`BlendMode::Normal`] reduces to source-over.
 #[must_use]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 pub fn blend(mode: BlendMode, cb: [f32; 4], cs: [f32; 4]) -> [f32; 4] {
     let (ab, as_) = (cb[3], cs[3]);
     // Porter-Duff compositing operators (COLRv1 `PaintComposite`): no

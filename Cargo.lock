@@ -1726,6 +1726,7 @@ dependencies = [
  "cherenkov-scene",
  "cherenkov-shader",
  "divan",
+ "fearless_simd",
  "filtrate",
  "filtrate-core",
  "gungraun",
