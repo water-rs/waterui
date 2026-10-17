@@ -5,6 +5,7 @@ use super::*;
 mod anchored_overlay;
 mod context_menu;
 mod dialog;
+mod edge_stretch;
 mod hit_test;
 mod interaction;
 mod menu_shortcuts;

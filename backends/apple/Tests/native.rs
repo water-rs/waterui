@@ -82,6 +82,13 @@ fn trials() -> Vec<Trial> {
                     Ok(())
                 },
             ),
+            Trial::test(
+                "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
+                || {
+                    navigation::a_searchable_page_rests_its_field_in_the_titlebar_row();
+                    Ok(())
+                },
+            ),
         ]);
         #[cfg(feature = "gpu_surface")]
         {
@@ -183,6 +190,10 @@ fn base_trials() -> Vec<Trial> {
         }),
         Trial::test("resolve::toggle_rows_place_the_control_by_kind", || {
             resolve::toggle_rows_place_the_control_by_kind();
+            Ok(())
+        }),
+        Trial::test("resolve::a_label_leaves_8pt_between_icon_and_title", || {
+            resolve::a_label_leaves_8pt_between_icon_and_title();
             Ok(())
         }),
         Trial::test(
@@ -731,11 +742,13 @@ mod resolve {
     use waterui::ViewExt as _;
     use waterui::component::form::picker::{PickerItem, PickerStyle, picker};
     use waterui::component::form::secure::{Secure, SecureField};
+    use waterui::component::label::label;
     use waterui::component::slider::slider;
     use waterui::component::stepper::stepper;
     use waterui::component::text_field::TextField;
     use waterui::component::toggle::Toggle;
     use waterui::filter::Opacity;
+    use waterui::icon::SystemIcon;
     use waterui::layout::Spacer;
     use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
@@ -1152,6 +1165,38 @@ mod resolve {
                 );
             }
         }
+    }
+
+    /// water-rs/waterui#1101: a semantic label leaves 8 pt between its
+    /// icon and its title — the `SwiftUI` `Label` and Material 3 default
+    /// the composition reproduces on every backend.
+    pub fn a_label_leaves_8pt_between_icon_and_title() {
+        let leaf = render(label("Play").icon(SystemIcon::new("play.fill")));
+        let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        let row = leaf.view();
+        cocoa_ui::view::set_frame(
+            row,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(row);
+        // The leaf's host view wraps the hstack's own host view, whose
+        // subviews are the icon and the title in one coordinate space.
+        let stack = cocoa_ui::view::subviews(row);
+        assert_eq!(stack.len(), 1, "the label leaf hosts one stack view");
+        let subviews = cocoa_ui::view::subviews(&stack[0]);
+        assert_eq!(
+            subviews.len(),
+            2,
+            "an icon label holds the icon and the title"
+        );
+        let icon = cocoa_ui::view::frame(&subviews[0]);
+        let title = cocoa_ui::view::frame(&subviews[1]);
+        // Auto Layout snaps frames to the backing scale's pixel grid.
+        let gap = title.origin.x - (icon.origin.x + icon.size.width);
+        assert!(
+            (gap - 8.0).abs() < 0.5,
+            "icon-to-title gap — expected 8 pt, got {gap}"
+        );
     }
 }
 
@@ -1930,6 +1975,95 @@ mod menus {
             })
             .collect();
         assert_eq!(enabled, [true, false, false, false]);
+    }
+}
+
+/// Navigation-chrome trials on `AppKit`: a `.searchable` page on a titled
+/// window rests its field in the titlebar's bottom accessory row, at the
+/// metrics the platform's own `.searchable` presents.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod navigation {
+    use cocoa_ui::objc2_app_kit::{NSLayoutAttribute, NSSearchField};
+    use waterui::Str;
+    use waterui::navigation::NavigationView;
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    use super::{leaf, mtm, resolve};
+
+    /// The platform's `.searchable` on a titled window without a sidebar
+    /// installs a bottom titlebar accessory row 38 pt tall, the field 28 pt
+    /// tall at 41 % of the window's width, centred, drawn in the 11 pt
+    /// system font. The assertions read the row's live `AppKit` objects so
+    /// each metric — attribute, height, font, size, centring — is checked
+    /// the way the platform's row was measured.
+    pub fn a_searchable_page_rests_its_field_in_the_titlebar_row() {
+        let mtm = mtm();
+        let query = binding(Str::from(""));
+        let page = resolve::render(
+            NavigationView::new("Title", text("body")).searchable(&query, "Search mail"),
+        );
+        let window = leaf::attach(mtm, page.view());
+        // The platform's reference window: the metrics were measured at an
+        // 800 pt window.
+        window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 800.0, 600.0), false);
+        window.order_front();
+        let native = window.native();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                native.titlebarAccessoryViewControllers().count() == 1
+            }),
+            "the searchable page must install exactly one titlebar accessory"
+        );
+        let accessory = native.titlebarAccessoryViewControllers().objectAtIndex(0);
+        assert_eq!(
+            accessory.layoutAttribute(),
+            NSLayoutAttribute::Bottom,
+            "the platform pins the search row to the titlebar's bottom"
+        );
+        accessory.view().layoutSubtreeIfNeeded();
+        let row = accessory.view().frame();
+        assert_eq!(
+            row.size.height.to_bits(),
+            38.0_f64.to_bits(),
+            "the platform's search row is 38 pt tall"
+        );
+        let field = accessory
+            .view()
+            .subviews()
+            .iter()
+            .find_map(|sub| sub.downcast::<NSSearchField>().ok())
+            .expect("the accessory row hosts an NSSearchField");
+        assert_eq!(
+            field
+                .font()
+                .expect("the field carries a font")
+                .pointSize()
+                .to_bits(),
+            11.0_f64.to_bits(),
+            "the platform's .searchable row draws the field at 11 pt"
+        );
+        let frame = field.frame();
+        assert!(
+            (frame.size.height - 28.0).abs() <= 1.0,
+            "the platform's field is 28 pt tall, got {}",
+            frame.size.height
+        );
+        let window_width = native.frame().size.width;
+        let expected_width = 0.41 * window_width;
+        assert!(
+            (frame.size.width - expected_width).abs() <= 1.0,
+            "the platform's field spans 41 % of the window's width, got {}",
+            frame.size.width
+        );
+        let in_window = field.convertRect_toView(field.bounds(), None);
+        let field_center_x = in_window.origin.x + in_window.size.width / 2.0;
+        let window_center_x = window_width / 2.0;
+        assert!(
+            (field_center_x - window_center_x).abs() <= 1.0,
+            "the platform centres the field in the window: field at {field_center_x}, window at {window_center_x}"
+        );
     }
 }
 

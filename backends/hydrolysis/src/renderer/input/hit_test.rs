@@ -1,3 +1,4 @@
+use super::edge_stretch::{ScrollStretch, linear_stretch};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -3708,6 +3709,19 @@ impl HydrolysisRenderer {
             .map(|target| target.handle.metrics())
     }
 
+    /// The stretch intensities of the scroll view under `(x, y)` — `None`
+    /// while no scroll target covers it.
+    #[cfg(test)]
+    pub(crate) fn scroll_stretch_at(&self, x: f32, y: f32) -> Option<kurbo::Vec2> {
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
+        self.hit_test
+            .scroll_targets
+            .iter()
+            .rev()
+            .find(|target| target.bounds.contains(point))
+            .map(|target| self.touch_stretch(target.handle.cache_key()))
+    }
+
     /// Handles a trackpad pan at `(x, y)` with deltas and a touch phase.
     pub fn handle_trackpad_pan(
         &mut self,
@@ -3754,9 +3768,13 @@ impl HydrolysisRenderer {
             self.hit_test.touch_scroll_config.is_some(),
             "{NO_TOUCH_SCROLL_CONFIG}"
         );
-        // The touch stops a running fling where it is; the pending press
-        // holds it until the sequence shows whether a drag takes it over.
-        let caught = self.hit_test.touch_fling.take();
+        // The touch stops a running fling where it is — its stretch held
+        // too; the pending press holds it until the sequence shows whether
+        // a drag takes it over.
+        let caught = self.hit_test.touch_fling.take().map(|mut fling| {
+            fling.catch();
+            fling
+        });
         if button == PointerButton::Primary {
             self.hit_test.touch_scroll = TouchScrollGesture::Pending(TouchScrollPending {
                 origin: point,
@@ -3833,7 +3851,14 @@ impl HydrolysisRenderer {
             .touch_scroll_config
             .expect(NO_TOUCH_SCROLL_CONFIG);
         let key = drag.handle.cache_key();
-        let release = TouchFling::release(&drag.handle, &drag.claim, finger_velocity, &config, at);
+        let release = TouchFling::release(
+            &drag.handle,
+            &drag.claim,
+            finger_velocity,
+            &config,
+            drag.stretch.clone(),
+            at,
+        );
         self.apply_touch_release(key, release)
     }
 
@@ -3856,7 +3881,7 @@ impl HydrolysisRenderer {
                 drag.tracker.record(at, point);
                 // The offset moves opposite the finger: a drag up pushes it
                 // down into the content.
-                let changed = drag.scroll_by(drag.last.x - point.x, drag.last.y - point.y);
+                let changed = drag.scroll_by(drag.last.x - point.x, drag.last.y - point.y, at);
                 drag.last = point;
                 let owner = drag.owner.clone();
                 self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
@@ -3900,12 +3925,18 @@ impl HydrolysisRenderer {
                 };
                 // A caught fling is taken over only by a drag of its own
                 // scroll view — whose claim catches the offset where it
-                // stands; any other outcome lets it go again from rest.
-                let caught = pending.caught.take().filter(|caught| {
-                    claimant
-                        .as_ref()
-                        .is_none_or(|(handle, _)| caught.handle().cache_key() != handle.cache_key())
-                });
+                // stands, and which carries on the stretch it held; any
+                // other outcome lets it go again from rest.
+                let (taken_over, caught) = match pending.caught.take() {
+                    Some(caught)
+                        if claimant.as_ref().is_some_and(|(handle, _)| {
+                            caught.handle().cache_key() == handle.cache_key()
+                        }) =>
+                    {
+                        (Some(caught), None)
+                    }
+                    caught => (None, caught),
+                };
                 let released = caught.is_some_and(|caught| self.let_go_caught_fling(&caught, at));
                 let Some((handle, owner)) = claimant else {
                     return released;
@@ -3924,15 +3955,24 @@ impl HydrolysisRenderer {
                     kurbo::Point::new(pending.origin.x, pending.origin.y + slop.copysign(dominant))
                 };
                 let claim = handle.begin_gesture();
-                let drag = TouchScrollDrag {
+                let stretch = match config.physics.overscroll {
+                    Overscroll::Stretch(stretch) => Some(
+                        taken_over
+                            .and_then(TouchFling::into_stretch)
+                            .unwrap_or_else(|| ScrollStretch::new(stretch)),
+                    ),
+                    Overscroll::Clamped | Overscroll::RubberBand(_) => None,
+                };
+                let mut drag = TouchScrollDrag {
                     handle,
                     claim,
                     owner: owner.clone(),
                     last: point,
                     tracker: pending.tracker,
                     overscroll: config.physics.overscroll,
+                    stretch,
                 };
-                let changed = drag.scroll_by(anchor.x - point.x, anchor.y - point.y);
+                let changed = drag.scroll_by(anchor.x - point.x, anchor.y - point.y, at);
                 self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
                 if changed {
                     SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
@@ -3946,11 +3986,12 @@ impl HydrolysisRenderer {
     /// The innermost scroll view under the touch-down point able to move
     /// along the drag's dominant axis and direction — the claimant of a
     /// past-slop touch drag. Newest-registered first, the same hit order
-    /// [`Self::handle_scroll`] walks. Under rubber-band edges a view with
-    /// any room along the axis claims the drag whatever its offset — a drag
-    /// at an edge toward it bands past it, as `UIScrollView` with `bounces`
-    /// does; under clamped edges only room left in the drag's direction
-    /// claims it.
+    /// [`Self::handle_scroll`] walks. Under rubber-band and stretch edges
+    /// a view with any room along the axis claims the drag whatever its
+    /// offset — a drag at an edge toward it bands past it, as
+    /// `UIScrollView` with `bounces` does, or stretches it, as
+    /// `ScrollView` claims any drag past the slop; under clamped edges only
+    /// room left in the drag's direction claims it.
     fn touch_scroll_claimant(
         &self,
         origin: kurbo::Point,
@@ -3960,7 +4001,7 @@ impl HydrolysisRenderer {
     ) -> Option<(crate::scroll::ScrollHandle, Weak<crate::renderer::NodeCell>)> {
         const EPSILON: f64 = 0.000_01;
         let dominant_x = displacement_x.abs() > displacement_y.abs();
-        let bounces = matches!(overscroll, Overscroll::RubberBand(_));
+        let bounces = !matches!(overscroll, Overscroll::Clamped);
         // Whether an axis at `offset` within `0..=max` can move the way the
         // finger's `displacement` pushes it. The finger's sign flips into
         // the offset's: a drag up (negative displacement) pushes the offset
@@ -4895,12 +4936,50 @@ impl SemanticCore {
         self.hit_test.touch_fling.is_some()
     }
 
+    /// The stretch intensities the scroll view keyed `key` shows: those of
+    /// the touch drag, the caught fling or the running fling that owns it
+    /// — zero when none does.
+    pub(crate) fn touch_stretch(&self, key: usize) -> kurbo::Vec2 {
+        let owns = |fling: &&TouchFling| fling.handle().cache_key() == key;
+        let gesture = match &self.hit_test.touch_scroll {
+            TouchScrollGesture::Dragging(drag) if drag.handle.cache_key() == key => {
+                drag.stretch.as_ref()
+            }
+            TouchScrollGesture::Pending(pending) => pending
+                .caught
+                .as_ref()
+                .filter(owns)
+                .and_then(TouchFling::stretch),
+            TouchScrollGesture::Dragging(_) | TouchScrollGesture::Idle => None,
+        };
+        gesture
+            .or_else(|| {
+                self.hit_test
+                    .touch_fling
+                    .as_ref()
+                    .filter(owns)
+                    .and_then(TouchFling::stretch)
+            })
+            .map_or(kurbo::Vec2::ZERO, ScrollStretch::vector)
+    }
+
+    /// The render-time stretch of the scroll view `handle` over its
+    /// `viewport`: the transform its content layer composes with, in the
+    /// viewport's space — the identity while nothing stretches it.
+    pub(crate) fn scroll_stretch(
+        &self,
+        handle: &crate::scroll::ScrollHandle,
+        viewport: kurbo::Rect,
+    ) -> kurbo::Affine {
+        linear_stretch(self.touch_stretch(handle.cache_key()), viewport)
+    }
+
     /// Advances a running touch fling to `now`; returns whether its write
     /// or its continuation needs another frame. The offset write marks
     /// the fling's `ScrollTarget` owner — looked up through the registry —
     /// not the root.
     pub(crate) fn tick_touch_scroll(&mut self, now: Instant) -> bool {
-        let Some(fling) = self.hit_test.touch_fling.take() else {
+        let Some(mut fling) = self.hit_test.touch_fling.take() else {
             return false;
         };
         // A fling whose scroll view no registered target holds any more

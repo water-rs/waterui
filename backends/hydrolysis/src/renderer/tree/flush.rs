@@ -773,9 +773,13 @@ impl RenderNode {
                         );
                         let viewport = renderer.current_placement();
                         viewport.set_content_offset(-offset);
-                        renderer
-                            .program()
-                            .begin_inner(viewport_rect, offset, Rc::clone(&viewport));
+                        let stretch = renderer.scroll_stretch(&handle, viewport_rect);
+                        renderer.program().begin_inner(
+                            viewport_rect,
+                            offset,
+                            stretch,
+                            Rc::clone(&viewport),
+                        );
                         let world = renderer.record_world(content_ctx.local);
                         renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
                             bounds: lazy_viewport,

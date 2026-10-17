@@ -493,7 +493,7 @@ pub fn encode(
                 .is_some_and(|(image, mask)| *image == range.image && *mask == range.mask)
             {
                 bound = Some((range.image.clone(), range.mask));
-                let key: Bind1Key = (None, false, range.image.clone(), range.mask);
+                let key: Bind1Key = (None, None, range.image.clone(), range.mask);
                 let bind = surf.binds1.entry(key).or_insert_with(|| {
                     stats.bind_groups_created += 1;
                     make_bind1(

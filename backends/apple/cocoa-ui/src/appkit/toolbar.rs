@@ -36,11 +36,11 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::sel;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSImage, NSLayoutAttribute, NSLayoutConstraint, NSSearchToolbarItem, NSSplitViewController,
-    NSSplitViewItem, NSSplitViewItemBehavior, NSTitlebarAccessoryViewController, NSToolbar,
-    NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarItem, NSToolbarItemIdentifier,
-    NSTrackingSeparatorToolbarItem, NSView, NSWindow, NSWindowStyleMask, NSWindowTitleVisibility,
-    NSWindowToolbarStyle,
+    NSControlSize, NSFont, NSImage, NSLayoutAttribute, NSLayoutConstraint, NSSearchToolbarItem,
+    NSSplitViewController, NSSplitViewItem, NSSplitViewItemBehavior,
+    NSTitlebarAccessoryViewController, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarItem, NSToolbarItemIdentifier, NSTrackingSeparatorToolbarItem, NSView, NSWindow,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{
@@ -171,6 +171,19 @@ const SEARCH_ITEM_WIDTH: f64 = 325.0;
 
 /// The search accessory row's height, measured off the platform's window.
 const SEARCH_ROW_HEIGHT: f64 = 38.0;
+
+/// The field's height inside the accessory row, measured off the
+/// platform's window.
+const SEARCH_FIELD_HEIGHT: f64 = 28.0;
+
+/// The field's share of the window's width inside the accessory row —
+/// 328 pt at a 800 pt window — measured off the platform's window.
+const SEARCH_FIELD_WIDTH_FRACTION: f64 = 0.41;
+
+/// The field's font size inside the accessory row: the field the
+/// platform's `.searchable` places in the same row draws the 11 pt
+/// system font, measured off its window.
+const SEARCH_ROW_FONT_SIZE: f64 = 11.0;
 
 thread_local! {
     /// The live coordinators, keyed by the window pointer.
@@ -677,9 +690,11 @@ impl WindowToolbar {
     /// Keeps the search accessory row in step with the offered content.
     ///
     /// The row is a titlebar accessory pinned to the bottom of the titlebar,
-    /// 38 pt tall with the field centred at 41 % of the window's width. Only
-    /// a *different* search replaces the row; rebuilding for the same one
-    /// leaves it alone so typing never loses focus.
+    /// 38 pt tall with the field centred at 41 % of the window's width and
+    /// drawn in the 11 pt system font — the metrics the platform's
+    /// `.searchable` presents. Only a *different* search replaces the row;
+    /// rebuilding for the same one leaves it alone so typing never loses
+    /// focus.
     fn update_search_accessory(&self) {
         let source = if self.search_is_toolbar_item() {
             None
@@ -723,6 +738,12 @@ impl WindowToolbar {
             self.charge_search_row_height(0.0);
             return;
         };
+        // The one field moves between the two search presentations: the
+        // accessory row carries the platform's `.searchable` metrics —
+        // the 11 pt system font — while the `NSSearchToolbarItem` keeps
+        // `AppKit`'s toolbar-field metrics, so each presentation site sets
+        // the font it needs (the `SEARCH_IDENTIFIER` arm restores it).
+        field.setFont(Some(&NSFont::systemFontOfSize(SEARCH_ROW_FONT_SIZE)));
         let mtm = MainThreadMarker::from(self);
         let accessory = NSTitlebarAccessoryViewController::new(mtm);
         accessory.setLayoutAttribute(NSLayoutAttribute::Bottom);
@@ -738,10 +759,13 @@ impl WindowToolbar {
             field
                 .centerYAnchor()
                 .constraintEqualToAnchor(&container.centerYAnchor()),
+            field.widthAnchor().constraintEqualToAnchor_multiplier(
+                &container.widthAnchor(),
+                SEARCH_FIELD_WIDTH_FRACTION,
+            ),
             field
-                .widthAnchor()
-                .constraintEqualToAnchor_multiplier(&container.widthAnchor(), 0.41),
-            field.heightAnchor().constraintEqualToConstant(28.0),
+                .heightAnchor()
+                .constraintEqualToConstant(SEARCH_FIELD_HEIGHT),
             container
                 .heightAnchor()
                 .constraintEqualToConstant(SEARCH_ROW_HEIGHT),
@@ -912,6 +936,13 @@ impl WindowToolbar {
                     .map(|search| search.field.clone())?;
                 let item = NSSearchToolbarItem::initWithItemIdentifier(mtm.alloc(), &identifier);
                 item.setPreferredWidthForSearchField(SEARCH_ITEM_WIDTH);
+                // The same field may arrive from the accessory row, which
+                // put the row's 11 pt font on it; the toolbar item keeps
+                // `AppKit`'s own toolbar-field metrics, so the regular
+                // control-size system font goes back on before the handoff.
+                field.setFont(Some(&NSFont::systemFontOfSize(
+                    NSFont::systemFontSizeForControlSize(NSControlSize::Regular),
+                )));
                 item.setSearchField(&field);
                 Some(item.into_super())
             }
