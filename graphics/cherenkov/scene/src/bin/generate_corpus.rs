@@ -625,6 +625,68 @@ fn filter_blur_content(l: &mut LayerBuilder<'_>, colors: &FilterColorSet) {
     );
 }
 
+/// A scrolled viewport's content for the overscroll stretch scenes: rows
+/// of bands four pixels tall on an eight-pixel pitch and columns one pixel
+/// wide on a twelve-pixel pitch over `content`, so the stretch shows as
+/// the band pitch growing toward the pulled edge, and a stretched column
+/// as the column pitch doing so.
+fn stretch_grid_content(l: &mut LayerBuilder<'_>, colors: &FilterColorSet, content: Rect) {
+    let bands = [colors.blur_rect, colors.blur_circle, colors.blur_star];
+    let rows = (0_u32..)
+        .map(|row| 8.0_f64.mul_add(f64::from(row), content.y0))
+        .take_while(|&y| y < content.y1);
+    for (y, color) in rows.zip(bands.iter().cycle()) {
+        l.fill(
+            Shape::rect(content.x0, y, content.width(), 4.0),
+            solid(*color),
+        );
+    }
+    let columns = (0_u32..)
+        .map(|column| 12.0_f64.mul_add(f64::from(column), content.x0 + 6.0))
+        .take_while(|&x| x < content.x1);
+    for x in columns {
+        l.fill(
+            Shape::rect(x, content.y0, 1.0, content.height()),
+            solid(colors.blur_stroke),
+        );
+    }
+}
+
+/// A scroll viewport the way a scroll view lowers it: a layer clipped to
+/// `viewport`, scrolled by `offset`, drawn under `transform`, its content
+/// stretched by HWUI's overscroll stretch in the viewport's frame.
+fn stretched_viewport(
+    l: &mut LayerBuilder<'_>,
+    colors: &FilterColorSet,
+    transform: Affine,
+    viewport: Rect,
+    offset: Vec2,
+    stretch: Vec2,
+) {
+    l.layer(|v| {
+        v.transform(transform);
+        v.clip(Shape::rect(
+            viewport.x0,
+            viewport.y0,
+            viewport.width(),
+            viewport.height(),
+        ));
+        v.scroll_offset(offset);
+        v.filter(LayerFilter::OverscrollStretch {
+            frame: transform * Affine::translate(viewport.origin().to_vec2()),
+            size: viewport.size(),
+            stretch,
+        });
+        let content = Rect::new(
+            viewport.x0,
+            viewport.y0,
+            viewport.x1,
+            viewport.y1 + offset.y + 24.0,
+        );
+        stretch_grid_content(v, colors, content);
+    });
+}
+
 fn filter_blend_content(l: &mut LayerBuilder<'_>, colors: &FilterColorSet) {
     l.fill(
         Shape::rounded_rect(24.0, 24.0, 80.0, 80.0, 8.0),
@@ -3789,6 +3851,82 @@ fn run() -> Result<(), SceneError> {
             });
         });
     }
+
+    // HWUI's overscroll stretch at Android's largest drawn intensity
+    // (`dampStretchVector` of a full pull, 0.032) on a scrolled viewport.
+    for &(suffix, colors) in &filter_color_variants {
+        corpus.scene(
+            format!("filter-overscroll-stretch-top{suffix}"),
+            128,
+            128,
+            white,
+            |l| {
+                stretched_viewport(
+                    l,
+                    colors,
+                    Affine::IDENTITY,
+                    Rect::new(16.0, 8.0, 112.0, 120.0),
+                    Vec2::new(0.0, 20.0),
+                    Vec2::new(0.0, 0.032),
+                );
+            },
+        );
+    }
+
+    // Exaggerated stretches make the edge weighting visible: the band
+    // pitch grows toward the pulled edge, not uniformly.
+    corpus.scene(
+        "filter-overscroll-stretch-bottom-strong",
+        128,
+        128,
+        white,
+        |l| {
+            stretched_viewport(
+                l,
+                &FILTER_COLORS_P3,
+                Affine::IDENTITY,
+                Rect::new(16.0, 8.0, 112.0, 120.0),
+                Vec2::new(0.0, 20.0),
+                Vec2::new(0.0, -0.4),
+            );
+        },
+    );
+
+    corpus.scene(
+        "filter-overscroll-stretch-both-axes-hdr",
+        128,
+        128,
+        Color::new(ColorSpace::LinearP3, [0.01, 0.012, 0.02, 1.0]),
+        |l| {
+            stretched_viewport(
+                l,
+                &FILTER_COLORS_HDR,
+                Affine::IDENTITY,
+                Rect::new(16.0, 8.0, 112.0, 120.0),
+                Vec2::new(0.0, 20.0),
+                Vec2::new(0.3, -0.2),
+            );
+        },
+    );
+
+    // A rotated, scaled viewport: the warp runs in the viewport's own
+    // frame, along its rotated axes.
+    corpus.scene(
+        "filter-overscroll-stretch-rotated-p3",
+        128,
+        128,
+        white,
+        |l| {
+            stretched_viewport(
+                l,
+                &FILTER_COLORS_P3,
+                rotate_about(0.4, (64.0, 64.0)) * Affine::scale(0.9),
+                Rect::new(24.0, 16.0, 120.0, 128.0),
+                Vec2::new(0.0, 12.0),
+                Vec2::new(0.0, 0.35),
+            );
+        },
+    );
 
     corpus.scene("filter-gaussian-blur-small-sigma", 128, 128, white, |l| {
         l.layer(|group| {

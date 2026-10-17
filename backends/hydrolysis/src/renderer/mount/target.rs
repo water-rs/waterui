@@ -4,9 +4,11 @@
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 
-use cherenkov::{FilterId, Layer, Transaction};
+use cherenkov::{Filter, FilterId, Layer, Transaction};
 use cherenkov_record::MaterialRegistry;
 use rustc_hash::FxHashMap;
+use waterui_graphics::Reactive;
+use waterui_graphics::filtrate::filters::OverscrollStretch;
 
 use crate::gpu_view::{ExternalFrameRuntime, GpuContentRuntime};
 use crate::renderer::ProducerWake;
@@ -74,6 +76,10 @@ pub trait LayerTarget: cherenkov::Target {
     ) -> Option<(u32, u32)>;
 
     fn filter(host: &Self::Host, runtime: &mut FilteredRuntime) -> FilterId;
+
+    /// Registers the overscroll stretch a scroll node's inner layer draws
+    /// with; the returned handle's drop unregisters it.
+    fn stretch_filter(host: &Self::Host, filter: OverscrollStretch<Reactive>) -> Filter;
 
     /// Joins `layer` to the backdrop group `key` names, sharing the
     /// group's filtered capture with every member under the same key,
@@ -306,6 +312,10 @@ impl LayerTarget for cherenkov_gpu::Gpu {
 
     fn filter(host: &CherenkovHost, runtime: &mut FilteredRuntime) -> FilterId {
         runtime.filter(&host.engine, &host.metrics).id()
+    }
+
+    fn stretch_filter(host: &CherenkovHost, filter: OverscrollStretch<Reactive>) -> Filter {
+        host.engine.filter(filter)
     }
 
     fn mount_material(

@@ -918,6 +918,11 @@ fn register_filter(
             engine.filter(filters::GaussianBlur::new(*sigma as f32))
         }
         LayerFilter::BoxBlur { radius } => engine.filter(filters::Blur(*radius as f32)),
+        LayerFilter::OverscrollStretch {
+            frame,
+            size,
+            stretch,
+        } => engine.filter(crate::convert::overscroll_stretch(*frame, *size, *stretch)),
         LayerFilter::BlendImage {
             image,
             amount,

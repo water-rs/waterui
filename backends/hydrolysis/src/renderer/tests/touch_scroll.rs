@@ -703,6 +703,70 @@ fn stretch_at(runtime: &HeadlessRuntime) -> kurbo::Vec2 {
         .expect("the scroll view must keep its target")
 }
 
+/// The scroll view's inner layer as committed, and its frame's content
+/// space in window points composed from the committed layer props.
+fn inner_stretch(
+    runtime: &HeadlessRuntime,
+) -> (
+    crate::renderer::mount::layers::InnerStretchProbe,
+    kurbo::Affine,
+) {
+    struct Probe(
+        Option<(
+            crate::renderer::mount::layers::InnerStretchProbe,
+            kurbo::Affine,
+        )>,
+    );
+    impl crate::renderer::mount::layers::LayerVisitor for Probe {
+        fn node(
+            &mut self,
+            layers: &crate::renderer::mount::layers::NodeLayers,
+            world: kurbo::Affine,
+            _alphas: &[f32],
+        ) {
+            if let Some(probe) = layers.inner_stretch() {
+                assert!(self.0.is_none(), "the test mounts one scroll view");
+                self.0 = Some((probe, world));
+            }
+        }
+    }
+    let mut probe = Probe(None);
+    crate::renderer::mount::layers::visit(&runtime.renderer().mount_roots(), &mut probe);
+    probe.0.expect("the scroll view mounts an inner layer")
+}
+
+/// While the content stretches, the inner layer draws through HWUI's
+/// stretch shader in the viewport's frame: the window's display transform
+/// over the committed layers' composition, from the viewport's origin,
+/// across its extent, in `stretch`'s direction.
+fn assert_draws_the_stretch(runtime: &HeadlessRuntime, stretch: kurbo::Vec2) {
+    let (probe, world) = inner_stretch(runtime);
+    let (filter, params) = probe
+        .stretch
+        .expect("a stretch registers the inner layer's filter");
+    assert_eq!(
+        probe.filter,
+        Some(filter),
+        "the inner layer draws through it"
+    );
+    let viewport = probe.clip.expect("the inner layer clips to its viewport");
+    let frame = runtime.renderer().window_display_transform
+        * world
+        * kurbo::Affine::translate(viewport.origin().to_vec2());
+    let expected = frame.as_coeffs().into_iter().chain([
+        viewport.width(),
+        viewport.height(),
+        stretch.x,
+        stretch.y,
+    ]);
+    for (index, (actual, expected)) in params.into_iter().zip(expected).enumerate() {
+        assert!(
+            (f64::from(actual) - expected).abs() <= 1e-4 * expected.abs().max(1.0),
+            "stretch parameter {index}: {actual}, expected {expected} ({params:?})"
+        );
+    }
+}
+
 #[test]
 fn a_drag_past_the_top_edge_stretches_and_its_release_relaxes() {
     let mut runtime = runtime(tall_stack());
@@ -733,6 +797,7 @@ fn a_drag_past_the_top_edge_stretches_and_its_release_relaxes() {
         (stretch.y - expected).abs() < 1e-9 && stretch.x.abs() < f64::EPSILON,
         "the top edge stretches: {stretch:?}, expected {expected}"
     );
+    assert_draws_the_stretch(&runtime, stretch);
 
     // A still release relaxes it to nothing and ends the gesture.
     runtime.push_input_event(touch_up(200.0, 310.0));
@@ -753,6 +818,11 @@ fn a_drag_past_the_top_edge_stretches_and_its_release_relaxes() {
     assert_eq!(relaxing.last().copied(), Some(0.0));
     assert_eq!(offset_y_at(&runtime, 200.0, 300.0), Some(0.0));
     assert!(!runtime.renderer().has_active_touch_fling());
+    // At rest the inner layer draws without the filter, which stays
+    // registered for the next pull.
+    let (probe, _) = inner_stretch(&runtime);
+    assert_eq!(probe.filter, None, "at rest nothing stretches the content");
+    assert!(probe.stretch.is_some(), "the filter stays registered");
 }
 
 #[test]
@@ -781,7 +851,12 @@ fn a_fling_into_the_bottom_edge_is_absorbed_by_the_stretch() {
     let offsets = (1..=120_u64)
         .map(|frame| {
             let _ = runtime.pump_at(false, start + Duration::from_millis(80 + frame * 16));
-            stretches.push(stretch_at(&runtime).y);
+            let stretch = stretch_at(&runtime);
+            // HWUI's `NON_ZERO_EPSILON`: past it the content draws stretched.
+            if stretch.y.abs() > 0.000_04 {
+                assert_draws_the_stretch(&runtime, stretch);
+            }
+            stretches.push(stretch.y);
             offset_y_at(&runtime, 200.0, 300.0).expect("the scroll view's metrics")
         })
         .collect::<Vec<_>>();

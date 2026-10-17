@@ -1,4 +1,4 @@
-use super::edge_stretch::{ScrollStretch, linear_stretch};
+use super::edge_stretch::{ScrollStretch, shown_stretch};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
@@ -4963,15 +4963,14 @@ impl SemanticCore {
             .map_or(kurbo::Vec2::ZERO, ScrollStretch::vector)
     }
 
-    /// The render-time stretch of the scroll view `handle` over its
-    /// `viewport`: the transform its content layer composes with, in the
-    /// viewport's space — the identity while nothing stretches it.
+    /// The stretch direction the scroll view `handle` draws its content
+    /// with — HWUI's `mStretchDirection` — or `None` while nothing visibly
+    /// stretches it.
     pub(crate) fn scroll_stretch(
         &self,
         handle: &crate::scroll::ScrollHandle,
-        viewport: kurbo::Rect,
-    ) -> kurbo::Affine {
-        linear_stretch(self.touch_stretch(handle.cache_key()), viewport)
+    ) -> Option<kurbo::Vec2> {
+        shown_stretch(self.touch_stretch(handle.cache_key()))
     }
 
     /// Advances a running touch fling to `now`; returns whether its write
