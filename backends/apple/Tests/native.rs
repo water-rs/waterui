@@ -96,6 +96,13 @@ fn trials() -> Vec<Trial> {
                     Ok(())
                 },
             ),
+            Trial::test(
+                "navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics",
+                || {
+                    navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics();
+                    Ok(())
+                },
+            ),
             Trial::test("split::a_sidebar_list_takes_the_source_list_chrome", || {
                 split::a_sidebar_list_takes_the_source_list_chrome();
                 Ok(())
@@ -1995,14 +2002,16 @@ mod menus {
 
 /// Navigation-chrome trials on `AppKit` against a real titled `NSWindow`: a
 /// `.searchable` page rests its field in the titlebar's bottom accessory
-/// row at the platform's metrics, and a `NavigationSplitView` in a hidden
-/// tab releases the toolbar space its sidebar claims — the same
-/// `navigation::` namespace the `UIKit` cases own on iOS.
+/// row at the platform's metrics, a `NavigationSplitView` in a hidden tab
+/// releases the toolbar space its sidebar claims, and the toolbar tab
+/// picker uses the system extra-large metrics — the same `navigation::`
+/// namespace the `UIKit` cases own on iOS.
 #[cfg(all(target_os = "macos", feature = "native-test"))]
 mod navigation {
+    use cocoa_ui::appkit::{Segment, SegmentedControl};
     use cocoa_ui::objc2_app_kit::{
-        NSLayoutAttribute, NSSearchField, NSSplitView, NSSplitViewController,
-        NSTrackingSeparatorToolbarItem,
+        NSControlSize, NSLayoutAttribute, NSSearchField, NSSegmentDistribution, NSSegmentStyle,
+        NSSegmentedControl, NSSplitView, NSSplitViewController, NSTrackingSeparatorToolbarItem,
     };
     use cocoa_ui::{PlatformView, Retained, view};
     use objc2::ClassType as _;
@@ -2262,6 +2271,97 @@ mod navigation {
             }),
             "the restored pane keeps the user's collapsed sidebar"
         );
+    }
+
+    /// The toolbar tab picker is the system one: an extra-large segmented
+    /// control whose segments fill equally. Joining the unified toolbar
+    /// narrows that control below the size it reports while free, and the
+    /// item follows the intrinsic size rather than freezing the free one.
+    /// The window stays unordered; the metrics were read that way.
+    pub fn a_toolbar_tab_picker_uses_the_extra_large_metrics() {
+        let mtm = mtm();
+        let pane = binding(0i32);
+        let labels = ["Inbox", "Library", "Gallery", "Settings"];
+        let leaf = resolve::render(Tabs::new(
+            &pane,
+            labels
+                .iter()
+                .enumerate()
+                .map(|(index, label)| {
+                    let title = (*label).to_string();
+                    let id = i32::try_from(index).expect("the four tabs fit in i32");
+                    Tab::new(id, *label, move || {
+                        NavigationView::new(title.clone(), text(title.clone()))
+                    })
+                })
+                .collect(),
+        ));
+        let window = leaf::attach(mtm, leaf.view());
+        window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 700.0, 520.0), false);
+
+        let free = SegmentedControl::new(mtm);
+        free.set_segments(
+            &labels
+                .iter()
+                .map(|label| Segment {
+                    label: label.to_string(),
+                    enabled: true,
+                    ..Segment::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+        let free_size = free.fitting_size();
+
+        let laid_out = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            toolbar_segmented(&window).is_some_and(|control| {
+                let bounds = control.bounds().size;
+                bounds.height > free_size.height - 0.5 && bounds.width + 8.0 < free_size.width
+            })
+        });
+        assert!(
+            laid_out,
+            "the toolbar tab picker adopts the unified-toolbar metrics"
+        );
+
+        let control = toolbar_segmented(&window).expect("the toolbar hosts the tab picker");
+        assert_eq!(control.controlSize(), NSControlSize::ExtraLarge);
+        assert_eq!(
+            control.segmentDistribution(),
+            NSSegmentDistribution::FillEqually
+        );
+        assert_eq!(control.segmentStyle(), NSSegmentStyle::Automatic);
+        let bounds = control.bounds().size;
+        let intrinsic = control.intrinsicContentSize();
+        assert!(
+            (bounds.width - intrinsic.width).abs() < 0.5,
+            "the item follows the intrinsic width {} rather than a frozen fitting size {}",
+            intrinsic.width,
+            bounds.width
+        );
+        assert!(
+            (bounds.height - intrinsic.height).abs() < 0.5
+                && (bounds.height - free_size.height).abs() < 0.5,
+            "the picker is the extra-large height"
+        );
+
+        let frame = view::convert_rect(&control, view::bounds(&control), None);
+        let center = frame.origin.x + frame.size.width / 2.0;
+        assert!(
+            (center - 350.0).abs() < 4.0,
+            "the picker stays centred in the 700 pt window, centre {center}"
+        );
+    }
+
+    /// The segmented control the window toolbar is hosting, when it has one.
+    fn toolbar_segmented(
+        window: &cocoa_ui::appkit::Window,
+    ) -> Option<Retained<NSSegmentedControl>> {
+        window.native().toolbar().and_then(|toolbar| {
+            toolbar.items().iter().find_map(|item| {
+                item.view()
+                    .and_then(|view| view.downcast::<NSSegmentedControl>().ok())
+            })
+        })
     }
 }
 
