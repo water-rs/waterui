@@ -1,11 +1,12 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
+use crate::renderer::chrome::LiveChromeParts;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, interaction_focus_ring, local_interaction_state, measure_label_intrinsic,
     measure_view_intrinsic, popup_menu_nodes,
 };
-use crate::theme::{ButtonMetrics, InteractionStyle};
+use crate::theme::{ButtonMetrics, ButtonSpec, InteractionStyle};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -45,6 +46,11 @@ pub struct ButtonRenderState {
     /// The last [`InteractionState`] the render pass reported for this control,
     /// feeding the retained label's reactive colour resolution.
     label_state: nami::Binding<InteractionState>,
+    /// The engine-realized chrome, while the theme supplies one through
+    /// [`WidgetTheme::button_chrome`](crate::theme::WidgetTheme::button_chrome):
+    /// kept across renders while its chrome, frame and motion stay the
+    /// same, so interaction changes reach it as live operands only.
+    chrome: Option<LiveChromeParts>,
 }
 
 impl ButtonRenderState {
@@ -53,6 +59,7 @@ impl ButtonRenderState {
             config,
             label_view: None,
             label_state: nami::Binding::container(InteractionState::empty()),
+            chrome: None,
         }
     }
 
@@ -561,12 +568,33 @@ pub fn render_button_parts(
     );
     let bounds = ctx.bounds;
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
-    let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
-        interaction_key.clone(),
-        bounds,
-        env,
-        disabled,
-    );
+    // The theme's engine-provided chrome, on the theme-drawn path only: an
+    // `InteractionStyle` or floating scope keeps its own presentation.
+    let live_chrome = (interaction_style.is_none() && floating_style.is_none())
+        .then(|| theme.button_chrome(ButtonSpec::new(style, size, icon_only)))
+        .flatten()
+        .map(|chrome| {
+            let motion = chrome
+                .motion
+                .clone()
+                .unwrap_or_else(|| theme.interaction_motion());
+            (chrome, motion)
+        });
+    let (interaction, press_slot, handles) = match &live_chrome {
+        Some((_, motion)) => ctx.renderer_mut().bind_live_chrome_target(
+            interaction_key.clone(),
+            bounds,
+            env,
+            disabled,
+            motion.clone(),
+        ),
+        None => ctx.renderer_mut().bind_control_interaction_target(
+            interaction_key.clone(),
+            bounds,
+            env,
+            disabled,
+        ),
+    };
     let interaction_flags = ctx
         .renderer_mut()
         .reported_interaction_state(&interaction_key);
@@ -578,7 +606,26 @@ pub fn render_button_parts(
             label_state.set(interaction_flags);
         }
     }
-    if interaction_style.is_none() && floating_style.is_none() {
+    let live_sources = live_chrome.map(|(chrome, motion)| {
+        let mut state_mut = state.borrow_mut();
+        let state_mut = &mut *state_mut;
+        let parts = LiveChromeParts::ensure(
+            &mut state_mut.chrome,
+            chrome,
+            bounds,
+            motion,
+            interaction_flags,
+            &state_mut.label_state,
+        );
+        handles.attach_live(Rc::clone(parts.chrome()));
+        (Rc::clone(parts.below()), Rc::clone(parts.above()))
+    });
+    if live_sources.is_none() {
+        state.borrow_mut().chrome = None;
+    }
+    if let Some((below, _)) = &live_sources {
+        ctx.push_live(below);
+    } else if interaction_style.is_none() && floating_style.is_none() {
         ctx.draw_context(|draw| {
             theme.draw_button_chrome(&mut *draw, bounds, style, icon_only, interaction);
         });
@@ -691,6 +738,8 @@ pub fn render_button_parts(
                     interaction,
                 );
             });
+        } else if let Some((_, above)) = &live_sources {
+            ctx.push_live(above);
         } else {
             ctx.draw_context(|draw| {
                 theme.draw_button_state_layer(&mut *draw, bounds, style, icon_only, interaction);

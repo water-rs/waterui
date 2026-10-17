@@ -11,6 +11,8 @@
 //!   layout and flush
 //! - [`mount`]: per-node cells, programs and retained layers, and the one
 //!   `Mount` a window commits through
+//! - [`chrome`]: the theme's chrome primitives recorded once with live
+//!   operands, steered by interaction state between records
 //! - [`signals`]: signal watching and animated-value sampling
 //! - [`effects`]: applied filters, view effects, embedded GPU surfaces
 //! - [`views`] / [`metadata`]: raw view and metadata handlers
@@ -22,6 +24,7 @@
 #[cfg(feature = "accessibility")]
 pub mod accessibility;
 mod bindings;
+pub mod chrome;
 mod effects;
 mod frame;
 mod frame_work;
