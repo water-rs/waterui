@@ -1535,12 +1535,21 @@ fn run(
         match &items[i] {
             Item::Draw {
                 edges,
+                offset,
                 bbox,
                 rule,
                 paint,
                 clip,
                 swept: _,
-            } => band.draw(acc, stack, edges, *bbox, *rule, paint, clip.as_ref()),
+            } => band.draw(
+                acc,
+                stack,
+                (edges, *offset),
+                *bbox,
+                *rule,
+                paint,
+                clip.as_ref(),
+            ),
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
                 space: *space,
@@ -2060,7 +2069,8 @@ struct Band<'a> {
 }
 
 impl Band<'_> {
-    /// Rasterizes one draw item into the top isolation buffer.
+    /// Rasterizes one draw item — its frame edges placed at `offset` —
+    /// into the top isolation buffer.
     #[expect(
         clippy::cast_precision_loss,
         clippy::too_many_arguments,
@@ -2070,8 +2080,8 @@ impl Band<'_> {
         &mut self,
         acc: &mut Accum,
         stack: &mut Vec<Plane>,
-        edges: &[Edge],
-        bbox: crate::render::lower::IRect,
+        (edges, [ox, oy]): (&[Edge], [f32; 2]),
+        bbox: crate::render::lower::DrawBox,
         rule: FillRule,
         paint: &PaintData,
         clip: Option<&ClipRef>,
@@ -2079,34 +2089,30 @@ impl Band<'_> {
         let bh = self.fb.len() / self.w;
         // Band-intersect the device-space bounding box.
         let (y_lo, y_hi) = (
-            usize::try_from(bbox.y0)
-                .unwrap_or(0)
-                .saturating_sub(self.y0)
-                .min(bh),
-            usize::try_from(bbox.y1)
-                .unwrap_or(0)
-                .saturating_sub(self.y0)
-                .min(bh),
+            usize::from(bbox.y0).saturating_sub(self.y0).min(bh),
+            usize::from(bbox.y1).saturating_sub(self.y0).min(bh),
         );
         if y_lo >= y_hi {
             return;
         }
         let (x_lo, x_hi) = (
-            usize::try_from(bbox.x0).unwrap_or(0).min(self.w),
-            usize::try_from(bbox.x1).unwrap_or(0).min(self.w),
+            usize::from(bbox.x0).min(self.w),
+            usize::from(bbox.x1).min(self.w),
         );
         // Only the item's bbox columns participate: clear and deposit
         // inside the guard window `x_lo .. x_hi + 1`.
         acc.set_window(x_lo, x_hi);
         acc.clear_range(y_lo, y_hi);
+        // The frame's origin relative to the band's top row.
+        let dy = oy - self.y0 as f32;
         for e in edges {
             // Only edges crossing the band deposit anything.
-            let ey0 = e.y0 - self.y0 as f32;
-            let ey1 = e.y1 - self.y0 as f32;
+            let ey0 = e.y0 + dy;
+            let ey1 = e.y1 + dy;
             if ey0.max(ey1) < 0.0 || ey0.min(ey1) >= bh as f32 {
                 continue;
             }
-            acc.draw_line(e.x0, ey0, e.x1, ey1);
+            acc.draw_line(e.x0 + ox, ey0, e.x1 + ox, ey1);
         }
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
         for y in y_lo..y_hi {
