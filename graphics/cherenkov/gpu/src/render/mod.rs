@@ -10340,11 +10340,10 @@ impl GpuRenderer {
                     external::vulkan::State::ReleaseSubmitted;
             }
         }
-        self.queue.on_submitted_work_done(move || {
-            for release in releases {
-                release.destroy(&shared);
-            }
-        });
+        // Deferred destroys run before `release.destroy` on the same
+        // completion: work-done callbacks fire in registration order, and
+        // an evicted set's `free_descriptor_sets` needs its pool alive —
+        // the pool dies in `release.destroy` below, not before.
         let destroys = external::vulkan::drain_destroys(native);
         if !destroys.is_empty() {
             let device = native.shared.vk.device.clone();
@@ -10357,6 +10356,11 @@ impl GpuRenderer {
                 }
             });
         }
+        self.queue.on_submitted_work_done(move || {
+            for release in releases {
+                release.destroy(&shared);
+            }
+        });
         Some(submission)
     }
 
