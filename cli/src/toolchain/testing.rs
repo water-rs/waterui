@@ -208,7 +208,8 @@ impl TestMachine {
     }
 
     /// The declared host: `PATH` is only `bin/`, `cwd` is the scratch root,
-    /// and the environment is exactly `vars` plus `HOME`/`USERPROFILE` and
+    /// and the environment is exactly `vars` plus `HOME`/`USERPROFILE`, the
+    /// profile's `LOCALAPPDATA` a Windows session always carries, and
     /// `WATERUI_FAKE_RESPONSES`.
     pub fn host<K, V>(&self, vars: impl IntoIterator<Item = (K, V)>) -> Host
     where
@@ -251,6 +252,10 @@ impl TestMachine {
             ),
             (OsString::from("HOME"), self.home().into_os_string()),
             (OsString::from("USERPROFILE"), self.home().into_os_string()),
+            (
+                OsString::from("LOCALAPPDATA"),
+                self.home().join("AppData").join("Local").into_os_string(),
+            ),
         ];
         declared.extend(
             vars.into_iter()
