@@ -334,7 +334,7 @@ mod platform {
 mod platform {
     use super::{Columns, Fill};
     use alloc::rc::Rc;
-    use core::cell::RefCell;
+    use core::cell::{Cell, RefCell};
 
     use crate::contract::{NativeLeaf, RenderContext};
     use cocoa_ui::appkit::{Column, ColumnWidth, HostView, SplitViewController, WindowToolbar};
@@ -349,6 +349,14 @@ mod platform {
         nav: Retained<SplitViewController>,
         /// The sidebar column's view, reinstalled on every `set_columns`.
         sidebar: Retained<cocoa_ui::PlatformView>,
+        /// Whether the split's host view is effectively visible. An
+        /// expanded `allowsFullHeightLayout` sidebar item claims titlebar
+        /// space even while its view is hidden, so a hidden pane's sidebar
+        /// item is collapsed for as long as the pane stays hidden.
+        chrome_active: Cell<bool>,
+        /// The sidebar collapse state the app or user wants — what
+        /// `apply_sidebar` restores when the pane shows again.
+        sidebar_collapsed: Cell<bool>,
     }
 
     /// `NSSplitViewController` with the sidebar leaf and rebuilt
@@ -383,11 +391,12 @@ mod platform {
             watchers: RefCell::new(KeepAlive::default()),
         };
         let sidebar_view = cocoa_ui::view::retain_base(sidebar_leaf.view());
-        let nav_for_binds = nav.clone();
         let split = Rc::new(Split {
             columns,
             nav,
             sidebar: sidebar_view,
+            chrome_active: Cell::new(true),
+            sidebar_collapsed: Cell::new(false),
         });
 
         let mut keep = KeepAlive::default();
@@ -415,7 +424,7 @@ mod platform {
         }
 
         split.columns.watchers.borrow_mut().bind(&visibility, {
-            let nav = nav_for_binds.clone();
+            let split = split.clone();
             move |visibility| {
                 let (sidebar, content) = match visibility {
                     NavigationSplitColumnVisibility::All
@@ -423,12 +432,28 @@ mod platform {
                     NavigationSplitColumnVisibility::DoubleColumn => (true, false),
                     NavigationSplitColumnVisibility::DetailOnly => (true, true),
                 };
-                nav.set_collapsed(Column::Sidebar, sidebar);
-                nav.set_collapsed(Column::Supplementary, content);
+                split.sidebar_collapsed.set(sidebar);
+                split.nav.set_collapsed(Column::Supplementary, content);
+                split.apply_sidebar();
             }
         });
 
-        nav_for_binds.set_column_widths(&[
+        // The platform's collapse reports are the user's own toggles, so
+        // they become the wanted state — but only while the pane's chrome
+        // is live. While the pane is hidden the reported collapse is this
+        // leaf's own forced one, which must not overwrite it. Captured
+        // weakly: `Split` owns `nav`, and `nav` owns the handler.
+        split.nav.set_collapse_handler({
+            let split = Rc::downgrade(&split);
+            move |column, collapsed| {
+                let Some(split) = split.upgrade() else { return };
+                if column == Column::Sidebar && split.chrome_active.get() {
+                    split.sidebar_collapsed.set(collapsed);
+                }
+            }
+        });
+
+        split.nav.set_column_widths(&[
             ColumnWidth {
                 preferred: Some(f64::from(sidebar_width.ideal())),
                 minimum: Some(f64::from(sidebar_width.min())),
@@ -453,7 +478,9 @@ mod platform {
     /// fills the host's bounds, and on a titled window the host registers it
     /// with the window's toolbar as the sidebar toggle. The coordinator is
     /// keyed per window, so attaching here shares the instance the
-    /// navigation pages publish into.
+    /// navigation pages publish into. While the host is hidden inside a
+    /// container the sidebar item collapses — an expanded one claims
+    /// titlebar space even unseen — and the offer withdraws with it.
     fn host_leaf(mtm: MainThreadMarker, split: Rc<Split>) -> NativeLeaf {
         let host = HostView::new(mtm, Rect::ZERO);
         // An `NSSplitViewController` owns its columns' insets — the sidebar
@@ -474,21 +501,31 @@ mod platform {
             }
         });
         let offer_sidebar = {
-            let nav = split.nav.clone();
+            let split = split.clone();
             move |host: &HostView| {
+                // A pane hidden inside a tab container contributes no
+                // sidebar chrome — and must release the sidebar's claim on
+                // the titlebar too: an expanded `allowsFullHeightLayout`
+                // item reserves that space even while its view is hidden,
+                // so the item collapses while the pane is hidden and the
+                // wanted collapse state comes back when it shows again.
+                let active = !view::is_hidden_in_hierarchy(host);
+                split.chrome_active.set(active);
+                split.apply_sidebar();
                 let Some(window) = view::window(host) else {
                     return;
                 };
                 if !window.styleMask().contains(NSWindowStyleMask::Titled) {
                     return;
                 }
-                // A pane hidden inside a tab container contributes no sidebar
-                // chrome: claim only while the split is effectively visible.
-                if view::is_hidden_in_hierarchy(host) {
-                    WindowToolbar::attached(&window).set_sidebar_split(None);
+                // The apply runs first so the toolbar's collapse-following
+                // toggle label reads the restored state, not the forced
+                // collapse the hidden pane carried.
+                WindowToolbar::attached(&window).set_sidebar_split(if active {
+                    Some(&split.nav)
                 } else {
-                    WindowToolbar::attached(&window).set_sidebar_split(Some(&nav));
-                }
+                    None
+                });
             }
         };
         host.set_window_handler({
@@ -507,7 +544,11 @@ mod platform {
 
     impl Split {
         /// Rebuilds the columns from the current selections and installs them
-        /// (`set_columns` replaces the split items in place).
+        /// (`set_columns` replaces the split items in place). The
+        /// replacements arrive expanded, so the sidebar state is re-imposed
+        /// afterwards: a selection change while the pane is hidden must not
+        /// bring back an expanded sidebar, and a visible pane keeps its
+        /// wanted collapse across the rebuild.
         fn mount(&self, keep: &mut KeepAlive) {
             // The sidebar leaf is already retained; the first column stays
             // mounted — only downstream columns rebuild.
@@ -522,8 +563,20 @@ mod platform {
                 },
                 detail.view(),
             );
+            self.apply_sidebar();
             keep.keep(middle);
             keep.keep(detail);
+        }
+
+        /// Writes the effective sidebar collapse: forced collapsed while
+        /// the pane is hidden — an expanded full-height sidebar item
+        /// claims titlebar space even with its view hidden — else the
+        /// wanted `sidebar_collapsed`.
+        fn apply_sidebar(&self) {
+            self.nav.set_collapsed(
+                Column::Sidebar,
+                !self.chrome_active.get() || self.sidebar_collapsed.get(),
+            );
         }
     }
 }

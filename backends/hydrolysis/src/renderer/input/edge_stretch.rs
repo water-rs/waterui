@@ -382,8 +382,9 @@ impl AxisStretch {
     }
 }
 
-/// A scroll view's stretch on both axes, carried by the touch gesture and
-/// the fling that owns the scroll view's offset.
+/// A scroll view's stretch on both axes, carried by the touch drag that
+/// holds the scroll view and then by its `ScrollMotion`, which outlives the
+/// fling that owns the offset.
 #[derive(Debug, Clone)]
 pub(super) struct ScrollStretch {
     pub(super) config: EdgeStretch,
@@ -400,11 +401,29 @@ impl ScrollStretch {
         }
     }
 
-    /// A touch down holds every unfinished edge where it is.
+    /// A touch down holds every unfinished edge where it is, and stops the
+    /// fling that was to reach an edge — its absorb never comes.
     pub(super) fn catch(&mut self) {
+        self.cancel_impacts();
         for axis in [&mut self.x, &mut self.y] {
             axis.leading.catch();
             axis.trailing.catch();
+        }
+    }
+
+    /// The fling that was to reach an edge stopped short of it: drops the
+    /// absorbs it armed.
+    pub(super) const fn cancel_impacts(&mut self) {
+        self.x.impact = None;
+        self.y.impact = None;
+    }
+
+    /// `endDrag`'s `onRelease` on every edge, with no fling: a held edge
+    /// relaxes from rest.
+    pub(super) fn release(&mut self, now: Instant) {
+        for axis in [&mut self.x, &mut self.y] {
+            axis.leading.on_release(now);
+            axis.trailing.on_release(now);
         }
     }
 
