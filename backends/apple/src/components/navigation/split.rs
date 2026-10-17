@@ -376,7 +376,10 @@ mod platform {
         let mtm = ctx.mtm();
         let nav = SplitViewController::new(mtm);
 
-        let sidebar_leaf = ctx.render(sidebar.build());
+        let sidebar_env = ctx
+            .env()
+            .extending(waterui::component::list::SidebarContent);
+        let sidebar_leaf = ctx.with_env(&sidebar_env).render(sidebar.build());
         let columns = Columns {
             renderer: ctx.renderer(),
             content,
@@ -398,6 +401,7 @@ mod platform {
 
         let mut keep = KeepAlive::default();
         keep.keep(sidebar_leaf);
+        keep.keep(sidebar_env);
         split.mount(&mut keep);
         *split.columns.mounted.borrow_mut() = keep;
 
