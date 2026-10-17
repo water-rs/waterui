@@ -17,7 +17,7 @@ use std::time::Instant;
 use nami::{Binding, Signal as _};
 use waterui::ViewExt as _;
 use waterui::widget::condition::when;
-use waterui::{AnyView, component::text};
+use waterui::{AnyView, View, component::text};
 use waterui_controls::button::button;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::{Id, SelfId};
@@ -47,12 +47,12 @@ fn test_config() -> TouchScrollConfig {
     TouchScrollConfig::android_default()
 }
 
-fn runtime(view: AnyView) -> HeadlessRuntime {
+fn runtime(view: impl View) -> HeadlessRuntime {
     runtime_with(view, test_config())
 }
 
-fn runtime_with(view: AnyView, config: TouchScrollConfig) -> HeadlessRuntime {
-    let view = std::cell::RefCell::new(Some(view));
+fn runtime_with(view: impl View, config: TouchScrollConfig) -> HeadlessRuntime {
+    let view = std::cell::RefCell::new(Some(AnyView::new(view)));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
         view.borrow_mut()
             .take()
@@ -69,12 +69,12 @@ fn runtime_with(view: AnyView, config: TouchScrollConfig) -> HeadlessRuntime {
     runtime
 }
 
-fn tall_stack() -> AnyView {
+fn tall_stack() -> impl View {
     let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
-    AnyView::new(scroll(VStack::for_each(rows, |row| {
+    scroll(VStack::for_each(rows, |row| {
         let index = row.into_inner();
         vstack((text(format!("Row {index}")),)).size(360.0, ROW_HEIGHT)
-    })))
+    }))
 }
 
 fn touch_down(x: f32, y: f32) -> InputEvent {
@@ -117,14 +117,14 @@ fn offset_y_at(runtime: &HeadlessRuntime, x: f32, y: f32) -> Option<f64> {
 
 /// A tall scroll whose content puts a full-width `button` under the touch
 /// point the tests drive — sized so the press target's bounds cover it.
-fn scroll_with_button(tapped: Binding<bool>) -> AnyView {
-    AnyView::new(scroll(vstack((
+fn scroll_with_button(tapped: Binding<bool>) -> impl View {
+    scroll(vstack((
         ().size(360.0, 260.0),
         Frame::new(button("tap me").action(move || tapped.set(true)))
             .width(360.0)
             .height(44.0),
         ().size(360.0, 1_200.0),
-    ))))
+    )))
 }
 
 #[test]
@@ -219,7 +219,7 @@ fn a_horizontal_drag_does_not_scroll_a_vertical_only_scroll_view() {
 #[test]
 fn a_nested_scroll_view_claims_the_drag_over_its_enclosing_parent() {
     let inner_rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
-    let mut runtime = runtime(AnyView::new(scroll(
+    let mut runtime = runtime(scroll(
         vstack((
             scroll(VStack::for_each(inner_rows, |row| {
                 let index = row.into_inner();
@@ -230,7 +230,7 @@ fn a_nested_scroll_view_claims_the_drag_over_its_enclosing_parent() {
             ().size(360.0, 1_200.0),
         ))
         .spacing(0.0),
-    )));
+    ));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
 
@@ -374,9 +374,7 @@ fn a_touch_down_during_a_fling_stops_it_where_it_is() {
 #[test]
 fn a_fling_whose_scroll_view_is_replaced_mid_fling_ends_with_it() {
     let show = Binding::container(true);
-    let mut runtime = runtime(AnyView::new(
-        when(show.clone(), tall_stack).otherwise(|| text("Loaded")),
-    ));
+    let mut runtime = runtime(when(show.clone(), tall_stack).otherwise(|| text("Loaded")));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
 
@@ -424,7 +422,7 @@ fn a_fling_whose_scroll_view_is_hidden_by_a_tab_switch_mid_fling_ends_with_it() 
             NavigationView::new("Other", text("Other"))
         }),
     ];
-    let mut runtime = runtime(AnyView::new(TabsLayout::new(selection.clone(), tabs)));
+    let mut runtime = runtime(TabsLayout::new(selection.clone(), tabs));
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
     assert!(
@@ -470,7 +468,7 @@ fn a_fling_whose_scroll_view_is_hidden_by_a_tab_switch_mid_fling_ends_with_it() 
 fn a_touch_press_without_a_touch_scroll_config_panics() {
     let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
-        AnyViewBuilder::<AnyView>::new(tall_stack),
+        AnyViewBuilder::<AnyView>::new(|| AnyView::new(tall_stack())),
         WINDOW_WIDTH,
         WINDOW_HEIGHT,
         MinimalTestTheme::default(),
@@ -489,7 +487,7 @@ fn a_touch_press_whose_target_is_removed_before_release_is_dropped() {
     let show = Binding::container(true);
     let tapped = Binding::container(false);
     let tapped_for_view = tapped.clone();
-    let mut runtime = runtime(AnyView::new(
+    let mut runtime = runtime(
         when(show.clone(), move || {
             let tapped = tapped_for_view.clone();
             Frame::new(button("tap me").action(move || tapped.set(true)))
@@ -497,7 +495,7 @@ fn a_touch_press_whose_target_is_removed_before_release_is_dropped() {
                 .height(640.0)
         })
         .otherwise(|| text("Gone")),
-    ));
+    );
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
 
@@ -523,7 +521,7 @@ fn a_touch_press_whose_target_is_removed_before_release_is_dropped() {
 // back from. The model's own math is unit-tested in `scroll_physics`; these
 // drive it through the real input path.
 
-fn uikit_runtime(view: AnyView) -> HeadlessRuntime {
+fn uikit_runtime(view: impl View) -> HeadlessRuntime {
     runtime_with(view, TouchScrollConfig::uikit_default())
 }
 
@@ -535,15 +533,16 @@ fn uikit_band() -> RubberBand {
 }
 
 /// `ROWS` rows in a scroll view whose offset reports into `offset`.
-fn reporting_stack(rows: usize, offset: &Binding<waterui_core::layout::Point>) -> AnyView {
+fn reporting_stack(
+    rows: usize,
+    offset: &Binding<waterui_core::layout::Point>,
+) -> impl View + use<> {
     let rows = (0..rows).map(SelfId::new).collect::<Vec<_>>();
-    AnyView::new(
-        scroll(VStack::for_each(rows, |row| {
-            let index = row.into_inner();
-            vstack((text(format!("Row {index}")),)).size(360.0, ROW_HEIGHT)
-        }))
-        .report_offset(offset),
-    )
+    scroll(VStack::for_each(rows, |row| {
+        let index = row.into_inner();
+        vstack((text(format!("Row {index}")),)).size(360.0, ROW_HEIGHT)
+    }))
+    .report_offset(offset)
 }
 
 /// Pumps 16 ms frames from `from_ms` for `frames` frames and returns the
@@ -870,7 +869,7 @@ fn the_physics_family_follows_the_browsers_user_agent() {
 const LEFT: f32 = 100.0;
 const RIGHT: f32 = 300.0;
 
-fn side_by_side() -> AnyView {
+fn side_by_side() -> impl View {
     let column = |name: &'static str| {
         let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
         scroll(VStack::for_each(rows, move |row| {
@@ -878,19 +877,19 @@ fn side_by_side() -> AnyView {
             vstack((text(format!("{name} {index}")),)).size(180.0, ROW_HEIGHT)
         }))
     };
-    AnyView::new(hstack((column("Left"), column("Right"))).spacing(0.0))
+    hstack((column("Left"), column("Right"))).spacing(0.0)
 }
 
 /// A scroll view driven by `controller`, `ROWS` rows tall.
-fn controlled_stack(controller: &ScrollController<waterui_core::layout::Point>) -> AnyView {
+fn controlled_stack(
+    controller: &ScrollController<waterui_core::layout::Point>,
+) -> impl View + use<> {
     let rows = (0..ROWS).map(SelfId::new).collect::<Vec<_>>();
-    AnyView::new(
-        scroll(VStack::for_each(rows, |row| {
-            let index = row.into_inner();
-            vstack((text(format!("Row {index}")),)).size(360.0, ROW_HEIGHT)
-        }))
-        .scroll_controller(controller),
-    )
+    scroll(VStack::for_each(rows, |row| {
+        let index = row.into_inner();
+        vstack((text(format!("Row {index}")),)).size(360.0, ROW_HEIGHT)
+    }))
+    .scroll_controller(controller)
 }
 
 fn offset_at(runtime: &HeadlessRuntime, x: f32) -> f64 {
