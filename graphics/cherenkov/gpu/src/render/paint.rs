@@ -52,7 +52,7 @@ impl Entry {
                 entry_point: Some(FRAGMENT_ENTRY),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: super::TARGET_FORMAT,
+                    format: super::WORKING_FORMAT,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -206,14 +206,14 @@ impl Registry {
                 "shader paint",
                 key.size,
                 super::TARGET_USAGES,
-                super::TARGET_FORMAT,
+                super::WORKING_FORMAT,
             );
             crate::diag::create(
                 device,
                 "shader paint",
                 u64::from(key.size.0)
                     * u64::from(key.size.1)
-                    * super::texel_bytes(super::TARGET_FORMAT),
+                    * super::texel_bytes(super::WORKING_FORMAT),
             );
             let globals = uniform_buffer(device, 16);
             let parameters = uniform_buffer(device, 256);

@@ -59,6 +59,37 @@ pub struct Limits {
     pub ordering: Ordering,
 }
 
+/// The storage formats of a frame's images: a part's or plane's is the
+/// surface's, a semantic isolation's the scratch format, a projected
+/// image's the working format, and a capture's that of what it copies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Formats {
+    /// The surface target's format.
+    pub surface: wgpu::TextureFormat,
+    /// The isolation scratch format.
+    pub scratch: wgpu::TextureFormat,
+}
+
+impl Formats {
+    /// The format `frame` stores pass target `target` in.
+    fn of(self, frame: &Frame, target: Target) -> wgpu::TextureFormat {
+        match target {
+            Target::Part(_) | Target::Plane(_) => self.surface,
+            Target::Scratch(_) => self.scratch,
+            Target::Projected(_) => super::super::WORKING_FORMAT,
+            Target::Backdrop { .. } => {
+                let copy_from = frame
+                    .passes
+                    .iter()
+                    .find_map(|pass| pass.capture.filter(|_| pass.target == target))
+                    .expect("a capture image is produced by its capture pass")
+                    .copy_from;
+                self.of(frame, copy_from)
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LogicalImageId(pub usize);
 
@@ -187,10 +218,10 @@ impl ExecutionPlan {
                 .sum::<usize>()) as u64
     }
 
-    /// The plan for `frame`, where `scratch` is the format the frame's
-    /// isolation scratches are stored in and `limits` is what the
+    /// The plan for `frame`, where `formats` are what the frame's images
+    /// are stored in and `limits` is what the
     /// backend's tile executor can hold.
-    pub fn build(frame: &Frame, scratch: wgpu::TextureFormat, limits: Limits) -> Self {
+    pub fn build(frame: &Frame, formats: Formats, limits: Limits) -> Self {
         let mut plan = Self {
             planned: true,
             ..Self::default()
@@ -210,11 +241,7 @@ impl ExecutionPlan {
                     generation,
                     region: pass.region,
                     space: pass.space,
-                    format: if matches!(pass.target, Target::Scratch(_)) {
-                        scratch
-                    } else {
-                        wgpu::TextureFormat::Rgba16Float
-                    },
+                    format: formats.of(frame, pass.target),
                     producer: Some(index),
                     last_consumer: index,
                     storage: Storage::Materialized(initial(pass.target)),
@@ -246,7 +273,7 @@ impl ExecutionPlan {
                             generation: 0,
                             region: [0; 4],
                             space: cherenkov::BlendSpace::Linear,
-                            format: wgpu::TextureFormat::Rgba16Float,
+                            format: formats.of(frame, target),
                             producer: None,
                             last_consumer: index,
                             storage: Storage::Materialized(Materialization::Persistent),
