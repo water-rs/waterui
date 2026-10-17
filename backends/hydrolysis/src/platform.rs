@@ -1736,11 +1736,6 @@ impl AdapterSelection {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg(not(target_arch = "wasm32"))]
 struct AdapterPreference {
-    /// Whether the adapter can compile the engine's shaders at all: a DX12
-    /// adapter without the DXC runtime falls back to wgpu's FXC path, which
-    /// cannot build them (#1713), so it ranks behind every adapter that can
-    /// — a Vulkan device on the same GPU included.
-    compiler_rank: u8,
     backend_rank: u8,
     device_type_rank: u8,
 }
@@ -1751,11 +1746,8 @@ impl AdapterPreference {
     /// `FORCE_FALLBACK_ADAPTER`, so with it set a software adapter must win
     /// over the real GPU beside it, which is the whole point of reproducing a
     /// software-adapter run on a machine that has a GPU.
-    fn for_info(info: &wgpu::AdapterInfo, prefer_software: bool) -> Self {
+    const fn for_info(info: &wgpu::AdapterInfo, prefer_software: bool) -> Self {
         Self {
-            compiler_rank: u8::from(
-                info.backend == wgpu::Backend::Dx12 && !dxc_runtime_available(),
-            ),
             backend_rank: backend_rank(info.backend),
             device_type_rank: if prefer_software {
                 software_first_device_type_rank(info.device_type)
@@ -1764,35 +1756,6 @@ impl AdapterPreference {
             },
         }
     }
-}
-
-/// Whether the DXC shader-compiler runtime — `dxcompiler.dll` and
-/// `dxil.dll`, the pair wgpu's DirectX 12 backend `LoadLibrary`s by name —
-/// resolves beside this executable or on `PATH`. Cherenkov's shaders need
-/// DXC: the FXC fallback wgpu picks when it is absent cannot compile them
-/// (#1713). `water run` stages the pair beside the binary; a plain
-/// `cargo run` has them only where a `dxc` install put them.
-#[cfg(windows)]
-pub(crate) fn dxc_runtime_available() -> bool {
-    fn on_load_path(name: &str) -> bool {
-        if let Ok(exe) = std::env::current_exe()
-            && exe.with_file_name(name).is_file()
-        {
-            return true;
-        }
-        let Some(path) = std::env::var_os("PATH") else {
-            return false;
-        };
-        std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
-    }
-    on_load_path("dxcompiler.dll") && on_load_path("dxil.dll")
-}
-
-/// The DX12 compiler question only exists on Windows; everywhere else the
-/// answer is that nothing is missing.
-#[cfg(all(not(windows), not(target_arch = "wasm32")))]
-const fn dxc_runtime_available() -> bool {
-    true
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -1993,6 +1956,13 @@ fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
 fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = backends;
+    // Cherenkov's shaders need DXC; wgpu's default `Auto` silently falls
+    // back to FXC when `dxcompiler.dll` does not load, and FXC cannot
+    // compile them (#1713). Requiring DXC makes wgpu drop the DirectX 12
+    // backend instead, so another backend's adapter is selected, or the
+    // no-adapter failure names the missing runtime.
+    descriptor.backend_options.dx12.shader_compiler =
+        wgpu::Dx12Compiler::default_dynamic_dxc().with_env();
     descriptor
 }
 
@@ -2078,7 +2048,13 @@ fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu
     assert!(
         !inspected_adapters.is_empty(),
         "{context}: failed to find a surface-compatible wgpu adapter across the probed backends {tiers:?}. \
-    Set WGPU_BACKEND to an available backend or install/update the platform GPU driver."
+    Set WGPU_BACKEND to an available backend or install/update the platform GPU driver.{}",
+        if cfg!(windows) {
+            " DirectX 12 is only offered when the DXC runtime (dxcompiler.dll) loads: \
+`water run` stages it beside the binary and `water doctor` installs it."
+        } else {
+            ""
+        }
     );
 
     panic!(
