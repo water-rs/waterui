@@ -49,9 +49,67 @@ jobs:
       # `cros-libva` build script, reached through `waterkit-codec`, fails the
       # `waterui-image` verify build on the missing `libva-dev`.
       - uses: ./.github/actions/setup-linux-deps
+      # The publish set is release-plz's `[[package]]` list. Two invariants
+      # are checked before anything uploads:
+      #
+      # 1. Every publishable workspace member must be listed — an unlisted
+      #    publishable crate is how `waterui-ts` was left out of the
+      #    managed set while the facade depended on it (#2687).
+      # 2. crates.io trusted publishing cannot mint the first version of a
+      #    name: a listed crate absent from the index needs either a
+      #    manual `cargo publish` or the `CARGO_REGISTRY_TOKEN` secret set
+      #    for this run (see RELEASING.md, "First publish of a crate
+      #    name"). Without that check a release would publish the cohort
+      #    in dependency order up to the unclaimed name and then die,
+      #    leaving immutable partial versions on crates.io.
+      - name: Guard the publish set
+        shell: bash
+        env:
+          STORED_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          mapfile -t managed < <(sed -n 's/^name = "\(.*\)"/\1/p' release-plz.toml | sort -u)
+          mapfile -t publishable < <(
+            cargo metadata --format-version 1 --no-deps \
+              | jq -r '.packages[] | select(.publish != []) | .name' | sort -u)
+          unlisted="$(comm -23 <(printf '%s\n' "${publishable[@]}") <(printf '%s\n' "${managed[@]}"))"
+          if [[ -n "$unlisted" ]]; then
+            echo "::error::publishable crates missing from release-plz.toml: $(xargs <<< "$unlisted")"
+            exit 1
+          fi
+          index_path() {
+            local n="$1"
+            case ${#n} in
+              1) echo "1/$n" ;;
+              2) echo "2/$n" ;;
+              3) echo "3/${n:0:1}/$n" ;;
+              *) echo "${n:0:2}/${n:2:2}/$n" ;;
+            esac
+          }
+          unclaimed=()
+          for name in "${managed[@]}"; do
+            code="$(curl -sL --retry 10 -o /dev/null -w '%{http_code}' \
+              "https://index.crates.io/$(index_path "$name")")"
+            if [[ "$code" == 404 ]]; then
+              unclaimed+=("$name")
+            elif [[ "$code" != 2* ]]; then
+              echo "::error::crates.io index probe for $name failed with HTTP $code"
+              exit 1
+            fi
+          done
+          if ((${#unclaimed[@]})); then
+            if [[ -z "${STORED_TOKEN}" ]]; then
+              echo "::error::crates.io has never published: ${unclaimed[*]} — trusted publishing cannot mint a first version; publish each once by hand or set the scoped CARGO_REGISTRY_TOKEN secret for this run (see RELEASING.md)."
+              exit 1
+            fi
+            echo "::notice::first publish via stored token for: ${unclaimed[*]} — configure a trusted publisher for each afterwards, then remove the secret."
+          fi
       # Mint a short-lived crates.io token from the GitHub OIDC identity
       # instead of a stored CARGO_REGISTRY_TOKEN (trusted publishing is
-      # configured per crate on crates.io).
+      # configured per crate on crates.io). A stored secret still wins when
+      # set — it is the bootstrap path for names trusted publishing cannot
+      # create, and the guard above only lets the run reach this step with
+      # unclaimed names when the secret is there.
       - uses: rust-lang/crates-io-auth-action@v1
         id: crates-io-auth
       - uses: ./.github/actions/release-plz
@@ -60,7 +118,7 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.crates-io-auth.outputs.token }}
       # Read the tag out of release-plz's own report rather than looking for
       # one on this job's HEAD. The tags do not land there: releasing 0.4.1
       # created `v0.4.1` on the release branch's tip, while this

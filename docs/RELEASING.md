@@ -47,6 +47,31 @@ and the Homebrew formula are produced by this workflow's `cli-dist` and
 crates.io, fix forward with new versions; do not delete tags or attempt to
 overwrite published versions.
 
+## First publish of a crate name
+
+Trusted publishing cannot mint the first version of a crate: a name that does
+not exist on crates.io has no settings page on which to register a trusted
+publisher. The release job's publish-set guard fails the run before any upload
+when the managed set contains an unclaimed name, so a partially published
+cohort cannot happen.
+
+For a release that carries new names — `cherenkov`, `cherenkov-record`,
+`cherenkov-gpu`, `cherenkov-cpu`, `waterui-meta`, and the `waterui-ts` family
+are the current set — choose one of:
+
+- Publish each new name once by hand from the merged `main` commit
+  (`cargo publish -p <name> --locked` with a token scoped to
+  `publish-new` for exactly that name), in dependency order, then let the
+  workflow publish the rest.
+- Add a `CARGO_REGISTRY_TOKEN` repository secret holding a token scoped for
+  `publish-new` and `publish-update` across the crate names, run the release,
+  then configure a trusted publisher for each new crate
+  (`https://crates.io/crates/<name>/settings`, repository `water-rs/waterui`,
+  workflow `release.yml`) and delete the secret again.
+
+Either way, every later release of those crates goes through trusted
+publishing like the rest of the workspace.
+
 ## Published-channel verification
 
 Install the released CLI from an empty Cargo cache, create a project whose

@@ -213,11 +213,12 @@ nami-core = "0.5"
 # The 2D engine WaterUI's self-drawn content records and renders through
 # (water-rs/hydrolysis#205, water-rs/waterui#1449): recording, resource
 # registration, the layer tree and GPU content. The whole `cherenkov` family
-# lives in this repository under `graphics/` — path members, not crates.io.
-cherenkov = { version = "0.0.0", path = "graphics/cherenkov" }
-cherenkov-cpu = { version = "0.0.0", path = "graphics/cherenkov/cpu" }
-cherenkov-gpu = { version = "0.0.0", path = "graphics/cherenkov/gpu" }
-cherenkov-record = { version = "0.0.0", path = "graphics/cherenkov/record" }
+# lives in this repository under `graphics/` and publishes from here on its
+# own line under `cherenkov-*` tags.
+cherenkov = { version = "0.1.0", path = "graphics/cherenkov" }
+cherenkov-cpu = { version = "0.1.0", path = "graphics/cherenkov/cpu" }
+cherenkov-gpu = { version = "0.1.0", path = "graphics/cherenkov/gpu" }
+cherenkov-record = { version = "0.1.0", path = "graphics/cherenkov/record" }
 pin-project-lite = "0.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -621,9 +622,9 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", branch = "d
 block = { git = "https://github.com/Dicklesworthstone/rust-block", rev = "b39ae859d1ee8e8cb5eef6a516471f1578d26b96" }
 
 # The `cherenkov`/`filtrate` families live in this repository under
-# `graphics/` (water-rs/waterui#1449). Components pinned from sibling
-# repositories declare them as crates.io requirements — `cherenkov` is
-# unpublished and `filtrate`'s published release is an older API — so the
+# `graphics/` (water-rs/waterui#1449) and publish from here. Components
+# pinned from sibling repositories declare them as crates.io requirements —
+# the published `filtrate` release predates the in-tree API — so the
 # requirements resolve to the in-tree sources instead. Every filtrate in the
 # graph must come from one source: a filter type built on the published
 # crate is a different type from one built in-tree.

@@ -1,11 +1,10 @@
 [package]
 name = "cherenkov-cpu"
-version = "0.0.0"
+version = "0.1.0"
 description = "CPU raster backend for the Cherenkov 2D rendering engine"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-publish = false
 
 # Bench and test access to the span kernels, the pattern `cherenkov`'s
 # `testing` feature uses: `testing::kernels`, no public API.
@@ -14,9 +13,9 @@ testing = []
 
 [dependencies]
 arrayvec = "0.7"
-cherenkov = { path = ".." }
+cherenkov = { version = "0.1.0", path = ".." }
 fearless_simd = "0.4"
-filtrate-core = { path = "../../filtrate/core" }
+filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
 kurbo = "0.13"
 skrifa = "0.44"
 png = "0.18"

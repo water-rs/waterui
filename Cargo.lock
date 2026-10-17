@@ -1653,7 +1653,7 @@ dependencies = [
 
 [[package]]
 name = "cherenkov"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "arc-swap",
  "cherenkov-record",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "cherenkov-cpu"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "arrayvec",
  "cherenkov",
@@ -1742,7 +1742,7 @@ dependencies = [
 
 [[package]]
 name = "cherenkov-gpu"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "ash",
  "block2 0.6.2",
@@ -1811,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "cherenkov-record"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "color",
  "filtrate-core",
