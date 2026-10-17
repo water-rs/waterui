@@ -171,9 +171,20 @@ impl TestMachine {
     }
 
     /// Stage canned output for a fake-tool response key.
+    ///
+    /// The dispatchers emit a canned file's contents line-wise — `.sh`'s
+    /// `print_file` terminates an unterminated final line and `.cmd`'s
+    /// `type` cannot append a bare LF — so the newline normalization lives
+    /// here instead: a non-empty response is staged newline-terminated and
+    /// both dispatchers then emit identical bytes.
     pub fn respond(&self, key: &str, contents: &str) {
         let dir = self.responses();
         fs::create_dir_all(&dir).expect("create responses dir");
+        let contents = if contents.is_empty() || contents.ends_with('\n') {
+            contents.to_owned()
+        } else {
+            format!("{contents}\n")
+        };
         fs::write(dir.join(key), contents).expect("write canned response");
     }
 

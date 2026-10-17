@@ -294,7 +294,13 @@ impl Host {
     pub fn cache_dir(&self) -> Option<PathBuf> {
         #[cfg(target_os = "windows")]
         {
-            self.absolute_env_path("LOCALAPPDATA")
+            // `LOCALAPPDATA` first, else the profile's conventional local
+            // application-data folder — the directory the known-folder API
+            // `dirs` consults reports.
+            self.absolute_env_path("LOCALAPPDATA").or_else(|| {
+                self.absolute_env_path("USERPROFILE")
+                    .map(|profile| profile.join("AppData").join("Local"))
+            })
         }
         #[cfg(target_os = "macos")]
         {
