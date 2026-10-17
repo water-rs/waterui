@@ -232,9 +232,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
 fn activates_on_press(gesture: &Gesture) -> bool {
     match gesture {
         Gesture::Tap(_) => true,
-        Gesture::Then(then) => {
-            activates_on_press(then.first()) || activates_on_press(then.then())
-        }
+        Gesture::Then(then) => activates_on_press(then.first()) || activates_on_press(then.then()),
         Gesture::Simultaneous(pair) => {
             activates_on_press(pair.first()) || activates_on_press(pair.second())
         }

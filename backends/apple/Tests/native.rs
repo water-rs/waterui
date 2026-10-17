@@ -8232,8 +8232,8 @@ mod gesture_ax {
     use std::rc::Rc;
 
     use cocoa_ui::PlatformView;
-    use cocoa_ui::objc2::msg_send;
     use cocoa_ui::objc2::runtime::ProtocolObject;
+    use cocoa_ui::objc2::{msg_send, sel};
     use cocoa_ui::objc2_app_kit::NSAccessibility;
     use waterui::ViewExt as _;
     use waterui::prelude::text;
@@ -8245,6 +8245,13 @@ mod gesture_ax {
     fn perform_press(view: &PlatformView) -> bool {
         // SAFETY: `accessibilityPerformPress` answers a `BOOL`.
         unsafe { msg_send![view, accessibilityPerformPress] }
+    }
+
+    /// Whether the element offers `AXPress` to an assistive client.
+    fn press_allowed(view: &PlatformView) -> bool {
+        // SAFETY: `isAccessibilitySelectorAllowed:` takes a selector and
+        // answers a `BOOL`.
+        unsafe { msg_send![view, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)] }
     }
 
     /// The gesture's `HostView` is an element whose press runs the tap's
@@ -8261,10 +8268,8 @@ mod gesture_ax {
             element.isAccessibilityElement(),
             "the tap host must sit in the accessibility tree"
         );
-        assert!(
-            perform_press(host),
-            "the tap host must handle a press"
-        );
+        assert!(press_allowed(host), "the tap host must offer AXPress");
+        assert!(perform_press(host), "the tap host must handle a press");
         assert_eq!(pressed.get(), 1, "the press must run the tap's action");
     }
 
@@ -8279,6 +8284,10 @@ mod gesture_ax {
             })
         });
         let host = leaf.view();
+        assert!(
+            !press_allowed(host),
+            "a long-press host must not offer AXPress"
+        );
         assert!(
             !perform_press(host),
             "a long-press host must not claim a press"
