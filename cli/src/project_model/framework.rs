@@ -563,6 +563,45 @@ impl ResolvedFramework {
             .and_then(toml::Value::as_str)
     }
 
+    /// Assert the selected framework's layout carries `member` in-tree —
+    /// its `[package.metadata.waterui]` declares `member.path_key`.
+    ///
+    /// This is the converse of `minimum-cli-version`: the framework records
+    /// the CLI floor it needs, and the CLI generates against the framework
+    /// layout it requires. The judgment reads the selected manifest's
+    /// declared metadata — never a version number — so a stable release
+    /// resolved before the member moved in-tree fails here, ahead of any
+    /// scaffold output, instead of surfacing inside `member_source` as an
+    /// unexplained missing-member error mid-render.
+    ///
+    /// A local `waterui_path` checkout is judged by the filesystem, not by
+    /// this table — `member_dependency`'s checkout probe owns that failure.
+    ///
+    /// # Errors
+    /// Returns an error naming the installed CLI, the selected framework's
+    /// coordinates, the layout the CLI requires, and the channels that
+    /// supply it, when the selected framework declares no `member.path_key`.
+    pub(crate) fn require_in_tree_member(&self, member: FrameworkMember) -> Result<()> {
+        if self.member_path(member).is_some() {
+            return Ok(());
+        }
+        let Some((repository, revision)) = self.git_coordinates()? else {
+            return Ok(());
+        };
+        bail!(
+            "water {} generates against the in-tree `{}` member \
+             (`{}` under `[package.metadata.waterui]`); \
+             the selected framework ({repository}@{revision}) predates that \
+             layout — it ships the backend as the external package it was \
+             before the move. Select a channel whose framework carries it \
+             (`water channel dev` or `water channel nightly`), or install \
+             the CLI matching the stable release.",
+            env!("CARGO_PKG_VERSION"),
+            member.package,
+            member.path_key,
+        );
+    }
+
     /// The `(repository, revision)` the framework tree itself resolves from
     /// on a channel selection — `dev` and `nightly` the selected revision,
     /// `stable` the certified release's provenance. `None` names a local
@@ -6204,6 +6243,33 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             let error = framework.member_source(member).unwrap_err().to_string();
             assert!(error.contains(key), "{error}");
         }
+    }
+
+    #[test]
+    fn in_tree_member_requirement_accepts_the_declared_layout_on_every_channel() {
+        for framework in [stable_framework(), dev_framework(), nightly_framework()] {
+            for member in [APPLE_BACKEND, HYDROLYSIS] {
+                framework.require_in_tree_member(member).unwrap();
+            }
+        }
+    }
+
+    /// The pre-move layout failure must name the installed CLI, the selected
+    /// framework's coordinates, the declaration it lacks, and the channels
+    /// that carry the member — the remedies #1953 asks the failure to state.
+    #[test]
+    fn in_tree_member_requirement_names_the_cli_framework_and_remedy() {
+        let mut framework = stable_framework();
+        framework.metadata.remove("apple-backend-path");
+        let error = framework
+            .require_in_tree_member(APPLE_BACKEND)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(env!("CARGO_PKG_VERSION")), "{error}");
+        assert!(error.contains("apple-backend-path"), "{error}");
+        assert!(error.contains("waterui-apple"), "{error}");
+        assert!(error.contains("water channel dev"), "{error}");
+        assert!(error.contains("water channel nightly"), "{error}");
     }
 
     /// The stable member-substitution table: every `path` member the root
