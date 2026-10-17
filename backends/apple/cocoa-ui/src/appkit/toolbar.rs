@@ -191,6 +191,14 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+/// The prefix of every window's toolbar identifier; the window's key
+/// completes it. `AppKit` synchronises item insertion and removal across
+/// every toolbar that shares an identifier, so a shared identifier would
+/// make one window's chrome rebuild insert its items into every other
+/// window's toolbar — and ask those windows' delegates for items they do
+/// not offer. Each window's chrome is its own, so each toolbar is too.
+const TOOLBAR_IDENTIFIER_PREFIX: &str = "dev.cocoaui.window.";
+
 fn window_key(window: &NSWindow) -> usize {
     std::ptr::from_ref(window) as usize
 }
@@ -386,7 +394,7 @@ impl WindowToolbar {
             })),
             toolbar: NSToolbar::initWithIdentifier(
                 mtm.alloc(),
-                &NSString::from_str("dev.cocoaui.window"),
+                &NSString::from_str(&format!("{TOOLBAR_IDENTIFIER_PREFIX}{key:x}")),
             ),
             content_owner: RefCell::new(None),
             content: RefCell::new(ToolbarContent::default()),
