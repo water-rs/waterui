@@ -3,7 +3,11 @@
 //!
 //! Segments carry a label and an optional icon; the control runs
 //! `on_select` with the tapped segment's index. It is the Mac's in-toolbar
-//! tab control: `trackingMode` `.selectOne`, spring-loaded, compact sizing.
+//! tab control: `trackingMode` `.selectOne`, the extra-large control size,
+//! and segments filled equally. A unified toolbar then draws that control
+//! at the platform tab picker's metrics — same height as the free control,
+//! narrower — so the toolbar item follows the intrinsic size instead of a
+//! width measured before the control joins the toolbar.
 //!
 //! # Safety
 //!
@@ -21,7 +25,9 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::sel;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
-use objc2_app_kit::{NSImage, NSSegmentSwitchTracking, NSSegmentedControl};
+use objc2_app_kit::{
+    NSControlSize, NSImage, NSSegmentDistribution, NSSegmentSwitchTracking, NSSegmentedControl,
+};
 use objc2_core_foundation::{CGRect, CGSize};
 use objc2_foundation::{NSObjectProtocol, NSString};
 
@@ -103,6 +109,10 @@ impl SegmentedControl {
         // initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
         this.setSegmentStyle(objc2_app_kit::NSSegmentStyle::Automatic);
+        // The system toolbar tab picker is an extra-large, equally filled
+        // segmented control. The regular size is a shorter, narrower capsule.
+        this.setControlSize(NSControlSize::ExtraLarge);
+        this.setSegmentDistribution(NSSegmentDistribution::FillEqually);
         this.setTrackingMode(NSSegmentSwitchTracking::SelectOne);
         // SAFETY: `self` is its own target for `segmentChanged:`.
         unsafe {

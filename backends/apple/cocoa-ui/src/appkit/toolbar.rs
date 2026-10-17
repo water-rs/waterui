@@ -998,31 +998,33 @@ impl WindowToolbar {
         item
     }
 
-    /// Wraps a view in a toolbar item at the size its owner measured.
+    /// Wraps a view in a toolbar item.
     ///
-    /// The toolbar measures an item through the constraint system, so the
-    /// size is stated as constraints rather than through the item's
-    /// long-deprecated size bounds.
+    /// `size` pins the item with constraints. `None` leaves the view's
+    /// intrinsic size in charge: the tab control's intrinsic width changes
+    /// once it joins the unified toolbar, and a width taken before that
+    /// insertion would freeze the free control's size.
     fn hosting_item(
         &self,
         identifier: &NSToolbarItemIdentifier,
         view: &Retained<NSView>,
         size: Option<Size>,
     ) -> Retained<NSToolbarItem> {
-        let size = size.unwrap_or_else(|| view.fittingSize().into());
         view.removeFromSuperview();
-        view.setFrame(CGRect::new(
-            objc2_core_foundation::CGPoint::ZERO,
-            size.into(),
-        ));
         view.setTranslatesAutoresizingMaskIntoConstraints(false);
-        let constraints: Vec<Retained<NSLayoutConstraint>> = vec![
-            view.widthAnchor().constraintEqualToConstant(size.width),
-            view.heightAnchor().constraintEqualToConstant(size.height),
-        ];
-        NSLayoutConstraint::activateConstraints(&NSArray::from_slice(
-            &constraints.iter().map(Retained::as_ref).collect::<Vec<_>>(),
-        ));
+        if let Some(size) = size {
+            view.setFrame(CGRect::new(
+                objc2_core_foundation::CGPoint::ZERO,
+                size.into(),
+            ));
+            let constraints: Vec<Retained<NSLayoutConstraint>> = vec![
+                view.widthAnchor().constraintEqualToConstant(size.width),
+                view.heightAnchor().constraintEqualToConstant(size.height),
+            ];
+            NSLayoutConstraint::activateConstraints(&NSArray::from_slice(
+                &constraints.iter().map(Retained::as_ref).collect::<Vec<_>>(),
+            ));
+        }
         let item =
             NSToolbarItem::initWithItemIdentifier(MainThreadMarker::from(self).alloc(), identifier);
         item.setView(Some(&**view));
