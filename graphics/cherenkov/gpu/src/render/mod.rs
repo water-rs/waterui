@@ -48,9 +48,9 @@ use crate::{
 use bitmap::BitmapKey;
 use cherenkov::{
     ContentOp, EngineError, FontData as EngineFontData, FontId, Frame, FrameId, FrameRedraw,
-    FrameStats, FrameTiming, ImageId, ImageUpload, LayerId, MemoryUsage, PassTiming, Pressure,
-    ProducerId, Readback, RenderError, Renderer, ResourceError, ResourceId, SurfaceError,
-    SurfaceFrame, SurfaceId, SurfaceInfo, Visibility,
+    FrameStats, FrameTiming, ImageId, ImageUpload, LayerId, MemoryUsage, OffscreenFormat,
+    PassTiming, Pressure, ProducerId, Readback, RenderError, Renderer, ResourceError, ResourceId,
+    SurfaceError, SurfaceFrame, SurfaceId, SurfaceInfo, Visibility,
 };
 /// The export pool's platform type: the bounded dma-buf pool on Linux
 /// (#1687), an uninhabited stand-in elsewhere.
@@ -149,8 +149,74 @@ impl CoveragePass {
     }
 }
 
-/// The surface target format: premultiplied linear Display P3.
-const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// The working format: premultiplied linear Display P3 in `Rgba16Float`.
+/// Every surface stores it except an offscreen target that requests
+/// [`OffscreenFormat::LinearF32`]; projected images, content and shader
+/// paint textures, images and tile attachments always do.
+const WORKING_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// The closed set of formats a pass renders into, by format slot: the
+/// working format, the `Rgba8Unorm` scratch format and an `Rgba32Float`
+/// offscreen target. Every format-keyed pipeline and texture array is
+/// indexed by [`format_slot`], so surfaces and scratch layers sharing a
+/// format share one cell.
+const RENDER_FORMATS: [wgpu::TextureFormat; 3] = [
+    WORKING_FORMAT,
+    wgpu::TextureFormat::Rgba8Unorm,
+    wgpu::TextureFormat::Rgba32Float,
+];
+
+/// The slot of `format` in [`RENDER_FORMATS`].
+///
+/// # Panics
+/// When `format` is not one the engine renders into: every pass target is
+/// created in one of them, so another format is an engine bug.
+const fn format_slot(format: wgpu::TextureFormat) -> usize {
+    match format {
+        wgpu::TextureFormat::Rgba16Float => 0,
+        wgpu::TextureFormat::Rgba8Unorm => 1,
+        wgpu::TextureFormat::Rgba32Float => 2,
+        _ => panic!("the engine renders only into RENDER_FORMATS"),
+    }
+}
+
+/// One cell per [`RENDER_FORMATS`] slot.
+type FormatCells<T> = [T; RENDER_FORMATS.len()];
+
+/// The device features an `Rgba32Float` surface needs: blending into it,
+/// and filtered sampling of the captures and backdrop copies taken from it
+/// (the engine's group-1 textures are filterable). Device creation enables
+/// them wherever the adapter offers them.
+fn float32_target_features() -> wgpu::Features {
+    wgpu::Features::FLOAT32_BLENDABLE | wgpu::Features::FLOAT32_FILTERABLE
+}
+
+/// The storage format of a surface on `target`, or the error naming the
+/// device features it lacks — never a substitute format. Only an
+/// offscreen target chooses its format; every other target is handed to
+/// a host or a compositor in the working format.
+fn surface_format(
+    device: &wgpu::Device,
+    target: &GpuTarget,
+) -> Result<wgpu::TextureFormat, SurfaceError> {
+    let GpuTarget::Offscreen(offscreen) = target else {
+        return Ok(WORKING_FORMAT);
+    };
+    match offscreen.format {
+        OffscreenFormat::LinearF16 => Ok(WORKING_FORMAT),
+        format @ OffscreenFormat::LinearF32 => {
+            let missing = float32_target_features() & device.features().complement();
+            if missing.is_empty() {
+                Ok(wgpu::TextureFormat::Rgba32Float)
+            } else {
+                Err(SurfaceError::UnsupportedFormat {
+                    format,
+                    missing: missing.to_string(),
+                })
+            }
+        }
+    }
+}
 
 /// Amortize Metal's limited number of counter sample buffers across frames.
 /// Each range remains exclusive until its frame's readback completes.
@@ -202,6 +268,57 @@ const XYZ_TO_P3: [[f64; 3]; 3] = [
     ],
 ];
 
+/// The row pitch of a readback buffer holding `width` texels of
+/// `format`: the tight row rounded up to the copy alignment.
+fn readback_pitch(format: wgpu::TextureFormat, width: u32) -> u32 {
+    let texel = u32::try_from(texel_bytes(format)).expect("a texel size fits in u32");
+    (width * texel).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+}
+
+/// The pixels of a mapped readback of a `size` surface stored in
+/// `format`, `pitch` bytes apart: f16 texels widen exactly, f32 texels
+/// are taken as stored.
+fn decode_readback(
+    data: &[u8],
+    format: wgpu::TextureFormat,
+    (width, height): (u32, u32),
+    pitch: u32,
+) -> Vec<[f32; 4]> {
+    let tight = width as usize * usize::try_from(texel_bytes(format)).expect("a texel fits usize");
+    let rows = (0..height).map(|row| {
+        let start = (row * pitch) as usize;
+        &data[start..start + tight]
+    });
+    match format {
+        wgpu::TextureFormat::Rgba16Float => rows
+            .flat_map(|row| row.as_chunks::<8>().0)
+            .map(|texel| {
+                let bits: [u16; 4] = bytemuck::cast(*texel);
+                bits.map(|channel| half::f16::from_bits(channel).to_f32())
+            })
+            .collect(),
+        wgpu::TextureFormat::Rgba32Float => rows
+            .flat_map(|row| row.as_chunks::<16>().0)
+            .map(|texel| bytemuck::cast::<[u8; 16], [f32; 4]>(*texel))
+            .collect(),
+        _ => unreachable!("a surface stores the working format or Rgba32Float"),
+    }
+}
+
+/// Whether `pass` draws in coverage order: a surface pass of plain
+/// source-over fills, front to back against the coverage depth.
+fn coverage_order(pass: &lower::Pass) -> bool {
+    matches!(pass.target, Target::Part(_))
+        && !pass.ranges.is_empty()
+        && pass.ranges.iter().all(|range| {
+            range.pipeline == PipelineKind::SrcOver
+                && range.variant == ShaderVariant::Simple
+                && range.source.is_none()
+                && range.image.is_none()
+                && range.mask.is_none()
+        })
+}
+
 /// The `wgpu` format for a [`ScratchFormat`].
 const fn scratch_wgpu(format: ScratchFormat) -> wgpu::TextureFormat {
     match format {
@@ -215,6 +332,7 @@ const fn format_name(format: wgpu::TextureFormat) -> &'static str {
     match format {
         wgpu::TextureFormat::Rgba16Float => "rgba16float",
         wgpu::TextureFormat::Rgba8Unorm => "rgba8unorm",
+        wgpu::TextureFormat::Rgba32Float => "rgba32float",
         _ => "unknown",
     }
 }
@@ -317,6 +435,9 @@ struct SurfaceState {
     /// the window's output re-selection (#98).
     display: cherenkov::Display,
     size: (u32, u32),
+    /// The target's storage format, and every part's and plane capture's:
+    /// [`WORKING_FORMAT`] unless an offscreen target requested another.
+    format: wgpu::TextureFormat,
     target: wgpu::Texture,
     view: wgpu::TextureView,
     /// Scratch textures, one per isolation depth, sized to the largest
@@ -324,28 +445,25 @@ struct SurfaceState {
     scratch: FxHashMap<usize, ScratchTarget>,
     /// Transient depth for opaque regions; cleared and discarded in one pass.
     coverage_depth: Option<ScratchTarget>,
-    /// Backdrop copies for blend composites: index 0 matches the surface
-    /// format, index 1 the scratch format.
-    backdrop: [Option<ScratchTarget>; 2],
+    /// Backdrop copies for blend composites, by the [`format_slot`] of the
+    /// target they copy.
+    backdrop: [Option<ScratchTarget>; RENDER_FORMATS.len()],
     /// The staged resolves' shared 1:1 device copies: every reduced
     /// capture with looked-through composites to apply first copies its
     /// device rect into the slot of its format, draws the composites
     /// over it and resolves from it — its contents die with that pass's
     /// resolve, so one texture per format serves every group, within
-    /// and across frames. Slot 0 matches the surface format (a capture
-    /// copying a part, projected image or plane), slot 1 the scratch
-    /// format when it differs from the surface format (a capture
-    /// copying a semantic isolation's scratch); otherwise slot 0
-    /// serves both. Each grows, never shrinks, to the largest staged
-    /// device rect of its format.
-    staging: [Option<ScratchTarget>; 2],
+    /// and across frames. The slots are the captures' [`format_slot`]s.
+    /// Each grows, never shrinks, to the largest staged device rect of
+    /// its format.
+    staging: [Option<ScratchTarget>; RENDER_FORMATS.len()],
     /// The staged-resolve bind group beside each staging slot: every
     /// staged resolve binds the same globals buffer and staging view at
     /// a dynamic offset, so one bind per slot serves all of them. It is
     /// dropped and rebuilt with its texture — a stale entry would keep
     /// the replaced view alive after the accounting says it is freed.
     /// The per-region bind caches hold only direct resolves.
-    staging_bind: [Option<resolve::Bind>; 2],
+    staging_bind: [Option<resolve::Bind>; RENDER_FORMATS.len()],
     /// Backdrop groups registered on this surface by raw id.
     backdrop_groups: FxHashMap<u64, BackdropGroupState>,
     anchor_scratch: lower::AnchorScratch,
@@ -652,28 +770,39 @@ fn source_view(surf: &SurfaceState, target: Target) -> Result<&wgpu::TextureView
     })
 }
 
-/// The format a capture takes: the surface format when its copy
-/// source is a part, a projected image or a plane; the scratch format
-/// when it is a semantic isolation's scratch. A capture never copies
-/// a capture.
-fn capture_format(
-    copy_from: Target,
-    scratch_format: wgpu::TextureFormat,
+/// The format pass target `target` stores, which a capture copying it
+/// takes too: the surface's for a part or a plane, the working format
+/// for a projected image, the scratch format for a semantic isolation's
+/// scratch. A capture never copies a capture.
+fn stored_format(
+    target: Target,
+    surface: wgpu::TextureFormat,
+    scratch: wgpu::TextureFormat,
 ) -> Result<wgpu::TextureFormat, RenderError> {
-    match copy_from {
-        Target::Part(_) | Target::Projected(_) | Target::Plane(_) => Ok(TARGET_FORMAT),
-        Target::Scratch(_) => Ok(scratch_format),
+    match target {
+        Target::Part(_) | Target::Plane(_) => Ok(surface),
+        Target::Projected(_) => Ok(WORKING_FORMAT),
+        Target::Scratch(_) => Ok(scratch),
         Target::Backdrop { group, .. } => Err(RenderError::Render(format!(
             "backdrop group {group} copies from a capture"
         ))),
     }
 }
 
-/// The staging slot a texture format uses: slot 1 the scratch format's
-/// staging when it differs from the surface format; otherwise slot 0
-/// serves both.
-fn staging_slot(format: wgpu::TextureFormat) -> usize {
-    usize::from(format != TARGET_FORMAT)
+/// The blend backdrop slot of a pass drawing into `target`: the
+/// [`format_slot`] of the target's format, since the copy keeps it. A
+/// capture pass never blends against a backdrop copy.
+fn blend_backdrop_slot(
+    target: Target,
+    surface: wgpu::TextureFormat,
+    scratch: wgpu::TextureFormat,
+) -> Result<usize, RenderError> {
+    if matches!(target, Target::Backdrop { .. }) {
+        return Err(RenderError::Render(
+            "a blend backdrop copy on a capture pass".into(),
+        ));
+    }
+    Ok(format_slot(stored_format(target, surface, scratch)?))
 }
 
 /// Prepares pass `index`'s resolve when its capture is reduced: a direct
@@ -703,7 +832,11 @@ fn prepare_resolve(
     let bind = if staged {
         // A staged resolve reads the staging slot of its capture's
         // format; one bind beside the slot serves every staged resolve.
-        let slot = staging_slot(capture_format(capture.copy_from, scratch_format)?);
+        let slot = format_slot(stored_format(
+            capture.copy_from,
+            surf.format,
+            scratch_format,
+        )?);
         let staging = &surf.staging[slot]
             .as_ref()
             .expect("staging allocated before encode")
@@ -798,11 +931,11 @@ fn retire_projective(
     }
 }
 
-/// The group-1 bind group key: `(source, backdrop-needed,
-/// image, mask texture)`.
+/// The group-1 bind group key: `(source, blend backdrop slot, image,
+/// mask texture)`.
 type Bind1Key = (
     Option<lower::Source>,
-    bool,
+    Option<usize>,
     Option<lower::ImageSource>,
     Option<u64>,
 );
@@ -894,14 +1027,13 @@ struct BackdropShaderEntry {
     union_source: std::sync::Arc<str>,
     /// The union-shaped module, built lazily with the first union slot.
     union_module: Option<wgpu::ShaderModule>,
-    /// The plain-variant pipelines by `[replace][format index]`: the
-    /// source-over slots built at registration, `Some` for each distinct
-    /// target format (the scratch-format slot stays `None` when it equals
-    /// the target's); the replace slots on first use.
-    plain: [[Option<wgpu::RenderPipeline>; 2]; 2],
-    /// The union-shaped pipelines by `[replace][format index]` — built on
+    /// The plain-variant pipelines by `[replace][format slot]`: the
+    /// source-over slots of the working and scratch formats built at
+    /// registration, every other slot on first use.
+    plain: [FormatCells<Option<wgpu::RenderPipeline>>; 2],
+    /// The union-shaped pipelines by `[replace][format slot]` — built on
     /// first use.
-    union: [[Option<wgpu::RenderPipeline>; 2]; 2],
+    union: [FormatCells<Option<wgpu::RenderPipeline>>; 2],
 }
 
 /// All render-thread state.
@@ -961,11 +1093,11 @@ pub struct GpuRenderer {
     queue: wgpu::Queue,
     /// Core pipelines keyed by target format, blend mode and shader
     /// variant: `[format][replace][variant]` where the format index is
-    /// `usize::from(format != TARGET_FORMAT)` — when surface and scratch
-    /// share `Rgba16Float`, both draw through slot 0, so identical
+    /// the [`format_slot`] — when surface and scratch share a format,
+    /// both draw through one slot, so identical
     /// pipelines are built once (#170). A `None` cell is created at first
     /// use — preparation is measured on the frame that needs it (#170 B3).
-    /// `[space][format][ShaderVariant]` — a fourth variant slot holds
+    /// `[format slot][replace][ShaderVariant]` — a fourth variant slot holds
     /// the union-field pipelines for backdrop-union members, a fifth the
     /// long-gradient pipelines, a sixth the cell-buffer pipelines of
     /// GPU-routed ranges (`DrawRange::module`) and a seventh the
@@ -974,13 +1106,13 @@ pub struct GpuRenderer {
     /// outer-band member, the first GPU-routed draw and the first image
     /// paint with source flags (on wasm, by `prepare_lazy_pipelines`
     /// before the frame that needs them).
-    pipelines: [[[Option<wgpu::RenderPipeline>; 7]; 2]; 2],
-    /// `[module][opaque, partial]` coverage pipelines, same cell policy
+    pipelines: FormatCells<[[Option<wgpu::RenderPipeline>; 7]; 2]>,
+    /// `[format slot][module][opaque, partial]` coverage pipelines, same cell policy
     /// as the core set: the simple module's pair is built at init under
     /// `core_pipelines_eager()` (always, on wasm), else created at the
     /// first coverage pass (#170 B3, #49); the cell module's pair, which
     /// GPU-routed ranges draw with, at the first such range.
-    coverage_pipelines: [[Option<wgpu::RenderPipeline>; 2]; 2],
+    coverage_pipelines: FormatCells<[[Option<wgpu::RenderPipeline>; 2]; 2]>,
     /// The pipeline layout every core and backdrop pipeline shares.
     pipeline_layout: wgpu::PipelineLayout,
     #[cfg(target_vendor = "apple")]
@@ -1057,10 +1189,12 @@ pub struct GpuRenderer {
     /// The external-frame group-1 layout, `None` until a surface first
     /// draws an external frame.
     ext_layout: Option<wgpu::BindGroupLayout>,
-    /// `[format index]` external pipelines — the same slot indexing as
-    /// `pipelines`; `None` until external frames are used (#170: prepared
-    /// at `set_external_frame` registration, never at idle).
-    external_pipes: [Option<wgpu::RenderPipeline>; 2],
+    /// `[format slot]` external pipelines — the same slot indexing as
+    /// `pipelines`; `None` until external frames are used (#170: the
+    /// working and scratch formats' prepared at `set_external_frame`
+    /// registration, never at idle, a surface's own format at its first
+    /// external draw).
+    external_pipes: FormatCells<Option<wgpu::RenderPipeline>>,
     /// The Vulkan native external-frame context (issue #166): descriptors,
     /// render passes and pipelines for multiplanar and external-format
     /// frames, built when the first native frame is registered (#170).
@@ -1359,7 +1493,7 @@ fn create_device(
     let adapter = adapters
         .into_iter()
         .find(|a| {
-            a.get_texture_format_features(TARGET_FORMAT)
+            a.get_texture_format_features(WORKING_FORMAT)
                 .allowed_usages
                 .contains(TARGET_USAGES)
         })
@@ -1380,8 +1514,12 @@ fn create_device(
         "adapter"
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
-    let mut required =
-        supported & (image_storage::COMPRESSION_FEATURES | wgpu::Features::INDIRECT_FIRST_INSTANCE);
+    // The float32 features are what an `Rgba32Float` offscreen surface
+    // needs; a device without them rejects that surface by name.
+    let mut required = supported
+        & (image_storage::COMPRESSION_FEATURES
+            | wgpu::Features::INDIRECT_FIRST_INSTANCE
+            | float32_target_features());
     // The fixed engine shaders are precompiled (#57): Vulkan loads SPIR-V
     // and Metal a metallib through the passthrough API; wgpu-hal advertises
     // the feature unconditionally on both backends.
@@ -1619,7 +1757,7 @@ async fn create_device(
         .await
         .map_err(|error| EngineError::Backend(error.to_string()))?;
     if !adapter
-        .get_texture_format_features(TARGET_FORMAT)
+        .get_texture_format_features(WORKING_FORMAT)
         .allowed_usages
         .contains(TARGET_USAGES)
     {
@@ -1643,8 +1781,12 @@ async fn create_device(
         "adapter"
     );
     tracing::debug!(limits = ?adapter.limits(), "adapter limits");
-    let mut required =
-        supported & (image_storage::COMPRESSION_FEATURES | wgpu::Features::INDIRECT_FIRST_INSTANCE);
+    // The float32 features are what an `Rgba32Float` offscreen surface
+    // needs; a device without them rejects that surface by name.
+    let mut required = supported
+        & (image_storage::COMPRESSION_FEATURES
+            | wgpu::Features::INDIRECT_FIRST_INSTANCE
+            | float32_target_features());
     // Pass-boundary timestamps are all Metal is asked for: Apple GPUs
     // advertise `TIMESTAMP_QUERY_INSIDE_ENCODERS` but sample only at
     // stage boundaries, so an encoder-level `write_timestamp` goes through
@@ -2224,39 +2366,38 @@ impl PipelineFactory<'_> {
     }
 }
 
-/// The core pipeline for `(format, replace, variant)` — the format-slot
-/// index `usize::from(format != TARGET_FORMAT)` shares pipelines across
-/// surface and scratch when their formats coincide, and an empty cell is
-/// created at first use so preparation lands inside the frame that needs
-/// it (#170).
+/// The core pipeline for `(format, replace, variant)` — the
+/// [`format_slot`] index shares pipelines across surfaces and scratch
+/// layers whose formats coincide, and an empty cell is created at first
+/// use so preparation lands inside the frame that needs it (#170).
 fn core_pipeline<'m>(
-    pipelines: &'m mut [[[Option<wgpu::RenderPipeline>; 7]; 2]; 2],
+    pipelines: &'m mut FormatCells<[[Option<wgpu::RenderPipeline>; 7]; 2]>,
     factory: &PipelineFactory<'_>,
     format: wgpu::TextureFormat,
     replace: bool,
     variant: ShaderVariant,
 ) -> Result<&'m wgpu::RenderPipeline, RenderError> {
-    let cell = &mut pipelines[usize::from(format != TARGET_FORMAT)][usize::from(replace)]
-        [variant_index(variant)];
+    let cell = &mut pipelines[format_slot(format)][usize::from(replace)][variant_index(variant)];
     if cell.is_none() {
         *cell = Some(factory.create(format, CoveragePass::Painter(replace), variant)?);
     }
     Ok(cell.as_ref().expect("core pipeline ready"))
 }
 
-/// The `[opaque, partial]` coverage pipeline for the surface target —
-/// the same cell policy as `core_pipeline`: an empty cell is created at
-/// the first coverage pass that needs it (#170 B3, #49).
+/// The `[opaque, partial]` coverage pipeline for a surface target in
+/// `format` — the same cell policy as `core_pipeline`: an empty cell is
+/// created at the first coverage pass that needs it (#170 B3, #49).
 fn coverage_pipeline<'m>(
-    pipelines: &'m mut [[Option<wgpu::RenderPipeline>; 2]; 2],
+    pipelines: &'m mut FormatCells<[[Option<wgpu::RenderPipeline>; 2]; 2]>,
     factory: &PipelineFactory<'_>,
+    format: wgpu::TextureFormat,
     phase: CoveragePhase,
     gpu: bool,
 ) -> Result<&'m wgpu::RenderPipeline, RenderError> {
-    let cell = &mut pipelines[usize::from(gpu)][phase as usize];
+    let cell = &mut pipelines[format_slot(format)][usize::from(gpu)][phase as usize];
     if cell.is_none() {
         *cell = Some(factory.create(
-            TARGET_FORMAT,
+            format,
             CoveragePass::Coverage(phase),
             if gpu {
                 ShaderVariant::Cell
@@ -2438,16 +2579,18 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
         let mut pipelines = std::array::from_fn(|_| {
             std::array::from_fn(|_| std::array::from_fn(|_| None::<wgpu::RenderPipeline>))
         });
-        let mut coverage_pipelines = [[None, None], [None, None]];
-        // The closed core set, deduplicated by format slot: when surface
-        // and scratch share `Rgba16Float` every cell lands in slot 0 and
-        // the later iteration's `is_none` skips its duplicates (#170).
+        let mut coverage_pipelines =
+            FormatCells::<[[Option<wgpu::RenderPipeline>; 2]; 2]>::default();
+        // The closed core set, deduplicated by format slot: when the
+        // working and scratch formats coincide every cell lands in one
+        // slot and the later iteration's `is_none` skips its duplicates
+        // (#170). A surface's own `Rgba32Float` slot is never built here.
         // CoreDemand leaves the cells empty — `core_pipeline` fills each
         // at the first draw that needs it (#170 B3). The coverage pair
         // follows the same policy via `coverage_pipeline`.
         if let Some(modules) = &modules {
-            for format in [TARGET_FORMAT, scratch_format] {
-                let slot = usize::from(format != TARGET_FORMAT);
+            for format in [WORKING_FORMAT, scratch_format] {
+                let slot = format_slot(format);
                 for replace in [false, true] {
                     for (variant, module) in EAGER_CORE_VARIANTS.iter().zip(modules) {
                         let cell = &mut pipelines[slot][usize::from(replace)][*variant];
@@ -2465,7 +2608,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                     }
                 }
             }
-            for (cell, phase) in coverage_pipelines[0]
+            for (cell, phase) in coverage_pipelines[format_slot(WORKING_FORMAT)][0]
                 .iter_mut()
                 .zip([CoveragePhase::Opaque, CoveragePhase::Partial])
             {
@@ -2475,7 +2618,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
                     &pipeline_layout,
                     pipeline_cache.as_ref(),
                     &modules[0],
-                    TARGET_FORMAT,
+                    WORKING_FORMAT,
                     CoveragePass::Coverage(phase),
                 )?);
             }
@@ -2548,7 +2691,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             "dummy source",
             (1, 1),
             wgpu::TextureUsages::TEXTURE_BINDING,
-            TARGET_FORMAT,
+            WORKING_FORMAT,
         );
         diag::create(&device, "dummy source", 8);
         let (_, dummy_uint_view) = create_target(
@@ -2697,7 +2840,7 @@ pub fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineError> {
             dummy,
             dummy_uint_view,
             ext_layout: None,
-            external_pipes: [None, None],
+            external_pipes: Default::default(),
             #[cfg(all(unix, not(target_vendor = "apple")))]
             native: None,
             #[cfg(all(unix, not(target_vendor = "apple")))]
@@ -2816,13 +2959,14 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
     let mut pipelines = std::array::from_fn(|_| {
         std::array::from_fn(|_| std::array::from_fn(|_| None::<wgpu::RenderPipeline>))
     });
-    // The closed core set, deduplicated by format slot: when surface and
-    // scratch share `Rgba16Float` every cell lands in slot 0 and the
+    // The closed core set, deduplicated by format slot: when the working
+    // and scratch formats coincide every cell lands in one slot and the
     // later iteration's `is_none` skips its duplicates (#170). wasm
-    // always prepares eagerly — async creation cannot run inside the
-    // synchronous encode loop, so the cells are never empty.
-    for format in [TARGET_FORMAT, scratch_format] {
-        let slot = usize::from(format != TARGET_FORMAT);
+    // always prepares these eagerly — async creation cannot run inside
+    // the synchronous encode loop — and a surface's own `Rgba32Float`
+    // cells in `prepare_lazy_pipelines` before its first frame.
+    for format in [WORKING_FORMAT, scratch_format] {
+        let slot = format_slot(format);
         for replace in [false, true] {
             for (variant, module) in EAGER_CORE_VARIANTS.iter().zip(&modules) {
                 let cell = &mut pipelines[slot][usize::from(replace)][*variant];
@@ -2851,7 +2995,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
                 &pipeline_layout,
                 pipeline_cache.as_ref(),
                 &modules[0],
-                TARGET_FORMAT,
+                WORKING_FORMAT,
                 CoveragePass::Coverage(CoveragePhase::Opaque),
             ),
             create_pipeline(
@@ -2860,14 +3004,15 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
                 &pipeline_layout,
                 pipeline_cache.as_ref(),
                 &modules[0],
-                TARGET_FORMAT,
+                WORKING_FORMAT,
                 CoveragePass::Coverage(CoveragePhase::Partial),
             ),
         )
         .await?,
     )
     .map(Some);
-    let coverage_pipelines = [simple_coverage, [None, None]];
+    let mut coverage_pipelines = FormatCells::<[[Option<wgpu::RenderPipeline>; 2]; 2]>::default();
+    coverage_pipelines[format_slot(WORKING_FORMAT)][0] = simple_coverage;
     fire_probe(
         &config,
         CreationPhase::CorePipelines,
@@ -2925,7 +3070,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         "dummy source",
         (1, 1),
         wgpu::TextureUsages::TEXTURE_BINDING,
-        TARGET_FORMAT,
+        WORKING_FORMAT,
     );
     diag::create(&device, "dummy source", 8);
     let (_, dummy_uint_view) = create_target(
@@ -3048,7 +3193,7 @@ pub async fn init(config: GpuConfig) -> Result<(GpuRenderer, GpuInfo), EngineErr
         dummy_view,
         dummy_uint_view,
         ext_layout: None,
-        external_pipes: [None, None],
+        external_pipes: Default::default(),
         #[cfg_attr(
             not(target_os = "linux"),
             expect(
@@ -3347,6 +3492,7 @@ impl Renderer for GpuRenderer {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_surface(Some(id.raw()));
         let size = self.target_size(&target)?;
+        let format = surface_format(&self.device, &target)?;
         let (window, textures, refresh, presents) = match target {
             GpuTarget::Offscreen(offscreen) => (None, None, offscreen.refresh, false),
             GpuTarget::Texture(texture) => (None, Some(texture.textures), texture.refresh, false),
@@ -3370,20 +3516,15 @@ impl Renderer for GpuRenderer {
             }
         };
         let promotes = self.planes.contains_key(&id);
-        let (target, view) = create_target(
-            &self.device,
-            "surface target",
-            size,
-            TARGET_USAGES,
-            TARGET_FORMAT,
-        );
+        let (target, view) =
+            create_target(&self.device, "surface target", size, TARGET_USAGES, format);
         if let Some(sender) = &textures {
             let _ = sender.send(target.clone());
         }
         diag::create(
             &self.device,
             "surface target",
-            u64::from(size.0) * u64::from(size.1) * texel_bytes(TARGET_FORMAT),
+            u64::from(size.0) * u64::from(size.1) * texel_bytes(format),
         );
         self.surfaces.insert(
             id,
@@ -3404,13 +3545,14 @@ impl Renderer for GpuRenderer {
                 present_pending: false,
                 display: cherenkov::Display::default(),
                 size,
+                format,
                 target,
                 view,
                 scratch: FxHashMap::default(),
                 coverage_depth: None,
-                backdrop: [None, None],
-                staging: [None, None],
-                staging_bind: [None, None],
+                backdrop: Default::default(),
+                staging: Default::default(),
+                staging_bind: Default::default(),
                 backdrop_groups: FxHashMap::default(),
                 anchor_scratch: lower::AnchorScratch::default(),
                 raster_scratch: path::EmitScratch::new(),
@@ -3471,7 +3613,7 @@ impl Renderer for GpuRenderer {
             "surface target",
             size,
             TARGET_USAGES,
-            TARGET_FORMAT,
+            state.format,
         );
         if let Some(window) = &mut state.window {
             window.resize(&self.device, size);
@@ -3530,7 +3672,7 @@ impl Renderer for GpuRenderer {
                 "engine part",
                 size,
                 TARGET_USAGES,
-                TARGET_FORMAT,
+                state.format,
             );
         }
         if let Some(system) = self.planes.get_mut(&id) {
@@ -3544,9 +3686,9 @@ impl Renderer for GpuRenderer {
         state.scratch.clear();
         #[cfg(target_vendor = "apple")]
         state.tile_targets.clear();
-        state.backdrop = [None, None];
-        state.staging = [None, None];
-        state.staging_bind = [None, None];
+        state.backdrop = Default::default();
+        state.staging = Default::default();
+        state.staging_bind = Default::default();
         state.retire_binds(&self.device);
         state.painter_replays.clear();
         state.bind_gen += 1;
@@ -3555,7 +3697,7 @@ impl Renderer for GpuRenderer {
             "surface target",
             diag::Class::Target,
             old_target,
-            u64::from(size.0) * u64::from(size.1) * texel_bytes(TARGET_FORMAT),
+            u64::from(size.0) * u64::from(size.1) * texel_bytes(state.format),
             0,
             true,
         );
@@ -3870,9 +4012,9 @@ impl Renderer for GpuRenderer {
             #[cfg(target_vendor = "apple")]
             surf.tile_targets.clear();
             surf.coverage_depth = None;
-            surf.backdrop = [None, None];
-            surf.staging = [None, None];
-            surf.staging_bind = [None, None];
+            surf.backdrop = Default::default();
+            surf.staging = Default::default();
+            surf.staging_bind = Default::default();
             for state in surf.backdrop_groups.values_mut() {
                 state.truncate(0);
             }
@@ -4244,9 +4386,10 @@ impl Renderer for GpuRenderer {
             return Err(RenderError::Readback("unknown surface".into()));
         };
         let (w, h) = state.size;
+        let format = state.format;
         diag::set_surface(Some(surface.raw()));
         diag::set_phase("readback");
-        let bytes_per_row = (w * 8).div_ceil(256) * 256;
+        let bytes_per_row = readback_pitch(format, w);
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
             size: u64::from(bytes_per_row) * u64::from(h),
@@ -4289,19 +4432,7 @@ impl Renderer for GpuRenderer {
         let data = slice
             .get_mapped_range()
             .expect("buffer range is mapped and not overlapping");
-        let mut pixels = Vec::with_capacity((w * h) as usize);
-        for row in 0..h {
-            let start = (row * bytes_per_row) as usize;
-            for px in data[start..start + (w * 8) as usize].as_chunks::<8>().0 {
-                let bits: [u16; 4] = bytemuck::cast(*px);
-                pixels.push([
-                    half::f16::from_bits(bits[0]).to_f32(),
-                    half::f16::from_bits(bits[1]).to_f32(),
-                    half::f16::from_bits(bits[2]).to_f32(),
-                    half::f16::from_bits(bits[3]).to_f32(),
-                ]);
-            }
-        }
+        let pixels = decode_readback(&data, format, (w, h), bytes_per_row);
         drop(data);
         buf.unmap();
         diag::retire(
@@ -4334,9 +4465,10 @@ impl Renderer for GpuRenderer {
             return Err(RenderError::Readback("unknown surface".into()));
         };
         let (w, h) = state.size;
+        let format = state.format;
         diag::set_surface(Some(surface.raw()));
         diag::set_phase("readback");
-        let bytes_per_row = (w * 8).div_ceil(256) * 256;
+        let bytes_per_row = readback_pitch(format, w);
         let buf = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
             size: u64::from(bytes_per_row) * u64::from(h),
@@ -4380,19 +4512,7 @@ impl Renderer for GpuRenderer {
         let data = slice
             .get_mapped_range()
             .expect("buffer range is mapped and not overlapping");
-        let mut pixels = Vec::with_capacity((w * h) as usize);
-        for row in 0..h {
-            let start = (row * bytes_per_row) as usize;
-            for px in data[start..start + (w * 8) as usize].as_chunks::<8>().0 {
-                let bits: [u16; 4] = bytemuck::cast(*px);
-                pixels.push([
-                    half::f16::from_bits(bits[0]).to_f32(),
-                    half::f16::from_bits(bits[1]).to_f32(),
-                    half::f16::from_bits(bits[2]).to_f32(),
-                    half::f16::from_bits(bits[3]).to_f32(),
-                ]);
-            }
-        }
+        let pixels = decode_readback(&data, format, (w, h), bytes_per_row);
         drop(data);
         buf.unmap();
         diag::retire(
@@ -5160,11 +5280,12 @@ impl GpuRenderer {
                 )
                 .map_err(|e| ResourceError::Shader(e.to_string()))
             };
-        // One pipeline per distinct target format on the plain variant
-        // — equal formats share the slot-0 pipeline (#170).
-        let mut pipelines = [None, None];
-        for format in [TARGET_FORMAT, self.scratch_format] {
-            let slot = usize::from(format != TARGET_FORMAT);
+        // One pipeline per distinct working or scratch format on the plain
+        // variant — equal formats share one slot (#170).
+        let mut pipelines: FormatCells<Option<Result<wgpu::RenderPipeline, ResourceError>>> =
+            Default::default();
+        for format in [WORKING_FORMAT, self.scratch_format] {
+            let slot = format_slot(format);
             if pipelines[slot].is_none() {
                 pipelines[slot] = Some(make(&module, format));
             }
@@ -5175,15 +5296,18 @@ impl GpuRenderer {
         if let Some(error) = scope_error {
             return Err(ResourceError::Shader(format!("{error}")));
         }
-        let [a, b] = pipelines;
+        let mut plain = <[FormatCells<Option<wgpu::RenderPipeline>>; 2]>::default();
+        for (cell, built) in plain[0].iter_mut().zip(pipelines) {
+            *cell = built.transpose()?;
+        }
         self.backdrop_shaders.insert(
             id.raw(),
             BackdropShaderEntry {
                 plain_module: module,
                 union_source,
                 union_module: None,
-                plain: [[a.transpose()?, b.transpose()?], [None, None]],
-                union: [[None, None], [None, None]],
+                plain,
+                union: Default::default(),
             },
         );
         Ok(())
@@ -5212,11 +5336,12 @@ impl GpuRenderer {
                 label: Some("backdrop effect"),
                 source: wgpu::ShaderSource::Wgsl(backdrop_effect_text(&source.source, false)),
             });
-        // One pipeline per distinct target format on the plain variant
-        // — equal formats share the slot-0 pipeline (#170).
-        let mut pipelines = [None, None];
-        for format in [TARGET_FORMAT, self.scratch_format] {
-            let slot = usize::from(format != TARGET_FORMAT);
+        // One pipeline per distinct working or scratch format on the plain
+        // variant — equal formats share one slot (#170).
+        let mut pipelines: FormatCells<Option<Result<wgpu::RenderPipeline, ResourceError>>> =
+            Default::default();
+        for format in [WORKING_FORMAT, self.scratch_format] {
+            let slot = format_slot(format);
             if pipelines[slot].is_none() {
                 pipelines[slot] = Some(
                     create_pipeline(
@@ -5241,15 +5366,18 @@ impl GpuRenderer {
         if let Some(error) = scope_error {
             return Err(ResourceError::Shader(format!("{error}")));
         }
-        let [a, b] = pipelines;
+        let mut plain = <[FormatCells<Option<wgpu::RenderPipeline>>; 2]>::default();
+        for (cell, built) in plain[0].iter_mut().zip(pipelines) {
+            *cell = built.transpose()?;
+        }
         self.backdrop_shaders.insert(
             id.raw(),
             BackdropShaderEntry {
                 plain_module: module,
                 union_source,
                 union_module: None,
-                plain: [[a.transpose()?, b.transpose()?], [None, None]],
-                union: [[None, None], [None, None]],
+                plain,
+                union: Default::default(),
             },
         );
         Ok(())
@@ -5683,7 +5811,7 @@ impl GpuRenderer {
         if let Some(producer) = self.producers.get_mut(&id) {
             producer.submit(&self.device, &self.queue, frame);
         }
-        if let Err(error) = self.ensure_external() {
+        if let Err(error) = self.ensure_external(&[WORKING_FORMAT, self.scratch_format]) {
             tracing::warn!(%error, "external-frame preparation failed at submission");
         }
         #[cfg(all(unix, not(target_vendor = "apple")))]
@@ -5717,8 +5845,8 @@ impl GpuRenderer {
         }
     }
 
-    /// Builds the external-frame group-1 layout and both format pipelines
-    /// on the first surface draw that samples an external slot.
+    /// Builds the external-frame group-1 layout on first need, and the
+    /// external pipeline of every format in `formats` that has none yet.
     #[cfg_attr(
         target_arch = "wasm32",
         expect(
@@ -5726,31 +5854,36 @@ impl GpuRenderer {
             reason = "browser WebGPU reports pipeline errors asynchronously, so only the native error scope can fail here"
         )
     )]
-    fn ensure_external(&mut self) -> Result<(), RenderError> {
-        if self.ext_layout.is_some() {
+    fn ensure_external(&mut self, formats: &[wgpu::TextureFormat]) -> Result<(), RenderError> {
+        if self.ext_layout.is_some()
+            && formats
+                .iter()
+                .all(|&format| self.external_pipes[format_slot(format)].is_some())
+        {
             return Ok(());
         }
-        let ext_layout = self
-            .device
-            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("cherenkov external 1"),
-                entries: &layout_entries(bindings::EXTERNAL_GROUP1),
-            });
+        let ext_layout = self.ext_layout.get_or_insert_with(|| {
+            self.device
+                .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                    label: Some("cherenkov external 1"),
+                    entries: &layout_entries(bindings::EXTERNAL_GROUP1),
+                })
+        });
         let module = self.shader_delivery.external_module(&self.device);
         // Error scopes resolve asynchronously; only the native path pops
         // synchronously. A failure here is an engine bug, so the wasm path
         // reports through the uncaptured-error handler instead.
         #[cfg(not(target_arch = "wasm32"))]
         let error_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        // One pipeline per distinct target format — equal formats share
-        // the slot-0 pipeline (#170).
-        for format in [TARGET_FORMAT, self.scratch_format] {
-            let slot = usize::from(format != TARGET_FORMAT);
+        // One pipeline per distinct format — equal formats share a slot
+        // (#170).
+        for &format in formats {
+            let slot = format_slot(format);
             if self.external_pipes[slot].is_none() {
                 self.external_pipes[slot] = Some(create_external_pipeline(
                     &self.device,
                     &self.layout0,
-                    &ext_layout,
+                    ext_layout,
                     &module,
                     format,
                 ));
@@ -5760,7 +5893,6 @@ impl GpuRenderer {
         if let Some(error) = pollster::block_on(error_scope.pop()) {
             return Err(RenderError::Render(format!("external pipeline: {error}")));
         }
-        self.ext_layout = Some(ext_layout);
         Ok(())
     }
 
@@ -5778,8 +5910,9 @@ impl GpuRenderer {
         ))
     }
 
-    /// Builds the projective composite and mip pipelines on the first
-    /// frame that composes a projective layer.
+    /// Builds the projective mip pipeline on the first frame that
+    /// composes a projective layer, and the composite pipelines of every
+    /// format in `formats` that has none yet.
     #[cfg_attr(
         target_arch = "wasm32",
         expect(
@@ -5787,23 +5920,27 @@ impl GpuRenderer {
             reason = "browser WebGPU reports pipeline errors asynchronously, so only the native error scope can fail here"
         )
     )]
-    fn ensure_projective(&mut self) -> Result<(), RenderError> {
-        if self.projective.is_some() {
+    fn ensure_projective(&mut self, formats: &[wgpu::TextureFormat]) -> Result<(), RenderError> {
+        if self
+            .projective
+            .as_ref()
+            .is_some_and(|pipelines| formats.iter().all(|&format| pipelines.has(format)))
+        {
             return Ok(());
         }
         #[cfg(not(target_arch = "wasm32"))]
         let error_scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let pipelines = projective::Pipelines::new(
-            &self.device,
-            self.shader_delivery,
-            &self.layout0,
-            self.scratch_format,
-        );
+        let pipelines = self.projective.get_or_insert_with(|| {
+            projective::Pipelines::new(&self.device, self.shader_delivery, &self.layout0)
+        });
+        for &format in formats {
+            pipelines.prepare(&self.device, format);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(error) = pollster::block_on(error_scope.pop()) {
+            self.projective = None;
             return Err(RenderError::Render(format!("projective pipeline: {error}")));
         }
-        self.projective = Some(pipelines);
         Ok(())
     }
 
@@ -5874,7 +6011,11 @@ impl GpuRenderer {
         composed: Vec<projective::LocalKey>,
     ) -> Result<(), RenderError> {
         if !composed.is_empty() {
-            self.ensure_projective()?;
+            let surface = self
+                .surfaces
+                .get(&id)
+                .map_or(WORKING_FORMAT, |surf| surf.format);
+            self.ensure_projective(&[surface, self.scratch_format, WORKING_FORMAT])?;
         }
         let available = self.projective_available();
         let Some(surf) = self.surfaces.get_mut(&id) else {
@@ -7415,7 +7556,8 @@ impl GpuRenderer {
     /// `Rgba16Float`, and both order a slot's accesses per pixel within
     /// a pass, so a frame whose isolation scratches are stored in
     /// another format can never place one on chip and is not planned at
-    /// all. What differs is what makes the executor available:
+    /// all. An `Rgba32Float` surface is planned: the planner keeps its
+    /// parts out of every epoch for [`composition::Materialization::Format`]. What differs is what makes the executor available:
     ///
     /// - Apple's shaders come from the prebuilt metallib (#57), so a
     ///   build that delivers WGSL has no executor to plan for.
@@ -7459,12 +7601,12 @@ impl GpuRenderer {
         let (slots, available) = (0, Err(composition::Materialization::NoExecutor));
 
         available?;
-        if self.scratch_format != TARGET_FORMAT {
+        if self.scratch_format != WORKING_FORMAT {
             return Err(composition::Materialization::Format);
         }
         Ok(composite::plan::Limits {
             slots,
-            format: TARGET_FORMAT,
+            format: WORKING_FORMAT,
             ordering: composite::plan::Ordering::PerPixel,
         })
     }
@@ -7518,7 +7660,7 @@ impl GpuRenderer {
                     "static plane capture",
                     domain.size,
                     TARGET_USAGES,
-                    TARGET_FORMAT,
+                    surf.format,
                 );
                 entry.capture = Some(planes::static_layer::Capture {
                     domain,
@@ -7531,15 +7673,14 @@ impl GpuRenderer {
         // One engine texture per part above the first, as the plan split
         // the surface.
         let parts = surf.plan.parts() - 1;
-        let part_bytes =
-            u64::from(surf.size.0) * u64::from(surf.size.1) * texel_bytes(TARGET_FORMAT);
+        let part_bytes = u64::from(surf.size.0) * u64::from(surf.size.1) * texel_bytes(surf.format);
         while surf.parts.len() < parts {
             surf.parts.push(create_target(
                 &self.device,
                 "engine part",
                 surf.size,
                 TARGET_USAGES,
-                TARGET_FORMAT,
+                surf.format,
             ));
             diag::create(&self.device, "engine part", part_bytes);
         }
@@ -7568,7 +7709,10 @@ impl GpuRenderer {
                 surf.composition_cache.update(
                     &mut surf.composition,
                     &surf.frame,
-                    self.scratch_format,
+                    composite::plan::Formats {
+                        surface: surf.format,
+                        scratch: self.scratch_format,
+                    },
                     limits,
                 );
             }
@@ -7712,13 +7856,13 @@ impl GpuRenderer {
         // later passes. The shared staging needs one allocation per
         // format, so the loop also accumulates the largest staged
         // device rect of each.
-        let mut staged_max = [None, None];
+        let mut staged_max = [None; RENDER_FORMATS.len()];
         for pass in &surf.frame.passes {
             let Some(capture) = pass.capture else {
                 continue;
             };
             let (w, h) = (pass.region[2], pass.region[3]);
-            let format = capture_format(capture.copy_from, self.scratch_format)?;
+            let format = stored_format(capture.copy_from, surf.format, self.scratch_format)?;
             let Some(group_state) = surf.backdrop_groups.get_mut(&capture.group) else {
                 return Err(RenderError::Render(format!(
                     "backdrop group {} was not registered",
@@ -7835,7 +7979,7 @@ impl GpuRenderer {
                 );
             }
             if let Some(resolve) = resolve::of(pass).filter(|_| resolve::staged(pass)) {
-                let entry = staged_max[staging_slot(format)].get_or_insert((format, 0, 0));
+                let entry = staged_max[format_slot(format)].get_or_insert((format, 0, 0));
                 entry.1 = entry.1.max(resolve.device[2]);
                 entry.2 = entry.2.max(resolve.device[3]);
             }
@@ -7917,7 +8061,7 @@ impl GpuRenderer {
         }
         // Backdrop textures for blend composites, sized like the scratch
         // pool to the largest region copied this frame.
-        let mut backdrop_max = [(0u32, 0u32); 2];
+        let mut backdrop_max = [(0u32, 0u32); RENDER_FORMATS.len()];
         let passes = surf
             .frame
             .passes
@@ -7928,15 +8072,7 @@ impl GpuRenderer {
             });
         for pass in passes {
             if let Some(r) = pass.backdrop_copy {
-                let slot = match pass.target {
-                    Target::Part(_) | Target::Projected(_) | Target::Plane(_) => 0,
-                    Target::Scratch(_) => 1,
-                    Target::Backdrop { .. } => {
-                        return Err(RenderError::Render(
-                            "a blend backdrop copy on a capture pass".into(),
-                        ));
-                    }
-                };
+                let slot = blend_backdrop_slot(pass.target, surf.format, self.scratch_format)?;
                 backdrop_max[slot].0 = backdrop_max[slot].0.max(r[2]);
                 backdrop_max[slot].1 = backdrop_max[slot].1.max(r[3]);
             }
@@ -7955,11 +8091,7 @@ impl GpuRenderer {
                 w.max(surf.backdrop[slot].as_ref().map_or(0, |b| b.width)),
                 h.max(surf.backdrop[slot].as_ref().map_or(0, |b| b.height)),
             );
-            let format = if slot == 0 {
-                TARGET_FORMAT
-            } else {
-                self.scratch_format
-            };
+            let format = RENDER_FORMATS[slot];
             let old_backdrop = surf.backdrop[slot].as_ref().map_or(0, |b| {
                 u64::from(b.width) * u64::from(b.height) * texel_bytes(b.texture.format())
             });
@@ -7992,7 +8124,7 @@ impl GpuRenderer {
                 self.images_gen,
                 self.atlas.mask_texture_generation(),
                 "backdrop regen",
-                |key| key.1,
+                |key| key.1 == Some(slot),
             );
         }
         // Gradient instances index stops absolutely; shift each instance's
@@ -8321,22 +8453,27 @@ impl GpuRenderer {
         if let Some(native) = self.native.as_mut() {
             external::vulkan::cancel_staged(native);
         }
-        let needs_external = self.surfaces.get(&id).is_some_and(|surf| {
-            surf.frame
-                .passes
-                .iter()
-                .flat_map(|pass| &pass.ranges)
-                .any(|range| matches!(range.image, Some(lower::ImageSource::Content(_))))
-        });
+        // The formats this surface's passes draw into: its parts', its
+        // scratch layers' and its projected images'.
+        let Some(surface_format) = self.surfaces.get(&id).map(|surf| surf.format) else {
+            return Ok(());
+        };
+        let formats = [surface_format, self.scratch_format, WORKING_FORMAT];
+        let needs_external = self.surfaces[&id]
+            .frame
+            .passes
+            .iter()
+            .flat_map(|pass| &pass.ranges)
+            .any(|range| matches!(range.image, Some(lower::ImageSource::Content(_))));
         if needs_external {
-            self.ensure_external()?;
+            self.ensure_external(&formats)?;
         }
         if self
             .surfaces
             .get(&id)
             .is_some_and(|surf| !surf.composed.is_empty())
         {
-            self.ensure_projective()?;
+            self.ensure_projective(&formats)?;
         }
         // The hal adapter handle is bound before `surf` borrows the
         // renderer: the native pass maps target formats through it inside
@@ -8679,15 +8816,7 @@ impl GpuRenderer {
                 None
             };
             let pass = &surf.frame.passes[i];
-            let coverage_order = matches!(pass.target, Target::Part(_))
-                && !pass.ranges.is_empty()
-                && pass.ranges.iter().all(|range| {
-                    range.pipeline == PipelineKind::SrcOver
-                        && range.variant == ShaderVariant::Simple
-                        && range.source.is_none()
-                        && range.image.is_none()
-                        && range.mask.is_none()
-                });
+            let coverage_order = coverage_order(pass);
             let replayable = !pass.ranges.iter().any(|range| range.gpu.is_some())
                 && !coverage_order
                 && !pass.ranges.is_empty()
@@ -8756,10 +8885,11 @@ impl GpuRenderer {
                 Target::Backdrop { group, region } => {
                     let group_state = &surf.backdrop_groups[&group];
                     let capture = if resolve::of(pass).is_some() && resolve::staged(pass) {
-                        let slot = staging_slot(capture_format(
+                        let slot = format_slot(stored_format(
                             pass.capture
                                 .expect("a staged resolve implies a capture")
                                 .copy_from,
+                            surf.format,
                             self.scratch_format,
                         )?);
                         surf.staging[slot]
@@ -8835,15 +8965,7 @@ impl GpuRenderer {
             // A blend pass reads the target's prior contents from a copy;
             // the copy must complete before the pass starts.
             if let Some([bx, by, bw, bh]) = pass.backdrop_copy {
-                let slot = match pass.target {
-                    Target::Part(_) | Target::Projected(_) | Target::Plane(_) => 0,
-                    Target::Scratch(_) => 1,
-                    Target::Backdrop { .. } => {
-                        return Err(RenderError::Render(
-                            "a blend backdrop copy on a capture pass".into(),
-                        ));
-                    }
-                };
+                let slot = blend_backdrop_slot(pass.target, surf.format, self.scratch_format)?;
                 let backdrop = surf.backdrop[slot].as_ref().expect("grown above");
                 // The copy region is recorded in device space; a scratch
                 // target stores its contents offset by its pass region.
@@ -9021,7 +9143,7 @@ impl GpuRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            let format_i = usize::from(texture.format() != TARGET_FORMAT);
+            let format_i = format_slot(texture.format());
             // `view`/`texture` can borrow `surf.projective` (a projected
             // pass target); the loop's projective draws need
             // `surf.projective` mutably, so the native op, the reopened
@@ -9037,6 +9159,7 @@ impl GpuRenderer {
                 render_pass.set_pipeline(coverage_pipeline(
                     &mut self.coverage_pipelines,
                     &factory,
+                    target_format,
                     CoveragePhase::Opaque,
                     gpu_module,
                 )?);
@@ -9047,7 +9170,7 @@ impl GpuRenderer {
                 );
                 let bind = surf
                     .binds1
-                    .entry((None, false, None, None))
+                    .entry((None, None, None, None))
                     .or_insert_with(|| {
                         stats.bind_groups_created += 1;
                         make_bind1(
@@ -9067,6 +9190,7 @@ impl GpuRenderer {
                         render_pass.set_pipeline(coverage_pipeline(
                             &mut self.coverage_pipelines,
                             &factory,
+                            target_format,
                             CoveragePhase::Opaque,
                             gpu_module,
                         )?);
@@ -9097,6 +9221,7 @@ impl GpuRenderer {
                 render_pass.set_pipeline(coverage_pipeline(
                     &mut self.coverage_pipelines,
                     &factory,
+                    target_format,
                     CoveragePhase::Partial,
                     false,
                 )?);
@@ -9147,14 +9272,11 @@ impl GpuRenderer {
             } else {
                 Bound::Engine(PipelineKind::SrcOver, ShaderVariant::Simple)
             };
-            let backdrop_slot = scratch_backdrop.then_some(match pass.target {
-                Target::Part(_) | Target::Projected(_) | Target::Plane(_) => 0,
-                Target::Scratch(_) | Target::Backdrop { .. } => 1,
-            });
+            let backdrop_slot = scratch_backdrop.then(|| format_slot(target_format));
             if replayable {
                 let bind1 = surf
                     .binds1
-                    .entry((None, false, None, None))
+                    .entry((None, None, None, None))
                     .or_insert_with(|| {
                         stats.bind_groups_created += 1;
                         make_bind1(
@@ -9259,7 +9381,7 @@ impl GpuRenderer {
                     if pipeline != Bound::Projective(replace) {
                         pipeline = Bound::Projective(replace);
                         stats.pipeline_switches += 1;
-                        render_pass.set_pipeline(&pipes.composite[format_i][usize::from(replace)]);
+                        render_pass.set_pipeline(pipes.composite(format_i, replace));
                     }
                     let Some(Source::Projected(key)) = range.source else {
                         unreachable!("a projective range samples a local image")
@@ -9500,6 +9622,7 @@ impl GpuRenderer {
                         Bound::Coverage(gpu) => coverage_pipeline(
                             &mut self.coverage_pipelines,
                             &factory,
+                            target_format,
                             CoveragePhase::Partial,
                             gpu,
                         )?,
@@ -9583,12 +9706,7 @@ impl GpuRenderer {
                     };
                     render_pass.set_pipeline(pipe);
                 }
-                let key = (
-                    range.source,
-                    scratch_backdrop,
-                    range.image.clone(),
-                    range.mask,
-                );
+                let key = (range.source, backdrop_slot, range.image.clone(), range.mask);
                 let bind = match surf.binds1.entry(key) {
                     std::collections::hash_map::Entry::Occupied(e) => &*e.into_mut(),
                     std::collections::hash_map::Entry::Vacant(e) => {
@@ -9730,8 +9848,8 @@ impl GpuRenderer {
                     &filtrate::EffectContext {
                         device: &self.device,
                         queue: &self.queue,
-                        input_format: TARGET_FORMAT,
-                        output_format: TARGET_FORMAT,
+                        input_format: capture.texture.format(),
+                        output_format: capture.texture.format(),
                     },
                     filter::Scope {
                         target: capture,
@@ -10710,15 +10828,15 @@ fn create_gpu_image(
         device,
         label,
         (width, height),
-        image_usage(device, TARGET_FORMAT, (width, height)),
-        TARGET_FORMAT,
+        image_usage(device, WORKING_FORMAT, (width, height)),
+        WORKING_FORMAT,
     );
     write_texels(
         device,
         queue,
         label,
         &texture,
-        TARGET_FORMAT,
+        WORKING_FORMAT,
         (width, height),
         texels,
     );
@@ -10776,7 +10894,8 @@ impl GpuRenderer {
                         .target
                         .texture
                         .format(),
-                    Target::Part(_) | Target::Projected(_) | Target::Plane(_) => TARGET_FORMAT,
+                    Target::Part(_) | Target::Plane(_) => surface.format,
+                    Target::Projected(_) => WORKING_FORMAT,
                 };
                 (*id, format)
             })
@@ -10812,11 +10931,14 @@ impl GpuRenderer {
     )]
     async fn prepare_lazy_pipelines(&mut self, surface: SurfaceId) -> Result<(), RenderError> {
         let surface = &self.surfaces[&surface];
-        // (variant index, format index, replace) demand-built core cells
-        // and (shader id, union, replace, format index) effect slots the
+        // (variant index, format slot, replace) demand-built core cells
+        // and (shader id, union, replace, format slot) effect slots the
         // frame draws.
         let mut core = FxHashSet::default();
         let mut effects = FxHashSet::default();
+        // Format slots whose simple-module coverage pair a coverage pass
+        // draws with and init did not build.
+        let mut coverage = FxHashSet::default();
         for pass in &surface.frame.passes {
             let format = match pass.target {
                 Target::Scratch(depth) => surface.scratch[&depth].texture.format(),
@@ -10825,9 +10947,16 @@ impl GpuRenderer {
                     .target
                     .texture
                     .format(),
-                Target::Part(_) | Target::Projected(_) | Target::Plane(_) => TARGET_FORMAT,
+                Target::Part(_) | Target::Plane(_) => surface.format,
+                Target::Projected(_) => WORKING_FORMAT,
             };
-            let format_i = usize::from(format != TARGET_FORMAT);
+            let format_i = format_slot(format);
+            // Init builds every eager cell of the working and scratch
+            // formats; a surface's own format has none of them.
+            let eager = format == WORKING_FORMAT || format == self.scratch_format;
+            if !eager && coverage_order(pass) {
+                coverage.insert(format_i);
+            }
             for range in &pass.ranges {
                 let union = range.variant == ShaderVariant::Union;
                 if let PipelineKind::Effect { id, replace } = range.pipeline {
@@ -10838,11 +10967,23 @@ impl GpuRenderer {
                         format_i,
                         range.pipeline == PipelineKind::Replace,
                     ));
+                } else if !eager
+                    && !matches!(range.pipeline, PipelineKind::Projective { .. })
+                    && !matches!(range.image, Some(lower::ImageSource::Content(_)))
+                {
+                    core.insert((
+                        variant_index(range.module()),
+                        format_i,
+                        range.pipeline == PipelineKind::Replace,
+                    ));
                 }
             }
         }
         for (variant, format_i, replace) in core {
             self.prepare_lazy_core(variant, format_i, replace).await?;
+        }
+        for format_i in coverage {
+            self.prepare_lazy_coverage(format_i).await?;
         }
         for (id, union, replace, format_i) in effects {
             let Some(entry) = self.backdrop_shaders.get_mut(&id) else {
@@ -10874,11 +11015,7 @@ impl GpuRenderer {
                 &self.pipeline_layout,
                 self.pipeline_cache.as_ref(),
                 module,
-                if format_i == 0 {
-                    TARGET_FORMAT
-                } else {
-                    self.scratch_format
-                },
+                RENDER_FORMATS[format_i],
                 CoveragePass::Painter(replace),
             )
             .await
@@ -10893,7 +11030,7 @@ impl GpuRenderer {
         Ok(())
     }
 
-    /// wasm: the demand-built core cell `(variant, format index, replace)`
+    /// wasm: the demand-built core cell `(variant, format slot, replace)`
     /// of a union or image range, with its engine module.
     #[cfg(target_arch = "wasm32")]
     #[expect(
@@ -10921,16 +11058,51 @@ impl GpuRenderer {
                 &self.pipeline_layout,
                 self.pipeline_cache.as_ref(),
                 module,
-                if format_i == 0 {
-                    TARGET_FORMAT
-                } else {
-                    self.scratch_format
-                },
+                RENDER_FORMATS[format_i],
                 CoveragePass::Painter(replace),
             )
             .await
             .map_err(|e| RenderError::Render(e.to_string()))?,
         );
+        Ok(())
+    }
+
+    /// wasm: the simple-module `[opaque, partial]` coverage pair of a
+    /// surface format init did not build.
+    #[cfg(target_arch = "wasm32")]
+    #[expect(
+        clippy::future_not_send,
+        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+    )]
+    async fn prepare_lazy_coverage(&mut self, format_i: usize) -> Result<(), RenderError> {
+        if self.coverage_pipelines[format_i][0]
+            .iter()
+            .all(Option::is_some)
+        {
+            return Ok(());
+        }
+        let module = self
+            .lazy_modules
+            .entry(variant_index(ShaderVariant::Simple))
+            .or_insert_with(|| {
+                self.shader_delivery
+                    .engine_module(&self.device, variant_index(ShaderVariant::Simple))
+            });
+        for phase in [CoveragePhase::Opaque, CoveragePhase::Partial] {
+            self.coverage_pipelines[format_i][0][phase as usize] = Some(
+                create_pipeline(
+                    &self.device,
+                    &self.config,
+                    &self.pipeline_layout,
+                    self.pipeline_cache.as_ref(),
+                    module,
+                    RENDER_FORMATS[format_i],
+                    CoveragePass::Coverage(phase),
+                )
+                .await
+                .map_err(|e| RenderError::Render(e.to_string()))?,
+            );
+        }
         Ok(())
     }
 }
