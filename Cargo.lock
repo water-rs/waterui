@@ -12984,6 +12984,7 @@ dependencies = [
  "waterui-assets-planner",
  "waterui-inspector-protocol",
  "waterui-mcp-protocol",
+ "waterui-meta",
  "waterui-preview-protocol",
  "which 8.0.6",
  "whoami",
