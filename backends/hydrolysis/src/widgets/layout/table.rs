@@ -589,9 +589,11 @@ pub fn render_table_parts(
         );
         let viewport_placement = renderer.current_placement();
         viewport_placement.set_content_offset(-offset);
+        let stretch = renderer.scroll_stretch(&handle, surface_viewport);
         renderer.program().begin_inner(
             surface_viewport,
             offset,
+            stretch,
             std::rc::Rc::clone(&viewport_placement),
         );
         // The cells record at `viewport.origin + content`: the content's local

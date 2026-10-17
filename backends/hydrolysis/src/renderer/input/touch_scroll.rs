@@ -15,16 +15,20 @@
 //! edges stop the drag and the fling on them; rubber-band edges let a drag
 //! past them move with resistance and spring a release or a fling past them
 //! back onto them, the offset held unclamped meanwhile — rendered and
-//! reported where it is, as `UIScrollView`'s `contentOffset` is.
+//! reported where it is, as `UIScrollView`'s `contentOffset` is; stretch
+//! edges keep the offset in the extents and stretch the rendered content
+//! instead — the drag carries the [`ScrollStretch`] and hands it to the
+//! fling, which absorbs an edge it reaches and lets the stretch relax.
 //!
 //! The gesture's parameters are the host's [`TouchScrollConfig`], pushed
 //! into the renderer by value from `PlatformWindow::touch_scroll_config` —
 //! no platform values are invented here.
-// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
+use super::edge_stretch::{AxisStretch, Edge, EdgeImpact, ScrollStretch};
 use super::scroll_physics::{DecayFling, SpringFling};
+// glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::platform::{FlingDeceleration, Overscroll, TouchScrollConfig};
+use crate::platform::{EdgeStretch, FlingDeceleration, Overscroll, TouchScrollConfig};
 use std::collections::VecDeque;
 use waterui_layout::scroll::Axis;
 
@@ -84,14 +88,20 @@ pub struct TouchScrollDrag {
     /// What the claimed view's edges do to the drag, from the physics the
     /// claim was taken under.
     pub(crate) overscroll: Overscroll,
+    /// The claimed view's stretch under stretch edges — taken over from
+    /// the fling the touch caught on the same view, or at rest — and
+    /// `None` under every other overscroll.
+    pub(super) stretch: Option<ScrollStretch>,
 }
 
 impl TouchScrollDrag {
     /// Moves the claimed offset by `(dx, dy)` — the finger's travel,
-    /// negated — and returns whether it moved: clamped edges stop it,
-    /// rubber-band edges let it past with their resistance. Refused once a
-    /// newer claim owns the offset.
-    pub(crate) fn scroll_by(&self, dx: f64, dy: f64) -> bool {
+    /// negated — at `now`, and returns whether the offset or the stretch
+    /// it shows changed: clamped edges stop it, rubber-band edges let it
+    /// past with their resistance, stretch edges stop the offset and pull
+    /// the content's stretch instead. Refused once a newer claim owns the
+    /// offset.
+    pub(crate) fn scroll_by(&mut self, dx: f64, dy: f64, now: Instant) -> bool {
         match self.overscroll {
             Overscroll::Clamped => self.handle.apply_gesture_delta(&self.claim, dx, dy),
             Overscroll::RubberBand(band) => {
@@ -101,6 +111,49 @@ impl TouchScrollDrag {
                     Some(band.drag(metrics.offset_x, dx, metrics.max_x, metrics.viewport_width)),
                     Some(band.drag(metrics.offset_y, dy, metrics.max_y, metrics.viewport_height)),
                 )
+            }
+            Overscroll::Stretch(_) => {
+                // A newer claim owns the offset: the drag moves nothing,
+                // its stretch included.
+                if !self.handle.holds(&self.claim) {
+                    return false;
+                }
+                let stretch = self
+                    .stretch
+                    .as_mut()
+                    .expect("a drag under stretch edges carries its stretch");
+                let metrics = self.handle.metrics();
+                let before = stretch.vector();
+                let axis = self.handle.axis();
+                let x = if matches!(axis, Axis::Horizontal | Axis::All) {
+                    stretch.x.drag(
+                        metrics.offset_x,
+                        dx,
+                        metrics.max_x,
+                        metrics.viewport_width,
+                        now,
+                    )
+                } else {
+                    metrics.offset_x
+                };
+                let y = if matches!(axis, Axis::Vertical | Axis::All) {
+                    stretch.y.drag(
+                        metrics.offset_y,
+                        dy,
+                        metrics.max_y,
+                        metrics.viewport_height,
+                        now,
+                    )
+                } else {
+                    metrics.offset_y
+                };
+                let stretched = stretch.vector() != before;
+                let moved = self.handle.apply_gesture_delta(
+                    &self.claim,
+                    x - metrics.offset_x,
+                    y - metrics.offset_y,
+                );
+                moved || stretched
             }
         }
     }
@@ -177,7 +230,8 @@ impl VelocityTracker {
 }
 
 /// A fling running after the touch released: per-axis deceleration — and,
-/// under rubber-band edges, the spring back onto an edge — driving the
+/// under rubber-band edges, the spring back onto an edge; under stretch
+/// edges, the stretch it absorbs at an edge and lets relax — driving the
 /// claimed scroll view's handle until it comes to rest inside the content
 /// bounds or a new touch down stops it.
 #[derive(Debug)]
@@ -189,11 +243,13 @@ pub struct TouchFling {
     /// overwriting its successor. A `rebind` — shifted by a membership
     /// anchor or for rows measured mid-gesture — never touches it.
     claim: crate::scroll::GestureClaim,
-    /// What the edges do: clamped edges write through the clamping fling
-    /// path, rubber-band edges through the unclamped one.
+    /// What the edges do: clamped and stretch edges write through the
+    /// clamping fling path, rubber-band edges through the unclamped one.
     overscroll: Overscroll,
     x: Option<AxisFling>,
     y: Option<AxisFling>,
+    /// The scroll view's stretch under stretch edges, `None` otherwise.
+    stretch: Option<ScrollStretch>,
 }
 
 /// One axis of a [`TouchFling`].
@@ -213,6 +269,41 @@ enum AxisFling {
 }
 
 impl AxisFling {
+    /// A fling under `physics` inside the extents `0..=extent`, from
+    /// `start` at `velocity`, starting at `from` — `None` when it moves
+    /// nothing.
+    fn inside(
+        physics: &crate::platform::ScrollPhysics,
+        velocity: f64,
+        start: f64,
+        extent: f64,
+        from: Instant,
+    ) -> Option<Self> {
+        let bounce = match physics.overscroll {
+            // An axis with nothing to scroll does not bounce — the band's
+            // `drag` documents why.
+            Overscroll::RubberBand(band) => (extent > 0.0).then_some(band.bounce),
+            Overscroll::Clamped | Overscroll::Stretch(_) => None,
+        };
+        match physics.deceleration {
+            FlingDeceleration::OverScrollerSpline(spline) => Some(SplineFling::new(
+                velocity,
+                start,
+                extent,
+                spline.physical_coeff,
+                spline.friction,
+                from,
+            ))
+            // A run whose clamped destination is already the offset —
+            // released at the edge it headed toward — is no fling.
+            .filter(|fling| (fling.final_offset - fling.start).abs() > SCROLL_END_EPSILON)
+            .map(Self::Spline),
+            FlingDeceleration::ExponentialDecay(decay) => {
+                DecayFling::new(decay, velocity, start, extent, bounce, from).map(Self::Decay)
+            }
+        }
+    }
+
     /// The axis's offset at `now` and whether it still moves.
     fn position(&self, now: Instant) -> (f64, bool) {
         match self {
@@ -223,6 +314,27 @@ impl AxisFling {
                 _ => spring.position(now),
             },
         }
+    }
+
+    /// Where a fling stops on an edge: when it reaches it, the edge — the
+    /// one it heads toward — and its speed there. `None` for a fling that
+    /// comes to rest inside, and for the rubber band's runs, which never
+    /// meet a stretch.
+    fn edge_impact(&self) -> Option<EdgeImpact> {
+        let (at, velocity) = match self {
+            Self::Spline(fling) => fling.edge_arrival()?,
+            Self::Decay(fling) => fling.edge_arrival()?,
+            Self::Release { .. } => return None,
+        };
+        Some(EdgeImpact {
+            at,
+            edge: if velocity < 0.0 {
+                Edge::Leading
+            } else {
+                Edge::Trailing
+            },
+            speed: velocity.abs(),
+        })
     }
 }
 
@@ -235,101 +347,144 @@ impl TouchFling {
     /// finger's, as `UIScrollView` reports it — and, moving toward the
     /// content, flings on into it from the edge; otherwise an axis under
     /// the minimum — or already at the edge it heads toward, under clamped
-    /// edges — does not fling. `None` when no axis moves or a newer claim
-    /// already owns the offset.
-    pub(crate) fn start(
+    /// and stretch edges — does not fling.
+    ///
+    /// Under stretch edges `stretch` is the drag's, released as
+    /// `ScrollView`'s `ACTION_UP` releases it
+    /// (`flingWithNestedDispatch`, then `endDrag`): a release that cannot
+    /// fling — it pushes against the edge it sits on — is absorbed by the
+    /// edge showing a stretch, every other pulled edge relaxes from rest,
+    /// and a fling that reaches an edge is absorbed there. The fling then
+    /// runs as long as the stretch moves, even when no axis flings.
+    /// `None` when nothing moves or a newer claim already owns the offset.
+    pub(super) fn start(
         handle: crate::scroll::ScrollHandle,
         claim: crate::scroll::GestureClaim,
         finger_velocity: kurbo::Vec2,
         config: &TouchScrollConfig,
+        mut stretch: Option<ScrollStretch>,
         at: Instant,
     ) -> Option<Self> {
         let metrics = handle.metrics();
         let max = f64::from(config.max_fling_velocity);
         let min = f64::from(config.min_fling_velocity);
         let physics = config.physics;
-        let axis_fling = |velocity: f64, start: f64, extent: f64| {
-            // The content offset moves opposite the finger: a finger flung
-            // up pushes the offset down into the content.
-            let offset_velocity = (-velocity).clamp(-max, max);
-            // A fling inside the extents from `start` at `velocity`, from
-            // `from`.
-            let inside = |velocity: f64, start: f64, from: Instant| {
-                let bounce = match physics.overscroll {
-                    // An axis with nothing to scroll does not bounce — the
-                    // band's `drag` documents why.
-                    Overscroll::RubberBand(band) => (extent > 0.0).then_some(band.bounce),
-                    Overscroll::Clamped => None,
+        assert_eq!(
+            matches!(physics.overscroll, Overscroll::Stretch(_)),
+            stretch.is_some(),
+            "a fling carries a stretch exactly under stretch edges"
+        );
+        let axis_fling =
+            |velocity: f64,
+             start: f64,
+             extent: f64,
+             stretch: Option<(&mut AxisStretch, &EdgeStretch)>| {
+                // The content offset moves opposite the finger: a finger flung
+                // up pushes the offset down into the content.
+                let offset_velocity = (-velocity).clamp(-max, max);
+                let inside = |velocity: f64, start: f64, from: Instant| {
+                    AxisFling::inside(&physics, velocity, start, extent, from)
                 };
-                match physics.deceleration {
-                    FlingDeceleration::OverScrollerSpline(spline) => Some(SplineFling::new(
-                        velocity,
-                        start,
-                        extent,
-                        spline.physical_coeff,
-                        spline.friction,
-                        from,
-                    ))
-                    // A run whose clamped destination is already the offset —
-                    // released at the edge it headed toward — is no fling.
-                    .filter(|fling| (fling.final_offset - fling.start).abs() > SCROLL_END_EPSILON)
-                    .map(AxisFling::Spline),
-                    FlingDeceleration::ExponentialDecay(decay) => {
-                        DecayFling::new(decay, velocity, start, extent, bounce, from)
-                            .map(AxisFling::Decay)
+                if let Some((axis, config)) = stretch {
+                    let fling = axis
+                        .release(start, offset_velocity, extent, min, config, at)
+                        .then(|| inside(offset_velocity, start, at))
+                        .flatten();
+                    // `OVER_SCROLL_IF_CONTENT_SCROLLS`: only an axis with
+                    // something to scroll stretches.
+                    if extent > 0.0
+                        && let Some(impact) = fling.as_ref().and_then(AxisFling::edge_impact)
+                    {
+                        axis.expect_impact(impact);
                     }
+                    return fling;
                 }
+                if let Overscroll::RubberBand(band) = physics.overscroll
+                    && !(0.0..=extent).contains(&start)
+                {
+                    let edge = start.clamp(0.0, extent);
+                    let overscroll = start - edge;
+                    let then =
+                        band.release
+                            .handover(overscroll, offset_velocity)
+                            .and_then(|handover| {
+                                let from = at + Duration::from_secs_f64(handover.seconds);
+                                inside(handover.velocity, edge, from)
+                                    .map(|fling| (from, Box::new(fling)))
+                            });
+                    return Some(AxisFling::Release {
+                        spring: SpringFling::new(
+                            edge,
+                            overscroll,
+                            offset_velocity,
+                            band.release,
+                            at,
+                        ),
+                        then,
+                    });
+                }
+                if offset_velocity.abs() < min {
+                    return None;
+                }
+                inside(offset_velocity, start, at)
             };
-            if let Overscroll::RubberBand(band) = physics.overscroll
-                && !(0.0..=extent).contains(&start)
-            {
-                let edge = start.clamp(0.0, extent);
-                let overscroll = start - edge;
-                let then =
-                    band.release
-                        .handover(overscroll, offset_velocity)
-                        .and_then(|handover| {
-                            let from = at + Duration::from_secs_f64(handover.seconds);
-                            inside(handover.velocity, edge, from)
-                                .map(|fling| (from, Box::new(fling)))
-                        });
-                return Some(AxisFling::Release {
-                    spring: SpringFling::new(edge, overscroll, offset_velocity, band.release, at),
-                    then,
-                });
-            }
-            if offset_velocity.abs() < min {
-                return None;
-            }
-            inside(offset_velocity, start, at)
+        let (stretch_x, stretch_y) = match stretch.as_mut() {
+            Some(ScrollStretch { config, x, y }) => (Some((x, &*config)), Some((y, &*config))),
+            None => (None, None),
         };
         let x = matches!(handle.axis(), Axis::Horizontal | Axis::All)
-            .then(|| axis_fling(finger_velocity.x, metrics.offset_x, metrics.max_x))
+            .then(|| {
+                axis_fling(
+                    finger_velocity.x,
+                    metrics.offset_x,
+                    metrics.max_x,
+                    stretch_x,
+                )
+            })
             .flatten();
         let y = matches!(handle.axis(), Axis::Vertical | Axis::All)
-            .then(|| axis_fling(finger_velocity.y, metrics.offset_y, metrics.max_y))
+            .then(|| {
+                axis_fling(
+                    finger_velocity.y,
+                    metrics.offset_y,
+                    metrics.max_y,
+                    stretch_y,
+                )
+            })
             .flatten();
-        ((x.is_some() || y.is_some()) && handle.begin_fling(&claim)).then_some(Self {
+        let stretching = stretch.as_ref().is_some_and(ScrollStretch::is_active);
+        ((x.is_some() || y.is_some() || stretching) && handle.begin_fling(&claim)).then_some(Self {
             handle,
             claim,
             overscroll: physics.overscroll,
             x,
             y,
+            stretch,
         })
     }
 
     /// Releases the claim `handle` and `claim` name — a drag let go, or a
-    /// fling a touch caught and let go again: the fling the release earns
-    /// under `config`, or, when it earns none, the gesture's end, which
-    /// clamps an offset the claim held past an edge.
-    pub(crate) fn release(
+    /// fling a touch caught and let go again — with the `stretch` it
+    /// carries: the fling the release earns under `config`, or, when it
+    /// earns none, the gesture's end, which clamps an offset the claim held
+    /// past an edge.
+    pub(super) fn release(
         handle: &crate::scroll::ScrollHandle,
         claim: &crate::scroll::GestureClaim,
         finger_velocity: kurbo::Vec2,
         config: &TouchScrollConfig,
+        stretch: Option<ScrollStretch>,
         at: Instant,
     ) -> TouchRelease {
-        Self::start(handle.clone(), claim.clone(), finger_velocity, config, at).map_or_else(
+        Self::start(
+            handle.clone(),
+            claim.clone(),
+            finger_velocity,
+            config,
+            stretch,
+            at,
+        )
+        .map_or_else(
             || TouchRelease::Ended {
                 moved: handle.end_gesture(claim),
             },
@@ -340,7 +495,28 @@ impl TouchFling {
     /// Lets this caught fling go again from rest at `at`: see
     /// [`Self::release`].
     pub(crate) fn let_go(&self, config: &TouchScrollConfig, at: Instant) -> TouchRelease {
-        Self::release(&self.handle, &self.claim, kurbo::Vec2::ZERO, config, at)
+        Self::release(
+            &self.handle,
+            &self.claim,
+            kurbo::Vec2::ZERO,
+            config,
+            self.stretch.clone(),
+            at,
+        )
+    }
+
+    /// A touch down caught this fling: its stretch holds where it is, as
+    /// `ScrollView`'s `ACTION_DOWN` holds an unfinished edge.
+    pub(crate) fn catch(&mut self) {
+        if let Some(stretch) = &mut self.stretch {
+            stretch.catch();
+        }
+    }
+
+    /// Takes the stretch out of this caught fling, for the drag of the
+    /// same scroll view that takes the fling over.
+    pub(super) fn into_stretch(self) -> Option<ScrollStretch> {
+        self.stretch
     }
 
     /// The claimed scroll view's offset handle — the pump needs it to
@@ -349,9 +525,14 @@ impl TouchFling {
         &self.handle
     }
 
+    /// The stretch the fling's scroll view shows.
+    pub(super) const fn stretch(&self) -> Option<&ScrollStretch> {
+        self.stretch.as_ref()
+    }
+
     /// Advances the fling to `now` and applies its offset through the
-    /// handle.
-    pub(crate) fn tick(&self, now: Instant) -> TouchFlingTick {
+    /// handle, and steps its stretch.
+    pub(crate) fn tick(&mut self, now: Instant) -> TouchFlingTick {
         // A programmatic request — jump or animated — or any user input
         // claims the offset past this fling's claim: the fling ends on the
         // spot instead of writing over whatever replaced it. Ownership is
@@ -369,22 +550,28 @@ impl TouchFling {
         let y = self.y.as_ref().map(|fling| fling.position(now));
         let (offset_x, offset_y) = (x.map(|(offset, _)| offset), y.map(|(offset, _)| offset));
         let changed = match self.overscroll {
-            Overscroll::Clamped => self
-                .handle
-                .apply_fling_offset(&self.claim, offset_x, offset_y),
+            Overscroll::Clamped | Overscroll::Stretch(_) => {
+                self.handle
+                    .apply_fling_offset(&self.claim, offset_x, offset_y)
+            }
             Overscroll::RubberBand(_) => {
                 self.handle
                     .apply_overscroll_fling_offset(&self.claim, offset_x, offset_y)
             }
         };
+        let (stretched, stretching) = self.stretch.as_mut().map_or((false, false), |stretch| {
+            let metrics = self.handle.metrics();
+            let stretched = stretch.step(now, metrics.viewport_width, metrics.viewport_height);
+            (stretched, stretch.is_active())
+        });
         let active = |axis: Option<(f64, bool)>| axis.is_some_and(|(_, active)| active);
-        let running = active(x) || active(y);
+        let running = active(x) || active(y) || stretching;
         // A fling that ends ends its gesture: an offset it still holds past
         // an edge — the content changed under a bounce — clamps into the
         // extents live now.
         let ended = !running && self.handle.end_gesture(&self.claim);
         TouchFlingTick {
-            changed: changed || ended,
+            changed: changed || stretched || ended,
             running,
         }
     }
@@ -436,6 +623,9 @@ struct SplineFling {
     spline_distance: f64,
     /// The clamped offset the run ends at — `mFinal` after the edge clamp.
     final_offset: f64,
+    /// Whether the edge clamp cut the run short: it ends on an edge with
+    /// speed left, rather than at rest.
+    reaches_edge: bool,
 }
 
 impl SplineFling {
@@ -468,7 +658,8 @@ impl SplineFling {
         let spline_distance = magnitude.copysign(velocity);
         let unclamped_final = start + spline_distance;
         let final_offset = unclamped_final.clamp(0.0, extent);
-        if !(0.0..=extent).contains(&unclamped_final) {
+        let reaches_edge = !(0.0..=extent).contains(&unclamped_final);
+        if reaches_edge {
             // `adjustDuration`: a clamped run ends where the edge is, at
             // the spline-time fraction of the clamped distance fraction —
             // not by crawling through the unclamped spline's full span.
@@ -482,7 +673,37 @@ impl SplineFling {
             start,
             spline_distance,
             final_offset,
+            reaches_edge,
         }
+    }
+
+    /// The offset's velocity `elapsed` into the run, in logical units per
+    /// second — `SplineOverScroller.update`'s SPLINE `mCurrVelocity`: the
+    /// `SPLINE_POSITION` slope over the sample `t` falls in, times
+    /// `mSplineDistance / mSplineDuration`.
+    fn velocity_at(&self, elapsed: Duration) -> f64 {
+        let spline_duration = self.spline_duration.as_secs_f64();
+        let samples = crate::num_cast::usize_as_f64(SPLINE_SAMPLES);
+        let index =
+            crate::num_cast::f64_as_usize(elapsed.as_secs_f64() / spline_duration * samples);
+        if index >= SPLINE_SAMPLES {
+            return 0.0;
+        }
+        let slope = (SPLINE_POSITION[index + 1] - SPLINE_POSITION[index]) * samples;
+        slope * self.spline_distance / spline_duration
+    }
+
+    /// When a run the edge clamp cut short reaches its edge, and the
+    /// offset's velocity there — the `getCurrVelocity` a container hands
+    /// `EdgeEffect.onAbsorb` when the fling hits the edge (`ScrollView`'s
+    /// `computeScroll`). `None` for a run that comes to rest inside.
+    fn edge_arrival(&self) -> Option<(Instant, f64)> {
+        self.reaches_edge.then(|| {
+            (
+                self.started_at + self.duration,
+                self.velocity_at(self.duration),
+            )
+        })
     }
 
     /// The axis's offset at `now` and whether the run still animates —
