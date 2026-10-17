@@ -7127,10 +7127,14 @@ mod list_scroll {
 /// `set_page` apply through the stack's `UINavigationControllerDelegate`.
 #[cfg(target_os = "ios")]
 mod navigation {
-    use cocoa_ui::objc2_ui_kit::{UINavigationController, UIView, UIViewController};
+    use cocoa_ui::objc2_ui_kit::{
+        UIBarButtonItem, UINavigationController, UIView, UIViewController,
+    };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{NavContentController, NavPage};
     use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::Str;
+    use waterui::component::{ButtonStyle, button};
     use waterui::navigation::{
         NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
         NavigationView,
@@ -7198,7 +7202,66 @@ mod navigation {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test("navigation::a_text_toolbar_button_draws_its_title", || {
+                a_text_toolbar_button_draws_its_title();
+                Ok(())
+            }),
         ]
+    }
+
+    /// The bar item's title as a plain string.
+    fn bar_item_title(item: &UIBarButtonItem) -> String {
+        item.title()
+            .map(|text| text.to_string())
+            .unwrap_or_default()
+    }
+
+    /// A leading text button is the bar's own title item, and the title
+    /// follows the label. Hosting the button would hand the bar a `UIButton`
+    /// whose configuration carries no title, which the bar draws as an empty
+    /// capsule. Plain text beside it stays a hosted view.
+    fn a_text_toolbar_button_draws_its_title() {
+        let title = binding(Str::from("Edit"));
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarLeading,
+                        button(waterui::text!("{title}")).style(ButtonStyle::Plain),
+                    ),
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarTrailing,
+                        text("12 unread"),
+                    ),
+                ],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let leading = top
+            .navigationItem()
+            .leftBarButtonItems()
+            .expect("the leading text button is a bar item");
+        assert_eq!(leading.count(), 1, "the root page has one leading item");
+        let leading = leading.objectAtIndex(0);
+        assert_eq!(bar_item_title(&leading), "Edit");
+        assert!(
+            leading.customView().is_none(),
+            "the word is the bar item's title, not a hosted view"
+        );
+
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the trailing caption is a bar item");
+        assert!(
+            trailing.objectAtIndex(0).customView().is_some(),
+            "plain text stays a hosted view"
+        );
+
+        title.set(Str::from("Done"));
+        assert_eq!(bar_item_title(&leading), "Done");
     }
 
     /// The root page's intent is recorded in `set_page` while

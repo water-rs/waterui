@@ -203,6 +203,10 @@ mod platform {
             }
         });
 
+        // The items' actions and live titles live on the bar's leaves. A
+        // title item does not host the button, so the page keeps the bar.
+        keep.keep(bar);
+
         let mut leaf = NativeLeaf::new(&*host, Fill);
         leaf.keep(keep);
         leaf
@@ -251,9 +255,10 @@ mod platform {
         }
     }
 
-    /// A bar item: the rendered content's own control provides the action;
-    /// a symbol icon becomes a `UIBarButtonItem` image; a view icon or a bare
-    /// view is hosted as the item's custom view.
+    /// A bar item. A symbol icon becomes a `UIBarButtonItem` image. A single
+    /// text button is a title item the bar draws. A view icon or any other
+    /// content is hosted as the item's custom view; the rendered control
+    /// provides the action.
     fn button(
         item: &BarItem,
         keep: &mut KeepAlive,
@@ -294,10 +299,16 @@ mod platform {
                 view_icon_item(item, icon, action, env, keep, mtm)
             }
             None => {
-                // A hosted item must arrive with a real frame: the bar wraps
-                // it as the item's customView and never lays it out itself.
-                cocoa_ui::view::set_frame(item.leaf.view(), bar_item_frame(item));
-                cocoa_ui::uikit::bar_item(mtm, None, Some(item.leaf.view()), None)
+                // A `UIButton` whose configuration carries no title is what
+                // the bar draws as an empty capsule. A single text label
+                // becomes the title the bar draws itself; anything else is
+                // hosted, and must arrive with a real frame because the bar
+                // never lays a custom view out.
+                crate::components::navigation::text_button_bar_item(item, action, mtm)
+                    .unwrap_or_else(|| {
+                        cocoa_ui::view::set_frame(item.leaf.view(), bar_item_frame(item));
+                        cocoa_ui::uikit::bar_item(mtm, None, Some(item.leaf.view()), None)
+                    })
             }
         };
         if let Some(title) = &item.title {

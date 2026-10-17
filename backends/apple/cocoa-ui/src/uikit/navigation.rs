@@ -773,6 +773,34 @@ pub fn image_bar_item(
     item
 }
 
+/// A `UIBarButtonItem` whose title the bar draws itself.
+///
+/// A text toolbar button goes through here. Hosting the rendered button
+/// would hand the bar a `UIButton` whose configuration carries no title,
+/// and the bar draws that as an empty capsule.
+#[must_use]
+pub fn title_bar_item(
+    mtm: MainThreadMarker,
+    title: &str,
+    action: Option<Rc<dyn Fn()>>,
+) -> Retained<UIBarButtonItem> {
+    // SAFETY: `initWithTitle:style:target:action:` is a `UIBarButtonItem`
+    // designated initializer; nil target/action are valid.
+    let item = unsafe {
+        UIBarButtonItem::initWithTitle_style_target_action(
+            mtm.alloc(),
+            Some(&NSString::from_str(title)),
+            UIBarButtonItemStyle::Plain,
+            None,
+            None,
+        )
+    };
+    if let Some(action) = action {
+        item.setPrimaryAction(Some(&handler_action(mtm, move || action())));
+    }
+    item
+}
+
 /// A `UIAction` that runs `handler`.
 fn handler_action(
     mtm: MainThreadMarker,
