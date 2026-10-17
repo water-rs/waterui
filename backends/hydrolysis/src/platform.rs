@@ -409,9 +409,9 @@ pub struct TouchScrollConfig {
 }
 
 impl TouchScrollConfig {
-    /// The Android `OverScroller` model at density 1 —
-    /// `ViewConfiguration`'s constants normalized to logical units, not
-    /// the scaled values the Android host reports at runtime.
+    /// The Android `OverScroller` model with Android 12's stretch edges, at
+    /// density 1 — `ViewConfiguration`'s constants normalized to logical
+    /// units, not the scaled values the Android host reports at runtime.
     ///
     /// This is what non-Apple hosts that publish no touch-scroll
     /// parameters of their own — the browser window, the winit desktop
@@ -424,10 +424,13 @@ impl TouchScrollConfig {
             touch_slop: 10.0,
             min_fling_velocity: 50.0,
             max_fling_velocity: 8_000.0,
-            physics: ScrollPhysics::android(SplineDeceleration {
-                physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
-                friction: 0.015,
-            }),
+            physics: ScrollPhysics::android(
+                SplineDeceleration {
+                    physical_coeff: 9.806_65 * 39.37 * 160.0 * 0.84,
+                    friction: 0.015,
+                },
+                EdgeStretch::android(1.0),
+            ),
         }
     }
 
@@ -512,13 +515,13 @@ pub struct ScrollPhysics {
 }
 
 impl ScrollPhysics {
-    /// Android's `OverScroller` spline with `coefficients`, and edges that
-    /// clamp.
+    /// Android's `OverScroller` spline with `coefficients`, and Android
+    /// 12's `stretch` edges — the edge effect Material 3 adopts.
     #[must_use]
-    pub const fn android(coefficients: SplineDeceleration) -> Self {
+    pub const fn android(coefficients: SplineDeceleration, stretch: EdgeStretch) -> Self {
         Self {
             deceleration: FlingDeceleration::OverScrollerSpline(coefficients),
-            overscroll: Overscroll::Clamped,
+            overscroll: Overscroll::Stretch(stretch),
         }
     }
 
@@ -580,6 +583,81 @@ pub enum Overscroll {
     /// `UIScrollView`'s rubber band: a drag past the edge moves with
     /// resistance, and a release or a fling past it springs back.
     RubberBand(RubberBand),
+    /// Android 12's stretch: the offset stays on the edge and the content
+    /// stretches toward it — pulled by a drag past it, kicked by a fling
+    /// that reaches it, and relaxing on release.
+    Stretch(EdgeStretch),
+}
+
+/// Android 12's stretch edge effect — AOSP
+/// `frameworks/base/core/java/android/widget/EdgeEffect.java` with
+/// `TYPE_STRETCH`, the edge effect every Android 12+ scrolling container
+/// draws by default.
+///
+/// The effect keeps a pull distance per edge, as a fraction of the
+/// viewport's length along the axis (`mDistance`), that a drag past the
+/// edge adds to (`onPullDistance`), a fling reaching the edge kicks
+/// (`onAbsorb`) and a release lets relax (`onRelease`) on an underdamped
+/// spring (`updateSpring`). The distance becomes a stretch intensity
+/// (`dampStretchVector`) that scales the content away from the edge.
+///
+/// The spring's constants are unitless or per second; the take-over and
+/// rest thresholds are in physical pixels on Android and are carried here
+/// in logical units — [`Self::android`] divides them by the density.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct EdgeStretch {
+    /// The relaxing spring's natural angular frequency, in rad/s —
+    /// `NATURAL_FREQUENCY`.
+    pub natural_frequency: f64,
+    /// The relaxing spring's damping ratio, below 1 — `DAMPING_RATIO`.
+    pub damping_ratio: f64,
+    /// What a fling's speed at the edge is multiplied by to start the
+    /// spring — `ON_ABSORB_VELOCITY_ADJUSTMENT`.
+    pub absorb_velocity_scale: f64,
+    /// The stretch intensity's linear share per unit of pull —
+    /// `LINEAR_STRETCH_INTENSITY`.
+    pub linear_intensity: f64,
+    /// The stretch intensity's exponential share at full pull —
+    /// `EXP_STRETCH_INTENSITY`.
+    pub exponential_intensity: f64,
+    /// The pull over which the exponential share builds up —
+    /// `SCROLL_DIST_AFFECTED_BY_EXP_STRETCH`.
+    pub exponential_distance: f64,
+    /// The speed a relaxing stretch close to rest finishes at linearly, in
+    /// logical units per second — `LINEAR_VELOCITY_TAKE_OVER`.
+    pub linear_take_over_velocity: f64,
+    /// The stretch, in logical units, under which a relaxing spring this
+    /// slow finishes linearly — `LINEAR_DISTANCE_TAKE_OVER`.
+    pub linear_take_over_distance: f64,
+    /// The spring speed under which it counts as at rest, in logical units
+    /// per second — `VELOCITY_THRESHOLD`.
+    pub rest_velocity: f64,
+    /// The stretch, in logical units, under which a slow spring counts as
+    /// at rest — `VALUE_THRESHOLD`.
+    pub rest_distance: f64,
+}
+
+impl EdgeStretch {
+    /// AOSP `EdgeEffect`'s constants (Android 12, `android12-release`) on a
+    /// display of `density` physical pixels per logical unit: its pixel
+    /// thresholds — 200 px/s and 8 px for the linear take-over, 0.01 px/s
+    /// and 0.001 px for rest — divided by `density`.
+    #[must_use]
+    pub const fn android(density: f64) -> Self {
+        Self {
+            natural_frequency: 24.657,
+            damping_ratio: 0.98,
+            absorb_velocity_scale: 13.0,
+            linear_intensity: 0.016,
+            exponential_intensity: 0.016,
+            exponential_distance: 0.33,
+            linear_take_over_velocity: 200.0 / density,
+            linear_take_over_distance: 8.0 / density,
+            rest_velocity: 0.01 / density,
+            rest_distance: 0.001 / density,
+        }
+    }
 }
 
 /// `UIScrollView`'s rubber band: the resistance a drag past an edge meets,

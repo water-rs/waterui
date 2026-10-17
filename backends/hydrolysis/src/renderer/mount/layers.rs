@@ -1031,8 +1031,9 @@ fn commit_material<T: LayerTarget>(
     }
 }
 
-/// Lowers a scroll node's inner layer — clipped to the viewport and offset
-/// by its `ScrollOffset` — or retires it when the node has none.
+/// Lowers a scroll node's inner layer — clipped to the viewport, offset by
+/// its `ScrollOffset` and stretched by its overscroll stretch — or retires
+/// it when the node has none.
 fn lower_inner<T: LayerTarget>(
     cx: &mut CommitCx<'_, '_, '_, T>,
     layers: &mut NodeLayers,
@@ -1054,7 +1055,15 @@ fn lower_inner<T: LayerTarget>(
             inner_layer,
             inner_props,
             LayerProps {
-                clip: Some(ShapeData::of(&inner.viewport)),
+                // The clip sits in the layer's own space, which the
+                // stretch maps into the parent's: the inverse stretch of
+                // the viewport lands exactly on the viewport, so only the
+                // content stretches. The stretch is an axis-aligned scale,
+                // whose image of a rectangle is a rectangle.
+                clip: Some(ShapeData::of(
+                    &inner.stretch.inverse().transform_rect_bbox(inner.viewport),
+                )),
+                transform: inner.stretch,
                 scroll: inner.offset,
                 ..LayerProps::DEFAULT
             },

@@ -326,6 +326,17 @@ impl DecayFling {
             DecayEnd::Bounce(spring) => spring.at(elapsed - self.duration),
         }
     }
+
+    /// When a fling that stops on an edge reaches it, and its velocity
+    /// there; `None` for one that rests inside or bounces.
+    pub(super) fn edge_arrival(&self) -> Option<(Instant, f64)> {
+        matches!(self.end, DecayEnd::Edge(_)).then(|| {
+            (
+                self.started_at + core::time::Duration::from_secs_f64(self.duration),
+                self.decay.velocity(self.velocity, self.duration),
+            )
+        })
+    }
 }
 
 /// One axis released past an edge: the return onto it.

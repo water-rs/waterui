@@ -530,7 +530,7 @@ fn uikit_runtime(view: AnyView) -> HeadlessRuntime {
 fn uikit_band() -> RubberBand {
     match TouchScrollConfig::uikit_default().physics.overscroll {
         Overscroll::RubberBand(band) => band,
-        Overscroll::Clamped => panic!("the UIKit family rubber-bands"),
+        Overscroll::Clamped | Overscroll::Stretch(_) => panic!("the UIKit family rubber-bands"),
     }
 }
 
@@ -690,14 +690,114 @@ fn a_touch_catches_a_uikit_bounce_and_its_release_springs_back() {
     assert!(offsets.iter().all(|&offset| offset <= 0.0));
 }
 
+// water-rs/waterui#2796 — the non-Apple family's stretch edges: the offset
+// stays in the extents and the content stretches. The effect's numerics
+// are unit-tested against AOSP in `edge_stretch`; these drive it through
+// the real input path.
+
+/// The stretch intensities of the scroll view under (200, 300).
+fn stretch_at(runtime: &HeadlessRuntime) -> kurbo::Vec2 {
+    runtime
+        .renderer()
+        .scroll_stretch_at(200.0, 300.0)
+        .expect("the scroll view must keep its target")
+}
+
 #[test]
-fn a_clamped_drag_at_the_top_edge_toward_it_is_not_claimed() {
-    // The non-Apple family is unchanged: nothing to scroll toward, no claim.
+fn a_drag_past_the_top_edge_stretches_and_its_release_relaxes() {
     let mut runtime = runtime(tall_stack());
     let start = Instant::now();
     let _ = runtime.pump_at(false, start);
+    let viewport = runtime
+        .renderer()
+        .scroll_metrics_at(200.0, 300.0)
+        .expect("the scroll view must publish its metrics")
+        .viewport_height;
+
+    // At the top edge a drag toward it is claimed and stretches the
+    // content: 100 units past the slop pull the top edge by 100 / height,
+    // drawn at AOSP `dampStretchVector`'s `0.016·d + 0.016·(1 − e^(−d·e/0.33))`.
     drag_past_the_top(&mut runtime, start);
+    assert_eq!(
+        offset_y_at(&runtime, 200.0, 300.0),
+        Some(0.0),
+        "the offset stays on the edge"
+    );
+    let pull = 100.0 / viewport;
+    let expected = 0.016f64.mul_add(
+        pull,
+        0.016 * (1.0 - (-pull * core::f64::consts::E / 0.33).exp()),
+    );
+    let stretch = stretch_at(&runtime);
+    assert!(
+        (stretch.y - expected).abs() < 1e-9 && stretch.x.abs() < f64::EPSILON,
+        "the top edge stretches: {stretch:?}, expected {expected}"
+    );
+
+    // A still release relaxes it to nothing and ends the gesture.
+    runtime.push_input_event(touch_up(200.0, 310.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(400));
+    let mut relaxing = Vec::new();
+    for frame in 1..=60_u64 {
+        let _ = runtime.pump_at(false, start + Duration::from_millis(400 + frame * 16));
+        relaxing.push(stretch_at(&runtime).y);
+    }
+    assert!(
+        relaxing[0] > 0.0,
+        "the stretch relaxes over time, not at once"
+    );
+    assert!(
+        relaxing.windows(2).all(|pair| pair[1] <= pair[0]),
+        "it relaxes monotonically: {relaxing:?}"
+    );
+    assert_eq!(relaxing.last().copied(), Some(0.0));
     assert_eq!(offset_y_at(&runtime, 200.0, 300.0), Some(0.0));
+    assert!(!runtime.renderer().has_active_touch_fling());
+}
+
+#[test]
+fn a_fling_into_the_bottom_edge_is_absorbed_by_the_stretch() {
+    let offset = Binding::container(waterui_core::layout::Point::zero());
+    // 20 rows of 44 over the 640-high window: a 240-unit extent.
+    let mut runtime = runtime(reporting_stack(20, &offset));
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    let max = runtime
+        .renderer()
+        .scroll_metrics_at(200.0, 300.0)
+        .expect("the scroll view must publish its metrics")
+        .max_y;
+    assert!(max > 0.0, "the content must overflow the viewport");
+
+    runtime.push_input_event(touch_down(200.0, 400.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    for (frame_ms, y) in [(32_u64, 360.0_f32), (48, 320.0), (64, 280.0)] {
+        runtime.push_input_event(touch_move(200.0, y));
+        let _ = runtime.pump_at(false, start + Duration::from_millis(frame_ms));
+    }
+    runtime.push_input_event(touch_up(200.0, 280.0));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(80));
+    let mut stretches = Vec::new();
+    let offsets = (1..=120_u64)
+        .map(|frame| {
+            let _ = runtime.pump_at(false, start + Duration::from_millis(80 + frame * 16));
+            stretches.push(stretch_at(&runtime).y);
+            offset_y_at(&runtime, 200.0, 300.0).expect("the scroll view's metrics")
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        offsets.iter().all(|&offset| (0.0..=max).contains(&offset)),
+        "the offset never leaves the extents: {offsets:?}"
+    );
+    assert_eq!(offsets.last().copied(), Some(max), "it rests on the edge");
+    let deepest = stretches.iter().copied().fold(0.0, f64::min);
+    assert!(
+        deepest < 0.0,
+        "the bottom edge absorbs the fling into a stretch: {stretches:?}"
+    );
+    assert_eq!(stretches.last().copied(), Some(0.0), "and relaxes");
+    assert!(!runtime.renderer().has_active_touch_fling());
 }
 
 #[test]
