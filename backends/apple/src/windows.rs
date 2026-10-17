@@ -25,8 +25,8 @@ mod imp {
     use waterui::animation::Animation;
     use waterui::reactive::{Binding, Computed, Signal};
     use waterui::window::{
-        ResolvedWindowBackground, UserAttention, Window, WindowBackground, WindowHandle,
-        WindowLevel, WindowState, WindowStyle as WuiStyle, resolve_background,
+        FocusRequestKind, ResolvedWindowBackground, UserAttention, Window, WindowBackground,
+        WindowHandle, WindowLevel, WindowState, WindowStyle as WuiStyle, resolve_background,
     };
     use waterui_backend_core::Environment;
 
@@ -120,6 +120,7 @@ mod imp {
             into_kit_rect(frame),
             style,
         ));
+        wire_focus_requests(&declaration, &window, mtm);
         window.set_accepts_mouse_moved_events(true);
         window.set_alpha_value(0.0);
 
@@ -399,9 +400,13 @@ mod imp {
         closable: bool,
         resizable: bool,
         close_requests: Option<WindowHandle>,
+        focus_requests: Option<&Window>,
         mtm: MainThreadMarker,
     ) -> RootWindowBinding {
         let window = Rc::new(cocoa_ui::appkit::Window::adopt(mtm, window));
+        if let Some(declaration) = focus_requests {
+            wire_focus_requests(declaration, &window, mtm);
+        }
         let mut keepalive = KeepAlive::default();
 
         // Adopt the declared style, now and when it changes — adopting must
@@ -603,6 +608,33 @@ mod imp {
             handle.request_close();
             false
         }
+    }
+
+    /// `WindowHandle::raise`/`focus`: the armed hook `realize` and
+    /// `bind_root_window` both install. Raise orders the window front
+    /// inside its level, leaving key status alone; focus restores a
+    /// miniaturized window first, makes it key and asks for app
+    /// activation — the cooperative `activate` the system may still
+    /// decline, as the handle's docs say.
+    fn wire_focus_requests(
+        declaration: &Window,
+        window: &Rc<cocoa_ui::appkit::Window>,
+        mtm: MainThreadMarker,
+    ) {
+        declaration.arm_focus_requests({
+            let window = window.clone();
+            let application = cocoa_ui::appkit::Application::shared(mtm);
+            move |kind| match kind {
+                FocusRequestKind::Raise => window.order_front(),
+                FocusRequestKind::Focus => {
+                    if window.is_miniaturized() {
+                        window.deminiaturize();
+                    }
+                    window.make_key_and_order_front();
+                    application.activate();
+                }
+            }
+        });
     }
 
     /// Applies `state` to the platform window — `applyState`'s switch.
@@ -1102,6 +1134,13 @@ mod imp {
         mtm: MainThreadMarker,
     ) -> WindowHost {
         let mut keepalive = KeepAlive::default();
+        // `WindowHandle::raise`/`focus`: `UIKit` keeps one primitive —
+        // `makeKeyAndVisible` orders the window front and makes it key —
+        // so both requests land on it, as the handle docs say.
+        declaration.arm_focus_requests({
+            let window = pending.window.clone();
+            move |_kind| window.makeKeyAndVisible()
+        });
         let host: Retained<HostView> = Retained::from(pending.controller.host_view());
 
         // Background: the framework resolves the reactive background to a

@@ -327,6 +327,7 @@ fn bind_root(
             declaration
                 .has_close_handler()
                 .then(|| declaration.handle()),
+            Some(&declaration),
             mtm,
         ));
     });

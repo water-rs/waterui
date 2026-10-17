@@ -23,7 +23,7 @@ use nami::Signal;
 use waterui::app::{
     App, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost, TerminationKind,
 };
-use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
+use waterui::window::{FocusRequestKind, Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
@@ -1147,6 +1147,13 @@ impl WinitRunner {
                 .create_window(attributes)
                 .expect("hydrolysis runner: failed to create winit window"),
         );
+        // `focus` files into winit's `focus_window` — `_NET_ACTIVE_WINDOW`,
+        // `SetForegroundWindow`, a Wayland activation-token request, as the
+        // handle's docs say. winit exposes no order-front-without-focus
+        // primitive, so `raise` declines loudly rather than silently
+        // delivering the focus it did not ask for; the request machine
+        // re-arms through the panic, so `focus` still works afterwards.
+        let focus_native = Arc::downgrade(&native_window);
         #[cfg(hydrolysis_wayland_platform)]
         if let Some(xid) = x11_state_watch::x11_window_id(&native_window) {
             // The window is on X11, so the app's own server connection is
@@ -1195,6 +1202,17 @@ impl WinitRunner {
         let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         let closable = window.closable;
         window.arm_close_requests(&self.env);
+        window.arm_focus_requests(move |kind| match kind {
+            FocusRequestKind::Raise => panic!(
+                "hydrolysis runner: `WindowHandle::raise` is unsupported — \
+                 winit exposes no order-front-without-focus primitive; use `focus`"
+            ),
+            FocusRequestKind::Focus => {
+                if let Some(native) = focus_native.upgrade() {
+                    native.focus_window();
+                }
+            }
+        });
         let mut runtime =
             RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
         runtime
