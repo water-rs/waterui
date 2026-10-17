@@ -20,6 +20,7 @@ use std::ops::Range;
 use cherenkov::FillRule;
 use cherenkov::lowering::scanline::{EdgeX, RowWalk, walk_rows};
 
+use crate::render::bins::{EdgeBins, EdgeGroup, FrameIndex, FrameMeter};
 use crate::render::lower::{
     BoxClip, CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect,
     SdfKind, UnionSample,
@@ -51,7 +52,7 @@ const SPAN_CHUNK: usize = 64;
 ///
 /// The transient pixel bound is `workers × (band + Σ filter windows at the
 /// deepest nesting)`, where each filter window is `w × (bh + 2·apron)`.
-pub struct Scratch {
+pub struct Scratch<'a> {
     /// `(w + 2) * band_rows` coverage cells, reused across bands.
     coverage: Vec<f32>,
     /// Isolation-stack colour buffers currently in use.
@@ -59,6 +60,10 @@ pub struct Scratch {
     buffers: Buffers,
     /// This band's captured backdrops, by group id.
     captures: Captures,
+    /// The frame's transient-memory meter; charged query scratch is
+    /// released when this scratch is dropped — mid-call on a recycled
+    /// worker or at the call's end.
+    meter: Option<&'a FrameMeter>,
 }
 
 struct Buffers {
@@ -66,6 +71,19 @@ struct Buffers {
     coverage: Vec<Vec<f32>>,
     /// Live colour-buffer bytes and their peak for the current band.
     meter: Meter,
+    /// Expanded-window query scratch: each `run` depth's item
+    /// selection and the edge selection a windowed draw consumes.
+    /// Slots keep their capacity across sibling scopes and bands.
+    sel_items: Vec<Vec<usize>>,
+    sel_edges: Vec<usize>,
+    /// The capacity each charged slot has been accounted for, in
+    /// cells — a selection's capacity only grows, so the delta is the
+    /// heap growth. Index `sel_items.len()` is the outer Vec's charge.
+    sel_charge: Vec<usize>,
+    /// `sel_items`'s own allocation, charged at capacity.
+    sel_items_charge: usize,
+    /// `sel_edges`'s allocation, charged at capacity.
+    sel_edges_charge: usize,
 }
 
 /// Live pixel-buffer accounting: pixels held across a band's run.
@@ -386,6 +404,24 @@ struct FrameCtx<'a> {
     /// The band's top-level capture rows; captures inside filter scopes
     /// are planned against the surface band by the scope's own run.
     top: &'a [(usize, Option<CaptureRows>)],
+    /// The frame's transient-memory meter for expanded-window query
+    /// scratch.
+    meter: Option<&'a FrameMeter>,
+}
+
+/// Charges `bytes` of freshly grown query-scratch capacity to the
+/// frame's live total and raises its peak. Called only on allocation
+/// transitions — a pooled selection keeps its charge until its
+/// scratch is dropped at the call's end.
+fn sel_alloc(bytes: u64, meter: Option<&FrameMeter>) {
+    if let Some(m) = meter {
+        let live = m
+            .query_live
+            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed)
+            + bytes;
+        m.query_peak
+            .fetch_max(live, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl Meter {
@@ -417,9 +453,9 @@ impl Meter {
     }
 }
 
-impl Scratch {
+impl<'a> Scratch<'a> {
     /// An empty working set; buffers grow to band size on first use.
-    pub fn new() -> Self {
+    pub fn new(meter: Option<&'a FrameMeter>) -> Self {
         Self {
             coverage: Vec::new(),
             stack: Vec::new(),
@@ -427,8 +463,31 @@ impl Scratch {
                 free: Vec::new(),
                 coverage: Vec::new(),
                 meter: Meter::default(),
+                sel_items: Vec::new(),
+                sel_edges: Vec::new(),
+                sel_charge: Vec::new(),
+                sel_items_charge: 0,
+                sel_edges_charge: 0,
             },
             captures: Captures::default(),
+            meter,
+        }
+    }
+}
+
+impl Drop for Scratch<'_> {
+    /// Releases the charged query-scratch capacity: the pooled
+    /// selections plus all retained bookkeeping heap (the slot Vec and
+    /// the charge table itself). Bytes leave `query_live` here, at the
+    /// buffers' actual destruction — including mid-call worker
+    /// recycling — not at the call's end.
+    fn drop(&mut self) {
+        if let Some(m) = self.meter {
+            let cells =
+                self.buffers.sel_edges_charge + self.buffers.sel_charge.iter().sum::<usize>();
+            let bytes = self.buffers.sel_items_charge as u64 + (cells * size_of::<usize>()) as u64;
+            m.query_live
+                .fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
@@ -458,6 +517,68 @@ impl Buffers {
 
     fn give_coverage(&mut self, buf: Vec<f32>) {
         self.coverage.push(buf);
+    }
+
+    /// The `depth` slot's item-selection buffer, cleared for reuse.
+    /// Charges growth of the retained bookkeeping heap — the slot Vec
+    /// and the charge table — to `meter`.
+    fn take_sel_items(&mut self, depth: usize, meter: Option<&FrameMeter>) -> Vec<usize> {
+        if self.sel_items.len() <= depth {
+            self.sel_items.resize_with(depth + 1, Vec::new);
+            self.sel_charge.resize(depth + 1, 0);
+            let book = self.sel_items.capacity() * size_of::<Vec<usize>>()
+                + self.sel_charge.capacity() * size_of::<usize>();
+            if book > self.sel_items_charge {
+                sel_alloc((book - self.sel_items_charge) as u64, meter);
+                self.sel_items_charge = book;
+            }
+        }
+        let mut buf = std::mem::take(&mut self.sel_items[depth]);
+        buf.clear();
+        buf
+    }
+
+    /// Charges `buf`'s capacity growth on the `depth` slot to `meter`.
+    /// Called right after the query fills `buf`, while the selection is
+    /// live — before the recursive run or draw consumes it.
+    fn charge_sel_items(&mut self, depth: usize, buf: &Vec<usize>, meter: Option<&FrameMeter>) {
+        let charged = &mut self.sel_charge[depth];
+        if buf.capacity() > *charged {
+            sel_alloc(
+                ((buf.capacity() - *charged) * size_of::<usize>()) as u64,
+                meter,
+            );
+            *charged = buf.capacity();
+        }
+    }
+
+    /// Returns a selection to its slot: restores ownership only; the
+    /// charge was taken when the buffer filled.
+    fn give_sel_items(&mut self, depth: usize, buf: Vec<usize>) {
+        self.sel_items[depth] = buf;
+    }
+
+    /// The edge-selection buffer, cleared for reuse.
+    fn take_sel_edges(&mut self) -> Vec<usize> {
+        let mut buf = std::mem::take(&mut self.sel_edges);
+        buf.clear();
+        buf
+    }
+
+    /// Charges `buf`'s capacity growth to `meter`, right after the
+    /// query filled it.
+    fn charge_sel_edges(&mut self, buf: &Vec<usize>, meter: Option<&FrameMeter>) {
+        if buf.capacity() > self.sel_edges_charge {
+            sel_alloc(
+                ((buf.capacity() - self.sel_edges_charge) * size_of::<usize>()) as u64,
+                meter,
+            );
+            self.sel_edges_charge = buf.capacity();
+        }
+    }
+
+    fn give_sel_edges(&mut self, buf: Vec<usize>) {
+        self.sel_edges = buf;
     }
 }
 
@@ -1394,14 +1515,16 @@ fn kept_rows(union: &IRect, reach: usize, band: (usize, usize), h: usize) -> (us
 fn shade(
     level: fearless_simd::Level,
     items: &[Item],
+    index: &FrameIndex,
     clear: [f32; 4],
     slice: &mut [[f32; 4]],
     w: usize,
     y0: usize,
     h: usize,
-    scratch: &mut Scratch,
+    scratch: &mut Scratch<'_>,
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
+    meter: Option<&FrameMeter>,
 ) -> Result<(), cherenkov::RenderError> {
     let bh = slice.len() / w;
     for (_, capture) in scratch.captures.drain() {
@@ -1432,6 +1555,7 @@ fn shade(
         shade_windowed(
             level,
             items,
+            index,
             clear,
             slice,
             w,
@@ -1440,17 +1564,20 @@ fn shade(
             (window, last),
             coverage,
             (scratch, &top),
+            meter,
         )
     } else {
         shade_plain(
             level,
             items,
+            index,
             slice,
             w,
             surface,
             h,
             coverage,
             (scratch, &top),
+            meter,
         )
     };
     for plane in scratch.stack.drain(..) {
@@ -1532,14 +1659,17 @@ fn top_captures(
 fn shade_plain(
     level: fearless_simd::Level,
     items: &[Item],
+    index: &FrameIndex,
     slice: &mut [[f32; 4]],
     w: usize,
     surface: (usize, usize),
     h: usize,
     coverage: Vec<f32>,
-    (scratch, top): (&mut Scratch, &[(usize, Option<CaptureRows>)]),
+    (scratch, top): (&mut Scratch<'_>, &[(usize, Option<CaptureRows>)]),
+    meter: Option<&FrameMeter>,
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, y1) = surface;
+    let b = y0 / BAND_H;
     let mut acc = Accum::with_buffer(w, y1 - y0, coverage);
     let mut band = Band {
         fb: slice,
@@ -1550,7 +1680,10 @@ fn shade_plain(
     let result = run_at(
         level,
         items,
-        0..items.len(),
+        index,
+        index.items(b),
+        items.len(),
+        EdgeSel::Band(b),
         &mut band,
         &mut acc,
         &mut scratch.stack,
@@ -1561,7 +1694,9 @@ fn shade_plain(
             h,
             captures: &mut scratch.captures,
             top,
+            meter,
         },
+        0,
     );
     scratch.coverage = acc.into_buffer();
     result
@@ -1587,6 +1722,7 @@ fn shade_plain(
 fn shade_windowed(
     level: fearless_simd::Level,
     items: &[Item],
+    index: &FrameIndex,
     clear: [f32; 4],
     slice: &mut [[f32; 4]],
     w: usize,
@@ -1594,7 +1730,8 @@ fn shade_windowed(
     h: usize,
     ((win0, win1), last): ((usize, usize), usize),
     coverage: Vec<f32>,
-    (scratch, top): (&mut Scratch, &[(usize, Option<CaptureRows>)]),
+    (scratch, top): (&mut Scratch<'_>, &[(usize, Option<CaptureRows>)]),
+    meter: Option<&FrameMeter>,
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, y1) = surface;
     let bh = y1 - y0;
@@ -1609,10 +1746,18 @@ fn shade_windowed(
         y0: win0,
         space: cherenkov::BlendSpace::Linear,
     };
+    // The window's item selection lives in the depth-0 slot; the run
+    // and its nested scopes take slots 1 and deeper.
+    let mut sel = scratch.buffers.take_sel_items(0, meter);
+    index.query_items(0..last + 1, (win0, win1), &mut sel);
+    scratch.buffers.charge_sel_items(0, &sel, meter);
     let first_pass = run_at(
         level,
         items,
-        0..last + 1,
+        index,
+        &sel,
+        last + 1,
+        EdgeSel::Window,
         &mut band,
         &mut acc,
         &mut scratch.stack,
@@ -1623,8 +1768,11 @@ fn shade_windowed(
             h,
             captures: &mut scratch.captures,
             top,
+            meter,
         },
+        1,
     );
+    scratch.buffers.give_sel_items(0, sel);
     if first_pass.is_ok() {
         // Collapse to the band: the central rows go to the output slice
         // and each live isolation buffer shrinks to band size.
@@ -1650,10 +1798,17 @@ fn shade_windowed(
         y0,
         space: cherenkov::BlendSpace::Linear,
     };
+    // The aligned band's bins, restricted to the items after the last
+    // top-level capture.
+    let all = index.items(y0 / BAND_H);
+    let start = all.partition_point(|&i| i <= last);
     let result = run_at(
         level,
         items,
-        last + 1..items.len(),
+        index,
+        &all[start..],
+        items.len(),
+        EdgeSel::Band(y0 / BAND_H),
         &mut band,
         &mut acc,
         &mut scratch.stack,
@@ -1664,7 +1819,9 @@ fn shade_windowed(
             h,
             captures: &mut scratch.captures,
             top,
+            meter,
         },
+        0,
     );
     scratch.coverage = acc.into_buffer();
     result
@@ -1688,14 +1845,20 @@ pub fn render_bands(
     h: usize,
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
+    meter: &FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
+    let index = FrameIndex::new(items, h);
+    meter
+        .index_bytes
+        .fetch_max(index.heap_bytes(), std::sync::atomic::Ordering::Relaxed);
     let stats = stats(items);
-    fb.par_chunks_mut(BAND_H * w)
-        .enumerate()
-        .try_for_each_init(Scratch::new, |scratch, (band, slice)| {
+    let result = fb.par_chunks_mut(BAND_H * w).enumerate().try_for_each_init(
+        || Scratch::new(Some(meter)),
+        |scratch, (band, slice)| {
             shade(
                 level,
                 items,
+                &index,
                 clear,
                 slice,
                 w,
@@ -1704,8 +1867,17 @@ pub fn render_bands(
                 scratch,
                 peak,
                 has_backdrop,
+                Some(meter),
             )
-        })?;
+        },
+    );
+    // The workers' scratches were dropped: charged query capacity is
+    // released by `Scratch::drop`, not here.
+    debug_assert_eq!(
+        meter.query_live.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    result?;
     Ok(stats)
 }
 
@@ -1724,32 +1896,48 @@ pub fn render_bands_f16(
     h: usize,
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
+    meter: &FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
+    let index = FrameIndex::new(items, h);
+    meter
+        .index_bytes
+        .fetch_max(index.heap_bytes(), std::sync::atomic::Ordering::Relaxed);
     let stats = stats(items);
-    out.par_chunks_mut(BAND_H * w)
+    let result = out
+        .par_chunks_mut(BAND_H * w)
         .enumerate()
-        .try_for_each_init(Scratch::new, |scratch, (band, out_slice)| {
-            let mut band_px = scratch.buffers.take_color(out_slice.len());
-            let result = shade(
-                level,
-                items,
-                clear,
-                &mut band_px,
-                w,
-                band * BAND_H,
-                h,
-                scratch,
-                peak,
-                has_backdrop,
-            );
-            if result.is_ok() {
-                for (dst, src) in out_slice.iter_mut().zip(band_px.iter()) {
-                    *dst = src.map(half::f16::from_f32);
+        .try_for_each_init(
+            || Scratch::new(Some(meter)),
+            |scratch, (band, out_slice)| {
+                let mut band_px = scratch.buffers.take_color(out_slice.len());
+                let result = shade(
+                    level,
+                    items,
+                    &index,
+                    clear,
+                    &mut band_px,
+                    w,
+                    band * BAND_H,
+                    h,
+                    scratch,
+                    peak,
+                    has_backdrop,
+                    Some(meter),
+                );
+                if result.is_ok() {
+                    for (dst, src) in out_slice.iter_mut().zip(band_px.iter()) {
+                        *dst = src.map(half::f16::from_f32);
+                    }
                 }
-            }
-            scratch.buffers.give_color(band_px);
-            result
-        })?;
+                scratch.buffers.give_color(band_px);
+                result
+            },
+        );
+    debug_assert_eq!(
+        meter.query_live.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    result?;
     Ok(stats)
 }
 
@@ -1771,10 +1959,15 @@ pub fn render_bands_stream(
     sink: &mut dyn FnMut(BandOut<'_>),
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
+    meter: &FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
     let (w, h) = size;
-    let mut scratch = Scratch::new();
+    let index = FrameIndex::new(items, h);
+    meter
+        .index_bytes
+        .fetch_max(index.heap_bytes(), std::sync::atomic::Ordering::Relaxed);
+    let mut scratch = Scratch::new(Some(meter));
     let mut band_px = scratch.buffers.take_color(w * h.min(BAND_H));
     let mut y0 = 0;
     while y0 < h {
@@ -1782,6 +1975,7 @@ pub fn render_bands_stream(
         if let Err(error) = shade(
             level,
             items,
+            &index,
             clear,
             &mut band_px[..w * bh],
             w,
@@ -1790,6 +1984,7 @@ pub fn render_bands_stream(
             &mut scratch,
             peak,
             has_backdrop,
+            Some(meter),
         ) {
             scratch.buffers.give_color(band_px);
             return Err(error);
@@ -1816,11 +2011,28 @@ pub fn render_bands_stream(
         y0 += bh;
     }
     scratch.buffers.give_color(band_px);
+    // `scratch`'s Drop releases the charged query capacity.
+    drop(scratch);
+    debug_assert_eq!(
+        meter.query_live.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
     Ok(stats)
 }
 
 const fn slice_len(w: usize, bh: usize) -> usize {
     w * bh
+}
+
+/// How a `run` level resolves a draw's edge selection for its rows:
+/// the aligned band's index slice borrowed, or an expanded window's
+/// merged query into the depth's scratch.
+#[derive(Clone, Copy)]
+enum EdgeSel {
+    /// The aligned surface band's bins.
+    Band(usize),
+    /// An expanded window covering `band.y0 .. band.y0 + bh`.
+    Window,
 }
 
 /// `run` exactly once per dispatched CPU level: the band passes and
@@ -1835,19 +2047,27 @@ const fn slice_len(w: usize, bh: usize) -> usize {
 fn run_at(
     level: fearless_simd::Level,
     items: &[Item],
-    range: Range<usize>,
+    index: &FrameIndex,
+    sel: &[usize],
+    limit: usize,
+    mode: EdgeSel,
     band: &mut Band<'_>,
     acc: &mut Accum,
     stack: &mut Vec<Plane>,
     buffers: &mut Buffers,
     ctx: &mut FrameCtx<'_>,
+    depth: usize,
 ) -> Result<(), cherenkov::RenderError> {
-    fearless_simd::dispatch!(level, _simd => run(items, range, band, acc, stack, buffers, ctx))
+    fearless_simd::dispatch!(level, _simd => run(items, index, sel, limit, mode, band, acc, stack, buffers, ctx, depth))
 }
 
 #[expect(
     clippy::too_many_lines,
     reason = "keeps ordered item processing and recursive filter scopes together"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
 )]
 #[expect(
     clippy::inline_always,
@@ -1856,17 +2076,26 @@ fn run_at(
 #[inline(always)]
 fn run(
     items: &[Item],
-    range: Range<usize>,
+    index: &FrameIndex,
+    sel: &[usize],
+    limit: usize,
+    mode: EdgeSel,
     band: &mut Band<'_>,
     acc: &mut Accum,
     stack: &mut Vec<Plane>,
     buffers: &mut Buffers,
     ctx: &mut FrameCtx<'_>,
+    depth: usize,
 ) -> Result<(), cherenkov::RenderError> {
     let bh = band.fb.len() / band.w;
     let h = ctx.h;
-    let mut i = range.start;
-    while i < range.end {
+    // Item indexes below `skip` were consumed by a filter scope's
+    // nested run.
+    let mut skip = 0usize;
+    for &i in sel {
+        if i < skip {
+            continue;
+        }
         match &items[i] {
             Item::Draw {
                 edges,
@@ -1876,15 +2105,32 @@ fn run(
                 paint,
                 clip,
                 swept: _,
-            } => band.draw(
-                acc,
-                stack,
-                (edges, *offset),
-                *bbox,
-                *rule,
-                paint,
-                clip.as_ref(),
-            ),
+            } => match mode {
+                EdgeSel::Band(b) => band.draw(
+                    acc,
+                    stack,
+                    (edges, index.edges(b, i), *offset),
+                    *bbox,
+                    *rule,
+                    paint,
+                    clip.as_ref(),
+                ),
+                EdgeSel::Window => {
+                    let mut selected = buffers.take_sel_edges();
+                    index.query_edges(i, (band.y0, band.y0 + bh), &mut selected);
+                    buffers.charge_sel_edges(&selected, ctx.meter);
+                    band.draw(
+                        acc,
+                        stack,
+                        (edges, &selected, *offset),
+                        *bbox,
+                        *rule,
+                        paint,
+                        clip.as_ref(),
+                    );
+                    buffers.give_sel_edges(selected);
+                }
+            },
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
                 space: *space,
@@ -1895,7 +2141,6 @@ fn run(
                 clip,
             } => {
                 let Some(plane) = stack.pop() else {
-                    i += 1;
                     continue;
                 };
                 band.composite_isolate(
@@ -1911,7 +2156,7 @@ fn run(
             Item::PushFilter { end, apron, space } => {
                 let scope_end = usize::try_from(*end)
                     .map_err(|_| cherenkov::RenderError::Render("invalid filter scope".into()))?;
-                if scope_end <= i || scope_end >= range.end {
+                if scope_end <= i || scope_end >= limit {
                     return Err(cherenkov::RenderError::Render(
                         "invalid filter scope".into(),
                     ));
@@ -1932,6 +2177,9 @@ fn run(
                 let bottom = y1.saturating_add(*apron).min(h);
                 let mut window = buffers.take_color(band.w * (bottom - top));
                 let coverage = buffers.take_coverage((band.w + 2) * (bottom - top));
+                let mut nested = buffers.take_sel_items(depth, ctx.meter);
+                index.query_items(i + 1..scope_end, (top, bottom), &mut nested);
+                buffers.charge_sel_items(depth, &nested, ctx.meter);
                 let nested_result = {
                     let mut filter_band = Band {
                         fb: &mut window,
@@ -1944,12 +2192,16 @@ fn run(
                     let result = run_at(
                         ctx.level,
                         items,
-                        i + 1..scope_end,
+                        index,
+                        &nested,
+                        scope_end,
+                        EdgeSel::Window,
                         &mut filter_band,
                         &mut filter_acc,
                         &mut filter_stack,
                         buffers,
                         ctx,
+                        depth + 1,
                     );
                     for plane in filter_stack {
                         buffers.give_color(plane.buf);
@@ -1957,6 +2209,7 @@ fn run(
                     buffers.give_coverage(filter_acc.into_buffer());
                     result
                 };
+                buffers.give_sel_items(depth, nested);
                 if let Err(error) = nested_result {
                     buffers.give_color(window);
                     return Err(error);
@@ -1969,7 +2222,7 @@ fn run(
                 let central = &window[first..first + band.fb.len()];
                 band.composite_isolate(central, *space, *opacity, *blend, clip.as_ref(), stack);
                 buffers.give_color(window);
-                i = scope_end;
+                skip = scope_end + 1;
             }
             Item::PopFilter { .. } => {
                 return Err(cherenkov::RenderError::Render(
@@ -2025,7 +2278,6 @@ fn run(
                 clip,
             } => band.glyph(stack, slot, *x, *y, paint, clip.as_ref()),
         }
-        i += 1;
     }
     Ok(())
 }
@@ -2420,8 +2672,9 @@ struct Band<'a> {
 }
 
 impl Band<'_> {
-    /// Rasterizes one draw item — its frame edges placed at `offset` —
-    /// into the top isolation buffer.
+    /// Rasterizes one draw item — its `sel` edges, indexes into the
+    /// frame edge list in original order, placed at `offset` — into the
+    /// top isolation buffer.
     #[expect(
         clippy::cast_precision_loss,
         clippy::too_many_arguments,
@@ -2436,7 +2689,7 @@ impl Band<'_> {
         &mut self,
         acc: &mut Accum,
         stack: &mut Vec<Plane>,
-        (edges, [ox, oy]): (&[Edge], [f32; 2]),
+        (edges, sel, [ox, oy]): (&[Edge], &[usize], [f32; 2]),
         bbox: crate::render::lower::DrawBox,
         rule: FillRule,
         paint: &PaintData,
@@ -2461,7 +2714,8 @@ impl Band<'_> {
         acc.clear_range(y_lo, y_hi);
         // The frame's origin relative to the band's top row.
         let dy = oy - self.y0 as f32;
-        for e in edges {
+        for &ei in sel {
+            let e = &edges[ei];
             // Only edges crossing the band deposit anything.
             let ey0 = e.y0 + dy;
             let ey1 = e.y1 + dy;
@@ -2939,6 +3193,19 @@ impl Band<'_> {
     reason = "band origins are small integers"
 )]
 pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<f32> {
+    let bands = h.div_ceil(BAND_H);
+    // The same edge→band bins the draw path uses; `oy` is 0 — the edges
+    // are already device-space.
+    let index = EdgeBins::build(
+        &[EdgeGroup {
+            edges,
+            oy: 0.0,
+            band0: 0,
+            band1: bands,
+        }],
+        bands,
+        h,
+    );
     let mut mask = vec![0.0; w * h];
     mask.par_chunks_mut(BAND_H * w)
         .enumerate()
@@ -2946,7 +3213,8 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
             let y0 = band * BAND_H;
             let bh = slice.len() / w;
             let mut acc = Accum::new(w, bh);
-            for e in edges {
+            for &ei in index.at(0, band) {
+                let e = &edges[ei];
                 let ey0 = e.y0 - y0 as f32;
                 let ey1 = e.y1 - y0 as f32;
                 if ey0.max(ey1) < 0.0 || ey0.min(ey1) >= bh as f32 {
