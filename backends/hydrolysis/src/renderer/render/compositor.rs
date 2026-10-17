@@ -433,7 +433,8 @@ impl HydrolysisRenderer {
         self.core.clear_commit_marks();
         let taken = window.mount.take_stats();
         self.last_mount_stats = mount::layers::census(&roots, taken);
-        self.state.counters.recorded_view_contents += taken.installs;
+        self.state.counters.recorded_view_contents += taken.installs + taken.live_records;
+        self.state.counters.live_recordings += taken.live_records;
         self.state.counters.layer_creations += taken.created;
         self.state.counters.layer_removals += taken.removed;
         let (fonts, images) = window.state.resources.take_registration_stats();

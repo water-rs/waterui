@@ -4,14 +4,28 @@
 //! The configuration sets the button's chrome (bordered / glass / plain);
 //! `Button` adds what a configuration cannot express: the label's content
 //! insets, tint, enabled state and accessibility hooks.
+//!
+//! # Safety
+//!
+//! The `unsafe` here defines a `UIButton` subclass, forwards to
+//! `UIButton`'s own `setEnabled:` implementation, and calls `objc2`
+//! bindings marked unsafe because `UIKit` view APIs are main-thread only —
+//! which the `MainThreadOnly` thread kind and [`MainThreadMarker`]
+//! constructor guarantee.
 
-use objc2::MainThreadMarker;
+use std::cell::RefCell;
+use std::fmt;
+use std::rc::Rc;
+
 use objc2::rc::Retained;
-use objc2_foundation::{NSAttributedString, NSString};
+use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2_foundation::{NSAttributedString, NSObjectProtocol, NSString};
 use objc2_ui_kit::{
-    NSDirectionalEdgeInsets, UIButton, UIButtonConfiguration, UIColor, UIControl, UIControlState,
+    NSDirectionalEdgeInsets, UIButton, UIButtonConfiguration, UIButtonType, UIColor, UIControl,
+    UIControlState,
 };
 
+use crate::callback::{emit, guarded};
 use crate::geometry::EdgeInsets;
 
 /// The chrome a `UIButtonConfiguration` draws around the label.
@@ -29,13 +43,106 @@ pub enum Chrome {
     ProminentGlass,
 }
 
+/// Runs after each `setEnabled:`, with the new value.
+type EnabledHandler = Rc<dyn Fn(bool)>;
+
+/// The ivars of [`CocoaUiButton`].
+pub struct CocoaUiButtonIvars {
+    /// Called with the new value after each `setEnabled:`.
+    enabled_handler: RefCell<Option<EnabledHandler>>,
+}
+
+impl fmt::Debug for CocoaUiButtonIvars {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CocoaUiButtonIvars")
+            .field("enabled_handler", &self.enabled_handler.borrow().is_some())
+            .finish()
+    }
+}
+
+define_class!(
+    // SAFETY: `UIButton`'s designated initializer is `initWithFrame:`;
+    // `CocoaUiButton::new` reaches it through `init` and `with_type`
+    // through `+buttonWithType:`'s own initialization, and the class does
+    // not implement `Drop`.
+    #[unsafe(super(UIButton))]
+    #[name = "CocoaUiButton"]
+    #[thread_kind = MainThreadOnly]
+    #[ivars = CocoaUiButtonIvars]
+    #[derive(Debug)]
+    /// A `UIButton` reporting enabled-state changes to a handler.
+    ///
+    /// The only `UIButton` cocoa-ui constructs: chrome mirroring a rendered
+    /// button's enabled state — a bar item's `isEnabled` — installs a
+    /// handler here, having downcast `first_button`'s result to this class.
+    pub struct CocoaUiButton;
+
+    // SAFETY: `NSObjectProtocol` asks nothing of a `UIButton`.
+    unsafe impl NSObjectProtocol for CocoaUiButton {}
+
+    impl CocoaUiButton {
+        // SAFETY: `setEnabled:` is `UIControl`'s setter; the override
+        // forwards to `super` unchanged.
+        #[unsafe(method(setEnabled:))]
+        fn set_enabled(&self, enabled: bool) {
+            guarded("CocoaUiButton setEnabled", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setEnabled: enabled] };
+                // `setEnabled:` may run inside `buttonWithType:`'s own
+                // initialization, before `mark_ivars_initialized` could
+                // have run — read the storage without the initialized
+                // check.
+                // SAFETY: the storage is `set_ivars`-written, marked, or
+                // still zero-filled, all valid `CocoaUiButtonIvars` states.
+                let ivars = unsafe { crate::defined_class::raw_ivars(self) };
+                emit(&ivars.enabled_handler, enabled);
+            });
+        }
+    }
+);
+
+impl CocoaUiButton {
+    /// A button of `button_type` — `+[UIButton buttonWithType:]` invoked
+    /// on this subclass.
+    ///
+    /// The factory's own `alloc` zero-fills the ivar storage, which is
+    /// exactly the state `CocoaUiButtonIvars` starts in, so no `set_ivars`
+    /// step is needed — only `objc2`'s initialized marker.
+    #[must_use]
+    pub fn with_type(mtm: MainThreadMarker, button_type: UIButtonType) -> Retained<Self> {
+        let _ = mtm;
+        // SAFETY: invoked on the subclass itself, `buttonWithType:`
+        // allocates through `self`, so the result is a `CocoaUiButton`.
+        let this: Retained<Self> = unsafe { msg_send![Self::class(), buttonWithType: button_type] };
+        crate::defined_class::mark_ivars_initialized(&*this);
+        this
+    }
+
+    /// A button through `-[UIButton init]` — the plain initializer the
+    /// `UIButton::new` sites share.
+    #[must_use]
+    pub fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(CocoaUiButtonIvars {
+            enabled_handler: RefCell::new(None),
+        });
+        // SAFETY: `init` is `UIView`'s designated-initializer chain.
+        unsafe { msg_send![super(this), init] }
+    }
+
+    /// Runs `handler` with the new value after each `setEnabled:` —
+    /// whichever path changed enabled, not only [`Button::set_enabled`].
+    pub fn set_enabled_handler(&self, handler: impl Fn(bool) + 'static) {
+        self.ivars().enabled_handler.replace(Some(Rc::new(handler)));
+    }
+}
+
 /// An interactive button backed by `UIButton` (`.system` type).
 ///
 /// Derefs to `UIButton` so callers can reach platform APIs the wrapper does
 /// not expose; prefer the wrapper's methods where they exist.
 #[derive(Debug, Clone)]
 pub struct Button {
-    inner: Retained<UIButton>,
+    inner: Retained<CocoaUiButton>,
 }
 
 impl Button {
@@ -43,7 +150,7 @@ impl Button {
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Self {
         Self {
-            inner: UIButton::buttonWithType(objc2_ui_kit::UIButtonType::System, mtm),
+            inner: CocoaUiButton::with_type(mtm, UIButtonType::System),
         }
     }
 
