@@ -236,6 +236,8 @@ impl fmt::Display for Case {
 /// `eval_span`'s inputs: the paint and the run's output buffer.
 #[derive(Debug)]
 pub struct Eval {
+    /// The level the kernel call dispatches under.
+    pub level: cherenkov_cpu::Level,
     /// The paint.
     pub paint: PaintData,
     /// The run's first device column.
@@ -260,6 +262,8 @@ pub struct Composite {
     pub clip: ClipRun<'static>,
     /// The destination's storage space.
     pub space: cherenkov::BlendSpace,
+    /// The level the kernel calls dispatch under.
+    pub level: cherenkov_cpu::Level,
 }
 
 impl Case {
@@ -270,6 +274,7 @@ impl Case {
             .expect("the case table's paints lower");
         self.kind.assert_variant(&paint);
         Eval {
+            level: cherenkov_cpu::Level::new(),
             paint,
             x0: self.offset,
             py: PY,
@@ -286,13 +291,15 @@ impl Case {
     )]
     pub fn composite(self) -> Composite {
         let Eval {
+            level,
             paint,
             x0,
             py,
             mut out,
         } = self.eval();
-        let src = paint.eval_span(x0, py, &mut out).to_vec();
+        let src = kernels::eval_span(level, &paint, x0, py, &mut out).to_vec();
         Composite {
+            level,
             dst: (0..self.len)
                 .map(|i| {
                     [

@@ -9,6 +9,7 @@ use cherenkov::{ColorStop, Extend, Interpolation, Paint};
 use rustc_hash::FxHashMap;
 
 use cherenkov::RenderError;
+use fearless_simd::Simd;
 use filtrate_core::space::{
     P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
 };
@@ -623,25 +624,57 @@ impl PaintData {
     /// Evaluates the run of pixel centres `(x0 + i + 0.5, py + 0.5)` into
     /// `out`: `out[i] == self.eval(x0 + i + 0.5, py + 0.5)` bit for bit.
     /// `out` may be uninitialised — every element is written — and is
-    /// returned as the initialised run. Scalar for now; the span shape is
-    /// what the SIMD kernels take over.
+    /// returned as the initialised run. [`PaintData::Solid`] fills the
+    /// span with native stores four pixels at a time; every other kind
+    /// keeps the scalar per-pixel evaluation until its own issue.
     #[expect(
         clippy::cast_precision_loss,
         reason = "pixel indices and band offsets are far below 2^24"
     )]
     #[expect(
         clippy::inline_always,
-        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+        reason = "compiled under the dispatched CPU level"
     )]
     #[inline(always)]
-    pub fn eval_span<'a>(
+    pub fn eval_span<'a, S: Simd>(
         &self,
+        simd: S,
         x0: usize,
         py: usize,
         out: &'a mut [MaybeUninit<[f32; 4]>],
     ) -> &'a mut [[f32; 4]] {
-        for (i, px) in out.iter_mut().enumerate() {
-            px.write(self.eval((x0 + i) as f32 + 0.5, py as f32 + 0.5));
+        match self {
+            Self::Solid(c) => {
+                let planes = simd.combine_f32x8(
+                    simd.combine_f32x4(simd.splat_f32x4(c[0]), simd.splat_f32x4(c[1])),
+                    simd.combine_f32x4(simd.splat_f32x4(c[2]), simd.splat_f32x4(c[3])),
+                );
+                let mut block = [0.0f32; 16];
+                simd.store_interleaved_128_f32x16(planes, &mut block);
+                let count = out.len();
+                let mut pos = 0;
+                while pos + 4 <= count {
+                    // SAFETY: `out[pos..pos + 4]` is four contiguous
+                    // `MaybeUninit<[f32; 4]>` — 16 floats — and `block`
+                    // holds those 16 initialised floats.
+                    unsafe {
+                        std::ptr::copy_nonoverlapping(
+                            block.as_ptr(),
+                            out[pos..].as_mut_ptr().cast::<f32>(),
+                            16,
+                        );
+                    }
+                    pos += 4;
+                }
+                for px in &mut out[pos..] {
+                    px.write(*c);
+                }
+            }
+            _ => {
+                for (i, px) in out.iter_mut().enumerate() {
+                    px.write(self.eval((x0 + i) as f32 + 0.5, py as f32 + 0.5));
+                }
+            }
         }
         // SAFETY: every element of `out` was just written.
         unsafe { out.assume_init_mut() }
@@ -750,28 +783,35 @@ mod tests {
     }
 
     /// `eval_span` is per-pixel `eval`, bit for bit, over every run of
-    /// length 0–67 starting at offsets 0–3.
+    /// length 0–67 starting at offsets 0–7, under the detected level and
+    /// the scalar fallback.
     #[expect(
         clippy::cast_precision_loss,
         reason = "pixel indices and band offsets are far below 2^24"
     )]
     #[test]
     fn eval_span_matches_scalar_eval_bit_for_bit() {
+        fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData, x0: usize, len: usize) {
+            let py = 13usize;
+            let mut span = vec![MaybeUninit::uninit(); len];
+            let span = paint.eval_span(simd, x0, py, &mut span);
+            for (i, px) in span.iter().enumerate() {
+                assert_eq!(
+                    px.map(f32::to_bits),
+                    paint
+                        .eval((x0 + i) as f32 + 0.5, py as f32 + 0.5)
+                        .map(f32::to_bits),
+                    "paint {paint:?}, run x0={x0} len={len}, pixel {i}"
+                );
+            }
+        }
         for paint in each_kind() {
-            for x0 in 0..4usize {
+            for x0 in 0..=7usize {
                 for len in 0..=67usize {
-                    let py = 13usize;
-                    let mut span = vec![MaybeUninit::uninit(); len];
-                    let span = paint.eval_span(x0, py, &mut span);
-                    for (i, px) in span.iter().enumerate() {
-                        assert_eq!(
-                            px.map(f32::to_bits),
-                            paint
-                                .eval((x0 + i) as f32 + 0.5, py as f32 + 0.5)
-                                .map(f32::to_bits),
-                            "paint {paint:?}, run x0={x0} len={len}, pixel {i}"
-                        );
-                    }
+                    fearless_simd::dispatch!(crate::Level::new(), simd => check(
+                        simd, &paint, x0, len
+                    ));
+                    check(fearless_simd::Fallback::new(), &paint, x0, len);
                 }
             }
         }

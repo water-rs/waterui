@@ -27,7 +27,8 @@ use crate::render::lower::{
 use crate::render::paint::PaintData;
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
-use filtrate_core::space::{from_srgb, to_srgb};
+use fearless_simd::{Select, Simd, f32x4};
+use filtrate_core::space::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode};
 use filtrate_core::{CpuFilterError, CpuImage, WorkingSpace};
 
 /// Rows per rasterization band.
@@ -1279,6 +1280,265 @@ fn nonzero_runs(cov: &[f32], mut f: impl FnMut(usize, usize)) {
     }
 }
 
+/// Loads a block of four `[f32; 4]` pixels into channel planes — the
+/// `R|G|B|A` `SoA` layout `load_interleaved_128_f32x16` produces, one
+/// pixel per lane.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn load_px4<S: Simd>(simd: S, px: &[[f32; 4]; 4]) -> [f32x4<S>; 4] {
+    // SAFETY: `[[f32; 4]; 4]` is layout-identical to `[f32; 16]`, fully
+    // initialised.
+    let vec = simd.load_interleaved_128_f32x16(unsafe { &*px.as_ptr().cast::<[f32; 16]>() });
+    let (rg, ba) = simd.split_f32x16(vec);
+    let (red, grn) = simd.split_f32x8(rg);
+    let (blu, alp) = simd.split_f32x8(ba);
+    [red, grn, blu, alp]
+}
+
+/// Stores channel planes into a block of four `[f32; 4]` pixels.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn store_px4<S: Simd>(simd: S, p: [f32x4<S>; 4], px: &mut [[f32; 4]; 4]) {
+    let v = simd.combine_f32x8(
+        simd.combine_f32x4(p[0], p[1]),
+        simd.combine_f32x4(p[2], p[3]),
+    );
+    // SAFETY: `[[f32; 4]; 4]` is layout-identical to `[f32; 16]`.
+    simd.store_interleaved_128_f32x16(v, unsafe { &mut *px.as_mut_ptr().cast::<[f32; 16]>() });
+}
+
+/// The clip coverage of the four span pixels starting at `i`; a run
+/// without a clip reads as `1.0` per lane.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn clip4<S: Simd>(simd: S, clip: &ClipRun<'_>, i: usize) -> f32x4<S> {
+    if clip.clip.is_none() {
+        simd.splat_f32x4(1.0)
+    } else {
+        simd.load_array_f32x4([clip.at(i), clip.at(i + 1), clip.at(i + 2), clip.at(i + 3)])
+    }
+}
+
+/// The 3×3 matrix multiply of `transform`'s non-fused order —
+/// `row[0] * x + row[1] * y + row[2] * z` per output channel — over four
+/// pixels' colour planes.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn matrix4<S: Simd>(simd: S, m: &[[f32; 3]; 3], v: [f32x4<S>; 3]) -> [f32x4<S>; 3] {
+    let coef = |row: usize, col: usize| simd.splat_f32x4(m[row][col]);
+    [
+        simd.add_f32x4(
+            simd.add_f32x4(
+                simd.mul_f32x4(coef(0, 0), v[0]),
+                simd.mul_f32x4(coef(0, 1), v[1]),
+            ),
+            simd.mul_f32x4(coef(0, 2), v[2]),
+        ),
+        simd.add_f32x4(
+            simd.add_f32x4(
+                simd.mul_f32x4(coef(1, 0), v[0]),
+                simd.mul_f32x4(coef(1, 1), v[1]),
+            ),
+            simd.mul_f32x4(coef(1, 2), v[2]),
+        ),
+        simd.add_f32x4(
+            simd.add_f32x4(
+                simd.mul_f32x4(coef(2, 0), v[0]),
+                simd.mul_f32x4(coef(2, 1), v[1]),
+            ),
+            simd.mul_f32x4(coef(2, 2), v[2]),
+        ),
+    ]
+}
+
+/// `to_srgb` on four premultiplied linear pixels in channel planes:
+/// unpremultiply by exact division, the `P3_TO_SRGB` matrix in
+/// `transform`'s non-fused order, `srgb_encode` per lane, re-premultiply.
+/// A zero-alpha lane lands transparent black, as `convert_space` writes.
+/// Such a lane still divides — producing non-finite garbage the alpha
+/// mask discards — matching the scalar branch's skipped computation.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn to_srgb4<S: Simd>(simd: S, px: [f32x4<S>; 4]) -> [f32x4<S>; 4] {
+    let [red, grn, blu, alp] = px;
+    let linear = matrix4(
+        simd,
+        &P3_TO_SRGB,
+        [
+            simd.div_f32x4(red, alp),
+            simd.div_f32x4(grn, alp),
+            simd.div_f32x4(blu, alp),
+        ],
+    );
+    let zero = simd.splat_f32x4(0.0);
+    let clear = simd.simd_eq_f32x4(alp, zero);
+    let [red, grn, blu] = linear.map(|ch| {
+        let enc = simd.load_array_f32x4(simd.as_array_f32x4(ch).map(srgb_encode));
+        clear.select(zero, simd.mul_f32x4(enc, alp))
+    });
+    [red, grn, blu, clear.select(zero, alp)]
+}
+
+/// `from_srgb` on four premultiplied sRGB-encoded pixels in channel
+/// planes: unpremultiply by exact division, `srgb_decode` per lane, the
+/// `SRGB_TO_P3` matrix in `transform`'s non-fused order, re-premultiply.
+/// A zero-alpha lane lands transparent black, as `convert_space` writes.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn from_srgb4<S: Simd>(simd: S, px: [f32x4<S>; 4]) -> [f32x4<S>; 4] {
+    let [red, grn, blu, alp] = px;
+    let straight = [
+        simd.div_f32x4(red, alp),
+        simd.div_f32x4(grn, alp),
+        simd.div_f32x4(blu, alp),
+    ];
+    let decoded = [
+        simd.load_array_f32x4(simd.as_array_f32x4(straight[0]).map(srgb_decode)),
+        simd.load_array_f32x4(simd.as_array_f32x4(straight[1]).map(srgb_decode)),
+        simd.load_array_f32x4(simd.as_array_f32x4(straight[2]).map(srgb_decode)),
+    ];
+    let linear = matrix4(simd, &SRGB_TO_P3, decoded);
+    let zero = simd.splat_f32x4(0.0);
+    let clear = simd.simd_eq_f32x4(alp, zero);
+    let [red, grn, blu] = linear.map(|ch| clear.select(zero, simd.mul_f32x4(ch, alp)));
+    [red, grn, blu, clear.select(zero, alp)]
+}
+
+/// `move_space` over a run of pixels — `convert_pixel` per pixel, the
+/// identity when `from == to` — with four-pixel groups in channel planes
+/// and the scalar expression as the tail.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_span<S: Simd>(
+    simd: S,
+    pixels: &mut [[f32; 4]],
+    from: cherenkov::BlendSpace,
+    to: cherenkov::BlendSpace,
+) {
+    if from == to {
+        return;
+    }
+    let encode = to == cherenkov::BlendSpace::SrgbEncoded;
+    let count = pixels.len();
+    let mut pos = 0;
+    while pos + 4 <= count {
+        let px = load_px4(simd, pixels[pos..pos + 4].try_into().expect("four pixels"));
+        let out = if encode {
+            to_srgb4(simd, px)
+        } else {
+            from_srgb4(simd, px)
+        };
+        store_px4(
+            simd,
+            out,
+            (&mut pixels[pos..pos + 4]).try_into().expect("four pixels"),
+        );
+        pos += 4;
+    }
+    for px in &mut pixels[pos..] {
+        *px = move_space(*px, from, to);
+    }
+}
+
+/// Composites four span pixels: `src * cov * cc` in that multiply order,
+/// `member`'s conversion under `SRGB` (`to_srgb`; the identity under
+/// linear storage), then `src + dst * (1 − src.a)` — the scalar
+/// `src_over`'s arithmetic, one rounding on the product and one on the
+/// sum, in every lane. Pixels at `cc <= 0` keep `dst`'s bytes; the `le`
+/// mask (not `gt`) keeps `NaN` clip coverage on the computed path like
+/// the scalar branch.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn blend4<S: Simd, const SRGB: bool>(
+    simd: S,
+    dst: &mut [[f32; 4]; 4],
+    src: [f32x4<S>; 4],
+    cov4: f32x4<S>,
+    cc4: f32x4<S>,
+) {
+    let mut scaled = src.map(|plane| simd.mul_f32x4(simd.mul_f32x4(plane, cov4), cc4));
+    if SRGB {
+        scaled = to_srgb4(simd, scaled);
+    }
+    let orig = load_px4(simd, dst);
+    let inv = simd.sub_f32x4(simd.splat_f32x4(1.0), scaled[3]);
+    let keep = simd.simd_le_f32x4(cc4, simd.splat_f32x4(0.0));
+    let out = [0, 1, 2, 3].map(|ch| {
+        keep.select(
+            orig[ch],
+            simd.add_f32x4(scaled[ch], simd.mul_f32x4(orig[ch], inv)),
+        )
+    });
+    store_px4(simd, out, dst);
+}
+
+/// `composite_span`'s per-space loop: `member` is the identity in linear
+/// storage and `to_srgb` under [`BlendSpace::SrgbEncoded`], selected once
+/// per span rather than per pixel. Four-pixel groups run the vector
+/// kernel; the tail runs the scalar expression bit for bit.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn composite_span_in<S: Simd, const SRGB: bool>(
+    simd: S,
+    dst: &mut [[f32; 4]],
+    src: &[[f32; 4]],
+    cov: &[f32],
+    clip: ClipRun<'_>,
+) {
+    let space = if SRGB {
+        cherenkov::BlendSpace::SrgbEncoded
+    } else {
+        cherenkov::BlendSpace::Linear
+    };
+    let count = dst.len();
+    let mut pos = 0;
+    while pos + 4 <= count {
+        let cov4 = simd.load_array_ref_f32x4(cov[pos..pos + 4].try_into().expect("four lanes"));
+        blend4::<S, SRGB>(
+            simd,
+            (&mut dst[pos..pos + 4]).try_into().expect("four pixels"),
+            load_px4(simd, src[pos..pos + 4].try_into().expect("four pixels")),
+            cov4,
+            clip4(simd, &clip, pos),
+        );
+        pos += 4;
+    }
+    for i in pos..count {
+        let cc = clip.at(i);
+        if cc <= 0.0 {
+            continue;
+        }
+        dst[i] = src_over(dst[i], member(src[i].map(|v| v * cov[i] * cc), space));
+    }
+}
+
 /// Composites a run of evaluated `src` pixels over `dst`.
 ///
 /// One pixel is `src_over(dst, member(src * cov * cc, space))`, `cc` the
@@ -1288,7 +1548,13 @@ fn nonzero_runs(cov: &[f32], mut f: impl FnMut(usize, usize)) {
 ///
 /// # Panics
 /// When `dst`, `src` and `cov` are not the same length.
-pub fn composite_span(
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+pub fn composite_span<S: Simd>(
+    simd: S,
     dst: &mut [[f32; 4]],
     src: &[[f32; 4]],
     cov: &[f32],
@@ -1297,12 +1563,103 @@ pub fn composite_span(
 ) {
     assert_eq!(dst.len(), src.len(), "composite run length mismatch");
     assert_eq!(src.len(), cov.len(), "composite run length mismatch");
-    for (i, d) in dst.iter_mut().enumerate() {
-        let cc = clip.at(i);
-        if cc <= 0.0 {
-            continue;
+    if space == cherenkov::BlendSpace::SrgbEncoded {
+        composite_span_in::<S, true>(simd, dst, src, cov, clip);
+    } else {
+        composite_span_in::<S, false>(simd, dst, src, cov, clip);
+    }
+}
+
+/// `composite_span` specialized to a solid paint `color` (premultiplied
+/// linear): the source planes are `color` splatted, so the span never
+/// reads evaluated pixels. An opaque `color` (`a == 1`) additionally
+/// splits each maximal `cov == 1 && cc == 1` run and stores
+/// `member(color)` — converted once — directly, without reading `dst`;
+/// partial boundaries run the shared group kernel, which produces the
+/// same `member(color)` value at full coverage anyway.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn composite_solid<S: Simd>(
+    simd: S,
+    dst: &mut [[f32; 4]],
+    cov: &[f32],
+    clip: ClipRun<'_>,
+    color: [f32; 4],
+    space: cherenkov::BlendSpace,
+) {
+    if space == cherenkov::BlendSpace::SrgbEncoded {
+        composite_solid_in::<S, true>(simd, dst, cov, clip, color);
+    } else {
+        composite_solid_in::<S, false>(simd, dst, cov, clip, color);
+    }
+}
+
+/// `composite_solid`'s per-space loop; see it for the contract.
+#[expect(clippy::float_cmp, reason = "full coverage is the exact value 1.0")]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn composite_solid_in<S: Simd, const SRGB: bool>(
+    simd: S,
+    dst: &mut [[f32; 4]],
+    cov: &[f32],
+    clip: ClipRun<'_>,
+    color: [f32; 4],
+) {
+    let space = if SRGB {
+        cherenkov::BlendSpace::SrgbEncoded
+    } else {
+        cherenkov::BlendSpace::Linear
+    };
+    let opaque = color[3] == 1.0;
+    // `member(color, space)`, converted once — the direct-store value.
+    let stored = member(color, space);
+    let stored_planes = stored.map(|v| simd.splat_f32x4(v));
+    let color_planes = color.map(|v| simd.splat_f32x4(v));
+    let count = dst.len();
+    let mut pos = 0;
+    while pos < count {
+        if opaque && cov[pos] == 1.0 && clip.at(pos) == 1.0 {
+            let run_start = pos;
+            while pos < count && cov[pos] == 1.0 && clip.at(pos) == 1.0 {
+                pos += 1;
+            }
+            let mut at = run_start;
+            while at + 4 <= pos {
+                store_px4(
+                    simd,
+                    stored_planes,
+                    (&mut dst[at..at + 4]).try_into().expect("four pixels"),
+                );
+                at += 4;
+            }
+            for px in &mut dst[at..pos] {
+                *px = stored;
+            }
+        } else if pos + 4 <= count {
+            let cov4 = simd.load_array_ref_f32x4(cov[pos..pos + 4].try_into().expect("four lanes"));
+            blend4::<S, SRGB>(
+                simd,
+                (&mut dst[pos..pos + 4]).try_into().expect("four pixels"),
+                color_planes,
+                cov4,
+                clip4(simd, &clip, pos),
+            );
+            pos += 4;
+        } else {
+            let cc = clip.at(pos);
+            if cc <= 0.0 {
+                pos += 1;
+                continue;
+            }
+            dst[pos] = src_over(dst[pos], member(color.map(|v| v * cov[pos] * cc), space));
+            pos += 1;
         }
-        *d = src_over(*d, member(src[i].map(|v| v * cov[i] * cc), space));
     }
 }
 
@@ -1310,17 +1667,19 @@ pub fn composite_span(
 /// covers device column `x0 + i` on device row `py`, so a run `r0..r1`
 /// shades `dst[x0 + r0..x0 + r1]`. Each run is paint-evaluated and
 /// composited in `SPAN_CHUNK`-pixel pieces against `src`, the
-/// stack-resident chunk.
+/// stack-resident chunk. A [`PaintData::Solid`] takes the dedicated
+/// kernel and never touches `src`.
 #[expect(
     clippy::too_many_arguments,
     reason = "the row context travels together"
 )]
 #[expect(
     clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn composite_runs(
+fn composite_runs<S: Simd>(
+    simd: S,
     dst: &mut [[f32; 4]],
     cov: &[f32],
     x0: usize,
@@ -1335,13 +1694,25 @@ fn composite_runs(
         let mut x = r0;
         while x < r1 {
             let n = (r1 - x).min(SPAN_CHUNK);
-            composite_span(
-                &mut dst[x0 + x..x0 + x + n],
-                paint.eval_span(x0 + x, py, &mut src[..n]),
-                &cov[x..x + n],
-                ClipRun::new(clip, w, x0 + x, py),
-                space,
-            );
+            let clip = ClipRun::new(clip, w, x0 + x, py);
+            match paint {
+                PaintData::Solid(c) => composite_solid(
+                    simd,
+                    &mut dst[x0 + x..x0 + x + n],
+                    &cov[x..x + n],
+                    clip,
+                    *c,
+                    space,
+                ),
+                _ => composite_span(
+                    simd,
+                    &mut dst[x0 + x..x0 + x + n],
+                    paint.eval_span(simd, x0 + x, py, &mut src[..n]),
+                    &cov[x..x + n],
+                    clip,
+                    space,
+                ),
+            }
             x += n;
         }
     });
@@ -1842,7 +2213,7 @@ fn run_at(
     buffers: &mut Buffers,
     ctx: &mut FrameCtx<'_>,
 ) -> Result<(), cherenkov::RenderError> {
-    fearless_simd::dispatch!(level, _simd => run(items, range, band, acc, stack, buffers, ctx))
+    fearless_simd::dispatch!(level, simd => run(simd, items, range, band, acc, stack, buffers, ctx))
 }
 
 #[expect(
@@ -1850,11 +2221,16 @@ fn run_at(
     reason = "keeps ordered item processing and recursive filter scopes together"
 )]
 #[expect(
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
+)]
+#[expect(
     clippy::inline_always,
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn run(
+fn run<S: Simd>(
+    simd: S,
     items: &[Item],
     range: Range<usize>,
     band: &mut Band<'_>,
@@ -1877,6 +2253,7 @@ fn run(
                 clip,
                 swept: _,
             } => band.draw(
+                simd,
                 acc,
                 stack,
                 (edges, *offset),
@@ -1961,7 +2338,9 @@ fn run(
                     buffers.give_color(window);
                     return Err(error);
                 }
-                if let Err(error) = apply_filter(filter, &mut window, *space, top, (band.w, h)) {
+                if let Err(error) =
+                    apply_filter(simd, filter, &mut window, *space, top, (band.w, h))
+                {
                     buffers.give_color(window);
                     return Err(error);
                 }
@@ -1982,7 +2361,7 @@ fn run(
                     None => capture_rows(ctx.level, capture, items, ctx.surface, (band.w, h)),
                 };
                 if let Some(rows) = rows {
-                    capture_band(band, stack.as_slice(), buffers, ctx, capture, rows)?;
+                    capture_band(simd, band, stack.as_slice(), buffers, ctx, capture, rows)?;
                 }
             }
             Item::Sample {
@@ -2015,7 +2394,7 @@ fn run(
             } => band.shadow(stack, rbox, radii, *sigma_eff, color, *bbox, clip.as_ref()),
             Item::Project(item) => band.project(stack, item),
             Item::Silhouette { slot, paint, clip } => {
-                band.glyph(stack, slot, 0, 0, paint, clip.as_ref());
+                band.glyph(simd, stack, slot, 0, 0, paint, clip.as_ref());
             }
             Item::Glyph {
                 slot,
@@ -2023,7 +2402,7 @@ fn run(
                 y,
                 paint,
                 clip,
-            } => band.glyph(stack, slot, *x, *y, paint, clip.as_ref()),
+            } => band.glyph(simd, stack, slot, *x, *y, paint, clip.as_ref()),
         }
         i += 1;
     }
@@ -2033,7 +2412,8 @@ fn run(
 /// Runs `filter` over `pixels` stored in `space`. A filter works in the
 /// linear working space whatever space its scope stores: sRGB-encoded
 /// pixels are decoded before it and encoded again after it.
-fn apply_filter(
+fn apply_filter<S: Simd>(
+    simd: S,
     (filter, params): &FrameFilter,
     pixels: &mut [[f32; 4]],
     space: cherenkov::BlendSpace,
@@ -2042,7 +2422,12 @@ fn apply_filter(
 ) -> Result<(), cherenkov::RenderError> {
     let encoded = space == cherenkov::BlendSpace::SrgbEncoded;
     if encoded {
-        from_srgb(pixels);
+        convert_span(
+            simd,
+            pixels,
+            cherenkov::BlendSpace::SrgbEncoded,
+            cherenkov::BlendSpace::Linear,
+        );
     }
     filter
         .apply(
@@ -2060,7 +2445,12 @@ fn apply_filter(
             }
         })?;
     if encoded {
-        to_srgb(pixels);
+        convert_span(
+            simd,
+            pixels,
+            cherenkov::BlendSpace::Linear,
+            cherenkov::BlendSpace::SrgbEncoded,
+        );
     }
     Ok(())
 }
@@ -2081,7 +2471,8 @@ fn apply_filter(
     reason = "compiled under the dispatched CPU level so mul_add is one instruction"
 )]
 #[inline(always)]
-fn capture_band(
+fn capture_band<S: Simd>(
+    simd: S,
     band: &Band<'_>,
     stack: &[Plane],
     buffers: &mut Buffers,
@@ -2158,7 +2549,14 @@ fn capture_band(
         flat
     };
     if let Some(filter) = &item.filter {
-        apply_filter(filter, &mut canvas, space, win0 - ry0, (rw, ry1 - ry0))?;
+        apply_filter(
+            simd,
+            filter,
+            &mut canvas,
+            space,
+            win0 - ry0,
+            (rw, ry1 - ry0),
+        )?;
     }
     let kept_rows = kept1 - kept0;
     let mut buf = buffers.take_color(rw * kept_rows);
@@ -2432,8 +2830,9 @@ impl Band<'_> {
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
-    fn draw(
+    fn draw<S: Simd>(
         &mut self,
+        simd: S,
         acc: &mut Accum,
         stack: &mut Vec<Plane>,
         (edges, [ox, oy]): (&[Edge], [f32; 2]),
@@ -2477,6 +2876,7 @@ impl Band<'_> {
             let cov = acc.coverage_in_place(y, rule, x_lo, x_hi);
             let row = y * self.w;
             composite_runs(
+                simd,
                 &mut dst[row..],
                 cov,
                 x_lo,
@@ -2788,9 +3188,14 @@ impl Band<'_> {
         clippy::inline_always,
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the glyph context travels together"
+    )]
     #[inline(always)]
-    fn glyph(
+    fn glyph<S: Simd>(
         &mut self,
+        simd: S,
         stack: &mut Vec<Plane>,
         slot: &std::sync::OnceLock<std::sync::Arc<crate::render::glyph::GlyphMask>>,
         ox: i32,
@@ -2829,6 +3234,7 @@ impl Band<'_> {
             let m_lo = usize::try_from(x_lo as i32 - mx0).unwrap_or(0);
             let cov = &mask.cov[row + m_lo..row + m_lo + (x_hi - x_lo)];
             composite_runs(
+                simd,
                 &mut dst[y * self.w..],
                 cov,
                 x_lo,
@@ -2963,8 +3369,14 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::{Accum, Edge, coverage_mask, reduce_rows};
-    use cherenkov::FillRule;
+    use std::sync::Arc;
+
+    use super::{
+        Accum, ClipRef, ClipRun, Edge, composite_solid, composite_span, convert_span,
+        coverage_mask, member, move_space, reduce_rows, src_over,
+    };
+    use crate::render::lower::{ClipMask, IRect};
+    use cherenkov::{BlendSpace, FillRule};
 
     /// The long edges of water-rs/waterui#2665 against the independent f64
     /// area of the same polygon: through one accumulator over the whole
@@ -3075,5 +3487,218 @@ mod tests {
         assert_texel(dst[4], mean(&[(2, 4), (3, 4)]));
         // The corner: the single texel present.
         assert_texel(dst[5], texel(4, 4));
+    }
+
+    /// `composite_span` and `composite_solid` produce the scalar
+    /// per-pixel expression bit for bit — `(src * cov) * cc`, `member`,
+    /// `src + dst * (1 − src.a)`, `cc <= 0` untouched — over run lengths
+    /// 0–67 and start offsets 0–7, both storage spaces, no clip / partial
+    /// rect clip / coverage clip / full rect clip, mixed and all-full
+    /// coverage rows, and opaque, translucent, extended-range,
+    /// transparent and signed-zero sources, under the detected level and
+    /// the fallback token. Only pixels actually eligible for the opaque
+    /// direct-store path (`c.a == 1 && cov == 1 && cc == 1`) allow a
+    /// differing zero sign: the store never reads `dst`, so it cannot
+    /// reproduce `dst * 0`'s zero sign where the scalar expression would
+    /// compute one; every other value is compared by `to_bits`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one matrix over spaces, clips and run shapes"
+    )]
+    #[test]
+    fn span_kernels_match_scalar_expression() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_precision_loss,
+            clippy::cast_possible_wrap,
+            clippy::float_cmp,
+            reason = "test pattern indices and coverage fractions are small; \
+                      full coverage is the exact value 1.0"
+        )]
+        #[expect(
+            clippy::too_many_lines,
+            reason = "one matrix over spaces, clips and run shapes"
+        )]
+        fn check<S: fearless_simd::Simd>(simd: S) {
+            let colors: &[[f32; 4]] = &[
+                [0.2, 0.5, 0.9, 1.0],   // opaque
+                [0.2, 0.5, 0.9, 0.6],   // translucent
+                [1.4, -0.3, 0.9, 1.2],  // extended range
+                [0.0, 0.0, 0.0, 0.0],   // transparent
+                [-0.0, 0.0, -0.0, 1.0], // signed zero
+            ];
+            for space in [BlendSpace::Linear, BlendSpace::SrgbEncoded] {
+                for clip_kind in 0..4u8 {
+                    for cov_kind in 0..2u8 {
+                        for &color in colors {
+                            for x0 in 0..=7usize {
+                                for len in 0..=67usize {
+                                    let w = x0 + len + 8;
+                                    let py = 1usize;
+                                    let mask: Option<ClipRef> = match clip_kind {
+                                        1 => Some(Arc::new(ClipMask::Rect(IRect {
+                                            x0: (x0 + 2) as i32,
+                                            y0: 0,
+                                            x1: (x0 + 5) as i32,
+                                            y1: 4,
+                                        }))),
+                                        2 => {
+                                            let mut cells = vec![0.0; (py + 1) * w];
+                                            for (i, cell) in cells[py * w + x0..py * w + x0 + len]
+                                                .iter_mut()
+                                                .enumerate()
+                                            {
+                                                *cell = match (i + x0) % 4 {
+                                                    0 => 0.25,
+                                                    1 => 1.0,
+                                                    2 => 0.0,
+                                                    _ => 0.5,
+                                                };
+                                            }
+                                            Some(Arc::new(ClipMask::Cover(cells)))
+                                        }
+                                        // A rect covering the whole run.
+                                        3 => Some(Arc::new(ClipMask::Rect(IRect {
+                                            x0: 0,
+                                            y0: 0,
+                                            x1: (x0 + len) as i32,
+                                            y1: 4,
+                                        }))),
+                                        _ => None,
+                                    };
+                                    let clip = ClipRun::new(mask.as_ref(), w, x0, py);
+                                    let cov: Vec<f32> = if cov_kind == 1 {
+                                        vec![1.0; len]
+                                    } else {
+                                        (0..len)
+                                            .map(|i| match (i + x0) % 7 {
+                                                0 => 0.0,
+                                                1 | 3 | 5 => 1.0,
+                                                2 => 0.35,
+                                                4 => 0.5,
+                                                _ => 0.75,
+                                            })
+                                            .collect()
+                                    };
+                                    let dst0: Vec<[f32; 4]> = (0..len)
+                                        .map(|i| {
+                                            [
+                                                (i % 5) as f32 / 10.0,
+                                                if i == 1 { -0.0 } else { (i % 3) as f32 / 10.0 },
+                                                (i % 7) as f32 / 10.0,
+                                                0.5,
+                                            ]
+                                        })
+                                        .collect();
+                                    let expect = |src: &[[f32; 4]]| -> Vec<[f32; 4]> {
+                                        (0..len)
+                                            .map(|i| {
+                                                let cc = clip.at(i);
+                                                if cc <= 0.0 {
+                                                    return dst0[i];
+                                                }
+                                                src_over(
+                                                    dst0[i],
+                                                    member(src[i].map(|v| v * cov[i] * cc), space),
+                                                )
+                                            })
+                                            .collect()
+                                    };
+                                    let tag = format!(
+                                        "space {space:?} clip {clip_kind} cov {cov_kind} \
+                                         c {color:?} x0 {x0} len {len}"
+                                    );
+                                    let mut dst = dst0.clone();
+                                    composite_solid(simd, &mut dst, &cov, clip, color, space);
+                                    let expected = expect(&vec![color; len]);
+                                    for (i, (actual, want)) in dst.iter().zip(&expected).enumerate()
+                                    {
+                                        // Only store-eligible pixels
+                                        // accept a differing zero sign.
+                                        let direct =
+                                            color[3] == 1.0 && cov[i] == 1.0 && clip.at(i) == 1.0;
+                                        for ch in 0..4 {
+                                            assert!(
+                                                actual[ch].to_bits() == want[ch].to_bits()
+                                                    || (direct
+                                                        && actual[ch] == 0.0
+                                                        && want[ch] == 0.0),
+                                                "solid {tag} px {i} ch {ch}: \
+                                                 {actual:?} vs {want:?}"
+                                            );
+                                        }
+                                    }
+                                    let src: Vec<[f32; 4]> = (0..len)
+                                        .map(|i| {
+                                            color.map(|v| {
+                                                v * (0.25 + 0.75 * ((i * 5 + x0) % 9) as f32 / 8.0)
+                                            })
+                                        })
+                                        .collect();
+                                    let mut dst = dst0.clone();
+                                    composite_span(simd, &mut dst, &src, &cov, clip, space);
+                                    let expected = expect(&src);
+                                    for (i, (actual, want)) in dst.iter().zip(&expected).enumerate()
+                                    {
+                                        assert_eq!(
+                                            actual.map(f32::to_bits),
+                                            want.map(f32::to_bits),
+                                            "span {tag} px {i}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fearless_simd::dispatch!(crate::Level::new(), simd => check(simd));
+        check(fearless_simd::Fallback::new());
+    }
+
+    /// `convert_span` is `move_space` per pixel, bit for bit, in both
+    /// directions and as the identity, over run lengths 0–67 and every
+    /// start offset, on finite, negative, HDR, transparent and
+    /// signed-zero values, under the detected level and the fallback
+    /// token.
+    #[test]
+    fn convert_span_matches_move_space_bit_for_bit() {
+        fn check<S: fearless_simd::Simd>(simd: S) {
+            let seeds: &[[f32; 4]] = &[
+                [0.2, 0.4, 0.6, 0.8],
+                [1.4, -0.3, 0.9, 1.2],
+                [0.0, 0.0, 0.0, 0.0],
+                [-0.0, 0.0, -0.0, 1.0],
+                [0.05, 0.15, 0.25, 0.35],
+            ];
+            let spaces = [
+                (BlendSpace::Linear, BlendSpace::SrgbEncoded),
+                (BlendSpace::SrgbEncoded, BlendSpace::Linear),
+                (BlendSpace::Linear, BlendSpace::Linear),
+                (BlendSpace::SrgbEncoded, BlendSpace::SrgbEncoded),
+            ];
+            for (from, to) in spaces {
+                for x0 in 0..=7usize {
+                    for len in 0..=67usize {
+                        let pixels: Vec<[f32; 4]> =
+                            (0..len).map(|i| seeds[(i + x0) % seeds.len()]).collect();
+                        let expected: Vec<[f32; 4]> =
+                            pixels.iter().map(|&p| move_space(p, from, to)).collect();
+                        let mut out = pixels;
+                        convert_span(simd, &mut out, from, to);
+                        for (i, (actual, want)) in out.iter().zip(&expected).enumerate() {
+                            assert_eq!(
+                                actual.map(f32::to_bits),
+                                want.map(f32::to_bits),
+                                "from {from:?} to {to:?} x0 {x0} len {len} px {i}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        fearless_simd::dispatch!(crate::Level::new(), simd => check(simd));
+        check(fearless_simd::Fallback::new());
     }
 }

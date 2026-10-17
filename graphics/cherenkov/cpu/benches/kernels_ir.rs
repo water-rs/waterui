@@ -7,6 +7,11 @@
 //! numbers. Setup builds the inputs outside the measured region.
 //! Wall-clock coverage of the same table is `kernels_wall`.
 //!
+//! Each measured call goes through the `kernels::*` Level-dispatched
+//! entry point, so every count includes one `Level` match and
+//! `vectorize` hop; the production kernels thread the concrete token
+//! inside the run's dispatch instead.
+//!
 //! Run with:
 //!
 //! ```text
@@ -19,7 +24,7 @@ mod kernels_bench {
     use std::hint::black_box;
     use std::mem::MaybeUninit;
 
-    use cherenkov_cpu::testing::kernels::composite_span;
+    use cherenkov_cpu::testing::kernels as bench_kernels;
     use gungraun::{library_benchmark, library_benchmark_group};
 
     use super::cases::{self, Case, Composite, Eval, Kind};
@@ -43,7 +48,9 @@ mod kernels_bench {
     #[benches::image_bilinear(iter = cases::of(Kind::ImageBilinear), setup = eval_setup)]
     #[benches::transformed(iter = cases::of(Kind::Transformed), setup = eval_setup)]
     fn eval(mut input: Eval) -> Vec<MaybeUninit<[f32; 4]>> {
-        black_box(input.paint.eval_span(
+        black_box(bench_kernels::eval_span(
+            input.level,
+            &input.paint,
             black_box(input.x0),
             black_box(input.py),
             black_box(&mut input.out),
@@ -62,7 +69,8 @@ mod kernels_bench {
     #[benches::image_bilinear(iter = cases::of(Kind::ImageBilinear), setup = composite_setup)]
     #[benches::transformed(iter = cases::of(Kind::Transformed), setup = composite_setup)]
     fn composite(mut input: Composite) -> Vec<[f32; 4]> {
-        composite_span(
+        bench_kernels::composite_span(
+            input.level,
             black_box(&mut input.dst),
             black_box(&input.src),
             black_box(&input.cov),
