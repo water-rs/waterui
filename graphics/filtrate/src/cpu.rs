@@ -17,7 +17,10 @@ use filtrate_core::{
 };
 use wide::f32x4;
 
-use crate::filters::{BlendWithImage, Blur, GAUSSIAN_RADIUS_PER_SIGMA, GaussianBlur, SRGB_LUMA};
+use crate::filters::{
+    BlendWithImage, Blur, GAUSSIAN_RADIUS_PER_SIGMA, GaussianBlur, OverscrollStretch, SRGB_LUMA,
+    STRETCH_INTERPOLATION_STRENGTH,
+};
 
 /// A 4x4 matrix on premultiplied RGBA, stored as columns: the output is
 /// `c[0] * r + c[1] * g + c[2] * b + c[3] * a`.
@@ -213,6 +216,119 @@ impl<A: FilterParam> CpuFilter for BlendWithImage<A> {
             image,
         );
         Ok(())
+    }
+}
+
+impl<T: FilterParam> CpuFilter for OverscrollStretch<T> {
+    fn cpu_footprint(params: &Self::Params) -> filtrate_core::Footprint {
+        Self::footprint_of(params)
+    }
+
+    fn apply_cpu_image(
+        &self,
+        params: &Self::Params,
+        _space: &WorkingSpace,
+        image: &mut CpuImage<'_>,
+    ) -> Result<(), CpuFilterError> {
+        overscroll_stretch(*params, image);
+        Ok(())
+    }
+}
+
+/// The stage's `stretch_axis`: HWUI's `computeOverscroll` for a position
+/// inside `[0, extent]`.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "mirrors the WGSL stage's evaluation order"
+)]
+fn stretch_axis(position: f32, overscroll: f32, extent: f32) -> f32 {
+    // `mix(1, offset / extent, strength)`.
+    let mix = |offset: f32| {
+        (1.0 - STRETCH_INTERPOLATION_STRENGTH)
+            + offset * (1.0 / extent) * STRETCH_INTERPOLATION_STRENGTH
+    };
+    let stretched = extent / (1.0 + overscroll.abs());
+    if overscroll > 0.0 {
+        let offset = extent - position;
+        stretched - offset / (1.0 + overscroll * mix(offset))
+    } else if overscroll < 0.0 {
+        let offset = position;
+        extent - (stretched - offset / (1.0 - overscroll * mix(offset)))
+    } else {
+        position
+    }
+}
+
+/// [`OverscrollStretch`]: each pixel inside the frame takes the bilinear
+/// sample at its warped position, read from the window's input and clamped
+/// like [`CpuImage`] samples; pixels outside the frame keep their value.
+///
+/// # Panics
+/// If the frame is not invertible.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names,
+    clippy::suboptimal_flops,
+    reason = "surface coordinates fit f32 and i64; the frame mapping mirrors the WGSL stage's `frame_a`..`frame_f`"
+)]
+fn overscroll_stretch(params: [f32; 10], image: &mut CpuImage<'_>) {
+    let [a, b, c, d, e, f, width, height, stretch_x, stretch_y] = params;
+    let determinant = a * d - b * c;
+    assert!(
+        determinant.is_finite() && determinant != 0.0,
+        "OverscrollStretch: the frame [{a}, {b}, {c}, {d}, {e}, {f}] is not invertible"
+    );
+    let columns = image.size.0;
+    let rows = image.pixels.len().checked_div(columns).unwrap_or(0);
+    if rows == 0 {
+        return;
+    }
+    // Half a pixel along each frame axis: the stage's edge-texel clamp.
+    let inset = [0.5 / a.hypot(b), 0.5 / c.hypot(d)];
+    let input = image.pixels.to_vec();
+    let texel = |x: i64, y: i64| {
+        let x = x.clamp(0, columns as i64 - 1) as usize;
+        let y = (y - image.top as i64).clamp(0, rows as i64 - 1) as usize;
+        input[y * columns + x]
+    };
+    for row in 0..rows {
+        let pixel_y = (image.top + row) as f32 + 0.5;
+        for column in 0..columns {
+            let relative = [column as f32 + 0.5 - e, pixel_y - f];
+            let local = [
+                (d * relative[0] - c * relative[1]) / determinant,
+                (a * relative[1] - b * relative[0]) / determinant,
+            ];
+            if !(0.0..=width).contains(&local[0]) || !(0.0..=height).contains(&local[1]) {
+                continue;
+            }
+            let warped = [
+                stretch_axis(local[0], stretch_x, width)
+                    .max(inset[0])
+                    .min(width - inset[0]),
+                stretch_axis(local[1], stretch_y, height)
+                    .max(inset[1])
+                    .min(height - inset[1]),
+            ];
+            let source = [
+                a * warped[0] + c * warped[1] + e - 0.5,
+                b * warped[0] + d * warped[1] + f - 0.5,
+            ];
+            let base = [source[0].floor(), source[1].floor()];
+            let t = [source[0] - base[0], source[1] - base[1]];
+            let (x0, y0) = (base[0] as i64, base[1] as i64);
+            let lerp = |p: [f32; 4], q: [f32; 4], t: f32| -> [f32; 4] {
+                std::array::from_fn(|channel| p[channel] * (1.0 - t) + q[channel] * t)
+            };
+            image.pixels[row * columns + column] = lerp(
+                lerp(texel(x0, y0), texel(x0 + 1, y0), t[0]),
+                lerp(texel(x0, y0 + 1), texel(x0 + 1, y0 + 1), t[0]),
+                t[1],
+            );
+        }
     }
 }
 

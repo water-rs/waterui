@@ -145,10 +145,11 @@ impl Item {
 pub struct InnerProgram {
     pub viewport: kurbo::Rect,
     pub offset: kurbo::Vec2,
-    /// The overscroll stretch the scrolled content draws with, in the
-    /// viewport's space — the identity at rest. It never reaches the clip:
+    /// The overscroll stretch direction the scrolled content draws with —
+    /// HWUI's `mStretchDirection`, warped by its stretch shader in the
+    /// viewport's frame — or `None` at rest. It never reaches the clip:
     /// the content stretches inside the unchanged viewport.
-    pub stretch: kurbo::Affine,
+    pub stretch: Option<kurbo::Vec2>,
     pub items: Vec<Item>,
 }
 
@@ -408,13 +409,13 @@ impl ProgramBuilder {
     }
 
     /// Opens the scroll node's `inner` list: until [`Self::end_inner`],
-    /// items land under the clipped, scrolled inner layer, stretched by
-    /// `stretch`.
+    /// items land under the clipped, scrolled inner layer, stretched in
+    /// the `stretch` direction.
     pub(crate) fn begin_inner(
         &mut self,
         viewport: kurbo::Rect,
         offset: kurbo::Vec2,
-        stretch: kurbo::Affine,
+        stretch: Option<kurbo::Vec2>,
         anchor: Rc<Placement>,
     ) {
         assert!(

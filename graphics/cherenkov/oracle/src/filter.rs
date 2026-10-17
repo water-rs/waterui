@@ -6,10 +6,15 @@
 //!   per channel, edge-clamped;
 //! - the box blur averages `2r + 1` edge-clamped texels per axis;
 //! - the image blend operates on the input's unpremultiplied colour and the
-//!   sampled texel, then re-premultiplies with the unchanged input alpha.
+//!   sampled texel, then re-premultiplies with the unchanged input alpha;
+//! - the overscroll stretch is HWUI's stretch shader, evaluated in the
+//!   frame's own space per axis and sampled bilinearly half a pixel
+//!   inside the frame, as HWUI's clamped snapshot sampler reads it.
 
 use cherenkov_scene::{FilterBlend, LayerFilter};
+use kurbo::{Affine, Point, Size, Vec2};
 
+use crate::sdf::bilinear;
 use crate::shadow::gaussian_blur;
 
 /// Straight-alpha texels of a filter image, `channel / 255`, row-major.
@@ -43,6 +48,11 @@ pub fn apply(
         }
         LayerFilter::GaussianBlur { sigma } => gaussian_blur_rgba(*sigma, pixels, width, height),
         LayerFilter::BoxBlur { radius } => box_blur(*radius, pixels, width, height),
+        LayerFilter::OverscrollStretch {
+            frame,
+            size,
+            stretch,
+        } => overscroll_stretch(*frame, *size, *stretch, pixels, width, height),
         LayerFilter::BlendImage { amount, mode, .. } => {
             let image = image.expect("a blend-image filter carries its image");
             blend_image(image, amount.clamp(0.0, 1.0), *mode, pixels, width, height);
@@ -110,6 +120,83 @@ fn box_blur(radius: f64, pixels: &mut [[f64; 4]], width: usize, height: usize) {
     let horizontal = pass(pixels, 1, 0);
     let vertical = pass(&horizontal, 0, 1);
     pixels.copy_from_slice(&vertical);
+}
+
+/// HWUI's `computeOverscroll` (`libs/hwui/effects/StretchEffect.cpp`,
+/// `stretchShader`) for a position inside `[0, extent]`, with the uniforms
+/// `StretchEffect::getShader` sets for a node `extent` long:
+/// `uStretchAffectedDist = extent`, `uInverseDistanceStretched = 1 / extent`,
+/// `uDistanceStretched = extent / (1 + |overscroll|)` and
+/// `uInterpolationStrength = INTERPOLATION_STRENGTH_VALUE = 0.7`.
+/// `computeOverscrollStart` serves a positive overscroll and
+/// `computeOverscrollEnd` a negative one; zero is the identity.
+fn compute_overscroll(position: f64, overscroll: f64, extent: f64) -> f64 {
+    const INTERPOLATION_STRENGTH: f64 = 0.7;
+    let distance_stretched = extent / (1.0 + overscroll.abs());
+    let variation = |offset: f64| {
+        (offset / extent).mul_add(INTERPOLATION_STRENGTH, 1.0 - INTERPOLATION_STRENGTH)
+    };
+    if overscroll > 0.0 {
+        let offset = extent - position;
+        distance_stretched - offset / overscroll.mul_add(variation(offset), 1.0)
+    } else if overscroll < 0.0 {
+        let offset = position;
+        extent - (distance_stretched - offset / (-overscroll).mul_add(variation(offset), 1.0))
+    } else {
+        position
+    }
+}
+
+/// The overscroll stretch: each pixel centre inside `frame`'s
+/// `[0, size.width] × [0, size.height]` takes the bilinear sample of the
+/// unfiltered pixels at its position remapped per axis by
+/// [`compute_overscroll`], kept half a pixel inside the frame along each of
+/// its axes like HWUI's clamped snapshot sampler; every other pixel is
+/// unchanged.
+///
+/// # Panics
+/// If `frame` is not invertible.
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pixel coordinates are small non-negative values"
+)]
+fn overscroll_stretch(
+    frame: Affine,
+    size: Size,
+    stretch: Vec2,
+    pixels: &mut [[f64; 4]],
+    width: usize,
+    height: usize,
+) {
+    let determinant = frame.determinant();
+    assert!(
+        determinant.is_finite() && determinant != 0.0,
+        "an overscroll stretch frame must be invertible: {frame:?}"
+    );
+    let inverse = frame.inverse();
+    // HWUI samples a snapshot of the node clamped to its edge texels: half
+    // a pixel along each frame axis, in the frame's own units.
+    let [a, b, c, d, _, _] = frame.as_coeffs();
+    let inset = Vec2::new(0.5 / a.hypot(b), 0.5 / c.hypot(d));
+    let source = pixels.to_vec();
+    for y in 0..height {
+        for x in 0..width {
+            let local = inverse * Point::new(x as f64 + 0.5, y as f64 + 0.5);
+            if !(0.0..=size.width).contains(&local.x) || !(0.0..=size.height).contains(&local.y) {
+                continue;
+            }
+            let warped = frame
+                * Point::new(
+                    compute_overscroll(local.x, stretch.x, size.width)
+                        .max(inset.x)
+                        .min(size.width - inset.x),
+                    compute_overscroll(local.y, stretch.y, size.height)
+                        .max(inset.y)
+                        .min(size.height - inset.y),
+                );
+            pixels[y * width + x] = bilinear(&source, width, height, [warped.x, warped.y]);
+        }
+    }
 }
 
 #[expect(

@@ -29,6 +29,7 @@ use super::program::{
     ChromeMaterial, InnerProgram, Item, LiveItem, MaterialRequest, ProducerContent, Program,
     RunKey, SceneContentSource, ScopeKey, ScopeProps,
 };
+use super::stretch::{ShownStretch, StretchFilter};
 use super::target::LayerTarget;
 use crate::renderer::ProducerWake;
 use crate::renderer::chrome::LiveSource;
@@ -121,6 +122,19 @@ fn write_props<T: LayerTarget>(
     *written = props;
 }
 
+/// What a test reads off a scroll node's inner layer
+/// ([`NodeLayers::inner_stretch`]).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InnerStretchProbe {
+    /// The clip's bounds in the inner layer's space.
+    pub clip: Option<kurbo::Rect>,
+    /// The filter the inner layer carries.
+    pub filter: Option<FilterId>,
+    /// The registered stretch filter and its last written parameters.
+    pub stretch: Option<(FilterId, [f32; 10])>,
+}
+
 /// One run of recorded content. The run at the head of a layer's list
 /// with no leading child is that layer's own content (`layer: None`).
 pub struct RunLayer {
@@ -200,6 +214,10 @@ pub struct NodeLayers {
     frame_props: LayerProps,
     /// The scroll node's clipped, scrolled content layer.
     inner: Option<(Layer, LayerProps)>,
+    /// The overscroll stretch filter the inner layer draws with while it
+    /// stretches — registered on its first stretch, kept while the inner
+    /// layer lives.
+    inner_stretch: Option<StretchFilter>,
     /// A producer node's install layer.
     install: Option<(Layer, LayerProps)>,
     /// Whether `install` holds a GPU producer (the census counts them).
@@ -306,6 +324,21 @@ impl NodeLayers {
     #[cfg(test)]
     pub(crate) fn inner_id(&self) -> Option<LayerId> {
         self.inner.as_ref().map(|(inner, _)| inner.id())
+    }
+
+    /// The inner layer's committed clip bounds and filter, with the stretch
+    /// filter's last written parameters — `None` without an inner layer.
+    #[cfg(test)]
+    pub(crate) fn inner_stretch(&self) -> Option<InnerStretchProbe> {
+        let (_, props) = self.inner.as_ref()?;
+        Some(InnerStretchProbe {
+            clip: props.clip.as_ref().map(ShapeData::bounds),
+            filter: props.filter,
+            stretch: self
+                .inner_stretch
+                .as_ref()
+                .map(|stretch| (stretch.id(), stretch.written())),
+        })
     }
 
     /// The member's frame layer id when the node holds a backdrop-group
@@ -472,6 +505,7 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
         let NodeLayers {
             frame,
             inner,
+            inner_stretch,
             install,
             runs,
             inner_runs,
@@ -510,7 +544,8 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
             self.retire_layer(layer);
         }
         self.retire_layer(frame);
-        self.graveyard.push(Box::new((content_held, material)));
+        self.graveyard
+            .push(Box::new((content_held, material, inner_stretch)));
     }
 }
 
@@ -867,6 +902,7 @@ pub fn commit_cell<T: LayerTarget>(
                 frame,
                 frame_props: LayerProps::DEFAULT,
                 inner: None,
+                inner_stretch: None,
                 install: None,
                 runs: Vec::new(),
                 inner_runs: Vec::new(),
@@ -898,6 +934,18 @@ pub fn commit_cell<T: LayerTarget>(
             ..layers.frame_props.clone()
         };
         write_props(cx.tx, &layers.frame, &mut layers.frame_props, props);
+        // A stretch the inner layer shows follows the node's device
+        // transform, which can move without the node re-lowering.
+        if let (Some((inner, inner_props)), Some(stretch)) =
+            (layers.inner.as_mut(), layers.inner_stretch.as_mut())
+        {
+            let world = cx.window_transform * cell.placement().resolved_transform(false);
+            let props = LayerProps {
+                filter: stretch.follow(world),
+                ..inner_props.clone()
+            };
+            write_props(cx.tx, inner, inner_props, props);
+        }
         // No program staged: the last lowered request still governs the
         // frame's material membership — re-key it when the mount's terms
         // (display scale) changed without a re-flush.
@@ -991,6 +1039,7 @@ fn lower_program<T: LayerTarget>(
     let mut scopes_new = Vec::new();
     lower_inner(
         cx,
+        cell,
         layers,
         inner.as_ref(),
         &mut scopes_old,
@@ -1076,10 +1125,11 @@ fn commit_material<T: LayerTarget>(
 }
 
 /// Lowers a scroll node's inner layer — clipped to the viewport, offset by
-/// its `ScrollOffset` and stretched by its overscroll stretch — or retires
-/// it when the node has none.
+/// its `ScrollOffset` and, while it stretches, filtered by the overscroll
+/// stretch in the viewport's frame — or retires it when the node has none.
 fn lower_inner<T: LayerTarget>(
     cx: &mut CommitCx<'_, '_, '_, T>,
+    cell: &Rc<NodeCell>,
     layers: &mut NodeLayers,
     inner: Option<&InnerProgram>,
     scopes_old: &mut Vec<ScopeLayer>,
@@ -1090,6 +1140,25 @@ fn lower_inner<T: LayerTarget>(
         if layers.inner.is_none() {
             layers.inner = Some((cx.layer(), LayerProps::DEFAULT));
         }
+        let filter = if let Some(direction) = inner.stretch {
+            let shown = ShownStretch {
+                viewport: inner.viewport,
+                direction,
+            };
+            let world = cx.window_transform * cell.placement().resolved_transform(false);
+            match &mut layers.inner_stretch {
+                Some(stretch) => stretch.show(shown, world),
+                None => {
+                    layers.inner_stretch = Some(StretchFilter::new::<T>(cx.host, shown, world));
+                }
+            }
+            layers.inner_stretch.as_ref().map(StretchFilter::id)
+        } else {
+            if let Some(stretch) = &mut layers.inner_stretch {
+                stretch.rest();
+            }
+            None
+        };
         let (inner_layer, inner_props) = layers
             .inner
             .as_mut()
@@ -1099,15 +1168,10 @@ fn lower_inner<T: LayerTarget>(
             inner_layer,
             inner_props,
             LayerProps {
-                // The clip sits in the layer's own space, which the
-                // stretch maps into the parent's: the inverse stretch of
-                // the viewport lands exactly on the viewport, so only the
-                // content stretches. The stretch is an axis-aligned scale,
-                // whose image of a rectangle is a rectangle.
-                clip: Some(ShapeData::of(
-                    &inner.stretch.inverse().transform_rect_bbox(inner.viewport),
-                )),
-                transform: inner.stretch,
+                // The stretch filter warps the content inside the clip; the
+                // viewport itself never moves.
+                clip: Some(ShapeData::of(&inner.viewport)),
+                filter,
                 scroll: inner.offset,
                 ..LayerProps::DEFAULT
             },
@@ -1131,6 +1195,9 @@ fn lower_inner<T: LayerTarget>(
     } else {
         if let Some((layer, _)) = layers.inner.take() {
             cx.retire_layer(layer);
+        }
+        if let Some(stretch) = layers.inner_stretch.take() {
+            cx.graveyard.push(Box::new(stretch));
         }
         for (scope, canvas, layer) in std::mem::take(&mut layers.inner_anchor_keys) {
             cx.scope_anchors.remove(scope, canvas, layer);

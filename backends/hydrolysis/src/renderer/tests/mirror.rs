@@ -169,6 +169,13 @@ impl LayerTarget for MirrorTarget {
         runtime.filter(&host.engine, &host.metrics).id()
     }
 
+    fn stretch_filter(
+        host: &MirrorHost,
+        filter: waterui_graphics::filtrate::filters::OverscrollStretch<waterui_graphics::Reactive>,
+    ) -> cherenkov::Filter {
+        host.engine.filter(filter)
+    }
+
     fn mount_material(
         _host: &MirrorHost,
         tx: &mut Transaction<'_, Self>,
@@ -543,6 +550,13 @@ impl LayerTarget for NoShaderTarget {
 
     fn filter(host: &NoShaderHost, runtime: &mut FilteredRuntime) -> FilterId {
         runtime.filter(&host.engine, &host.metrics).id()
+    }
+
+    fn stretch_filter(
+        host: &NoShaderHost,
+        filter: waterui_graphics::filtrate::filters::OverscrollStretch<waterui_graphics::Reactive>,
+    ) -> cherenkov::Filter {
+        host.engine.filter(filter)
     }
 
     fn mount_material(
