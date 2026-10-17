@@ -206,7 +206,8 @@ jobs:
           esac
           # The tag must already exist: a dispatch republish ships assets for
           # a tag someone cut, never mints one.
-          git ls-remote --exit-code --tags origin "refs/tags/${tag}" > /dev/null
+          git ls-remote --exit-code --tags origin "refs/tags/${tag}" > /dev/null \
+            || { echo "::error::tag '${tag}' does not exist on the remote; cut it first, then republish"; exit 1; }
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
 
       - name: Download browser runtime artifacts
