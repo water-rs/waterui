@@ -1745,7 +1745,6 @@ name = "cherenkov-gpu"
 version = "0.0.0"
 dependencies = [
  "ash",
- "askama",
  "block2 0.6.2",
  "bytemuck",
  "cherenkov",
@@ -6777,7 +6776,7 @@ dependencies = [
 [[package]]
 name = "naga"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -6802,7 +6801,7 @@ dependencies = [
 [[package]]
 name = "naga-types"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "hashbrown 0.17.1",
  "indexmap 2.14.2",
@@ -13981,7 +13980,7 @@ dependencies = [
 [[package]]
 name = "wgpu"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "arrayvec",
  "bitflags 2.13.2",
@@ -14043,7 +14042,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "arrayvec",
  "bit-set 0.10.0",
@@ -14086,7 +14085,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-apple"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "wgpu-hal 30.0.1",
 ]
@@ -14103,7 +14102,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-emscripten"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "wgpu-hal 30.0.1",
 ]
@@ -14111,7 +14110,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-wasm"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "wgpu-hal 30.0.1",
 ]
@@ -14128,7 +14127,7 @@ dependencies = [
 [[package]]
 name = "wgpu-core-deps-windows-linux-android"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "wgpu-hal 30.0.1",
 ]
@@ -14232,7 +14231,7 @@ dependencies = [
 [[package]]
 name = "wgpu-hal"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "android_system_properties",
  "arrayvec",
@@ -14297,7 +14296,7 @@ dependencies = [
 [[package]]
 name = "wgpu-naga-bridge"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "naga 30.0.1",
  "wgpu-types 30.0.1",
@@ -14331,7 +14330,7 @@ dependencies = [
 [[package]]
 name = "wgpu-types"
 version = "30.0.1"
-source = "git+https://github.com/water-rs/wgpu?rev=3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97#3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97"
+source = "git+https://github.com/water-rs/wgpu?rev=11e85956a78886d1a96d586f255ea9b0661da2cd#11e85956a78886d1a96d586f255ea9b0661da2cd"
 dependencies = [
  "bitflags 2.13.2",
  "bytemuck",

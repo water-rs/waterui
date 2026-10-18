@@ -53,7 +53,6 @@ fn attachment_read(producer: &str, consumer: &str, expected: [f32; 4]) {
                 .map(|name| wgpu::PassthroughShaderEntryPoint {
                     name: Cow::Borrowed(name),
                     workgroup_size: (0, 0, 0),
-                    workgroup_memory_sizes: Cow::Borrowed(&[]),
                 })
                 .collect(),
             ),

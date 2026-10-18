@@ -660,16 +660,16 @@ glifo = { git = "https://github.com/lexoliu/vello", rev = "a01e5039c290fa869e0f6
 # apply downstream, so without these entries this graph resolves the crashing
 # crates.io build while cherenkov resolves the fork. Drop them once wgpu-hal
 # 30.0.2 ships the backport.
-naga = { git = "https://github.com/water-rs/wgpu", rev = "3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97" }
-naga-types = { git = "https://github.com/water-rs/wgpu", rev = "3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97" }
-wgpu = { git = "https://github.com/water-rs/wgpu", rev = "3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97" }
-wgpu-core = { git = "https://github.com/water-rs/wgpu", rev = "3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97" }
-wgpu-core-deps-apple = { git = "https://github.com/water-rs/wgpu", rev = "3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97" }
-wgpu-core-deps-emscripten = { git = "https://github.com/water-rs/wgpu", rev = "3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97" }
-wgpu-core-deps-windows-linux-android = { git = "https://github.com/water-rs/wgpu", rev = "3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97" }
-wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97" }
-wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97" }
-wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "3dd8eb4f8d5116ab40cce610dbb5ffe61b229e97" }
+naga = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+naga-types = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-core = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-core-deps-apple = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-core-deps-emscripten = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-core-deps-windows-linux-android = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-hal = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-naga-bridge = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
+wgpu-types = { git = "https://github.com/water-rs/wgpu", rev = "11e85956a78886d1a96d586f255ea9b0661da2cd" }
 
 # Split component repositories, the waterkit family and suiteki follow their
 # `dev` branch; `Cargo.lock` records the exact commit.

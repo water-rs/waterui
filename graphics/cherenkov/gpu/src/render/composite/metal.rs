@@ -139,7 +139,6 @@ fn tile_module(device: &wgpu::Device, metallib: &'static [u8]) -> wgpu::ShaderMo
             .map(|name| wgpu::PassthroughShaderEntryPoint {
                 name: Cow::Borrowed(name),
                 workgroup_size: (0, 0, 0),
-                workgroup_memory_sizes: Cow::Borrowed(&[]),
             })
             .collect();
     for target in 0..SLOTS {
@@ -151,7 +150,6 @@ fn tile_module(device: &wgpu::Device, metallib: &'static [u8]) -> wgpu::ShaderMo
             entries.push(wgpu::PassthroughShaderEntryPoint {
                 name: Cow::Owned(format!("tile_{target}_{source}")),
                 workgroup_size: (0, 0, 0),
-                workgroup_memory_sizes: Cow::Borrowed(&[]),
             });
         }
     }

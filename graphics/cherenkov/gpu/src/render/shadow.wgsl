@@ -24,6 +24,9 @@ fn sample_at(p: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(input, linear_sampler, uv, 0.) * (edge.x * edge.y);
 }
 @fragment fn fs(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    if kernel.mode == 3u {
+        return sample_at(position.xy * kernel.taps[0].xy - vec2<f32>(0.5));
+    }
     let p = position.xy-vec2<f32>(0.5);
     var result = vec4<f32>(0.);
     if kernel.mode == 2u { result = sample_at(p); }
