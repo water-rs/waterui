@@ -152,9 +152,14 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                 if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
                     imeAnimating = false
                     // The last progress frame is not guaranteed to carry
-                    // fraction 1.0 — publish the settled insets.
+                    // fraction 1.0 — publish the settled insets. `onEnd`
+                    // runs inside the traversal like `onProgress`, so a
+                    // changed snapshot pumps now rather than letting the
+                    // settle value lag the keyboard by a frame.
                     lastRootInsets = ViewCompat.getRootWindowInsets(this@HydrolysisHostView)
-                    pushMetrics()
+                    if (pushMetrics()) {
+                        session?.frameScheduler?.pumpNow("ime-settled")
+                    }
                 }
             }
         }
