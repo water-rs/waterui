@@ -1,7 +1,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::engine::WidgetTheme;
+use crate::theme::WidgetTheme;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;

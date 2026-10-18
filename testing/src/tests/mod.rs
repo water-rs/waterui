@@ -282,6 +282,14 @@ fn semantic_builder_does_not_require_theme_package() {
 mod token_probe {
     use std::time::Duration;
 
+    use hydrolysis::theme::{
+        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
+        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
+        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
+        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
+        TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+        WidgetInteractionState, WidgetTheme,
+    };
     use kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
@@ -295,14 +303,6 @@ mod token_probe {
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
     use waterui::{Color, EasingCurve, Environment, Signal as _, SignalExt as _, View};
-    use waterui_backend_core::widget::{
-        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
-        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
-        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
-        TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
-    };
 
     use crate::Style;
 

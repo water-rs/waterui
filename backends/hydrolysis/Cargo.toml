@@ -35,7 +35,7 @@ waterui-watcher-set.workspace = true
 waterui-layout.workspace = true
 waterui-controls.workspace = true
 waterui-form.workspace = true
-waterui-backend-core = { workspace = true, features = ["widgets", "gestures", "overlay"] }
+waterui-backend-core = { workspace = true, features = ["gestures", "overlay"] }
 waterkit-clipboard.workspace = true
 waterui-locale.workspace = true
 # `std` for `Url::from_file_path`, the OS file-drop path.
@@ -46,8 +46,10 @@ waterui-url = { workspace = true, features = ["std"] }
 getrandom = { workspace = true, optional = true }
 cherenkov.workspace = true
 cherenkov-gpu.workspace = true
-# `MaterialRegistry`/`MaterialScope`/`MaterialCapture`/`Live` — the widget
-# theme's chrome terms the mount installs per member (water-rs/waterui#1788).
+# The theme contract's drawing vocabulary (`Recorder`, `Paint`,
+# `MaterialRegistry`) and the chrome terms the mount installs per member
+# (`MaterialScope`/`MaterialCapture`/`Live`, water-rs/waterui#1788). Style
+# packages record through it, never through a render engine.
 cherenkov-record.workspace = true
 kurbo.workspace = true
 peniko = "0.6"
@@ -304,6 +306,7 @@ web-sys = { version = "0.3", optional = true, features = [
     "IntersectionObserver",
     "IntersectionObserverEntry",
     "KeyboardEvent",
+    "Navigator",
     "Node",
     "PointerEvent",
     "WheelEvent",

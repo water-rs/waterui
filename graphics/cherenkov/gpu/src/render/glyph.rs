@@ -13,7 +13,7 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::TableProvider;
 use skrifa::raw::types::F2Dot14;
 
-use crate::render::raster::Raster;
+use crate::render::raster::{self, Raster};
 use cherenkov::RenderError;
 
 /// Initial atlas edge length.
@@ -1650,6 +1650,13 @@ impl Atlas {
     /// Bands never overlap in y within a page, so the scan hits at
     /// most once; shelves from dead-band splits sit at any index, so
     /// the search is a filter rather than a binary search.
+    ///
+    /// Kept out of line: the commit's pin walk calls the hint check
+    /// from four nested loops, and inlined there at opt-level 3 the
+    /// scan's position counter is spilled to the stack, so every shelf
+    /// pays a store-to-load round trip (#2852). In its own frame the
+    /// counter stays in a register.
+    #[inline(never)]
     fn shelf_hit(&self, y: u32, x: u32) -> Option<u32> {
         let page = y / self.size;
         self.layout
@@ -2381,7 +2388,8 @@ fn rasterize_texels(
     }
     // Overlapping contours resolve to the union's boundary edges, like
     // `path::rasterize`: `None` keeps the glyph bit-identical.
-    let resolved = cherenkov::lowering::resolve_winding(&segments, cherenkov::FillRule::NonZero);
+    let resolved = cherenkov::lowering::resolve_winding(&segments, cherenkov::FillRule::NonZero)
+        .into_resolved();
     let segments = resolved.as_deref().unwrap_or(&segments);
     let left = bbox.x0.floor() as i32 - 1;
     let top = bbox.y0.floor() as i32 - 1;
@@ -2397,10 +2405,7 @@ fn rasterize_texels(
         raster.draw_line(x0 - ox, y0 - oy, x1 - ox, y1 - oy);
     }
     let coverage = raster.coverage();
-    let texels: Vec<u8> = coverage
-        .iter()
-        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-        .collect();
+    let texels: Vec<u8> = coverage.iter().copied().map(raster::texel).collect();
     Ok(Some(CellRaster {
         left,
         top,

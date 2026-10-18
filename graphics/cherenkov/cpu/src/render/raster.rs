@@ -15,18 +15,26 @@ use arrayvec::ArrayVec;
 use half::slice::HalfFloatSliceExt;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+use std::marker::PhantomData;
+use std::mem::MaybeUninit;
+use std::num::NonZeroUsize;
 use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cherenkov::FillRule;
+use cherenkov::lowering::scanline::{EdgeX, RowWalk, walk_rows};
 
+use crate::render::bins::{EdgeBins, EdgeGroup, FrameIndex, FrameMeter};
 use crate::render::lower::{
     BoxClip, CaptureItem, ClipMask, ClipRef, FrameFilter, IRect, Item, SampleEffect, SdfEffect,
     SdfKind, UnionSample,
 };
 use crate::render::paint::PaintData;
+use crate::render::shadow;
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
-use filtrate_core::space::{from_srgb, to_srgb};
+use fearless_simd::{Simd, f32x4};
+use filtrate_core::space::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode};
 use filtrate_core::{CpuFilterError, CpuImage, WorkingSpace};
 
 /// Rows per rasterization band.
@@ -37,15 +45,21 @@ pub const BAND_H: usize = 16;
 /// moves across a texel boundary still lands on a kept row.
 pub const SAMPLE_MARGIN: usize = 1;
 
-/// One worker's reusable raster and filter buffers.
+/// The run length one span paint evaluation covers: a longer run is
+/// evaluated and composited in `SPAN_CHUNK`-pixel pieces against one
+/// stack-resident buffer.
+const SPAN_CHUNK: usize = 64;
+
+/// One job's reusable raster and filter buffers.
 ///
-/// Created per rayon worker for the duration of a pass (`for_each_init`);
+/// Created once per raster task, at most one task per worker, for the
+/// duration of a pass. Each task dynamically claims whole bands;
 /// buffers are single-owner, never locked, and nothing is retained after the
 /// pass.
 ///
 /// The transient pixel bound is `workers × (band + Σ filter windows at the
 /// deepest nesting)`, where each filter window is `w × (bh + 2·apron)`.
-pub struct Scratch {
+pub struct Scratch<'a> {
     /// `(w + 2) * band_rows` coverage cells, reused across bands.
     coverage: Vec<f32>,
     /// Isolation-stack colour buffers currently in use.
@@ -53,6 +67,10 @@ pub struct Scratch {
     buffers: Buffers,
     /// This band's captured backdrops, by group id.
     captures: Captures,
+    /// The frame's transient-memory meter; charged query scratch is
+    /// released when this scratch is dropped — mid-call on a recycled
+    /// worker or at the call's end.
+    meter: Option<&'a FrameMeter>,
 }
 
 struct Buffers {
@@ -60,6 +78,19 @@ struct Buffers {
     coverage: Vec<Vec<f32>>,
     /// Live colour-buffer bytes and their peak for the current band.
     meter: Meter,
+    /// Expanded-window query scratch: each `run` depth's item
+    /// selection and the edge selection a windowed draw consumes.
+    /// Slots keep their capacity across sibling scopes and bands.
+    sel_items: Vec<Vec<usize>>,
+    sel_edges: Vec<usize>,
+    /// The capacity each charged slot has been accounted for, in
+    /// cells — a selection's capacity only grows, so the delta is the
+    /// heap growth. Index `sel_items.len()` is the outer Vec's charge.
+    sel_charge: Vec<usize>,
+    /// `sel_items`'s own allocation, charged at capacity.
+    sel_items_charge: usize,
+    /// `sel_edges`'s allocation, charged at capacity.
+    sel_edges_charge: usize,
 }
 
 /// Live pixel-buffer accounting: pixels held across a band's run.
@@ -164,7 +195,13 @@ struct CaptureRows {
     clippy::cast_precision_loss,
     reason = "rows are bounded by the surface height and clamped before the conversions"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn capture_rows(
+    level: fearless_simd::Level,
     item: &CaptureItem,
     items: &[Item],
     need: (usize, usize),
@@ -178,7 +215,7 @@ fn capture_rows(
             _ => None,
         }) == Some(item.group)
     {
-        let sampled = sample_rows(items, 0..items.len(), item.group, need, (width, h));
+        let sampled = sample_rows_at(level, items, 0..items.len(), item.group, need, (width, h));
         k0 = k0.max(sampled.0);
         k1 = k1.min(sampled.1);
     }
@@ -258,12 +295,33 @@ fn capture_rows(
 /// walk carries each enclosing filter's expanded draw window. Displaced
 /// reads use the same field and coordinate evaluation as compositing;
 /// plain reads need only their draw-row interval.
+/// `sample_rows` exactly once per dispatched CPU level, like [`run_at`].
+#[inline(never)]
+fn sample_rows_at(
+    level: fearless_simd::Level,
+    items: &[Item],
+    range: Range<usize>,
+    group: u64,
+    band: (usize, usize),
+    (w, h): (usize, usize),
+) -> (usize, usize) {
+    fearless_simd::dispatch!(level, _simd => {
+        sample_rows(level, items, range, group, band, (w, h))
+    })
+}
+
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     reason = "sample coordinates are finite and clamped to surface rows"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn sample_rows(
+    level: fearless_simd::Level,
     items: &[Item],
     range: Range<usize>,
     group: u64,
@@ -276,7 +334,8 @@ fn sample_rows(
         match &items[i] {
             Item::PushFilter { end, apron, .. } => {
                 let end = *end as usize;
-                let nested = sample_rows(
+                let nested = sample_rows_at(
+                    level,
                     items,
                     i + 1..end,
                     group,
@@ -341,6 +400,8 @@ type TopCaptures = Vec<(usize, Option<CaptureRows>)>;
 
 /// Per-band state shared across the recursive `run` calls.
 struct FrameCtx<'a> {
+    /// The dispatched CPU level; each recursive `run` re-dispatches under it.
+    level: fearless_simd::Level,
     /// The surface band rows `[y0, y1)` this run derives from.
     surface: (usize, usize),
     /// The surface height.
@@ -350,6 +411,26 @@ struct FrameCtx<'a> {
     /// The band's top-level capture rows; captures inside filter scopes
     /// are planned against the surface band by the scope's own run.
     top: &'a [(usize, Option<CaptureRows>)],
+    /// The frame's transient-memory meter for expanded-window query
+    /// scratch.
+    meter: Option<&'a FrameMeter>,
+}
+
+/// Charges `bytes` of freshly grown query-scratch capacity to the
+/// frame's live total and raises its peak. Called only on allocation
+/// transitions — a pooled selection keeps its charge until its
+/// scratch is dropped at the call's end.
+fn sel_alloc(bytes: u64, meter: Option<&FrameMeter>) {
+    if let Some(m) = meter {
+        let live = m
+            .query_live
+            .fetch_add(bytes, std::sync::atomic::Ordering::Relaxed)
+            + bytes;
+        m.query_peak
+            .fetch_max(live, std::sync::atomic::Ordering::Relaxed);
+        m.peak
+            .fetch_max(m.index_bytes + live, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 impl Meter {
@@ -381,9 +462,9 @@ impl Meter {
     }
 }
 
-impl Scratch {
+impl<'a> Scratch<'a> {
     /// An empty working set; buffers grow to band size on first use.
-    pub fn new() -> Self {
+    pub fn new(meter: Option<&'a FrameMeter>) -> Self {
         Self {
             coverage: Vec::new(),
             stack: Vec::new(),
@@ -391,8 +472,31 @@ impl Scratch {
                 free: Vec::new(),
                 coverage: Vec::new(),
                 meter: Meter::default(),
+                sel_items: Vec::new(),
+                sel_edges: Vec::new(),
+                sel_charge: Vec::new(),
+                sel_items_charge: 0,
+                sel_edges_charge: 0,
             },
             captures: Captures::default(),
+            meter,
+        }
+    }
+}
+
+impl Drop for Scratch<'_> {
+    /// Releases the charged query-scratch capacity: the pooled
+    /// selections plus all retained bookkeeping heap (the slot Vec and
+    /// the charge table itself). Bytes leave `query_live` here, at the
+    /// buffers' actual destruction — including mid-call worker
+    /// recycling — not at the call's end.
+    fn drop(&mut self) {
+        if let Some(m) = self.meter {
+            let cells =
+                self.buffers.sel_edges_charge + self.buffers.sel_charge.iter().sum::<usize>();
+            let bytes = self.buffers.sel_items_charge as u64 + (cells * size_of::<usize>()) as u64;
+            m.query_live
+                .fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
         }
     }
 }
@@ -423,6 +527,68 @@ impl Buffers {
     fn give_coverage(&mut self, buf: Vec<f32>) {
         self.coverage.push(buf);
     }
+
+    /// The `depth` slot's item-selection buffer, cleared for reuse.
+    /// Charges growth of the retained bookkeeping heap — the slot Vec
+    /// and the charge table — to `meter`.
+    fn take_sel_items(&mut self, depth: usize, meter: Option<&FrameMeter>) -> Vec<usize> {
+        if self.sel_items.len() <= depth {
+            self.sel_items.resize_with(depth + 1, Vec::new);
+            self.sel_charge.resize(depth + 1, 0);
+            let book = self.sel_items.capacity() * size_of::<Vec<usize>>()
+                + self.sel_charge.capacity() * size_of::<usize>();
+            if book > self.sel_items_charge {
+                sel_alloc((book - self.sel_items_charge) as u64, meter);
+                self.sel_items_charge = book;
+            }
+        }
+        let mut buf = std::mem::take(&mut self.sel_items[depth]);
+        buf.clear();
+        buf
+    }
+
+    /// Charges `buf`'s capacity growth on the `depth` slot to `meter`.
+    /// Called right after the query fills `buf`, while the selection is
+    /// live — before the recursive run or draw consumes it.
+    fn charge_sel_items(&mut self, depth: usize, buf: &Vec<usize>, meter: Option<&FrameMeter>) {
+        let charged = &mut self.sel_charge[depth];
+        if buf.capacity() > *charged {
+            sel_alloc(
+                ((buf.capacity() - *charged) * size_of::<usize>()) as u64,
+                meter,
+            );
+            *charged = buf.capacity();
+        }
+    }
+
+    /// Returns a selection to its slot: restores ownership only; the
+    /// charge was taken when the buffer filled.
+    fn give_sel_items(&mut self, depth: usize, buf: Vec<usize>) {
+        self.sel_items[depth] = buf;
+    }
+
+    /// The edge-selection buffer, cleared for reuse.
+    fn take_sel_edges(&mut self) -> Vec<usize> {
+        let mut buf = std::mem::take(&mut self.sel_edges);
+        buf.clear();
+        buf
+    }
+
+    /// Charges `buf`'s capacity growth to `meter`, right after the
+    /// query filled it.
+    fn charge_sel_edges(&mut self, buf: &Vec<usize>, meter: Option<&FrameMeter>) {
+        if buf.capacity() > self.sel_edges_charge {
+            sel_alloc(
+                ((buf.capacity() - self.sel_edges_charge) * size_of::<usize>()) as u64,
+                meter,
+            );
+            self.sel_edges_charge = buf.capacity();
+        }
+    }
+
+    fn give_sel_edges(&mut self, buf: Vec<usize>) {
+        self.sel_edges = buf;
+    }
 }
 
 /// Sample count of the shadow y-quadrature (the GPU uses the same).
@@ -439,6 +605,12 @@ pub struct Edge {
     pub x1: f32,
     /// End point.
     pub y1: f32,
+}
+
+impl From<Edge> for (f32, f32, f32, f32) {
+    fn from(e: Edge) -> Self {
+        (e.x0, e.y0, e.x1, e.y1)
+    }
 }
 
 /// A signed-area accumulation buffer over a band of `h` rows.
@@ -463,11 +635,13 @@ pub struct Accum {
 
 impl Accum {
     /// A zeroed accumulator of `w` × `h` cells.
+    #[must_use]
     pub fn new(w: usize, h: usize) -> Self {
         Self::with_buffer(w, h, Vec::new())
     }
 
     /// An accumulator of `w` × `h` cells on a reused zeroed buffer.
+    #[must_use]
     pub fn with_buffer(w: usize, h: usize, mut a: Vec<f32>) -> Self {
         a.clear();
         a.resize((w + 2) * h, 0.0);
@@ -481,6 +655,7 @@ impl Accum {
     }
 
     /// Releases the cell buffer for pooling.
+    #[must_use]
     pub fn into_buffer(self) -> Vec<f32> {
         self.a
     }
@@ -515,15 +690,28 @@ impl Accum {
 
     /// Accumulates the signed area of the segment `(x0,y0)-(x1,y1)`, where
     /// `y` is band-local (`0..h`).
+    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        walk_rows(Line {
+            acc: self,
+            p: [x0, y0, x1, y1],
+        });
+    }
+
+    /// [`Self::draw_line`] with every row boundary evaluated from the
+    /// segment's origin by `E` ([`cherenkov::lowering::scanline`]), never
+    /// by advancing an absolute x row by row.
+    #[inline(always)]
     #[expect(
+        clippy::inline_always,
         clippy::similar_names,
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::suboptimal_flops,
-        reason = "a direct port of font-rs's scanline area accounting"
+        reason = "inlined into `walk_rows`' instantiation for `E`; a direct port of \
+                  font-rs's scanline area accounting"
     )]
-    pub fn draw_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+    fn accumulate<E: EdgeX>(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
         if (y0 - y1).abs() <= f32::EPSILON {
             return;
         }
@@ -532,16 +720,14 @@ impl Accum {
         } else {
             (-1.0, x1, y1, x0, y0)
         };
-        let dxdy = (x1 - x0) / (y1 - y0);
-        let mut x = x0;
-        if y0 < 0.0 {
-            x -= y0 * dxdy;
-        }
+        let line = E::new((x1 - x0) / (y1 - y0), x0);
+        let mut x = if y0 < 0.0 { line.at(-y0) } else { x0 };
         let y_start = y0.max(0.0) as usize;
         let y_end = self.h.min((y1.ceil() as usize).min(self.h));
         for y in y_start..y_end {
-            let dy = ((y + 1) as f32).min(y1) - (y as f32).max(y0);
-            let xnext = x + dxdy * dy;
+            let bottom = ((y + 1) as f32).min(y1);
+            let dy = bottom - (y as f32).max(y0);
+            let xnext = line.at(bottom - y0);
             let d = dy * dir;
             let (xa, xb) = if x < xnext { (x, xnext) } else { (xnext, x) };
             let xa_floor = xa.floor();
@@ -581,57 +767,82 @@ impl Accum {
     }
 
     /// Folds band-local row `y` into per-pixel coverage under `rule`,
-    /// calling `f(x, coverage)` for each pixel `x0..x1`.
+    /// writing the coverage of columns `x0..min(x1, w)` into `out` —
+    /// zeros included, so callers split the row into runs by sign.
     ///
     /// The prefix sum starts at guard column `x0` and the coverage of
-    /// pixel `x` is the sum through column `x + 1`.
-    pub fn coverage_row(
-        &self,
-        y: usize,
-        rule: FillRule,
-        x0: usize,
-        x1: usize,
-        mut f: impl FnMut(usize, f32),
-    ) {
+    /// pixel `x` is the sum through column `x + 1`. `out` holds at least
+    /// `min(x1, w) - x0` elements.
+    ///
+    /// # Panics
+    /// When `out` is shorter than `min(x1, w) - x0` elements.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    pub fn coverage_into(&self, y: usize, rule: FillRule, x0: usize, x1: usize, out: &mut [f32]) {
         let row = y * (self.w + 2);
         let mut acc = self.a[row + x0];
         for x in x0..x1.min(self.w) {
             acc += self.a[row + x + 1];
-            let cov = match rule {
+            out[x - x0] = match rule {
                 FillRule::NonZero => acc.abs().min(1.0),
                 FillRule::EvenOdd => {
                     let m = acc.rem_euclid(2.0);
                     if m > 1.0 { 2.0 - m } else { m }
                 }
             };
-            if cov > 0.0 {
-                f(x, cov);
-            }
         }
+    }
+
+    /// [`coverage_into`](Self::coverage_into) writing back into the
+    /// accumulation cells it consumed: the coverage of columns
+    /// `x0..min(x1, w)` — computed by the same prefix sum with the same
+    /// expressions — lands in the row's cells `x0 + 1..min(x1, w) + 1`,
+    /// each written after that cell has been added to the running sum.
+    ///
+    /// The row's window columns are consumed and must be cleared by
+    /// [`clear_range`](Self::clear_range) before the next accumulation.
+    /// Every column it reads or writes lies in `cmin..=cmax` once
+    /// [`set_window(x0, x1)`](Self::set_window) is set.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    pub fn coverage_in_place(&mut self, y: usize, rule: FillRule, x0: usize, x1: usize) -> &[f32] {
+        let row = y * (self.w + 2);
+        let mut acc = self.a[row + x0];
+        for x in x0..x1.min(self.w) {
+            acc += self.a[row + x + 1];
+            self.a[row + x + 1] = match rule {
+                FillRule::NonZero => acc.abs().min(1.0),
+                FillRule::EvenOdd => {
+                    let m = acc.rem_euclid(2.0);
+                    if m > 1.0 { 2.0 - m } else { m }
+                }
+            };
+        }
+        &self.a[row + x0 + 1..=row + x1.min(self.w)]
     }
 }
 
-/// Abramowitz & Stegun 7.1.26 — the same approximation the GPU WGSL
-/// uses, |error| < 1.5e-7.
-#[expect(
-    clippy::many_single_char_names,
-    clippy::excessive_precision,
-    clippy::suboptimal_flops,
-    reason = "the A&S formula and its coefficients are cited verbatim"
-)]
-fn erf(x: f32) -> f32 {
-    let s = x.signum();
-    let a = x.abs();
-    let t = (0.327_591_1_f32.mul_add(a, 1.0)).recip();
-    let y = 1.0
-        - (1.061_405_429_f32
-            .mul_add(t, -1.453_152_027)
-            .mul_add(t, 1.421_413_741)
-            .mul_add(t, -0.284_496_736)
-            .mul_add(t, 0.254_829_592))
-            * t
-            * (-a * a).exp();
-    s * y
+/// One [`Accum::draw_line`] call, run by [`walk_rows`].
+struct Line<'a> {
+    acc: &'a mut Accum,
+    p: [f32; 4],
+}
+
+impl RowWalk for Line<'_> {
+    type Output = ();
+
+    #[inline(always)]
+    #[expect(clippy::inline_always, reason = "see `RowWalk::walk`")]
+    fn walk<E: EdgeX>(self) {
+        let [x0, y0, x1, y1] = self.p;
+        self.acc.accumulate::<E>(x0, y0, x1, y1);
+    }
 }
 
 /// `exp(-x²/2σ²) / (σ√2π)`.
@@ -684,6 +895,11 @@ fn top<'a>(
 }
 
 /// `src_over` composite of premultiplied `src` onto `dst`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn src_over(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
     let inv = 1.0 - src[3];
     [
@@ -696,6 +912,11 @@ fn src_over(dst: [f32; 4], src: [f32; 4]) -> [f32; 4] {
 
 /// A 3×4 premultiplied colour matrix on `s` (filtrate `ColorMatrix`
 /// layout): `dot(row, s)` per channel, alpha passes through.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn color_matrix(m: &[f32; 12], s: [f32; 4]) -> [f32; 4] {
     [
         s[0].mul_add(m[0], s[1].mul_add(m[1], s[2].mul_add(m[2], s[3] * m[3]))),
@@ -714,6 +935,11 @@ fn color_matrix(m: &[f32; 12], s: [f32; 4]) -> [f32; 4] {
     clippy::cast_precision_loss,
     reason = "pixels stay well below f32's integer bound"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn sdf_sample(
     capture: &Capture,
     sdf: &SdfEffect,
@@ -753,6 +979,11 @@ fn sdf_sample(
 /// The refracted read point of pixel `(px, py)` given the field's
 /// distance and unit normal there: `SdfKind::Refraction`'s displacement.
 #[expect(clippy::cast_precision_loss, reason = "pixel coordinates are small")]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn refracted(
     (d, nx, ny): (f32, f32, f32),
     depth: f32,
@@ -771,6 +1002,11 @@ fn refracted(
 /// by capture planning and member compositing: the union field when the
 /// member is in a union, the SDF effect's own clip distance otherwise.
 #[expect(clippy::cast_precision_loss, reason = "pixel coordinates are small")]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn sample_field(
     effect: &SampleEffect,
     union: Option<&UnionSample>,
@@ -803,6 +1039,10 @@ fn sample_field(
 /// hard step only where `|∇d₂ − ∇d_i| < 1e-6` (coincident shapes), an
 /// exact `f_i == 0` tie going to the earliest member in paint order.
 /// The same math as `union_field` in the GPU's `union.wgsl`, in f32.
+// `const` items keep `clippy::inline_always` from firing here; the
+// attribute is still required so the pixel loop compiles under the
+// dispatched CPU level.
+#[inline(always)]
 fn union_field_at(
     union: &crate::render::lower::UnionSample,
     x: f32,
@@ -876,6 +1116,11 @@ fn union_field_at(
 }
 
 /// The Euclidean length of `(x, y)` — WGSL's `length`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn length(x: f32, y: f32) -> f32 {
     x.mul_add(x, y * y).sqrt()
 }
@@ -885,6 +1130,11 @@ fn length(x: f32, y: f32) -> f32 {
 /// mapped into box-local space by `inv`, the box's distance and outward
 /// normal evaluated there, the normal mapped back by `inv`'s transpose
 /// and normalised, and the distance divided by the same stretch.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn box_sdf_at(clip: &BoxClip, x: f32, y: f32) -> (f32, f32, f32) {
     let m = &clip.inv;
     let (px, py) = (
@@ -904,6 +1154,11 @@ fn box_sdf_at(clip: &BoxClip, x: f32, y: f32) -> (f32, f32, f32) {
     clippy::cast_precision_loss,
     reason = "pixels stay well below f32's integer bound"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn pixel_sample(capture: &Capture, px: usize, py: usize, crow: usize) -> [f32; 4] {
     if capture.scale.is_full() {
         capture.buf[crow + px - capture.x0]
@@ -921,6 +1176,11 @@ fn pixel_sample(capture: &Capture, px: usize, py: usize, crow: usize) -> [f32; 4
     clippy::cast_precision_loss,
     reason = "the coordinates are clamped into the capture first"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn capture_sample(capture: &Capture, x: f32, y: f32) -> [f32; 4] {
     let s = capture.scale.get();
     let fx = (x.mul_add(s, -(capture.x0 as f32)) - 0.5).clamp(0.0, capture.w as f32 - 1.0);
@@ -959,6 +1219,11 @@ fn capture_sample(capture: &Capture, x: f32, y: f32) -> [f32; 4] {
     clippy::cast_precision_loss,
     reason = "the coordinates are clamped into the capture first"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn capture_sample_at(capture: &Capture, x: f32, y: f32, k: u32) -> [f32; 4] {
     if k == 0 {
         return capture_sample(capture, x, y);
@@ -1008,6 +1273,11 @@ fn capture_sample_at(capture: &Capture, x: f32, y: f32, k: u32) -> [f32; 4] {
     clippy::cast_precision_loss,
     reason = "the level is clamped into the pyramid first"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn capture_sample_level(capture: &Capture, x: f32, y: f32, level: f32) -> [f32; 4] {
     let n = capture.levels.len() as u32 + 1;
     let lc = level.clamp(0.0, (n - 1) as f32);
@@ -1043,6 +1313,11 @@ fn member(px: [f32; 4], space: cherenkov::BlendSpace) -> [f32; 4] {
 /// Composite `src` onto `dst` blending in `space`: each operand converts
 /// from its storage space, the blend applies, and the result lands back
 /// in the destination's storage space.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn composite(
     mode: cherenkov::BlendMode,
     space: cherenkov::BlendSpace,
@@ -1060,6 +1335,404 @@ fn composite(
         space,
         dst_space,
     )
+}
+
+/// The clip-coverage source of one run on a device row: [`clip_cov`]
+/// sampled per pixel column from the run's first column `x0` on.
+#[derive(Clone, Copy, Debug)]
+pub struct ClipRun<'a> {
+    clip: Option<&'a ClipRef>,
+    /// The coverage mask's stride (the surface width).
+    w: usize,
+    /// The run's first device column.
+    x0: usize,
+    /// The run's device row.
+    py: usize,
+}
+
+impl<'a> ClipRun<'a> {
+    /// The clip source of the run `x0..` on device row `py`.
+    #[must_use]
+    pub const fn new(clip: Option<&'a ClipRef>, w: usize, x0: usize, py: usize) -> Self {
+        Self { clip, w, x0, py }
+    }
+
+    /// The clip coverage of the run's `i`th pixel.
+    fn at(&self, i: usize) -> f32 {
+        clip_cov(self.clip, self.w, self.x0 + i, self.py)
+    }
+}
+
+/// Calls `f(start, end)` for each maximal run of positive coverage in
+/// `cov`, `start`/`end` indexing into it.
+fn nonzero_runs(cov: &[f32], mut f: impl FnMut(usize, usize)) {
+    let mut x = 0;
+    while x < cov.len() {
+        if cov[x] <= 0.0 || cov[x].is_nan() {
+            x += 1;
+            continue;
+        }
+        let start = x;
+        x += 1;
+        while x < cov.len() && cov[x] > 0.0 {
+            x += 1;
+        }
+        f(start, x);
+    }
+}
+
+/// Matrix columns operate on the packed pixel's RGB channels, preserving
+/// `(m0 * r + m1 * g) + m2 * b` without fused operations.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn matrix_pixel<S: Simd>(simd: S, m: &[[f32; 3]; 3], rgb: [f32; 4]) -> f32x4<S> {
+    let col0 = simd.load_array_f32x4([m[0][0], m[1][0], m[2][0], 0.0]);
+    let col1 = simd.load_array_f32x4([m[0][1], m[1][1], m[2][1], 0.0]);
+    let col2 = simd.load_array_f32x4([m[0][2], m[1][2], m[2][2], 0.0]);
+    simd.add_f32x4(
+        simd.add_f32x4(
+            simd.mul_f32x4(col0, simd.splat_f32x4(rgb[0])),
+            simd.mul_f32x4(col1, simd.splat_f32x4(rgb[1])),
+        ),
+        simd.mul_f32x4(col2, simd.splat_f32x4(rgb[2])),
+    )
+}
+
+/// Converts one packed pixel with exact scalar transfer functions. Zero
+/// alpha returns before division or transfer evaluation; other alpha bits
+/// are retained unchanged.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_packed<S: Simd, const ENCODE: bool>(simd: S, pixel: [f32; 4]) -> [f32; 4] {
+    let alpha = pixel[3];
+    if alpha == 0.0 {
+        return [0.0; 4];
+    }
+    let straight = simd.as_array_f32x4(simd.div_f32x4(
+        simd.load_array_f32x4([pixel[0], pixel[1], pixel[2], 0.0]),
+        simd.splat_f32x4(alpha),
+    ));
+    let linear = if ENCODE {
+        let rgb = simd.as_array_f32x4(matrix_pixel(simd, &P3_TO_SRGB, straight));
+        simd.load_array_f32x4([
+            srgb_encode(rgb[0]),
+            srgb_encode(rgb[1]),
+            srgb_encode(rgb[2]),
+            0.0,
+        ])
+    } else {
+        matrix_pixel(
+            simd,
+            &SRGB_TO_P3,
+            [
+                srgb_decode(straight[0]),
+                srgb_decode(straight[1]),
+                srgb_decode(straight[2]),
+                0.0,
+            ],
+        )
+    };
+    let out = simd.as_array_f32x4(simd.mul_f32x4(linear, simd.splat_f32x4(alpha)));
+    [out[0], out[1], out[2], alpha]
+}
+
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn convert_span_in<S: Simd, const ENCODE: bool>(simd: S, pixels: &mut [[f32; 4]]) {
+    let (chunks, tail) = pixels.as_chunks_mut::<4>();
+    for group in chunks {
+        group[0] = convert_packed::<S, ENCODE>(simd, group[0]);
+        group[1] = convert_packed::<S, ENCODE>(simd, group[1]);
+        group[2] = convert_packed::<S, ENCODE>(simd, group[2]);
+        group[3] = convert_packed::<S, ENCODE>(simd, group[3]);
+    }
+    for pixel in tail {
+        *pixel = convert_packed::<S, ENCODE>(simd, *pixel);
+    }
+}
+
+/// `move_space` over packed pixels, with the same helper for full groups
+/// and the tail. Equal spaces preserve every input bit.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+pub fn convert_span<S: Simd>(
+    simd: S,
+    pixels: &mut [[f32; 4]],
+    from: cherenkov::BlendSpace,
+    to: cherenkov::BlendSpace,
+) {
+    if from == to {
+        return;
+    }
+    if to == cherenkov::BlendSpace::SrgbEncoded {
+        convert_span_in::<S, true>(simd, pixels);
+    } else {
+        convert_span_in::<S, false>(simd, pixels);
+    }
+}
+
+/// Packed source-over, preserving the coverage/clip multiply order and
+/// separate destination multiply and add. A blocked clip does not touch
+/// destination bits; NaN clip coverage follows the computed path.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn blend_packed<S: Simd, const SRGB: bool>(
+    simd: S,
+    dst: &mut [f32; 4],
+    src: [f32; 4],
+    coverage: f32,
+    clip: f32,
+) {
+    if clip <= 0.0 {
+        return;
+    }
+    let scaled = simd.mul_f32x4(
+        simd.mul_f32x4(simd.load_array_f32x4(src), simd.splat_f32x4(coverage)),
+        simd.splat_f32x4(clip),
+    );
+    let scaled = if SRGB {
+        simd.load_array_f32x4(convert_packed::<S, true>(simd, simd.as_array_f32x4(scaled)))
+    } else {
+        scaled
+    };
+    let inverse = simd.splat_f32x4(1.0 - simd.as_array_f32x4(scaled)[3]);
+    *dst = simd.as_array_f32x4(
+        simd.add_f32x4(scaled, simd.mul_f32x4(simd.load_array_f32x4(*dst), inverse)),
+    );
+}
+
+/// The clip's presence is selected once per span; every pixel remains
+/// packed throughout the arithmetic.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn composite_span_in<S: Simd, const SRGB: bool, const CLIPPED: bool>(
+    simd: S,
+    dst: &mut [[f32; 4]],
+    src: &[[f32; 4]],
+    cov: &[f32],
+    clip: ClipRun<'_>,
+) {
+    let mut pos = 0;
+    while pos + 4 <= dst.len() {
+        for lane in 0..4 {
+            let i = pos + lane;
+            let cc = if CLIPPED { clip.at(i) } else { 1.0 };
+            blend_packed::<S, SRGB>(simd, &mut dst[i], src[i], cov[i], cc);
+        }
+        pos += 4;
+    }
+    for i in pos..dst.len() {
+        let cc = if CLIPPED { clip.at(i) } else { 1.0 };
+        blend_packed::<S, SRGB>(simd, &mut dst[i], src[i], cov[i], cc);
+    }
+}
+
+/// Composites a run of evaluated `src` pixels over `dst`.
+///
+/// One pixel is `src_over(dst, member(src * cov * cc, space))`, `cc` the
+/// run's clip coverage, pixels with `cc <= 0.0` untouched: a draw's
+/// per-pixel expression, unchanged. `dst`, `src` and `cov` are the same
+/// length.
+///
+/// # Panics
+/// When `dst`, `src` and `cov` are not the same length.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+pub fn composite_span<S: Simd>(
+    simd: S,
+    dst: &mut [[f32; 4]],
+    src: &[[f32; 4]],
+    cov: &[f32],
+    clip: ClipRun<'_>,
+    space: cherenkov::BlendSpace,
+) {
+    assert_eq!(dst.len(), src.len(), "composite run length mismatch");
+    assert_eq!(src.len(), cov.len(), "composite run length mismatch");
+    match (
+        space == cherenkov::BlendSpace::SrgbEncoded,
+        clip.clip.is_some(),
+    ) {
+        (true, true) => composite_span_in::<S, true, true>(simd, dst, src, cov, clip),
+        (true, false) => composite_span_in::<S, true, false>(simd, dst, src, cov, clip),
+        (false, true) => composite_span_in::<S, false, true>(simd, dst, src, cov, clip),
+        (false, false) => composite_span_in::<S, false, false>(simd, dst, src, cov, clip),
+    }
+}
+
+/// `composite_span` specialized to a solid paint `color` (premultiplied
+/// linear): the packed source is constant, so the span never reads
+/// evaluated pixels. An opaque `color` (`a == 1`) additionally
+/// splits each maximal `cov == 1 && cc == 1` run and stores
+/// `member(color)` — converted once — directly, without reading `dst`;
+/// partial boundaries run the shared packed kernel, which produces the
+/// same `member(color)` value at full coverage anyway.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+pub fn composite_solid<S: Simd>(
+    simd: S,
+    dst: &mut [[f32; 4]],
+    cov: &[f32],
+    clip: ClipRun<'_>,
+    color: [f32; 4],
+    space: cherenkov::BlendSpace,
+) {
+    if space == cherenkov::BlendSpace::SrgbEncoded {
+        composite_solid_in::<S, true>(simd, dst, cov, clip, color);
+    } else {
+        composite_solid_in::<S, false>(simd, dst, cov, clip, color);
+    }
+}
+
+/// Stores four identical solid pixels from precomputed channel planes.
+/// This opaque-only store keeps the interleaved SIMD instruction without
+/// transposing the ordinary composition or conversion paths.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn store_solid_block<S: Simd>(simd: S, planes: [f32x4<S>; 4], pixels: &mut [[f32; 4]; 4]) {
+    let packed = simd.combine_f32x8(
+        simd.combine_f32x4(planes[0], planes[1]),
+        simd.combine_f32x4(planes[2], planes[3]),
+    );
+    // SAFETY: `[[f32; 4]; 4]` is layout-identical to `[f32; 16]`.
+    simd.store_interleaved_128_f32x16(packed, unsafe {
+        &mut *pixels.as_mut_ptr().cast::<[f32; 16]>()
+    });
+}
+
+/// `composite_solid`'s per-space loop; see it for the contract.
+#[expect(clippy::float_cmp, reason = "full coverage is the exact value 1.0")]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn composite_solid_in<S: Simd, const SRGB: bool>(
+    simd: S,
+    dst: &mut [[f32; 4]],
+    cov: &[f32],
+    clip: ClipRun<'_>,
+    color: [f32; 4],
+) {
+    let opaque = color[3] == 1.0;
+    let stored = if SRGB {
+        convert_packed::<S, true>(simd, color)
+    } else {
+        color
+    };
+    let stored_planes = [
+        simd.splat_f32x4(stored[0]),
+        simd.splat_f32x4(stored[1]),
+        simd.splat_f32x4(stored[2]),
+        simd.splat_f32x4(stored[3]),
+    ];
+    let count = dst.len();
+    let mut pos = 0;
+    while pos < count {
+        if opaque && cov[pos] == 1.0 && clip.at(pos) == 1.0 {
+            let start = pos;
+            while pos < count && cov[pos] == 1.0 && clip.at(pos) == 1.0 {
+                pos += 1;
+            }
+            let (groups, tail) = dst[start..pos].as_chunks_mut::<4>();
+            for group in groups {
+                store_solid_block(simd, stored_planes, group);
+            }
+            for pixel in tail {
+                *pixel = stored;
+            }
+        } else if pos + 4 <= count {
+            for lane in 0..4 {
+                let i = pos + lane;
+                blend_packed::<S, SRGB>(simd, &mut dst[i], color, cov[i], clip.at(i));
+            }
+            pos += 4;
+        } else {
+            blend_packed::<S, SRGB>(simd, &mut dst[pos], color, cov[pos], clip.at(pos));
+            pos += 1;
+        }
+    }
+}
+
+/// Shades the nonzero runs of `cov` over `dst`: coverage index `i`
+/// covers device column `x0 + i` on device row `py`, so a run `r0..r1`
+/// shades `dst[x0 + r0..x0 + r1]`. Each run is paint-evaluated and
+/// composited in `SPAN_CHUNK`-pixel pieces against `src`, the
+/// stack-resident chunk. A [`PaintData::Solid`] takes the dedicated
+/// kernel and never touches `src`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the row context travels together"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn composite_runs<S: Simd>(
+    simd: S,
+    dst: &mut [[f32; 4]],
+    cov: &[f32],
+    x0: usize,
+    py: usize,
+    w: usize,
+    paint: &PaintData,
+    clip: Option<&ClipRef>,
+    space: cherenkov::BlendSpace,
+    src: &mut [MaybeUninit<[f32; 4]>],
+) {
+    nonzero_runs(cov, |r0, r1| {
+        let mut x = r0;
+        while x < r1 {
+            let n = (r1 - x).min(SPAN_CHUNK);
+            let clip = ClipRun::new(clip, w, x0 + x, py);
+            match paint {
+                PaintData::Solid(c) => composite_solid(
+                    simd,
+                    &mut dst[x0 + x..x0 + x + n],
+                    &cov[x..x + n],
+                    clip,
+                    *c,
+                    space,
+                ),
+                _ => composite_span(
+                    simd,
+                    &mut dst[x0 + x..x0 + x + n],
+                    paint.eval_span(simd, x0 + x, py, &mut src[..n]),
+                    &cov[x..x + n],
+                    clip,
+                    space,
+                ),
+            }
+            x += n;
+        }
+    });
 }
 
 /// `(draws, edges)` stats for an item list.
@@ -1101,16 +1774,24 @@ fn kept_rows(union: &IRect, reach: usize, band: (usize, usize), h: usize) -> (us
     clippy::too_many_arguments,
     reason = "the band context travels together"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn shade(
+    level: fearless_simd::Level,
     items: &[Item],
+    index: &FrameIndex,
     clear: [f32; 4],
     slice: &mut [[f32; 4]],
     w: usize,
     y0: usize,
     h: usize,
-    scratch: &mut Scratch,
+    scratch: &mut Scratch<'_>,
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
+    meter: Option<&FrameMeter>,
 ) -> Result<(), cherenkov::RenderError> {
     let bh = slice.len() / w;
     for (_, capture) in scratch.captures.drain() {
@@ -1122,7 +1803,7 @@ fn shade(
     // A surface that used no backdrop group cannot contain a `Capture`,
     // so the scan is skipped outright.
     let top = if has_backdrop {
-        top_captures(items, surface, (w, h))
+        top_captures(level, items, surface, (w, h))
     } else {
         TopCaptures::new()
     };
@@ -1139,7 +1820,9 @@ fn shade(
     let coverage = std::mem::take(&mut scratch.coverage);
     let result = if let Some(last) = last_capture {
         shade_windowed(
+            level,
             items,
+            index,
             clear,
             slice,
             w,
@@ -1148,9 +1831,21 @@ fn shade(
             (window, last),
             coverage,
             (scratch, &top),
+            meter,
         )
     } else {
-        shade_plain(items, slice, w, surface, h, coverage, (scratch, &top))
+        shade_plain(
+            level,
+            items,
+            index,
+            slice,
+            w,
+            surface,
+            h,
+            coverage,
+            (scratch, &top),
+            meter,
+        )
     };
     for plane in scratch.stack.drain(..) {
         scratch.buffers.give_color(plane.buf);
@@ -1172,7 +1867,12 @@ fn shade(
 /// covers, including what this group's members drew there when one of
 /// them samples before that capture's item; such a capture's window
 /// widens the rows this capture covers past the band.
-fn top_captures(items: &[Item], surface: (usize, usize), size: (usize, usize)) -> TopCaptures {
+fn top_captures(
+    level: fearless_simd::Level,
+    items: &[Item],
+    surface: (usize, usize),
+    size: (usize, usize),
+) -> TopCaptures {
     // (capture item, its group, the first item sampling the group)
     let mut plan: Vec<(usize, u64, usize)> = Vec::new();
     let mut scope_end = 0;
@@ -1208,22 +1908,35 @@ fn top_captures(items: &[Item], surface: (usize, usize), size: (usize, usize)) -
         let Item::Capture(capture) = &items[i] else {
             unreachable!("only capture items are planned");
         };
-        top[k].1 = capture_rows(capture, items, need, size);
+        top[k].1 = capture_rows(level, capture, items, need, size);
     }
     top
 }
 
 /// The band's pass with no capture: `run` over the caller's slice.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
+)]
 fn shade_plain(
+    level: fearless_simd::Level,
     items: &[Item],
+    index: &FrameIndex,
     slice: &mut [[f32; 4]],
     w: usize,
     surface: (usize, usize),
     h: usize,
     coverage: Vec<f32>,
-    (scratch, top): (&mut Scratch, &[(usize, Option<CaptureRows>)]),
+    (scratch, top): (&mut Scratch<'_>, &[(usize, Option<CaptureRows>)]),
+    meter: Option<&FrameMeter>,
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, y1) = surface;
+    let b = y0 / BAND_H;
     let mut acc = Accum::with_buffer(w, y1 - y0, coverage);
     let mut band = Band {
         fb: slice,
@@ -1231,19 +1944,26 @@ fn shade_plain(
         y0,
         space: cherenkov::BlendSpace::Linear,
     };
-    let result = run(
+    let result = run_at(
+        level,
         items,
-        0..items.len(),
+        index,
+        index.items(b),
+        items.len(),
+        EdgeSel::Band(b),
         &mut band,
         &mut acc,
         &mut scratch.stack,
         &mut scratch.buffers,
         &mut FrameCtx {
+            level,
             surface,
             h,
             captures: &mut scratch.captures,
             top,
+            meter,
         },
+        0,
     );
     scratch.coverage = acc.into_buffer();
     result
@@ -1261,8 +1981,15 @@ fn shade_plain(
     clippy::too_many_arguments,
     reason = "the band's captured state travels together"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn shade_windowed(
+    level: fearless_simd::Level,
     items: &[Item],
+    index: &FrameIndex,
     clear: [f32; 4],
     slice: &mut [[f32; 4]],
     w: usize,
@@ -1270,7 +1997,8 @@ fn shade_windowed(
     h: usize,
     ((win0, win1), last): ((usize, usize), usize),
     coverage: Vec<f32>,
-    (scratch, top): (&mut Scratch, &[(usize, Option<CaptureRows>)]),
+    (scratch, top): (&mut Scratch<'_>, &[(usize, Option<CaptureRows>)]),
+    meter: Option<&FrameMeter>,
 ) -> Result<(), cherenkov::RenderError> {
     let (y0, y1) = surface;
     let bh = y1 - y0;
@@ -1285,20 +2013,33 @@ fn shade_windowed(
         y0: win0,
         space: cherenkov::BlendSpace::Linear,
     };
-    let first_pass = run(
+    // The window's item selection lives in the depth-0 slot; the run
+    // and its nested scopes take slots 1 and deeper.
+    let mut sel = scratch.buffers.take_sel_items(0, meter);
+    index.query_items(0..last + 1, (win0, win1), &mut sel);
+    scratch.buffers.charge_sel_items(0, &sel, meter);
+    let first_pass = run_at(
+        level,
         items,
-        0..last + 1,
+        index,
+        &sel,
+        last + 1,
+        EdgeSel::Window,
         &mut band,
         &mut acc,
         &mut scratch.stack,
         &mut scratch.buffers,
         &mut FrameCtx {
+            level,
             surface,
             h,
             captures: &mut scratch.captures,
             top,
+            meter,
         },
+        1,
     );
+    scratch.buffers.give_sel_items(0, sel);
     if first_pass.is_ok() {
         // Collapse to the band: the central rows go to the output slice
         // and each live isolation buffer shrinks to band size.
@@ -1324,90 +2065,213 @@ fn shade_windowed(
         y0,
         space: cherenkov::BlendSpace::Linear,
     };
-    let result = run(
+    // The aligned band's bins, restricted to the items after the last
+    // top-level capture.
+    let all = index.items(y0 / BAND_H);
+    let start = all.partition_point(|&i| i <= last);
+    let result = run_at(
+        level,
         items,
-        last + 1..items.len(),
+        index,
+        &all[start..],
+        items.len(),
+        EdgeSel::Band(y0 / BAND_H),
         &mut band,
         &mut acc,
         &mut scratch.stack,
         &mut scratch.buffers,
         &mut FrameCtx {
+            level,
             surface,
             h,
             captures: &mut scratch.captures,
             top,
+            meter,
         },
+        0,
     );
     scratch.coverage = acc.into_buffer();
     result
 }
 
-/// Rasterizes the whole surface's items into `fb`, parallel over bands.
+/// A pass's exclusive output, split only by unique atomic band claims.
 ///
-/// Each worker reuses its coverage, isolation and filter-window buffers.
-/// The transient pixel bound is `workers × (band + Σ filter windows at the
-/// deepest nesting)`, with each window sized `w × (bh + 2·apron)`.
+/// The input borrow lasts through the joined raster tasks. Claims never
+/// create a shared reference to pixel contents or reuse a claimed band.
+struct BandQueue<'a, T> {
+    output: *mut T,
+    len: usize,
+    chunk_len: NonZeroUsize,
+    next: AtomicUsize,
+    borrow: PhantomData<&'a mut [T]>,
+}
+
+// SAFETY: the queue owns the exclusive input borrow. Its only pixel access
+// hands each uniquely claimed, disjoint band to one task; sharing the queue
+// never shares pixel references. Moving those elements between tasks needs
+// T: Send, not T: Sync. The borrow outlives all claims and joined tasks.
+unsafe impl<T: Send> Sync for BandQueue<'_, T> {}
+
+impl<'a, T> BandQueue<'a, T> {
+    const fn new(output: &'a mut [T], chunk_len: NonZeroUsize) -> Self {
+        Self {
+            output: output.as_mut_ptr(),
+            len: output.len(),
+            chunk_len,
+            next: AtomicUsize::new(0),
+            borrow: PhantomData,
+        }
+    }
+
+    const fn band_count(&self) -> usize {
+        self.len.div_ceil(self.chunk_len.get())
+    }
+
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "unique atomic claims partition the exclusively borrowed output"
+    )]
+    fn claim(&self) -> Option<(usize, &mut [T])> {
+        let count = self.band_count();
+        let index = self
+            .next
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                (next < count).then(|| next + 1)
+            })
+            .ok()?;
+        let start = index * self.chunk_len.get();
+        let len = self.chunk_len.get().min(self.len - start);
+        // SAFETY: try_update claims each index below count exactly once,
+        // without wrapping. Thus start < self.len, multiplication cannot
+        // overflow, and this band lies wholly within the original slice.
+        // Distinct indices yield disjoint bands. The exclusive input borrow
+        // and this queue borrow keep the allocation alive for the result.
+        let band = unsafe { std::slice::from_raw_parts_mut(self.output.add(start), len) };
+        Some((index, band))
+    }
+}
+
+/// Runs at most min(bands, workers) tasks, each reusing one stack-owned
+/// Scratch. A claim transfers one band without copying output or allocating.
+/// The transient pixel bound is workers × (band + Σ filter windows at the
+/// deepest nesting), with each window sized w × (bh + 2·apron).
+fn for_each_band<T: Send>(
+    output: &mut [T],
+    w: usize,
+    h: usize,
+    meter: &FrameMeter,
+    shade_band: impl Fn(usize, &mut [T], &mut Scratch<'_>) -> Result<(), cherenkov::RenderError> + Sync,
+) -> Result<(), cherenkov::RenderError> {
+    if output.is_empty() || h == 0 {
+        return Ok(());
+    }
+    let chunk_len =
+        NonZeroUsize::new(w * h.min(BAND_H)).expect("non-empty raster output has non-zero width");
+    let queue = BandQueue::new(output, chunk_len);
+    let tasks = queue.band_count().min(rayon::current_num_threads());
+    (0..tasks).into_par_iter().try_for_each(|_| {
+        let Some((mut index, mut band)) = queue.claim() else {
+            return Ok(());
+        };
+        let mut scratch = Scratch::new(Some(meter));
+        loop {
+            shade_band(index * BAND_H, band, &mut scratch)?;
+            match queue.claim() {
+                Some(next) => (index, band) = next,
+                None => return Ok(()),
+            }
+        }
+    })
+}
+
+/// Rasterizes the whole surface's items into `fb`, dynamically claiming
+/// whole bands. Each task reuses its coverage, isolation and filter-window
+/// buffers until no bands remain. All tasks join before the pass returns.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
+)]
 pub fn render_bands(
+    level: fearless_simd::Level,
     items: &[Item],
+    index: &mut FrameIndex,
     clear: [f32; 4],
     fb: &mut [[f32; 4]],
     w: usize,
     h: usize,
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
+    meter: &mut FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
+    index.rebuild(items, h);
+    meter.record_index(index.heap_bytes());
+    let meter = &*meter;
+    let index = &*index;
     let stats = stats(items);
-    fb.par_chunks_mut(BAND_H * w)
-        .enumerate()
-        .try_for_each_init(Scratch::new, |scratch, (band, slice)| {
-            shade(
-                items,
-                clear,
-                slice,
-                w,
-                band * BAND_H,
-                h,
-                scratch,
-                peak,
-                has_backdrop,
-            )
-        })?;
+    for_each_band(fb, w, h, meter, |y0, band, scratch| {
+        shade(
+            level,
+            items,
+            index,
+            clear,
+            band,
+            w,
+            y0,
+            h,
+            scratch,
+            peak,
+            has_backdrop,
+            Some(meter),
+        )
+    })?;
     Ok(stats)
 }
 
 /// Rasterizes into `out`, converting each finished band to `f16`. Shading
 /// runs at full `f32`; the store rounds once, at the output boundary.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
+)]
 pub fn render_bands_f16(
+    level: fearless_simd::Level,
     items: &[Item],
+    index: &mut FrameIndex,
     clear: [f32; 4],
     out: &mut [[half::f16; 4]],
     w: usize,
     h: usize,
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
+    meter: &mut FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
+    index.rebuild(items, h);
+    meter.record_index(index.heap_bytes());
+    let meter = &*meter;
+    let index = &*index;
     let stats = stats(items);
-    out.par_chunks_mut(BAND_H * w)
-        .enumerate()
-        .try_for_each_init(Scratch::new, |scratch, (band, out_slice)| {
-            let mut band_px = scratch.buffers.take_color(out_slice.len());
-            let result = shade(
-                items,
-                clear,
-                &mut band_px,
-                w,
-                band * BAND_H,
-                h,
-                scratch,
-                peak,
-                has_backdrop,
-            );
-            if result.is_ok() {
-                store_f16(out_slice, &band_px);
-            }
-            scratch.buffers.give_color(band_px);
-            result
-        })?;
+    for_each_band(out, w, h, meter, |y0, out_slice, scratch| {
+        let mut band_px = scratch.buffers.take_color(out_slice.len());
+        let result = shade(
+            level,
+            items,
+            index,
+            clear,
+            &mut band_px,
+            w,
+            y0,
+            h,
+            scratch,
+            peak,
+            has_backdrop,
+            Some(meter),
+        );
+        if result.is_ok() {
+            store_f16(out_slice, &band_px);
+        }
+        scratch.buffers.give_color(band_px);
+        result
+    })?;
     Ok(stats)
 }
 
@@ -1420,6 +2284,7 @@ pub fn render_bands_f16(
     reason = "the band context travels together"
 )]
 pub fn render_bands_stream(
+    level: fearless_simd::Level,
     items: &[Item],
     clear: [f32; 4],
     size: (usize, usize),
@@ -1428,16 +2293,24 @@ pub fn render_bands_stream(
     sink: &mut dyn FnMut(BandOut<'_>),
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
+    index: &mut FrameIndex,
+    meter: &mut FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
     let (w, h) = size;
-    let mut scratch = Scratch::new();
+    index.rebuild(items, h);
+    meter.record_index(index.heap_bytes());
+    let meter = &*meter;
+    let index = &*index;
+    let mut scratch = Scratch::new(Some(meter));
     let mut band_px = scratch.buffers.take_color(w * h.min(BAND_H));
     let mut y0 = 0;
     while y0 < h {
         let bh = (h - y0).min(BAND_H);
         if let Err(error) = shade(
+            level,
             items,
+            index,
             clear,
             &mut band_px[..w * bh],
             w,
@@ -1446,6 +2319,7 @@ pub fn render_bands_stream(
             &mut scratch,
             peak,
             has_backdrop,
+            Some(meter),
         ) {
             scratch.buffers.give_color(band_px);
             return Err(error);
@@ -1469,6 +2343,12 @@ pub fn render_bands_stream(
         y0 += bh;
     }
     scratch.buffers.give_color(band_px);
+    // `scratch`'s Drop releases the charged query capacity.
+    drop(scratch);
+    debug_assert_eq!(
+        meter.query_live.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
     Ok(stats)
 }
 
@@ -1484,31 +2364,116 @@ const fn slice_len(w: usize, bh: usize) -> usize {
     w * bh
 }
 
+/// How a `run` level resolves a draw's edge selection for its rows:
+/// the aligned band's index slice borrowed, or an expanded window's
+/// merged query into the depth's scratch.
+#[derive(Clone, Copy)]
+enum EdgeSel {
+    /// The aligned surface band's bins.
+    Band(usize),
+    /// An expanded window covering `band.y0 .. band.y0 + bh`.
+    Window,
+}
+
+/// `run` exactly once per dispatched CPU level: the band passes and
+/// `run`'s own recursion enter through this boundary, so `run`'s
+/// `#[inline(always)]` body exists once per level rather than once per
+/// call site.
 #[expect(
-    clippy::too_many_lines,
-    reason = "keeps ordered item processing and recursive filter scopes together"
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
 )]
-fn run(
+#[inline(never)]
+fn run_at(
+    level: fearless_simd::Level,
     items: &[Item],
-    range: Range<usize>,
+    index: &FrameIndex,
+    sel: &[usize],
+    limit: usize,
+    mode: EdgeSel,
     band: &mut Band<'_>,
     acc: &mut Accum,
     stack: &mut Vec<Plane>,
     buffers: &mut Buffers,
     ctx: &mut FrameCtx<'_>,
+    depth: usize,
+) -> Result<(), cherenkov::RenderError> {
+    fearless_simd::dispatch!(level, simd => run(simd, items, index, sel, limit, mode, band, acc, stack, buffers, ctx, depth))
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "keeps ordered item processing and recursive filter scopes together"
+)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the band context travels together"
+)]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn run<S: Simd>(
+    simd: S,
+    items: &[Item],
+    index: &FrameIndex,
+    sel: &[usize],
+    limit: usize,
+    mode: EdgeSel,
+    band: &mut Band<'_>,
+    acc: &mut Accum,
+    stack: &mut Vec<Plane>,
+    buffers: &mut Buffers,
+    ctx: &mut FrameCtx<'_>,
+    depth: usize,
 ) -> Result<(), cherenkov::RenderError> {
     let bh = band.fb.len() / band.w;
     let h = ctx.h;
-    let mut i = range.start;
-    while i < range.end {
+    // Item indexes below `skip` were consumed by a filter scope's
+    // nested run.
+    let mut skip = 0usize;
+    for &i in sel {
+        if i < skip {
+            continue;
+        }
         match &items[i] {
             Item::Draw {
                 edges,
+                offset,
                 bbox,
                 rule,
                 paint,
                 clip,
-            } => band.draw(acc, stack, edges, *bbox, *rule, paint, clip.as_ref()),
+                swept: _,
+            } => match mode {
+                EdgeSel::Band(b) => band.draw(
+                    simd,
+                    acc,
+                    stack,
+                    (edges, index.edges(b, i), *offset),
+                    *bbox,
+                    *rule,
+                    paint,
+                    clip.as_ref(),
+                ),
+                EdgeSel::Window => {
+                    let mut selected = buffers.take_sel_edges();
+                    index.query_edges(i, (band.y0, band.y0 + bh), &mut selected);
+                    buffers.charge_sel_edges(&selected, ctx.meter);
+                    band.draw(
+                        simd,
+                        acc,
+                        stack,
+                        (edges, &selected, *offset),
+                        *bbox,
+                        *rule,
+                        paint,
+                        clip.as_ref(),
+                    );
+                    buffers.give_sel_edges(selected);
+                }
+            },
             Item::PushIsolate { space } => stack.push(Plane {
                 buf: buffers.take_color(slice_len(band.w, bh)),
                 space: *space,
@@ -1519,7 +2484,6 @@ fn run(
                 clip,
             } => {
                 let Some(plane) = stack.pop() else {
-                    i += 1;
                     continue;
                 };
                 band.composite_isolate(
@@ -1535,7 +2499,7 @@ fn run(
             Item::PushFilter { end, apron, space } => {
                 let scope_end = usize::try_from(*end)
                     .map_err(|_| cherenkov::RenderError::Render("invalid filter scope".into()))?;
-                if scope_end <= i || scope_end >= range.end {
+                if scope_end <= i || scope_end >= limit {
                     return Err(cherenkov::RenderError::Render(
                         "invalid filter scope".into(),
                     ));
@@ -1556,6 +2520,9 @@ fn run(
                 let bottom = y1.saturating_add(*apron).min(h);
                 let mut window = buffers.take_color(band.w * (bottom - top));
                 let coverage = buffers.take_coverage((band.w + 2) * (bottom - top));
+                let mut nested = buffers.take_sel_items(depth, ctx.meter);
+                index.query_items(i + 1..scope_end, (top, bottom), &mut nested);
+                buffers.charge_sel_items(depth, &nested, ctx.meter);
                 let nested_result = {
                     let mut filter_band = Band {
                         fb: &mut window,
@@ -1565,14 +2532,19 @@ fn run(
                     };
                     let mut filter_acc = Accum::with_buffer(band.w, bottom - top, coverage);
                     let mut filter_stack = Vec::new();
-                    let result = run(
+                    let result = run_at(
+                        ctx.level,
                         items,
-                        i + 1..scope_end,
+                        index,
+                        &nested,
+                        scope_end,
+                        EdgeSel::Window,
                         &mut filter_band,
                         &mut filter_acc,
                         &mut filter_stack,
                         buffers,
                         ctx,
+                        depth + 1,
                     );
                     for plane in filter_stack {
                         buffers.give_color(plane.buf);
@@ -1580,11 +2552,14 @@ fn run(
                     buffers.give_coverage(filter_acc.into_buffer());
                     result
                 };
+                buffers.give_sel_items(depth, nested);
                 if let Err(error) = nested_result {
                     buffers.give_color(window);
                     return Err(error);
                 }
-                if let Err(error) = apply_filter(filter, &mut window, *space, top, (band.w, h)) {
+                if let Err(error) =
+                    apply_filter(simd, filter, &mut window, *space, top, (band.w, h))
+                {
                     buffers.give_color(window);
                     return Err(error);
                 }
@@ -1592,7 +2567,7 @@ fn run(
                 let central = &window[first..first + band.fb.len()];
                 band.composite_isolate(central, *space, *opacity, *blend, clip.as_ref(), stack);
                 buffers.give_color(window);
-                i = scope_end;
+                skip = scope_end + 1;
             }
             Item::PopFilter { .. } => {
                 return Err(cherenkov::RenderError::Render(
@@ -1602,10 +2577,10 @@ fn run(
             Item::Capture(capture) => {
                 let rows = match ctx.top.iter().find(|(j, _)| *j == i) {
                     Some((_, rows)) => *rows,
-                    None => capture_rows(capture, items, ctx.surface, (band.w, h)),
+                    None => capture_rows(ctx.level, capture, items, ctx.surface, (band.w, h)),
                 };
                 if let Some(rows) = rows {
-                    capture_band(band, stack.as_slice(), buffers, ctx, capture, rows)?;
+                    capture_band(simd, band, stack.as_slice(), buffers, ctx, capture, rows)?;
                 }
             }
             Item::Sample {
@@ -1635,10 +2610,19 @@ fn run(
                 color,
                 bbox,
                 clip,
-            } => band.shadow(stack, rbox, radii, *sigma_eff, color, *bbox, clip.as_ref()),
+            } => band.shadow(
+                simd,
+                stack,
+                rbox,
+                radii,
+                *sigma_eff,
+                color,
+                *bbox,
+                clip.as_ref(),
+            ),
             Item::Project(item) => band.project(stack, item),
             Item::Silhouette { slot, paint, clip } => {
-                band.glyph(stack, slot, 0, 0, paint, clip.as_ref());
+                band.glyph(simd, stack, slot, 0, 0, paint, clip.as_ref());
             }
             Item::Glyph {
                 slot,
@@ -1646,9 +2630,8 @@ fn run(
                 y,
                 paint,
                 clip,
-            } => band.glyph(stack, slot, *x, *y, paint, clip.as_ref()),
+            } => band.glyph(simd, stack, slot, *x, *y, paint, clip.as_ref()),
         }
-        i += 1;
     }
     Ok(())
 }
@@ -1656,7 +2639,8 @@ fn run(
 /// Runs `filter` over `pixels` stored in `space`. A filter works in the
 /// linear working space whatever space its scope stores: sRGB-encoded
 /// pixels are decoded before it and encoded again after it.
-fn apply_filter(
+fn apply_filter<S: Simd>(
+    simd: S,
     (filter, params): &FrameFilter,
     pixels: &mut [[f32; 4]],
     space: cherenkov::BlendSpace,
@@ -1665,7 +2649,12 @@ fn apply_filter(
 ) -> Result<(), cherenkov::RenderError> {
     let encoded = space == cherenkov::BlendSpace::SrgbEncoded;
     if encoded {
-        from_srgb(pixels);
+        convert_span(
+            simd,
+            pixels,
+            cherenkov::BlendSpace::SrgbEncoded,
+            cherenkov::BlendSpace::Linear,
+        );
     }
     filter
         .apply(
@@ -1683,7 +2672,12 @@ fn apply_filter(
             }
         })?;
     if encoded {
-        to_srgb(pixels);
+        convert_span(
+            simd,
+            pixels,
+            cherenkov::BlendSpace::Linear,
+            cherenkov::BlendSpace::SrgbEncoded,
+        );
     }
     Ok(())
 }
@@ -1699,7 +2693,13 @@ fn apply_filter(
     clippy::cast_sign_loss,
     reason = "device spans of texels inside the surface are small and non-negative"
 )]
-fn capture_band(
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn capture_band<S: Simd>(
+    simd: S,
     band: &Band<'_>,
     stack: &[Plane],
     buffers: &mut Buffers,
@@ -1776,7 +2776,14 @@ fn capture_band(
         flat
     };
     if let Some(filter) = &item.filter {
-        apply_filter(filter, &mut canvas, space, win0 - ry0, (rw, ry1 - ry0))?;
+        apply_filter(
+            simd,
+            filter,
+            &mut canvas,
+            space,
+            win0 - ry0,
+            (rw, ry1 - ry0),
+        )?;
     }
     let kept_rows = kept1 - kept0;
     let mut buf = buffers.take_color(rw * kept_rows);
@@ -1898,6 +2905,11 @@ fn reduce_rows(
 /// looked-through level is `Normal`-blended and stored in the root's
 /// linear space (layers never sit inside an encoded group scope), so
 /// each composites source-over.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn flatten(
     band: &Band<'_>,
     stack: &[Plane],
@@ -1978,6 +2990,11 @@ fn taps(i: usize, s: f64, end: usize) -> impl Iterator<Item = (usize, f32)> {
 /// area-weighted mean of the device pixels under its span clipped to
 /// `extent` — rows across first into `across` (`from`'s rows × `width`),
 /// then down.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn resolve(
     from: Resolved<'_>,
     (across, out): (&mut [[f32; 4]], &mut [[f32; 4]]),
@@ -2028,18 +3045,26 @@ struct Band<'a> {
 }
 
 impl Band<'_> {
-    /// Rasterizes one draw item into the top isolation buffer.
+    /// Rasterizes one draw item — its `sel` edges, indexes into the
+    /// frame edge list in original order, placed at `offset` — into the
+    /// top isolation buffer.
     #[expect(
         clippy::cast_precision_loss,
         clippy::too_many_arguments,
         reason = "pixel indices and band offsets are far below 2^24"
     )]
-    fn draw(
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    fn draw<S: Simd>(
         &mut self,
+        simd: S,
         acc: &mut Accum,
         stack: &mut Vec<Plane>,
-        edges: &[Edge],
-        bbox: crate::render::lower::IRect,
+        (edges, sel, [ox, oy]): (&[Edge], &[usize], [f32; 2]),
+        bbox: crate::render::lower::DrawBox,
         rule: FillRule,
         paint: &PaintData,
         clip: Option<&ClipRef>,
@@ -2047,48 +3072,50 @@ impl Band<'_> {
         let bh = self.fb.len() / self.w;
         // Band-intersect the device-space bounding box.
         let (y_lo, y_hi) = (
-            usize::try_from(bbox.y0)
-                .unwrap_or(0)
-                .saturating_sub(self.y0)
-                .min(bh),
-            usize::try_from(bbox.y1)
-                .unwrap_or(0)
-                .saturating_sub(self.y0)
-                .min(bh),
+            usize::from(bbox.y0).saturating_sub(self.y0).min(bh),
+            usize::from(bbox.y1).saturating_sub(self.y0).min(bh),
         );
         if y_lo >= y_hi {
             return;
         }
         let (x_lo, x_hi) = (
-            usize::try_from(bbox.x0).unwrap_or(0).min(self.w),
-            usize::try_from(bbox.x1).unwrap_or(0).min(self.w),
+            usize::from(bbox.x0).min(self.w),
+            usize::from(bbox.x1).min(self.w),
         );
         // Only the item's bbox columns participate: clear and deposit
         // inside the guard window `x_lo .. x_hi + 1`.
         acc.set_window(x_lo, x_hi);
         acc.clear_range(y_lo, y_hi);
-        for e in edges {
+        // The frame's origin relative to the band's top row.
+        let dy = oy - self.y0 as f32;
+        for &ei in sel {
+            let e = &edges[ei];
             // Only edges crossing the band deposit anything.
-            let ey0 = e.y0 - self.y0 as f32;
-            let ey1 = e.y1 - self.y0 as f32;
+            let ey0 = e.y0 + dy;
+            let ey1 = e.y1 + dy;
             if ey0.max(ey1) < 0.0 || ey0.min(ey1) >= bh as f32 {
                 continue;
             }
-            acc.draw_line(e.x0, ey0, e.x1, ey1);
+            acc.draw_line(e.x0 + ox, ey0, e.x1 + ox, ey1);
         }
         let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
+        let mut src = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
         for y in y_lo..y_hi {
             let py = self.y0 + y;
-            acc.coverage_row(y, rule, x_lo, x_hi, |x, cov| {
-                let cc = clip_cov(clip, self.w, x, py);
-                if cc <= 0.0 {
-                    return;
-                }
-                let src = paint
-                    .eval(x as f32 + 0.5, py as f32 + 0.5)
-                    .map(|v| v * cov * cc);
-                dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
-            });
+            let cov = acc.coverage_in_place(y, rule, x_lo, x_hi);
+            let row = y * self.w;
+            composite_runs(
+                simd,
+                &mut dst[row..],
+                cov,
+                x_lo,
+                py,
+                self.w,
+                paint,
+                clip,
+                space,
+                &mut src,
+            );
         }
     }
 
@@ -2105,8 +3132,14 @@ impl Band<'_> {
                   flat-row test is intentionally exact and the quadrature \
                   weights mirror the reference formula"
     )]
-    fn shadow(
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
+    fn shadow<S: Simd>(
         &mut self,
+        simd: S,
         stack: &mut Vec<Plane>,
         rbox: &[f32; 4],
         radii: &[f32; 4],
@@ -2171,9 +3204,27 @@ impl Band<'_> {
         // straight-wall x-integral, one `erf` pair per column computed
         // once for the whole item.
         let mut x_term: Option<Vec<f32>> = None;
-        let mut xl = [0.0_f32; SHADOW_N];
-        let mut xr = [0.0_f32; SHADOW_N];
-        let mut wg = [0.0_f32; SHADOW_N];
+        let flat_sample = [shadow::Sample {
+            left: -half[0],
+            right: half[0],
+            weight: 1.0,
+        }];
+        let mut samples = [shadow::Sample::default(); SHADOW_N];
+        // One pixel centre per lane, each computed independently as
+        // `(x as f32 + 0.5) - cx`; a 1–3-lane tail pads with the first
+        // lane's valid centre and its outputs are never read.
+        let coverage4 = |x0: usize, lanes: usize, samples: &[shadow::Sample]| {
+            let mut centres = [(x0 as f32 + 0.5) - cx; 4];
+            for (j, c) in centres.iter_mut().enumerate().take(lanes) {
+                *c = (x0 + j) as f32 + 0.5 - cx;
+            }
+            simd.as_array_f32x4(shadow::integral4(
+                simd,
+                simd.load_array_f32x4(centres),
+                inv_sqrt2_sigma,
+                samples,
+            ))
+        };
         for y in y_lo..y_hi {
             let py_i = self.y0 + y;
             let py = py_i as f32 + 0.5 - cy;
@@ -2195,12 +3246,14 @@ impl Band<'_> {
                     (radii[3], radii[2])
                 };
                 let ay = yi.abs();
-                xl[n] = -half[0] + corner_inset(rl, ay - (half[1] - rl));
-                xr[n] = half[0] - corner_inset(rr, ay - (half[1] - rr));
-                wg[n] = *w;
-                flat &= xl[n] == -half[0] && xr[n] == half[0];
-                xlm = xlm.max(xl[n]);
-                xrm = xrm.min(xr[n]);
+                samples[n] = shadow::Sample {
+                    left: -half[0] + corner_inset(rl, ay - (half[1] - rl)),
+                    right: half[0] - corner_inset(rr, ay - (half[1] - rr)),
+                    weight: *w,
+                };
+                flat &= samples[n].left == -half[0] && samples[n].right == half[0];
+                xlm = xlm.max(samples[n].left);
+                xrm = xrm.min(samples[n].right);
                 s += w;
                 n += 1;
             }
@@ -2211,13 +3264,16 @@ impl Band<'_> {
             if flat {
                 // Separable: `cov = x_term[px] * s` across the row.
                 let t = x_term.get_or_insert_with(|| {
-                    (cx_lo..cx_hi)
-                        .map(|x| {
-                            let px = x as f32 + 0.5 - cx;
-                            0.5 * (erf((half[0] - px) * inv_sqrt2_sigma)
-                                - erf((-half[0] - px) * inv_sqrt2_sigma))
-                        })
-                        .collect()
+                    let mut term = Vec::with_capacity(cx_hi - cx_lo);
+                    let mut x = cx_lo;
+                    while x < cx_hi {
+                        let lanes = (cx_hi - x).min(4);
+                        for cov in coverage4(x, lanes, &flat_sample).into_iter().take(lanes) {
+                            term.push(cov);
+                        }
+                        x += 4;
+                    }
+                    term
                 });
                 for x in cx_lo..cx_hi {
                     let cov = t[x - cx_lo] * s;
@@ -2244,24 +3300,26 @@ impl Band<'_> {
                 .clamp(x_in_lo, cx_hi);
             let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
             let edge = |dst: &mut [[f32; 4]], f: usize, t: usize| {
-                for x in f..t {
-                    let px = x as f32 + 0.5 - cx;
-                    let mut cov = 0.0_f32;
-                    for k in 0..n {
-                        cov += 0.5
-                            * (erf((xr[k] - px) * inv_sqrt2_sigma)
-                                - erf((xl[k] - px) * inv_sqrt2_sigma))
-                            * wg[k];
+                let mut x = f;
+                while x < t {
+                    let lanes = (t - x).min(4);
+                    for (j, cov) in coverage4(x, lanes, &samples[..n])
+                        .into_iter()
+                        .enumerate()
+                        .take(lanes)
+                    {
+                        if cov <= 0.0 {
+                            continue;
+                        }
+                        let x = x + j;
+                        let cc = clip_mask.map_or(1.0, |m| m[py_i * self.w + x]);
+                        if cc <= 0.0 {
+                            continue;
+                        }
+                        let src = color.map(|v| v * cov.clamp(0.0, 1.0) * cc);
+                        dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
                     }
-                    if cov <= 0.0 {
-                        continue;
-                    }
-                    let cc = clip_mask.map_or(1.0, |m| m[py_i * self.w + x]);
-                    if cc <= 0.0 {
-                        continue;
-                    }
-                    let src = color.map(|v| v * cov.clamp(0.0, 1.0) * cc);
-                    dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
+                    x += 4;
                 }
             };
             edge(&mut *dst, cx_lo, x_in_lo);
@@ -2289,6 +3347,11 @@ impl Band<'_> {
         clippy::too_many_arguments,
         reason = "one sample item's fields plus the band's plane stack"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     fn sample(
         &mut self,
         capture: &Capture,
@@ -2374,11 +3437,20 @@ impl Band<'_> {
     #[expect(
         clippy::cast_possible_wrap,
         clippy::cast_possible_truncation,
-        clippy::cast_precision_loss,
         reason = "mask coordinates and pixel indices are small"
     )]
-    fn glyph(
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the glyph context travels together"
+    )]
+    #[inline(always)]
+    fn glyph<S: Simd>(
         &mut self,
+        simd: S,
         stack: &mut Vec<Plane>,
         slot: &std::sync::OnceLock<std::sync::Arc<crate::render::glyph::GlyphMask>>,
         ox: i32,
@@ -2408,24 +3480,26 @@ impl Band<'_> {
         if y_lo >= y_hi || x_lo >= x_hi {
             return;
         }
+        let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
+        let mut src = [const { MaybeUninit::<[f32; 4]>::uninit() }; SPAN_CHUNK];
         for y in y_lo..y_hi {
             let py = self.y0 + y;
             let row = usize::try_from(py as i32 - my0).unwrap_or(0) * mask.w as usize;
-            for x in x_lo..x_hi {
-                let cc = clip_cov(clip, self.w, x, py);
-                if cc <= 0.0 {
-                    continue;
-                }
-                let cov = mask.cov[row + usize::try_from(x as i32 - mx0).unwrap_or(0)];
-                if cov <= 0.0 {
-                    continue;
-                }
-                let src = paint
-                    .eval(x as f32 + 0.5, py as f32 + 0.5)
-                    .map(|v| v * cov * cc);
-                let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
-                dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
-            }
+            // The mask columns under `x_lo..x_hi`, indexed `x - mx0`.
+            let m_lo = usize::try_from(x_lo as i32 - mx0).unwrap_or(0);
+            let cov = &mask.cov[row + m_lo..row + m_lo + (x_hi - x_lo)];
+            composite_runs(
+                simd,
+                &mut dst[y * self.w..],
+                cov,
+                x_lo,
+                py,
+                self.w,
+                paint,
+                clip,
+                space,
+                &mut src,
+            );
         }
     }
 
@@ -2437,6 +3511,11 @@ impl Band<'_> {
         clippy::cast_precision_loss,
         reason = "pixel indices are far below 2^53"
     )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     fn project(&mut self, stack: &mut [Plane], item: &super::lower::ProjectItem) {
         let bh = self.fb.len() / self.w;
         let [x0, y0, x1, y1] = item.placed.bounds.map(|v| v as usize);
@@ -2466,6 +3545,11 @@ impl Band<'_> {
     /// which is its declared `blend_space` for a semantic level or the
     /// parent's for a pass-through one — members already composited in
     /// it.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+    )]
+    #[inline(always)]
     fn composite_isolate(
         &mut self,
         scratch: &[[f32; 4]],
@@ -2516,6 +3600,21 @@ impl Band<'_> {
     reason = "band origins are small integers"
 )]
 pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<f32> {
+    let bands = h.div_ceil(BAND_H);
+    // The same edge→band bins the draw path uses; `oy` is 0 — the edges
+    // are already device-space.
+    let mut index = EdgeBins::default();
+    index.rebuild(
+        std::iter::once(EdgeGroup {
+            edges,
+            oy: 0.0,
+            band0: 0,
+            band1: bands,
+        }),
+        &mut Vec::new(),
+        bands,
+        h,
+    );
     let mut mask = vec![0.0; w * h];
     mask.par_chunks_mut(BAND_H * w)
         .enumerate()
@@ -2523,7 +3622,8 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
             let y0 = band * BAND_H;
             let bh = slice.len() / w;
             let mut acc = Accum::new(w, bh);
-            for e in edges {
+            for &ei in index.at(0, band) {
+                let e = &edges[ei];
                 let ey0 = e.y0 - y0 as f32;
                 let ey1 = e.y1 - y0 as f32;
                 if ey0.max(ey1) < 0.0 || ey0.min(ey1) >= bh as f32 {
@@ -2532,9 +3632,7 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
                 acc.draw_line(e.x0, ey0, e.x1, ey1);
             }
             for y in 0..bh {
-                acc.coverage_row(y, rule, 0, w, |x, cov| {
-                    slice[y * w + x] = cov;
-                });
+                acc.coverage_into(y, rule, 0, w, &mut slice[y * w..y * w + w]);
             }
         });
     mask
@@ -2542,7 +3640,7 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
 
 #[cfg(test)]
 mod tests {
-    use super::{reduce_rows, store_f16};
+    use super::store_f16;
 
     /// `store_f16` must produce the same bits as the per-element
     /// `f16::from_f32` it replaces: the corpus stays bit-identical only
@@ -2605,6 +3703,127 @@ mod tests {
         }
     }
 
+    #[test]
+    fn band_claims_partition_output_across_workers() {
+        use super::{AtomicUsize, BandQueue, NonZeroUsize, Ordering};
+        use rayon::prelude::*;
+
+        let chunk_len = NonZeroUsize::new(7).unwrap();
+        for workers in [1, 2, 8] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .unwrap();
+            for len in [0usize, 1, 6, 7, 8, 127, 4097] {
+                let mut output = vec![usize::MAX; len];
+                let claims: Vec<_> = (0..len.div_ceil(chunk_len.get()))
+                    .map(|_| AtomicUsize::new(0))
+                    .collect();
+                {
+                    let queue = BandQueue::new(&mut output, chunk_len);
+                    pool.install(|| {
+                        (0..workers).into_par_iter().for_each(|_| {
+                            while let Some((index, band)) = queue.claim() {
+                                assert_eq!(claims[index].fetch_add(1, Ordering::Relaxed), 0);
+                                for (offset, value) in band.iter_mut().enumerate() {
+                                    *value = index * chunk_len.get() + offset;
+                                }
+                            }
+                        });
+                    });
+                    assert!(queue.claim().is_none());
+                    assert_eq!(queue.next.load(Ordering::Relaxed), claims.len());
+                }
+                assert!(
+                    claims
+                        .iter()
+                        .all(|count| count.load(Ordering::Relaxed) == 1)
+                );
+                assert!(
+                    output
+                        .iter()
+                        .enumerate()
+                        .all(|(index, &value)| index == value)
+                );
+            }
+        }
+    }
+
+    use std::sync::Arc;
+
+    use super::{
+        Accum, ClipRef, ClipRun, Edge, composite_solid, composite_span, convert_span,
+        coverage_mask, member, move_space, reduce_rows, src_over,
+    };
+    use crate::render::lower::{ClipMask, IRect};
+    use cherenkov::{BlendSpace, FillRule};
+
+    /// The long edges of water-rs/waterui#2665 against the independent f64
+    /// area of the same polygon: through one accumulator over the whole
+    /// height, as glyph masks rasterize, and through the 16-row bands of
+    /// a coverage mask, in both directions and under both fill rules.
+    #[test]
+    fn tall_edges_agree_with_independent_pixel_area() {
+        let cases = [
+            (
+                [(900.0_f32, 0.0_f32), (512.0, 900.0), (900.0, 900.0)],
+                (598_u16, 699_u16),
+            ),
+            (
+                [
+                    (689.4518, 1.803_737_2),
+                    (532.2187, 337.7357),
+                    (668.394_17, 2.898_188_6),
+                ],
+                (534, 332),
+            ),
+        ];
+        let size = 901;
+        for (vertices, pixel) in cases {
+            let (px, py) = (usize::from(pixel.0), usize::from(pixel.1));
+            for reverse in [false, true] {
+                let mut reference = cherenkov_oracle::coverage::Coverage::new(1, 1);
+                let mut edges = Vec::new();
+                for i in 0..vertices.len() {
+                    let (mut a, mut b) = (vertices[i], vertices[(i + 1) % vertices.len()]);
+                    if reverse {
+                        std::mem::swap(&mut a, &mut b);
+                    }
+                    edges.push(Edge {
+                        x0: a.0,
+                        y0: a.1,
+                        x1: b.0,
+                        y1: b.1,
+                    });
+                    reference.add_line(
+                        f64::from(a.0) - f64::from(pixel.0),
+                        f64::from(a.1) - f64::from(pixel.1),
+                        f64::from(b.0) - f64::from(pixel.0),
+                        f64::from(b.1) - f64::from(pixel.1),
+                    );
+                }
+                let expected = reference.finish(cherenkov_scene::FillRule::NonZero)[0];
+                for rule in [FillRule::NonZero, FillRule::EvenOdd] {
+                    let mut acc = Accum::new(size, size);
+                    for e in &edges {
+                        acc.draw_line(e.x0, e.y0, e.x1, e.y1);
+                    }
+                    let mut row = vec![0.0; size];
+                    acc.coverage_into(py, rule, 0, size, &mut row);
+                    let whole = row[px];
+                    let banded = coverage_mask(&edges, rule, size, size)[py * size + px];
+                    for (route, actual) in [("whole", whole), ("banded", banded)] {
+                        let actual = f64::from(actual);
+                        assert!(
+                            (actual - expected).abs() < 0.0002,
+                            "{route} {rule:?} reverse={reverse} ({px},{py}): {actual} versus {expected}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Texel `(x, y)` of the source level: every channel varies, alpha
     /// included.
     fn texel(x: u8, y: u8) -> [f32; 4] {
@@ -2648,5 +3867,218 @@ mod tests {
         assert_texel(dst[4], mean(&[(2, 4), (3, 4)]));
         // The corner: the single texel present.
         assert_texel(dst[5], texel(4, 4));
+    }
+
+    /// `composite_span` and `composite_solid` produce the scalar
+    /// per-pixel expression bit for bit — `(src * cov) * cc`, `member`,
+    /// `src + dst * (1 − src.a)`, `cc <= 0` untouched — over run lengths
+    /// 0–67 and start offsets 0–7, both storage spaces, no clip / partial
+    /// rect clip / coverage clip / full rect clip, mixed and all-full
+    /// coverage rows, and opaque, translucent, extended-range,
+    /// transparent and signed-zero sources, under the detected level and
+    /// the fallback token. Only pixels actually eligible for the opaque
+    /// direct-store path (`c.a == 1 && cov == 1 && cc == 1`) allow a
+    /// differing zero sign: the store never reads `dst`, so it cannot
+    /// reproduce `dst * 0`'s zero sign where the scalar expression would
+    /// compute one; every other value is compared by `to_bits`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one matrix over spaces, clips and run shapes"
+    )]
+    #[test]
+    fn span_kernels_match_scalar_expression() {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_precision_loss,
+            clippy::cast_possible_wrap,
+            clippy::float_cmp,
+            reason = "test pattern indices and coverage fractions are small; \
+                      full coverage is the exact value 1.0"
+        )]
+        #[expect(
+            clippy::too_many_lines,
+            reason = "one matrix over spaces, clips and run shapes"
+        )]
+        fn check<S: fearless_simd::Simd>(simd: S) {
+            let colors: &[[f32; 4]] = &[
+                [0.2, 0.5, 0.9, 1.0],   // opaque
+                [0.2, 0.5, 0.9, 0.6],   // translucent
+                [1.4, -0.3, 0.9, 1.2],  // extended range
+                [0.0, 0.0, 0.0, 0.0],   // transparent
+                [-0.0, 0.0, -0.0, 1.0], // signed zero
+            ];
+            for space in [BlendSpace::Linear, BlendSpace::SrgbEncoded] {
+                for clip_kind in 0..4u8 {
+                    for cov_kind in 0..2u8 {
+                        for &color in colors {
+                            for x0 in 0..=7usize {
+                                for len in 0..=67usize {
+                                    let w = x0 + len + 8;
+                                    let py = 1usize;
+                                    let mask: Option<ClipRef> = match clip_kind {
+                                        1 => Some(Arc::new(ClipMask::Rect(IRect {
+                                            x0: (x0 + 2) as i32,
+                                            y0: 0,
+                                            x1: (x0 + 5) as i32,
+                                            y1: 4,
+                                        }))),
+                                        2 => {
+                                            let mut cells = vec![0.0; (py + 1) * w];
+                                            for (i, cell) in cells[py * w + x0..py * w + x0 + len]
+                                                .iter_mut()
+                                                .enumerate()
+                                            {
+                                                *cell = match (i + x0) % 4 {
+                                                    0 => 0.25,
+                                                    1 => 1.0,
+                                                    2 => 0.0,
+                                                    _ => 0.5,
+                                                };
+                                            }
+                                            Some(Arc::new(ClipMask::Cover(cells)))
+                                        }
+                                        // A rect covering the whole run.
+                                        3 => Some(Arc::new(ClipMask::Rect(IRect {
+                                            x0: 0,
+                                            y0: 0,
+                                            x1: (x0 + len) as i32,
+                                            y1: 4,
+                                        }))),
+                                        _ => None,
+                                    };
+                                    let clip = ClipRun::new(mask.as_ref(), w, x0, py);
+                                    let cov: Vec<f32> = if cov_kind == 1 {
+                                        vec![1.0; len]
+                                    } else {
+                                        (0..len)
+                                            .map(|i| match (i + x0) % 7 {
+                                                0 => 0.0,
+                                                1 | 3 | 5 => 1.0,
+                                                2 => 0.35,
+                                                4 => 0.5,
+                                                _ => 0.75,
+                                            })
+                                            .collect()
+                                    };
+                                    let dst0: Vec<[f32; 4]> = (0..len)
+                                        .map(|i| {
+                                            [
+                                                (i % 5) as f32 / 10.0,
+                                                if i == 1 { -0.0 } else { (i % 3) as f32 / 10.0 },
+                                                (i % 7) as f32 / 10.0,
+                                                0.5,
+                                            ]
+                                        })
+                                        .collect();
+                                    let expect = |src: &[[f32; 4]]| -> Vec<[f32; 4]> {
+                                        (0..len)
+                                            .map(|i| {
+                                                let cc = clip.at(i);
+                                                if cc <= 0.0 {
+                                                    return dst0[i];
+                                                }
+                                                src_over(
+                                                    dst0[i],
+                                                    member(src[i].map(|v| v * cov[i] * cc), space),
+                                                )
+                                            })
+                                            .collect()
+                                    };
+                                    let tag = format!(
+                                        "space {space:?} clip {clip_kind} cov {cov_kind} \
+                                         c {color:?} x0 {x0} len {len}"
+                                    );
+                                    let mut dst = dst0.clone();
+                                    composite_solid(simd, &mut dst, &cov, clip, color, space);
+                                    let expected = expect(&vec![color; len]);
+                                    for (i, (actual, want)) in dst.iter().zip(&expected).enumerate()
+                                    {
+                                        // Only store-eligible pixels
+                                        // accept a differing zero sign.
+                                        let direct =
+                                            color[3] == 1.0 && cov[i] == 1.0 && clip.at(i) == 1.0;
+                                        for ch in 0..4 {
+                                            assert!(
+                                                actual[ch].to_bits() == want[ch].to_bits()
+                                                    || (direct
+                                                        && actual[ch] == 0.0
+                                                        && want[ch] == 0.0),
+                                                "solid {tag} px {i} ch {ch}: \
+                                                 {actual:?} vs {want:?}"
+                                            );
+                                        }
+                                    }
+                                    let src: Vec<[f32; 4]> = (0..len)
+                                        .map(|i| {
+                                            color.map(|v| {
+                                                v * (0.25 + 0.75 * ((i * 5 + x0) % 9) as f32 / 8.0)
+                                            })
+                                        })
+                                        .collect();
+                                    let mut dst = dst0.clone();
+                                    composite_span(simd, &mut dst, &src, &cov, clip, space);
+                                    let expected = expect(&src);
+                                    for (i, (actual, want)) in dst.iter().zip(&expected).enumerate()
+                                    {
+                                        assert_eq!(
+                                            actual.map(f32::to_bits),
+                                            want.map(f32::to_bits),
+                                            "span {tag} px {i}"
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        fearless_simd::dispatch!(crate::Level::new(), simd => check(simd));
+        check(fearless_simd::Fallback::new());
+    }
+
+    /// `convert_span` is `move_space` per pixel, bit for bit, in both
+    /// directions and as the identity, over run lengths 0–67 and every
+    /// start offset, on finite, negative, HDR, transparent and
+    /// signed-zero values, under the detected level and the fallback
+    /// token.
+    #[test]
+    fn convert_span_matches_move_space_bit_for_bit() {
+        fn check<S: fearless_simd::Simd>(simd: S) {
+            let seeds: &[[f32; 4]] = &[
+                [0.2, 0.4, 0.6, 0.8],
+                [1.4, -0.3, 0.9, 1.2],
+                [0.0, 0.0, 0.0, 0.0],
+                [-0.0, 0.0, -0.0, 1.0],
+                [0.05, 0.15, 0.25, 0.35],
+            ];
+            let spaces = [
+                (BlendSpace::Linear, BlendSpace::SrgbEncoded),
+                (BlendSpace::SrgbEncoded, BlendSpace::Linear),
+                (BlendSpace::Linear, BlendSpace::Linear),
+                (BlendSpace::SrgbEncoded, BlendSpace::SrgbEncoded),
+            ];
+            for (from, to) in spaces {
+                for x0 in 0..=7usize {
+                    for len in 0..=67usize {
+                        let pixels: Vec<[f32; 4]> =
+                            (0..len).map(|i| seeds[(i + x0) % seeds.len()]).collect();
+                        let expected: Vec<[f32; 4]> =
+                            pixels.iter().map(|&p| move_space(p, from, to)).collect();
+                        let mut out = pixels;
+                        convert_span(simd, &mut out, from, to);
+                        for (i, (actual, want)) in out.iter().zip(&expected).enumerate() {
+                            assert_eq!(
+                                actual.map(f32::to_bits),
+                                want.map(f32::to_bits),
+                                "from {from:?} to {to:?} x0 {x0} len {len} px {i}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        fearless_simd::dispatch!(crate::Level::new(), simd => check(simd));
+        check(fearless_simd::Fallback::new());
     }
 }

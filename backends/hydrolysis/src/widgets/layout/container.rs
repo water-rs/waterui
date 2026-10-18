@@ -31,7 +31,7 @@ impl HydroNativeView for Native<FixedContainer> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         let (layout, children) = view.as_inner().as_parts();
         estimate_layout_intrinsic(layout, children.iter(), state, env, theme)
@@ -41,7 +41,7 @@ impl HydroNativeView for Native<FixedContainer> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> waterui_core::layout::ViewDimensions {
         let (layout, children) = view.as_inner().as_parts();
@@ -66,7 +66,7 @@ fn lazy_stack_sample_size(
     state: &mut HydroState,
     view: &Native<LazyContainer>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     main: Option<f32>,
     cross: Option<f32>,
 ) -> LayoutSize {
@@ -148,7 +148,7 @@ impl HydroNativeView for Native<LazyContainer> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         lazy_stack_sample_size(state, view, env, theme, None, None)
     }
@@ -157,7 +157,7 @@ impl HydroNativeView for Native<LazyContainer> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> waterui_core::layout::ViewDimensions {
         let (layout, children) = view.as_inner().as_parts();

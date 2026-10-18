@@ -288,10 +288,18 @@ impl SemanticCore {
             .hit_test
             .pending_context_menu_hold
             .map(|hold| hold.started_at + CONTEXT_MENU_HOLD_DURATION);
-        [gesture_deadline, caret_deadline, hold_deadline]
-            .into_iter()
-            .flatten()
-            .min()
+        // A released press on an engine-realized chrome wakes the runner
+        // when its minimum press duration ends, not every frame until then.
+        let release_deadline = self.next_live_release_deadline();
+        [
+            gesture_deadline,
+            caret_deadline,
+            hold_deadline,
+            release_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub fn sync_active_interactions_after_layout(&mut self, pointer: Option<(f32, f32)>) {

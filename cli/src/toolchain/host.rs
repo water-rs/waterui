@@ -195,6 +195,33 @@ impl Host {
         self.std_output
     }
 
+    /// A host whose builds stay off the network.
+    ///
+    /// `offline` binds `CARGO_NET_OFFLINE` — the switch Cargo reads for its
+    /// own `--offline` — so the policy reaches the CLI's own downloads and
+    /// every Cargo invocation the host spawns alike.
+    #[must_use]
+    pub fn with_offline(&self, offline: bool) -> Self {
+        if offline {
+            self.with_env("CARGO_NET_OFFLINE", "true")
+        } else {
+            self.clone()
+        }
+    }
+
+    /// Whether this host is asked to keep builds off the network.
+    ///
+    /// `CARGO_NET_OFFLINE` carries it — set in the environment or bound by a
+    /// command's `--offline` flag through [`Host::with_offline`] — spelled
+    /// the way the environment spells booleans (`1`, `true`, `yes`, `on`).
+    #[must_use]
+    pub fn offline(&self) -> bool {
+        self.env("CARGO_NET_OFFLINE").is_some_and(|value| {
+            let value = value.to_string_lossy().trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+    }
+
     /// An environment variable on this host.
     ///
     /// Lookup is case-sensitive on Unix and case-insensitive on Windows,

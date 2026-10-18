@@ -16,7 +16,7 @@ use crate::renderer::{FontFamilyResolution, HydrolysisRenderer};
 /// retained tree between passes, then renders it once.
 pub struct HydrolysisViewRenderer {
     surface: Rc<RefCell<Option<OffscreenSurface>>>,
-    theme: Rc<dyn crate::engine::WidgetTheme>,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
     configure_environment: Rc<dyn Fn(&mut Environment)>,
 }
 
@@ -30,7 +30,7 @@ impl core::fmt::Debug for HydrolysisViewRenderer {
 impl HydrolysisViewRenderer {
     #[must_use]
     /// Creates a renderer drawing with `theme`.
-    pub fn new(theme: Rc<dyn crate::engine::WidgetTheme>) -> Self {
+    pub fn new(theme: Rc<dyn crate::theme::WidgetTheme>) -> Self {
         Self {
             surface: Rc::new(RefCell::new(None)),
             theme,
@@ -41,7 +41,7 @@ impl HydrolysisViewRenderer {
     #[must_use]
     /// Creates a renderer whose environment is first configured by `configure_environment`.
     pub fn with_environment(
-        theme: Rc<dyn crate::engine::WidgetTheme>,
+        theme: Rc<dyn crate::theme::WidgetTheme>,
         configure_environment: impl Fn(&mut Environment) + 'static,
     ) -> Self {
         Self {
@@ -78,6 +78,17 @@ impl CustomViewRenderer for HydrolysisViewRenderer {
         let height = request.size.height.max(1.0).round() as u32;
 
         if surface.borrow().is_none() {
+            // Test builds of this renderer — the crate's own `cfg(test)`
+            // targets and `testing`-feature hosts — open their surface
+            // through the test adapter selection so a CI runner whose only
+            // device is a software rasterizer (Windows WARP, llvmpipe) still
+            // answers (#2732). The production build keeps the production
+            // selection.
+            #[cfg(any(test, feature = "testing"))]
+            let offscreen =
+                OffscreenSurface::new_for_tests(width, height, wgpu::TextureFormat::Rgba8Unorm)
+                    .await;
+            #[cfg(not(any(test, feature = "testing")))]
             let offscreen =
                 OffscreenSurface::new(width, height, wgpu::TextureFormat::Rgba8Unorm).await;
             *surface.borrow_mut() = Some(offscreen);

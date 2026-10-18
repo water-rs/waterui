@@ -42,7 +42,6 @@ approx = "0.5"
 async-io = "2.6"
 bitflags.workspace = true
 hydrolysis-m3.workspace = true
-waterui-backend-core = { workspace = true, features = ["widgets"] }
 waterui-canvas.workspace = true
 
 [lints]

@@ -67,7 +67,8 @@ use super::Eligible;
 use crate::render::shaders::spirv;
 
 use crate::render::bindings::{
-    ENGINE_GROUP0, ENGINE_GROUP1, TILE_INPUT_BINDINGS, TILE_INPUT_GROUP, vulkan_slot,
+    ENGINE_GROUP0, ENGINE_GROUP1, IMAGE_DECODE_BINDING, TILE_INPUT_BINDINGS, TILE_INPUT_GROUP,
+    vulkan_slot,
 };
 
 /// Attachment slots this executor binds at once, slot zero — the
@@ -215,8 +216,8 @@ struct FrameSets {
 /// resources.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum SetKey {
-    /// Group 0: globals, instances, stops, atlas.
-    Engine(u64, u64, u64, u64),
+    /// Group 0: globals, instances, stops, atlas, image transfer table.
+    Engine(u64, u64, u64, u64, u64),
     /// Group 1: source, backdrop, image, mask views. The tile path
     /// never binds source or backdrop — they read as attachments — so
     /// only the last two vary, but the key carries all four to stay
@@ -266,10 +267,12 @@ pub struct Mirror {
     /// The eligibility the mirror was built on, which carries the
     /// device's lazily allocated memory types.
     eligible: Eligible,
-    /// The tile modules, `[long][self]`: `engine_tile{,_long}.spv` for a
-    /// draw sourcing another slot, `engine_tile{,_long}_self.spv` for a
-    /// draw sourcing its own slot.
-    modules: [[vk::ShaderModule; 2]; 2],
+    /// The tile modules, `[family][self]` with families short, long
+    /// gradient and image source (see [`family`]):
+    /// `engine_tile{,_long,_image}.spv` for a draw sourcing another slot,
+    /// `engine_tile{,_long,_image}_self.spv` for a draw sourcing its own
+    /// slot.
+    modules: [[vk::ShaderModule; 2]; 3],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -687,7 +690,7 @@ impl Mirror {
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::STORAGE_BUFFER,
-                descriptor_count: 2 * SETS_PER_POOL,
+                descriptor_count: 3 * SETS_PER_POOL,
             },
             vk::DescriptorPoolSize {
                 ty: vk::DescriptorType::SAMPLED_IMAGE,
@@ -756,9 +759,16 @@ impl Mirror {
         instances: vk::Buffer,
         stops: vk::Buffer,
         atlas: vk::ImageView,
+        image_decode: vk::Buffer,
     ) -> Result<vk::DescriptorSet, MirrorError> {
         self.check(stamp);
-        let key = SetKey::Engine(raw(globals), raw(instances), raw(stops), raw_view(atlas));
+        let key = SetKey::Engine(
+            raw(globals),
+            raw(instances),
+            raw(stops),
+            raw_view(atlas),
+            raw(image_decode),
+        );
         if let Some(set) = self.lookup(key) {
             return Ok(set);
         }
@@ -776,6 +786,11 @@ impl Mirror {
             },
             vk::DescriptorBufferInfo {
                 buffer: stops,
+                offset: 0,
+                range: vk::WHOLE_SIZE,
+            },
+            vk::DescriptorBufferInfo {
+                buffer: image_decode,
                 offset: 0,
                 range: vk::WHOLE_SIZE,
             },
@@ -811,6 +826,11 @@ impl Mirror {
                         .dst_binding(3)
                         .descriptor_type(vk::DescriptorType::SAMPLED_IMAGE)
                         .image_info(&image),
+                    vk::WriteDescriptorSet::default()
+                        .dst_set(set)
+                        .dst_binding(IMAGE_DECODE_BINDING)
+                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                        .buffer_info(std::slice::from_ref(&buffers[3])),
                 ],
                 &[],
             );
@@ -968,12 +988,11 @@ impl Mirror {
     /// source-over (or replaces) and writes all channels, and every
     /// other slot writes none.
     fn create_pipeline(&self, key: PipeKey) -> Result<vk::Pipeline, MirrorError> {
-        let module =
-            self.modules[usize::from(key.variant == 4)][usize::from(key.source == key.target)];
+        let module = self.modules[family(key.variant)][usize::from(key.source == key.target)];
         let fragment_entry = match key.variant {
             0 => c"tile_simple",
             1 => c"tile_shadow",
-            2 | 4 => c"tile_full",
+            2 | 4 | 5 => c"tile_full",
             3 => c"tile_clear",
             _ => unreachable!("closed tile shader set"),
         };
@@ -1237,6 +1256,17 @@ fn raw(buffer: vk::Buffer) -> u64 {
     ash::vk::Handle::as_raw(buffer)
 }
 
+/// The tile module family a pipeline key's engine variant draws through:
+/// 0 for the short module (variants 0–3), 1 for long gradients (4), 2 for
+/// image sources (6).
+const fn family(variant: u8) -> usize {
+    match variant {
+        4 => 1,
+        6 => 2,
+        _ => 0,
+    }
+}
+
 /// A view handle as the integer the set key stores.
 fn raw_view(view: vk::ImageView) -> u64 {
     ash::vk::Handle::as_raw(view)
@@ -1246,8 +1276,8 @@ fn raw_view(view: vk::ImageView) -> u64 {
 /// failure part way through can destroy exactly what was made.
 #[derive(Default)]
 struct Built {
-    /// `[long][self]` — see [`Mirror::modules`].
-    modules: [[vk::ShaderModule; 2]; 2],
+    /// `[family][self]` — see [`Mirror::modules`].
+    modules: [[vk::ShaderModule; 2]; 3],
     set_layouts: [vk::DescriptorSetLayout; 3],
     layout: vk::PipelineLayout,
     cache: vk::PipelineCache,
@@ -1271,6 +1301,8 @@ impl Built {
             spirv::TILE_SELF,
             spirv::TILE_LONG,
             spirv::TILE_LONG_SELF,
+            spirv::TILE_IMAGE,
+            spirv::TILE_IMAGE_SELF,
         ];
         for (slot, bytes) in self.modules.iter_mut().flatten().zip(blobs) {
             *slot = create_module(bytes)?;
@@ -1287,7 +1319,11 @@ impl Built {
         };
         // Group 0 mirrors `ENGINE_GROUP0`: the globals uniform window
         // the dynamic offset selects a pass's slot in, the instance and
-        // stop storage buffers, and the glyph atlas.
+        // stop storage buffers, the glyph atlas and the image transfer
+        // table. The GPU coverage cell buffer is left out: the tile
+        // families are built without the `// cell-buffer` spans, and a
+        // GPU-routed range ends the tile epoch at its materialization
+        // boundary.
         let group0 = [
             vk::DescriptorSetLayoutBinding::default()
                 .binding(0)
@@ -1305,6 +1341,11 @@ impl Built {
                 .descriptor_count(1)
                 .stage_flags(fragment),
             sampled(3),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(IMAGE_DECODE_BINDING)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(fragment),
         ];
         // Group 1 mirrors `ENGINE_GROUP1`: source, backdrop, image and
         // mask. A tile draw binds the dummy for the first two.
@@ -1327,11 +1368,11 @@ impl Built {
         // and in order, so the layouts above can name the bindings
         // directly — but only while that holds, and a table edited out
         // of order must not silently misbind the mirror.
-        for (group, count) in [(ENGINE_GROUP0, group0.len()), (ENGINE_GROUP1, group1.len())] {
-            for ordinal in 0..u32::try_from(count).expect("four bindings") {
+        for (group, layout) in [(ENGINE_GROUP0, &group0[..]), (ENGINE_GROUP1, &group1[..])] {
+            for binding in layout {
                 assert_eq!(
-                    vulkan_slot(group, ordinal),
-                    ordinal,
+                    vulkan_slot(group, binding.binding),
+                    binding.binding,
                     "the engine binding tables are no longer in ordinal order"
                 );
             }

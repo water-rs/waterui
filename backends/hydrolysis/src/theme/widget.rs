@@ -1,5 +1,7 @@
-//! Widget chrome contracts shared by rendering backends and theme packages.
+//! The widget chrome half of the theme contract: [`WidgetTheme`] and the
+//! token tables, state snapshots and presentation plugins it names.
 
+use cherenkov_record::{MaterialRegistry, Paint, Recorder};
 use core::time::Duration;
 use kurbo::{BezPath, Point, Rect, RoundedRectRadii};
 use nami::signal::IntoComputed;
@@ -14,7 +16,6 @@ use waterui_core::{Binding, Computed, Signal};
 use waterui_form::picker::PickerStyle;
 use waterui_graphics::WorkingColor;
 use waterui_graphics::color::Color;
-use waterui_graphics::draw::{MaterialRegistry, Paint, Recorder};
 use waterui_text::font::Font;
 
 /// Button layout metrics.
@@ -43,6 +44,37 @@ impl ButtonMetrics {
             padding_y,
             min_width,
             min_height,
+        }
+    }
+}
+
+/// What Hydrolysis asks a theme's button hooks for: the button's style, its
+/// control size and whether its label resolved to an icon-only
+/// presentation.
+///
+/// Parameters travel by name, so a new one does not break a theme that
+/// reads the others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ButtonSpec {
+    /// The button's style.
+    pub style: ButtonStyle,
+    /// The button's control size.
+    pub size: ControlSize,
+    /// Whether the label resolved to `IconOnly`: the bounds are the theme's
+    /// touch target, and the chrome is the icon-button container centred
+    /// inside them.
+    pub icon_only: bool,
+}
+
+impl ButtonSpec {
+    /// The spec of a `style` button of `size`.
+    #[must_use]
+    pub const fn new(style: ButtonStyle, size: ControlSize, icon_only: bool) -> Self {
+        Self {
+            style,
+            size,
+            icon_only,
         }
     }
 }
@@ -1263,7 +1295,16 @@ pub struct TableMetrics {
     pub outline_width: f64,
 }
 
-/// Theme contract for backend-rendered widgets.
+/// The widget chrome a style package supplies to Hydrolysis.
+///
+/// Hydrolysis lays out every widget it renders from the theme's metrics,
+/// animates it with the theme's motion policies, and records its chrome by
+/// calling the theme's `draw_*` methods with the widget's bounds and the
+/// renderer-resolved [`WidgetInteractionState`]. Every draw method records
+/// into a `cherenkov-record` [`Recorder`], the render-target-neutral
+/// vocabulary every Hydrolysis render target consumes, so a theme never
+/// names a render engine. A theme becomes a runnable style by also
+/// implementing [`Style`](crate::Style).
 pub trait WidgetTheme {
     /// Return motion policy for interactive widget chrome.
     fn interaction_motion(&self) -> InteractionMotion;
@@ -1281,10 +1322,10 @@ pub trait WidgetTheme {
     /// theme's chrome names when it records a backdrop material with
     /// [`Recorder::backdrop_material`].
     ///
-    /// [`MaterialShader`]: waterui_graphics::draw::MaterialShader
-    /// [`BackdropShaderSource`]: waterui_graphics::draw::BackdropShaderSource
-    /// [`CaptureClass`]: waterui_graphics::draw::CaptureClass
-    /// [`MaterialCapture`]: waterui_graphics::draw::MaterialCapture
+    /// [`MaterialShader`]: cherenkov_record::MaterialShader
+    /// [`BackdropShaderSource`]: cherenkov_record::BackdropShaderSource
+    /// [`CaptureClass`]: cherenkov_record::CaptureClass
+    /// [`MaterialCapture`]: cherenkov_record::MaterialCapture
     ///
     /// The contract a backend that realizes backdrop materials follows: it
     /// calls this once, before it draws any chrome, and keeps the
@@ -1322,6 +1363,19 @@ pub trait WidgetTheme {
     /// views with this alpha.
     fn disabled_content_alpha(&self) -> f32 {
         0.38
+    }
+    /// The button's chrome as engine-provided primitives.
+    ///
+    /// `Some` hands the button's container, interaction tint, press feedback
+    /// and focus indicator to Hydrolysis, which records them once and
+    /// animates hover, press and focus as live operands; the renderer then
+    /// does not call [`Self::draw_button_chrome`] or
+    /// [`Self::draw_button_state_layer`] for the button. `None`, the
+    /// default, keeps those draw hooks. A button inside an
+    /// [`InteractionStyle`] or a floating scope keeps the presentation that
+    /// scope supplies.
+    fn button_chrome(&self, _spec: ButtonSpec) -> Option<super::Chrome> {
+        None
     }
     /// Draw button chrome for a style. `state` carries the disabled flag so
     /// themes can render the inactive container. `icon_only` marks a button

@@ -175,7 +175,7 @@ impl<'a> WidgetRenderContext<'a> {
 
     /// The renderer-owned widget theme, cloned out as an `Rc` so callers can
     /// hold it without borrowing the context across a `&mut` renderer call.
-    pub(crate) fn theme(&self) -> std::rc::Rc<dyn crate::engine::WidgetTheme> {
+    pub(crate) fn theme(&self) -> std::rc::Rc<dyn crate::theme::WidgetTheme> {
         self.renderer.theme()
     }
 
@@ -193,6 +193,16 @@ impl<'a> WidgetRenderContext<'a> {
     ) {
         let ctx = self.render_context();
         self.renderer.draw_context(ctx, body);
+    }
+
+    /// Lists `source` as a live item at this point of the widget's record
+    /// ([`HydrolysisRenderer::push_live`]).
+    pub(crate) fn push_live(
+        &mut self,
+        source: &std::rc::Rc<dyn crate::renderer::chrome::LiveSource>,
+    ) {
+        let ctx = self.render_context();
+        self.renderer.push_live(ctx, source);
     }
 
     pub(crate) fn state_mut(&mut self) -> &mut HydroState {

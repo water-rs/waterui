@@ -134,7 +134,7 @@ impl RenderNode {
         &self,
         state: &mut HydroState,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let (memo_gate, memo_slots) = match self {
@@ -175,7 +175,7 @@ impl RenderNode {
         &self,
         state: &mut HydroState,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         state.counters.measure_calls += 1;

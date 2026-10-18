@@ -464,9 +464,7 @@ impl HydrolysisRenderer {
         });
 
         if matches!(effect.gesture, Gesture::Tap(_))
-            && let Some(style) = env
-                .get::<waterui_backend_core::widget::InteractionStyle>()
-                .cloned()
+            && let Some(style) = env.get::<crate::theme::InteractionStyle>().cloned()
         {
             let interaction_key = InteractionKey::for_rc(&effect.action, 0);
             let (interaction, press_slot, _) = renderer.bind_control_interaction_target(

@@ -331,19 +331,19 @@ are the two places a coverage change shows up first.
 
 ### 4.3 Proposed thresholds for the GPU route
 
-The governing rule is `AGENTS.md`: a change that is not meant to change
-pixels keeps every scene bit-identical, and a change that does must be
-no worse than dev on every scene and better overall. The GPU route is
-not meant to change pixels. The thresholds below are the *acceptance
-gate for the GPU route when it is not bit-identical*, measured the same
-way as section 4.1 (P3, unclipped, HDR-FLIP where the reference exceeds
-SDR white):
+The governing rule is `AGENTS.md`: differences are judged by perceptibility
+against the independent f64 oracle. Imperceptible differences are acceptable;
+perceptible differences must bring the scene closer to the oracle. Bit identity
+is not an acceptance goal. The thresholds below gate the GPU route, measured
+as in section 4.1 (P3, unclipped, HDR-FLIP where the reference exceeds SDR white):
 
 1. **Per-scene primary gate — no regression.** For every scene, the
    GPU route's `flip_mean` must be `<= max(dev_flip_mean * 1.05,
-   dev_flip_mean + 0.0005)`, and the corpus-wide mean of `flip_mean`
-   must not increase. Basis: the measured spread between adjacent
-   scenes of the same family (e.g. `stroke-join-rect-miter-hi` 0.002445
+   dev_flip_mean + 0.0005)`. Corpus-wide means are diagnostic, not a
+   second acceptance gate: a CPU sweep improvement must not reject an
+   unchanged GPU route that passes the per-scene limits and independent
+   polygon oracle (water-rs/waterui#2901). Basis: the measured spread between
+   adjacent scenes of the same family (e.g. `stroke-join-rect-miter-hi` 0.002445
    versus `stroke-join-rect-miter-lo` 0.003032) is larger than 5%, so a
    5% band admits no visible change while the additive floor keeps the
    gate meaningful on the `0.0007`-class scenes.

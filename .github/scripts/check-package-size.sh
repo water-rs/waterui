@@ -177,15 +177,6 @@ failed=0
 for entry in ${subjects[@]+"${subjects[@]}"}; do
     label="${entry%%=*}"
     subject_dir="${entry#*=}"
-    # Builds never touch the network: a declared remote font must already be
-    # in the font cache, so it is fetched once per subject before the
-    # platform packaging passes (#2638). A fetch failure fails the subject
-    # the way a package failure does.
-    if ! "${water_bin}" fetch --path "${subject_dir}"; then
-        echo "::error::water fetch failed for ${label}; see output above"
-        failed=1
-        continue
-    fi
     for platform in ${PLATFORMS:-macos ios-simulator}; do
         measure_platform "${label}" "${platform}" "${subject_dir}" || failed=1
     done

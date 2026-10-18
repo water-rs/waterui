@@ -353,6 +353,16 @@ impl Debug for Running {
 }
 
 impl Running {
+    /// Drop this handle without asking a monitor to kill.
+    ///
+    /// Launch can fail before any app process exists. The handle still owns
+    /// the event channel, and dropping it in that state would report a kill
+    /// that was never delivered.
+    #[cfg(target_os = "macos")]
+    fn abandon(mut self) {
+        self.ended = true;
+    }
+
     /// Create a new `Running` instance and its event and control channels.
     #[must_use]
     pub fn new() -> (Self, Sender<DeviceEvent>, Receiver<StopRequest>) {
@@ -874,6 +884,12 @@ use smol::{
 struct MacosLogStream {
     task: smol::Task<DrainEnd>,
     panic_rx: Receiver<PanicInfo>,
+    /// The app's pid, sent once the process exists. The stream is subscribed
+    /// before then, so the reader holds earlier lines until this arrives and
+    /// then keeps only this pid.
+    pid_tx: Sender<u32>,
+    /// Fires when the attach probe has been delivered on the stream.
+    attached_rx: Receiver<()>,
 }
 
 #[cfg(target_os = "macos")]
@@ -886,8 +902,13 @@ enum DrainEnd {
 
 /// Start streaming logs from a `WaterUI` app on macOS.
 ///
-/// Uses `log stream` with a predicate to filter by the `WaterUI` subsystem (`dev.waterui`).
-/// This captures all tracing output from the Rust code via `tracing_oslog`.
+/// The stream is subscribed before the app exists. Its predicate names the
+/// executable and the `dev.waterui` subsystem, plus the run's `logger`
+/// probe and drain marker. `log stream` only forwards entries written after
+/// it attaches to logd, and it prints its header before that attach, so the
+/// caller writes a probe and waits until this reader observes it before
+/// spawning the app. The reader then keeps lines whose compact-format pid
+/// is the one [`MacosLogStream::pid_tx`] delivers.
 ///
 /// The `log stream` process is returned beside the stream: it is spawned with
 /// `kill_on_drop` and the reader task only holds its stdout, so whoever owns
@@ -900,23 +921,19 @@ fn start_log_stream(
     host: &Host,
     sender: Sender<DeviceEvent>,
     log_level: Option<LogLevel>,
-    pid: u32,
-    end_marker: &str,
+    process_name: &str,
+    run_token: &str,
 ) -> Result<(MacosLogStream, smol::process::Child), FailToRun> {
     // Bounded channel with capacity 1 acts as oneshot - only first panic is captured
     let (panic_tx, panic_rx) = smol::channel::bounded::<PanicInfo>(1);
+    let (pid_tx, pid_rx) = smol::channel::bounded::<u32>(1);
+    let (attached_tx, attached_rx) = smol::channel::bounded::<()>(1);
 
     // Always stream at default level to capture errors/faults, even if user didn't request logs
     let stream_level = log_level.map_or("default", |l| l.to_apple_level());
-
-    // The marker clause admits the run's own end-of-entries marker: the
-    // supervisor writes it through `logger` after the child exits. Treating
-    // its arrival as proof that all earlier app entries were delivered is
-    // the empirical logd ordering assumption documented below.
-    let predicate = format!(
-        "(processID == {pid} AND subsystem == \"dev.waterui\") OR \
-         (process == \"logger\" AND eventMessage CONTAINS \"{end_marker}\")"
-    );
+    let predicate = macos_log_predicate(process_name, run_token);
+    let probe = log_probe(run_token);
+    let end_marker = log_end_marker(run_token);
 
     let mut log_cmd = host.command_in_own_process_group("log");
     log_cmd
@@ -939,24 +956,22 @@ fn start_log_stream(
         .take()
         .expect("stdout is piped for the macOS log stream");
 
-    // The stream only forwards entries written after it attaches to logd, and
-    // a fast first paint can beat the attach. The persisted store is replayed
-    // once shortly after, but that replay does not reliably recover entries
-    // written before the attach (#2080). Duplicates are harmless: the
-    // consumer takes the first matching marker.
-    replay_log_history(
-        host.clone(),
-        predicate,
-        sender.clone(),
-        panic_tx.clone(),
-        log_level,
-    );
-
-    let end_marker = end_marker.to_string();
     let task = spawn(async move {
         let mut lines = BufReader::new(stdout).lines();
-        while let Some(Ok(line)) = lines.next().await {
-            if line.starts_with("Filtering") || line.starts_with("Timestamp") {
+        let mut expected_pid = None;
+        let mut pending = Vec::new();
+        loop {
+            take_app_pid(&pid_rx, &mut expected_pid);
+            if let Some(end) =
+                publish_pending_app_logs(expected_pid, &mut pending, log_level, &sender, &panic_tx)
+            {
+                return end;
+            }
+
+            let Some(Ok(line)) = lines.next().await else {
+                return DrainEnd::StreamClosed;
+            };
+            if line.starts_with("Filtering") || line.starts_with("Timestamp") || line.is_empty() {
                 continue;
             }
 
@@ -965,92 +980,167 @@ fn start_log_stream(
             // the reader is done when it arrives — before the stream is
             // dropped and unconsumed tail lines are lost.
             if line.contains(&end_marker) {
+                take_app_pid(&pid_rx, &mut expected_pid);
+                if let Some(end) = publish_pending_app_logs(
+                    expected_pid,
+                    &mut pending,
+                    log_level,
+                    &sender,
+                    &panic_tx,
+                ) {
+                    return end;
+                }
                 return DrainEnd::Marker;
             }
-
-            if line.contains("panic.payload=")
-                && let Some(info) = extract_panic_info_from_log(&line)
-            {
-                let _ = panic_tx.try_send(info);
-            }
-
-            if log_level.is_some() {
-                let level = if line.contains(" F ") || line.contains(" E ") {
-                    tracing::Level::ERROR
-                } else if line.contains(" W ") {
-                    tracing::Level::WARN
-                } else if line.contains(" D ") {
-                    tracing::Level::DEBUG
-                } else {
-                    tracing::Level::INFO
-                };
-
-                if sender
-                    .try_send(DeviceEvent::Log {
-                        level,
-                        message: line,
-                    })
-                    .is_err()
-                {
-                    return DrainEnd::ConsumerGone;
-                }
-            }
-        }
-        DrainEnd::StreamClosed
-    });
-
-    Ok((MacosLogStream { task, panic_rx }, log_child))
-}
-
-/// Forward `log show` output for the recent window into the same event path as
-/// the live stream, a few seconds after the stream starts. Reads the persisted
-/// store, so it recovers entries emitted before the stream attached to logd.
-#[cfg(target_os = "macos")]
-fn replay_log_history(
-    host: Host,
-    predicate: String,
-    sender: Sender<DeviceEvent>,
-    panic_tx: Sender<PanicInfo>,
-    log_level: Option<LogLevel>,
-) {
-    spawn(async move {
-        Timer::after(Duration::from_secs(4)).await;
-        let Ok(output) = host
-            .command("log")
-            .args(["show", "--last", "2m", "--predicate", &predicate])
-            .args(["--style", "compact"])
-            .output()
-            .await
-        else {
-            return;
-        };
-        for line in String::from_utf8_lossy(&output.stdout).lines() {
-            if line.starts_with("Filtering") || line.starts_with("Timestamp") {
+            if line.contains(&probe) {
+                let _ = attached_tx.try_send(());
                 continue;
             }
-            if line.contains("panic.payload=")
-                && let Some(info) = extract_panic_info_from_log(line)
-            {
-                let _ = panic_tx.try_send(info);
-            }
-            if log_level.is_some() {
-                let level = if line.contains(" F ") || line.contains(" E ") {
-                    tracing::Level::ERROR
-                } else if line.contains(" W ") {
-                    tracing::Level::WARN
-                } else if line.contains(" D ") {
-                    tracing::Level::DEBUG
-                } else {
-                    tracing::Level::INFO
-                };
-                let _ = sender.try_send(DeviceEvent::Log {
-                    level,
-                    message: line.to_string(),
-                });
+            match expected_pid {
+                Some(pid) if compact_process_id(&line) == Some(pid) => {
+                    if let Some(end) = forward_macos_log_line(line, log_level, &sender, &panic_tx) {
+                        return end;
+                    }
+                }
+                Some(_) => {}
+                None => pending.push(line),
             }
         }
-    })
-    .detach();
+    });
+
+    Ok((
+        MacosLogStream {
+            task,
+            panic_rx,
+            pid_tx,
+            attached_rx,
+        },
+        log_child,
+    ))
+}
+
+/// Predicate for a stream that starts before the app's pid exists.
+///
+/// The executable name keeps other `dev.waterui` processes out of the
+/// stream. The run token admits both the attach probe and the drain marker,
+/// which `logger` writes under its own process name.
+#[cfg(target_os = "macos")]
+fn macos_log_predicate(process_name: &str, run_token: &str) -> String {
+    format!(
+        "(process == \"{}\" AND subsystem == \"dev.waterui\") OR \
+         (process == \"logger\" AND eventMessage CONTAINS \"{}\")",
+        predicate_quoted(process_name),
+        predicate_quoted(run_token),
+    )
+}
+
+/// Escape `\` and `"` so `value` can sit inside an `NSPredicate` string literal.
+#[cfg(target_os = "macos")]
+fn predicate_quoted(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if matches!(ch, '\\' | '"') {
+            quoted.push('\\');
+        }
+        quoted.push(ch);
+    }
+    quoted
+}
+
+#[cfg(target_os = "macos")]
+fn log_probe(run_token: &str) -> String {
+    format!("{run_token}-attached")
+}
+
+#[cfg(target_os = "macos")]
+fn log_end_marker(run_token: &str) -> String {
+    format!("{run_token}-drain")
+}
+
+#[cfg(target_os = "macos")]
+fn take_app_pid(pid_rx: &Receiver<u32>, expected: &mut Option<u32>) {
+    while let Ok(pid) = pid_rx.try_recv() {
+        *expected = Some(pid);
+    }
+}
+
+/// Publish buffered lines once the app's pid is known.
+///
+/// Lines that arrived before the pid are held so a same-named process cannot
+/// be forwarded, and so the app's own first lines are not dropped while the
+/// pid message is still in its channel.
+#[cfg(target_os = "macos")]
+fn publish_pending_app_logs(
+    expected_pid: Option<u32>,
+    pending: &mut Vec<String>,
+    log_level: Option<LogLevel>,
+    sender: &Sender<DeviceEvent>,
+    panic_tx: &Sender<PanicInfo>,
+) -> Option<DrainEnd> {
+    let pid = expected_pid?;
+    for line in pending.drain(..) {
+        if compact_process_id(&line) != Some(pid) {
+            continue;
+        }
+        if let Some(end) = forward_macos_log_line(line, log_level, sender, panic_tx) {
+            return Some(end);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn forward_macos_log_line(
+    line: String,
+    log_level: Option<LogLevel>,
+    sender: &Sender<DeviceEvent>,
+    panic_tx: &Sender<PanicInfo>,
+) -> Option<DrainEnd> {
+    if line.contains("panic.payload=")
+        && let Some(info) = extract_panic_info_from_log(&line)
+    {
+        let _ = panic_tx.try_send(info);
+    }
+    if log_level.is_some()
+        && sender
+            .try_send(DeviceEvent::Log {
+                level: compact_log_level(&line),
+                message: line,
+            })
+            .is_err()
+    {
+        return Some(DrainEnd::ConsumerGone);
+    }
+    None
+}
+
+/// Pid from `log`'s compact process field, `name[pid:tid]`.
+#[cfg(target_os = "macos")]
+fn compact_process_id(line: &str) -> Option<u32> {
+    let start = line.find('[')?;
+    let rest = line.get(start + 1..)?;
+    let end = rest.find(']')?;
+    let (pid, tid) = rest.get(..end)?.split_once(':')?;
+    if tid.is_empty() || !tid.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    pid.parse().ok()
+}
+
+/// Parse log level from `log`'s compact format: "timestamp Ty Process..." where
+/// Ty is F (fault), E (error), W (warning), I (info), or D (debug). Fault is
+/// Apple's highest severity - used by the panic handler.
+#[cfg(target_os = "macos")]
+fn compact_log_level(line: &str) -> tracing::Level {
+    if line.contains(" F ") || line.contains(" E ") {
+        tracing::Level::ERROR
+    } else if line.contains(" W ") {
+        tracing::Level::WARN
+    } else if line.contains(" D ") {
+        tracing::Level::DEBUG
+    } else {
+        tracing::Level::INFO
+    }
 }
 
 /// Extract panic information from a log line containing panic.payload and panic.location fields.
@@ -1536,6 +1626,47 @@ async fn run_macos_app_with_grace(
     terminate_pids(host, &existing_pids).await?;
 
     info!("Launching app on macOS: {}", launch.artifact_path.display());
+    let process_name = launch
+        .executable_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            FailToRun::Launch(eyre::eyre!(
+                "Failed to determine executable name for '{}'",
+                launch.executable_path.display()
+            ))
+        })?;
+    // Unique per run. The stream's predicate admits the token, so both the
+    // attach probe and the post-exit drain marker reach the reader. The
+    // token cannot include the pid: the probe is written before the app exists.
+    let run_token = format!(
+        "waterui-log-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |span| span.as_nanos())
+    );
+    let (mut running, sender, control) = Running::new();
+    let (log_stream, log_child) = match start_log_stream(
+        host,
+        sender.clone(),
+        options.log_level(),
+        process_name,
+        &run_token,
+    ) {
+        Ok(started) => started,
+        Err(error) => {
+            running.abandon();
+            return Err(error);
+        }
+    };
+    if let Err(error) =
+        await_macos_log_attach(host, &log_stream.attached_rx, &log_probe(&run_token)).await
+    {
+        release_macos_log_stream(log_child, log_stream).await;
+        running.abandon();
+        return Err(error);
+    }
+
     // The app leads its own process group: a terminal `Ctrl-C` must reach
     // this process alone so the monitor controls its termination.
     let mut command = host.command_in_own_process_group(&launch.executable_path);
@@ -1549,35 +1680,36 @@ async fn run_macos_app_with_grace(
         .current_dir("/")
         .kill_on_drop(true);
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    let child = command.spawn().map_err(|error| {
-        FailToRun::Launch(eyre::eyre!(
-            "Failed to launch '{}': {error}",
-            launch.executable_path.display()
-        ))
-    })?;
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            release_macos_log_stream(log_child, log_stream).await;
+            running.abandon();
+            return Err(FailToRun::Launch(eyre::eyre!(
+                "Failed to launch '{}': {error}",
+                launch.executable_path.display()
+            )));
+        }
+    };
     let app_pid = child.id();
-    let (mut running, sender, control) = Running::new();
-    // Unique per run: `log stream` admits this text through the marker
-    // clause of its predicate, and the exit monitor writes it after the
-    // child exits to end the log reader only once every earlier entry the
-    // app wrote has been delivered.
-    let end_marker = format!(
-        "waterui-log-drain-{app_pid}-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |span| span.as_nanos())
-    );
-    let (log_stream, log_child) = start_log_stream(
-        host,
-        sender.clone(),
-        options.log_level(),
-        app_pid,
-        &end_marker,
-    )?;
+    if log_stream.pid_tx.try_send(app_pid).is_err() {
+        drop(child);
+        release_macos_log_stream(log_child, log_stream).await;
+        running.abandon();
+        return Err(FailToRun::Launch(eyre::eyre!(
+            "macOS log stream ended before the app process id could be applied"
+        )));
+    }
     running.retain(log_child);
     let monitor = ChildMonitor::new(child, sender.clone(), control, grace);
     spawn_macos_app_exit_monitor(
-        host, monitor, log_stream, sender, started_at, app_pid, end_marker,
+        host,
+        monitor,
+        log_stream,
+        sender,
+        started_at,
+        app_pid,
+        log_end_marker(&run_token),
     );
 
     Ok(running)
@@ -2068,18 +2200,19 @@ fn spawn_binary_exit_monitor(monitor: ChildMonitor, sender: Sender<DeviceEvent>)
     .detach();
 }
 
-/// Write the run's end-of-entries marker into the unified log.
+/// Write `message` into the unified log through `logger`.
 ///
-/// `log stream`'s predicate admits this text through its marker clause.
-/// Relying on its arrival as the end-of-entries signal assumes logd delivers
-/// entries to a stream subscriber in receipt order across processes. This is
-/// empirical — observed, not documented by Apple — and the drain deadline
-/// bounds the cost if the assumption is ever wrong.
+/// The macOS stream predicate admits the run token whether the text is the
+/// attach probe or the end-of-entries marker. Relying on the marker's arrival
+/// as the end-of-entries signal assumes logd delivers entries to a stream
+/// subscriber in receipt order across processes. This is empirical — observed,
+/// not documented by Apple — and the drain deadline bounds the cost if the
+/// assumption is ever wrong.
 #[cfg(target_os = "macos")]
-async fn write_log_end_marker(host: &Host, marker: &str) -> Result<(), String> {
+async fn write_logger_message(host: &Host, message: &str) -> Result<(), String> {
     let output = host
         .command_in_own_process_group("logger")
-        .arg(marker)
+        .arg(message)
         .kill_on_drop(true)
         .output()
         .await
@@ -2099,13 +2232,79 @@ async fn write_log_end_marker(host: &Host, marker: &str) -> Result<(), String> {
 #[cfg(target_os = "macos")]
 const LOG_DRAIN_DEADLINE: Duration = Duration::from_secs(3);
 
+/// Maximum time to wait until a probe written after `log stream` starts
+/// comes back on that stream.
+///
+/// The header is not the attach signal: `log stream` prints it before logd
+/// delivers new entries to the subscriber, and a probe written in that gap
+/// never arrives. The wait rewrites the probe until one is observed.
+#[cfg(target_os = "macos")]
+const LOG_ATTACH_DEADLINE: Duration = Duration::from_secs(5);
+
+/// How long to wait for the previous probe before writing another.
+///
+/// A probe submitted before the subscriber is attached cannot be observed
+/// later, so the next one has to be a new log entry. This is the gap between
+/// those entries, not a sleep that stands in for the attach signal.
+#[cfg(target_os = "macos")]
+const LOG_ATTACH_PROBE_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Stop a log stream that will not be retained by a [`Running`].
+#[cfg(target_os = "macos")]
+async fn release_macos_log_stream(log_child: smol::process::Child, log_stream: MacosLogStream) {
+    drop(log_child);
+    log_stream.task.cancel().await;
+}
+
+/// Write the attach probe until the reader observes it, or the deadline passes.
+///
+/// The app is spawned only after this returns. Entries the app writes then
+/// are after the attach, so the stream delivers them without a later replay.
+#[cfg(target_os = "macos")]
+async fn await_macos_log_attach(
+    host: &Host,
+    attached: &Receiver<()>,
+    probe: &str,
+) -> Result<(), FailToRun> {
+    use futures_util::future::{Either, select};
+
+    let proved = async {
+        loop {
+            write_logger_message(host, probe).await.map_err(|error| {
+                FailToRun::Launch(eyre::eyre!(
+                    "Failed to write the macOS log attach probe: {error}"
+                ))
+            })?;
+            let seen = std::pin::pin!(attached.recv());
+            let retry = std::pin::pin!(Timer::after(LOG_ATTACH_PROBE_INTERVAL));
+            match select(seen, retry).await {
+                Either::Left((Ok(()), _)) => return Ok(()),
+                Either::Left((Err(_), _)) => {
+                    return Err(FailToRun::Launch(eyre::eyre!(
+                        "macOS log stream ended before it delivered the attach probe"
+                    )));
+                }
+                Either::Right((_, _)) => {}
+            }
+        }
+    };
+    within(LOG_ATTACH_DEADLINE, proved)
+        .await
+        .ok_or_else(|| {
+            FailToRun::Launch(eyre::eyre!(
+                "macOS log stream did not deliver the attach probe within {LOG_ATTACH_DEADLINE:?}"
+            ))
+        })
+        .flatten()
+}
+
 /// Let the log reader finish on the marker written after the child's
 /// exit rather than dropping it mid-delivery.
 ///
 /// The child exiting does not mean `log stream` already delivered the
 /// app's last entries — a shutdown hook's output can still be in flight.
 /// Awaiting the task lets it consume through the marker; this relies on the
-/// empirical logd ordering assumption documented by [`write_log_end_marker`].
+/// empirical logd ordering assumption documented by [`write_logger_message`].
 /// It also ends when `log stream` itself dies (the reader's stdout hits EOF).
 /// Writing the marker and reading up to it share one [`LOG_DRAIN_DEADLINE`].
 #[cfg(target_os = "macos")]
@@ -2120,9 +2319,11 @@ async fn drain_log_stream(
         MarkerFailed(String),
     }
 
-    let MacosLogStream { mut task, panic_rx } = log_stream;
+    let MacosLogStream {
+        mut task, panic_rx, ..
+    } = log_stream;
     let drain = within(LOG_DRAIN_DEADLINE, async {
-        if let Err(error) = write_log_end_marker(host, marker).await {
+        if let Err(error) = write_logger_message(host, marker).await {
             return Drain::MarkerFailed(error);
         }
         Drain::Ended((&mut task).await)
@@ -3093,8 +3294,14 @@ mod tests {
         use std::time::Duration;
 
         let machine = crate::toolchain::testing::TestMachine::new();
-        machine.install("log");
-        machine.install("logger");
+        // The attach probe round-trips through the real `log` and `logger`.
+        // A fake that exits immediately never delivers it, so launch fails.
+        let current = crate::toolchain::Host::current();
+        for tool in ["log", "logger"] {
+            let real = smol::block_on(current.which(tool)).expect("macOS provides the tool");
+            std::os::unix::fs::symlink(real, machine.bin().join(tool))
+                .expect("link the real tool into the fixture PATH");
+        }
         machine.install("ps");
         let host = machine.host(Vec::<(String, String)>::new());
         let fixture = signal_counting_app(&machine, false);
@@ -3256,7 +3463,88 @@ mod tests {
     const SIGINT_TEST_NAME: &str =
         "workflows::device::tests::sigint_to_water_process_group_drains_on_terminate_logs";
     #[cfg(target_os = "macos")]
+    const SIGINT_TEST_NAME_C: &std::ffi::CStr =
+        c"workflows::device::tests::sigint_to_water_process_group_drains_on_terminate_logs";
+    #[cfg(target_os = "macos")]
+    const SIGINT_ROLE_ENV_C: &std::ffi::CStr = c"WATERUI_1934_FIXTURE_ROLE";
+    #[cfg(target_os = "macos")]
+    const SIGINT_EXECED_ENV_C: &std::ffi::CStr = c"WATERUI_1934_FIXTURE_EXECED";
+    #[cfg(target_os = "macos")]
+    const SIGINT_APP_SUFFIX: &[u8] = b"/fixture-app";
+    #[cfg(target_os = "macos")]
+    const _: () = {
+        assert!(SIGINT_TEST_NAME.len() == SIGINT_TEST_NAME_C.to_bytes().len());
+        assert!(SIGINT_ROLE_ENV.len() == SIGINT_ROLE_ENV_C.to_bytes().len());
+        let mut index = 0;
+        while index < SIGINT_TEST_NAME.len() {
+            assert!(SIGINT_TEST_NAME.as_bytes()[index] == SIGINT_TEST_NAME_C.to_bytes()[index]);
+            index += 1;
+        }
+        let mut index = 0;
+        while index < SIGINT_ROLE_ENV.len() {
+            assert!(SIGINT_ROLE_ENV.as_bytes()[index] == SIGINT_ROLE_ENV_C.to_bytes()[index]);
+            index += 1;
+        }
+    };
+    #[cfg(target_os = "macos")]
     const SIGINT_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" {
+        /// Executable path lookup. `libc`'s wrapper is deprecated in favor of
+        /// another crate; this test calls the system function directly.
+        fn _NSGetExecutablePath(buf: *mut i8, bufsize: *mut u32) -> i32;
+    }
+
+    /// Re-exec a copied `fixture-app` into this test's app role.
+    ///
+    /// `run_macos_app` spawns the bundle executable with no arguments. The
+    /// copy is this test binary, so without a filter libtest would run every
+    /// test. The initializer runs before `main` and replaces the process,
+    /// keeping the pid and the on-disk name `fixture-app` that the log
+    /// predicate matches. It does not run for the cargo test binary: that
+    /// image's path does not end in `/fixture-app`.
+    #[cfg(target_os = "macos")]
+    unsafe extern "C" fn sigint_fixture_enter_app_role() {
+        // SAFETY: the libc calls are used with NUL-terminated literals and
+        // the buffer `_NSGetExecutablePath` fills. This runs before the Rust
+        // runtime, so it does not touch Rust allocators or `std::env`.
+        unsafe {
+            let role = libc::getenv(SIGINT_ROLE_ENV_C.as_ptr());
+            if role.is_null() || libc::strcmp(role, c"app".as_ptr()) != 0 {
+                return;
+            }
+            if !libc::getenv(SIGINT_EXECED_ENV_C.as_ptr()).is_null() {
+                return;
+            }
+            let mut buf = [0i8; 4096];
+            let mut size: u32 = 4096;
+            if _NSGetExecutablePath(buf.as_mut_ptr(), &raw mut size) != 0 {
+                return;
+            }
+            let path = std::ffi::CStr::from_ptr(buf.as_ptr());
+            if !path.to_bytes().ends_with(SIGINT_APP_SUFFIX) {
+                return;
+            }
+            if libc::setenv(SIGINT_EXECED_ENV_C.as_ptr(), c"1".as_ptr(), 1) != 0 {
+                libc::_exit(127);
+            }
+            let argv = [
+                buf.as_ptr(),
+                SIGINT_TEST_NAME_C.as_ptr(),
+                c"--exact".as_ptr(),
+                c"--nocapture".as_ptr(),
+                std::ptr::null(),
+            ];
+            libc::execv(buf.as_ptr(), argv.as_ptr());
+            libc::_exit(127);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[used]
+    #[unsafe(link_section = "__DATA,__mod_init_func")]
+    static SIGINT_FIXTURE_APP_ROLE: unsafe extern "C" fn() = sigint_fixture_enter_app_role;
 
     #[cfg(target_os = "macos")]
     fn run_sigint_fixture_role(current: &crate::toolchain::Host) -> bool {
@@ -3297,8 +3585,10 @@ mod tests {
         .expect("install the app's SIGTERM handler");
         let mut events = open_sigint_events(current);
         send_sigint_event(&mut events, &format!("pid={}", std::process::id()));
-        send_sigint_event(&mut events, "trap-armed");
+        // Submitted before the trap is announced, so an interrupt that
+        // follows `trap-armed` immediately still has this entry in the log.
         tracing::info!("fixture-app-ready");
+        send_sigint_event(&mut events, "trap-armed");
         let signal = std::pin::pin!(signal_rx.recv());
         let deadline = std::pin::pin!(smol::Timer::after(SIGINT_TEST_DEADLINE));
         smol::block_on(async {
@@ -3380,8 +3670,6 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     fn prepare_sigint_log_fixture(current: &crate::toolchain::Host) -> SigintLogFixture {
-        use std::os::unix::fs::PermissionsExt as _;
-
         let machine = crate::toolchain::testing::TestMachine::new();
         // The supervisor runs the real macOS tools its app monitor needs,
         // resolved on this machine and linked into the declared PATH.
@@ -3404,17 +3692,19 @@ mod tests {
                 "</dict></plist>",
             ),
         );
-        let app = machine.file(
-            "Fixture.app/Contents/MacOS/fixture-app",
-            &format!(
-                "#!/bin/sh\nexec \"{}\" {SIGINT_TEST_NAME} --exact --nocapture\n",
-                crate::toolchain::Host::current_exe()
-                    .expect("test executable path")
-                    .display()
-            ),
-        );
-        std::fs::set_permissions(&app, std::fs::Permissions::from_mode(0o755))
-            .expect("make fixture app executable");
+        // The bundle executable is a copy of this test binary, named
+        // `fixture-app`, so the unified-log process name matches the
+        // stream predicate. The copy's initializer re-execs into the app role.
+        let app = machine
+            .root()
+            .join("Fixture.app/Contents/MacOS/fixture-app");
+        std::fs::create_dir_all(app.parent().expect("bundle executable directory"))
+            .expect("create the bundle executable directory");
+        std::fs::copy(
+            crate::toolchain::Host::current_exe().expect("test executable path"),
+            &app,
+        )
+        .expect("copy the test executable into the bundle");
         let host = machine.host([
             (SIGINT_ROLE_ENV, "water"),
             (
@@ -3497,12 +3787,12 @@ mod tests {
         let readiness_deadline = Instant::now() + SIGINT_TEST_DEADLINE;
         let mut armed = false;
         let mut app_pid_seen = false;
-        let mut app_ready = false;
-        // Wait until `log stream` is attached, shown by the app's readiness
-        // entry arriving: an entry written before the attach can be lost,
-        // since the delayed `log show` replay does not reliably recover it
-        // (#2080).
-        while !(armed && app_pid_seen && app_ready) {
+        let mut saw_ready_before_stopped = false;
+        // Interrupt as soon as the trap is armed. The startup line was
+        // submitted before that announcement, and the stream was attached
+        // before the process existed, so neither waiting for the line nor a
+        // later `log show` replay is what makes it arrive.
+        while !(armed && app_pid_seen) {
             let Some(line) = line_rx
                 .recv_timeout(readiness_deadline.saturating_duration_since(Instant::now()))
                 .expect("fixture readiness is bounded")
@@ -3520,7 +3810,7 @@ mod tests {
                 armed = true;
             }
             if line.starts_with("log:") && line.contains("fixture-app-ready") {
-                app_ready = true;
+                saw_ready_before_stopped = true;
             }
         }
         assert!(
@@ -3530,10 +3820,6 @@ mod tests {
         assert!(
             armed,
             "the fixture must arm its trap before SIGINT goes out"
-        );
-        assert!(
-            app_ready,
-            "the fixture app's os_log readiness event is forwarded"
         );
 
         nix::sys::signal::killpg(
@@ -3549,6 +3835,9 @@ mod tests {
             .recv_timeout(output_deadline.saturating_duration_since(Instant::now()))
             .expect("supervisor output is bounded")
         {
+            if line.starts_with("log:") && line.contains("fixture-app-ready") && !saw_stopped {
+                saw_ready_before_stopped = true;
+            }
             if line.starts_with("log:") && line.contains("on-terminate-hook-ran") && !saw_stopped {
                 saw_hook_before_stopped = true;
             }
@@ -3566,6 +3855,10 @@ mod tests {
             .expect("helper exit is bounded")
             .expect("wait for helper");
         assert!(status.success(), "the supervised helper exits cleanly");
+        assert!(
+            saw_ready_before_stopped,
+            "the app's startup os_log is delivered before Stopped"
+        );
         assert!(
             saw_hook_before_stopped,
             "termination logs drain before Stopped"
@@ -3598,6 +3891,29 @@ mod tests {
             helper_group,
             &app_group,
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn compact_process_id_reads_the_log_process_field() {
+        let line = "2026-10-16 23:48:50.215 Df fixture-app[97800:14bcb99] name-probe";
+        assert_eq!(super::compact_process_id(line), Some(97800));
+        assert_eq!(super::compact_process_id("no brackets here"), None);
+        assert_eq!(super::compact_process_id("bad[nope]"), None);
+        assert_eq!(super::compact_process_id("bad[12:]"), None);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_log_predicate_names_the_executable_and_quotes_it() {
+        let predicate = super::macos_log_predicate("fixture-app", "waterui-log-1");
+        assert_eq!(
+            predicate,
+            "(process == \"fixture-app\" AND subsystem == \"dev.waterui\") OR \
+             (process == \"logger\" AND eventMessage CONTAINS \"waterui-log-1\")"
+        );
+        let quoted = super::macos_log_predicate("we\"ird\\name", "token");
+        assert!(quoted.contains("process == \"we\\\"ird\\\\name\""));
     }
 
     /// The monitor remains the acknowledgment authority even after kill is requested.

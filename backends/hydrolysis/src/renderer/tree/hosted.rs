@@ -12,7 +12,7 @@ impl HydroNativeView for Native<crate::HostedView> {
         _state: &mut HydroState,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::new(0.0, 0.0)
     }
@@ -21,7 +21,7 @@ impl HydroNativeView for Native<crate::HostedView> {
         _state: &mut HydroState,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         graphics_dimensions_from_proposal(proposal)
@@ -40,7 +40,7 @@ impl WidgetBehavior for HostedNode {
         _state: &mut HydroState,
         proposal: ProposalSize,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> ViewDimensions {
         graphics_dimensions_from_proposal(proposal)
     }

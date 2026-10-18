@@ -467,7 +467,7 @@ pub struct TextContextMenuOverlay {
     pub(crate) dismiss_state: nami::Binding<WindowState>,
     /// The widget theme the overlay was opened under: submenu windows draw
     /// with the same menu metrics and surface treatment.
-    pub(crate) theme: Rc<dyn crate::engine::WidgetTheme>,
+    pub(crate) theme: Rc<dyn crate::theme::WidgetTheme>,
     pub(crate) env: Environment,
 }
 

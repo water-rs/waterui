@@ -6,6 +6,10 @@
 //! (premultiplied linear Display P3 — the suite's working space end to end).
 //! Readback is f16-rounded by default; `CHERENKOV_CPU_READBACK=f32` keeps the
 //! raw f32s. There is no GPU timestamp source; `gpu_seconds` is always `null`.
+//! Each frame reports the backend's phases (`FrameStats::phases`): `lower`,
+//! `glyph` (glyph resolution) and `shade` (the raster pass). The raster
+//! pool's size is rayon's default, so `RAYON_NUM_THREADS` sets it; the
+//! report's `device.adapter` states it.
 
 use std::collections::{BTreeSet, HashMap};
 
@@ -777,6 +781,13 @@ fn register_image(
             };
             (width, height, rgba, space)
         }
+        ImageEncoding::BlockCompressed { format, .. } => {
+            return Err(BenchError::Unsupported {
+                engine: Cherenkov::NAME,
+                feature: Feature::ImageCompressed(format),
+                api: Some("compressed image uploads"),
+            });
+        }
         ImageEncoding::Rgba16F {
             width,
             height,
@@ -907,6 +918,11 @@ fn register_filter(
             engine.filter(filters::GaussianBlur::new(*sigma as f32))
         }
         LayerFilter::BoxBlur { radius } => engine.filter(filters::Blur(*radius as f32)),
+        LayerFilter::OverscrollStretch {
+            frame,
+            size,
+            stretch,
+        } => engine.filter(crate::convert::overscroll_stretch(*frame, *size, *stretch)),
         LayerFilter::BlendImage {
             image,
             amount,
@@ -1564,6 +1580,7 @@ impl Engine for Cherenkov {
             readback && self.has_motion,
             render_error,
         )?;
+        let phases = self.engine.stats().phases;
         let render_seconds = render_at.elapsed().as_secs_f64();
         let readback_at = std::time::Instant::now();
         let image = if readback {
@@ -1580,22 +1597,28 @@ impl Engine for Cherenkov {
                 // the comparison — the same interchange the GPU adapter
                 // uses on its presented texture.
                 Some(PresentKind::SrgbHw | PresentKind::SrgbShader) => {
-                    cherenkov_cpu::present_srgb8(self.headroom, &rb.pixels)
-                        .as_chunks::<4>()
-                        .0
-                        .iter()
-                        .map(|texel| {
-                            let encoded = texel.map(|v| f64::from(v) / 255.0);
-                            let p3 = presented_srgb_to_working(encoded);
-                            [p3[0] as f32, p3[1] as f32, p3[2] as f32, p3[3] as f32]
-                        })
-                        .collect()
+                    cherenkov_cpu::present_srgb8(
+                        cherenkov_cpu::Level::new(),
+                        self.headroom,
+                        &rb.pixels,
+                    )
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|texel| {
+                        let encoded = texel.map(|v| f64::from(v) / 255.0);
+                        let p3 = presented_srgb_to_working(encoded);
+                        [p3[0] as f32, p3[1] as f32, p3[2] as f32, p3[3] as f32]
+                    })
+                    .collect()
                 }
                 // Extended linear Display P3 tone-maps to the display
                 // headroom, like the GPU's `LinearP3` destination.
-                Some(PresentKind::LinearP3) => {
-                    cherenkov_cpu::present_linear_p3(self.headroom, &rb.pixels)
-                }
+                Some(PresentKind::LinearP3) => cherenkov_cpu::present_linear_p3(
+                    cherenkov_cpu::Level::new(),
+                    self.headroom,
+                    &rb.pixels,
+                ),
                 Some(kind) => {
                     return Err(BenchError::Engine(format!(
                         "cherenkov-cpu: {} presentation is unsupported",
@@ -1615,7 +1638,11 @@ impl Engine for Cherenkov {
         Ok(Submit {
             image,
             gpu: Vec::new(),
-            phases: None,
+            phases: crate::PhaseSample::list(&[
+                ("lower", phases.lower_seconds),
+                ("glyph", phases.glyph_seconds),
+                ("shade", phases.shade_seconds),
+            ]),
             composition: None,
             render_seconds: Some(render_seconds),
             readback_seconds: readback.then(|| readback_at.elapsed().as_secs_f64()),

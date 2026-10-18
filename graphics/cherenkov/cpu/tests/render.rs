@@ -449,3 +449,65 @@ fn sweep_renders_and_remaining_unsupported_features_report_their_names() {
         .sum();
     assert!(area > 10.0, "transformed glyph coverage {area}");
 }
+
+/// A static scene records its content again every frame, and the new
+/// lowering takes the swept geometry of the realization it replaces. The
+/// result must be bit-identical to lowering the same content in a fresh
+/// engine, including when only the paint changed between the records.
+#[test]
+fn re_recorded_overlapping_geometry_renders_like_a_fresh_lowering() {
+    // A five-point star filled non-zero overlaps itself, and a thick
+    // zigzag stroke overlaps at its joins: both are swept.
+    let mut star = BezPath::new();
+    for k in 0..5 {
+        let angle = f64::from(k).mul_add(0.8, -0.5) * std::f64::consts::PI;
+        let point = (
+            28.0f64.mul_add(angle.cos(), 32.0),
+            28.0f64.mul_add(angle.sin(), 32.0),
+        );
+        if k == 0 {
+            star.move_to(point);
+        } else {
+            star.line_to(point);
+        }
+    }
+    star.close_path();
+    let mut zigzag = BezPath::new();
+    zigzag.move_to((6.0, 50.0));
+    zigzag.line_to((30.0, 10.0));
+    zigzag.line_to((34.0, 58.0));
+    zigzag.line_to((58.0, 12.0));
+    let draw = |color: WorkingColor| {
+        let (star, zigzag) = (star.clone(), zigzag.clone());
+        move |c: &mut cherenkov::Recorder| {
+            c.fill(star, color);
+            c.stroke(zigzag, Stroke::new(9.0), color);
+        }
+    };
+    let first = WorkingColor::new([0.0, 0.0, 1.0, 0.5]);
+    let second = WorkingColor::new([1.0, 0.0, 0.0, 0.5]);
+
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let mut frames = Vec::new();
+    for color in [first, first, second] {
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(draw(color)));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        frames.push(surface.readback().expect("readback").pixels);
+    }
+    for (frame, color) in frames.iter().zip([first, first, second]) {
+        let fresh = render_f32(&self::engine(), 64, 64, draw(color));
+        assert!(
+            frame
+                .iter()
+                .flatten()
+                .map(|v| v.to_bits())
+                .eq(fresh.iter().flatten().map(|v| v.to_bits())),
+            "a re-recorded frame differs from a fresh lowering"
+        );
+    }
+}

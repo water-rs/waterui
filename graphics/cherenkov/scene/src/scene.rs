@@ -81,6 +81,8 @@ pub enum Feature {
     ExtendNone,
     /// An image resource in `Rgba16F` encoding (half-float texels).
     ImageF16,
+    /// A block-compressed image resource.
+    ImageCompressed(crate::ImageCompression),
     /// An image resource in a non-sRGB colour space (payload is the space).
     ImageColorSpace(crate::ImageColorSpace),
     /// A gradient whose stops are interpolated in the payload space. Engines
@@ -732,6 +734,16 @@ fn collect_paint_features(paint: &Paint, f: &mut BTreeSet<Feature>) {
 fn collect_encoding_features(encoding: &ImageEncoding, f: &mut BTreeSet<Feature>) {
     match encoding {
         ImageEncoding::Png { color_space } => {
+            if *color_space != crate::ImageColorSpace::Srgb {
+                f.insert(Feature::ImageColorSpace(*color_space));
+            }
+        }
+        ImageEncoding::BlockCompressed {
+            format,
+            color_space,
+            ..
+        } => {
+            f.insert(Feature::ImageCompressed(*format));
             if *color_space != crate::ImageColorSpace::Srgb {
                 f.insert(Feature::ImageColorSpace(*color_space));
             }

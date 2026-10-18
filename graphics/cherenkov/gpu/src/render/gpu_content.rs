@@ -305,7 +305,7 @@ impl Producer {
                 adapter,
                 device,
                 queue,
-                format: super::TARGET_FORMAT,
+                format: super::WORKING_FORMAT,
                 redraw,
             });
             self.initialized = true;
@@ -326,7 +326,7 @@ impl Producer {
             queue,
             texture: buffer.texture,
             view: buffer.view,
-            format: super::TARGET_FORMAT,
+            format: super::WORKING_FORMAT,
             width: self.size.0,
             height: self.size.1,
             scale,
@@ -397,7 +397,7 @@ impl Producer {
                     adapter,
                     device,
                     queue,
-                    format: super::TARGET_FORMAT,
+                    format: super::WORKING_FORMAT,
                     redraw,
                 })
                 .await;
@@ -417,7 +417,7 @@ impl Producer {
             queue,
             texture: buffer.texture,
             view: buffer.view,
-            format: super::TARGET_FORMAT,
+            format: super::WORKING_FORMAT,
             width: self.size.0,
             height: self.size.1,
             scale,
@@ -488,7 +488,7 @@ impl Ring {
         self.image.as_ref().map_or(0, |image| {
             u64::from(image.width)
                 * u64::from(image.height)
-                * super::texel_bytes(super::TARGET_FORMAT)
+                * super::texel_bytes(super::WORKING_FORMAT)
         })
     }
 
@@ -498,14 +498,15 @@ impl Ring {
             "GPU content frame",
             size,
             super::TARGET_USAGES,
-            super::TARGET_FORMAT,
+            super::WORKING_FORMAT,
         );
         crate::diag::create(
             device,
             "GPU content frame",
-            u64::from(size.0) * u64::from(size.1) * super::texel_bytes(super::TARGET_FORMAT),
+            u64::from(size.0) * u64::from(size.1) * super::texel_bytes(super::WORKING_FORMAT),
         );
         super::GpuImage {
+            sampling_flags: 0,
             texture,
             view,
             width: size.0,

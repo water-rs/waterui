@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_encode, to_working};
+use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_decode, srgb_encode, to_working};
 use cherenkov_scene::{
     BlendMode, Color, ColorSpace, Draw, Extend, Feature, FillRule, ImagePaint, Item, Layer,
     NormalizedCoord, Paint, ResourceHash, Scene, Shape, StrokeStyle,
@@ -339,6 +339,27 @@ fn visit_draw(p: &mut Prepared, d: &Draw, blobs: &Blobs) -> Result<(), BenchErro
         }
     }
     Ok(())
+}
+
+/// The filtrate filter a scene's
+/// [`LayerFilter::OverscrollStretch`](cherenkov_scene::LayerFilter::OverscrollStretch)
+/// names: its frame's coefficients, extent and stretch in `f32`.
+#[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "scene filter parameters use f64; filtrate parameters use f32"
+)]
+#[must_use]
+pub fn overscroll_stretch(
+    frame: Affine,
+    size: kurbo::Size,
+    stretch: kurbo::Vec2,
+) -> filtrate::filters::OverscrollStretch<f32> {
+    filtrate::filters::OverscrollStretch {
+        frame: frame.as_coeffs().map(|value| value as f32),
+        size: [size.width as f32, size.height as f32],
+        stretch: [stretch.x as f32, stretch.y as f32],
+    }
 }
 
 /// The `Paint::Image` inside a draw's paint, when any.
@@ -894,16 +915,6 @@ pub fn rgba8_to_working(width: u32, height: u32, rgba8: &[u8]) -> cherenkov_orac
         *out = [p3[0] as f32, p3[1] as f32, p3[2] as f32, a as f32];
     }
     img
-}
-
-/// sRGB transfer-function decode (inverse of `srgb_encode`).
-#[must_use]
-fn srgb_decode(e: f64) -> f64 {
-    if e <= 0.04045 {
-        e / 12.92
-    } else {
-        ((e + 0.055) / 1.055).powf(2.4)
-    }
 }
 
 /// IEEE 754 binary16 → `f32`, used by the skia-vulkan/`RGBAF16` readback.

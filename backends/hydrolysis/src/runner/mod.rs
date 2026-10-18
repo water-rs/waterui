@@ -364,7 +364,7 @@ pub fn run(app: App, style: impl crate::Style) {
     menu_bar::register_menu_bar(&menu_bar, &env);
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
-    let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
+    let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
     env.insert(waterui_core::ViewRenderer::new(
         crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
     ));

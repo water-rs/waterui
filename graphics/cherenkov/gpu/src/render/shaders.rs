@@ -148,16 +148,22 @@ const ENGINE_WGSL3: &str = include_str!(concat!(env!("OUT_DIR"), "/engine3.wgsl"
 const ENGINE_WGSL4: &str = include_str!(concat!(env!("OUT_DIR"), "/engine4.wgsl"));
 /// The `VARIANT = 5` specialization (cell): every span but the union's,
 /// including the `// cell-buffer` reads of a GPU-routed path's partial
-/// cells from the frame's cell-texel buffer (issue #2543). Only
-/// GPU-routed ranges draw with it (`DrawRange::module`); variants 0–2
-/// and 4 carry none of the cell-buffer code.
+/// cells from the frame's cell-texel buffer (issue #2543) and the
+/// `// image-source` conversion. Only GPU-routed ranges draw with it
+/// (`DrawRange::module`); variants 0–2, 4 and 6 carry none of the
+/// cell-buffer code.
 const ENGINE_WGSL5: &str = include_str!(concat!(env!("OUT_DIR"), "/engine5.wgsl"));
+/// The `VARIANT = 6` specialization (image): the full module plus the
+/// `// image-source` spans, which convert source image texels per tap.
+/// Only ranges drawing an image paint with source flags use it.
+const ENGINE_WGSL6: &str = include_str!(concat!(env!("OUT_DIR"), "/engine6.wgsl"));
 
 /// The effect-module text for a user `backdrop_effect` source.
 ///
-/// The full engine module with the cell-buffer reads — `ENGINE_WGSL5`,
-/// or `ENGINE_WGSL3` when `union` marks a member of a union group, since
-/// one effect pipeline serves whatever route its draws take — with the stub
+/// The full engine module — `ENGINE_WGSL5`, which keeps the cell-buffer
+/// reads and the source image conversion, or `ENGINE_WGSL3` when `union`
+/// marks a member of a union group, since one effect pipeline serves
+/// whatever route and paint its draws carry — with the stub
 /// `backdrop_effect` removed and the user source appended. The stub sits
 /// between two `// backdrop-effect-stub` marker lines, so removal is a
 /// plain string split.
@@ -179,8 +185,8 @@ pub fn backdrop_effect_text(user: &str, union: bool) -> Cow<'static, str> {
 }
 
 /// Parses and validates WGSL `text` on the caller thread, with the
-/// capabilities of a core WebGPU device. Errors carry naga's diagnostic
-/// against the text.
+/// engine's capability floor. Errors carry naga's diagnostic against the
+/// text.
 ///
 /// # Errors
 /// [`ResourceError::Shader`] when the text fails to parse or validate.
@@ -190,12 +196,14 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
     // The engine's floor, not the device's capabilities: a user shader has
     // to run on every device the engine supports, so a construct that only
     // a host-supplied `SharedDevice` with extra features could compile is
-    // rejected here, identically on every device. What depends on the
+    // rejected here, identically on every device. The floor is the one
+    // `build.rs` validates the engine modules with, which the composed
+    // module (`quantizeToF16` and all) needs. What depends on the
     // actual device (limits, the driver's compiler) is left to pipeline
     // creation on the render thread, which reports it as a rejection.
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
-        naga::valid::Capabilities::default(),
+        super::capabilities::ENGINE_CAPABILITIES,
     )
     .validate(&module)
     .map_err(|error| ResourceError::Shader(error.emit_to_string(text)))?;
@@ -211,15 +219,16 @@ pub fn validate_wgsl(text: &str) -> Result<naga::Module, ResourceError> {
 /// exactly those targets, so the condition lives in one place (issue #241).
 #[cfg(cherenkov_spirv)]
 pub mod spirv {
-    /// naga SPIR-V for the six `VARIANT` specializations of
+    /// naga SPIR-V for the seven `VARIANT` specializations of
     /// `shader.wgsl`.
-    pub const ENGINE: [&[u8]; 6] = [
+    pub const ENGINE: [&[u8]; 7] = [
         include_bytes!(concat!(env!("OUT_DIR"), "/engine0.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine1.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine2.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine3.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine4.spv")),
         include_bytes!(concat!(env!("OUT_DIR"), "/engine5.spv")),
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine6.spv")),
     ];
     /// `present.wgsl`.
     pub const PRESENT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.spv"));
@@ -267,22 +276,33 @@ pub mod spirv {
     #[cfg(all(cherenkov_spirv, unix))]
     pub const TILE_LONG_SELF: &[u8] =
         include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_long_self.spv"));
+    /// `engine_tile_image.spv` — the tile module built on the variant-5
+    /// (image source) source, for a draw sourcing another slot.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_IMAGE: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_image.spv"));
+    /// `engine_tile_image_self.spv` — the image-source module for a draw
+    /// sourcing its own slot.
+    #[cfg(all(cherenkov_spirv, unix))]
+    pub const TILE_IMAGE_SELF: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_image_self.spv"));
 }
 
 // `.metallib` files exist only in Apple builds (`build.rs` refuses to
 // produce them otherwise, and a Metal backend cannot appear on a
 // non-Apple build), so the empty slices are unreachable.
 #[cfg(target_vendor = "apple")]
-const ENGINE_METALLIB: [&[u8]; 6] = [
+const ENGINE_METALLIB: [&[u8]; 7] = [
     include_bytes!(concat!(env!("OUT_DIR"), "/engine0.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine1.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine2.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine3.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine4.metallib")),
     include_bytes!(concat!(env!("OUT_DIR"), "/engine5.metallib")),
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine6.metallib")),
 ];
 #[cfg(not(target_vendor = "apple"))]
-const ENGINE_METALLIB: [&[u8]; 6] = [&[], &[], &[], &[], &[], &[]];
+const ENGINE_METALLIB: [&[u8]; 7] = [&[], &[], &[], &[], &[], &[], &[]];
 #[cfg(target_vendor = "apple")]
 const PRESENT_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/present.metallib"));
 #[cfg(not(target_vendor = "apple"))]
@@ -321,9 +341,9 @@ const COVERAGE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cover
 #[cfg(not(target_vendor = "apple"))]
 const COVERAGE_METALLIB: &[u8] = &[];
 
-/// The six `VARIANT` specializations of `shader.wgsl`, indexed by
+/// The seven `VARIANT` specializations of `shader.wgsl`, indexed by
 /// `variant_index`.
-const ENGINE: [Fixed; 6] = [
+const ENGINE: [Fixed; 7] = [
     Fixed {
         wgsl: ENGINE_WGSL0,
         #[cfg(cherenkov_spirv)]
@@ -364,6 +384,13 @@ const ENGINE: [Fixed; 6] = [
         #[cfg(cherenkov_spirv)]
         spirv: spirv::ENGINE[5],
         metallib: ENGINE_METALLIB[5],
+        entries: ENGINE_ENTRIES,
+    },
+    Fixed {
+        wgsl: ENGINE_WGSL6,
+        #[cfg(cherenkov_spirv)]
+        spirv: spirv::ENGINE[6],
+        metallib: ENGINE_METALLIB[6],
         entries: ENGINE_ENTRIES,
     },
 ];
@@ -489,6 +516,10 @@ const COVERAGE: Fixed = Fixed {
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("fragment_bins"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("integrate_edges"),
             workgroup_size: (64, 1, 1),
         },
         wgpu::PassthroughShaderEntryPoint {

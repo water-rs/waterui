@@ -7,9 +7,15 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+# Bench and test access to the span kernels, the pattern `cherenkov`'s
+# `testing` feature uses: `testing::kernels`, no public API.
+[features]
+testing = []
+
 [dependencies]
 arrayvec = "0.7"
 cherenkov = { path = ".." }
+fearless_simd = "0.4"
 filtrate-core = { path = "../../filtrate/core" }
 kurbo = "0.13"
 skrifa = "0.44"
@@ -18,6 +24,10 @@ half = "2"
 rayon = "1"
 rustc-hash = "2"
 tracing = "0.1"
+wide = { version = "1.7.1", default-features = false }
+
+[target.'cfg(any(target_vendor = "apple", target_os = "android"))'.dependencies]
+libc = "0.2"
 
 [dev-dependencies]
 cherenkov = { path = "..", features = ["testing"] }
@@ -26,6 +36,18 @@ cherenkov-scene = { path = "../scene" }
 cherenkov-shader = { path = "../shader", features = ["eval"] }
 filtrate = { path = "../../filtrate" }
 nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
+divan = "0.1"
+gungraun = "=0.20.0"
 
 [lints]
 workspace = true
+
+[[bench]]
+name = "kernels_wall"
+harness = false
+required-features = ["testing"]
+
+[[bench]]
+name = "kernels_ir"
+harness = false
+required-features = ["testing"]

@@ -26,7 +26,7 @@ impl HydroNativeView for Native<()> {
         _state: &mut HydroState,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::zero()
     }
@@ -37,7 +37,7 @@ impl HydroNativeView for Native<Spacer> {
         _state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         spacer_intrinsic(view.as_inner(), env)
     }
@@ -52,7 +52,7 @@ pub fn measure_empty_node(
     _proposal: ProposalSize,
     _state: &mut HydroState,
     _env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     ViewDimensions::new(LayoutSize::zero())
 }
@@ -83,7 +83,7 @@ pub fn measure_spacer_node(
     _proposal: ProposalSize,
     _state: &mut HydroState,
     env: &Environment,
-    _theme: &Rc<dyn crate::engine::WidgetTheme>,
+    _theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     ViewDimensions::new(spacer_intrinsic(spacer, env))
 }

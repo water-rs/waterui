@@ -8,12 +8,12 @@
 
 use std::time::{Duration, Instant};
 
+use crate::theme::WidgetTheme;
 use accesskit::{Action, ActionRequest, Role, TreeId, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
 use waterui::prelude::{ContextMenu, DismissContextMenu, Use};
-use waterui_backend_core::WidgetTheme;
 use waterui_controls::button::button;
 use waterui_controls::menu::{CommandExt as _, MenuItem};
 use waterui_core::AnyView;

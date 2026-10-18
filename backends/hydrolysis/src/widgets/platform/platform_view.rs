@@ -99,7 +99,7 @@ impl HydroNativeView for Native<PlatformView> {
         _state: &mut HydroState,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         LayoutSize::zero()
     }
@@ -108,7 +108,7 @@ impl HydroNativeView for Native<PlatformView> {
         _state: &mut HydroState,
         _view: &Self,
         _env: &Environment,
-        _theme: &Rc<dyn crate::engine::WidgetTheme>,
+        _theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         graphics_dimensions_from_proposal(proposal)
@@ -122,7 +122,7 @@ pub fn measure_platform_view_node(
     proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let _ = (state, hydro, env, theme);
     graphics_dimensions_from_proposal(proposal)

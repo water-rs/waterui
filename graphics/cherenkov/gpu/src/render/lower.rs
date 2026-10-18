@@ -29,6 +29,7 @@ use crate::render::instance::{
 };
 use crate::render::path;
 use crate::render::projective::{LocalKey, Placement};
+use crate::render::raster;
 
 /// The target a pass draws into.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +106,10 @@ pub enum ShaderVariant {
     /// [`DrawRange::module`] selects it for GPU-routed ranges, so the
     /// pipelines every other draw uses carry none of the cell-buffer code.
     Cell,
+    /// `Full` plus the per-tap conversion of source image texels: an
+    /// image paint whose texture keeps its source encoding (non-zero
+    /// `image_storage` source flags).
+    Image,
 }
 
 /// A texture identity scoped to its resource owner.
@@ -486,11 +491,11 @@ const GRADIENT_LINEAR_STOPS: u32 = 8;
 
 /// The specialised fragment pipeline `inst` requires: the union variant
 /// for a backdrop member drawing against the group's shared field, the
-/// long-gradient module for a gradient past `GRADIENT_LINEAR_STOPS`,
-/// the uber-shader when it reads rare fields (clip, mask, inner,
-/// strokes, other non-solid paint), the shadow kernel otherwise for
-/// shadows, and the trivial coverage path for solid fills, spans, and
-/// glyphs.
+/// long-gradient module for a gradient past `GRADIENT_LINEAR_STOPS`, the
+/// image variant for an image paint sampling source-encoded texels, the
+/// uber-shader when it reads rare fields (clip, mask, inner, strokes,
+/// other non-solid paint), the shadow kernel otherwise for shadows, and
+/// the trivial coverage path for solid fills, spans, and glyphs.
 const fn variant_of(inst: &Instance) -> ShaderVariant {
     let flags = inst.meta[3] >> 24;
     if (flags & FLAG_UNION) != 0 {
@@ -503,6 +508,13 @@ const fn variant_of(inst: &Instance) -> ShaderVariant {
         || inst.meta[1] != PAINT_SOLID
         || matches!(inst.meta[0], KIND_STROKE_OFFSET | KIND_STROKE_DIST)
     {
+        // An image paint is never solid, so every image instance reaches
+        // this branch; testing it here keeps the solid path free of it.
+        // `SOURCE` first: in that order the common path compiles to the
+        // same instructions as without the image variant.
+        if (inst.meta[3] & super::image_storage::SOURCE) != 0 && inst.meta[1] == PAINT_IMAGE {
+            return ShaderVariant::Image;
+        }
         return ShaderVariant::Full;
     }
     if inst.meta[0] == KIND_SHADOW {
@@ -4898,15 +4910,17 @@ impl<'a> Lowering<'a> {
             offset,
         );
         if let Some(pending) = pending {
-            for i in 0..emit.cells.len() {
-                let patch = (
+            // Extending from the exact-size range grows each list at most
+            // once per path, where a push per cell can grow it several times.
+            let patches = (0..emit.cells.len()).map(|i| {
+                (
                     u32::try_from(first + i).expect("instance index fits u32"),
                     pending,
                     u32::try_from(i).expect("cell index fits u32"),
-                );
-                self.emission_patches.push(patch);
-                self.cell_patches.push(patch);
-            }
+                )
+            });
+            self.emission_patches.extend(patches.clone());
+            self.cell_patches.extend(patches);
         }
     }
 
@@ -5097,11 +5111,7 @@ impl<'a> Lowering<'a> {
             let (Ok(w), Ok(h)) = (u32::try_from(coverage.w), u32::try_from(coverage.h)) else {
                 return Err(RenderError::Unsupported(names::PATH_CLIP_TOO_LARGE));
             };
-            let texels: Vec<u8> = coverage
-                .data
-                .iter()
-                .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-                .collect();
+            let texels: Vec<u8> = coverage.data.iter().copied().map(raster::texel).collect();
             let key = if coverage.clipped {
                 pl.key_exact()
             } else {
@@ -5691,9 +5701,16 @@ fn bboxes_disjoint(instances: &[Instance]) -> bool {
 /// by one pixel and integer-rounded, as `(x, y, w, h)`; `[0, 0, 0, 0]`
 /// when empty.
 fn tight_region(instances: &[Instance], width: u32, height: u32) -> [u32; 4] {
+    union_region(instances.iter().map(device_bbox), width, height)
+}
+
+/// The union device bbox of `bboxes` (non-finite boxes skipped), inflated
+/// by one pixel, integer-rounded and clipped to `width`×`height`, as
+/// `(x, y, w, h)`; `[0, 0, 0, 0]` when empty.
+fn union_region(bboxes: impl IntoIterator<Item = [f32; 4]>, width: u32, height: u32) -> [u32; 4] {
     let mut min = [f32::INFINITY; 2];
     let mut max = [f32::NEG_INFINITY; 2];
-    for b in instances.iter().map(device_bbox) {
+    for b in bboxes {
         if b.iter().any(|v| !v.is_finite()) {
             continue;
         }
@@ -5703,6 +5720,63 @@ fn tight_region(instances: &[Instance], width: u32, height: u32) -> [u32; 4] {
         max[1] = max[1].max(b[3]);
     }
     padded_region(min, max, width, height)
+}
+
+/// The texel region of a shadow capture that can hold nonzero input to
+/// its convolution: the union of everything drawn into its scratch depth
+/// since the depth's last clear — the silhouette scope opens it with a
+/// transparent one — padded and clipped to the padded capture extents of
+/// the pass at `last`. Draws into nested scratch depths are not members
+/// of the union; their composites into this depth are, since every pixel
+/// a pass writes comes through a drawn instance. A GPU-routed path's
+/// range contributes its anchor instance's conservative bound, and a
+/// coverage-tier polygon is bounded by the source instance it copies.
+/// A filtered pass can grow content past its draws' bounds, so its
+/// explicit region joins the union; `capture` and `backdrop_copy` never
+/// write the depth (the former is backdrop-only, the latter reads it).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pass region coordinates are small positive integers"
+)]
+pub fn shadow_support(frame: &Frame, last: usize) -> [u32; 4] {
+    let target = frame.passes[last].target;
+    let width = frame.passes[last].region[2];
+    let height = frame.passes[last].region[3];
+    let first = frame.passes[..=last]
+        .iter()
+        .rposition(|pass| pass.target == target && pass.clear.is_some())
+        .expect("a shadow capture opens its depth with a clear");
+    union_region(
+        frame.passes[first..=last]
+            .iter()
+            .enumerate()
+            .filter(|(_, pass)| pass.target == target)
+            .flat_map(|(index, pass)| {
+                let filtered = frame
+                    .filters
+                    .iter()
+                    .any(|&(pass_index, _)| pass_index == first + index)
+                    .then_some(pass.region);
+                pass.ranges
+                    .iter()
+                    .flat_map(|range| {
+                        frame.instances
+                            [range.instances.start as usize..range.instances.end as usize]
+                            .iter()
+                    })
+                    .map(device_bbox)
+                    .chain(filtered.map(|[x, y, w, h]| {
+                        [
+                            x as f32,
+                            y as f32,
+                            x.saturating_add(w) as f32,
+                            y.saturating_add(h) as f32,
+                        ]
+                    }))
+            }),
+        width,
+        height,
+    )
 }
 
 /// The `[x, y, w, h]` texel region covering the device rect `bounds`
@@ -7118,5 +7192,67 @@ mod tests {
             .plan_anchors(&tree)
             .expect("a plan after an error has no stale links");
         assert_eq!(lowering.anchor_scratch.links, [(anchor_a, 10)]);
+    }
+
+    #[test]
+    fn shadow_support_unions_draws_since_the_depths_last_clear() {
+        let span = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            let mut inst = Instance::new(KIND_SPAN);
+            inst.bounds = [x0, y0, x1, y1];
+            inst
+        };
+        let range = |instances: Range<u32>| DrawRange {
+            source: None,
+            image: None,
+            mask: None,
+            pipeline: PipelineKind::SrcOver,
+            variant: ShaderVariant::Simple,
+            instances,
+            gpu: None,
+        };
+        let pass = |target: Target, clear: Option<[f32; 4]>, ranges: Vec<DrawRange>| Pass {
+            target,
+            clear,
+            ranges,
+            space: cherenkov::BlendSpace::Linear,
+            region: [0, 0, 64, 64],
+            backdrop_copy: None,
+            capture: None,
+            tier_ranges: [Range::default(), Range::default()],
+        };
+        let mut frame = Frame {
+            instances: vec![
+                span(0.0, 0.0, 60.0, 60.0),
+                span(20.0, 10.0, 24.0, 18.0),
+                span(2.0, 30.0, 6.0, 34.0),
+                span(50.0, 50.0, 54.0, 54.0),
+            ],
+            passes: vec![
+                // A sibling scope's stale capture at the same depth; the
+                // shadow's own open clears it away below.
+                pass(Target::Scratch(0), Some([0.0; 4]), vec![range(0..1)]),
+                // The shadow capture's transparent open and first draws.
+                pass(Target::Scratch(0), Some([0.0; 4]), vec![range(1..2)]),
+                // A nested scratch's draws are not members of this depth.
+                pass(Target::Scratch(1), Some([0.0; 4]), vec![range(3..4)]),
+                // A continued pass on the capture's depth adds more.
+                pass(Target::Scratch(0), None, vec![range(2..3)]),
+                // A depth whose clear admits no draws has no support.
+                pass(Target::Scratch(2), Some([0.0; 4]), vec![]),
+            ],
+            ..Frame::default()
+        };
+        // Union of (20,10)-(24,18) and (2,30)-(6,34), padded by one.
+        assert_eq!(shadow_support(&frame, 3), [1, 9, 24, 26]);
+        // At pass 1 only (20,10)-(24,18) has drawn since the clear.
+        assert_eq!(shadow_support(&frame, 1), [19, 9, 6, 10]);
+        // The nested depth's own support sees only its own draw.
+        assert_eq!(shadow_support(&frame, 2), [49, 49, 6, 6]);
+        // Nothing drawn since the clear: the support is empty.
+        assert_eq!(shadow_support(&frame, 4), [0, 0, 0, 0]);
+        // A filter on a pass can grow its content past the draws'
+        // bounds; its explicit region joins the union.
+        frame.filters.push((3, FilterKey::Layer(7)));
+        assert_eq!(shadow_support(&frame, 3), [0, 0, 64, 64]);
     }
 }

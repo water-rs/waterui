@@ -209,7 +209,7 @@ pub use waterui_url::Url;
 
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, Error, Str, animation,
+    AnyView, ContentLedger, Error, Str, animation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     event,

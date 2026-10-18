@@ -200,6 +200,21 @@ impl_debug!(ListConfig);
 )]
 pub struct ListMinRowHeight(pub f32);
 
+/// Marks the subtree below it as a navigation container's sidebar column.
+///
+/// The owner of the sidebar — a `NavigationSplitView` backend — installs it
+/// into the sidebar's environment; a list reads it to take the platform's
+/// sidebar presentation: the unemphasised selection chrome rather than the
+/// accent fill, and a selected row keeping its own colors rather than
+/// re-theming onto `SelectionForeground`.
+#[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "environment marker used by presence"
+)]
+#[doc(hidden)]
+pub struct SidebarContent;
+
 impl NativeView for ListConfig {
     fn stretch_axis(&self) -> StretchAxis {
         StretchAxis::Both
@@ -679,6 +694,12 @@ fn selection_themed(mut item: ListItem, selection: &ListSelection<RawId>, id: Ra
     };
     let content = core::mem::take(&mut item.content);
     item.content = AnyView::new(use_env(move |mut env: Environment| {
+        // A sidebar's selection chrome is the unemphasised pill, not the
+        // accent fill `SelectionForeground` is written for — a selected
+        // sidebar row keeps its own colors (water-rs/waterui#1495).
+        if env.get::<SidebarContent>().is_some() {
+            return AnyView::new(content);
+        }
         let on_selection = color::SelectionForeground.resolve(&env).computed();
         let flip = |normal: Computed<WorkingColor>| {
             selected
@@ -694,7 +715,7 @@ fn selection_themed(mut item: ListItem, selection: &ListSelection<RawId>, id: Ra
         install_color_signal::<color::Foreground>(&mut env, foreground);
         install_color_signal::<color::MutedForeground>(&mut env, muted);
         install_color_signal::<color::Accent>(&mut env, accent);
-        Metadata::new(content, env)
+        AnyView::new(Metadata::new(content, env))
     }));
     item
 }

@@ -390,7 +390,7 @@ struct RowSectionChrome {
 }
 
 impl RowSectionChrome {
-    const fn header_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+    const fn header_height(&self, metrics: &crate::theme::ListMetrics) -> f64 {
         if self.header.is_some() {
             metrics.section_header_height
         } else {
@@ -398,7 +398,7 @@ impl RowSectionChrome {
         }
     }
 
-    const fn footer_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+    const fn footer_height(&self, metrics: &crate::theme::ListMetrics) -> f64 {
         if self.footer.is_some() {
             metrics.section_footer_height
         } else {
@@ -406,7 +406,7 @@ impl RowSectionChrome {
         }
     }
 
-    fn total_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+    fn total_height(&self, metrics: &crate::theme::ListMetrics) -> f64 {
         self.header_height(metrics) + self.footer_height(metrics)
     }
 }
@@ -922,7 +922,7 @@ impl HydroNativeView for Native<ListConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_list_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -1109,7 +1109,7 @@ fn draw_list_ghost(
 pub fn list_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
-    theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
     state: &Rc<RefCell<ListRenderState>>,
     env: &Environment,
 ) {
@@ -1642,7 +1642,7 @@ pub fn measure_list_node(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let intrinsic = measure_list_intrinsic(list, state, env, theme);
     ViewDimensions::new(LayoutSize::new(
@@ -1785,9 +1785,11 @@ pub fn render_list_parts(
         );
         let viewport_placement = renderer.current_placement();
         viewport_placement.set_content_offset(-offset);
+        let stretch = renderer.scroll_stretch(&handle);
         renderer.program().begin_inner(
             surface_viewport,
             offset,
+            stretch,
             std::rc::Rc::clone(&viewport_placement),
         );
         // The visible window resolves in content space while the rows record
@@ -2599,7 +2601,7 @@ struct RowEditControls {
 }
 
 fn row_edit_controls(
-    metrics: &waterui_backend_core::widget::ListMetrics,
+    metrics: &crate::theme::ListMetrics,
     row_rect: kurbo::Rect,
     slot_height: f64,
     index: usize,
@@ -2935,7 +2937,7 @@ fn section_chrome_text(label: Text, is_header: bool) -> Text {
 
 fn list_content_rect(
     row_rect: kurbo::Rect,
-    metrics: waterui_backend_core::widget::ListMetrics,
+    metrics: crate::theme::ListMetrics,
     insets: Option<&waterui_layout::padding::EdgeInsets>,
     content_size: waterui_core::layout::Size,
     env: &Environment,
