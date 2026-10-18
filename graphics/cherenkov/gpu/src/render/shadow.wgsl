@@ -18,6 +18,14 @@ fn texel(p: vec2<i32>) -> vec4<f32> {
 fn sample_at(p: vec2<f32>) -> vec4<f32> {
     let origin = vec2<i32>(floor(p));
     let phase = fract(p);
+    if phase.x == 0. {
+        let first = texel(origin);
+        if phase.y == 0. { return first; }
+        return mix(first, texel(origin+vec2<i32>(0,1)), phase.y);
+    }
+    if phase.y == 0. {
+        return mix(texel(origin), texel(origin+vec2<i32>(1,0)), phase.x);
+    }
     return mix(mix(texel(origin),texel(origin+vec2<i32>(1,0)),phase.x),
                mix(texel(origin+vec2<i32>(0,1)),texel(origin+vec2<i32>(1,1)),phase.x),phase.y);
 }
