@@ -91,26 +91,20 @@ pub fn flatten_segments(path: &BezPath, tolerance: f64) -> (Vec<(f32, f32, f32, 
     (segments, bbox)
 }
 
-/// Which route turns a path's flattened segments into coverage.
-///
-/// The CPU sweep is the only route today. water-rs/waterui#2536's GPU
-/// coverage route is added by water-rs/waterui#2543: it adds a variant
-/// here, grows [`route`] into the predicate of that specification's
-/// section 6 over the inputs `route` already takes, and the route
-/// differential (`route_diff.rs`) compares the two images under section
-/// 4.3 threshold 4.
+/// Coverage policy for a path's flattened segments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoverageRoute {
-    /// The scanline sweep of this module: `O((n + k) log n)` in `n`
-    /// segments and `k` crossings.
+    /// Choose deterministically from content and device-space work estimates.
+    Automatic,
+    /// Force the CPU scanline sweep in route comparisons.
+    #[cfg(test)]
     Sweep,
-    /// The GPU compute route of water-rs/waterui#2543: curve elements go
-    /// to the frame's compute input buffer untouched by the CPU, and the
-    /// coverage and classification kernels emit the same spans and
-    /// partial cells. Route selection is water-rs/waterui#2545; in this
-    /// change the route is reachable only through the test hook.
+    /// Use GPU flattening, coverage and classification.
     Gpu,
 }
+
+/// Keep ordinary UI geometry out of the GPU preparation pass.
+pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
 /// A coverage grid over an integer device-space rect.
 pub struct Coverage {
@@ -413,6 +407,26 @@ pub struct GpuElement {
     pub hi: [f32; 4],
 }
 
+/// A compute path and the capacity bound derived from those same elements.
+pub struct GpuPath {
+    /// Local curve records consumed by the flatten kernel.
+    pub elements: Vec<GpuElement>,
+    /// Device-space capacity and work estimates for these records.
+    pub bound: GpuBound,
+}
+
+impl GpuPath {
+    /// Large, crossing-dense paths amortize compute dispatch and classification.
+    pub const fn prefers_gpu(&self) -> bool {
+        let bound = &self.bound;
+        let strips = bound.grid_h.div_ceil(STRIP_H);
+        !bound.empty
+            && bound.segments >= GPU_ROUTE_MIN_ELEMENTS
+            && bound.grid_w * bound.grid_h >= 4096
+            && bound.bins >= strips * 32
+    }
+}
+
 /// Decision R2's per-path buffer bound, computed in `O(n)` over the
 /// curve elements from their device-space bounding boxes.
 #[derive(Clone, Copy, Debug, Default)]
@@ -558,11 +572,7 @@ impl GpuEncode {
     clippy::cast_sign_loss,
     reason = "grid dimensions are clamped nonnegative"
 )]
-pub fn gpu_bound(
-    elements: &[PathEl],
-    raster: Affine,
-    surface: (f64, f64),
-) -> (Vec<GpuElement>, GpuBound) {
+pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> GpuPath {
     let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
     let mut hull = Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     let mut state = GpuEncode {
@@ -634,7 +644,10 @@ pub fn gpu_bound(
         .min(strip_cap)
         .max(usize::from(w <= 32 && h <= 32));
     bound.span_cap = bound.cell_cap + h.div_ceil(STRIP_H);
-    (out, bound)
+    GpuPath {
+        elements: out,
+        bound,
+    }
 }
 
 /// Emits `coverage` as spans and atlas cells: one cell when the grid is

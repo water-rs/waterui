@@ -698,9 +698,9 @@ mod tests {
 
     #[test]
     fn sparse_capacity_tracks_perimeter_and_rejects_over_budget() {
-        fn rectangle(size: u32) -> (Vec<GpuElement>, GpuBound) {
+        fn rectangle(size: u32) -> crate::render::path::GpuPath {
             let edge = f64::from(size);
-            crate::render::path::gpu_bound(
+            crate::render::path::prepare_gpu(
                 &[
                     PathEl::MoveTo(Point::new(0.0, 0.0)),
                     PathEl::LineTo(Point::new(edge, 0.0)),
@@ -712,8 +712,11 @@ mod tests {
                 (edge, edge),
             )
         }
-        let (_, small) = rectangle(1024);
-        let (elements, large) = rectangle(4096);
+        let small = rectangle(1024).bound;
+        let crate::render::path::GpuPath {
+            elements,
+            bound: large,
+        } = rectangle(4096);
         assert!(large.fragments <= 4 * small.fragments);
         assert!(large.texels <= 4 * small.texels);
         assert!(large.cell_cap <= 4 * small.cell_cap);
@@ -729,7 +732,10 @@ mod tests {
             )
             .expect("sparse 4096-square capacity");
         assert!(frame.bound_bytes < GPU_COV_MAX_BYTES);
-        let (elements, huge) = rectangle(1_000_000);
+        let crate::render::path::GpuPath {
+            elements,
+            bound: huge,
+        } = rectangle(1_000_000);
         let before = frame.paths.len();
         assert!(
             frame

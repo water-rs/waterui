@@ -20,8 +20,12 @@ use cherenkov_scene::{Draw as SceneDraw, Item, Paint, Scene, Shape as SceneShape
 use super::CoverageRoute;
 use crate::{Gpu, GpuConfig};
 
-/// Every route the differential pairs, sweep then GPU (issue #2543).
-const ROUTES: [CoverageRoute; 2] = [CoverageRoute::Sweep, CoverageRoute::Gpu];
+/// Explicit routes and the production selection policy.
+const ROUTES: [CoverageRoute; 3] = [
+    CoverageRoute::Sweep,
+    CoverageRoute::Gpu,
+    CoverageRoute::Automatic,
+];
 
 /// The large-path scenes of #2546: a road network of 1,920 stroke-outline
 /// crossings, a dense self-overlapping ring field under both fill rules,
@@ -129,7 +133,7 @@ fn render_path(
     route: CoverageRoute,
 ) -> F32Image {
     let engine = Engine::<Gpu>::new(GpuConfig {
-        force_gpu_coverage: route == CoverageRoute::Gpu,
+        coverage_route: Some(route),
         ..GpuConfig::default()
     })
     .expect("GPU coverage test adapter");
@@ -295,15 +299,15 @@ fn gpu_paths_satisfy_polygon_and_scene_oracles() {
     // Section 4.3 thresholds 1–3 against the oracle: the absolute ceilings
     // of threshold 2, threshold 3's measured corpus maxima (which the
     // ceilings already tighten here), and threshold 1's regression band —
-    // the CPU sweep's metrics stand in for dev's, since route selection is
-    // #2545 and the sweep is today's route on every scene.
+    // the CPU sweep supplies the baseline for both explicit GPU coverage
+    // and automatic selection.
     const FLIP_MEAN_CEIL: f64 = 0.006;
     const FLIP_MAX_CEIL: f64 = 0.15;
     const MAX_LOCAL_CEIL: f64 = 0.09;
 
     let mut failures = Vec::new();
     // [route][scene] oracle-relative metrics, for threshold 1.
-    let mut oracle_metrics: [Vec<f64>; 2] = [Vec::new(), Vec::new()];
+    let mut oracle_metrics: [Vec<f64>; 3] = std::array::from_fn(|_| Vec::new());
     for name in SCENES {
         let scene = Scene::load(&corpus().join(name)).expect("load corpus scene");
         let reference = cherenkov_oracle::Renderer::new(
@@ -348,13 +352,17 @@ fn gpu_paths_satisfy_polygon_and_scene_oracles() {
     // 5%-or-0.0005 band of the sweep's. Aggregate means are diagnostic:
     // improving the sweep must not reject an unchanged GPU route whose
     // per-scene and independent polygon-oracle checks still pass.
-    // `ROUTES` is [Sweep, Gpu].
-    let [sweep, gpu] = &oracle_metrics;
-    for (name, (&cpu, &gpu_mean)) in SCENES.iter().zip(sweep.iter().zip(gpu.iter())) {
-        if gpu_mean > f64::max(cpu * 1.05, cpu + 0.0005) {
-            failures.push(format!(
-                "{name} Gpu regression band: sweep {cpu:.6} -> Gpu {gpu_mean:.6}"
-            ));
+    let [sweep, gpu, automatic] = &oracle_metrics;
+    for (route, selected) in [
+        (CoverageRoute::Gpu, gpu),
+        (CoverageRoute::Automatic, automatic),
+    ] {
+        for (name, (&cpu, &selected_mean)) in SCENES.iter().zip(sweep.iter().zip(selected.iter())) {
+            if selected_mean > f64::max(cpu * 1.05, cpu + 0.0005) {
+                failures.push(format!(
+                    "{name} {route:?} regression band: sweep {cpu:.6} -> {selected_mean:.6}"
+                ));
+            }
         }
     }
     let sweep_mean =
@@ -378,7 +386,7 @@ fn gpu_paths_satisfy_polygon_and_scene_oracles() {
 #[test]
 fn gpu_boundary_cells_integrate_fill_rule_regions() {
     let engine = Engine::<Gpu>::new(GpuConfig {
-        force_gpu_coverage: true,
+        coverage_route: Some(CoverageRoute::Gpu),
         ..GpuConfig::default()
     })
     .expect("GPU coverage test adapter");
@@ -452,7 +460,7 @@ fn gpu_boundary_cells_integrate_fill_rule_regions() {
 #[test]
 fn gpu_sparse_interiors_preserve_painter_order_across_frames() {
     let engine = Engine::<Gpu>::new(GpuConfig {
-        force_gpu_coverage: true,
+        coverage_route: Some(CoverageRoute::Gpu),
         ..GpuConfig::default()
     })
     .expect("GPU coverage test adapter");

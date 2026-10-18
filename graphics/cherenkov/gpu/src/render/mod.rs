@@ -19,6 +19,8 @@ mod instance;
 mod lower;
 mod paint;
 mod path;
+#[cfg(test)]
+pub use path::CoverageRoute;
 pub mod planes;
 mod prepared;
 pub mod present;
@@ -6369,14 +6371,14 @@ impl GpuRenderer {
                 .features()
                 .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
         #[cfg(test)]
-        if self.config.force_gpu_coverage {
+        if let Some(route) = self.config.coverage_route {
             assert!(
-                has_compute,
+                route != path::CoverageRoute::Gpu || has_compute,
                 "forced GPU coverage requires compute and indirect first-instance support"
             );
-            return (has_compute, path::CoverageRoute::Gpu);
+            return (has_compute, route);
         }
-        (has_compute, path::CoverageRoute::Sweep)
+        (has_compute, path::CoverageRoute::Automatic)
     }
 
     #[cfg(not(target_arch = "wasm32"))]

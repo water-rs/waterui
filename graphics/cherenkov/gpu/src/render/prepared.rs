@@ -507,6 +507,80 @@ pub enum Outline {
     },
 }
 
+/// Borrowed geometry after resolving a retained command reference.
+#[derive(Clone, Copy)]
+pub enum OutlineRef<'a> {
+    /// Fill geometry and its precomputed semantic hash.
+    Fill {
+        elements: &'a [PathEl],
+        content: u64,
+    },
+    /// Stroke geometry whose hash also depends on device tolerance.
+    Stroke {
+        shape: &'a ShapeData,
+        stroke: &'a kurbo::Stroke,
+    },
+}
+
+impl Outline {
+    /// Resolve owned and source-backed outlines without constructing geometry.
+    pub fn get<'a>(&'a self, source: &'a cherenkov::DisplayList) -> OutlineRef<'a> {
+        match self {
+            Self::Fill { elements, content } => OutlineRef::Fill {
+                elements,
+                content: *content,
+            },
+            Self::Stroke { shape, stroke } => OutlineRef::Stroke { shape, stroke },
+            Self::Source { command, content } => match &source.commands()[*command] {
+                Command::Fill {
+                    shape: ShapeData::Path { elements, .. },
+                    ..
+                } => OutlineRef::Fill {
+                    elements,
+                    content: content.expect("prepared fill has a hash"),
+                },
+                Command::Stroke { shape, stroke, .. } => OutlineRef::Stroke { shape, stroke },
+                _ => unreachable!("prepared outline keeps its source kind"),
+            },
+        }
+    }
+}
+
+impl OutlineRef<'_> {
+    /// Constant-time content size, before stroke expansion or device encoding.
+    pub fn elements(self) -> usize {
+        match self {
+            Self::Fill { elements, .. } => elements.len(),
+            Self::Stroke {
+                shape: ShapeData::Path { elements, .. },
+                ..
+            } => elements.len(),
+            Self::Stroke { .. } => 0,
+        }
+    }
+
+    /// Semantic identity at the tolerance used to construct the outline.
+    pub fn content(self, tolerance: f64) -> u64 {
+        match self {
+            Self::Fill { content, .. } => content,
+            Self::Stroke { shape, stroke } => path::hash_stroke(shape, stroke, tolerance),
+        }
+    }
+
+    /// Construct local geometry only when a realization needs it.
+    pub fn build(self, tolerance: f64) -> kurbo::BezPath {
+        match self {
+            Self::Fill { elements, .. } => kurbo::BezPath::from_vec(elements.to_vec()),
+            Self::Stroke { shape, stroke } => kurbo::stroke(
+                path::shape_path(shape, tolerance),
+                stroke,
+                &kurbo::StrokeOpts::default(),
+                tolerance,
+            ),
+        }
+    }
+}
+
 /// A prepared glyph run either indexes retained source or owns expanded glyphs.
 pub enum GlyphSource {
     /// A partial run produced by nested pictures or COLR expansion.
