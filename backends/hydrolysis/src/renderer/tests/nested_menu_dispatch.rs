@@ -209,37 +209,9 @@ fn selection_menu_nested_command_dispatches() {
     assert_eq!(fired.get(), 1, "the nested command must dispatch");
 }
 
-/// A custom selection-menu command extracts the field's `TextSelection` —
-/// reads the selected text and splices a replacement through it at fire
-/// time, writing back to the field's value binding
-/// (water-rs/waterui#1260).
-#[test]
-fn selection_menu_command_reads_selection() {
-    let observed = Rc::new(RefCell::new(String::new()));
-    let value = Binding::container(Str::from("hello"));
-    let value_probe = value.clone();
-    let observed_clone = observed.clone();
-    let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
-        let observed = observed_clone.clone();
-        AnyView::new(
-            field("Name", &value)
-                .selection_menu("Wrap".action(move |selection: TextSelection| {
-                    *observed.borrow_mut() = selection.selected_text().to_string();
-                    selection.replace("[wrapped]");
-                }))
-                .size(300.0, 60.0),
-        )
-    }));
-    pump_until_settled(&mut runtime);
-
-    let field_bounds = runtime.renderer().text_editing.text_input_targets[0].bounds;
-    let field_center = field_bounds.center();
-    click(
-        &mut runtime,
-        crate::num_cast::f64_as_f32(field_center.x),
-        crate::num_cast::f64_as_f32(field_center.y),
-        PointerButton::Primary,
-    );
+/// Selects the focused field's whole text (⌘A), opens the selection menu
+/// with a secondary press inside the selection, and fires the `Wrap` row.
+fn select_all_and_fire_wrap(runtime: &mut HeadlessRuntime, field_bounds: kurbo::Rect) {
     runtime.push_input_event(InputEvent::Key {
         key: KeyCode::Character("a".to_string()),
         logical_key: Key::Character("a".into()),
@@ -251,14 +223,14 @@ fn selection_menu_command_reads_selection() {
             ..Modifiers::default()
         },
     });
-    pump_until_settled(&mut runtime);
+    pump_until_settled(runtime);
 
     // The secondary press must land inside the selection — a press outside
     // it collapses the range before the menu builds.
     click(
-        &mut runtime,
+        runtime,
         crate::num_cast::f64_as_f32(field_bounds.x0 + 8.0),
-        crate::num_cast::f64_as_f32(field_center.y),
+        crate::num_cast::f64_as_f32(field_bounds.center().y),
         PointerButton::Secondary,
     );
 
@@ -282,12 +254,52 @@ fn selection_menu_command_reads_selection() {
             .expect("the custom Wrap command must appear in the selection menu")
     };
     click(
-        &mut runtime,
+        runtime,
         crate::num_cast::f64_as_f32(f64::midpoint(wrap_row.x0, wrap_row.x1)),
         crate::num_cast::f64_as_f32(f64::midpoint(wrap_row.y0, wrap_row.y1)),
         PointerButton::Primary,
     );
+}
 
+/// A custom selection-menu command extracts the field's `TextSelection` —
+/// reads the selected text and splices a replacement through it at fire
+/// time, writing back to the field's value binding
+/// (water-rs/waterui#1260).
+#[test]
+fn selection_menu_command_reads_selection() {
+    let observed = Rc::new(RefCell::new(String::new()));
+    let calls = Rc::new(Cell::new(0u8));
+    let value = Binding::container(Str::from("hello"));
+    let value_probe = value.clone();
+    let observed_clone = observed.clone();
+    let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
+        let observed = observed_clone.clone();
+        let calls = calls.clone();
+        AnyView::new(
+            field("Name", &value)
+                .selection_menu("Wrap".action(move |selection: TextSelection| {
+                    let call = calls.get();
+                    calls.set(call + 1);
+                    *observed.borrow_mut() = selection.selected_text().to_string();
+                    // A later firing replaces with nothing — "replace the
+                    // selection with empty" must delete it, not no-op.
+                    selection.replace(if call == 0 { "[wrapped]" } else { "" });
+                }))
+                .size(300.0, 60.0),
+        )
+    }));
+    pump_until_settled(&mut runtime);
+
+    let field_bounds = runtime.renderer().text_editing.text_input_targets[0].bounds;
+    let field_center = field_bounds.center();
+    click(
+        &mut runtime,
+        crate::num_cast::f64_as_f32(field_center.x),
+        crate::num_cast::f64_as_f32(field_center.y),
+        PointerButton::Primary,
+    );
+
+    select_all_and_fire_wrap(&mut runtime, field_bounds);
     assert_eq!(
         *observed.borrow(),
         "hello",
@@ -297,5 +309,14 @@ fn selection_menu_command_reads_selection() {
         value_probe.snapshot().as_str(),
         "[wrapped]",
         "selection.replace must write through to the field's value binding"
+    );
+
+    // The field stays focused after the first firing: select all again and
+    // fire — an empty replacement deletes the selection.
+    select_all_and_fire_wrap(&mut runtime, field_bounds);
+    assert_eq!(
+        value_probe.snapshot().as_str(),
+        "",
+        "selection.replace(\"\") must delete the selection"
     );
 }
