@@ -654,7 +654,7 @@ impl GpuCoverage {
 /// Passes ping-pong between the sort buffers and the sorted keys must end
 /// in `sort_a`, so the count is even.
 const fn radix_passes(key_end: u32) -> u32 {
-    let digits = (u32::BITS - key_end.leading_zeros()).div_ceil(4);
+    let digits = key_end.bit_width().div_ceil(4);
     digits.div_ceil(2) * 2
 }
 
