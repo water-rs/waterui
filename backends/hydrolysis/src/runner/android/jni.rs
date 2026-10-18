@@ -7,7 +7,9 @@
 //! pointers carried as `jlong` and driven only on the UI thread, which the
 //! Kotlin host guarantees.
 
+use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ptr::addr_of;
 use std::sync::OnceLock;
 
 use jni::objects::{GlobalRef, JClass, JObject, JString};
@@ -151,14 +153,94 @@ pub(super) fn publish_application_context(
     Ok(())
 }
 
-/// Decodes a session pointer. The host passes exactly what
-/// `nativeCreateSession` returned; anything else is a programming error.
-fn session(ptr: jlong) -> &'static mut AndroidSession {
+/// The heap allocation a session `jlong` points at. The Kotlin host owns
+/// it for the session's life; every entry point borrows `session` through
+/// [`session`], which `entered` makes exclusive.
+///
+/// `entered` sits beside `session` rather than inside it: a borrow is
+/// checked and cleared through `&Cell` on the flag's own field while the
+/// disjoint `session` field is lent mutably — the two never overlap.
+struct SessionBox {
+    entered: Cell<bool>,
+    session: AndroidSession,
+}
+
+/// One JNI call's exclusive borrow of the session [`session`] names.
+///
+/// While the guard lives, a re-entrant [`session`] call — a Kotlin
+/// callback synchronously invoking a native entry point under a session
+/// call — panics rather than minting a second `&mut AndroidSession`
+/// (water-rs/waterui#2953); `guard` reports the panic to that nested
+/// caller as `IllegalStateException`, the same surface every entry
+/// failure takes. Dropping the guard releases the borrow.
+struct SessionGuard {
+    entry: *mut SessionBox,
+}
+
+impl SessionGuard {
+    /// The `entered` flag of this guard's box, read through a field
+    /// projection so the shared borrow never covers the disjoint
+    /// `session` field this guard lends mutably.
+    fn entered(&self) -> &Cell<bool> {
+        // SAFETY: `addr_of!` projects to the `entered` field without
+        // borrowing the whole box, so this `&Cell` never aliases the
+        // `&mut AndroidSession` derived from the disjoint `session`
+        // field below.
+        unsafe { &*addr_of!((*self.entry).entered) }
+    }
+}
+
+impl std::ops::Deref for SessionGuard {
+    type Target = AndroidSession;
+    fn deref(&self) -> &AndroidSession {
+        // SAFETY: `session()` proves no other borrow was live when it
+        // minted this guard, and `entered` keeps a second guard from
+        // existing until this one drops.
+        unsafe { &(*self.entry).session }
+    }
+}
+
+impl std::ops::DerefMut for SessionGuard {
+    fn deref_mut(&mut self) -> &mut AndroidSession {
+        // SAFETY: same argument as `deref` — the guard is the exclusive
+        // borrow for the whole JNI call.
+        unsafe { &mut (*self.entry).session }
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.entered().set(false);
+    }
+}
+
+/// Decodes a session pointer and borrows its session for this call.
+/// The host passes exactly what `nativeCreateSession` returned; anything
+/// else is a programming error.
+///
+/// # Panics
+/// Panics when a borrow is already live: a Kotlin callback re-entered
+/// JNI under a running session call, where minting a second `&mut
+/// AndroidSession` would alias the first.
+fn session(ptr: jlong) -> SessionGuard {
     assert!(ptr != 0, "hydrolysis android: null session pointer");
-    // SAFETY: the pointer came from Box::into_raw on a session that the
-    // Kotlin host owns, and every entry point runs on the UI thread, so no
-    // aliased &mut ever coexists.
-    unsafe { &mut *(ptr as *mut AndroidSession) }
+    // SAFETY: the pointer came from `Box::into_raw` on a `SessionBox` in
+    // `nativeCreateSession`, and the Kotlin host keeps it alive until
+    // `nativeDestroySession`.
+    let entry = ptr as *mut SessionBox;
+    // Read and set the flag before the guard exists: a failed assertion
+    // has no guard to drop, so the live borrow's `entered` stays set
+    // instead of being released under it.
+    //
+    // SAFETY: same projection argument as `SessionGuard::entered` — the
+    // flag field never overlaps the disjoint `session` field.
+    let entered = unsafe { &*addr_of!((*entry).entered) };
+    assert!(
+        !entered.replace(true),
+        "hydrolysis android: a Kotlin callback re-entered JNI while a \
+         session call was still running"
+    );
+    SessionGuard { entry }
 }
 
 /// Decodes the UI-thread services pointer. The host passes exactly what
@@ -327,7 +409,10 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             scroll_friction: 0.0,
         };
         let session = AndroidSession::create(env, vm, host_view, metrics, services(services_ptr))?;
-        Ok(Box::into_raw(session) as jlong)
+        Ok(Box::into_raw(Box::new(SessionBox {
+            entered: Cell::new(false),
+            session: *session,
+        })) as jlong)
     })
 }
 
@@ -342,10 +427,19 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeDestroySes
 ) {
     guard(&mut env, |_env| {
         assert!(session_ptr != 0, "hydrolysis android: null session pointer");
+        let entry = session_ptr as *mut SessionBox;
         // SAFETY: the pointer came from nativeCreateSession, and the Kotlin
         // session hands it here exactly once, on the UI thread, after
         // closing its accessor — no other reference to the session exists.
-        drop(unsafe { Box::from_raw(session_ptr as *mut AndroidSession) });
+        // The flag read is the same disjoint-field projection `session`
+        // uses; it proves no call into the session is still running, so
+        // dropping cannot free memory a live borrow points into.
+        assert!(
+            !unsafe { &*addr_of!((*entry).entered) }.get(),
+            "hydrolysis android: destroying a session while a call into \
+             it is still running"
+        );
+        drop(unsafe { Box::from_raw(entry) });
         Ok(())
     });
 }
@@ -683,7 +777,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeKeyEvent(
             alt: alt != 0,
             super_key: meta != 0,
         };
-        let session = session(session_ptr);
+        let mut session = session(session_ptr);
         super::ime::ImeBridge::key_event(
             &mut session.runtime.platform,
             &key,
@@ -816,7 +910,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibil
     guard_val(&mut env, 0, |env| {
         let text = get_string(env, &text)?;
         Ok(u8::from(super::accessibility::perform_action(
-            session(session_ptr),
+            &mut session(session_ptr),
             virtual_view_id,
             action,
             arg1,
@@ -835,7 +929,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
     session_ptr: jlong,
 ) -> jstring {
     guard_string(&mut env, |_env| {
-        Ok(Some(super::platform_views::placements_json(session(
+        Ok(Some(super::platform_views::placements_json(&session(
             session_ptr,
         ))?))
     })
