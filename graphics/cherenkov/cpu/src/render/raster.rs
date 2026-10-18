@@ -27,7 +27,7 @@ use crate::render::lower::{
 use crate::render::paint::PaintData;
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
-use fearless_simd::{Select, Simd, f32x4};
+use fearless_simd::{Select, Simd, f32x4, mask32x4};
 use filtrate_core::space::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode};
 use filtrate_core::{CpuFilterError, CpuImage, WorkingSpace};
 
@@ -1461,6 +1461,26 @@ pub fn convert_span<S: Simd>(
     }
 }
 
+/// One `blend4` output channel: `keep` lanes hold `orig`, the rest take
+/// `scaled + orig * inv`. A named generic, not an array `map`: `map`
+/// outlines the channel expression into `core::array::try_map`, a
+/// function compiled without the dispatched level's target features,
+/// where the vector ops spill instead of inlining.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level"
+)]
+#[inline(always)]
+fn blend4_ch<S: Simd>(
+    simd: S,
+    keep: mask32x4<S>,
+    orig: f32x4<S>,
+    scaled: f32x4<S>,
+    inv: f32x4<S>,
+) -> f32x4<S> {
+    keep.select(orig, simd.add_f32x4(scaled, simd.mul_f32x4(orig, inv)))
+}
+
 /// Composites four span pixels: `src * cov * cc` in that multiply order,
 /// `member`'s conversion under `SRGB` (`to_srgb`; the identity under
 /// linear storage), then `src + dst * (1 − src.a)` — the scalar
@@ -1487,12 +1507,14 @@ fn blend4<S: Simd, const SRGB: bool>(
     let orig = load_px4(simd, dst);
     let inv = simd.sub_f32x4(simd.splat_f32x4(1.0), scaled[3]);
     let keep = simd.simd_le_f32x4(cc4, simd.splat_f32x4(0.0));
-    let out = [0, 1, 2, 3].map(|ch| {
-        keep.select(
-            orig[ch],
-            simd.add_f32x4(scaled[ch], simd.mul_f32x4(orig[ch], inv)),
-        )
-    });
+    let [orig_r, orig_g, orig_b, orig_a] = orig;
+    let [scaled_r, scaled_g, scaled_b, scaled_a] = scaled;
+    let out = [
+        blend4_ch(simd, keep, orig_r, scaled_r, inv),
+        blend4_ch(simd, keep, orig_g, scaled_g, inv),
+        blend4_ch(simd, keep, orig_b, scaled_b, inv),
+        blend4_ch(simd, keep, orig_a, scaled_a, inv),
+    ];
     store_px4(simd, out, dst);
 }
 
