@@ -428,17 +428,18 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeDestroySes
     guard(&mut env, |_env| {
         assert!(session_ptr != 0, "hydrolysis android: null session pointer");
         let entry = session_ptr as *mut SessionBox;
-        // SAFETY: the pointer came from nativeCreateSession, and the Kotlin
-        // session hands it here exactly once, on the UI thread, after
-        // closing its accessor — no other reference to the session exists.
-        // The flag read is the same disjoint-field projection `session`
-        // uses; it proves no call into the session is still running, so
-        // dropping cannot free memory a live borrow points into.
         assert!(
+            // SAFETY: the pointer came from nativeCreateSession, and the
+            // Kotlin session hands it here exactly once, on the UI thread,
+            // after closing its accessor. The flag read is the same
+            // disjoint-field projection `session` uses.
             !unsafe { &*addr_of!((*entry).entered) }.get(),
             "hydrolysis android: destroying a session while a call into \
              it is still running"
         );
+        // SAFETY: same pointer and exclusivity as the flag read above —
+        // `entered` being clear means no borrow of `session` is still live,
+        // so reclaiming the box frees nothing a borrow points into.
         drop(unsafe { Box::from_raw(entry) });
         Ok(())
     });
