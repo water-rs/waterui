@@ -670,6 +670,9 @@ pub struct Lowering<'a, 'b> {
     projected: FxHashMap<LayerId, crate::render::projective::Placed>,
     /// The host CPU's SIMD level the coverage passes dispatch under.
     level: fearless_simd::Level,
+    /// The renderer's worker pool: the coverage masks and convolutions
+    /// below install their parallel work on it, never the global pool.
+    pool: &'a rayon::ThreadPool,
 }
 
 /// Reusable state for anchor planning and capture emission, owned by the
@@ -1007,6 +1010,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
         (bitmap_cache, geometry): (&'b mut super::bitmap::BitmapCache, &'b mut GeometryCache),
         level: fearless_simd::Level,
+        pool: &'a rayon::ThreadPool,
     ) -> Self {
         let (items, anchor_scratch) = buffers;
         anchor_scratch.clear();
@@ -1038,6 +1042,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             local: None,
             projected: FxHashMap::default(),
             level,
+            pool,
         }
     }
 
@@ -1673,7 +1678,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let (path, rule) = shape_outline(shape, tol_u)?;
         let edges = flatten_edges(self.transform * path, FLATTEN_TOL);
         let (edges, rule) = resolve_edges(edges, rule);
-        let mut mask = coverage_mask(&edges, rule, w, h);
+        let mut mask = self.pool.install(|| coverage_mask(&edges, rule, w, h));
         if let Some(current) = &self.clip {
             for (i, m) in mask.iter_mut().enumerate() {
                 let (px, py) = (i % w, i / w);
@@ -2254,6 +2259,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.bitmap_fonts,
             (&mut *self.bitmap_cache, &mut *self.geometry),
             self.level,
+            self.pool,
         );
         compose.width = self.width;
         compose.height = self.height;
@@ -2683,6 +2689,10 @@ mod tests {
         let (mut items, mut scratch) = (Vec::new(), AnchorScratch::default());
         let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
         let (mut bitmaps, mut geometry) = (BitmapCache::new(0), GeometryCache::default());
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("lowering test pool");
         let mut lowering = Lowering::new(
             (&mut items, &mut scratch),
             (64, 64),
@@ -2692,6 +2702,7 @@ mod tests {
             &bitmap_fonts,
             (&mut bitmaps, &mut geometry),
             crate::Level::new(),
+            &pool,
         );
         lowering.transform = transform;
         lowering.leaf(op, cache).expect("realize");

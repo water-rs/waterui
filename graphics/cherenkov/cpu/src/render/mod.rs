@@ -163,7 +163,7 @@ impl std::fmt::Debug for RasterRenderer {
 /// [`EngineError::Backend`] when the pool cannot be built.
 pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), EngineError> {
     let builder = rayon::ThreadPoolBuilder::new()
-        .num_threads(config.threads.unwrap_or(0))
+        .num_threads(crate::topology::workers(config.threads)?.get())
         .thread_name(|i| format!("cherenkov-raster-{i}"));
     builder
         .build()
@@ -937,6 +937,7 @@ impl RasterRenderer {
                 &self.bitmap_fonts,
                 (&mut self.bitmap_cache, &mut self.geometry),
                 self.level,
+                &self.pool,
             );
             lowering.project(local, projected);
             let result = lowering.run(id, sf.tree, &mut caches, &self.images);
