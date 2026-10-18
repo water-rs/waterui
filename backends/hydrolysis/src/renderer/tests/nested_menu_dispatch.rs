@@ -4,14 +4,15 @@
 //! a nested `Menu` in `.selection_menu` panicked while the menu was being
 //! built; it now opens through the shared popup-submenu machinery.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Instant;
 
 use accesskit::Role;
-use nami::Binding;
+use nami::{Binding, Signal};
 use waterui::component::text;
 use waterui::{AnyView, Str, ViewExt as _};
+use waterui_controls::TextSelection;
 use waterui_controls::menu::{CommandExt as _, Menu};
 use waterui_controls::text_field::field;
 use waterui_core::handler::AnyViewBuilder;
@@ -206,4 +207,95 @@ fn selection_menu_nested_command_dispatches() {
     click(&mut runtime, x, y, PointerButton::Primary);
 
     assert_eq!(fired.get(), 1, "the nested command must dispatch");
+}
+
+/// A custom selection-menu command extracts the field's `TextSelection` —
+/// reads the selected text and splices a replacement through it at fire
+/// time, writing back to the field's value binding
+/// (water-rs/waterui#1260).
+#[test]
+fn selection_menu_command_reads_selection() {
+    let observed = Rc::new(RefCell::new(String::new()));
+    let value = Binding::container(Str::from("hello"));
+    let value_probe = value.clone();
+    let observed_clone = observed.clone();
+    let mut runtime = runtime(AnyViewBuilder::<AnyView>::new(move || {
+        let observed = observed_clone.clone();
+        AnyView::new(
+            field("Name", &value)
+                .selection_menu("Wrap".action(move |selection: TextSelection| {
+                    *observed.borrow_mut() = selection.selected_text().to_string();
+                    selection.replace("[wrapped]");
+                }))
+                .size(300.0, 60.0),
+        )
+    }));
+    pump_until_settled(&mut runtime);
+
+    let field_bounds = runtime.renderer().text_editing.text_input_targets[0].bounds;
+    let field_center = field_bounds.center();
+    click(
+        &mut runtime,
+        crate::num_cast::f64_as_f32(field_center.x),
+        crate::num_cast::f64_as_f32(field_center.y),
+        PointerButton::Primary,
+    );
+    runtime.push_input_event(InputEvent::Key {
+        key: KeyCode::Character("a".to_string()),
+        logical_key: Key::Character("a".into()),
+        physical_code: Code::KeyA,
+        repeat: false,
+        state: KeyState::Pressed,
+        modifiers: Modifiers {
+            super_key: true,
+            ..Modifiers::default()
+        },
+    });
+    pump_until_settled(&mut runtime);
+
+    // The secondary press must land inside the selection — a press outside
+    // it collapses the range before the menu builds.
+    click(
+        &mut runtime,
+        crate::num_cast::f64_as_f32(field_bounds.x0 + 8.0),
+        crate::num_cast::f64_as_f32(field_center.y),
+        PointerButton::Secondary,
+    );
+
+    let wrap_row = {
+        let menu = runtime
+            .renderer()
+            .text_editing
+            .active_text_context_menu
+            .as_ref()
+            .expect("the selection menu must be open");
+        let ActiveTextContextMenu::Overlay { overlay, .. } = menu else {
+            panic!("the headless selection menu is a drawn overlay")
+        };
+        overlay
+            .rows
+            .iter()
+            .find(|row| {
+                matches!(&row.node, PopupMenuNode::Command { plain_label, .. } if plain_label == "Wrap")
+            })
+            .map(|row| row.bounds)
+            .expect("the custom Wrap command must appear in the selection menu")
+    };
+    click(
+        &mut runtime,
+        crate::num_cast::f64_as_f32(f64::midpoint(wrap_row.x0, wrap_row.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(wrap_row.y0, wrap_row.y1)),
+        PointerButton::Primary,
+    );
+
+    assert_eq!(
+        *observed.borrow(),
+        "hello",
+        "the command must read the selected text through TextSelection"
+    );
+    assert_eq!(
+        value_probe.snapshot().as_str(),
+        "[wrapped]",
+        "selection.replace must write through to the field's value binding"
+    );
 }

@@ -2108,6 +2108,71 @@ impl SemanticCore {
     }
 }
 
+/// The [`TextSelectionImpl`] a `selection_menu` command's `TextSelection`
+/// delegates to: the field's model plus its selection slot, so the handle
+/// answers and splices the live selection at fire time
+/// (water-rs/waterui#1260).
+struct FieldSelectionDriver {
+    model: TextInputModel,
+    selection: Rc<RefCell<TextSelectionSlot>>,
+}
+
+impl waterui_controls::text_selection::TextSelectionImpl for FieldSelectionDriver {
+    fn text(&self) -> Str {
+        Str::from(self.model.plain_text())
+    }
+
+    fn range(&self) -> std::ops::Range<usize> {
+        let slot = self.selection.borrow();
+        selection_slot_range_for_text(&slot, self.model.plain_text().as_str())
+    }
+
+    fn replace_range(&self, range: std::ops::Range<usize>, inserted: &str) {
+        // Splice through the same path a typed replacement takes —
+        // normalization, the line limit, and the caret landing after the
+        // inserted text all come from `replace_model_selection`.
+        let mut slot = self.selection.borrow_mut();
+        let text = self.model.plain_text();
+        slot.anchor = clamp_to_char_boundary(text.as_str(), range.start);
+        slot.focus = clamp_to_char_boundary(text.as_str(), range.end);
+        replace_model_selection(&self.model, &mut slot, inserted);
+    }
+
+    fn select(&self, range: std::ops::Range<usize>) {
+        let mut slot = self.selection.borrow_mut();
+        let text = self.model.plain_text();
+        slot.anchor = clamp_to_char_boundary(text.as_str(), range.start);
+        slot.focus = clamp_to_char_boundary(text.as_str(), range.end);
+        slot.initialized = true;
+    }
+
+    fn styled_value(&self) -> Option<nami::Binding<StyledStr>> {
+        match &self.model {
+            TextInputModel::TextField { value, .. } => Some(value.clone()),
+            TextInputModel::SecureField { .. } => None,
+        }
+    }
+}
+
+/// The `TextSelection` a `selection_menu` command extracts — installed
+/// into the menu's environment before its rows build, so the command's
+/// action resolves it as any other environment value. Only a `TextField`
+/// declares `selection_menu` items — a secure field's selection never
+/// reaches a command.
+fn text_selection_for_env(target: &TextInputTarget) -> Option<waterui_controls::TextSelection> {
+    if !matches!(target.model, TextInputModel::TextField { .. }) {
+        return None;
+    }
+    Some(
+        waterui_controls::text_selection::TextSelection::from_driver(Rc::new(
+            FieldSelectionDriver {
+                model: target.model.clone(),
+                selection: Rc::clone(&target.selection),
+            },
+        )),
+    )
+}
+
 impl HydrolysisRenderer {
     pub(crate) fn show_text_context_menu(
         &mut self,
@@ -2132,6 +2197,13 @@ impl HydrolysisRenderer {
         // The menu's rows carry this window's identity, so a Close Window
         // row they fire targets the window the menu belongs to.
         let menu_env = menu_env.extending(self.window_id);
+        // The field's live selection rides the menu's environment, so a
+        // custom `selection_menu` command extracts it as a `TextSelection`
+        // (water-rs/waterui#1260).
+        let menu_env = match text_selection_for_env(&target) {
+            Some(selection) => menu_env.extending(selection),
+            None => menu_env,
+        };
         let nodes =
             SemanticCore::build_text_context_menu_nodes(&target, &menu_env, self.window_closable);
         if nodes.is_empty() {

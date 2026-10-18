@@ -24,6 +24,8 @@ pub mod slider;
 pub use slider::{Slider, slider};
 pub mod text_field;
 pub use text_field::{TextField, field};
+pub mod text_selection;
+pub use text_selection::{TextSelection, TextSelectionImpl};
 pub mod toggle;
 pub use toggle::{Toggle, ToggleStyle, toggle};
 
