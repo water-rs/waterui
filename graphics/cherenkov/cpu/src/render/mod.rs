@@ -34,6 +34,8 @@ pub use lower::{ClipMask, ClipRef};
 pub use paint::{PaintData, paint_data};
 #[cfg(any(test, feature = "testing"))]
 pub use raster::{Accum, ClipRun, Edge, composite_span};
+#[cfg(feature = "testing")]
+pub use raster::{composite_solid, convert_span};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 

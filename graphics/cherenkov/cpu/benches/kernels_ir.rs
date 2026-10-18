@@ -80,7 +80,61 @@ mod kernels_bench {
         black_box(input.dst)
     }
 
-    library_benchmark_group!(name = kernels, benchmarks = [eval, composite]);
+    #[library_benchmark]
+    #[benches::lengths(iter = cases::LENS.iter().copied(), setup = cases::opaque_store)]
+    fn opaque_store(mut input: Composite) -> Vec<[f32; 4]> {
+        bench_kernels::composite_solid(
+            input.level,
+            black_box(&mut input.dst),
+            black_box(&input.cov),
+            input.clip,
+            black_box(input.src[0]),
+            input.space,
+        );
+        black_box(input.dst)
+    }
+
+    fn encode_setup(len: usize) -> (cherenkov_cpu::Level, Vec<[f32; 4]>) {
+        (
+            cherenkov_cpu::Level::new(),
+            cases::conversion_pixels(len, false),
+        )
+    }
+    fn decode_setup(len: usize) -> (cherenkov_cpu::Level, Vec<[f32; 4]>) {
+        (
+            cherenkov_cpu::Level::new(),
+            cases::conversion_pixels(len, true),
+        )
+    }
+
+    #[library_benchmark]
+    #[benches::lengths(iter = cases::LENS.iter().copied(), setup = encode_setup)]
+    fn encode((level, mut pixels): (cherenkov_cpu::Level, Vec<[f32; 4]>)) -> Vec<[f32; 4]> {
+        bench_kernels::convert_span(
+            level,
+            black_box(&mut pixels),
+            bench_kernels::BlendSpace::Linear,
+            bench_kernels::BlendSpace::SrgbEncoded,
+        );
+        black_box(pixels)
+    }
+
+    #[library_benchmark]
+    #[benches::lengths(iter = cases::LENS.iter().copied(), setup = decode_setup)]
+    fn decode((level, mut pixels): (cherenkov_cpu::Level, Vec<[f32; 4]>)) -> Vec<[f32; 4]> {
+        bench_kernels::convert_span(
+            level,
+            black_box(&mut pixels),
+            bench_kernels::BlendSpace::SrgbEncoded,
+            bench_kernels::BlendSpace::Linear,
+        );
+        black_box(pixels)
+    }
+
+    library_benchmark_group!(
+        name = kernels,
+        benchmarks = [eval, composite, opaque_store, encode, decode]
+    );
 }
 
 use gungraun::main;

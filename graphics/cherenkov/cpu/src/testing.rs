@@ -70,4 +70,24 @@ pub mod kernels {
             crate::render::composite_span(simd, dst, src, cov, clip, space);
         });
     }
+    /// The opaque-solid specialization under `level`'s dispatch.
+    pub fn composite_solid(
+        level: Level,
+        dst: &mut [[f32; 4]],
+        cov: &[f32],
+        clip: ClipRun<'_>,
+        color: [f32; 4],
+        space: BlendSpace,
+    ) {
+        fearless_simd::dispatch!(level, simd => {
+            crate::render::composite_solid(simd, dst, cov, clip, color, space);
+        });
+    }
+
+    /// Bidirectional filter conversion under `level`'s dispatch.
+    pub fn convert_span(level: Level, pixels: &mut [[f32; 4]], from: BlendSpace, to: BlendSpace) {
+        fearless_simd::dispatch!(level, simd => {
+            crate::render::convert_span(simd, pixels, from, to);
+        });
+    }
 }

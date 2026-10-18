@@ -62,3 +62,50 @@ fn composite(b: Bencher, case: &Case) {
         );
     });
 }
+
+#[divan::bench(args = cases::LENS.iter().copied())]
+fn opaque_store(b: Bencher, len: usize) {
+    let mut input = cases::opaque_store(len);
+    let color = input.src[0];
+    b.bench_local(|| {
+        kernels::composite_solid(
+            input.level,
+            black_box(&mut input.dst),
+            black_box(&input.cov),
+            input.clip,
+            black_box(color),
+            input.space,
+        );
+    });
+}
+
+fn conversion(b: Bencher, len: usize, encoded: bool) {
+    let pixels = cases::conversion_pixels(len, encoded);
+    let level = cherenkov_cpu::Level::new();
+    let (from, to) = if encoded {
+        (
+            kernels::BlendSpace::SrgbEncoded,
+            kernels::BlendSpace::Linear,
+        )
+    } else {
+        (
+            kernels::BlendSpace::Linear,
+            kernels::BlendSpace::SrgbEncoded,
+        )
+    };
+    // Divan generates inputs outside the timed region. Each iteration sees
+    // the same pixels, never the previous iteration's converted result.
+    b.with_inputs(|| pixels.clone()).bench_refs(|pixels| {
+        kernels::convert_span(level, black_box(pixels), from, to);
+    });
+}
+
+#[divan::bench(args = cases::LENS.iter().copied())]
+fn encode(b: Bencher, len: usize) {
+    conversion(b, len, false);
+}
+
+#[divan::bench(args = cases::LENS.iter().copied())]
+fn decode(b: Bencher, len: usize) {
+    conversion(b, len, true);
+}

@@ -336,3 +336,31 @@ pub fn cases() -> impl Iterator<Item = Case> {
 pub fn of(kind: Kind) -> impl Iterator<Item = Case> {
     cases().filter(move |case| case.kind.name() == kind.name())
 }
+
+/// Opaque solid coverage: the entire run takes the destination-free store path.
+pub fn opaque_store(len: usize) -> Composite {
+    let mut input = Case {
+        kind: Kind::SolidOpaque,
+        len,
+        offset: 0,
+    }
+    .composite();
+    input.cov.fill(1.0);
+    input
+}
+
+/// Fixed premultiplied linear inputs spanning zero alpha, SDR and HDR.
+/// The encoded input is prepared outside the measured conversion.
+pub fn conversion_pixels(len: usize, encoded: bool) -> Vec<[f32; 4]> {
+    let palette = [
+        [0.0; 4],
+        [0.2, 0.1, 0.3, 0.5],
+        [-0.1, 1.5, 0.4, 1.0],
+        [0.7, 0.3, 0.2, 1.0],
+    ];
+    let mut pixels: Vec<_> = (0..len).map(|i| palette[i % palette.len()]).collect();
+    if encoded {
+        filtrate_core::space::to_srgb(&mut pixels);
+    }
+    pixels
+}

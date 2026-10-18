@@ -1430,7 +1430,7 @@ fn from_srgb4<S: Simd>(simd: S, px: [f32x4<S>; 4]) -> [f32x4<S>; 4] {
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn convert_span<S: Simd>(
+pub fn convert_span<S: Simd>(
     simd: S,
     pixels: &mut [[f32; 4]],
     from: cherenkov::BlendSpace,
@@ -1582,7 +1582,7 @@ pub fn composite_span<S: Simd>(
     reason = "compiled under the dispatched CPU level"
 )]
 #[inline(always)]
-fn composite_solid<S: Simd>(
+pub fn composite_solid<S: Simd>(
     simd: S,
     dst: &mut [[f32; 4]],
     cov: &[f32],
