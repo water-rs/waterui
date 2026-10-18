@@ -14,8 +14,11 @@
 use arrayvec::ArrayVec;
 use rayon::prelude::*;
 use rustc_hash::FxHashMap;
+use std::marker::PhantomData;
 use std::mem::MaybeUninit;
+use std::num::NonZeroUsize;
 use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cherenkov::FillRule;
 use cherenkov::lowering::scanline::{EdgeX, RowWalk, walk_rows};
@@ -45,8 +48,8 @@ const SPAN_CHUNK: usize = 64;
 
 /// One job's reusable raster and filter buffers.
 ///
-/// Created once per raster job — a contiguous run of whole bands, at
-/// most one job per worker — for the duration of a pass;
+/// Created once per raster task, at most one task per worker, for the
+/// duration of a pass. Each task dynamically claims whole bands;
 /// buffers are single-owner, never locked, and nothing is retained after the
 /// pass.
 ///
@@ -1671,21 +1674,98 @@ fn shade_windowed(
     result
 }
 
-/// The whole bands one raster job covers: `band_count` bands split
-/// into at most [`rayon::current_num_threads`] contiguous runs, so one
-/// [`Scratch`] serves each run. `None` for an empty output — the
-/// callers' no-op case.
-fn bands_per_job(band_count: usize) -> Option<usize> {
-    let jobs = band_count.min(rayon::current_num_threads());
-    (jobs > 0).then(|| band_count.div_ceil(jobs))
+/// A pass's exclusive output, split only by unique atomic band claims.
+///
+/// The input borrow lasts through the joined raster tasks. Claims never
+/// create a shared reference to pixel contents or reuse a claimed band.
+struct BandQueue<'a, T> {
+    output: *mut T,
+    len: usize,
+    chunk_len: NonZeroUsize,
+    next: AtomicUsize,
+    borrow: PhantomData<&'a mut [T]>,
 }
 
-/// Rasterizes the whole surface's items into `fb`, parallel over
-/// contiguous runs of whole bands. Each job creates one [`Scratch`],
-/// reusing its coverage, isolation and filter-window buffers across the
-/// run's bands. The transient pixel bound is `workers × (band + Σ filter
-/// windows at the deepest nesting)`, with each window sized
-/// `w × (bh + 2·apron)`.
+// SAFETY: the queue owns the exclusive input borrow. Its only pixel access
+// hands each uniquely claimed, disjoint band to one task; sharing the queue
+// never shares pixel references. Moving those elements between tasks needs
+// T: Send, not T: Sync. The borrow outlives all claims and joined tasks.
+unsafe impl<T: Send> Sync for BandQueue<'_, T> {}
+
+impl<'a, T> BandQueue<'a, T> {
+    const fn new(output: &'a mut [T], chunk_len: NonZeroUsize) -> Self {
+        Self {
+            output: output.as_mut_ptr(),
+            len: output.len(),
+            chunk_len,
+            next: AtomicUsize::new(0),
+            borrow: PhantomData,
+        }
+    }
+
+    const fn band_count(&self) -> usize {
+        self.len.div_ceil(self.chunk_len.get())
+    }
+
+    #[expect(
+        clippy::mut_from_ref,
+        reason = "unique atomic claims partition the exclusively borrowed output"
+    )]
+    fn claim(&self) -> Option<(usize, &mut [T])> {
+        let count = self.band_count();
+        let index = self
+            .next
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                (next < count).then(|| next + 1)
+            })
+            .ok()?;
+        let start = index * self.chunk_len.get();
+        let len = self.chunk_len.get().min(self.len - start);
+        // SAFETY: try_update claims each index below count exactly once,
+        // without wrapping. Thus start < self.len, multiplication cannot
+        // overflow, and this band lies wholly within the original slice.
+        // Distinct indices yield disjoint bands. The exclusive input borrow
+        // and this queue borrow keep the allocation alive for the result.
+        let band = unsafe { std::slice::from_raw_parts_mut(self.output.add(start), len) };
+        Some((index, band))
+    }
+}
+
+/// Runs at most min(bands, workers) tasks, each reusing one stack-owned
+/// Scratch. A claim transfers one band without copying output or allocating.
+/// The transient pixel bound is workers × (band + Σ filter windows at the
+/// deepest nesting), with each window sized w × (bh + 2·apron).
+fn for_each_band<T: Send>(
+    output: &mut [T],
+    w: usize,
+    h: usize,
+    shade_band: impl Fn(usize, &mut [T], &mut Scratch) -> Result<(), cherenkov::RenderError> + Sync,
+) -> Result<(), cherenkov::RenderError> {
+    if output.is_empty() || h == 0 {
+        return Ok(());
+    }
+    let chunk_len =
+        NonZeroUsize::new(w * h.min(BAND_H)).expect("non-empty raster output has non-zero width");
+    let queue = BandQueue::new(output, chunk_len);
+    let tasks = queue.band_count().min(rayon::current_num_threads());
+    (0..tasks).into_par_iter().try_for_each(|_| {
+        let Some((mut index, mut band)) = queue.claim() else {
+            return Ok(());
+        };
+        let mut scratch = Scratch::new();
+        loop {
+            shade_band(index * BAND_H, band, &mut scratch)?;
+            match queue.claim() {
+                Some(next) => (index, band) = next,
+                None => return Ok(()),
+            }
+        }
+    })
+}
+
+/// Rasterizes the whole surface's items into `fb`, dynamically claiming
+/// whole bands. Each task reuses its coverage, isolation and filter-window
+/// buffers until no bands remain. All tasks join before the pass returns.
 #[expect(
     clippy::too_many_arguments,
     reason = "the band context travels together"
@@ -1701,29 +1781,20 @@ pub fn render_bands(
     has_backdrop: bool,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
-    let Some(per_job) = bands_per_job(h.div_ceil(BAND_H)) else {
-        return Ok(stats);
-    };
-    fb.par_chunks_mut(per_job * BAND_H * w)
-        .enumerate()
-        .try_for_each(|(job, slice)| {
-            let mut scratch = Scratch::new();
-            for (sub, band) in slice.chunks_mut(BAND_H * w).enumerate() {
-                shade(
-                    level,
-                    items,
-                    clear,
-                    band,
-                    w,
-                    (job * per_job + sub) * BAND_H,
-                    h,
-                    &mut scratch,
-                    peak,
-                    has_backdrop,
-                )?;
-            }
-            Ok(())
-        })?;
+    for_each_band(fb, w, h, |y0, band, scratch| {
+        shade(
+            level,
+            items,
+            clear,
+            band,
+            w,
+            y0,
+            h,
+            scratch,
+            peak,
+            has_backdrop,
+        )
+    })?;
     Ok(stats)
 }
 
@@ -1744,37 +1815,28 @@ pub fn render_bands_f16(
     has_backdrop: bool,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
-    let Some(per_job) = bands_per_job(h.div_ceil(BAND_H)) else {
-        return Ok(stats);
-    };
-    out.par_chunks_mut(per_job * BAND_H * w)
-        .enumerate()
-        .try_for_each(|(job, slice)| {
-            let mut scratch = Scratch::new();
-            for (sub, out_slice) in slice.chunks_mut(BAND_H * w).enumerate() {
-                let mut band_px = scratch.buffers.take_color(out_slice.len());
-                let result = shade(
-                    level,
-                    items,
-                    clear,
-                    &mut band_px,
-                    w,
-                    (job * per_job + sub) * BAND_H,
-                    h,
-                    &mut scratch,
-                    peak,
-                    has_backdrop,
-                );
-                if result.is_ok() {
-                    for (dst, src) in out_slice.iter_mut().zip(band_px.iter()) {
-                        *dst = src.map(half::f16::from_f32);
-                    }
-                }
-                scratch.buffers.give_color(band_px);
-                result?;
+    for_each_band(out, w, h, |y0, out_slice, scratch| {
+        let mut band_px = scratch.buffers.take_color(out_slice.len());
+        let result = shade(
+            level,
+            items,
+            clear,
+            &mut band_px,
+            w,
+            y0,
+            h,
+            scratch,
+            peak,
+            has_backdrop,
+        );
+        if result.is_ok() {
+            for (dst, src) in out_slice.iter_mut().zip(band_px.iter()) {
+                *dst = src.map(half::f16::from_f32);
             }
-            Ok(())
-        })?;
+        }
+        scratch.buffers.give_color(band_px);
+        result
+    })?;
     Ok(stats)
 }
 
@@ -2988,6 +3050,52 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn band_claims_partition_output_across_workers() {
+        use super::{AtomicUsize, BandQueue, NonZeroUsize, Ordering};
+        use rayon::prelude::*;
+
+        let chunk_len = NonZeroUsize::new(7).unwrap();
+        for workers in [1, 2, 8] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(workers)
+                .build()
+                .unwrap();
+            for len in [0usize, 1, 6, 7, 8, 127, 4097] {
+                let mut output = vec![usize::MAX; len];
+                let claims: Vec<_> = (0..len.div_ceil(chunk_len.get()))
+                    .map(|_| AtomicUsize::new(0))
+                    .collect();
+                {
+                    let queue = BandQueue::new(&mut output, chunk_len);
+                    pool.install(|| {
+                        (0..workers).into_par_iter().for_each(|_| {
+                            while let Some((index, band)) = queue.claim() {
+                                assert_eq!(claims[index].fetch_add(1, Ordering::Relaxed), 0);
+                                for (offset, value) in band.iter_mut().enumerate() {
+                                    *value = index * chunk_len.get() + offset;
+                                }
+                            }
+                        });
+                    });
+                    assert!(queue.claim().is_none());
+                    assert_eq!(queue.next.load(Ordering::Relaxed), claims.len());
+                }
+                assert!(
+                    claims
+                        .iter()
+                        .all(|count| count.load(Ordering::Relaxed) == 1)
+                );
+                assert!(
+                    output
+                        .iter()
+                        .enumerate()
+                        .all(|(index, &value)| index == value)
+                );
+            }
+        }
+    }
+
     use super::{Accum, Edge, coverage_mask, reduce_rows};
     use cherenkov::FillRule;
 
