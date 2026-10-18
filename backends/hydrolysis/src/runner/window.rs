@@ -1117,6 +1117,11 @@ crate::engine::cfg_async_fn! {
         display_scale: f64,
         capture_snapshot: bool,
     } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+    // Restore a lost device generation before any handle is read: the
+    // recovered device, its fresh context id and the reconfigured
+    // swapchain are what the frame below renders on. An unrecoverable
+    // device panics inside, naming the recorded losses.
+    surface.ensure_live();
     let (width, height) = surface.size();
     let format = surface.format();
     let output_alpha = surface.output_alpha();
@@ -1134,7 +1139,7 @@ crate::engine::cfg_async_fn! {
             queue: surface.queue(),
             device_loss: surface.device_loss().clone(),
             gpu_context_id: context.context_id,
-            shared_device: context.shared_device,
+            shared_device: context.shared_device.clone(),
             display_scale,
             width,
             height,
@@ -1203,6 +1208,10 @@ crate::engine::cfg_async_fn! {
     let present_started_at = Instant::now();
     surface.present(frame);
     let present = present_started_at.elapsed();
+    // The submitted frame credits this device generation as productive —
+    // the recovery budget clears its loss streak once the queue reports
+    // the submission done.
+    surface.device_loss().note_frame_presented();
     Ok(SurfaceRenderResult {
         acquire,
         render,
@@ -1230,11 +1239,15 @@ impl GpuSurfaceFrame for crate::platform::WinitSurface {
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
         let render_started_at = Instant::now();
+        // Restore a lost device generation before the render target is
+        // built: the engine window is rebuilt on the new context id.
+        self.ensure_live();
         let (target, engine_target) =
             self.render_targets(display_scale, crate::renderer::working_color(clear_color));
         renderer
             .render_window_frame(&target, engine_target)
             .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+        self.device_loss().note_frame_presented();
         Ok(SurfaceRenderResult {
             acquire: Duration::ZERO,
             render: render_started_at.elapsed(),
@@ -1262,12 +1275,19 @@ impl GpuSurfaceFrame for crate::platform::BrowserSurface {
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
         let render_started_at = Instant::now();
+        // Restore a lost device generation before the render target is
+        // built; a still-dead one reports the surface lost so the pump
+        // reschedules and the next frame retries under the loss budget.
+        if !self.ensure_live().await {
+            return Err(crate::platform::SurfaceError::Lost);
+        }
         let (target, root, window_slot) =
             self.render_targets(display_scale, crate::renderer::working_color(clear_color));
         renderer
             .render_dom_frame(&target, root, window_slot)
             .await
             .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+        self.device_loss().note_frame_presented();
         Ok(SurfaceRenderResult {
             acquire: Duration::ZERO,
             render: render_started_at.elapsed(),

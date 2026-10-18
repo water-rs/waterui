@@ -35,8 +35,7 @@ use super::gpu::{AndroidGpuContext, AndroidSurface};
 use super::ime::ImeBridge;
 use super::jni::JniError;
 use crate::platform::{
-    GpuSurfaceWindow, InputEvent, PlatformWindow, PresentationSurface as _, TextInputState,
-    validated_window_frame,
+    GpuSurfaceWindow, InputEvent, PlatformWindow, TextInputState, validated_window_frame,
 };
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
@@ -297,33 +296,6 @@ impl HostBridge {
     /// out its slots.
     pub(crate) fn platform_views_changed(&self) {
         self.call(HostMethodId::PlatformViewsChanged, &[]);
-    }
-
-    /// Delivers a fatal error (GPU loss, unrecoverable renderer failure) —
-    /// the host raises it as an exception on the UI thread.
-    fn fatal_error(&self, message: &str) {
-        let Ok(mut env) = self.vm.get_env() else {
-            tracing::error!(
-                target: "waterui::hydrolysis::android",
-                %message,
-                "fatal error raised with no attached JNIEnv"
-            );
-            return;
-        };
-        let Ok(message) = env.new_string(message) else {
-            return;
-        };
-        let jni_args = [JValue::Object(&message).as_jni()];
-        // SAFETY: as in `call_with_env` — the cached id matches
-        // `onNativeFatalError`'s `(Ljava/lang/String;)V` signature exactly.
-        let _ = unsafe {
-            env.call_method_unchecked(
-                &self.host_view,
-                self.methods[HostMethodId::FatalError as usize],
-                ReturnType::Primitive(Primitive::Void),
-                &jni_args,
-            )
-        };
     }
 
     /// The window's content asked to close — the host finishes the activity.
@@ -1106,14 +1078,11 @@ impl AndroidSession {
             }
             self.sync_back_navigation_available();
         }
-        // A lost device is fatal for the session — surface it through the
-        // host's explicit error callback, not a silently black band.
-        if self.runtime.platform.surface.device_loss().is_lost() {
-            self.runtime
-                .platform
-                .bridge
-                .fatal_error("hydrolysis android: wgpu device lost");
-        }
+        // A lost device is recreated inside the frame above
+        // (`PresentationSurface::ensure_live`, water-rs/waterui#2742); a
+        // recreation that exhausts its loss budget panics there, which the
+        // JNI `guard` raises as `IllegalStateException` — the same explicit
+        // error surface a fatal host callback would have been.
         if should_close {
             self.runtime.platform.bridge.close_requested();
         }
