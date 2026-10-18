@@ -142,6 +142,8 @@ pub struct RasterRenderer {
     image_replacements: u64,
     /// Counts rendered frames; the projective cache's recency clock.
     frame_count: u64,
+    /// Rebuilt for each raster call; capacity is shared across surfaces.
+    band_index: bins::FrameIndex,
 }
 
 impl std::fmt::Debug for RasterRenderer {
@@ -187,6 +189,7 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     geometry: geometry::GeometryCache::default(),
                     image_replacements: 0,
                     frame_count: 0,
+                    band_index: bins::FrameIndex::default(),
                 },
                 info,
             )
@@ -598,7 +601,12 @@ impl Renderer for RasterRenderer {
                 .map(|content| account::content_bytes(content) + lower::silhouette_bytes(content))
                 .sum::<u64>();
         }
-        categories.bands = self.surfaces.values().map(SurfaceState::band_bytes).sum();
+        categories.bands = self
+            .surfaces
+            .values()
+            .map(SurfaceState::band_bytes)
+            .sum::<u64>()
+            + self.band_index.heap_bytes();
         categories.glyphs = self.glyph_cache.bytes();
         categories.images = self.images.values().map(|image| image.bytes()).sum();
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
@@ -687,7 +695,10 @@ impl RasterRenderer {
             });
             if sf.changed || filter_changed {
                 stats.frame = Some(frame.id);
-                self.render_surface(sf, frame.id, stats)?;
+                let mut index = std::mem::take(&mut self.band_index);
+                let result = self.render_surface(sf, frame.id, stats, &mut index);
+                self.band_index = index;
+                result?;
             }
         }
         let (used, used_groups) = self.filter_uses();
@@ -781,6 +792,7 @@ impl RasterRenderer {
         sf: &cherenkov::SurfaceFrame<'_>,
         frame: cherenkov::FrameId,
         stats: &mut FrameStats,
+        index: &mut bins::FrameIndex,
     ) -> Result<(), RenderError> {
         let phases = stats.phases;
         let id = sf.id;
@@ -791,10 +803,9 @@ impl RasterRenderer {
         // The frame's transient band-index metrics, shared by the
         // projective realizations and the surface render: each records
         // the frame-local peak.
-        let mut index = bins::FrameIndex::default();
         let mut frame_mem = bins::FrameMeter::default();
         let (projected, mut used) =
-            self.realize_projective(sf, frame, stats, &mut index, &mut frame_mem)?;
+            self.realize_projective(sf, frame, stats, index, &mut frame_mem)?;
         let mut items: Vec<Item> = Vec::new();
         let glyph_reqs = self.lower_items(
             sf,
@@ -825,7 +836,7 @@ impl RasterRenderer {
                 raster::render_bands(
                     level,
                     &items,
-                    &mut index,
+                    index,
                     clear,
                     fb,
                     w,
@@ -839,7 +850,7 @@ impl RasterRenderer {
                 raster::render_bands_f16(
                     level,
                     &items,
-                    &mut index,
+                    index,
                     clear,
                     out,
                     w,
@@ -859,7 +870,7 @@ impl RasterRenderer {
                 sink.as_mut(),
                 Some(&peak),
                 has_backdrop,
-                &mut index,
+                index,
                 &mut frame_mem,
             )?,
         };

@@ -1,7 +1,7 @@
 //! Per-frame band bins over a raster's painter-ordered [`Item`] list.
 //!
 //! A [`FrameIndex`] is rebuilt per `render_bands*` call and reused across
-//! the frame's sequential calls, then dropped. Flat prefix-offset tables
+//! sequential calls and frames. Flat prefix-offset tables
 //! give each `BAND_H`-row band the item indices it must run — every structural item in original order,
 //! plus each bounded draw whose device rows reach the band — and, for
 //! each `Item::Draw`, the indices of its own edges that can cross the
@@ -63,7 +63,7 @@ const SUBNORMAL: f64 = 1.401_298_464_324_817e-45;
 /// the render thread reads the combined peak after shading.
 #[derive(Debug, Default)]
 pub struct FrameMeter {
-    /// Current frame-owned index allocation, fixed while workers run.
+    /// Current index allocation, fixed while workers run.
     pub index_bytes: u64,
     /// Peak simultaneously live index and query-scratch allocation.
     pub peak: AtomicU64,
@@ -184,7 +184,7 @@ pub struct EdgeGroup<'a> {
 /// the group's own `edges`, in original order.
 ///
 /// Every table keeps its capacity across [`EdgeBins::rebuild`]s: the
-/// owner reuses the storage for the frame's lifetime instead of
+/// renderer reuses the storage across frames instead of
 /// re-allocating per call.
 #[derive(Default)]
 pub struct EdgeBins {
@@ -326,9 +326,7 @@ impl EdgeBins {
     }
 }
 
-/// Frame-owned per-band item and draw-edge bins. Every table keeps its
-/// capacity across the frame's sequential projective and surface renders;
-/// none survives the frame boundary.
+/// Per-band item and edge bins, rebuilt in renderer-owned reusable storage.
 #[derive(Default)]
 pub struct FrameIndex {
     /// The surface's band count: `⌈h / BAND_H⌉`.
