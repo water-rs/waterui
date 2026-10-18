@@ -538,6 +538,7 @@ impl PaintData {
     }
 
     /// Evaluates the paint at a device-space pixel centre in premultiplied linear P3.
+    #[cfg(test)]
     #[must_use]
     #[expect(
         clippy::inline_always,
@@ -711,11 +712,13 @@ impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
     }
 }
 
+#[cfg(test)]
 struct PixelCenter {
     dx: f32,
     dy: f32,
 }
 
+#[cfg(test)]
 impl PaintOutput for PixelCenter {
     type Output = [f32; 4];
 
