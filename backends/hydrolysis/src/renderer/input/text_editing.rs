@@ -2130,12 +2130,19 @@ impl waterui_controls::text_selection::TextSelectionImpl for FieldSelectionDrive
     fn replace_range(&self, range: std::ops::Range<usize>, inserted: &str) {
         // Splice through the same path a typed replacement takes —
         // normalization, the line limit, and the caret landing after the
-        // inserted text all come from `replace_model_selection`.
+        // inserted text all come from `replace_model_selection`. That path
+        // treats an empty payload as "nothing typed" and leaves the range
+        // in place, so an empty `inserted` — "replace the selection with
+        // nothing" — routes to the delete path instead.
         let mut slot = self.selection.borrow_mut();
         let text = self.model.plain_text();
         slot.anchor = clamp_to_char_boundary(text.as_str(), range.start);
         slot.focus = clamp_to_char_boundary(text.as_str(), range.end);
-        replace_model_selection(&self.model, &mut slot, inserted);
+        if inserted.is_empty() {
+            delete_model_selection(&self.model, &mut slot);
+        } else {
+            replace_model_selection(&self.model, &mut slot, inserted);
+        }
     }
 
     fn select(&self, range: std::ops::Range<usize>) {

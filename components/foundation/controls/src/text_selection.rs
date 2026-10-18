@@ -68,6 +68,7 @@ impl TextSelection {
     /// Replaces the selection with `inserted`, collapsing the caret to the
     /// end of the inserted text — the same normalization a typed
     /// replacement goes through (a line-limited field never grows a line).
+    /// An empty `inserted` deletes the selection.
     pub fn replace(&self, inserted: &str) {
         let range = self.driver.range();
         self.driver.replace_range(range, inserted);
@@ -100,7 +101,8 @@ pub trait TextSelectionImpl: 'static {
     fn range(&self) -> Range<usize>;
 
     /// Replaces `range` in `text()` with `inserted`, then collapses the
-    /// selection to a caret after the inserted text.
+    /// selection to a caret after the inserted text. An empty `inserted`
+    /// deletes `range`.
     fn replace_range(&self, range: Range<usize>, inserted: &str);
 
     /// Selects `range` — or sets the caret when `range` is empty.
