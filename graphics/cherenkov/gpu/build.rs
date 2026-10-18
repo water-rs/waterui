@@ -45,7 +45,6 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use askama::Template;
 use naga::back::{msl, spv};
 use naga::valid::{ValidationFlags, Validator};
 
@@ -605,7 +604,7 @@ struct PassthroughEntry<'a> {
     memory: Vec<u32>,
 }
 
-#[derive(Template)]
+#[derive(askama::Template)]
 #[template(path = "passthrough_entries.rs.jinja", escape = "none")]
 struct PassthroughEntries<'a> {
     entries: Vec<PassthroughEntry<'a>>,
@@ -643,8 +642,7 @@ fn write_entry_points(
             }
         })
         .collect();
-    let source = PassthroughEntries { entries }
-        .render()
+    let source = askama::Template::render(&PassthroughEntries { entries })
         .expect("render passthrough entry points");
     std::fs::write(out_dir.join(format!("{}.entries.rs", spec.name)), source)
         .expect("write passthrough entry points");
