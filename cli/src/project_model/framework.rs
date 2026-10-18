@@ -2779,18 +2779,19 @@ fn resolve_packages(
                 dependency.version = Some(format!("={version}").parse()?);
             }
             Some(source) if source.is_git() => {
-                let Some(cargo_lock::package::GitReference::Rev(revision)) = source.git_reference()
-                else {
-                    bail!(
-                        "framework package {name} must use an immutable Git revision in the framework manifest"
-                    );
+                // Whatever form the framework's pin takes — a `rev`, a
+                // `branch` a `[patch]` follows upstream, a `tag`, or the
+                // repository's head — the lock records the commit it
+                // resolved to, and that precise commit is the immutable
+                // revision a scaffolded project pins. The requirement is
+                // written `rev` so the generated manifest never carries a
+                // moving target.
+                let Some(revision) = source.precise() else {
+                    bail!("framework package {name}'s git source records no resolved commit");
                 };
                 validate_revision(revision)?;
-                if source.precise() != Some(revision.as_str()) {
-                    bail!("framework package {name} does not resolve its declared revision");
-                }
                 dependency.git = Some(source.url().to_string());
-                dependency.rev = Some(revision.clone());
+                dependency.rev = Some(revision.to_owned());
             }
             Some(source) => bail!("unsupported framework package source for {name}: {source}"),
         }
@@ -5021,6 +5022,40 @@ mod tests {
             Some("https://github.com/water-rs/hydrolysis-m3")
         );
         assert_eq!(m3.rev.as_deref(), Some(m3_revision));
+    }
+
+    #[test]
+    fn a_branch_pinned_scaffold_package_resolves_its_locked_commit() {
+        // A `[patch]` following a moving branch — `hydrolysis-m3`'s
+        // `branch = "dev"` while its split surfaces stabilize — locks a
+        // `?branch=dev#<commit>` source. The scaffold pins the precise
+        // commit the lock records, never the branch: a generated manifest
+        // carries no moving target.
+        let m3_commit = "0add1da1efe14f4b42349de93c687df033ec258e";
+        let m3_source =
+            format!("git+https://github.com/water-rs/hydrolysis-m3?branch=dev#{m3_commit}");
+        let lock = Lockfile {
+            packages: vec![
+                package("waterui", "0.3.0", None),
+                package("hydrolysis-m3", "0.3.1", Some(&m3_source)),
+            ],
+            version: cargo_lock::ResolveVersion::V4,
+            root: None,
+            metadata: BTreeMap::default(),
+            patch: cargo_lock::Patch::default(),
+        };
+        let scaffold = BTreeMap::from([
+            ("waterui-version".to_string(), "0.3.0".to_string()),
+            ("hydrolysis-m3-version".to_string(), "0.3.1".to_string()),
+        ]);
+        let packages =
+            resolve_packages(&scaffold, &lock, framework_repository(), &"a".repeat(40)).unwrap();
+        let m3 = &packages["hydrolysis-m3"];
+        assert_eq!(
+            m3.git.as_deref(),
+            Some("https://github.com/water-rs/hydrolysis-m3")
+        );
+        assert_eq!(m3.rev.as_deref(), Some(m3_commit));
     }
 
     #[test]
