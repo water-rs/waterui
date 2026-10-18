@@ -22,12 +22,16 @@ GPU governor picks the clock from recent utilization: a fresh process, a
 previous seconds settled on. Identical binaries then differ by the clocks
 they happened to get, not by their cost (#2613). So `run` measures code cost
 with both the GPU and the measuring CPU held at one operating point:
-`scaling_min_freq = scaling_max_freq = --gpu-khz / --cpu-khz` for the whole
-collection, the original limits restored afterwards. A thermal cap is never
-overridden: when a requested clock lies outside the effective policy range,
-the run waits for the device to cool and fails if it does not. `--governor`
-leaves both clocks to their governors instead; that mode measures what the
-device delivers (the 8.33 ms p99 frame budget), not cost.
+`scaling_min_freq = scaling_max_freq = --gpu-khz / --cpu-khz` for each
+workload. The device-side supervisor selects the vendor's CPU performance
+profiles, releases CPU skin-temperature votes and selects the performance
+governor. It restores every setting when the workload exits, times out or is
+interrupted. Physical CPU/GPU temperatures are checked against their first
+passive hardware trip; the battery is checked against `--battery-c`.
+Crossing a limit terminates the workload. Thermal status is recorded without
+waiting for it to clear. Emergency hardware protection remains enabled.
+`--governor` leaves performance policies unchanged and measures the delivered
+frame budget instead of fixed-clock cost.
 
 A frame whose GPU time is a fraction of a millisecond is latency-bound on the
 Pixel's Mali: added work is absorbed or changes the GPU's power state, so its
@@ -50,28 +54,16 @@ through `VELLO_CPU_THREADS` (one worker is its single-threaded dispatcher, N
 its multithreaded one with N workers); skia-cpu is single-threaded and runs
 at one worker only. The GPU is left to its governor. Every CPU frequency
 policy holding a CPU of the set is held at its `--cluster-khz` clock for the
-whole collection instead, and policies outside the set are left alone.
+workload instead. Original policy values are restored after each invocation.
 
 Controls, checked for every invocation and recorded with it:
 
-- before: screen off; thermal status below moderate; battery below
-  `--battery-c`; every CPU and GPU cooling device at state 0; in pinned mode
-  every pinned policy's range collapsed onto its requested clock. Android's
-  power HAL rewrites a policy's limits on its own hints: while no cooling
-  device is active the check writes the pin back and records it in
-  `control.json` (`repins`); with one active it waits, so a thermal cap is
-  never written over;
-- during: for the GPU engine, the report's `gpu_clock` residency over the
-  measured window (in pinned mode all of its powered time at `--gpu-khz`);
-  the measuring thread starting and ending every frame on a CPU of the set
-  (CPU 7 for the GPU engine, so it never migrates); for a CPU engine, the
-  report's `device.adapter` stating the requested worker count;
-- after: thermal status below moderate; in pinned mode every pinned policy's
-  range still on its clock and every pinned CPU policy's `time_in_state`
-  residency over the whole process at that clock alone; under the governor
-  every cooling device still at 0, since a cooling device narrows the range
-  the governor picks from. A pinned run is not invalidated by a cooling
-  device that moved no pinned clock.
+- before: screen off, physical sensors below their limits, and the requested
+  device settings applied with readback evidence;
+- during: physical temperature supervision, GPU clock residency, CPU placement,
+  and the requested worker count;
+- after: pinned policy ranges and CPU frequency residency over the workload,
+  followed by restoration of every original property and sysfs value.
 
 A failed control marks the invocation invalid and stops the collection:
 `analyze` reports a scene with an invalid invocation as `invalid`, never as
@@ -187,8 +179,6 @@ RATE_HZ = 120
 BOOTSTRAP_RESAMPLES = 2000
 # The GPU engine's measuring CPU.
 CPU = 7
-# Thermal status from `dumpsys thermalservice`: 2 is MODERATE.
-THERMAL_STATUS_BELOW = 2
 # CoolingDevice types of `android.os.CoolingDevice`: CPU and GPU.
 COOLING_TYPES = (2, 3)
 CPUFREQ = "/sys/devices/system/cpu/cpufreq"
@@ -277,26 +267,6 @@ class Clocks:
             state[name] = dict(zip(("min", "max", "current"), map(int, values)))
         return state
 
-    def cpu_residency(self) -> dict[str, dict[int, int]]:
-        """Every CPU policy's cumulative time per clock (kHz to 10 ms ticks,
-        cpufreq `stats/time_in_state`)."""
-        out = {}
-        for name, path in self.paths.items():
-            if name == "gpu":
-                continue
-            text = self.device.root(f"cat {path}/stats/time_in_state")
-            out[name] = {int(khz): int(ticks) for khz, ticks
-                         in (line.split() for line in text.splitlines())}
-        return out
-
-    def write(self, name: str, low: int, high: int) -> None:
-        path = self.paths[name]
-        # Raise the ceiling before the floor when moving up and the floor
-        # before the ceiling when moving down, so min <= max holds at every
-        # step; writing max, min, max covers both.
-        self.device.root(f"echo {high} > {path}/scaling_max_freq; "
-                         f"echo {low} > {path}/scaling_min_freq; "
-                         f"echo {high} > {path}/scaling_max_freq")
 
 
 def thermal(device: Device) -> dict[str, Any]:
@@ -320,6 +290,99 @@ def screen_off(device: Device) -> str:
     return re.search(r"mWakefulness=(\w+)", device.adb("shell", "dumpsys power"))[1]
 
 
+class PerformanceControls:
+    """Device-native policy controls and physical sensor limits for one workload."""
+
+    def __init__(self, device: Device, clocks: Clocks, pinned: dict[str, int] | None,
+                 battery_c: float) -> None:
+        self.arguments: list[str] = []
+        self.sensors: list[dict[str, Any]] = []
+        power = json.loads(device.root("cat /vendor/etc/powerhint.json"))
+        nodes = {node["Name"]: node for node in power["Nodes"]}
+        if pinned:
+            for action in power["Actions"]:
+                node = nodes.get(action.get("Node"))
+                if (action["PowerHint"] == "GAME" and node is not None
+                        and node.get("Type") == "Property"
+                        and node["Path"].startswith("vendor.thermal.")
+                        and node["Path"].endswith(".profile")):
+                    self.arguments += ["--property", node["Path"], action["Value"]]
+            for node in nodes.values():
+                if node["Name"].endswith("_TSKIN_BYPASS"):
+                    assert "1" in node["Values"]
+                    self.arguments += ["--node", node["Path"], "1"]
+            for name, khz in pinned.items():
+                path = clocks.paths[name]
+                if name != "gpu":
+                    governors = device.root("cat " + shlex.quote(path + "/scaling_available_governors")).split()
+                    if "performance" not in governors:
+                        raise ControlError(f"{name} has no performance governor")
+                    self.arguments += ["--node", path + "/scaling_governor", "performance"]
+                self.arguments += ["--clock", name, path, str(khz)]
+
+        config_name = device.root("getprop vendor.thermal.config").strip()
+        sensors = self.load_sensors(device, config_name)
+        for sensor in sensors.values():
+            if sensor.get("VirtualSensor") or sensor.get("Type") not in ("CPU", "GPU", "BATTERY"):
+                continue
+            name = sensor["Name"]
+            zone = device.root("readlink -f " + shlex.quote("/dev/thermal/tz-by-name/" + name)).strip()
+            if not zone:
+                raise ControlError(f"no physical sensor path for {name}")
+            if sensor["Type"] == "BATTERY":
+                limit = round(battery_c * 1000)
+            else:
+                types = device.root("ls " + shlex.quote(zone) + "/trip_point_*_type").split()
+                limits = []
+                for path in types:
+                    if device.root("cat " + shlex.quote(path)).strip() == "passive":
+                        limits.append(int(device.root("cat " + shlex.quote(path.removesuffix("_type") + "_temp")).strip()))
+                if not limits:
+                    raise ControlError(f"{name} has no physical throttling threshold")
+                limit = min(limits)
+            reading = {"name": name, "path": zone + "/temp", "limit_millicelsius": limit}
+            self.sensors.append(reading)
+            self.arguments += ["--sensor", name, reading["path"], str(limit)]
+        if not self.sensors:
+            raise ControlError("device exposes no physical temperature sensors")
+
+    @classmethod
+    def load_sensors(cls, device: Device, name: str) -> dict[str, dict[str, Any]]:
+        config = json.loads(device.root("cat " + shlex.quote("/vendor/etc/" + name)))
+        sensors: dict[str, dict[str, Any]] = {}
+        for include in config.get("Include", []):
+            sensors.update(cls.load_sensors(device, include))
+        sensors.update({sensor["Name"]: sensor for sensor in config.get("Sensors", [])})
+        return sensors
+
+    @staticmethod
+    def read_evidence(directory: Path) -> dict[str, Any]:
+        """Read actual setup/restore values, never infer success from process exit alone."""
+        controls = []
+        exit_code = int((directory / "exit-code").read_text())
+        count = int((directory / "registered-controls").read_text())
+        for index in range(count):
+            stem = directory / f"control-{index}"
+            fields = {suffix: stem.with_suffix("." + suffix).read_text().strip()
+                      for suffix in ("kind", "key", "original", "requested", "restored")}
+            applied = stem.with_suffix(".applied")
+            fields["applied"] = applied.read_text().strip() if applied.exists() else None
+            if fields["original"] != fields["restored"]:
+                raise ControlError(f"device setting not restored: {fields['key']}")
+            if fields["kind"] == "clock":
+                fields.update({suffix: stem.with_suffix("." + suffix).read_text().strip()
+                               for suffix in ("name", "original-max", "restored-max")})
+                maximum = stem.with_suffix(".applied-max")
+                fields["applied-max"] = maximum.read_text().strip() if maximum.exists() else None
+                if fields["original-max"] != fields["restored-max"]:
+                    raise ControlError(f"clock ceiling not restored: {fields['key']}")
+            if exit_code == 0 and (fields["applied"] != fields["requested"] or
+                    (fields["kind"] == "clock" and fields["applied-max"] != fields["requested"])):
+                raise ControlError(f"device setting not applied: {fields['key']}")
+            controls.append(fields)
+        return {"exit": exit_code, "settings": controls}
+
+
 class Session:
     """One collection: the plan, the device, the controls and the run log."""
 
@@ -337,50 +400,19 @@ class Session:
             self.pinned = dict(args.cluster_khz)
         self.clocks = Clocks(self.device, list(self.pinned or {"gpu": 0, self.policy_of(CPU): 0}))
         self.remote = f"/data/local/tmp/pixel-compare-{self.out.name}"
-        self.repins: list[dict[str, Any]] = []
+        self.performance = PerformanceControls(self.device, self.clocks, self.pinned, args.battery_c)
+        self.device_runs: dict[str, dict[str, Any]] = {}
 
     def policy_of(self, cpu: int) -> str:
         return self.device.root(f"readlink -f /sys/devices/system/cpu/cpu{cpu}/cpufreq").strip(
             ).rsplit("/", 1)[1]
 
-    def quiet(self, pinned: bool) -> dict[str, Any]:
-        """Waits, bounded, until the device is cool and — when `pinned` —
-        every pinned policy sits on its requested clock. A pinned CPU policy
-        the power HAL moved is written back while no cooling device is
-        active. Unpinned, a requested clock must lie inside the effective
-        range, which a thermal cap narrows; this never lifts a cap."""
-        deadline = time.clock_gettime(time.CLOCK_MONOTONIC) + self.args.cool_seconds
-        while True:
-            wakefulness = screen_off(self.device)
-            sample = thermal(self.device)
-            clocks = self.clocks.state()
-            reasons = []
-            if wakefulness == "Awake":
-                reasons.append("screen awake")
-            if sample["status"] >= THERMAL_STATUS_BELOW:
-                reasons.append(f"thermal status {sample['status']}")
-            if sample["battery_c"] >= self.args.battery_c:
-                reasons.append(f"battery {sample['battery_c']} C")
-            hot = {k: v for k, v in sample["cooling"].items() if v != 0}
-            if hot:
-                reasons.append(f"cooling {hot}")
-            for name, khz in (self.pinned or {}).items():
-                low, high = clocks[name]["min"], clocks[name]["max"]
-                if pinned and (low, high) != (khz, khz):
-                    reasons.append(f"{name} policy {low}-{high} not pinned at {khz}")
-                    if not hot and name != "gpu":
-                        self.clocks.write(name, khz, khz)
-                        self.repins.append({"policy": name, "found": [low, high],
-                                            "time_unix": time.time()})
-                if not pinned and not low <= khz <= high:
-                    reasons.append(f"{name} {khz} outside the effective range {low}-{high}")
-            if not reasons:
-                return {"wakefulness": wakefulness, "thermal": sample, "clocks": clocks}
-            if time.clock_gettime(time.CLOCK_MONOTONIC) > deadline:
-                raise ControlError("device not quiet within "
-                                   f"{self.args.cool_seconds} s: {'; '.join(reasons)}")
-            print("waiting:", "; ".join(reasons), flush=True)
-            time.sleep(5)
+    def snapshot(self) -> dict[str, Any]:
+        wakefulness = screen_off(self.device)
+        if wakefulness == "Awake":
+            raise ControlError("screen remained awake")
+        return {"wakefulness": wakefulness, "thermal": thermal(self.device),
+                "clocks": self.clocks.state()}
 
     def plan(self) -> list[dict[str, Any]]:
         args = self.args
@@ -418,6 +450,9 @@ class Session:
             "clocks": "governor" if self.pinned is None else self.pinned,
             "battery_c": args.battery_c, "serial": args.serial,
             "script_sha256": sha256(Path(__file__)),
+            "supervisor_sha256": sha256(Path(__file__).with_name("pixel_run.sh")),
+            "physical_temperature_limits": self.performance.sensors,
+            "device_controls": self.performance.arguments,
         }
         save(self.out / PLAN, plan)
         if self.device.root("id -u").strip() != "0":
@@ -428,6 +463,10 @@ class Session:
         """Pushes both arms and every scene into the collection's remote
         directory, which the shell user owns so `adb push` can write it."""
         plan = json.loads((self.out / PLAN).read_text())
+        supervisor = self.remote + "/pixel_run.sh"
+        self.device.adb("push", str(Path(__file__).with_name("pixel_run.sh")), supervisor, timeout=30)
+        if self.device.root("sha256sum " + shlex.quote(supervisor)).split()[0] != plan["supervisor_sha256"]:
+            raise ControlError("uploaded device supervisor hash differs from plan")
         arms = {side: Path(arm["path"]) for side, arm in plan["arms"].items()}
         for side, path in arms.items():
             target = f"{self.remote}/bench-{side}"
@@ -458,9 +497,30 @@ class Session:
         else:
             environment = self.cpu_engine.environment(args.workers)
         prefix = ["env", *(f"{k}={v}" for k, v in environment.items())] if environment else []
-        log = self.device.root(f"timeout {args.run_seconds} " + shlex.join(prefix + command) + " 2>&1",
-                               timeout=args.run_seconds + 30)
+        remote_control = f"{self.remote}/{run_id}-control"
+        supervised = ["sh", self.remote + "/pixel_run.sh", "--out", remote_control,
+                      "--seconds", str(args.run_seconds), *self.performance.arguments,
+                      "--", *prefix, *command]
+        process = subprocess.Popen(
+            ["adb", "-s", self.device.serial, "shell", "su -c " + shlex.quote(shlex.join(supervised))],
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        try:
+            log, _ = process.communicate(timeout=args.run_seconds + 30)
+        except BaseException:
+            self.device.root(
+                "if [ -f " + shlex.quote(remote_control + "/supervisor-pid") + "]; then "
+                "read -r pid < " + shlex.quote(remote_control + "/supervisor-pid") +
+                '; kill -TERM "$pid"; fi', timeout=10)
+            log, _ = process.communicate(timeout=15)
+            (self.out / f"{run_id}.log").write_text(log)
+            raise
+        finally:
+            self.device.adb("pull", remote_control, str(self.out / f"{run_id}-control"), timeout=30)
         (self.out / f"{run_id}.log").write_text(log)
+        evidence = PerformanceControls.read_evidence(self.out / f"{run_id}-control")
+        self.device_runs[run_id] = evidence
+        if process.returncode != 0 or evidence["exit"] != 0:
+            raise ControlError(f"{run_id}: device supervisor exited {process.returncode}; see {run_id}.log")
         local = self.out / f"{run_id}.json"
         self.device.adb("pull", report, str(local), timeout=60)
         return local
@@ -499,22 +559,12 @@ class Session:
 
     def run(self) -> None:
         scenes = self.plan()
-        # The limits to restore are read from a cool device: a thermal cap
-        # reads as a lowered `scaling_max_freq`, and writing that back would
-        # leave the cap in place as a user limit.
-        control: dict[str, Any] = {"completed": False, "repins": self.repins}
-        control["original_cooled"] = self.quiet(pinned=False)
-        original = control["original_cooled"]["clocks"]
-        control["original"] = original
+        control: dict[str, Any] = {"completed": False, "invocations": self.device_runs}
+        control["original"] = self.clocks.state()
         save(self.out / CONTROL, control)
         self.device.adb("shell", f"mkdir {self.remote} {self.remote}/scenes")
         try:
             self.push(scenes)
-            if self.pinned:
-                for name, khz in self.pinned.items():
-                    self.clocks.write(name, khz, khz)
-                control["pinned"] = self.clocks.state()
-                save(self.out / CONTROL, control)
             for scene in scenes:
                 for pair in range(self.args.rounds):
                     order = ("base", "head") if pair % 2 == 0 else ("head", "base")
@@ -523,26 +573,31 @@ class Session:
             control["completed"] = True
         finally:
             self.device.root(f"rm -r {self.remote}")
-            if self.pinned:
-                self.restore(original, control)
+            control["restored"] = self.clocks.state()
             save(self.out / CONTROL, control)
 
     def invocation(self, scene: dict[str, Any], pair: int, side: str) -> None:
         """Measures one invocation between its controls and logs it; a
         failed control stops the collection."""
         run_id = f"{scene['name']}-p{pair}-{side}"
-        before = self.quiet(pinned=self.pinned is not None)
-        residency_before = self.clocks.cpu_residency()
+        before = self.snapshot()
         local = self.measure(scene, side, run_id)
-        residency = {name: {khz: ticks - residency_before[name].get(khz, 0)
-                            for khz, ticks in table.items()}
-                     for name, table in self.clocks.cpu_residency().items()}
-        after = {"thermal": thermal(self.device), "clocks": self.clocks.state(),
+        directory = self.out / f"{run_id}-control"
+        residency = {}
+        ranges = {}
+        for name in self.pinned or {}:
+            values = [int(v) for v in (directory / f"{name}-after-range").read_text().split()]
+            ranges[name] = dict(zip(("min", "max"), values))
+            if name != "gpu":
+                readings = [{int(k): int(v) for k, v in
+                             (line.split() for line in (directory / f"{name}-{moment}-residency").read_text().splitlines())}
+                            for moment in ("before", "after")]
+                residency[name] = {khz: ticks - readings[0][khz] for khz, ticks in readings[1].items()}
+        after = {"thermal": thermal(self.device), "clocks": ranges,
+                 "restored_clocks": self.clocks.state(),
                  "cpu_residency_ticks": {name: {k: v for k, v in table.items() if v}
                                          for name, table in residency.items()}}
         failures = self.check_report(local)
-        if after["thermal"]["status"] >= THERMAL_STATUS_BELOW:
-            failures.append(f"thermal status {after['thermal']['status']} after")
         if self.pinned:
             # What a pinned run controls is the clocks: a cooling device
             # that moved none leaves the run valid. Each range is checked
@@ -555,12 +610,6 @@ class Session:
                 other = {k: v for k, v in residency.get(name, {}).items() if k != khz and v}
                 if other:
                     failures.append(f"{name} left {khz} kHz: {other}")
-        else:
-            # Under the governor a cooling device narrows the range the
-            # governor picks from.
-            hot = {k: v for k, v in after["thermal"]["cooling"].items() if v}
-            if hot:
-                failures.append(f"cooling after {hot}")
         record = {"scene": scene["name"], "pair": pair, "side": side, "run_id": run_id,
                   "report_sha256": sha256(local), "before": before, "after": after,
                   "failures": failures}
@@ -571,20 +620,6 @@ class Session:
         if failures:
             raise ControlError(f"{run_id}: {'; '.join(failures)}")
 
-    def restore(self, original: dict[str, Any], control: dict[str, Any]) -> None:
-        """Writes the original policy limits back, then verifies them once
-        the device has cooled: a thermal cap reads as a lower
-        `scaling_max_freq` until its cooling device returns to 0."""
-        for name in self.clocks.paths:
-            self.clocks.write(name, original[name]["min"], original[name]["max"])
-        self.pinned = None
-        control["restored_cooled"] = self.quiet(pinned=False)
-        control["restored"] = self.clocks.state()
-        save(self.out / CONTROL, control)
-        for name in self.clocks.paths:
-            for bound in ("min", "max"):
-                if control["restored"][name][bound] != original[name][bound]:
-                    raise RuntimeError(f"{name} {bound} not restored: {control['restored']}")
 
 
 def quantile(values: list[float], q: float) -> float:
@@ -730,7 +765,6 @@ def main() -> None:
     run.add_argument("--width", type=int, default=1280)
     run.add_argument("--run-seconds", type=int, default=300)
     run.add_argument("--battery-c", type=float, default=45.0)
-    run.add_argument("--cool-seconds", type=float, default=600.0)
     report = commands.add_parser("analyze")
     report.add_argument("out", type=Path)
     report.add_argument("--limit-percent", type=float, default=2.0)
