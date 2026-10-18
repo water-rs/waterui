@@ -606,7 +606,12 @@ impl PaintData {
             } => output.sample(|dx, dy| {
                 let (px, py) = apply(*inv, dx, dy);
                 let raw = (py - center[1]).atan2(px - center[0]) - *start;
-                let t = raw.rem_euclid(std::f32::consts::TAU) / *span;
+                // Lowering normalizes start to [0, TAU]; atan2 is in [-PI, PI].
+                // At most two additions wrap the angle without a per-pixel fmod.
+                let turn = std::f32::consts::TAU;
+                let raw = if raw < -turn { raw + turn } else { raw };
+                let angle = if raw < 0.0 { raw + turn } else { raw };
+                let t = angle / *span;
                 extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
             }),
 
