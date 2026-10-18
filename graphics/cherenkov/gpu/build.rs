@@ -45,6 +45,7 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use askama::Template;
 use naga::back::{msl, spv};
 use naga::valid::{ValidationFlags, Validator};
 
@@ -598,6 +599,57 @@ fn emits_spirv() -> bool {
         && env::var("CARGO_CFG_TARGET_VENDOR").unwrap() != "apple"
 }
 
+struct PassthroughEntry<'a> {
+    name: &'a str,
+    size: [u32; 3],
+    memory: Vec<u32>,
+}
+
+#[derive(Template)]
+#[template(path = "passthrough_entries.rs.jinja", escape = "none")]
+struct PassthroughEntries<'a> {
+    entries: Vec<PassthroughEntry<'a>>,
+}
+
+fn write_entry_points(
+    out_dir: &Path,
+    spec: &Spec,
+    module: &naga::Module,
+    info: &naga::valid::ModuleInfo,
+) {
+    let entries = module
+        .entry_points
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let usage = info.get_entry_point(index);
+            let memory = module
+                .global_variables
+                .iter()
+                .filter(|(handle, var)| {
+                    var.space == naga::AddressSpace::WorkGroup && !usage[*handle].is_empty()
+                })
+                .map(|(_, var)| {
+                    module.types[var.ty]
+                        .inner
+                        .size(module.to_ctx())
+                        .next_multiple_of(16)
+                })
+                .collect();
+            PassthroughEntry {
+                name: &entry.name,
+                size: entry.workgroup_size,
+                memory,
+            }
+        })
+        .collect();
+    let source = PassthroughEntries { entries }
+        .render()
+        .expect("render passthrough entry points");
+    std::fs::write(out_dir.join(format!("{}.entries.rs", spec.name)), source)
+        .expect("write passthrough entry points");
+}
+
 /// Parses, validates and compiles one module.
 fn compile(out_dir: &Path, spec: &Spec, apple: Option<&AppleTarget>, wasm: bool, spirv: bool) {
     // Every consumer embeds this exact composed text — the runtime and
@@ -617,6 +669,7 @@ fn compile(out_dir: &Path, spec: &Spec, apple: Option<&AppleTarget>, wasm: bool,
     let info = Validator::new(ValidationFlags::all(), capabilities::ENGINE_CAPABILITIES)
         .validate(&module)
         .unwrap_or_else(|e| panic!("{}: WGSL validation failed: {e:?}", spec.name));
+    write_entry_points(out_dir, spec, &module, &info);
     if wasm {
         return;
     }

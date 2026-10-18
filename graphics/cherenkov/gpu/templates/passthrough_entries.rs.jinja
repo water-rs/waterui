@@ -1,0 +1,11 @@
+&[
+{% for entry in entries %}
+    wgpu::PassthroughShaderEntryPoint {
+        name: std::borrow::Cow::Borrowed("{{ entry.name }}"),
+        workgroup_size: ({{ entry.size[0] }}, {{ entry.size[1] }}, {{ entry.size[2] }}),
+        workgroup_memory_sizes: std::borrow::Cow::Borrowed(&[
+            {% for bytes in entry.memory %}{{ bytes }},{% endfor %}
+        ]),
+    },
+{% endfor %}
+]

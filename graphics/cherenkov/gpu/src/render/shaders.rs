@@ -44,10 +44,12 @@ const VS_FS_MAIN: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("vs_main"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("fs_main"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
 ];
 
@@ -55,26 +57,32 @@ const ENGINE_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("vs_main"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("fs_main"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("vs_opaque"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("fs_opaque"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("vs_partial"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("fs_partial"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
 ];
 
@@ -83,10 +91,12 @@ const VS_FS_EXTERNAL: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("vs_main"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("fs_external"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
 ];
 
@@ -95,10 +105,12 @@ const VS_FS_PROJECTIVE: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("vs_main"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("fs_projective"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
 ];
 
@@ -108,14 +120,17 @@ const SPACE_CONVERT_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("vs_main"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("fs_decode"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("fs_encode"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
 ];
 
@@ -124,10 +139,12 @@ const SHADOW_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] = &[
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("vs"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
     wgpu::PassthroughShaderEntryPoint {
         name: Cow::Borrowed("fs"),
         workgroup_size: (0, 0, 0),
+        workgroup_memory_sizes: Cow::Borrowed(&[]),
     },
 ];
 
@@ -475,18 +492,12 @@ const SHADOW: Fixed = Fixed {
     entries: SHADOW_ENTRIES,
 };
 
-const SHADOW_COMPUTE_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] =
-    &[wgpu::PassthroughShaderEntryPoint {
-        name: Cow::Borrowed("convolve"),
-        workgroup_size: (64, 1, 1),
-    }];
-
 const SHADOW_COMPUTE_F16: Fixed = Fixed {
     wgsl: include_str!(concat!(env!("OUT_DIR"), "/shadow_compute_f16.wgsl")),
     #[cfg(cherenkov_spirv)]
     spirv: spirv::SHADOW_COMPUTE_F16,
     metallib: SHADOW_COMPUTE_F16_METALLIB,
-    entries: SHADOW_COMPUTE_ENTRIES,
+    entries: include!(concat!(env!("OUT_DIR"), "/shadow_compute_f16.entries.rs")),
 };
 
 const SHADOW_COMPUTE_U8: Fixed = Fixed {
@@ -494,7 +505,7 @@ const SHADOW_COMPUTE_U8: Fixed = Fixed {
     #[cfg(cherenkov_spirv)]
     spirv: spirv::SHADOW_COMPUTE_U8,
     metallib: SHADOW_COMPUTE_U8_METALLIB,
-    entries: SHADOW_COMPUTE_ENTRIES,
+    entries: include!(concat!(env!("OUT_DIR"), "/shadow_compute_u8.entries.rs")),
 };
 
 /// The space fragment plus `space_convert.wgsl`, the module moving a
@@ -517,62 +528,77 @@ const COVERAGE: Fixed = Fixed {
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("initialize"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("radix_count"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("radix_scan_blocks"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("radix_prefix"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("radix_scatter"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("flatten"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("bin"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("link_groups"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("prefix"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("fragment_bins"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("integrate_edges"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("integrate"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("classify"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("fill_cells"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
         wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("emit_args"),
             workgroup_size: (64, 1, 1),
+            workgroup_memory_sizes: Cow::Borrowed(&[]),
         },
     ],
 };
