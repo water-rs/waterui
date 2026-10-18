@@ -207,6 +207,42 @@ const UNCHECKED: naga::proc::BoundsCheckPolicies = naga::proc::BoundsCheckPolici
     binding_array: naga::proc::BoundsCheckPolicy::Unchecked,
 };
 
+fn shadow_storage_format(source: &str, target: naga::StorageFormat) -> String {
+    let mut module = naga::front::wgsl::parse_str(source).expect("shadow compute WGSL");
+    let (handle, mut ty) = module
+        .types
+        .iter()
+        .find_map(|(handle, ty)| {
+            matches!(
+                ty.inner,
+                naga::TypeInner::Image {
+                    class: naga::ImageClass::Storage { .. },
+                    ..
+                }
+            )
+            .then(|| (handle, ty.clone()))
+        })
+        .expect("shadow compute output storage type");
+    let naga::TypeInner::Image {
+        class: naga::ImageClass::Storage { ref mut format, .. },
+        ..
+    } = ty.inner
+    else {
+        unreachable!()
+    };
+    *format = target;
+    module.types.replace(handle, ty);
+    let info = Validator::new(ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&module)
+        .expect("shadow compute format specialization");
+    naga::back::wgsl::write_string(
+        &module,
+        &info,
+        naga::back::wgsl::WriterFlags::EXPLICIT_TYPES,
+    )
+    .expect("shadow compute WGSL emission")
+}
+
 fn main() {
     let manifest = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -231,6 +267,7 @@ fn main() {
         resolve,
         reduce,
         shadow,
+        shadow_compute,
         coverage,
         native,
         tile,
@@ -247,12 +284,14 @@ fn main() {
         "resolve",
         "reduce",
         "shadow",
+        "shadow_compute",
         "coverage",
         "external_native",
         "composite/tile",
         "space_convert",
     ]
     .map(read);
+    let shadow_compute_u8 = shadow_storage_format(&shadow_compute, naga::StorageFormat::Rgba8Unorm);
 
     // The working-space ↔ sRGB conversion every colour-converting module
     // shares: filtrate-core's `space::WGSL`, rendered from the same
@@ -303,6 +342,8 @@ fn main() {
         resolve: &resolve,
         reduce: &reduce,
         shadow: &shadow,
+        shadow_compute_f16: &shadow_compute,
+        shadow_compute_u8: &shadow_compute_u8,
         space_convert: &space_convert,
         coverage: &coverage,
         tile: &tile,
@@ -340,6 +381,8 @@ struct Modules<'a> {
     resolve: &'a str,
     reduce: &'a str,
     shadow: &'a str,
+    shadow_compute_f16: &'a str,
+    shadow_compute_u8: &'a str,
     /// `space_convert.wgsl` behind the space fragment.
     space_convert: &'a str,
     coverage: &'a str,
@@ -438,6 +481,16 @@ fn module_specs(m: &Modules<'_>) -> Vec<Spec> {
         ("resolve", m.resolve, bindings::RESOLVE_GROUPS),
         ("reduce", m.reduce, bindings::REDUCE_GROUPS),
         ("shadow", m.shadow, bindings::SHADOW_GROUPS),
+        (
+            "shadow_compute_f16",
+            m.shadow_compute_f16,
+            bindings::SHADOW_COMPUTE_F16_GROUPS,
+        ),
+        (
+            "shadow_compute_u8",
+            m.shadow_compute_u8,
+            bindings::SHADOW_COMPUTE_U8_GROUPS,
+        ),
         (
             "space_convert",
             m.space_convert,

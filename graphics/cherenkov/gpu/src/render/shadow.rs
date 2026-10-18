@@ -14,6 +14,9 @@ pub struct Parameters {
 
 struct Kernel {
     key: [u64; 8],
+    compute: bool,
+    horizontal: bool,
+    count: u32,
     /// Tap extrema `[min_x, max_x, min_y, max_y]` from the
     /// exact f32 taps, with `(0, 0)` folded in for the erosion
     /// initializer. Bounds the texel offsets the stage can sample.
@@ -27,6 +30,8 @@ pub struct Blur {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    compute_pipeline: wgpu::ComputePipeline,
+    compute_layout: wgpu::BindGroupLayout,
     kernels: [Option<Kernel>; 3],
     temporary: Option<super::ScratchTarget>,
 }
@@ -77,9 +82,39 @@ impl Blur {
             multiview_mask: None,
             cache: None,
         });
+        let rgba16_float = match format {
+            wgpu::TextureFormat::Rgba16Float => true,
+            wgpu::TextureFormat::Rgba8Unorm => false,
+            _ => panic!("unsupported silhouette texture format: {format:?}"),
+        };
+        let compute_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("silhouette shared convolution"),
+            entries: &super::layout_entries(if rgba16_float {
+                super::bindings::SHADOW_COMPUTE_F16_GROUP0
+            } else {
+                super::bindings::SHADOW_COMPUTE_U8_GROUP0
+            }),
+        });
+        let compute_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("silhouette shared convolution"),
+                bind_group_layouts: &[Some(&compute_layout)],
+                immediate_size: 0,
+            });
+        let compute_module = delivery.shadow_compute_module(device, rgba16_float);
+        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("silhouette shared convolution"),
+            layout: Some(&compute_pipeline_layout),
+            module: &compute_module,
+            entry_point: Some("convolve"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
         Self {
             pipeline,
             layout,
+            compute_pipeline,
+            compute_layout,
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("silhouette linear sampling"),
                 mag_filter: wgpu::FilterMode::Linear,
@@ -136,7 +171,7 @@ impl Blur {
                 device,
                 "silhouette intermediate",
                 size,
-                super::TARGET_USAGES,
+                super::TARGET_USAGES | wgpu::TextureUsages::STORAGE_BINDING,
                 input.texture.format(),
             );
             self.temporary = Some(super::ScratchTarget {
@@ -182,14 +217,7 @@ impl Blur {
                 let taps = if slot == 0 {
                     shadow_taps::spread_taps([a, b, c, d], parameters.spread, count_limit)?
                 } else {
-                    let mut taps = shadow_taps::gaussian_taps(axis, parameters.sigma, count_limit)?;
-                    // Adjacent unit taps on a device axis share a linear
-                    // interpolation interval. One weighted sample evaluates
-                    // both; oblique taps cross different texel cells.
-                    if axis[0] == 0.0 || axis[1] == 0.0 {
-                        pair_linear_taps(&mut taps);
-                    }
-                    taps
+                    shadow_taps::gaussian_taps(axis, parameters.sigma, count_limit)?
                 };
                 let taps: Vec<[f32; 4]> = taps.into_iter().map(|[x, y, w]| [x, y, w, 0.]).collect();
                 let offsets = tap_bounds(&taps, mode == 2);
@@ -205,6 +233,9 @@ impl Blur {
                 });
                 self.kernels[slot] = Some(Kernel {
                     key,
+                    compute: slot != 0 && (axis[0] == 0.0 || axis[1] == 0.0),
+                    horizontal: axis[1] == 0.0,
+                    count,
                     offsets,
                     buffer,
                 });
@@ -222,12 +253,85 @@ impl Blur {
         }
         Ok(dispatches)
     }
+
     fn dispatch(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         input: &super::ScratchTarget,
         size: (u32, u32),
+        slot: usize,
+        region: [u32; 4],
+    ) {
+        let kernel = self.kernels[slot].as_ref().expect("kernel prepared");
+        let temporary = self.temporary.as_ref().expect("intermediate prepared");
+        if kernel.compute {
+            let parameters = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("silhouette convolution region"),
+                contents: bytemuck::cast_slice(&[
+                    region[0],
+                    region[1],
+                    region[2],
+                    region[3],
+                    kernel.count,
+                    u32::from(kernel.horizontal),
+                    0,
+                    0,
+                ]),
+                usage: wgpu::BufferUsages::UNIFORM,
+            });
+            let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("silhouette shared convolution"),
+                layout: &self.compute_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&input.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: kernel.buffer.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&temporary.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: parameters.as_entire_binding(),
+                    },
+                ],
+            });
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("silhouette shared convolution"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.compute_pipeline);
+            pass.set_bind_group(0, &bindings, &[]);
+            let (along, across) = if kernel.horizontal {
+                size
+            } else {
+                (size.1, size.0)
+            };
+            pass.dispatch_workgroups(along.div_ceil(64), across, 1);
+        } else {
+            self.dispatch_fragment(device, encoder, input, slot, region);
+        }
+        encoder.copy_texture_to_texture(
+            temporary.texture.as_image_copy(),
+            input.texture.as_image_copy(),
+            wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    fn dispatch_fragment(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        input: &super::ScratchTarget,
         slot: usize,
         region: [u32; 4],
     ) {
@@ -274,15 +378,6 @@ impl Blur {
         pass.set_scissor_rect(region[0], region[1], region[2], region[3]);
         pass.draw(0..3, 0..1);
         drop(pass);
-        encoder.copy_texture_to_texture(
-            temporary.texture.as_image_copy(),
-            input.texture.as_image_copy(),
-            wgpu::Extent3d {
-                width: size.0,
-                height: size.1,
-                depth_or_array_layers: 1,
-            },
-        );
     }
 }
 
@@ -359,52 +454,9 @@ fn expand(support: [u32; 4], offsets: [f32; 4], size: (u32, u32)) -> [u32; 4] {
     [x0, y0, x1 - x0, y1 - y0]
 }
 
-/// Combine adjacent, axis-aligned unit Gaussian taps into linear samples.
-#[expect(clippy::cast_possible_truncation, reason = "GPU taps use f32 storage")]
-fn pair_linear_taps(taps: &mut Vec<[f32; 3]>) {
-    let count = taps.len();
-    for output in 0..count / 2 {
-        let first = taps[output * 2].map(f64::from);
-        let second = taps[output * 2 + 1].map(f64::from);
-        let weight = first[2] + second[2];
-        taps[output] = [
-            (second[0].mul_add(second[2], first[0] * first[2]) / weight) as f32,
-            (second[1].mul_add(second[2], first[1] * first[2]) / weight) as f32,
-            weight as f32,
-        ];
-    }
-    if !count.is_multiple_of(2) {
-        taps[count / 2] = taps[count - 1];
-    }
-    taps.truncate(count.div_ceil(2));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn linear_taps_preserve_gaussian_mass_and_interpolation() {
-        for axis in [[1., 0.], [-1., 0.], [0., 2.], [0., -2.]] {
-            for sigma in [0., 0.1, 1., 30.] {
-                let original = shadow_taps::gaussian_taps(axis, sigma, 4096.).unwrap();
-                let mut paired = original.clone();
-                pair_linear_taps(&mut paired);
-                assert_eq!(paired.len(), original.len().div_ceil(2));
-                for (source, tap) in original.chunks(2).zip(&paired) {
-                    let mass: f32 = source.iter().map(|tap| tap[2]).sum();
-                    assert!((tap[2] - mass).abs() < 1e-7);
-                    if let [first, second] = source {
-                        let dimension = usize::from(axis[0] == 0.);
-                        let phase = (tap[dimension] - first[dimension])
-                            / (second[dimension] - first[dimension]);
-                        assert!(tap[2].mul_add(phase, -second[2]).abs() < 1e-6);
-                        assert!((0.0..=1.0).contains(&phase));
-                    }
-                }
-            }
-        }
-    }
 
     #[test]
     fn stage_support_expands_by_the_kernels_reach() {

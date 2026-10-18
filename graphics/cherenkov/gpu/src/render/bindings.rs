@@ -39,6 +39,8 @@ pub enum Kind {
     /// A sampled `texture_2d<u32>` (external frame planes are code-bearing
     /// uint textures the shader decodes itself).
     TextureUint,
+    /// A write-only storage texture in the silhouette target format.
+    StorageTexture { rgba16_float: bool },
     /// A filtering sampler.
     Sampler,
 }
@@ -326,6 +328,29 @@ pub const SHADOW_GROUP0: &[Entry] = &[
 #[allow(dead_code)]
 pub const SHADOW_GROUPS: &[&[Entry]] = &[SHADOW_GROUP0];
 
+const fn shadow_compute_group(rgba16_float: bool) -> [Entry; 4] {
+    [
+        Entry {
+            stages: COMPUTE,
+            ..Entry::texture(0)
+        },
+        Entry::storage_read(1, COMPUTE),
+        Entry {
+            stages: COMPUTE,
+            kind: Kind::StorageTexture { rgba16_float },
+            ..Entry::texture(2)
+        },
+        Entry::uniform(3, COMPUTE, false, 32),
+    ]
+}
+
+pub const SHADOW_COMPUTE_F16_GROUP0: &[Entry] = &shadow_compute_group(true);
+pub const SHADOW_COMPUTE_U8_GROUP0: &[Entry] = &shadow_compute_group(false);
+#[allow(dead_code)]
+pub const SHADOW_COMPUTE_F16_GROUPS: &[&[Entry]] = &[SHADOW_COMPUTE_F16_GROUP0];
+#[allow(dead_code)]
+pub const SHADOW_COMPUTE_U8_GROUPS: &[&[Entry]] = &[SHADOW_COMPUTE_U8_GROUP0];
+
 /// Group 1 of the Vulkan native external-frame module: `EXTERNAL_GROUP1`
 /// plus the designated texture/sampler pair at bindings 5–6 that the
 /// `external_native` build lowering merges into the combined sampled
@@ -405,7 +430,7 @@ pub fn metal_plan(groups: &[&[Entry]], stage: u8) -> StagePlan {
                     target.buffer = Some(buffers);
                     buffers += 1;
                 }
-                Kind::Texture { .. } | Kind::TextureUint => {
+                Kind::Texture { .. } | Kind::TextureUint | Kind::StorageTexture { .. } => {
                     target.texture = Some(textures);
                     textures += 1;
                 }

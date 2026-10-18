@@ -1862,6 +1862,17 @@ pub fn layout_entries(entries: &[bindings::Entry]) -> Vec<wgpu::BindGroupLayoutE
                     view_dimension: wgpu::TextureViewDimension::D2,
                     multisampled: false,
                 },
+                bindings::Kind::StorageTexture { rgba16_float } => {
+                    wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: if rgba16_float {
+                            wgpu::TextureFormat::Rgba16Float
+                        } else {
+                            wgpu::TextureFormat::Rgba8Unorm
+                        },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    }
+                }
                 bindings::Kind::Sampler => {
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering)
                 }

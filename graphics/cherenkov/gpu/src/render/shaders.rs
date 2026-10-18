@@ -244,6 +244,10 @@ pub mod spirv {
     pub const REDUCE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/reduce.spv"));
     /// `shadow.wgsl`, the silhouette convolution module.
     pub const SHADOW: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.spv"));
+    pub const SHADOW_COMPUTE_F16: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shadow_compute_f16.spv"));
+    pub const SHADOW_COMPUTE_U8: &[u8] =
+        include_bytes!(concat!(env!("OUT_DIR"), "/shadow_compute_u8.spv"));
     /// The space fragment plus `space_convert.wgsl`.
     pub const SPACE_CONVERT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/space_convert.spv"));
     /// `coverage.wgsl`.
@@ -331,6 +335,16 @@ const REDUCE_METALLIB: &[u8] = &[];
 const SHADOW_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/shadow.metallib"));
 #[cfg(not(target_vendor = "apple"))]
 const SHADOW_METALLIB: &[u8] = &[];
+#[cfg(target_vendor = "apple")]
+const SHADOW_COMPUTE_F16_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/shadow_compute_f16.metallib"));
+#[cfg(not(target_vendor = "apple"))]
+const SHADOW_COMPUTE_F16_METALLIB: &[u8] = &[];
+#[cfg(target_vendor = "apple")]
+const SHADOW_COMPUTE_U8_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/shadow_compute_u8.metallib"));
+#[cfg(not(target_vendor = "apple"))]
+const SHADOW_COMPUTE_U8_METALLIB: &[u8] = &[];
 #[cfg(target_vendor = "apple")]
 const SPACE_CONVERT_METALLIB: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/space_convert.metallib"));
@@ -459,6 +473,28 @@ const SHADOW: Fixed = Fixed {
     spirv: spirv::SHADOW,
     metallib: SHADOW_METALLIB,
     entries: SHADOW_ENTRIES,
+};
+
+const SHADOW_COMPUTE_ENTRIES: &[wgpu::PassthroughShaderEntryPoint<'static>] =
+    &[wgpu::PassthroughShaderEntryPoint {
+        name: Cow::Borrowed("convolve"),
+        workgroup_size: (64, 1, 1),
+    }];
+
+const SHADOW_COMPUTE_F16: Fixed = Fixed {
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/shadow_compute_f16.wgsl")),
+    #[cfg(cherenkov_spirv)]
+    spirv: spirv::SHADOW_COMPUTE_F16,
+    metallib: SHADOW_COMPUTE_F16_METALLIB,
+    entries: SHADOW_COMPUTE_ENTRIES,
+};
+
+const SHADOW_COMPUTE_U8: Fixed = Fixed {
+    wgsl: include_str!(concat!(env!("OUT_DIR"), "/shadow_compute_u8.wgsl")),
+    #[cfg(cherenkov_spirv)]
+    spirv: spirv::SHADOW_COMPUTE_U8,
+    metallib: SHADOW_COMPUTE_U8_METALLIB,
+    entries: SHADOW_COMPUTE_ENTRIES,
 };
 
 /// The space fragment plus `space_convert.wgsl`, the module moving a
@@ -646,6 +682,24 @@ impl ShaderDelivery {
     #[must_use]
     pub fn shadow_module(self, device: &wgpu::Device) -> wgpu::ShaderModule {
         self.module(device, "cherenkov silhouette convolution", &SHADOW)
+    }
+
+    /// Shared-memory axis-aligned Gaussian convolution.
+    #[must_use]
+    pub fn shadow_compute_module(
+        self,
+        device: &wgpu::Device,
+        rgba16_float: bool,
+    ) -> wgpu::ShaderModule {
+        self.module(
+            device,
+            "cherenkov shared silhouette convolution",
+            if rgba16_float {
+                &SHADOW_COMPUTE_F16
+            } else {
+                &SHADOW_COMPUTE_U8
+            },
+        )
     }
 
     /// The space conversion module.
