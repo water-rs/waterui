@@ -1839,6 +1839,7 @@ fn shade_windowed(
 pub fn render_bands(
     level: fearless_simd::Level,
     items: &[Item],
+    index: &mut FrameIndex,
     clear: [f32; 4],
     fb: &mut [[f32; 4]],
     w: usize,
@@ -1847,10 +1848,8 @@ pub fn render_bands(
     has_backdrop: bool,
     meter: &FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
-    let index = FrameIndex::new(items, h);
-    meter
-        .index_bytes
-        .fetch_max(index.heap_bytes(), std::sync::atomic::Ordering::Relaxed);
+    index.rebuild(items, h);
+    let index = &*index;
     let stats = stats(items);
     let result = fb.par_chunks_mut(BAND_H * w).enumerate().try_for_each_init(
         || Scratch::new(Some(meter)),
@@ -1858,7 +1857,7 @@ pub fn render_bands(
             shade(
                 level,
                 items,
-                &index,
+                index,
                 clear,
                 slice,
                 w,
@@ -1890,6 +1889,7 @@ pub fn render_bands(
 pub fn render_bands_f16(
     level: fearless_simd::Level,
     items: &[Item],
+    index: &mut FrameIndex,
     clear: [f32; 4],
     out: &mut [[half::f16; 4]],
     w: usize,
@@ -1898,10 +1898,8 @@ pub fn render_bands_f16(
     has_backdrop: bool,
     meter: &FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
-    let index = FrameIndex::new(items, h);
-    meter
-        .index_bytes
-        .fetch_max(index.heap_bytes(), std::sync::atomic::Ordering::Relaxed);
+    index.rebuild(items, h);
+    let index = &*index;
     let stats = stats(items);
     let result = out
         .par_chunks_mut(BAND_H * w)
@@ -1913,7 +1911,7 @@ pub fn render_bands_f16(
                 let result = shade(
                     level,
                     items,
-                    &index,
+                    index,
                     clear,
                     &mut band_px,
                     w,
@@ -1959,14 +1957,13 @@ pub fn render_bands_stream(
     sink: &mut dyn FnMut(BandOut<'_>),
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
+    index: &mut FrameIndex,
     meter: &FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
     let (w, h) = size;
-    let index = FrameIndex::new(items, h);
-    meter
-        .index_bytes
-        .fetch_max(index.heap_bytes(), std::sync::atomic::Ordering::Relaxed);
+    index.rebuild(items, h);
+    let index = &*index;
     let mut scratch = Scratch::new(Some(meter));
     let mut band_px = scratch.buffers.take_color(w * h.min(BAND_H));
     let mut y0 = 0;
@@ -1975,7 +1972,7 @@ pub fn render_bands_stream(
         if let Err(error) = shade(
             level,
             items,
-            &index,
+            index,
             clear,
             &mut band_px[..w * bh],
             w,
@@ -3196,13 +3193,15 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
     let bands = h.div_ceil(BAND_H);
     // The same edge→band bins the draw path uses; `oy` is 0 — the edges
     // are already device-space.
-    let index = EdgeBins::build(
-        &[EdgeGroup {
+    let mut index = EdgeBins::default();
+    index.rebuild(
+        std::iter::once(EdgeGroup {
             edges,
             oy: 0.0,
             band0: 0,
             band1: bands,
-        }],
+        }),
+        &mut Vec::new(),
         bands,
         h,
     );

@@ -58,15 +58,11 @@ const GAMMA2: f64 = 2.0 * U / (1.0 - 2.0 * U);
 /// Both rounding steps' subnormal allowance: `2⁻¹⁴⁹ = 2 × 2⁻¹⁵⁰`.
 const SUBNORMAL: f64 = 1.401_298_464_324_817e-45;
 
-/// Heap metrics of one frame's transient band index, owned by the
-/// render call. `render_bands*` reports into it; the render thread
+/// Heap metrics of a frame's expanded-window query scratch, owned by
+/// the render call. `render_bands*` reports into it; the render thread
 /// reads it after shading.
 #[derive(Debug, Default)]
 pub struct FrameMeter {
-    /// Exact heap capacity of the frame index's flat tables plus its
-    /// construction temporaries, in bytes — the frame-local peak across
-    /// the frame's render calls.
-    pub index_bytes: AtomicU64,
     /// Simultaneously-live query-scratch bytes: expanded-window item and
     /// edge selections held at this instant across all workers.
     pub query_live: AtomicU64,
@@ -152,7 +148,9 @@ fn edge_bands(e: &Edge, oy: f32, h: usize, bands: usize) -> (usize, usize) {
 }
 
 /// One edge list's contribution to an [`EdgeBins`]: the item it belongs
-/// to reaches bands `band0..band1`.
+/// to reaches bands `band0..band1`. A rebuild-time descriptor — never
+/// retained.
+#[derive(Clone, Copy)]
 pub struct EdgeGroup<'a> {
     /// The draw's own edges, in original order.
     pub edges: &'a [Edge],
@@ -171,6 +169,11 @@ pub struct EdgeGroup<'a> {
 /// `pair_base[g] .. pair_base[g] + span[g]`, one per band in its reach,
 /// in ascending band order. Each pair's pool slice holds indices into
 /// the group's own `edges`, in original order.
+///
+/// Every table keeps its capacity across [`EdgeBins::rebuild`]s: the
+/// owner reuses the storage for the frame's lifetime instead of
+/// re-allocating per call.
+#[derive(Default)]
 pub struct EdgeBins {
     /// Pair-space prefix offsets into `pool`; `pairs + 1` entries.
     off: Vec<usize>,
@@ -182,66 +185,80 @@ pub struct EdgeBins {
     band0: Vec<usize>,
     /// Each group's reachable band count.
     span: Vec<usize>,
-    /// The build's peak live heap bytes: during the scatter, every
-    /// final table plus the `fill` cursor is simultaneously live. The
-    /// retained tables alone are always below it.
-    build_peak: u64,
+    /// Each group's first index into `edge_spans`.
+    span_off: Vec<usize>,
+    /// Each edge's `[first, last)` band span, computed once per edge
+    /// per rebuild and reused verbatim by the scatter pass.
+    edge_spans: Vec<(usize, usize)>,
 }
 
 impl EdgeBins {
-    /// Builds the bins for `groups` on a `bands`-band, `h`-row grid.
-    pub fn build(groups: &[EdgeGroup<'_>], bands: usize, h: usize) -> Self {
-        let mut pair_base = Vec::with_capacity(groups.len());
-        let (mut band_first, mut span) = (
-            Vec::with_capacity(groups.len()),
-            Vec::with_capacity(groups.len()),
-        );
-        let mut pairs = 0usize;
-        for group in groups {
-            pair_base.push(pairs);
-            band_first.push(group.band0);
-            let n = group.band1.saturating_sub(group.band0);
-            span.push(n);
-            pairs += n;
+    /// Rebuilds the bins for `groups` over the `bands`-band, `h`-row
+    /// grid, retaining all table capacity. `groups` is a cloneable
+    /// view (it is iterated once per pass, nothing borrowed is
+    /// retained). `counts` is all-zero on entry and restored to
+    /// all-zero on exit: the scatter writes at `off[p+1] − counts[p]`
+    /// and decrements, so every counted reference lands exactly once.
+    pub fn rebuild<'a, I>(&mut self, groups: I, counts: &mut Vec<usize>, bands: usize, h: usize)
+    where
+        I: Iterator<Item = EdgeGroup<'a>> + Clone,
+    {
+        // Group metadata: reach, pair prefix and span prefix.
+        self.pair_base.clear();
+        self.band0.clear();
+        self.span.clear();
+        self.span_off.clear();
+        let (mut pairs, mut edges_total) = (0usize, 0usize);
+        for g in groups.clone() {
+            self.pair_base.push(pairs);
+            self.band0.push(g.band0);
+            self.span.push(g.band1.saturating_sub(g.band0));
+            self.span_off.push(edges_total);
+            edges_total += g.edges.len();
+            pairs += g.band1.saturating_sub(g.band0);
         }
-        let mut off = vec![0usize; pairs + 1];
-        for (g, group) in groups.iter().enumerate() {
-            for e in group.edges {
-                let (ef, el) = edge_bands(e, group.oy, h, bands);
-                for b in ef.max(group.band0)..el.min(group.band1) {
-                    off[pair_base[g] + (b - group.band0) + 1] += 1;
-                }
-            }
-        }
-        for i in 0..pairs {
-            off[i + 1] += off[i];
-        }
-        let mut pool = vec![0usize; off[pairs]];
-        let mut fill = off.clone();
-        for (g, group) in groups.iter().enumerate() {
+        // Each edge's widened band span, once per edge per rebuild.
+        self.edge_spans.resize(edges_total, (0, 0));
+        for (g, group) in groups.clone().enumerate() {
             for (ei, e) in group.edges.iter().enumerate() {
-                let (ef, el) = edge_bands(e, group.oy, h, bands);
+                self.edge_spans[self.span_off[g] + ei] = edge_bands(e, group.oy, h, bands);
+            }
+        }
+        // Count in pair space. `counts` keeps its high-water length —
+        // the `counts[..pairs]` prefix is active and all-zero on entry
+        // (the tail stayed zero from the last scatter).
+        counts.resize(counts.len().max(pairs), 0);
+        for (g, group) in groups.clone().enumerate() {
+            for ei in 0..group.edges.len() {
+                let (ef, el) = self.edge_spans[self.span_off[g] + ei];
                 for b in ef.max(group.band0)..el.min(group.band1) {
-                    let p = pair_base[g] + (b - group.band0);
-                    pool[fill[p]] = ei;
-                    fill[p] += 1;
+                    counts[self.pair_base[g] + (b - group.band0)] += 1;
                 }
             }
         }
-        let build_peak = ((off.capacity()
-            + pool.capacity()
-            + pair_base.capacity()
-            + band_first.capacity()
-            + span.capacity()
-            + fill.capacity())
-            * size_of::<usize>()) as u64;
-        Self {
-            off,
-            pool,
-            pair_base,
-            band0: band_first,
-            span,
-            build_peak,
+        // Prefix sums over the active prefix: read `counts`, write
+        // `off` — no clearing pass.
+        self.off.resize(pairs + 1, 0);
+        self.off[0] = 0;
+        let mut total = 0;
+        for (p, &c) in counts[..pairs].iter().enumerate() {
+            total += c;
+            self.off[p + 1] = total;
+        }
+        self.pool.resize(total, 0);
+        // Scatter at `off[p+1] − counts[p]` — the pair's end minus its
+        // remaining count — filling each slice forward from its start
+        // in original order. Every counted reference lands exactly
+        // once, so `counts` returns to all-zero by construction.
+        for (g, group) in groups.enumerate() {
+            for ei in 0..group.edges.len() {
+                let (ef, el) = self.edge_spans[self.span_off[g] + ei];
+                for b in ef.max(group.band0)..el.min(group.band1) {
+                    let p = self.pair_base[g] + (b - group.band0);
+                    self.pool[self.off[p + 1] - counts[p]] = ei;
+                    counts[p] -= 1;
+                }
+            }
         }
     }
 
@@ -282,10 +299,25 @@ impl EdgeBins {
         };
         out.truncate(start + tail);
     }
+
+    /// The retained heap capacity of every table and scratch Vec.
+    pub const fn heap_bytes(&self) -> u64 {
+        ((self.off.capacity()
+            + self.pool.capacity()
+            + self.pair_base.capacity()
+            + self.band0.capacity()
+            + self.span.capacity()
+            + self.span_off.capacity())
+            * size_of::<usize>()
+            + self.edge_spans.capacity() * size_of::<(usize, usize)>()) as u64
+    }
 }
 
-/// A frame's per-band item and draw-edge bins, transient for the
-/// `render_bands*` call that built it.
+/// A surface's per-band item and draw-edge bins, retained for the
+/// surface's lifetime and rebuilt in place on every `render_bands*`
+/// call — every table keeps its capacity across rebuilds, so a frame
+/// allocates only what a bigger frame first grows.
+#[derive(Default)]
 pub struct FrameIndex {
     /// The surface's band count: `⌈h / BAND_H⌉`.
     bands: usize,
@@ -293,82 +325,90 @@ pub struct FrameIndex {
     item_off: Vec<usize>,
     /// Original item indices per band, ascending.
     item_pool: Vec<usize>,
+    /// The `Item::Draw` items' indices, in item order — the
+    /// `EdgeBins` groups' items.
+    draws: Vec<usize>,
     /// `item index → draw rank`; `usize::MAX` for non-`Draw` items.
     draw_rank: Vec<usize>,
+    /// The shared count buffer: all-zero at every rebuild boundary —
+    /// counting writes it up, the scatter reads it back down to zero,
+    /// so it never needs a clearing pass.
+    counts: Vec<usize>,
     /// The draws' edge bins, draw rank as group.
     edges: EdgeBins,
-    /// The build's peak live heap bytes: the maximum over the
-    /// construction stages of the tables and temporaries actually live
-    /// at that stage — the item scatter (`item_off` + `item_pool` +
-    /// item `fill`) versus the edge stage (all retained tables +
-    /// `groups` + the edge scatter's own peak). The retained tables
-    /// alone are always below it.
-    build_peak: u64,
 }
 
 impl FrameIndex {
-    /// Bins `items` over the band grid of a `h`-row surface.
-    pub fn new(items: &[Item], h: usize) -> Self {
+    /// Rebuilds the bins for `items` over the band grid of an `h`-row
+    /// surface. Called once per `render_bands*` before the parallel
+    /// band pass reads the tables.
+    pub fn rebuild(&mut self, items: &[Item], h: usize) {
         let bands = h.div_ceil(BAND_H);
-        let mut item_off = vec![0usize; bands + 1];
-        for item in items {
-            for b in rows_bands(item_rows(item, h), bands) {
-                item_off[b + 1] += 1;
-            }
-        }
-        for b in 0..bands {
-            item_off[b + 1] += item_off[b];
-        }
-        let mut item_pool = vec![0usize; item_off[bands]];
-        // Stage A — the item scatter: `item_off`, `item_pool` and the
-        // fill cursor are simultaneously live.
-        let stage_a = {
-            let mut fill = item_off.clone();
-            for (i, item) in items.iter().enumerate() {
-                for b in rows_bands(item_rows(item, h), bands) {
-                    item_pool[fill[b]] = i;
-                    fill[b] += 1;
-                }
-            }
-            ((item_off.capacity() + item_pool.capacity() + fill.capacity()) * size_of::<usize>())
-                as u64
-        };
-        let (mut draw_rank, mut groups) = (vec![usize::MAX; items.len()], Vec::new());
+        self.bands = bands;
+        debug_assert!(self.counts.iter().all(|&c| c == 0));
+        // `counts` keeps its high-water length — `counts[..bands]` is
+        // the active prefix and all-zero on entry (the tail stayed
+        // zero from the last scatter).
+        self.counts.resize(self.counts.len().max(bands), 0);
+        self.draws.clear();
+        self.draw_rank.resize(items.len(), usize::MAX);
+        // One item walk: per-band counts, draw ranks and the draw list.
         for (i, item) in items.iter().enumerate() {
-            if let Item::Draw {
-                edges,
-                offset,
-                bbox,
-                ..
-            } = item
-            {
-                draw_rank[i] = groups.len();
+            for b in rows_bands(item_rows(item, h), bands) {
+                self.counts[b] += 1;
+            }
+            if let Item::Draw { .. } = item {
+                self.draw_rank[i] = self.draws.len();
+                self.draws.push(i);
+            } else {
+                self.draw_rank[i] = usize::MAX;
+            }
+        }
+        // Prefix sums over the active prefix: read `counts`, write
+        // `item_off` — no clearing pass.
+        self.item_off.resize(bands + 1, 0);
+        self.item_off[0] = 0;
+        let mut total = 0;
+        for (b, &c) in self.counts[..bands].iter().enumerate() {
+            total += c;
+            self.item_off[b + 1] = total;
+        }
+        self.item_pool.resize(total, 0);
+        // Scatter at `item_off[b+1] − counts[b]` — the band's end minus
+        // its remaining count — filling each slice forward from its
+        // start in original order. Every counted reference lands
+        // exactly once, so `counts` returns to all-zero by construction.
+        for (i, item) in items.iter().enumerate() {
+            for b in rows_bands(item_rows(item, h), bands) {
+                self.item_pool[self.item_off[b + 1] - self.counts[b]] = i;
+                self.counts[b] -= 1;
+            }
+        }
+        // A cloneable view of the draws' placements — nothing borrowed
+        // is retained, no `Vec<EdgeGroup>` exists per rebuild.
+        self.edges.rebuild(
+            self.draws.iter().map(|&i| {
+                let Item::Draw {
+                    edges,
+                    offset,
+                    bbox,
+                    ..
+                } = &items[i]
+                else {
+                    unreachable!("draws only names Item::Draw")
+                };
                 let reach = rows_bands((bbox.y0 as usize, (bbox.y1 as usize).min(h)), bands);
-                groups.push(EdgeGroup {
+                EdgeGroup {
                     edges,
                     oy: offset[1],
                     band0: reach.start,
                     band1: reach.end,
-                });
-            }
-        }
-        // Stage B — the edge stage: every retained table, the `groups`
-        // list and the edge scatter's own peak are live at once; the
-        // item fill was already dropped.
-        let edges = EdgeBins::build(&groups, bands, h);
-        let stage_b = ((item_off.capacity() + item_pool.capacity() + draw_rank.capacity())
-            * size_of::<usize>()) as u64
-            + (groups.capacity() * size_of::<EdgeGroup<'_>>()) as u64
-            + edges.build_peak;
-        let build_peak = stage_a.max(stage_b);
-        Self {
+                }
+            }),
+            &mut self.counts,
             bands,
-            item_off,
-            item_pool,
-            draw_rank,
-            edges,
-            build_peak,
-        }
+            h,
+        );
     }
 
     /// The original item indices to run for band `b`: every structural
@@ -426,11 +466,16 @@ impl FrameIndex {
         self.edges.query(rank, rows, out);
     }
 
-    /// The frame's peak live heap bytes for this index: the maximum
-    /// over construction stages, which always covers the retained
-    /// tables (`capacity()` sums) too.
+    /// The retained heap capacity of every table and scratch Vec —
+    /// reported under `Engine::memory()`'s band-buffers category.
     pub const fn heap_bytes(&self) -> u64 {
-        self.build_peak
+        ((self.item_off.capacity()
+            + self.item_pool.capacity()
+            + self.draws.capacity()
+            + self.draw_rank.capacity()
+            + self.counts.capacity())
+            * size_of::<usize>()) as u64
+            + self.edges.heap_bytes()
     }
 }
 
@@ -458,18 +503,27 @@ mod tests {
             .collect()
     }
 
-    /// Bins a single edge list and checks, for every edge, that the bin
-    /// contains the band whenever the reference predicate keeps it —
-    /// and that every bin is sorted and unique.
-    fn assert_bins_cover(edges: &[Edge], oy: f32, h: usize) {
+    /// Rebuilds `index` in place for a single edge list and checks, for
+    /// every edge, that the bin contains the band whenever the
+    /// reference predicate keeps it — and that every bin is sorted and
+    /// unique. Reusing one index across calls exercises the retained
+    /// storage's reset between shapes.
+    fn assert_bins_cover(
+        index: &mut EdgeBins,
+        counts: &mut Vec<usize>,
+        edges: &[Edge],
+        oy: f32,
+        h: usize,
+    ) {
         let bands = h.div_ceil(BAND_H);
-        let index = EdgeBins::build(
-            &[EdgeGroup {
+        index.rebuild(
+            std::iter::once(EdgeGroup {
                 edges,
                 oy,
                 band0: 0,
                 band1: bands,
-            }],
+            }),
+            counts,
             bands,
             h,
         );
@@ -523,11 +577,18 @@ mod tests {
         });
         // Cancellation: an offset that lands e.y + oy near zero and near
         // each band edge, plus one very large offset.
+        let mut index = EdgeBins::default();
+        let mut counts = Vec::new();
         for &oy in &[0.0f32, -0.5, -64.0, 1e3, 33.333_336, -1e6] {
             for &h in &[16usize, 17, 64, 901] {
-                assert_bins_cover(&edges, oy, h);
+                assert_bins_cover(&mut index, &mut counts, &edges, oy, h);
             }
         }
+        // Smaller and larger band counts plus a different edge list on
+        // the same retained storage.
+        assert_bins_cover(&mut index, &mut counts, &edges[..40], -3.0, 48);
+        assert_bins_cover(&mut index, &mut counts, &edges, -3.0, 16);
+        assert_bins_cover(&mut index, &mut counts, &edges[..40], -3.0, 901);
     }
 
     /// Expanded windows: the merged query is a superset of what the
@@ -549,13 +610,15 @@ mod tests {
             .collect();
         let h: usize = 128;
         let bands = h.div_ceil(BAND_H);
-        let index = EdgeBins::build(
-            &[EdgeGroup {
+        let mut index = EdgeBins::default();
+        index.rebuild(
+            std::iter::once(EdgeGroup {
                 edges: &edges,
                 oy: 7.5,
                 band0: 0,
                 band1: bands,
-            }],
+            }),
+            &mut Vec::new(),
             bands,
             h,
         );
@@ -606,7 +669,8 @@ mod tests {
             },
         ];
         let h = 96;
-        let index = FrameIndex::new(&items, h);
+        let mut index = FrameIndex::default();
+        index.rebuild(&items, h);
         // Band 1 (rows 16..32): structural items plus the first draw.
         assert_eq!(index.items(1), &[0, 1, 3]);
         // Band 5 (rows 80..96): only structural — the second draw's box
@@ -621,5 +685,25 @@ mod tests {
         let mut sel = Vec::new();
         index.query_items(0..4, (0, 16), &mut sel);
         assert_eq!(sel, &[0, 1, 3]);
+        // Rebuild the same retained index over a different item shape:
+        // the first draw reaches bands 0..4 (rows 0..50), the second
+        // 0..6 (rows 0..90), and only item 1 is structural.
+        let items2 = vec![
+            draw(0, 50),
+            Item::PushIsolate {
+                space: cherenkov::BlendSpace::Linear,
+            },
+            draw(0, 90),
+        ];
+        index.rebuild(&items2, 96);
+        assert_eq!(index.items(1), &[0, 1, 2]);
+        assert_eq!(index.items(5), &[1, 2]);
+        // A smaller surface rebuilds in place over fewer bands.
+        index.rebuild(&items, 32);
+        assert_eq!(index.items(1), &[0, 1, 3]);
+        // And a larger one again — no stale band survives either way.
+        index.rebuild(&items2, 96);
+        assert_eq!(index.items(1), &[0, 1, 2]);
+        assert_eq!(index.items(5), &[1, 2]);
     }
 }

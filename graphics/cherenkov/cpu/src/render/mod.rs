@@ -84,10 +84,9 @@ struct SurfaceState {
     /// backdrop capture last frame (window, isolation stack and capture
     /// buffers). 0 when no capture ran.
     backdrop_capture_peak: u64,
-    /// The last frame's frame-index heap capacity peak: the transient
-    /// per-call band bins' exact bytes, largest across the frame's
-    /// render calls.
-    frame_index_bytes: u64,
+    /// The surface's retained band bins: rebuilt in place each
+    /// `render_bands*` call, its capacity reported under `bands`.
+    index: bins::FrameIndex,
     /// The last frame's peak of simultaneously-live expanded-window
     /// query scratch, in bytes.
     window_query_peak: u64,
@@ -149,6 +148,9 @@ pub struct RasterRenderer {
     image_replacements: u64,
     /// Counts rendered frames; the projective cache's recency clock.
     frame_count: u64,
+    /// The renderer-level band bins reused by projective realizations —
+    /// they run sequentially, so one index serves them all.
+    projective_index: bins::FrameIndex,
 }
 
 impl std::fmt::Debug for RasterRenderer {
@@ -194,6 +196,7 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     geometry: geometry::GeometryCache::default(),
                     image_replacements: 0,
                     frame_count: 0,
+                    projective_index: bins::FrameIndex::default(),
                 },
                 info,
             )
@@ -330,7 +333,7 @@ impl Renderer for RasterRenderer {
                 groups: Vec::new(),
                 anchor_scratch: lower::AnchorScratch::default(),
                 backdrop_capture_peak: 0,
-                frame_index_bytes: 0,
+                index: bins::FrameIndex::default(),
                 window_query_peak: 0,
                 projective: FxHashMap::default(),
                 visibility: Visibility::Visible,
@@ -610,8 +613,9 @@ impl Renderer for RasterRenderer {
         categories.bands = self
             .surfaces
             .values()
-            .map(SurfaceState::band_bytes)
-            .sum::<u64>();
+            .map(|surface| surface.band_bytes() + surface.index.heap_bytes())
+            .sum::<u64>()
+            + self.projective_index.heap_bytes();
         categories.glyphs = self.glyph_cache.bytes();
         categories.images = self.images.values().map(|image| image.bytes()).sum();
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
@@ -836,6 +840,7 @@ impl RasterRenderer {
                 raster::render_bands(
                     level,
                     &items,
+                    &mut surf.index,
                     clear,
                     fb,
                     w,
@@ -849,6 +854,7 @@ impl RasterRenderer {
                 raster::render_bands_f16(
                     level,
                     &items,
+                    &mut surf.index,
                     clear,
                     out,
                     w,
@@ -868,14 +874,12 @@ impl RasterRenderer {
                 sink.as_mut(),
                 Some(&peak),
                 has_backdrop,
+                &mut surf.index,
                 &frame_mem,
             )?,
         };
         stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
         surf.backdrop_capture_peak = peak.load(std::sync::atomic::Ordering::Relaxed);
-        surf.frame_index_bytes = frame_mem
-            .index_bytes
-            .load(std::sync::atomic::Ordering::Relaxed);
         surf.window_query_peak = frame_mem
             .query_peak
             .load(std::sync::atomic::Ordering::Relaxed);
@@ -884,7 +888,7 @@ impl RasterRenderer {
             glyph_s = stats.phases.glyph_seconds - phases.glyph_seconds,
             shade_s = stats.phases.shade_seconds - phases.shade_seconds,
             items = items.len(), glyphs = glyph_reqs,
-            index_bytes = surf.frame_index_bytes,
+            index_bytes = surf.index.heap_bytes(),
             query_peak = surf.window_query_peak, "raster phases");
         stats.draws += draws;
         stats.instances += edges;
@@ -1032,6 +1036,7 @@ impl RasterRenderer {
                     raster::render_bands(
                         self.level,
                         &items,
+                        &mut self.projective_index,
                         [0.0; 4],
                         &mut base,
                         w,
