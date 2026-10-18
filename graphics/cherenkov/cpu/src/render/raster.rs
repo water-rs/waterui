@@ -1746,18 +1746,8 @@ fn for_each_band<T: Send>(
     }
     let chunk_len =
         NonZeroUsize::new(w * h.min(BAND_H)).expect("non-empty raster output has non-zero width");
-    let tasks = output
-        .len()
-        .div_ceil(chunk_len.get())
-        .min(rayon::current_num_threads());
-    if tasks == 1 {
-        let mut scratch = Scratch::new();
-        for (index, band) in output.chunks_mut(chunk_len.get()).enumerate() {
-            shade_band(index * BAND_H, band, &mut scratch)?;
-        }
-        return Ok(());
-    }
     let queue = BandQueue::new(output, chunk_len);
+    let tasks = queue.band_count().min(rayon::current_num_threads());
     (0..tasks).into_par_iter().try_for_each(|_| {
         let Some((mut index, mut band)) = queue.claim() else {
             return Ok(());
