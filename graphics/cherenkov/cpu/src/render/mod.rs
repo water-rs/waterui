@@ -34,6 +34,8 @@ pub use lower::{ClipMask, ClipRef};
 pub use paint::{PaintData, paint_data};
 #[cfg(any(test, feature = "testing"))]
 pub use raster::{Accum, ClipRun, Edge, composite_span};
+#[cfg(any(test, feature = "testing"))]
+pub use raster::{composite_solid, convert_span};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -166,15 +168,16 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
     builder
         .build()
         .map(|pool| {
+            let level = fearless_simd::Level::new();
             let info = RasterInfo {
                 threads: pool.current_num_threads(),
-                simd: "scalar",
+                simd: level_name(level),
                 cpu: cpu_model(),
             };
             (
                 RasterRenderer {
                     pool,
-                    level: fearless_simd::Level::new(),
+                    level,
                     surfaces: FxHashMap::default(),
                     filters: filter::Registry::default(),
                     fonts: FxHashMap::default(),
@@ -191,6 +194,48 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
             )
         })
         .map_err(|e| EngineError::Backend(format!("rayon pool: {e}")))
+}
+
+/// The `RasterInfo::simd` string for `level` — the CPU level the span
+/// kernels actually dispatch to. The variant accessors are cfg-gated to
+/// the same conditions as the variants they unwrap (so a forced-fallback
+/// build reports `"fallback"` through `is_fallback`); an unrecognised
+/// level is a bug and panics.
+fn level_name(level: fearless_simd::Level) -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    if level.as_neon().is_some() {
+        return "neon";
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    if level.as_wasm_simd128().is_some() {
+        return "simd128";
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if level.as_avx2().is_some() {
+        return "avx2";
+    }
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        not(all(
+            target_feature = "avx2",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "cmpxchg16b",
+            target_feature = "f16c",
+            target_feature = "fma",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "popcnt",
+            target_feature = "xsave"
+        ))
+    ))]
+    if level.as_sse4_2().is_some() {
+        return "sse4.2";
+    }
+    if level.is_fallback() {
+        return "fallback";
+    }
+    unreachable!("unsupported SIMD level {level:?}")
 }
 
 /// The host CPU model, best effort.
