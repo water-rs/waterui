@@ -3809,6 +3809,19 @@ struct SubmodulePin {
     commit: String,
 }
 
+/// The `*-path` members `metadata` declares — the crates a stable project
+/// links from the framework's own Git source rather than the registry:
+/// [`stable_member_substitutions`] substitutes their dependents' edges and
+/// [`annotate_stable_lock`] annotates their lock entries to the same set. A
+/// revision that declares none resolves nothing from the repository.
+fn git_sourced_members(metadata: &toml::Table) -> BTreeSet<&'static str> {
+    FRAMEWORK_MEMBERS
+        .iter()
+        .filter(|member| metadata.get(member.path_key).is_some())
+        .map(|member| member.package)
+        .collect()
+}
+
 /// The `[patch]` rows a `stable` project's Git-sourced members need.
 ///
 /// `[patch.crates-io]` carries the framework's own Git pins verbatim — the
@@ -3839,15 +3852,9 @@ fn stable_member_substitutions(
     metadata: &toml::Table,
 ) -> Result<PatchSet> {
     let mut patches = PatchSet::default();
-    // The `*-path` members this revision declares — the crates a generated
-    // crate links from the framework's own Git source. A revision that
-    // declares none resolves nothing from the repository, so nothing needs
-    // substituting.
-    let member_packages: BTreeSet<&str> = FRAMEWORK_MEMBERS
-        .iter()
-        .filter(|member| metadata.get(member.path_key).is_some())
-        .map(|member| member.package)
-        .collect();
+    // A revision that declares no `*-path` member resolves nothing from
+    // the repository, so nothing needs substituting.
+    let member_packages = git_sourced_members(metadata);
     if member_packages.is_empty() {
         return Ok(patches);
     }
@@ -4080,11 +4087,7 @@ fn annotate_stable_lock(
     let registry = "registry+https://github.com/rust-lang/crates.io-index"
         .parse::<cargo_lock::SourceId>()
         .expect("the crates.io index source is valid");
-    let git_members: BTreeSet<&str> = FRAMEWORK_MEMBERS
-        .iter()
-        .filter(|member| metadata.get(member.path_key).is_some())
-        .map(|member| member.package)
-        .collect();
+    let git_members = git_sourced_members(metadata);
     annotate_member_sources(lock, |name| {
         if git_members.contains(name) {
             git.clone()
