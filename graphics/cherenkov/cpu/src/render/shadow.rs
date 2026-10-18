@@ -88,13 +88,29 @@ pub(super) fn integral4<S: Simd>(
     let scale = simd.splat_f32x4(inv_sqrt2_sigma);
     let half = simd.splat_f32x4(0.5);
     let mut coverage = simd.splat_f32x4(0.0);
+    // Consecutive samples can share the straight-wall interval. Reuse its
+    // x integral only when both endpoints have identical bits; retain each
+    // sample's weight and addition in the original quadrature order.
+    let mut previous = None;
     for sample in samples {
-        let right = simd.mul_f32x4(
-            simd.sub_f32x4(simd.splat_f32x4(sample.right), pixels),
-            scale,
-        );
-        let left = simd.mul_f32x4(simd.sub_f32x4(simd.splat_f32x4(sample.left), pixels), scale);
-        let difference = simd.sub_f32x4(erf4(simd, right), erf4(simd, left));
+        let left_bits = sample.left.to_bits();
+        let right_bits = sample.right.to_bits();
+        let difference = match previous {
+            Some((left, right, difference)) if left_bits == left && right_bits == right => {
+                difference
+            }
+            _ => {
+                let right = simd.mul_f32x4(
+                    simd.sub_f32x4(simd.splat_f32x4(sample.right), pixels),
+                    scale,
+                );
+                let left =
+                    simd.mul_f32x4(simd.sub_f32x4(simd.splat_f32x4(sample.left), pixels), scale);
+                let difference = simd.sub_f32x4(erf4(simd, right), erf4(simd, left));
+                previous = Some((left_bits, right_bits, difference));
+                difference
+            }
+        };
         let weighted = simd.mul_f32x4(
             simd.mul_f32x4(half, difference),
             simd.splat_f32x4(sample.weight),
