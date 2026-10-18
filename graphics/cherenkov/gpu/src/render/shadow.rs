@@ -26,6 +26,7 @@ struct Kernel {
 pub struct Blur {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
     kernels: [Option<Kernel>; 3],
     temporary: Option<super::ScratchTarget>,
 }
@@ -41,8 +42,8 @@ impl Blur {
             entries: &super::layout_entries(super::bindings::SHADOW_GROUP0),
         });
         // Passthrough delivery trusts the fixed module's own bounds: the
-        // vertex stage draws 0..3, `texel` checks coordinates against the
-        // logical source size, which is within the scratch texture, and the
+        // vertex stage draws 0..3, `sample_at` clamps to the logical source
+        // size, which is within the scratch texture, and the
         // uploaded count equals the following tap array's length, capped to
         // the storage binding limit.
         let shader = delivery.shadow_module(device);
@@ -79,6 +80,12 @@ impl Blur {
         Self {
             pipeline,
             layout,
+            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("silhouette linear sampling"),
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                ..Default::default()
+            }),
             kernels: std::array::from_fn(|_| None),
             temporary: None,
         }
@@ -175,7 +182,14 @@ impl Blur {
                 let taps = if slot == 0 {
                     shadow_taps::spread_taps([a, b, c, d], parameters.spread, count_limit)?
                 } else {
-                    shadow_taps::gaussian_taps(axis, parameters.sigma, count_limit)?
+                    let mut taps = shadow_taps::gaussian_taps(axis, parameters.sigma, count_limit)?;
+                    // Adjacent unit taps on a device axis share a linear
+                    // interpolation interval. One weighted sample evaluates
+                    // both; oblique taps cross different texel cells.
+                    if axis[0] == 0.0 || axis[1] == 0.0 {
+                        pair_linear_taps(&mut taps);
+                    }
+                    taps
                 };
                 let taps: Vec<[f32; 4]> = taps.into_iter().map(|[x, y, w]| [x, y, w, 0.]).collect();
                 let offsets = tap_bounds(&taps, mode == 2);
@@ -230,6 +244,10 @@ impl Blur {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: kernel.buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
             ],
         });
@@ -341,9 +359,52 @@ fn expand(support: [u32; 4], offsets: [f32; 4], size: (u32, u32)) -> [u32; 4] {
     [x0, y0, x1 - x0, y1 - y0]
 }
 
+/// Combine adjacent, axis-aligned unit Gaussian taps into linear samples.
+#[expect(clippy::cast_possible_truncation, reason = "GPU taps use f32 storage")]
+fn pair_linear_taps(taps: &mut Vec<[f32; 3]>) {
+    let count = taps.len();
+    for output in 0..count / 2 {
+        let first = taps[output * 2].map(f64::from);
+        let second = taps[output * 2 + 1].map(f64::from);
+        let weight = first[2] + second[2];
+        taps[output] = [
+            (second[0].mul_add(second[2], first[0] * first[2]) / weight) as f32,
+            (second[1].mul_add(second[2], first[1] * first[2]) / weight) as f32,
+            weight as f32,
+        ];
+    }
+    if !count.is_multiple_of(2) {
+        taps[count / 2] = taps[count - 1];
+    }
+    taps.truncate(count.div_ceil(2));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn linear_taps_preserve_gaussian_mass_and_interpolation() {
+        for axis in [[1., 0.], [-1., 0.], [0., 2.], [0., -2.]] {
+            for sigma in [0., 0.1, 1., 30.] {
+                let original = shadow_taps::gaussian_taps(axis, sigma, 4096.).unwrap();
+                let mut paired = original.clone();
+                pair_linear_taps(&mut paired);
+                assert_eq!(paired.len(), original.len().div_ceil(2));
+                for (source, tap) in original.chunks(2).zip(&paired) {
+                    let mass: f32 = source.iter().map(|tap| tap[2]).sum();
+                    assert!((tap[2] - mass).abs() < 1e-7);
+                    if let [first, second] = source {
+                        let dimension = usize::from(axis[0] == 0.);
+                        let phase = (tap[dimension] - first[dimension])
+                            / (second[dimension] - first[dimension]);
+                        assert!(tap[2].mul_add(phase, -second[2]).abs() < 1e-6);
+                        assert!((0.0..=1.0).contains(&phase));
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn stage_support_expands_by_the_kernels_reach() {

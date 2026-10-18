@@ -6,28 +6,22 @@ struct Kernel {
 }
 @group(0) @binding(0) var input: texture_2d<f32>;
 @group(0) @binding(1) var<storage, read> kernel: Kernel;
+@group(0) @binding(2) var linear_sampler: sampler;
 
 @vertex fn vs(@builtin(vertex_index) vertex: u32) -> @builtin(position) vec4<f32> {
     let p = array<vec2<f32>, 3>(vec2<f32>(-1.,-1.),vec2<f32>(3.,-1.),vec2<f32>(-1.,3.));
     return vec4<f32>(p[vertex],0.,1.);
 }
-fn texel(p: vec2<i32>) -> vec4<f32> {
-    if any(p < vec2<i32>(0)) || any(p >= vec2<i32>(kernel.size)) { return vec4<f32>(0.); }
-    return textureLoad(input,p,0);
-}
 fn sample_at(p: vec2<f32>) -> vec4<f32> {
-    let origin = vec2<i32>(floor(p));
-    let phase = fract(p);
-    if phase.x == 0. {
-        let first = texel(origin);
-        if phase.y == 0. { return first; }
-        return mix(first, texel(origin+vec2<i32>(0,1)), phase.y);
-    }
-    if phase.y == 0. {
-        return mix(texel(origin), texel(origin+vec2<i32>(1,0)), phase.x);
-    }
-    return mix(mix(texel(origin),texel(origin+vec2<i32>(1,0)),phase.x),
-               mix(texel(origin+vec2<i32>(0,1)),texel(origin+vec2<i32>(1,1)),phase.x),phase.y);
+    // Clamp to the logical capture, which can be smaller than the texture.
+    // Fade the edge texels to zero over one pixel to reproduce a transparent
+    // border without requiring the optional clamp-to-border sampler feature.
+    let size = vec2<f32>(kernel.size);
+    let edge = clamp(p + vec2<f32>(1.), vec2<f32>(0.), vec2<f32>(1.))
+             * clamp(size - p, vec2<f32>(0.), vec2<f32>(1.));
+    let uv = (clamp(p, vec2<f32>(0.), size - vec2<f32>(1.)) + vec2<f32>(0.5))
+           / vec2<f32>(textureDimensions(input));
+    return textureSampleLevel(input, linear_sampler, uv, 0.) * (edge.x * edge.y);
 }
 @fragment fn fs(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let p = position.xy-vec2<f32>(0.5);
