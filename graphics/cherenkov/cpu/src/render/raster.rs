@@ -3673,10 +3673,10 @@ mod tests {
             ],
             // The largest finite f16 and the values around overflow.
             [
-                f32::from_bits(0x477E_0000), // 65504, largest finite f16
-                f32::from_bits(0x477E_FFFF), // just below overflow -> 65504
-                f32::from_bits(0x477F_0000), // 65520 -> +inf
-                f32::from_bits(0xFF7F_0000), // -65520 -> -inf
+                f32::from_bits(0x477F_E000), // 65504, largest finite f16
+                f32::from_bits(0x477F_EFFF), // just below overflow -> 65504
+                f32::from_bits(0x477F_F000), // 65520 -> +inf
+                f32::from_bits(0xC77F_F000), // -65520 -> -inf
             ],
             // Signed zeros, infinities and NaN.
             [
