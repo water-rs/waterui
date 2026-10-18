@@ -1732,6 +1732,7 @@ dependencies = [
  "gungraun",
  "half",
  "kurbo 0.13.1",
+ "libc",
  "nami",
  "png",
  "rayon",

@@ -3,6 +3,7 @@
 //! end's render loop.
 
 mod account;
+mod bins;
 mod bitmap;
 mod blend;
 mod colr;
@@ -35,6 +36,8 @@ pub use lower::{ClipMask, ClipRef};
 pub use paint::{PaintData, paint_data};
 #[cfg(any(test, feature = "testing"))]
 pub use raster::{Accum, ClipRun, Edge, composite_span};
+#[cfg(any(test, feature = "testing"))]
+pub use raster::{composite_solid, convert_span};
 
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -142,6 +145,8 @@ pub struct RasterRenderer {
     image_replacements: u64,
     /// Counts rendered frames; the projective cache's recency clock.
     frame_count: u64,
+    /// Rebuilt for each raster call; capacity is shared across surfaces.
+    band_index: bins::FrameIndex,
 }
 
 impl std::fmt::Debug for RasterRenderer {
@@ -162,20 +167,21 @@ impl std::fmt::Debug for RasterRenderer {
 /// [`EngineError::Backend`] when the pool cannot be built.
 pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), EngineError> {
     let builder = rayon::ThreadPoolBuilder::new()
-        .num_threads(config.threads.unwrap_or(0))
+        .num_threads(crate::topology::workers(config.threads)?.get())
         .thread_name(|i| format!("cherenkov-raster-{i}"));
     builder
         .build()
         .map(|pool| {
+            let level = fearless_simd::Level::new();
             let info = RasterInfo {
                 threads: pool.current_num_threads(),
-                simd: "scalar",
+                simd: level_name(level),
                 cpu: cpu_model(),
             };
             (
                 RasterRenderer {
                     pool,
-                    level: fearless_simd::Level::new(),
+                    level,
                     surfaces: FxHashMap::default(),
                     filters: filter::Registry::default(),
                     fonts: FxHashMap::default(),
@@ -187,11 +193,54 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     geometry: geometry::GeometryCache::default(),
                     image_replacements: 0,
                     frame_count: 0,
+                    band_index: bins::FrameIndex::default(),
                 },
                 info,
             )
         })
         .map_err(|e| EngineError::Backend(format!("rayon pool: {e}")))
+}
+
+/// The `RasterInfo::simd` string for `level` — the CPU level the span
+/// kernels actually dispatch to. The variant accessors are cfg-gated to
+/// the same conditions as the variants they unwrap (so a forced-fallback
+/// build reports `"fallback"` through `is_fallback`); an unrecognised
+/// level is a bug and panics.
+fn level_name(level: fearless_simd::Level) -> &'static str {
+    #[cfg(target_arch = "aarch64")]
+    if level.as_neon().is_some() {
+        return "neon";
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    if level.as_wasm_simd128().is_some() {
+        return "simd128";
+    }
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if level.as_avx2().is_some() {
+        return "avx2";
+    }
+    #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        not(all(
+            target_feature = "avx2",
+            target_feature = "bmi1",
+            target_feature = "bmi2",
+            target_feature = "cmpxchg16b",
+            target_feature = "f16c",
+            target_feature = "fma",
+            target_feature = "lzcnt",
+            target_feature = "movbe",
+            target_feature = "popcnt",
+            target_feature = "xsave"
+        ))
+    ))]
+    if level.as_sse4_2().is_some() {
+        return "sse4.2";
+    }
+    if level.is_fallback() {
+        return "fallback";
+    }
+    unreachable!("unsupported SIMD level {level:?}")
 }
 
 /// The host CPU model, best effort.
@@ -602,7 +651,8 @@ impl Renderer for RasterRenderer {
             .surfaces
             .values()
             .map(SurfaceState::band_bytes)
-            .sum::<u64>();
+            .sum::<u64>()
+            + self.band_index.heap_bytes();
         categories.glyphs = self.glyph_cache.bytes();
         categories.images = self.images.values().map(|image| image.bytes()).sum();
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
@@ -691,7 +741,10 @@ impl RasterRenderer {
             });
             if sf.changed || filter_changed {
                 stats.frame = Some(frame.id);
-                self.render_surface(sf, frame.id, stats)?;
+                let mut index = std::mem::take(&mut self.band_index);
+                let result = self.render_surface(sf, frame.id, stats, &mut index);
+                self.band_index = index;
+                result?;
             }
         }
         let (used, used_groups) = self.filter_uses();
@@ -785,6 +838,7 @@ impl RasterRenderer {
         sf: &cherenkov::SurfaceFrame<'_>,
         frame: cherenkov::FrameId,
         stats: &mut FrameStats,
+        index: &mut bins::FrameIndex,
     ) -> Result<(), RenderError> {
         let phases = stats.phases;
         let id = sf.id;
@@ -792,7 +846,12 @@ impl RasterRenderer {
             Some(surf) => surf.size,
             None => return Ok(()),
         };
-        let (projected, mut used) = self.realize_projective(sf, frame, stats)?;
+        // The frame's transient band-index metrics, shared by the
+        // projective realizations and the surface render: each records
+        // the frame-local peak.
+        let mut frame_mem = bins::FrameMeter::default();
+        let (projected, mut used) =
+            self.realize_projective(sf, frame, stats, index, &mut frame_mem)?;
         let mut items: Vec<Item> = Vec::new();
         let glyph_reqs = self.lower_items(
             sf,
@@ -820,10 +879,32 @@ impl RasterRenderer {
         let shade_at = cherenkov::Instant::now();
         let (draws, edges) = match &mut surf.output {
             Output::F32(fb) => pool.install(|| {
-                raster::render_bands(level, &items, clear, fb, w, h, Some(&peak), has_backdrop)
+                raster::render_bands(
+                    level,
+                    &items,
+                    index,
+                    clear,
+                    fb,
+                    w,
+                    h,
+                    Some(&peak),
+                    has_backdrop,
+                    &mut frame_mem,
+                )
             })?,
             Output::F16(out) => pool.install(|| {
-                raster::render_bands_f16(level, &items, clear, out, w, h, Some(&peak), has_backdrop)
+                raster::render_bands_f16(
+                    level,
+                    &items,
+                    index,
+                    clear,
+                    out,
+                    w,
+                    h,
+                    Some(&peak),
+                    has_backdrop,
+                    &mut frame_mem,
+                )
             })?,
             Output::Stream { format, sink, emit } => raster::render_bands_stream(
                 level,
@@ -835,6 +916,8 @@ impl RasterRenderer {
                 sink.as_mut(),
                 Some(&peak),
                 has_backdrop,
+                index,
+                &mut frame_mem,
             )?,
         };
         stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
@@ -843,7 +926,11 @@ impl RasterRenderer {
             lower_s = stats.phases.lower_seconds - phases.lower_seconds,
             glyph_s = stats.phases.glyph_seconds - phases.glyph_seconds,
             shade_s = stats.phases.shade_seconds - phases.shade_seconds,
-            items = items.len(), glyphs = glyph_reqs, "raster phases");
+            items = items.len(), glyphs = glyph_reqs,
+            index_bytes = index.heap_bytes(),
+            query_peak = frame_mem.query_peak.load(std::sync::atomic::Ordering::Relaxed),
+            index_query_peak = frame_mem.peak.load(std::sync::atomic::Ordering::Relaxed),
+            "raster phases");
         stats.draws += draws;
         stats.instances += edges;
         stats.passes += u32::try_from(h.div_ceil(raster::BAND_H)).unwrap_or(u32::MAX);
@@ -893,6 +980,7 @@ impl RasterRenderer {
                 &self.bitmap_fonts,
                 (&mut self.bitmap_cache, &mut self.geometry),
                 self.level,
+                &self.pool,
             );
             lowering.project(local, projected);
             let result = lowering.run(id, sf.tree, &mut caches, &self.images);
@@ -931,6 +1019,8 @@ impl RasterRenderer {
         sf: &cherenkov::SurfaceFrame<'_>,
         frame: cherenkov::FrameId,
         stats: &mut FrameStats,
+        index: &mut bins::FrameIndex,
+        meter: &mut bins::FrameMeter,
     ) -> Result<(FxHashMap<LayerId, projective::Placed>, projective::Used), RenderError> {
         let mut used = projective::Used::default();
         let Some(size) = self.surfaces.get(&sf.id).map(|surf| surf.size) else {
@@ -989,12 +1079,14 @@ impl RasterRenderer {
                     raster::render_bands(
                         self.level,
                         &items,
+                        index,
                         [0.0; 4],
                         &mut base,
                         w,
                         h,
                         None,
                         has_backdrop,
+                        meter,
                     )
                 })?;
                 stats.draws += draws;

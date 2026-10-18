@@ -105,13 +105,6 @@ impl Entry {
         }
     }
 
-    const fn texture_unfilterable(binding: u32) -> Self {
-        Self {
-            kind: Kind::Texture { filterable: false },
-            ..Self::texture(binding)
-        }
-    }
-
     const fn texture_uint(binding: u32) -> Self {
         Self {
             binding,
@@ -322,10 +315,11 @@ pub const REDUCE_GROUPS: &[&[Entry]] = &[REDUCE_GROUP0];
 #[allow(dead_code)]
 pub const SPACE_CONVERT_GROUPS: &[&[Entry]] = &[SPACE_CONVERT_GROUP0];
 
-/// Silhouette convolution: unfilterable source and the uploaded kernel.
+/// Silhouette convolution: filtered source and the uploaded kernel.
 pub const SHADOW_GROUP0: &[Entry] = &[
-    Entry::texture_unfilterable(0),
+    Entry::texture(0),
     Entry::storage_read(1, FRAGMENT),
+    Entry::sampler(2),
 ];
 
 /// The silhouette convolution's single bind group.

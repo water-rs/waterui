@@ -228,5 +228,39 @@ class CpuEngines(unittest.TestCase):
         self.assertEqual(engines['skia-cpu'].max_workers, 1)
 
 
+class DeviceControlEvidence(unittest.TestCase):
+    def evidence(self, directory, restored="10", applied="20", exit_code=0):
+        files = {"registered-controls": "1", "exit-code": str(exit_code),
+                 "control-0.kind": "node", "control-0.key": "/sys/test-frequency",
+                 "control-0.original": "10", "control-0.requested": "20",
+                 "control-0.restored": restored}
+        if applied is not None:
+            files["control-0.applied"] = applied
+        for name, value in files.items():
+            (directory / name).write_text(value + "\n")
+
+    def test_restoration_mismatch_is_rejected_even_on_zero_exit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp)
+            self.evidence(path, restored="20")
+            with self.assertRaisesRegex(pixel_compare.ControlError, "not restored"):
+                pixel_compare.PerformanceControls.read_evidence(path)
+
+    def test_success_requires_requested_setting_to_be_applied(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp)
+            self.evidence(path, applied="10")
+            with self.assertRaisesRegex(pixel_compare.ControlError, "not applied"):
+                pixel_compare.PerformanceControls.read_evidence(path)
+
+    def test_preflight_temperature_abort_preserves_unapplied_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp)
+            self.evidence(path, applied=None, exit_code=125)
+            result = pixel_compare.PerformanceControls.read_evidence(path)
+            self.assertEqual(result["exit"], 125)
+            self.assertIsNone(result["settings"][0]["applied"])
+
+
 if __name__ == '__main__':
     unittest.main()
