@@ -537,27 +537,36 @@ impl PaintData {
         paint
     }
 
-    /// Evaluates the paint at device-space pixel centre `(dx, dy)`,
-    /// returning premultiplied linear Display P3.
+    /// Evaluates the paint at a device-space pixel centre in premultiplied linear P3.
     #[must_use]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    pub fn eval(&self, dx: f32, dy: f32) -> [f32; 4] {
+        self.evaluate(PixelCenter { dx, dy })
+    }
+
+    // Select the paint formula once, before the output iterates over pixel centres.
     #[expect(
         clippy::cast_precision_loss,
         reason = "image dimensions are bounded by memory budget"
     )]
     #[expect(
         clippy::inline_always,
-        reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+        reason = "compiled under the dispatched CPU level"
     )]
     #[inline(always)]
-    pub fn eval(&self, dx: f32, dy: f32) -> [f32; 4] {
+    fn evaluate<O: PaintOutput>(&self, output: O) -> O::Output {
         match self {
-            Self::Transformed(inner, inverse) => {
+            Self::Transformed(inner, inverse) => output.sample(|dx, dy| {
                 let (x, y) = apply(affine_f32(*inverse), dx, dy);
                 inner.eval(x, y)
-            }
-            Self::Solid(c) => *c,
-            Self::Mesh(mesh) => mesh.eval(dx, dy),
-            Self::Image(image) => {
+            }),
+            Self::Solid(c) => output.solid(*c),
+            Self::Mesh(mesh) => output.sample(|dx, dy| mesh.eval(dx, dy)),
+            Self::Image(image) => output.sample(|dx, dy| {
                 let (qx, qy) = apply(image.inv, dx, dy);
                 let (iw, ih) = (image.image.width as f32, image.image.height as f32);
                 let Some(u) = extend_t(qx / iw, image.extend_x).map(|t| t * iw) else {
@@ -567,7 +576,7 @@ impl PaintData {
                     return [0.0; 4];
                 };
                 sample_image(&image.image, u, v, image.sampling)
-            }
+            }),
             Self::Sweep {
                 inv,
                 center,
@@ -576,12 +585,12 @@ impl PaintData {
                 stops,
                 extend,
                 interpolation,
-            } => {
+            } => output.sample(|dx, dy| {
                 let (px, py) = apply(*inv, dx, dy);
                 let raw = (py - center[1]).atan2(px - center[0]) - *start;
                 let t = raw.rem_euclid(std::f32::consts::TAU) / *span;
                 extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-            }
+            }),
 
             Self::Linear {
                 inv,
@@ -589,7 +598,7 @@ impl PaintData {
                 stops,
                 extend,
                 interpolation,
-            } => {
+            } => output.sample(|dx, dy| {
                 let (px, py) = apply(*inv, dx, dy);
                 let (sx, sy, ex, ey) = (*end_points).into();
                 let (ddx, ddy) = (ex - sx, ey - sy);
@@ -600,7 +609,7 @@ impl PaintData {
                     (py - sy).mul_add(ddy, (px - sx) * ddx) / len2
                 };
                 extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-            }
+            }),
             Self::Radial {
                 inv,
                 centres,
@@ -609,7 +618,7 @@ impl PaintData {
                 stops,
                 extend,
                 interpolation,
-            } => {
+            } => output.sample(|dx, dy| {
                 let (px, py) = apply(*inv, dx, dy);
                 let t = radial_t(px, py, *centres, *radii, *identical);
                 if t.is_nan() {
@@ -617,20 +626,13 @@ impl PaintData {
                 } else {
                     extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
                 }
-            }
+            }),
         }
     }
 
-    /// Evaluates the run of pixel centres `(x0 + i + 0.5, py + 0.5)` into
-    /// `out`: `out[i] == self.eval(x0 + i + 0.5, py + 0.5)` bit for bit.
-    /// `out` may be uninitialised — every element is written — and is
-    /// returned as the initialised run. [`PaintData::Solid`] fills the
-    /// span with native stores four pixels at a time; every other kind
-    /// keeps the scalar per-pixel evaluation until its own issue.
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "pixel indices and band offsets are far below 2^24"
-    )]
+    /// Evaluates pixel centres into `out`, bit for bit like [`Self::eval`].
+    /// Every element is initialized. Solid spans use four-pixel native stores;
+    /// other paints select their scalar formula once for the whole span.
     #[expect(
         clippy::inline_always,
         reason = "compiled under the dispatched CPU level"
@@ -643,40 +645,105 @@ impl PaintData {
         py: usize,
         out: &'a mut [MaybeUninit<[f32; 4]>],
     ) -> &'a mut [[f32; 4]] {
-        match self {
-            Self::Solid(c) => {
-                let planes = simd.combine_f32x8(
-                    simd.combine_f32x4(simd.splat_f32x4(c[0]), simd.splat_f32x4(c[1])),
-                    simd.combine_f32x4(simd.splat_f32x4(c[2]), simd.splat_f32x4(c[3])),
-                );
-                let mut block = [0.0f32; 16];
-                simd.store_interleaved_128_f32x16(planes, &mut block);
-                let count = out.len();
-                let mut pos = 0;
-                while pos + 4 <= count {
-                    // SAFETY: `out[pos..pos + 4]` is four contiguous
-                    // `MaybeUninit<[f32; 4]>` — 16 floats — and `block`
-                    // holds those 16 initialised floats.
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            block.as_ptr(),
-                            out[pos..].as_mut_ptr().cast::<f32>(),
-                            16,
-                        );
-                    }
-                    pos += 4;
-                }
-                for px in &mut out[pos..] {
-                    px.write(*c);
-                }
-            }
-            _ => {
-                for (i, px) in out.iter_mut().enumerate() {
-                    px.write(self.eval((x0 + i) as f32 + 0.5, py as f32 + 0.5));
-                }
-            }
+        self.evaluate(PixelSpan { simd, x0, py, out })
+    }
+}
+
+// The output owns iteration and initialization; paint formulas are shared by
+// scalar sampling and span sampling without a per-pixel enum dispatch.
+trait PaintOutput: Sized {
+    type Output;
+
+    fn sample(self, evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output;
+    fn solid(self, color: [f32; 4]) -> Self::Output;
+}
+
+struct PixelCenter {
+    dx: f32,
+    dy: f32,
+}
+
+impl PaintOutput for PixelCenter {
+    type Output = [f32; 4];
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sample(self, mut evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
+        evaluate(self.dx, self.dy)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn solid(self, color: [f32; 4]) -> Self::Output {
+        color
+    }
+}
+
+struct PixelSpan<'a, S> {
+    simd: S,
+    x0: usize,
+    py: usize,
+    out: &'a mut [MaybeUninit<[f32; 4]>],
+}
+
+impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
+    type Output = &'a mut [[f32; 4]];
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel indices and band offsets are far below 2^24"
+    )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sample(self, mut evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
+        for (i, pixel) in self.out.iter_mut().enumerate() {
+            pixel.write(evaluate((self.x0 + i) as f32 + 0.5, self.py as f32 + 0.5));
         }
-        // SAFETY: every element of `out` was just written.
+        // SAFETY: every element was written by the loop above.
+        unsafe { self.out.assume_init_mut() }
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn solid(self, c: [f32; 4]) -> Self::Output {
+        let Self { simd, out, .. } = self;
+        let planes = simd.combine_f32x8(
+            simd.combine_f32x4(simd.splat_f32x4(c[0]), simd.splat_f32x4(c[1])),
+            simd.combine_f32x4(simd.splat_f32x4(c[2]), simd.splat_f32x4(c[3])),
+        );
+        let mut block = [0.0f32; 16];
+        simd.store_interleaved_128_f32x16(planes, &mut block);
+        let count = out.len();
+        let mut pos = 0;
+        while pos + 4 <= count {
+            // SAFETY: `out[pos..pos + 4]` is four contiguous
+            // `MaybeUninit<[f32; 4]>` — 16 floats — and `block`
+            // holds those 16 initialised floats.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    block.as_ptr(),
+                    out[pos..].as_mut_ptr().cast::<f32>(),
+                    16,
+                );
+            }
+            pos += 4;
+        }
+        for px in &mut out[pos..] {
+            px.write(c);
+        }
+        // SAFETY: the four-pixel stores and scalar tail initialized every element.
         unsafe { out.assume_init_mut() }
     }
 }
