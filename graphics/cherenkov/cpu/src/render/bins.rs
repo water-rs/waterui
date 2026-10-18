@@ -185,6 +185,8 @@ fn edge_bands(e: &Edge, oy: f32, h: usize, bands: usize) -> (usize, usize) {
 pub struct EdgeGroup<'a> {
     /// The draw's own edges, in original order.
     pub edges: &'a [Edge],
+    /// The caller retained the same immutable geometry at this group index.
+    pub geometry_unchanged: bool,
     /// The draw's device-space y origin.
     pub oy: f32,
     /// First band the owning item reaches.
@@ -257,6 +259,9 @@ impl EdgeBins {
             return false;
         }
         groups.enumerate().all(|(g, group)| {
+            if group.geometry_unchanged {
+                return true;
+            }
             let start = self.span_off[g];
             let end = self
                 .span_off
@@ -525,7 +530,7 @@ impl FrameIndex {
                 .clone()
                 .zip(&self.source_ids)
                 .all(|(new, old)| GeometryIdentity::of(new) == *old);
-        let groups = self.draws.iter().map(|&i| {
+        let groups = self.draws.iter().enumerate().map(|(g, &i)| {
             let Item::Draw {
                 edges,
                 offset,
@@ -538,6 +543,7 @@ impl FrameIndex {
             let reach = rows_bands((bbox.y0 as usize, (bbox.y1 as usize).min(h)), bands);
             EdgeGroup {
                 edges,
+                geometry_unchanged: self.source_ids.get(g) == Some(&GeometryIdentity::of(edges)),
                 oy: offset[1],
                 band0: reach.start,
                 band1: reach.end,
@@ -673,6 +679,7 @@ mod tests {
         index.rebuild(
             std::iter::once(EdgeGroup {
                 edges,
+                geometry_unchanged: false,
                 oy,
                 band0: 0,
                 band1: bands,
@@ -750,6 +757,7 @@ mod tests {
         fn group(edges: &[Edge]) -> EdgeGroup<'_> {
             EdgeGroup {
                 edges,
+                geometry_unchanged: false,
                 oy: 0.0,
                 band0: 0,
                 band1: 4,
@@ -825,6 +833,7 @@ mod tests {
             .windows(2)
             .map(|pair| EdgeGroup {
                 edges: &edges[pair[0]..pair[1]],
+                geometry_unchanged: false,
                 oy: -2.0,
                 band0: 0,
                 band1: 8,
@@ -917,6 +926,7 @@ mod tests {
         index.rebuild(
             std::iter::once(EdgeGroup {
                 edges: &edges,
+                geometry_unchanged: false,
                 oy: 7.5,
                 band0: 0,
                 band1: bands,

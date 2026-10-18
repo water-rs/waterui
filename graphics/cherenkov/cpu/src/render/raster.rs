@@ -3593,6 +3593,7 @@ pub fn coverage_mask(edges: &[Edge], rule: FillRule, w: usize, h: usize) -> Vec<
     index.rebuild(
         std::iter::once(EdgeGroup {
             edges,
+            geometry_unchanged: false,
             oy: 0.0,
             band0: 0,
             band1: bands,
