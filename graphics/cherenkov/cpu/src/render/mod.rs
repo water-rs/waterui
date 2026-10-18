@@ -705,6 +705,7 @@ impl Renderer for RasterRenderer {
             self.glyph_cache.clear();
             self.bitmap_cache.clear();
             self.geometry.clear();
+            self.band_index = bins::FrameIndex::default();
             for surface in self.surfaces.values_mut() {
                 for content in surface.layers.values_mut() {
                     content.trim();
