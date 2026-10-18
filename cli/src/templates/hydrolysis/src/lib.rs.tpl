@@ -10,8 +10,11 @@ use waterui::env::Environment;
 #[wasm_bindgen(start)]
 pub fn start() {
     let env = waterui::configure_environment!(Environment::new());
-    let app = {{ ctx.crate_name_ident() }}::app(env);
-    hydrolysis::run(app, hydrolysis_m3::Material3::defaults());
+    hydrolysis::run(
+        {{ ctx.crate_name_ident() }}::app,
+        env,
+        hydrolysis_m3::Material3::defaults(),
+    );
 }
 
 #[cfg(all(target_os = "android", feature = "waterui-preview-mode"))]
