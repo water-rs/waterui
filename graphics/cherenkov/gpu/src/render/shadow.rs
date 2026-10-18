@@ -13,7 +13,11 @@ pub struct Parameters {
 }
 
 struct Kernel {
-    key: Vec<u64>,
+    key: [u64; 8],
+    /// Tap extrema `[min_x, max_x, min_y, max_y]` from the
+    /// exact f32 taps, with `(0, 0)` folded in for the erosion
+    /// initializer. Bounds the texel offsets the stage can sample.
+    offsets: [f32; 4],
     buffer: wgpu::Buffer,
 }
 
@@ -103,14 +107,19 @@ impl Blur {
             })
     }
 
+    /// Convolves `input`'s capture in place. `support` is the
+    /// `(x, y, w, h)` region of the `size` capture that can hold nonzero
+    /// pixels; each stage scissors its output to the region its taps can
+    /// still reach from it. Returns the number of passes encoded.
     pub fn apply(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         input: &super::ScratchTarget,
         size: (u32, u32),
+        mut support: [u32; 4],
         parameters: Parameters,
-    ) -> Result<(), RenderError> {
+    ) -> Result<u32, RenderError> {
         if self
             .temporary
             .as_ref()
@@ -131,6 +140,7 @@ impl Blur {
             });
         }
         let [a, b, c, d, _, _] = parameters.transform.as_coeffs();
+        let mut dispatches = 0;
         for (slot, mode, axis) in [
             (0, if parameters.spread >= 0. { 1 } else { 2 }, [0., 0.]),
             (1, 0, [a, b]),
@@ -139,7 +149,7 @@ impl Blur {
             if (slot == 0 && parameters.spread == 0.) || (slot != 0 && parameters.sigma <= 0.) {
                 continue;
             }
-            let key = vec![
+            let key = [
                 u64::from(size.0),
                 u64::from(size.1),
                 parameters.sigma.to_bits(),
@@ -168,6 +178,7 @@ impl Blur {
                     shadow_taps::gaussian_taps(axis, parameters.sigma, count_limit)?
                 };
                 let taps: Vec<[f32; 4]> = taps.into_iter().map(|[x, y, w]| [x, y, w, 0.]).collect();
+                let offsets = tap_bounds(&taps, mode == 2);
                 let count = u32::try_from(taps.len()).map_err(|_| {
                     RenderError::Render("shadow kernel exceeds addressable storage".into())
                 })?;
@@ -178,11 +189,24 @@ impl Blur {
                     contents: &bytes,
                     usage: wgpu::BufferUsages::STORAGE,
                 });
-                self.kernels[slot] = Some(Kernel { key, buffer });
+                self.kernels[slot] = Some(Kernel {
+                    key,
+                    offsets,
+                    buffer,
+                });
             }
-            self.dispatch(device, encoder, input, size, slot);
+            if support[2] == 0 || support[3] == 0 {
+                // The input is identically transparent, so the output is
+                // too — and it is already in place: the cleared capture
+                // is never touched. Validation above still ran.
+                continue;
+            }
+            let kernel = self.kernels[slot].as_ref().expect("kernel prepared");
+            support = expand(support, kernel.offsets, size);
+            self.dispatch(device, encoder, input, size, slot, support);
+            dispatches += 1;
         }
-        Ok(())
+        Ok(dispatches)
     }
     fn dispatch(
         &self,
@@ -191,6 +215,7 @@ impl Blur {
         input: &super::ScratchTarget,
         size: (u32, u32),
         slot: usize,
+        region: [u32; 4],
     ) {
         let kernel = self.kernels[slot].as_ref().expect("kernel prepared");
         let temporary = self.temporary.as_ref().expect("intermediate prepared");
@@ -226,6 +251,9 @@ impl Blur {
         });
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bindings, &[]);
+        // The full-target triangle still runs; the scissor drops the
+        // fragments whose inputs the kernel's reach cannot make nonzero.
+        pass.set_scissor_rect(region[0], region[1], region[2], region[3]);
         pass.draw(0..3, 0..1);
         drop(pass);
         encoder.copy_texture_to_texture(
@@ -236,6 +264,112 @@ impl Blur {
                 height: size.1,
                 depth_or_array_layers: 1,
             },
+        );
+    }
+}
+
+fn tap_bounds(taps: &[[f32; 4]], erosion: bool) -> [f32; 4] {
+    let mut offsets = [
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    for tap in taps {
+        offsets[0] = offsets[0].min(tap[0]);
+        offsets[1] = offsets[1].max(tap[0]);
+        offsets[2] = offsets[2].min(tap[1]);
+        offsets[3] = offsets[3].max(tap[1]);
+    }
+    if erosion {
+        // Erosion seeds its result from the unshifted sample.
+        offsets[0] = offsets[0].min(0.0);
+        offsets[1] = offsets[1].max(0.0);
+        offsets[2] = offsets[2].min(0.0);
+        offsets[3] = offsets[3].max(0.0);
+    }
+    offsets
+}
+
+/// The output interval of one stage along an axis whose taps span
+/// `[min_tap, max_tap]`: output `p` samples `floor(p + t)` and its `+1`
+/// bilinear neighbour, so nonzero input in `[lo, hi)` can only leave
+/// outputs in `[lo - max_tap - 1, hi - min_tap + 1)` nonzero — clamped to
+/// `[0, size)`. `error` covers the GPU's f32 rounding of `p + t` at
+/// magnitudes up to `size + |t|`.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the interval is floor/ceil-clamped to [0, size] before conversion"
+)]
+fn axis_support(lo: u32, hi: u32, min_tap: f64, max_tap: f64, size: u32) -> (u32, u32) {
+    let error = f64::from(f32::EPSILON) * (f64::from(size) + min_tap.abs().max(max_tap.abs()));
+    let out_lo = (f64::from(lo) - max_tap - 1.0 - error)
+        .floor()
+        .clamp(0.0, f64::from(size));
+    let out_hi = (f64::from(hi) - min_tap + 1.0 + error)
+        .ceil()
+        .clamp(0.0, f64::from(size));
+    (out_lo as u32, out_hi as u32)
+}
+
+/// The `(x, y, w, h)` region a stage's output can be nonzero in, given
+/// the input `support` and the kernel's per-axis tap `offsets`
+/// `[min_x, max_x, min_y, max_y]`; `[0, 0, 0, 0]` when no output pixel
+/// can reach the input.
+fn expand(support: [u32; 4], offsets: [f32; 4], size: (u32, u32)) -> [u32; 4] {
+    if support[2] == 0 || support[3] == 0 {
+        return [0, 0, 0, 0];
+    }
+    let (x0, x1) = axis_support(
+        support[0],
+        support[0] + support[2],
+        f64::from(offsets[0]),
+        f64::from(offsets[1]),
+        size.0,
+    );
+    let (y0, y1) = axis_support(
+        support[1],
+        support[1] + support[3],
+        f64::from(offsets[2]),
+        f64::from(offsets[3]),
+        size.1,
+    );
+    if x1 <= x0 || y1 <= y0 {
+        return [0, 0, 0, 0];
+    }
+    [x0, y0, x1 - x0, y1 - y0]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stage_support_expands_by_the_kernels_reach() {
+        // Output p reads floor(p + t) and its +1 neighbour for taps
+        // t ∈ [min, max]: x = 5 reaches input 8 at t = 3 (floor(8..9)),
+        // x = 23 reaches 20 at t = -3 (floor(19..20) + 1) — and the
+        // rounding margin adds one integer pixel on each side.
+        assert_eq!(axis_support(10, 20, -2.0, 3.0, 64), (5, 24));
+        // The interval clamps to the capture.
+        assert_eq!(axis_support(0, 5, -2.0, 3.0, 64), (0, 9));
+        assert_eq!(axis_support(10, 64, -2.0, 3.0, 64), (5, 64));
+        // Taps that cannot reach the input leave no support.
+        assert_eq!(axis_support(10, 20, 100.0, 200.0, 64), (0, 0));
+        assert_eq!(axis_support(10, 20, -200.0, -100.0, 64), (64, 64));
+    }
+
+    #[test]
+    fn expand_applies_each_axis_independently() {
+        assert_eq!(expand([10, 10, 0, 10], [-3.0; 4], (64, 64)), [0; 4]);
+        assert_eq!(
+            expand([10, 10, 10, 10], [-2.0, 3.0, -1.0, 1.0], (64, 64)),
+            [5, 7, 19, 16]
+        );
+        assert_eq!(
+            expand([10, 10, 10, 10], [100.0, 200.0, -1.0, 1.0], (64, 64)),
+            [0, 0, 0, 0]
         );
     }
 }
