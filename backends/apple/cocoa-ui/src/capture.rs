@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use block2::RcBlock;
-use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBound};
+use dispatch2::{DispatchData, DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBound};
 use objc2::Message;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -61,9 +61,14 @@ use crate::core_animation::flush_transaction;
 use crate::geometry::Rect;
 use crate::main_queue::enqueue;
 
-/// The MSL the composition pipeline is compiled from — `CaptureComposite`
-/// in-tree, so the kit carries no bundle resources.
-const CAPTURE_COMPOSITE_MSL: &str = include_str!("capture_composite.metal");
+/// The compositor's metallib, precompiled from `capture_composite.metal`
+/// at build time with `-ftexture-write-rounding-mode=rte` (#2827): a
+/// source-compiled library always takes the platform's toward-zero float
+/// store default — `MTLCompileOptions` carries no rounding switch — so
+/// the composite pass would land every `RGBA16Float` channel one f16 step
+/// low. The bytes are embedded, so the kit carries no bundle resources.
+const CAPTURE_COMPOSITE_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/capture_composite.metallib"));
 
 /// A value handed to the compositor's serial queue and handed back —
 /// never *shared* across threads. `objc2` protocol objects are not `Send`,
@@ -604,11 +609,10 @@ impl DeviceResources {
         {
             return pipeline.clone();
         }
-        let source = NSString::from_str(CAPTURE_COMPOSITE_MSL);
         let library = self
             .device
-            .newLibraryWithSource_options_error(&source, None)
-            .expect("failed to compile the capture composite Metal library");
+            .newLibraryWithData_error(&DispatchData::from_static_bytes(CAPTURE_COMPOSITE_METALLIB))
+            .expect("failed to load the precompiled capture composite Metal library");
         let vertex = library
             .newFunctionWithName(&NSString::from_str("capture_composite_vertex"))
             .expect("CaptureComposite is missing capture_composite_vertex");
@@ -2068,13 +2072,16 @@ impl Drop for HiddenRestore<'_> {
 mod tests {
     use objc2::rc::Retained;
     use objc2_metal::{
-        MTLCommandBufferStatus, MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLPixelFormat,
-        MTLResource, MTLScissorRect, MTLSize, MTLTexture,
+        MTLCommandBuffer, MTLCommandBufferStatus, MTLCommandEncoder, MTLCommandQueue,
+        MTLCopyAllDevices, MTLCreateSystemDefaultDevice, MTLDevice, MTLLoadAction, MTLOrigin,
+        MTLPixelFormat, MTLPrimitiveType, MTLRegion, MTLRenderCommandEncoder,
+        MTLRenderPassDescriptor, MTLResource, MTLScissorRect, MTLSize, MTLStoreAction, MTLTexture,
+        MTLTextureDescriptor, MTLTextureUsage, MTLViewport,
     };
 
     use super::{
-        CaptureError, CompositionFailed, CompositorState, FenceBatch, NativeRenderer, SurfaceSpec,
-        composition_outcome,
+        CaptureError, CompositeRegion, CompositionFailed, CompositorState, DeviceResources,
+        FenceBatch, NativeRenderer, SurfaceSpec, composition_outcome,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -2107,6 +2114,124 @@ mod tests {
                 other => panic!("status {status:?} must fail the capture, got {other:?}"),
             }
         }
+    }
+
+    /// The compositor's `RGBA16Float` store rounds to nearest even (#2827):
+    /// a source-compiled library takes the platform's toward-zero texture
+    /// store default, so this composites an overlay whose blend result lands
+    /// strictly between two f16s and reads back the stored half — under
+    /// toward-zero it would land one step low.
+    #[test]
+    fn an_off_grid_rgba16float_composite_stores_the_nearest_half() {
+        let Some(device) = MTLCreateSystemDefaultDevice() else {
+            return; // No Metal on this runner — nothing to check.
+        };
+        let mut resources = DeviceResources::new(&device);
+        let queue = device.newCommandQueue().expect("a Metal command queue");
+        // SAFETY: a 2D texture descriptor is always valid to construct.
+        let descriptor = unsafe {
+            MTLTextureDescriptor::texture2DDescriptorWithPixelFormat_width_height_mipmapped(
+                MTLPixelFormat::RGBA16Float,
+                1,
+                1,
+                false,
+            )
+        };
+        descriptor.setUsage(MTLTextureUsage::ShaderRead | MTLTextureUsage::RenderTarget);
+        let texture = |texel: [u16; 4]| {
+            let texture = device
+                .newTextureWithDescriptor(&descriptor)
+                .expect("a 1x1 RGBA16Float texture");
+            // SAFETY: `texel` is a live 8-byte buffer for a 4-channel
+            // 16-bit texel, matching the texture's layout.
+            unsafe {
+                texture.replaceRegion_mipmapLevel_withBytes_bytesPerRow(
+                    MTLRegion {
+                        origin: MTLOrigin { x: 0, y: 0, z: 0 },
+                        size: MTLSize {
+                            width: 1,
+                            height: 1,
+                            depth: 1,
+                        },
+                    },
+                    0,
+                    std::ptr::NonNull::from(&texel).cast::<core::ffi::c_void>(),
+                    8,
+                );
+            }
+            texture
+        };
+        // 0x0300 is the f16 subnormal 3 * 2^-16; 0x2E66 is the f16 nearest
+        // 0.1, 0.0999755859375. A transparent overlay adds the two: the
+        // blend result 0.1000213623046875 sits above the midpoint of its
+        // f16 cell, so rte stores 0x2E67 while toward-zero stores 0x2E66.
+        let overlay = texture([0x0300, 0, 0, 0]);
+        let target = texture([0x2E66, 0, 0, 0x3C00]);
+        let command_buffer = queue.commandBuffer().expect("a command buffer");
+        let pass = MTLRenderPassDescriptor::new();
+        // SAFETY: index 0 is the single color attachment.
+        let attachment = unsafe { pass.colorAttachments().objectAtIndexedSubscript(0) };
+        attachment.setTexture(Some(&target));
+        attachment.setLoadAction(MTLLoadAction::Load);
+        attachment.setStoreAction(MTLStoreAction::Store);
+        let encoder = command_buffer
+            .renderCommandEncoderWithDescriptor(&pass)
+            .expect("a render encoder");
+        encoder.setRenderPipelineState(&resources.render_pipeline(MTLPixelFormat::RGBA16Float));
+        let sampler = resources.composite_sampler();
+        encoder.setViewport(MTLViewport {
+            originX: 0.0,
+            originY: 0.0,
+            width: 1.0,
+            height: 1.0,
+            znear: 0.0,
+            zfar: 1.0,
+        });
+        let region = CompositeRegion {
+            uv_origin: [0.0, 0.0],
+            uv_scale: [1.0, 1.0],
+        };
+        // SAFETY: `encoder` is a live render encoder; index 0 is the
+        // vertex-constant, texture and sampler slots the shader binds, and
+        // `setVertexBytes` copies `region`'s bytes into the command.
+        unsafe {
+            encoder.setVertexBytes_length_atIndex(
+                std::ptr::NonNull::from(&region).cast::<core::ffi::c_void>(),
+                core::mem::size_of::<CompositeRegion>(),
+                0,
+            );
+            encoder.setFragmentTexture_atIndex(Some(&overlay), 0);
+            encoder.setFragmentSamplerState_atIndex(Some(&sampler), 0);
+            encoder.drawPrimitives_vertexStart_vertexCount(MTLPrimitiveType::Triangle, 0, 3);
+        }
+        encoder.endEncoding();
+        command_buffer.commit();
+        command_buffer.waitUntilCompleted();
+        let mut texel = [0u16; 4];
+        // SAFETY: `texel` is a live 8-byte buffer for one 4-channel
+        // 16-bit texel.
+        unsafe {
+            target.getBytes_bytesPerRow_fromRegion_mipmapLevel(
+                std::ptr::NonNull::from(&mut texel).cast::<core::ffi::c_void>(),
+                8,
+                MTLRegion {
+                    origin: MTLOrigin { x: 0, y: 0, z: 0 },
+                    size: MTLSize {
+                        width: 1,
+                        height: 1,
+                        depth: 1,
+                    },
+                },
+                0,
+            );
+        }
+        assert_eq!(
+            texel[0], 0x2E67,
+            "the off-grid blend 0.1000213623046875 stores the nearest f16 \
+             (0x2E67 = 0.10003662109375), not the toward-zero 0x2E66 a \
+             runtime-compiled library produces"
+        );
+        assert_eq!(texel[3], 0x3C00, "the opaque alpha round-trips");
     }
 
     /// The lease contract, exercised behaviorally: while a frame's lease
