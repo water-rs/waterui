@@ -905,19 +905,22 @@ impl RasterRenderer {
                     &mut frame_mem,
                 )
             })?,
-            Output::Stream { format, sink, emit } => raster::render_bands_stream(
-                level,
-                &items,
-                clear,
-                (w, h),
-                emit,
-                *format,
-                sink.as_mut(),
-                Some(&peak),
-                has_backdrop,
-                index,
-                &mut frame_mem,
-            )?,
+            Output::Stream { format, sink, emit } => {
+                pool.install(|| index.rebuild(&items, h));
+                raster::render_bands_stream(
+                    level,
+                    &items,
+                    clear,
+                    (w, h),
+                    emit,
+                    *format,
+                    sink.as_mut(),
+                    Some(&peak),
+                    has_backdrop,
+                    index,
+                    &mut frame_mem,
+                )?
+            }
         };
         stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
         surf.backdrop_capture_peak = peak.load(std::sync::atomic::Ordering::Relaxed);

@@ -2321,15 +2321,13 @@ pub fn render_bands_stream(
     sink: &mut dyn FnMut(BandOut<'_>),
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
-    index: &mut FrameIndex,
+    index: &FrameIndex,
     meter: &mut FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
     let (w, h) = size;
-    index.rebuild(items, h);
     meter.record_index(index.heap_bytes());
     let meter = &*meter;
-    let index = &*index;
     let mut scratch = Scratch::new(Some(meter));
     let mut band_px = scratch.buffers.take_color(w * h.min(BAND_H));
     let mut y0 = 0;
