@@ -393,10 +393,27 @@ fn a_popup_only_change_publishes_the_merged_tree() {
 }
 
 /// Pumps until the runtime settles and returns the merged tree as of that
-/// settle — `None` when no window has ever produced one.
-fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<TreeUpdate> {
-    for _ in 0..64 {
-        let _ = runtime.pump_at(false, Instant::now());
+/// settle — `None` when no window has ever produced one — plus the last
+/// frame instant pumped, so a caller that keeps pumping continues the same
+/// clock.
+///
+/// The clock is virtual, not wall: iteration `i` stamps its frame
+/// `i * 16ms` after `start`, so an interaction animation the preceding
+/// input armed crosses its horizon inside the loop instead of racing real
+/// time. Wall-clock stamps leave `is_settled` chasing the animation's real
+/// duration — the loop ends on its iteration cap while the fade is still
+/// in flight, and the next pump renders that frame and publishes a tree
+/// update a "clean" pump must not have (water-rs/waterui#1969 — the race
+/// #2499 fixed for `a_window_with_a_pending_frame_is_not_settled`, on the
+/// settle loop this test shares).
+fn pump_until_settled(
+    runtime: &mut HeadlessRuntime,
+    start: Instant,
+) -> (Option<TreeUpdate>, Instant) {
+    let mut at = start;
+    for i in 0..64u32 {
+        at = start + Duration::from_millis(16) * i;
+        let _ = runtime.pump_at(false, at);
         if runtime.is_settled() {
             break;
         }
@@ -405,7 +422,7 @@ fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<TreeUpdate> {
         !runtime.has_pending_semantic_update(),
         "headless runtime never settled"
     );
-    runtime.accessibility_tree()
+    (runtime.accessibility_tree(), at)
 }
 
 /// `tree_update` is the "the tree changed" signal: a pump where no window —
@@ -432,10 +449,11 @@ fn a_clean_pump_publishes_no_tree_update() {
         MinimalTestTheme::default(),
     );
 
-    let update = pump_until_settled(&mut runtime)
-        .expect("the first frame must publish an accessibility tree");
+    let (update, mut now) = pump_until_settled(&mut runtime, Instant::now());
+    let update = update.expect("the first frame must publish an accessibility tree");
+    now += Duration::from_millis(16);
     assert!(
-        runtime.pump_at(false, Instant::now()).tree_update.is_none(),
+        runtime.pump_at(false, now).tree_update.is_none(),
         "a settled pump with no popup must publish nothing"
     );
 
@@ -455,14 +473,20 @@ fn a_clean_pump_publishes_no_tree_update() {
     ) {
         runtime.push_input_event(event);
     }
-    let update =
-        pump_until_settled(&mut runtime).expect("the click frame must publish the merged tree");
+    // The secondary click rests the pointer on the host button, arming its
+    // hover fade-in: the settle loop must run on the virtual clock or the
+    // fade is still in flight at the "clean pump" check (see the helper).
+    let (update, last) = pump_until_settled(&mut runtime, now);
+    let update = update.expect("the click frame must publish the merged tree");
     assert!(
         find_by_label(&update, Role::Button, "Copy").is_some(),
         "the menu's window must be merged before the clean-pump check"
     );
     assert!(
-        runtime.pump_at(false, Instant::now()).tree_update.is_none(),
+        runtime
+            .pump_at(false, last + Duration::from_millis(16))
+            .tree_update
+            .is_none(),
         "a settled pump with an open popup must publish nothing"
     );
 }
