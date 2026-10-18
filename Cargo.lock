@@ -14408,7 +14408,7 @@ dependencies = [
 [[package]]
 name = "wide"
 version = "1.7.1"
-source = "git+https://github.com/lexoliu/wide?rev=a4ef6a82ea8dd0ba2b9a017cf91c81c105e5f049#a4ef6a82ea8dd0ba2b9a017cf91c81c105e5f049"
+source = "git+https://github.com/lexoliu/wide?branch=perf%2Ff32x4-exp-const#a4ef6a82ea8dd0ba2b9a017cf91c81c105e5f049"
 dependencies = [
  "bytemuck",
  "safe_arch",

@@ -570,7 +570,7 @@ lto = "thin"
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
 # Evaluate SIMD exponential constants at compile time until wide releases the fix.
-wide = { git = "https://github.com/lexoliu/wide", rev = "a4ef6a82ea8dd0ba2b9a017cf91c81c105e5f049" }
+wide = { git = "https://github.com/lexoliu/wide", branch = "perf/f32x4-exp-const" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the
 # registry `waterui-core` and `waterui-graphics`; the workspace must resolve
 # those to its own copies or the graph carries two of each and every `View`
