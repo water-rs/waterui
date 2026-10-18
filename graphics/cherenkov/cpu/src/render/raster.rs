@@ -421,6 +421,8 @@ fn sel_alloc(bytes: u64, meter: Option<&FrameMeter>) {
             + bytes;
         m.query_peak
             .fetch_max(live, std::sync::atomic::Ordering::Relaxed);
+        m.peak
+            .fetch_max(m.index_bytes + live, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -1846,9 +1848,11 @@ pub fn render_bands(
     h: usize,
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
-    meter: &FrameMeter,
+    meter: &mut FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     index.rebuild(items, h);
+    meter.record_index(index.heap_bytes());
+    let meter = &*meter;
     let index = &*index;
     let stats = stats(items);
     let result = fb.par_chunks_mut(BAND_H * w).enumerate().try_for_each_init(
@@ -1896,9 +1900,11 @@ pub fn render_bands_f16(
     h: usize,
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
-    meter: &FrameMeter,
+    meter: &mut FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     index.rebuild(items, h);
+    meter.record_index(index.heap_bytes());
+    let meter = &*meter;
     let index = &*index;
     let stats = stats(items);
     let result = out
@@ -1958,11 +1964,13 @@ pub fn render_bands_stream(
     peak: Option<&std::sync::atomic::AtomicU64>,
     has_backdrop: bool,
     index: &mut FrameIndex,
-    meter: &FrameMeter,
+    meter: &mut FrameMeter,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
     let (w, h) = size;
     index.rebuild(items, h);
+    meter.record_index(index.heap_bytes());
+    let meter = &*meter;
     let index = &*index;
     let mut scratch = Scratch::new(Some(meter));
     let mut band_px = scratch.buffers.take_color(w * h.min(BAND_H));

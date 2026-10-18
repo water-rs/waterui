@@ -1,8 +1,8 @@
 //! Per-frame band bins over a raster's painter-ordered [`Item`] list.
 //!
-//! A [`FrameIndex`] is built once per `render_bands*` call and dropped
-//! with it: flat prefix-offset tables give each `BAND_H`-row band the
-//! item indices it must run — every structural item in original order,
+//! A [`FrameIndex`] is rebuilt per `render_bands*` call and reused across
+//! the frame's sequential calls, then dropped. Flat prefix-offset tables
+//! give each `BAND_H`-row band the item indices it must run — every structural item in original order,
 //! plus each bounded draw whose device rows reach the band — and, for
 //! each `Item::Draw`, the indices of its own edges that can cross the
 //! band. Indices always name the original `items` slice and each draw's
@@ -58,16 +58,29 @@ const GAMMA2: f64 = 2.0 * U / (1.0 - 2.0 * U);
 /// Both rounding steps' subnormal allowance: `2⁻¹⁴⁹ = 2 × 2⁻¹⁵⁰`.
 const SUBNORMAL: f64 = 1.401_298_464_324_817e-45;
 
-/// Heap metrics of a frame's expanded-window query scratch, owned by
-/// the render call. `render_bands*` reports into it; the render thread
-/// reads it after shading.
+/// Heap metrics of a frame's index and expanded-window query scratch.
+/// `render_bands*` records the index before sharing the meter with workers;
+/// the render thread reads the combined peak after shading.
 #[derive(Debug, Default)]
 pub struct FrameMeter {
+    /// Current frame-owned index allocation, fixed while workers run.
+    pub index_bytes: u64,
+    /// Peak simultaneously live index and query-scratch allocation.
+    pub peak: AtomicU64,
     /// Simultaneously-live query-scratch bytes: expanded-window item and
     /// edge selections held at this instant across all workers.
     pub query_live: AtomicU64,
     /// `query_live`'s maximum over the frame's render calls.
     pub query_peak: AtomicU64,
+}
+
+impl FrameMeter {
+    /// Records the rebuilt index before any workers borrow the meter.
+    pub fn record_index(&mut self, bytes: u64) {
+        self.index_bytes = bytes;
+        self.peak
+            .fetch_max(bytes, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// The device rows `item` can draw in, clamped to `0..h`. Structural
@@ -313,10 +326,9 @@ impl EdgeBins {
     }
 }
 
-/// A surface's per-band item and draw-edge bins, retained for the
-/// surface's lifetime and rebuilt in place on every `render_bands*`
-/// call — every table keeps its capacity across rebuilds, so a frame
-/// allocates only what a bigger frame first grows.
+/// Frame-owned per-band item and draw-edge bins. Every table keeps its
+/// capacity across the frame's sequential projective and surface renders;
+/// none survives the frame boundary.
 #[derive(Default)]
 pub struct FrameIndex {
     /// The surface's band count: `⌈h / BAND_H⌉`.

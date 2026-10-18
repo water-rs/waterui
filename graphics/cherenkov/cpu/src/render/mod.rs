@@ -84,12 +84,6 @@ struct SurfaceState {
     /// backdrop capture last frame (window, isolation stack and capture
     /// buffers). 0 when no capture ran.
     backdrop_capture_peak: u64,
-    /// The surface's retained band bins: rebuilt in place each
-    /// `render_bands*` call, its capacity reported under `bands`.
-    index: bins::FrameIndex,
-    /// The last frame's peak of simultaneously-live expanded-window
-    /// query scratch, in bytes.
-    window_query_peak: u64,
     /// Projective layers' realized local images, by layer, one per
     /// density bucket.
     projective: FxHashMap<LayerId, Vec<projective::Entry>>,
@@ -148,9 +142,6 @@ pub struct RasterRenderer {
     image_replacements: u64,
     /// Counts rendered frames; the projective cache's recency clock.
     frame_count: u64,
-    /// The renderer-level band bins reused by projective realizations —
-    /// they run sequentially, so one index serves them all.
-    projective_index: bins::FrameIndex,
 }
 
 impl std::fmt::Debug for RasterRenderer {
@@ -196,7 +187,6 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     geometry: geometry::GeometryCache::default(),
                     image_replacements: 0,
                     frame_count: 0,
-                    projective_index: bins::FrameIndex::default(),
                 },
                 info,
             )
@@ -333,8 +323,6 @@ impl Renderer for RasterRenderer {
                 groups: Vec::new(),
                 anchor_scratch: lower::AnchorScratch::default(),
                 backdrop_capture_peak: 0,
-                index: bins::FrameIndex::default(),
-                window_query_peak: 0,
                 projective: FxHashMap::default(),
                 visibility: Visibility::Visible,
                 waker,
@@ -610,12 +598,7 @@ impl Renderer for RasterRenderer {
                 .map(|content| account::content_bytes(content) + lower::silhouette_bytes(content))
                 .sum::<u64>();
         }
-        categories.bands = self
-            .surfaces
-            .values()
-            .map(|surface| surface.band_bytes() + surface.index.heap_bytes())
-            .sum::<u64>()
-            + self.projective_index.heap_bytes();
+        categories.bands = self.surfaces.values().map(SurfaceState::band_bytes).sum();
         categories.glyphs = self.glyph_cache.bytes();
         categories.images = self.images.values().map(|image| image.bytes()).sum();
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
@@ -808,8 +791,10 @@ impl RasterRenderer {
         // The frame's transient band-index metrics, shared by the
         // projective realizations and the surface render: each records
         // the frame-local peak.
-        let frame_mem = bins::FrameMeter::default();
-        let (projected, mut used) = self.realize_projective(sf, frame, stats, &frame_mem)?;
+        let mut index = bins::FrameIndex::default();
+        let mut frame_mem = bins::FrameMeter::default();
+        let (projected, mut used) =
+            self.realize_projective(sf, frame, stats, &mut index, &mut frame_mem)?;
         let mut items: Vec<Item> = Vec::new();
         let glyph_reqs = self.lower_items(
             sf,
@@ -840,28 +825,28 @@ impl RasterRenderer {
                 raster::render_bands(
                     level,
                     &items,
-                    &mut surf.index,
+                    &mut index,
                     clear,
                     fb,
                     w,
                     h,
                     Some(&peak),
                     has_backdrop,
-                    &frame_mem,
+                    &mut frame_mem,
                 )
             })?,
             Output::F16(out) => pool.install(|| {
                 raster::render_bands_f16(
                     level,
                     &items,
-                    &mut surf.index,
+                    &mut index,
                     clear,
                     out,
                     w,
                     h,
                     Some(&peak),
                     has_backdrop,
-                    &frame_mem,
+                    &mut frame_mem,
                 )
             })?,
             Output::Stream { format, sink, emit } => raster::render_bands_stream(
@@ -874,22 +859,21 @@ impl RasterRenderer {
                 sink.as_mut(),
                 Some(&peak),
                 has_backdrop,
-                &mut surf.index,
-                &frame_mem,
+                &mut index,
+                &mut frame_mem,
             )?,
         };
         stats.phases.shade_seconds += shade_at.elapsed().as_secs_f64();
         surf.backdrop_capture_peak = peak.load(std::sync::atomic::Ordering::Relaxed);
-        surf.window_query_peak = frame_mem
-            .query_peak
-            .load(std::sync::atomic::Ordering::Relaxed);
         tracing::debug!(target: "cherenkov_cpu::profile",
             lower_s = stats.phases.lower_seconds - phases.lower_seconds,
             glyph_s = stats.phases.glyph_seconds - phases.glyph_seconds,
             shade_s = stats.phases.shade_seconds - phases.shade_seconds,
             items = items.len(), glyphs = glyph_reqs,
-            index_bytes = surf.index.heap_bytes(),
-            query_peak = surf.window_query_peak, "raster phases");
+            index_bytes = index.heap_bytes(),
+            query_peak = frame_mem.query_peak.load(std::sync::atomic::Ordering::Relaxed),
+            index_query_peak = frame_mem.peak.load(std::sync::atomic::Ordering::Relaxed),
+            "raster phases");
         stats.draws += draws;
         stats.instances += edges;
         stats.passes += u32::try_from(h.div_ceil(raster::BAND_H)).unwrap_or(u32::MAX);
@@ -977,7 +961,8 @@ impl RasterRenderer {
         sf: &cherenkov::SurfaceFrame<'_>,
         frame: cherenkov::FrameId,
         stats: &mut FrameStats,
-        meter: &bins::FrameMeter,
+        index: &mut bins::FrameIndex,
+        meter: &mut bins::FrameMeter,
     ) -> Result<(FxHashMap<LayerId, projective::Placed>, projective::Used), RenderError> {
         let mut used = projective::Used::default();
         let Some(size) = self.surfaces.get(&sf.id).map(|surf| surf.size) else {
@@ -1036,7 +1021,7 @@ impl RasterRenderer {
                     raster::render_bands(
                         self.level,
                         &items,
-                        &mut self.projective_index,
+                        index,
                         [0.0; 4],
                         &mut base,
                         w,
