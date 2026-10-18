@@ -340,7 +340,7 @@ fn left_winding(head: u32, seed: i32, y: f32) -> i32 {
     return winding;
 }
 
-fn boundary_area(head: u32, seed: i32, rule: u32) -> f32 {
+fn left_area(head: u32, seed: i32, rule: u32) -> f32 {
     var area = 0.0;
     var y = 0.0;
     // Integrate the left edge's piecewise-constant inside state.
@@ -356,66 +356,69 @@ fn boundary_area(head: u32, seed: i32, rule: u32) -> f32 {
         area += inside(left_winding(head, seed, (y + end) * 0.5), rule) * (end - y);
         y = end;
     }
-    var node = head;
-    while node != 0u {
-        let edge = fragment(node);
-        let a = edge.xy;
-        let d = edge.zw - a;
-        if d.y == 0.0 { node = next_fragment(node); continue; }
-        var t = 0.0;
-        while t < 1.0 {
-            var end = 1.0;
-            var other = head;
-            while other != 0u {
-                if other != node {
-                    let s = fragment(other);
-                    let v = s.zw - s.xy;
-                    let q = s.xy - a;
-                    let denominator = cross(d, v);
-                    if !same_line(node, other) && denominator != 0.0 {
-                        let hit = cross(q, v) / denominator;
-                        let u = cross(q, d) / denominator;
-                        if hit > t && u >= 0.0 && u <= 1.0 { end = min(end, hit); }
-                    } else if same_line(node, other) {
-                        // Coincident edges change multiplicity at endpoints.
-                        let u = (s.y - a.y) / d.y;
-                        let v_end = (s.w - a.y) / d.y;
-                        if u > t { end = min(end, u); }
-                        if v_end > t { end = min(end, v_end); }
-                    }
+    return area;
+}
+
+// Each fragment integrates its own boundary contribution. The next dispatch
+// reduces those contributions in linked-list order.
+fn edge_area(node: u32, head: u32, seed: i32, rule: u32) -> f32 {
+    var area = 0.0;
+    let edge = fragment(node);
+    let a = edge.xy;
+    let d = edge.zw - a;
+    if d.y == 0.0 { return 0.0; }
+    var t = 0.0;
+    while t < 1.0 {
+        var end = 1.0;
+        var other = head;
+        while other != 0u {
+            if other != node {
+                let s = fragment(other);
+                let v = s.zw - s.xy;
+                let q = s.xy - a;
+                let denominator = cross(d, v);
+                if !same_line(node, other) && denominator != 0.0 {
+                    let hit = cross(q, v) / denominator;
+                    let u = cross(q, d) / denominator;
+                    if hit > t && u >= 0.0 && u <= 1.0 { end = min(end, hit); }
+                } else if same_line(node, other) {
+                    // Coincident edges change multiplicity at endpoints.
+                    let u = (s.y - a.y) / d.y;
+                    let v_end = (s.w - a.y) / d.y;
+                    if u > t { end = min(end, u); }
+                    if v_end > t { end = min(end, v_end); }
                 }
-                other = next_fragment(other);
             }
-            let midpoint = a + d * ((t + end) * 0.5);
-            var winding = left_winding(head, seed, midpoint.y);
-            var transition = select(-1i, 1i, d.y > 0.0);
-            var owner = node;
-            other = head;
-            while other != 0u {
-                if other != node {
-                    let s = fragment(other);
-                    if midpoint.y >= min(s.y, s.w) && midpoint.y < max(s.y, s.w) {
-                        let delta = select(-1i, 1i, s.w > s.y);
-                        let x = s.x + (midpoint.y - s.y) * (s.z - s.x) / (s.w - s.y);
-                        if same_line(node, other) {
-                            transition += delta;
-                            owner = min(owner, other);
-                        } else if x < midpoint.x {
-                            winding += delta;
-                        }
-                    }
-                }
-                other = next_fragment(other);
-            }
-            if owner == node {
-                let change = inside(winding + transition, rule) - inside(winding, rule);
-                area += change * (1.0 - midpoint.x) * abs(d.y) * (end - t);
-            }
-            t = end;
+            other = next_fragment(other);
         }
-        node = next_fragment(node);
+        let midpoint = a + d * ((t + end) * 0.5);
+        var winding = left_winding(head, seed, midpoint.y);
+        var transition = select(-1i, 1i, d.y > 0.0);
+        var owner = node;
+        other = head;
+        while other != 0u {
+            if other != node {
+                let s = fragment(other);
+                if midpoint.y >= min(s.y, s.w) && midpoint.y < max(s.y, s.w) {
+                    let delta = select(-1i, 1i, s.w > s.y);
+                    let x = s.x + (midpoint.y - s.y) * (s.z - s.x) / (s.w - s.y);
+                    if same_line(node, other) {
+                        transition += delta;
+                        owner = min(owner, other);
+                    } else if x < midpoint.x {
+                        winding += delta;
+                    }
+                }
+            }
+            other = next_fragment(other);
+        }
+        if owner == node {
+            let change = inside(winding + transition, rule) - inside(winding, rule);
+            area += change * (1.0 - midpoint.x) * abs(d.y) * (end - t);
+        }
+        t = end;
     }
-    return clamp(area, 0.0, 1.0);
+    return area;
 }
 
 fn sort_key(index: u32) -> u32 { return atomicLoad(&coverage[params.sort_a + index * 2u]); }
@@ -595,6 +598,34 @@ fn prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
+fn path_for_key(key: u32) -> u32 {
+    var lo = 0u;
+    var hi = params.path_count;
+    while lo + 1u < hi {
+        let mid = (lo + hi) / 2u;
+        if paths[mid].grid_base <= key { lo = mid; } else { hi = mid; }
+    }
+    return lo;
+}
+
+// The directed crossing delta at fragment word 7 has been consumed by
+// link_groups and prefix. Reuse it without enlarging the coverage arena.
+@compute @workgroup_size(64)
+fn integrate_edges(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = invocation(gid);
+    if i >= params.fragment_cap { return; }
+    let key = sort_key(i);
+    if key == 0xffffffffu { return; }
+    let node = sort_node(i);
+    let base = params.fragment_base + (node - 1u) * 8u;
+    let row = atomicLoad(&coverage[base + 6u]);
+    let group = params.groups + lower_bound(key) * 16u;
+    let head = atomicLoad(&coverage[group + 4u + row]);
+    let seed = bitcast<i32>(atomicLoad(&coverage[group + 8u + row]));
+    let value = edge_area(node, head, seed, paths[path_for_key(key)].rule);
+    atomicStore(&coverage[base + 7u], bitcast<u32>(value));
+}
+
 @compute @workgroup_size(64)
 fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = invocation(gid);
@@ -602,19 +633,22 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let key = sort_key(i);
     if key == 0xffffffffu { return; }
     if i > 0u && sort_key(i - 1u) == key { return; }
-    var lo = 0u;
-    var hi = params.path_count;
-    while lo + 1u < hi {
-        let mid = (lo + hi) / 2u;
-        if paths[mid].grid_base <= key { lo = mid; } else { hi = mid; }
-    }
+    let pi = path_for_key(key);
     let group = params.groups + i * 16u;
     let next = atomicLoad(&coverage[group]);
     for (var row = 0u; row < 4u; row += 1u) {
         let head = atomicLoad(&coverage[group + 4u + row]);
         let seed = bitcast<i32>(atomicLoad(&coverage[group + 8u + row]));
-        var value = inside(seed, paths[lo].rule);
-        if head != 0u { value = boundary_area(head, seed, paths[lo].rule); }
+        var value = inside(seed, paths[pi].rule);
+        if head != 0u {
+            value = left_area(head, seed, paths[pi].rule);
+            var node = head;
+            while node != 0u {
+                value += bitcast<f32>(atomicLoad(&coverage[params.fragment_base + (node - 1u) * 8u + 7u]));
+                node = next_fragment(node);
+            }
+            value = clamp(value, 0.0, 1.0);
+        }
         atomicStore(&coverage[group + row], bitcast<u32>(value));
     }
     // No later stage reads edge-list heads; retain the sparse traversal link.
