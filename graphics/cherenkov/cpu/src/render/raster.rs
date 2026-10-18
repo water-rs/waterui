@@ -43,9 +43,10 @@ pub const SAMPLE_MARGIN: usize = 1;
 /// stack-resident buffer.
 const SPAN_CHUNK: usize = 64;
 
-/// One worker's reusable raster and filter buffers.
+/// One job's reusable raster and filter buffers.
 ///
-/// Created per rayon worker for the duration of a pass (`for_each_init`);
+/// Created once per raster job — a contiguous run of whole bands, at
+/// most one job per worker — for the duration of a pass;
 /// buffers are single-owner, never locked, and nothing is retained after the
 /// pass.
 ///
@@ -1670,11 +1671,21 @@ fn shade_windowed(
     result
 }
 
-/// Rasterizes the whole surface's items into `fb`, parallel over bands.
-///
-/// Each worker reuses its coverage, isolation and filter-window buffers.
-/// The transient pixel bound is `workers × (band + Σ filter windows at the
-/// deepest nesting)`, with each window sized `w × (bh + 2·apron)`.
+/// The whole bands one raster job covers: `band_count` bands split
+/// into at most [`rayon::current_num_threads`] contiguous runs, so one
+/// [`Scratch`] serves each run. `None` for an empty output — the
+/// callers' no-op case.
+fn bands_per_job(band_count: usize) -> Option<usize> {
+    let jobs = band_count.min(rayon::current_num_threads());
+    (jobs > 0).then(|| band_count.div_ceil(jobs))
+}
+
+/// Rasterizes the whole surface's items into `fb`, parallel over
+/// contiguous runs of whole bands. Each job creates one [`Scratch`],
+/// reusing its coverage, isolation and filter-window buffers across the
+/// run's bands. The transient pixel bound is `workers × (band + Σ filter
+/// windows at the deepest nesting)`, with each window sized
+/// `w × (bh + 2·apron)`.
 #[expect(
     clippy::too_many_arguments,
     reason = "the band context travels together"
@@ -1690,21 +1701,28 @@ pub fn render_bands(
     has_backdrop: bool,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
-    fb.par_chunks_mut(BAND_H * w)
+    let Some(per_job) = bands_per_job(h.div_ceil(BAND_H)) else {
+        return Ok(stats);
+    };
+    fb.par_chunks_mut(per_job * BAND_H * w)
         .enumerate()
-        .try_for_each_init(Scratch::new, |scratch, (band, slice)| {
-            shade(
-                level,
-                items,
-                clear,
-                slice,
-                w,
-                band * BAND_H,
-                h,
-                scratch,
-                peak,
-                has_backdrop,
-            )
+        .try_for_each(|(job, slice)| {
+            let mut scratch = Scratch::new();
+            for (sub, band) in slice.chunks_mut(BAND_H * w).enumerate() {
+                shade(
+                    level,
+                    items,
+                    clear,
+                    band,
+                    w,
+                    (job * per_job + sub) * BAND_H,
+                    h,
+                    &mut scratch,
+                    peak,
+                    has_backdrop,
+                )?;
+            }
+            Ok(())
         })?;
     Ok(stats)
 }
@@ -1726,29 +1744,36 @@ pub fn render_bands_f16(
     has_backdrop: bool,
 ) -> Result<(u32, u32), cherenkov::RenderError> {
     let stats = stats(items);
-    out.par_chunks_mut(BAND_H * w)
+    let Some(per_job) = bands_per_job(h.div_ceil(BAND_H)) else {
+        return Ok(stats);
+    };
+    out.par_chunks_mut(per_job * BAND_H * w)
         .enumerate()
-        .try_for_each_init(Scratch::new, |scratch, (band, out_slice)| {
-            let mut band_px = scratch.buffers.take_color(out_slice.len());
-            let result = shade(
-                level,
-                items,
-                clear,
-                &mut band_px,
-                w,
-                band * BAND_H,
-                h,
-                scratch,
-                peak,
-                has_backdrop,
-            );
-            if result.is_ok() {
-                for (dst, src) in out_slice.iter_mut().zip(band_px.iter()) {
-                    *dst = src.map(half::f16::from_f32);
+        .try_for_each(|(job, slice)| {
+            let mut scratch = Scratch::new();
+            for (sub, out_slice) in slice.chunks_mut(BAND_H * w).enumerate() {
+                let mut band_px = scratch.buffers.take_color(out_slice.len());
+                let result = shade(
+                    level,
+                    items,
+                    clear,
+                    &mut band_px,
+                    w,
+                    (job * per_job + sub) * BAND_H,
+                    h,
+                    &mut scratch,
+                    peak,
+                    has_backdrop,
+                );
+                if result.is_ok() {
+                    for (dst, src) in out_slice.iter_mut().zip(band_px.iter()) {
+                        *dst = src.map(half::f16::from_f32);
+                    }
                 }
+                scratch.buffers.give_color(band_px);
+                result?;
             }
-            scratch.buffers.give_color(band_px);
-            result
+            Ok(())
         })?;
     Ok(stats)
 }

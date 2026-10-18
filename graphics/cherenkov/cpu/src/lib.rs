@@ -49,6 +49,7 @@ mod names;
 mod render;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+mod topology;
 
 use cherenkov::{Backend, EngineError, Offscreen, OffscreenFormat};
 
@@ -66,8 +67,12 @@ pub struct RasterInfo {
 /// Configuration for the CPU raster engine.
 #[derive(Clone, Debug, Default)]
 pub struct RasterConfig {
-    /// Worker thread count for the banded rasterizer. `None` uses the
-    /// rayon default (one thread per logical core).
+    /// Positive worker count for the banded rasterizer. An explicit count
+    /// takes precedence over `RAYON_NUM_THREADS`, which must also be positive.
+    /// Otherwise Apple uses the highest-performance physical core class;
+    /// Android uses the highest-capacity class in the current CPU affinity;
+    /// other native platforms use their available parallelism. Automatic
+    /// discovery is unsupported on WebAssembly.
     pub threads: Option<usize>,
     /// Memory budgets; only `budget.cpu` is used for resident images and cached glyph masks.
     /// Surface framebuffers and in-flight frame data are not evictable caches.
