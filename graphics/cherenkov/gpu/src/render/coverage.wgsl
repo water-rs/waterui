@@ -340,7 +340,38 @@ fn left_winding(head: u32, seed: i32, y: f32) -> i32 {
     return winding;
 }
 
+// A singleton row has no intersections or coincident-edge multiplicity.
+// Keep the general integrator's left-edge intervals and arithmetic order,
+// but load the sole fragment once instead of walking it in every scan.
+fn singleton_winding(edge: vec4<f32>, seed: i32, y: f32) -> i32 {
+    var winding = seed;
+    if edge.x == 0.0 && edge.y > 0.0 && edge.y <= y { winding -= 1i; }
+    if edge.z == 0.0 && edge.w > 0.0 && edge.w <= y { winding += 1i; }
+    return winding;
+}
+fn singleton_area(edge: vec4<f32>, seed: i32, rule: u32) -> f32 {
+    var area = 0.0;
+    var y = 0.0;
+    while y < 1.0 {
+        var end = 1.0;
+        if edge.x == 0.0 && edge.y > y { end = min(end, edge.y); }
+        if edge.z == 0.0 && edge.w > y { end = min(end, edge.w); }
+        area += inside(singleton_winding(edge, seed, (y + end) * 0.5), rule) * (end - y);
+        y = end;
+    }
+    let d = edge.zw - edge.xy;
+    if d.y != 0.0 {
+        let midpoint = edge.xy + d * 0.5;
+        let winding = singleton_winding(edge, seed, midpoint.y);
+        let transition = select(-1i, 1i, d.y > 0.0);
+        let change = inside(winding + transition, rule) - inside(winding, rule);
+        area += change * (1.0 - midpoint.x) * abs(d.y);
+    }
+    return clamp(area, 0.0, 1.0);
+}
+
 fn boundary_area(head: u32, seed: i32, rule: u32) -> f32 {
+    if next_fragment(head) == 0u { return singleton_area(fragment(head), seed, rule); }
     var area = 0.0;
     var y = 0.0;
     // Integrate the left edge's piecewise-constant inside state.
