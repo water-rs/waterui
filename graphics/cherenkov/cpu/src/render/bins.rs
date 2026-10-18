@@ -1,6 +1,7 @@
 //! Per-frame band bins over a raster's painter-ordered [`Item`] list.
 //!
-//! A [`FrameIndex`] is rebuilt per `render_bands*` call and reused across
+//! A [`FrameIndex`] refreshes item bins per raster call and reuses edge bins
+//! when their complete membership inputs match. Storage is reused across
 //! sequential calls and frames. Flat prefix-offset tables
 //! give each `BAND_H`-row band the item indices it must run — every structural item in original order,
 //! plus each bounded draw whose device rows reach the band — and, for
@@ -201,13 +202,52 @@ pub struct EdgeBins {
     /// Each group's first index into `edge_spans`.
     span_off: Vec<usize>,
     /// Each edge's `[first, last)` band span, computed once per edge
-    /// per rebuild and reused verbatim by the scatter pass.
+    /// per changed geometry and reused verbatim by the scatter pass.
     edge_spans: Vec<(usize, usize)>,
+    /// Exact inputs that determine edge membership, independent of paint and x.
+    grid: Option<(usize, usize)>,
+    origins: Vec<u32>,
+    edge_rows: Vec<[u32; 2]>,
 }
 
 impl EdgeBins {
-    /// Rebuilds the bins for `groups` over the `bands`-band, `h`-row
-    /// grid, retaining all table capacity. `groups` is a cloneable
+    fn matches<'a, I>(&self, groups: I, bands: usize, h: usize) -> bool
+    where
+        I: Iterator<Item = EdgeGroup<'a>>,
+    {
+        if self.grid != Some((bands, h)) {
+            return false;
+        }
+        let mut group_count = 0;
+        for (g, group) in groups.enumerate() {
+            if g >= self.span.len()
+                || self.band0[g] != group.band0
+                || self.span[g] != group.band1.saturating_sub(group.band0)
+                || self.origins[g] != group.oy.to_bits()
+            {
+                return false;
+            }
+            let start = self.span_off[g];
+            let end = self
+                .span_off
+                .get(g + 1)
+                .copied()
+                .unwrap_or(self.edge_rows.len());
+            if end - start != group.edges.len()
+                || !self.edge_rows[start..end]
+                    .iter()
+                    .zip(group.edges)
+                    .all(|(rows, edge)| *rows == [edge.y0.to_bits(), edge.y1.to_bits()])
+            {
+                return false;
+            }
+            group_count += 1;
+        }
+        group_count == self.span.len()
+    }
+
+    /// Refreshes bins for `groups` over the `bands`-band, `h`-row grid.
+    /// Unchanged membership inputs reuse the bins; rebuilding retains capacity. `groups` is a cloneable
     /// view (it is iterated once per pass, nothing borrowed is
     /// retained). `counts` is all-zero on entry and restored to
     /// all-zero on exit: the scatter writes at `off[p+1] − counts[p]`
@@ -216,6 +256,11 @@ impl EdgeBins {
     where
         I: Iterator<Item = EdgeGroup<'a>> + Clone,
     {
+        if self.matches(groups.clone(), bands, h) {
+            return;
+        }
+        self.grid = Some((bands, h));
+        self.origins.clear();
         // Group metadata: reach, pair prefix and span prefix.
         self.pair_base.clear();
         self.band0.clear();
@@ -223,6 +268,7 @@ impl EdgeBins {
         self.span_off.clear();
         let (mut pairs, mut edges_total) = (0usize, 0usize);
         for g in groups.clone() {
+            self.origins.push(g.oy.to_bits());
             self.pair_base.push(pairs);
             self.band0.push(g.band0);
             self.span.push(g.band1.saturating_sub(g.band0));
@@ -232,8 +278,10 @@ impl EdgeBins {
         }
         // Each edge's widened band span, once per edge per rebuild.
         self.edge_spans.resize(edges_total, (0, 0));
+        self.edge_rows.resize(edges_total, [0; 2]);
         for (g, group) in groups.clone().enumerate() {
             for (ei, e) in group.edges.iter().enumerate() {
+                self.edge_rows[self.span_off[g] + ei] = [e.y0.to_bits(), e.y1.to_bits()];
                 self.edge_spans[self.span_off[g] + ei] = edge_bands(e, group.oy, h, bands);
             }
         }
@@ -322,7 +370,9 @@ impl EdgeBins {
             + self.span.capacity()
             + self.span_off.capacity())
             * size_of::<usize>()
-            + self.edge_spans.capacity() * size_of::<(usize, usize)>()) as u64
+            + self.edge_spans.capacity() * size_of::<(usize, usize)>()
+            + self.edge_rows.capacity() * size_of::<[u32; 2]>()
+            + self.origins.capacity() * size_of::<u32>()) as u64
     }
 }
 
@@ -599,6 +649,58 @@ mod tests {
         assert_bins_cover(&mut index, &mut counts, &edges[..40], -3.0, 48);
         assert_bins_cover(&mut index, &mut counts, &edges, -3.0, 16);
         assert_bins_cover(&mut index, &mut counts, &edges[..40], -3.0, 901);
+    }
+
+    #[test]
+    fn edge_cache_tracks_membership_inputs() {
+        fn group(edges: &[Edge]) -> EdgeGroup<'_> {
+            EdgeGroup {
+                edges,
+                oy: 0.0,
+                band0: 0,
+                band1: 4,
+            }
+        }
+        let mut edges = [Edge {
+            x0: 1.0,
+            y0: 2.0,
+            x1: 3.0,
+            y1: 6.0,
+        }];
+        let mut index = EdgeBins::default();
+        let mut counts = Vec::new();
+        index.rebuild(std::iter::once(group(&edges)), &mut counts, 4, 64);
+        assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
+        index.rebuild(std::iter::once(group(&edges)), &mut counts, 4, 64);
+        assert_eq!(index.at(0, 0), &[0]);
+        assert!(counts.iter().all(|&count| count == 0));
+        edges[0].x0 = 9.0;
+        assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
+        assert!(!index.matches(std::iter::empty(), 4, 64));
+        assert!(!index.matches(std::iter::once(group(&edges)), 4, 63));
+        assert!(!index.matches(
+            std::iter::once(EdgeGroup {
+                oy: 16.0,
+                ..group(&edges)
+            }),
+            4,
+            64
+        ));
+        assert!(!index.matches(
+            std::iter::once(EdgeGroup {
+                band1: 3,
+                ..group(&edges)
+            }),
+            4,
+            64
+        ));
+        edges[0].y0 = 34.0;
+        edges[0].y1 = 38.0;
+        assert!(!index.matches(std::iter::once(group(&edges)), 4, 64));
+        index.rebuild(std::iter::once(group(&edges)), &mut counts, 4, 64);
+        assert_eq!(index.at(0, 0), &[0usize; 0]);
+        assert_eq!(index.at(0, 2), &[0]);
+        assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
     }
 
     /// Expanded windows: the merged query is a superset of what the
