@@ -24,6 +24,7 @@ half = "2"
 rayon = "1"
 rustc-hash = "2"
 tracing = "0.1"
+wide = "1.7.1"
 
 [dev-dependencies]
 cherenkov = { path = "..", features = ["testing"] }
