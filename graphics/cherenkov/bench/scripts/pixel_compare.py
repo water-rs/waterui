@@ -458,7 +458,7 @@ class Session:
         else:
             environment = self.cpu_engine.environment(args.workers)
         prefix = ["env", *(f"{k}={v}" for k, v in environment.items())] if environment else []
-        log = self.device.root(f"timeout {args.run_seconds} " + shlex.join(prefix + command),
+        log = self.device.root(f"timeout {args.run_seconds} " + shlex.join(prefix + command) + " 2>&1",
                                timeout=args.run_seconds + 30)
         (self.out / f"{run_id}.log").write_text(log)
         local = self.out / f"{run_id}.json"
