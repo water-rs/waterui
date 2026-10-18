@@ -239,7 +239,8 @@ impl DeviceLoss {
     /// placeholder reason when the flag went up without one.
     #[must_use]
     pub(crate) fn describe_loss(&self) -> String {
-        self.reason().unwrap_or_else(|| "device reported lost".to_owned())
+        self.reason()
+            .unwrap_or_else(|| "device reported lost".to_owned())
     }
 
     /// Marks this generation productive: a frame was submitted to its
@@ -409,7 +410,11 @@ impl RecoverableGpu {
             // Another surface already recovered past this generation.
             return inner.generation.clone();
         }
-        if dead.gpu_context().presented.load(std::sync::atomic::Ordering::Relaxed) {
+        if dead
+            .gpu_context()
+            .presented
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
             inner.unproductive_losses.clear();
         } else {
             inner.unproductive_losses.push(dead.describe_loss());
@@ -2383,7 +2388,12 @@ async fn request_instance_surface_adapter(
     context: &str,
     selection: AdapterSelection,
     make_surface: impl Fn(&wgpu::Instance) -> wgpu::Surface<'static>,
-) -> (wgpu::Instance, wgpu::Surface<'static>, wgpu::Adapter, wgpu::Backends) {
+) -> (
+    wgpu::Instance,
+    wgpu::Surface<'static>,
+    wgpu::Adapter,
+    wgpu::Backends,
+) {
     let tiers = hydrolysis_backend_tiers();
     let mut inspected_adapters = Vec::new();
     for &backends in &tiers {
@@ -2530,6 +2540,12 @@ impl OffscreenSurface {
         match frame {
             SurfaceFrame::Offscreen { texture, .. } => {
                 self.last_presented = Some(texture);
+                // The frame's queue work is submitted: credit this device
+                // generation as productive so a later loss does not count
+                // against the recovery budget (water-rs/waterui#2742). The
+                // pump path marks it again on `SurfaceProvider` — the flag
+                // is idempotent.
+                self.handles.note_frame_presented();
             }
             #[cfg(all(hydrolysis_winit, not(target_os = "macos")))]
             SurfaceFrame::Window { .. } => {
@@ -2727,9 +2743,10 @@ impl PresentationSurface for OffscreenSurface {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let gpu = self.gpu.clone();
-            let generation = gpu.inner.gpu.ensure_live(|instance| {
-                pollster::block_on(gpu.recreate(instance))
-            });
+            let generation = gpu
+                .inner
+                .gpu
+                .ensure_live(|instance| pollster::block_on(gpu.recreate(instance)));
             self.adopt_generation(generation);
         }
         #[cfg(target_arch = "wasm32")]
@@ -3569,11 +3586,9 @@ mod winit_impl {
                 gpu.clone()
             } else {
                 let selection = super::AdapterSelection::PRODUCTION;
-                let (instance, adapter, backends) = super::request_instance_and_adapter(
-                    "hydrolysis winit surface",
-                    selection,
-                )
-                .await;
+                let (instance, adapter, backends) =
+                    super::request_instance_and_adapter("hydrolysis winit surface", selection)
+                        .await;
                 WinitGpuContext::open(instance, adapter, selection, backends).await
             };
             let size = window.inner_size();
@@ -3629,9 +3644,9 @@ mod winit_impl {
         #[cfg(target_os = "macos")]
         fn ensure_live(&mut self) {
             let gpu = self.gpu.clone();
-            let generation = gpu.gpu.ensure_live(|instance| {
-                pollster::block_on(gpu.recreate(instance, None))
-            });
+            let generation = gpu
+                .gpu
+                .ensure_live(|instance| pollster::block_on(gpu.recreate(instance, None)));
             if generation.gpu_context().context_id != self.handles.gpu_context().context_id {
                 self.handles = generation;
             }
@@ -3739,8 +3754,10 @@ mod winit_impl {
             self.ensure_live();
             self.config.width = width.max(1);
             self.config.height = height.max(1);
-            self.surface
-                .configure(&self.handles.gpu_context().shared_device.device, &self.config);
+            self.surface.configure(
+                &self.handles.gpu_context().shared_device.device,
+                &self.config,
+            );
         }
 
         fn ensure_live(&mut self) {
