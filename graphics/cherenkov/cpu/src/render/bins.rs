@@ -43,6 +43,7 @@
 //! them — sorted, deduplicated, back in original order. No whole-list
 //! rescan.
 
+use rayon::prelude::*;
 use std::ops::Range;
 use std::sync::atomic::AtomicU64;
 
@@ -279,10 +280,29 @@ impl EdgeBins {
         // Each edge's widened band span, once per edge per rebuild.
         self.edge_spans.resize(edges_total, (0, 0));
         self.edge_rows.resize(edges_total, [0; 2]);
+        let workers = rayon::current_thread_index().map_or(1, |_| rayon::current_num_threads());
+        let chunk_len = edges_total.div_ceil(workers).max(1);
         for (g, group) in groups.clone().enumerate() {
-            for (ei, e) in group.edges.iter().enumerate() {
-                self.edge_rows[self.span_off[g] + ei] = [e.y0.to_bits(), e.y1.to_bits()];
-                self.edge_spans[self.span_off[g] + ei] = edge_bands(e, group.oy, h, bands);
+            let start = self.span_off[g];
+            let end = start + group.edges.len();
+            let fill = |spans: &mut [(usize, usize)], rows: &mut [[u32; 2]], edges: &[Edge]| {
+                for ((span, row), edge) in spans.iter_mut().zip(rows).zip(edges) {
+                    *row = [edge.y0.to_bits(), edge.y1.to_bits()];
+                    *span = edge_bands(edge, group.oy, h, bands);
+                }
+            };
+            if workers == 1 || group.edges.len() <= chunk_len {
+                fill(
+                    &mut self.edge_spans[start..end],
+                    &mut self.edge_rows[start..end],
+                    group.edges,
+                );
+            } else {
+                self.edge_spans[start..end]
+                    .par_chunks_mut(chunk_len)
+                    .zip(self.edge_rows[start..end].par_chunks_mut(chunk_len))
+                    .zip(group.edges.par_chunks(chunk_len))
+                    .for_each(|((spans, rows), edges)| fill(spans, rows, edges));
             }
         }
         // Count in pair space. `counts` keeps its high-water length —
