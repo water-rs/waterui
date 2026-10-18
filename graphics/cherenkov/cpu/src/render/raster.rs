@@ -2629,7 +2629,9 @@ impl Band<'_> {
                     let mut x = cx_lo;
                     while x < cx_hi {
                         let lanes = (cx_hi - x).min(4);
-                        term.extend_from_slice(&coverage4(x, lanes, &flat_sample)[..lanes]);
+                        for cov in coverage4(x, lanes, &flat_sample).into_iter().take(lanes) {
+                            term.push(cov);
+                        }
                         x += 4;
                     }
                     term
