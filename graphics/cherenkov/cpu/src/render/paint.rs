@@ -550,6 +550,26 @@ impl PaintData {
 
     // Select the paint formula once, before the output iterates over pixel centres.
     #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn evaluate<O: PaintOutput>(&self, output: O) -> O::Output {
+        if matches!(self, Self::Transformed(..)) {
+            let mut leaf = self;
+            while let Self::Transformed(inner, _) = leaf {
+                leaf = inner;
+            }
+            leaf.evaluate_leaf(TransformedOutput {
+                output,
+                paint: self,
+            })
+        } else {
+            self.evaluate_leaf(output)
+        }
+    }
+
+    #[expect(
         clippy::cast_precision_loss,
         reason = "image dimensions are bounded by memory budget"
     )]
@@ -558,12 +578,9 @@ impl PaintData {
         reason = "compiled under the dispatched CPU level"
     )]
     #[inline(always)]
-    fn evaluate<O: PaintOutput>(&self, output: O) -> O::Output {
+    fn evaluate_leaf<O: PaintOutput>(&self, output: O) -> O::Output {
         match self {
-            Self::Transformed(inner, inverse) => output.sample(|dx, dy| {
-                let (x, y) = apply(affine_f32(*inverse), dx, dy);
-                inner.eval(x, y)
-            }),
+            Self::Transformed(..) => unreachable!("evaluate resolves the transform chain"),
             Self::Solid(c) => output.solid(*c),
             Self::Mesh(mesh) => output.sample(|dx, dy| mesh.eval(dx, dy)),
             Self::Image(image) => output.sample(|dx, dy| {
@@ -656,6 +673,42 @@ trait PaintOutput: Sized {
 
     fn sample(self, evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output;
     fn solid(self, color: [f32; 4]) -> Self::Output;
+}
+
+/// Applies each mapping separately, preserving the scalar evaluator's f32
+/// rounding at every link. The terminal paint formula is already selected.
+struct TransformedOutput<'a, O> {
+    output: O,
+    paint: &'a PaintData,
+}
+
+impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
+    type Output = O::Output;
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sample(self, mut evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
+        self.output.sample(|mut x, mut y| {
+            let mut paint = self.paint;
+            while let PaintData::Transformed(inner, inverse) = paint {
+                (x, y) = apply(affine_f32(*inverse), x, y);
+                paint = inner;
+            }
+            evaluate(x, y)
+        })
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn solid(self, color: [f32; 4]) -> Self::Output {
+        self.output.solid(color)
+    }
 }
 
 struct PixelCenter {
@@ -846,6 +899,13 @@ mod tests {
                 Paint::Linear(linear()),
                 Affine::translate((20.0, 5.0)) * Affine::rotate(0.3),
             ))),
+            lower(&Paint::Transformed(TransformedPaint::new(
+                Paint::Transformed(TransformedPaint::new(
+                    Paint::Linear(linear()),
+                    Affine::scale_non_uniform(1.03, 0.97) * Affine::rotate(0.17),
+                )),
+                Affine::translate((20.0, 5.0)) * Affine::rotate(0.3),
+            ))),
         ]
     }
 
@@ -858,6 +918,15 @@ mod tests {
     )]
     #[test]
     fn eval_span_matches_scalar_eval_bit_for_bit() {
+        fn scalar_reference(paint: &PaintData, x: f32, y: f32) -> [f32; 4] {
+            if let PaintData::Transformed(inner, inverse) = paint {
+                let (x, y) = super::apply(super::affine_f32(*inverse), x, y);
+                scalar_reference(inner, x, y)
+            } else {
+                paint.eval(x, y)
+            }
+        }
+
         fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData, x0: usize, len: usize) {
             let py = 13usize;
             let mut span = vec![MaybeUninit::uninit(); len];
@@ -865,8 +934,7 @@ mod tests {
             for (i, px) in span.iter().enumerate() {
                 assert_eq!(
                     px.map(f32::to_bits),
-                    paint
-                        .eval((x0 + i) as f32 + 0.5, py as f32 + 0.5)
+                    scalar_reference(paint, (x0 + i) as f32 + 0.5, py as f32 + 0.5)
                         .map(f32::to_bits),
                     "paint {paint:?}, run x0={x0} len={len}, pixel {i}"
                 );
