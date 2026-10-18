@@ -4980,6 +4980,7 @@ impl<'a> Lowering<'a> {
         if bound.empty {
             return;
         }
+        self.paths += 1;
         let mut template = self.gpu_template(paint, shader_data);
         template.bounds = bound.rect;
         self.set_variant(&template);
@@ -5971,6 +5972,7 @@ mod tests {
                     usize::from(gpu),
                     "compute={has_compute}, rectangles={rectangles}"
                 );
+                assert_eq!(lowering.paths_rasterized(), 1);
                 assert_eq!(cache.valid, !gpu);
                 if gpu {
                     assert!(cache.data.is_none(), "GPU emissions cannot be retained");
