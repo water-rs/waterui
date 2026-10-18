@@ -255,7 +255,7 @@ impl EdgeBins {
     /// and decrements, so every counted reference lands exactly once.
     pub fn rebuild<'a, I>(&mut self, groups: I, counts: &mut Vec<usize>, bands: usize, h: usize)
     where
-        I: Iterator<Item = EdgeGroup<'a>> + Clone,
+        I: Iterator<Item = EdgeGroup<'a>> + Clone + Send + Sync,
     {
         if self.matches(groups.clone(), bands, h) {
             return;
@@ -282,28 +282,41 @@ impl EdgeBins {
         self.edge_rows.resize(edges_total, [0; 2]);
         let workers = rayon::current_thread_index().map_or(1, |_| rayon::current_num_threads());
         let chunk_len = edges_total.div_ceil(workers).max(1);
-        for (g, group) in groups.clone().enumerate() {
-            let start = self.span_off[g];
-            let end = start + group.edges.len();
-            let fill = |spans: &mut [(usize, usize)], rows: &mut [[u32; 2]], edges: &[Edge]| {
-                for ((span, row), edge) in spans.iter_mut().zip(rows).zip(edges) {
+        let span_off = &self.span_off;
+        let fill_chunk = |chunk: usize, spans: &mut [(usize, usize)], rows: &mut [[u32; 2]]| {
+            let start = chunk * chunk_len;
+            let first = span_off.partition_point(|&offset| offset <= start) - 1;
+            let mut skip = start - span_off[first];
+            let mut written = 0;
+            for group in groups.clone().skip(first) {
+                let count = (group.edges.len() - skip).min(spans.len() - written);
+                for ((span, row), edge) in spans[written..written + count]
+                    .iter_mut()
+                    .zip(&mut rows[written..written + count])
+                    .zip(&group.edges[skip..skip + count])
+                {
                     *row = [edge.y0.to_bits(), edge.y1.to_bits()];
                     *span = edge_bands(edge, group.oy, h, bands);
                 }
-            };
-            if workers == 1 || group.edges.len() <= chunk_len {
-                fill(
-                    &mut self.edge_spans[start..end],
-                    &mut self.edge_rows[start..end],
-                    group.edges,
-                );
-            } else {
-                self.edge_spans[start..end]
-                    .par_chunks_mut(chunk_len)
-                    .zip(self.edge_rows[start..end].par_chunks_mut(chunk_len))
-                    .zip(group.edges.par_chunks(chunk_len))
-                    .for_each(|((spans, rows), edges)| fill(spans, rows, edges));
+                written += count;
+                if written == spans.len() {
+                    break;
+                }
+                skip = 0;
             }
+        };
+        if workers == 1 {
+            self.edge_spans
+                .chunks_mut(chunk_len)
+                .zip(self.edge_rows.chunks_mut(chunk_len))
+                .enumerate()
+                .for_each(|(chunk, (spans, rows))| fill_chunk(chunk, spans, rows));
+        } else {
+            self.edge_spans
+                .par_chunks_mut(chunk_len)
+                .zip(self.edge_rows.par_chunks_mut(chunk_len))
+                .enumerate()
+                .for_each(|(chunk, (spans, rows))| fill_chunk(chunk, spans, rows));
         }
         // Count in pair space. `counts` keeps its high-water length —
         // the `counts[..pairs]` prefix is active and all-zero on entry
@@ -721,6 +734,43 @@ mod tests {
         assert_eq!(index.at(0, 0), &[0usize; 0]);
         assert_eq!(index.at(0, 2), &[0]);
         assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
+    }
+
+    #[test]
+    fn parallel_chunks_cross_group_boundaries() {
+        let edges: Vec<Edge> = (0_u16..17)
+            .map(|i| Edge {
+                x0: 0.0,
+                x1: 1.0,
+                y0: f32::from(i) * 5.0,
+                y1: f32::from(i).mul_add(5.0, 19.0),
+            })
+            .collect();
+        let boundaries = [0, 0, 3, 4, 9, 9, 16, 17, 17];
+        let groups: Vec<_> = boundaries
+            .windows(2)
+            .map(|pair| EdgeGroup {
+                edges: &edges[pair[0]..pair[1]],
+                oy: -2.0,
+                band0: 0,
+                band1: 8,
+            })
+            .collect();
+        let mut serial = EdgeBins::default();
+        serial.rebuild(groups.iter().copied(), &mut Vec::new(), 8, 128);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .unwrap();
+        let mut parallel = EdgeBins::default();
+        let mut counts = Vec::new();
+        pool.install(|| parallel.rebuild(groups.iter().copied(), &mut counts, 8, 128));
+        for group in 0..groups.len() {
+            for band in 0..8 {
+                assert_eq!(parallel.at(group, band), serial.at(group, band));
+            }
+        }
+        assert!(counts.iter().all(|&count| count == 0));
     }
 
     /// Expanded windows: the merged query is a superset of what the
