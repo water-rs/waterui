@@ -12,6 +12,12 @@ fn composite_space(mode: u32, s: u32, cb: vec4<f32>, cs: vec4<f32>) -> vec4<f32>
 
 // W3C Compositing and Blending Level 1, a literal port of
 // oracle/src/blend.rs. Premultiplied inputs and output.
+//
+// Extension over the W3C text (#2908): the four non-separable modes
+// (Hue, Saturation, Color, Luminosity) evaluate B on a shared affine
+// domain covering both straight colours instead of fixed SDR [0,1], so
+// extended-range and negative channels blend through the same formulas
+// rather than clamping. See blend_color.
 
 fn lum(c: vec3<f32>) -> f32 {
     return 0.3 * c.x + 0.59 * c.y + 0.11 * c.z;
@@ -141,12 +147,49 @@ fn blend_color(mode: u32, cb: vec4<f32>, cs: vec4<f32>) -> vec4<f32> {
         ub = cb.rgb / ab;
     }
     let us = cs.rgb / as_;
+    // #2908: the non-separable modes share one affine domain covering
+    // both straight colours — lo = min(0, all six channels), hi = max(1,
+    // all six), so the domain always contains [0,1]. When the domain is
+    // extended, both colours normalize through scale = max(-lo, hi) as
+    // (c/scale - lo/scale) / (hi/scale - lo/scale) — the same affine map
+    // as (c - lo)/(hi - lo) with every intermediate bounded in magnitude
+    // by 2, so even ±f32::MAX channels stay finite where the direct
+    // width hi - lo would overflow. nb/ns are the colours the SDR formulas below see;
+    // a pure-SDR pair hits the identity domain and keeps the exact
+    // original arithmetic. Since lum and sat are affine-covariant the
+    // modes keep their semantics; the blend result maps back through
+    // lo·(1-B) + hi·B after the switch (the convex combination
+    // lo + (hi-lo)·B written with opposite-sign terms so no intermediate
+    // can overflow), and the source-over tail still uses the
+    // unnormalized us.
+    var nb = ub;
+    var ns = us;
+    var lo = 0.0;
+    var hi = 1.0;
+    var normalized = false;
+    switch mode {
+        case 12u, 13u, 14u, 15u: {
+            for (var i = 0; i < 3; i += 1) {
+                lo = min(lo, min(ub[i], us[i]));
+                hi = max(hi, max(ub[i], us[i]));
+            }
+            if lo < 0.0 || hi > 1.0 {
+                let scale = max(-lo, hi);
+                let low_scaled = lo / scale;
+                let width_scaled = hi / scale - low_scaled;
+                nb = (ub / scale - vec3<f32>(low_scaled)) / width_scaled;
+                ns = (us / scale - vec3<f32>(low_scaled)) / width_scaled;
+                normalized = true;
+            }
+        }
+        default: {}
+    }
     var b: vec3<f32>;
     switch mode {
-        case 12u: { b = set_lum(set_sat(us, sat(ub)), lum(ub)); }          // Hue
-        case 13u: { b = set_lum(set_sat(ub, sat(us)), lum(ub)); }          // Saturation
-        case 14u: { b = set_lum(us, lum(ub)); }                            // Color
-        case 15u: { b = set_lum(ub, lum(us)); }                            // Luminosity
+        case 12u: { b = set_lum(set_sat(ns, sat(nb)), lum(nb)); }          // Hue
+        case 13u: { b = set_lum(set_sat(nb, sat(ns)), lum(nb)); }          // Saturation
+        case 14u: { b = set_lum(ns, lum(nb)); }                            // Color
+        case 15u: { b = set_lum(nb, lum(ns)); }                            // Luminosity
         default: {
             b = vec3<f32>(
                 blend_channel(mode, ub.x, us.x),
@@ -154,6 +197,9 @@ fn blend_color(mode: u32, cb: vec4<f32>, cs: vec4<f32>) -> vec4<f32> {
                 blend_channel(mode, ub.z, us.z),
             );
         }
+    }
+    if normalized {
+        b = fma(vec3<f32>(hi), b, lo * (vec3<f32>(1.0) - b));
     }
     // Cr = (1-αb)·Cs + αb·B(Cb,Cs); premultiplied: αs·Cr + (1-αs)·Cb.
     var out: vec4<f32>;
