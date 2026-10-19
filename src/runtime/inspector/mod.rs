@@ -66,7 +66,7 @@ const DEFAULT_TASK_WINDOW_MS: u64 = 100;
 const DEFAULT_STALL_RATIO: f64 = 0.90;
 
 /// Where the endpoint is listening and the token required to talk to it.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct InspectorEndpointInfo {
     /// Bound socket address.
@@ -88,7 +88,7 @@ impl std::fmt::Debug for InspectorEndpointInfo {
 }
 
 /// Runtime endpoint configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct InspectorServerConfig {
     /// Address to bind.
