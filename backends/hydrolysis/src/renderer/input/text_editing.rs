@@ -2108,7 +2108,7 @@ impl SemanticCore {
     }
 }
 
-/// The [`TextSelectionImpl`] a `selection_menu` command's `TextSelection`
+/// The [`CustomTextSelection`](waterui_controls::CustomTextSelection) a `selection_menu` command's `TextSelection`
 /// delegates to: the field's model plus its selection slot, so the handle
 /// answers and splices the live selection at fire time
 /// (water-rs/waterui#1260).
@@ -2117,7 +2117,7 @@ struct FieldSelectionDriver {
     selection: Rc<RefCell<TextSelectionSlot>>,
 }
 
-impl waterui_controls::text_selection::TextSelectionImpl for FieldSelectionDriver {
+impl waterui_controls::CustomTextSelection for FieldSelectionDriver {
     fn text(&self) -> Str {
         Str::from(self.model.plain_text())
     }
@@ -2170,14 +2170,10 @@ fn text_selection_for_env(target: &TextInputTarget) -> Option<waterui_controls::
     if !matches!(target.model, TextInputModel::TextField { .. }) {
         return None;
     }
-    Some(
-        waterui_controls::text_selection::TextSelection::from_driver(Rc::new(
-            FieldSelectionDriver {
-                model: target.model.clone(),
-                selection: Rc::clone(&target.selection),
-            },
-        )),
-    )
+    Some(waterui_controls::TextSelection::new(FieldSelectionDriver {
+        model: target.model.clone(),
+        selection: Rc::clone(&target.selection),
+    }))
 }
 
 impl HydrolysisRenderer {

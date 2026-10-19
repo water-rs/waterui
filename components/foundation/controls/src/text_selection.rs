@@ -7,7 +7,7 @@
 //! tolerates its absence with `Option<TextSelection>`.
 //!
 //! The backend that owns the field's editing state implements
-//! [`TextSelectionImpl`] and installs the handle while building the
+//! [`CustomTextSelection`] and installs the handle while building the
 //! selection menu; application code only consumes it.
 
 use alloc::borrow::ToOwned;
@@ -25,7 +25,7 @@ use waterui_text::styled::StyledStr;
 /// byte offsets into [`Self::text`]; both edges sit on UTF-8 boundaries.
 #[derive(Clone)]
 pub struct TextSelection {
-    driver: Rc<dyn TextSelectionImpl>,
+    driver: Rc<dyn CustomTextSelection>,
 }
 
 impl core::fmt::Debug for TextSelection {
@@ -37,12 +37,13 @@ impl core::fmt::Debug for TextSelection {
 }
 
 impl TextSelection {
-    /// The backend half of the contract: wraps the field's selection driver
-    /// for installation into a selection-menu environment. Backends call
-    /// this; application code never does.
-    #[doc(hidden)]
-    pub fn from_driver(driver: Rc<dyn TextSelectionImpl>) -> Self {
-        Self { driver }
+    /// Wraps a backend's field selection for installation into a
+    /// selection-menu environment. Backends call this; application code
+    /// only consumes the handle.
+    pub fn new(selection: impl CustomTextSelection) -> Self {
+        Self {
+            driver: Rc::new(selection),
+        }
     }
 
     /// The field's complete plain text.
@@ -93,7 +94,7 @@ impl TextSelection {
 /// Implemented once per backend that realizes text fields; commands hold
 /// only the `TextSelection` handle that delegates to it. All ranges are
 /// byte offsets into `text()`.
-pub trait TextSelectionImpl: 'static {
+pub trait CustomTextSelection: 'static {
     /// The field's complete plain text.
     fn text(&self) -> Str;
 
