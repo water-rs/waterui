@@ -3978,7 +3978,7 @@ impl Renderer for GpuRenderer {
     fn trim(&mut self, pressure: Pressure) {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("trim");
-        self.gpu_cov.trim_cache();
+        self.gpu_cov.trim();
         if let Some(blur) = &mut self.shadow_blur {
             blur.trim();
         }

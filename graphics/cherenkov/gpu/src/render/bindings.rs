@@ -246,7 +246,7 @@ pub const COVERAGE_GROUP0: &[Entry] = &[
     Entry::storage(5, COMPUTE),
     Entry::storage(6, COMPUTE),
     Entry::storage(7, COMPUTE),
-    Entry::storage_read(8, COMPUTE),
+    Entry::storage(8, COMPUTE),
 ];
 
 /// The coverage pipeline's group list.

@@ -524,6 +524,11 @@ pub enum OutlineRef<'a> {
 
 impl Outline {
     /// Resolve owned and source-backed outlines without constructing geometry.
+    #[expect(
+        clippy::inline_always,
+        reason = "resolve borrowed outline fields at their use site"
+    )]
+    #[inline(always)]
     pub fn get<'a>(&'a self, source: &'a cherenkov::DisplayList) -> OutlineRef<'a> {
         match self {
             Self::Fill { elements, content } => OutlineRef::Fill {
