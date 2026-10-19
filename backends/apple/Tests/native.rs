@@ -115,6 +115,7 @@ fn trials() -> Vec<Trial> {
         tests.extend(list_ax::trials());
         tests.extend(gesture_ax::trials());
         tests.extend(a11y_extent::trials());
+        tests.extend(gesture_events::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -123,6 +124,7 @@ fn trials() -> Vec<Trial> {
     }
     #[cfg(target_os = "ios")]
     {
+        tests.extend(gesture_events::trials());
         tests.extend(tabs::trials());
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
@@ -8726,6 +8728,178 @@ mod a11y_extent {
             (
                 "a11y_extent::a_host_view_reports_content_extent_only_when_marked".to_owned(),
                 Box::new(a_host_view_reports_content_extent_only_when_marked),
+            ),
+        ])
+    }
+}
+
+/// The shared gesture contract end to end: a completed gesture inserts
+/// the observed `Gesture` and its typed event — `TapEvent`, `DragEvent` —
+/// into the action's environment, so a `Use<T>` handler extracts the same
+/// value Hydrolysis reports for the same input. `AppKit` cannot drive an
+/// `NSGestureRecognizer` without a window-server event stream — synthetic
+/// `NSEvent`s and `CGEvent`s never reach a recognizer in a headless
+/// process — so its case activates the gesture through
+/// `accessibilityPerformPress`, the supported assistive-activation entry
+/// point, which runs the same `on_recognized` dispatch a recognizer
+/// completion does. `UIKit` cannot synthesize a `UITouch`, so its cases
+/// drive the recognizer's own `setState:` transition — the documented
+/// state-machine entry point subclasses use — which dispatches the target
+/// through the same code path a touch would.
+mod gesture_events {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    #[cfg(target_os = "ios")]
+    use cocoa_ui::Retained;
+    use waterui::ViewExt as _;
+    use waterui::extract::Use;
+    #[cfg(target_os = "ios")]
+    use waterui::gesture::{DragEvent, DragGesture, GesturePhase};
+    use waterui::gesture::{PointerButton, TapEvent, TapGesture};
+    use waterui::prelude::text;
+
+    use super::{resolve, trial_each};
+
+    /// `AppKit`: an assistive client's `AXPress` activates the tap the way
+    /// a click's recognizer completion would — through the shared
+    /// `on_recognized` dispatch; the action's environment carries the
+    /// observed `Gesture` and a `TapEvent` naming the activation point in
+    /// the host's local space, the tap count and the button.
+    #[cfg(target_os = "macos")]
+    fn a_tap_gesture_delivers_its_event() {
+        use cocoa_ui::objc2::msg_send;
+        use waterui::gesture::Gesture;
+
+        let taps = Rc::new(RefCell::new(Vec::new()));
+        let gestures = Rc::new(RefCell::new(Vec::new()));
+        let leaf = resolve::render({
+            let taps = Rc::clone(&taps);
+            let gestures = Rc::clone(&gestures);
+            text("tap").gesture(
+                TapGesture::new(),
+                move |Use(event): Use<TapEvent>, Use(gesture): Use<Gesture>| {
+                    taps.borrow_mut().push(event);
+                    gestures.borrow_mut().push(gesture);
+                },
+            )
+        });
+        let host = leaf.view();
+        let _window = super::mount_and_order_front(host);
+        cocoa_ui::view::set_frame(host, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        // SAFETY: `accessibilityPerformPress` answers a `BOOL`.
+        let handled: bool = unsafe { msg_send![host, accessibilityPerformPress] };
+        assert!(handled, "the tap host's AXPress runs the gesture's action");
+        let taps = taps.borrow();
+        let [tap] = taps.as_slice() else {
+            panic!("one press delivers one tap event, saw {}", taps.len());
+        };
+        assert_eq!(tap.count, 1, "an assistive press is a count-1 tap");
+        assert_eq!(tap.button, PointerButton::Primary);
+        assert_eq!(
+            tap.location,
+            waterui::gesture::GesturePoint::new(100.0, 50.0),
+            "the event names the activation point — the host's center — in local space"
+        );
+        let gestures = gestures.borrow();
+        let [gesture] = gestures.as_slice() else {
+            panic!(
+                "one press delivers one observed gesture, saw {}",
+                gestures.len()
+            );
+        };
+        assert!(
+            matches!(gesture, Gesture::Tap(_)),
+            "the environment carries the observed gesture, saw {gesture:?}"
+        );
+    }
+
+    /// `UIKit`: the host's recognizers — the first of `T` attached — as
+    /// the test's handle on the concrete recognizer the observer wired.
+    #[cfg(target_os = "ios")]
+    fn recognizer<T: cocoa_ui::objc2::DowncastTarget>(
+        host: &cocoa_ui::PlatformView,
+    ) -> Retained<T> {
+        host.gestureRecognizers()
+            .expect("the observer attaches a recognizer")
+            .iter()
+            .find_map(|recognizer| recognizer.downcast::<T>().ok())
+            .expect("the observer attaches a recognizer of the requested kind")
+    }
+
+    /// `UIKit`: driving the tap recognizer's `Recognized` transition
+    /// completes it; the action's environment carries a `TapEvent` whose
+    /// count and button match the configured gesture.
+    #[cfg(target_os = "ios")]
+    fn a_tap_gesture_delivers_its_event() {
+        use cocoa_ui::objc2_ui_kit::{UIGestureRecognizerState, UITapGestureRecognizer};
+
+        let taps = Rc::new(RefCell::new(Vec::new()));
+        let leaf = resolve::render({
+            let taps = Rc::clone(&taps);
+            text("tap").gesture(TapGesture::new(), move |Use(event): Use<TapEvent>| {
+                taps.borrow_mut().push(event);
+            })
+        });
+        let host = leaf.view();
+        let _window = super::mount_and_order_front(host);
+        let recognizer = recognizer::<UITapGestureRecognizer>(host);
+        recognizer.setState(UIGestureRecognizerState::Recognized);
+        let taps = taps.borrow();
+        let [tap] = taps.as_slice() else {
+            panic!("a recognized tap delivers one event, saw {}", taps.len());
+        };
+        assert_eq!(tap.count, 1);
+        assert_eq!(tap.button, PointerButton::Primary);
+    }
+
+    /// `UIKit`: driving the pan recognizer's `Began`→`Changed`→`Ended`
+    /// transitions delivers the phase sequence the shared contract names
+    /// — the events the same input produces on Hydrolysis.
+    #[cfg(target_os = "ios")]
+    fn a_drag_gesture_delivers_its_events() {
+        use cocoa_ui::objc2_ui_kit::{UIGestureRecognizerState, UIPanGestureRecognizer};
+
+        let drags = Rc::new(RefCell::new(Vec::new()));
+        let leaf = resolve::render({
+            let drags = Rc::clone(&drags);
+            text("drag").gesture(DragGesture::new(0.0), move |Use(event): Use<DragEvent>| {
+                drags.borrow_mut().push(event);
+            })
+        });
+        let host = leaf.view();
+        let _window = super::mount_and_order_front(host);
+        let recognizer = recognizer::<UIPanGestureRecognizer>(host);
+        recognizer.setState(UIGestureRecognizerState::Began);
+        recognizer.setState(UIGestureRecognizerState::Changed);
+        recognizer.setState(UIGestureRecognizerState::Ended);
+        let drags = drags.borrow();
+        assert_eq!(
+            drags.iter().map(|e| e.phase).collect::<Vec<_>>(),
+            vec![
+                GesturePhase::Started,
+                GesturePhase::Updated,
+                GesturePhase::Ended
+            ],
+            "the pan's transitions are the contract's phase sequence"
+        );
+        assert!(
+            drags.iter().all(|e| e.button == PointerButton::Primary),
+            "a touches contact presses as the primary button"
+        );
+    }
+
+    /// The `gesture_events::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        trial_each(vec![
+            (
+                "gesture_events::a_tap_gesture_delivers_its_event".to_owned(),
+                Box::new(a_tap_gesture_delivers_its_event) as Box<dyn FnOnce() + Send>,
+            ),
+            #[cfg(target_os = "ios")]
+            (
+                "gesture_events::a_drag_gesture_delivers_its_events".to_owned(),
+                Box::new(a_drag_gesture_delivers_its_events),
             ),
         ])
     }
