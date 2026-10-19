@@ -185,3 +185,81 @@ fn interaction_cycle_records_chrome_once() {
     assert_eq!(chrome.recordings(), 2, "press and release record no chrome");
     assert_eq!(draws.get(), 0, "the theme never draws the button's chrome");
 }
+
+/// water-rs/waterui#2940: a pointer press that moves keyboard focus onto a
+/// live-chrome control is pure bookkeeping — the focus indicator rides the
+/// chrome's live operands and the accessibility focus publishes as a
+/// focus-only tree update. The press frame therefore does no tree work:
+/// no layout pass, no recorded contents, no semantic builds — and the
+/// update it publishes carries only the moved focus, not a re-emitted
+/// tree.
+#[test]
+#[cfg(feature = "accessibility")]
+fn press_focus_move_needs_no_tree_pass() {
+    // The press feedback is a static tint, not a ripple: the press needs
+    // no animation frames, so every mark this test may produce is the
+    // focus move's — anything beyond the operands is the bug.
+    let mut focus_chrome = chrome();
+    focus_chrome.press = PressFeedback::Tint;
+    let theme = MinimalTestTheme::default().with_button_chrome(focus_chrome);
+    let mut runtime = runtime_with(button("Chrome").action(|| {}), theme);
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    // Mount plus a few steady frames settle the scene before input lands;
+    // the last pump's counters are the baseline the press pump's delta is
+    // measured against (the renderer resets them only on a scene build, so
+    // a rebuild inside the press pump reads as a reset — itself a failure).
+    let mut settled = frames.pump(&mut runtime).frame_work;
+    for _ in 0..3 {
+        settled = frames.pump(&mut runtime).frame_work;
+    }
+    let button_node = runtime
+        .accessibility_tree()
+        .and_then(|tree| {
+            tree.nodes
+                .iter()
+                .find(|(_, node)| node.label() == Some("Chrome"))
+                .map(|(id, _)| *id)
+        })
+        .expect("the button emits an accessibility node");
+
+    runtime.push_input_event(InputEvent::PointerDown {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x: CENTER,
+        y: CENTER,
+        button: PointerButton::Primary,
+    });
+    let at = frames.start + Duration::from_millis(frames.next * 16);
+    let result = runtime.pump_at(true, at);
+    let work = result.profile.counters.frame_work;
+
+    assert!(
+        the_chrome(&runtime).state().contains(InteractionState::PRESSED),
+        "the press landed on the live chrome"
+    );
+    assert_eq!(
+        tree_work(settled, work),
+        [0, 0, 0],
+        "a focus move records nothing and lays nothing out"
+    );
+    assert_eq!(
+        work.semantic_builds - settled.semantic_builds,
+        0,
+        "a focus move builds nothing"
+    );
+    let update = result
+        .tree_update
+        .expect("the focus move publishes an accessibility update");
+    assert_eq!(
+        update.focus, button_node,
+        "the published focus lands on the pressed button's node"
+    );
+    assert!(
+        update.nodes.is_empty(),
+        "a focus move emits no node changes — {} nodes emitted",
+        update.nodes.len()
+    );
+}

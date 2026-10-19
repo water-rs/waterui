@@ -1232,6 +1232,37 @@ impl SemanticCore {
         self.accessibility.pending_tree_update.take()
     }
 
+    /// Publishes an accessibility focus move as a focus-only tree update:
+    /// only the focus field changed, so the update carries no nodes and no
+    /// tree structure — the host applies it incrementally. A full update
+    /// still pending is corrected in place instead. Returns `false` when a
+    /// quiet publish cannot describe the move and the caller must arm the
+    /// normal flush: focus landing on a node the last emit never produced
+    /// (`accessibility.focus` still updated — the next emit carries it), or
+    /// an open modal scope, whose reachable-subtree focus clamp only
+    /// `assembled_tree_update` resolves (water-rs/waterui#2940).
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn publish_accessibility_focus(&mut self, focus: AccessibilityNodeId) -> bool {
+        if let Some(update) = self.accessibility.pending_tree_update.as_mut() {
+            update.focus = focus;
+            return true;
+        }
+        let emitted = &self.accessibility.nodes;
+        let focus_is_emitted = focus == ACCESSIBILITY_ROOT_NODE_ID
+            || emitted.iter().any(|(id, _)| *id == focus);
+        let modal_open = emitted.iter().any(|(_, node)| node.is_modal());
+        if emitted.is_empty() || !focus_is_emitted || modal_open {
+            return false;
+        }
+        self.accessibility.pending_tree_update = Some(AccessibilityTreeUpdate {
+            nodes: Vec::new(),
+            tree: None,
+            tree_id: AccessibilityTreeId::ROOT,
+            focus,
+        });
+        true
+    }
+
     /// The tree this window would publish if it emitted now: the last
     /// emitted node set with the current focus, rebuilt from the live
     /// registry. A clean frame has nothing new to say, but the merged
@@ -1332,6 +1363,14 @@ impl SemanticCore {
                 tree_update: merged,
                 content_types,
             });
+        }
+        // A focus-only main update carries no root for the popup graft —
+        // rebuild the main window's full emission and keep the moved focus.
+        if merged.nodes.is_empty()
+            && let Some(mut full) = self.current_accessibility_tree_update()
+        {
+            full.focus = merged.focus;
+            merged = full;
         }
 
         let mut root_children = merged
