@@ -1149,11 +1149,12 @@ fn chevron(x: f64, y: f64) -> BezPath {
 fn silhouette_scene(
     corpus: &mut Corpus,
     name: &str,
+    size: u32,
     shape: Shape,
     transform: Affine,
     color: Color,
 ) {
-    corpus.scene(name, 128, 128, srgb(0.95, 0.95, 0.95), |l| {
+    corpus.scene(name, size, size, srgb(0.95, 0.95, 0.95), |l| {
         l.transform(transform);
         l.shadow(shape.clone(), 3.0, [7.0, 8.0], color);
         l.fill(shape, solid(srgb(1.0, 0.65, 0.15)));
@@ -4750,6 +4751,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-ellipse",
+        128,
         shadow_ellipse(),
         Affine::IDENTITY,
         blue,
@@ -4757,6 +4759,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-path",
+        128,
         shadow_star(),
         Affine::IDENTITY,
         blue,
@@ -4764,6 +4767,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-affine-path",
+        128,
         shadow_star(),
         Affine::new([0.72, 0.22, -0.15, 0.7, 28.0, 4.0]),
         blue,
@@ -4771,6 +4775,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-affine-ellipse",
+        128,
         shadow_ellipse(),
         Affine::new([0.72, 0.22, -0.15, 0.7, 28.0, 4.0]),
         blue,
@@ -4778,6 +4783,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-affine-continuous",
+        128,
         shadow_uneven(),
         Affine::new([0.72, 0.22, -0.15, 0.7, 28.0, 4.0]),
         blue,
@@ -4785,6 +4791,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-continuous",
+        128,
         shadow_uneven(),
         Affine::IDENTITY,
         blue,
@@ -4792,6 +4799,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-p3",
+        128,
         shadow_star(),
         Affine::IDENTITY,
         Color::new(ColorSpace::LinearP3, [1.0, 0.0, 0.3, 0.9]),
@@ -4799,6 +4807,7 @@ fn run() -> Result<(), SceneError> {
     silhouette_scene(
         &mut corpus,
         "shadow-silhouette-hdr",
+        128,
         shadow_star(),
         Affine::IDENTITY,
         Color::new(ColorSpace::LinearP3, [3.6, 0.0, 0.6, 0.9]),
@@ -5714,6 +5723,13 @@ fn run() -> Result<(), SceneError> {
     let (pw, ph) = (1024u32, 2216u32);
     let mut perf = Corpus::new();
     gradient_search::add_perf(&mut perf);
+
+    for (name, shape) in [
+        ("shadow-silhouette-ellipse", shadow_ellipse()),
+        ("shadow-silhouette-continuous", shadow_uneven()),
+    ] {
+        silhouette_scene(&mut perf, name, 1280, shape, Affine::scale(10.0), blue);
+    }
 
     // Scrolling UI list: 30 rows, each a shadowed rounded card with an
     // avatar, two text runs and a chevron icon path.

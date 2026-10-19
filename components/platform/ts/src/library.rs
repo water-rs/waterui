@@ -15,7 +15,8 @@
 //! same constant, on the channel every other `waterui_meta_*` payload uses.
 
 use waterui_ts_schema::{
-    HASH_BASIS, RuntimePart, encode_runtime_half, hash_extend, payload, runtime_half_encoded_len,
+    HASH_BASIS, RuntimePart, dir_entry, encode_runtime_half, hash_extend, payload,
+    runtime_half_encoded_len,
 };
 
 /// Every file of the library, in the order they are hashed.
@@ -59,21 +60,29 @@ const ENCODED: [u8; runtime_half_encoded_len(RuntimePart::Library, LIBRARY_HASH)
 
 /// The library half of the runtime fingerprint, read back by the `water` CLI.
 ///
-/// `#[used]` keeps the item in the object file and the rlib, so the CLI
-/// enumerates it by its `waterui_meta_` prefix and cuts the section data at
-/// the first NUL — a Mach-O symbol carries no size. The debug gate is what
-/// keeps a shipped application free of it.
+/// `#[used]` parks it in the `.wmeta` (`__DATA,__wmeta` on Apple) metadata
+/// directory as a `name`, NUL, `payload`, NUL record, so the CLI and tests
+/// recover it by record name — never by symbol, because a linked image need
+/// not carry a symbol table at all (a PE keeps none). The debug gate is
+/// what keeps a shipped application free of it.
 #[cfg(debug_assertions)]
 #[used]
+#[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
+#[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
 #[expect(
     non_upper_case_globals,
-    reason = "tooling enumerates the symbol by its `waterui_meta_` prefix, so the name is the \
+    reason = "tooling names the record by its `waterui_meta_` item name, so the name is the \
               contract"
 )]
-pub static waterui_meta_ts_runtime_library: [u8; runtime_half_encoded_len(
-    RuntimePart::Library,
-    LIBRARY_HASH,
-) + 1] = ENCODED;
+pub static waterui_meta_ts_runtime_library: [u8; RUNTIME_LIBRARY_RECORD_LEN] =
+    dir_entry::<RUNTIME_LIBRARY_RECORD_LEN>(
+        b"waterui_meta_ts_runtime_library",
+        LIBRARY_HALF_ENCODED,
+    );
+
+/// The record's length: the name, NUL, the encoded half, NUL.
+const RUNTIME_LIBRARY_RECORD_LEN: usize =
+    b"waterui_meta_ts_runtime_library".len() + ENCODED.len() + 1;
 
 /// The encoded library half without its terminator: the exact bytes the CLI
 /// recovers from the artifact.

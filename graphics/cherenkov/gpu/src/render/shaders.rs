@@ -519,6 +519,10 @@ const COVERAGE: Fixed = Fixed {
             workgroup_size: (64, 1, 1),
         },
         wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("integrate_edges"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
             name: Cow::Borrowed("integrate"),
             workgroup_size: (64, 1, 1),
         },

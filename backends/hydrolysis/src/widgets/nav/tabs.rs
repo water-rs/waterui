@@ -101,6 +101,21 @@ impl TabsRenderState {
             .position(|tab| tab.tag == selected_id)
             .unwrap_or_else(|| panic!("hydrolysis Tabs selection is not present in tabs"))
     }
+
+    /// Consume every tab's label/icon/content layout-dirty marks: their
+    /// measured sizes feed the bar's, so an enclosing retained sub-view
+    /// must see them (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.tabs.iter_mut().fold(false, |dirty, tab| {
+            dirty
+                | tab.label.take_layout_dirty_if_built()
+                | tab
+                    .icon
+                    .as_mut()
+                    .is_some_and(RetainedSubview::take_layout_dirty_if_built)
+                | tab.content.take_layout_dirty_if_built()
+        })
+    }
 }
 
 impl HydroNativeView for Native<TabsLayout> {

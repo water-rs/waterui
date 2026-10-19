@@ -84,16 +84,16 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
 }
 
 struct AndroidGpuContextInner {
-    instance: wgpu::Instance,
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    device_loss: crate::platform::DeviceLoss,
+    /// The live device generation and its loss budget; a lost device is
+    /// recreated on the same instance (water-rs/waterui#2742).
+    gpu: crate::platform::RecoverableGpu,
 }
 
 impl Drop for AndroidGpuContextInner {
     fn drop(&mut self) {
-        crate::platform::drain_device_before_teardown(&self.device);
+        crate::platform::drain_device_before_teardown(
+            &self.gpu.generation().gpu_context().shared_device.device,
+        );
     }
 }
 
@@ -114,7 +114,8 @@ impl AndroidGpuContext {
         pollster::block_on(Self::request_async())
     }
 
-    async fn request_async() -> Result<Self, GpuError> {
+    /// The first painter-capable Vulkan adapter on `instance`.
+    async fn pick_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, GpuError> {
         // The engine's shaders require f16 arithmetic — its raster pipeline
         // uses f16-in-f32 builtins unconditionally. The default pick may lack
         // it (software Vulkan drivers like llvmpipe drop shaderFloat16), so
@@ -123,32 +124,38 @@ impl AndroidGpuContext {
         const PAINTER_FLAGS: wgpu::DownlevelFlags = wgpu::DownlevelFlags::SHADER_F16_IN_F32;
         let flags_of = |adapter: &wgpu::Adapter| adapter.get_downlevel_capabilities().flags;
         let capable = |adapter: &wgpu::Adapter| flags_of(adapter).contains(PAINTER_FLAGS);
-        // A Vulkan-only instance: no other GPU API is ever instantiated, and
-        // `create_surface` therefore only ever builds the Vulkan surface that
-        // claims the `ANativeWindow`'s single producer connection.
-        let instance = new_instance(wgpu::Backends::VULKAN);
-        let preferred = request_adapter(&instance).await?;
-        let adapter = if capable(&preferred) {
-            preferred
-        } else {
-            let chosen = instance
-                .enumerate_adapters(wgpu::Backends::VULKAN)
-                .await
-                .into_iter()
-                .find(capable);
-            if let Some(candidate) = chosen {
-                candidate
-            } else {
-                let info = preferred.get_info();
-                let missing = PAINTER_FLAGS.difference(flags_of(&preferred));
-                return Err(GpuError::new(format!(
-                    "hydrolysis android: no Vulkan adapter meets the \
-                         painter's requirements — '{}' ({:?}) lacks \
-                         {missing:?} and no alternate Vulkan adapter qualifies",
-                    info.name, info.backend
-                )));
-            }
-        };
+        let preferred = request_adapter(instance).await?;
+        if capable(&preferred) {
+            return Ok(preferred);
+        }
+        instance
+            .enumerate_adapters(wgpu::Backends::VULKAN)
+            .await
+            .into_iter()
+            .find(capable)
+            .map_or_else(
+                || {
+                    let info = preferred.get_info();
+                    let missing = PAINTER_FLAGS.difference(flags_of(&preferred));
+                    Err(GpuError::new(format!(
+                        "hydrolysis android: no Vulkan adapter meets the \
+                             painter's requirements — '{}' ({:?}) lacks \
+                             {missing:?} and no alternate Vulkan adapter qualifies",
+                        info.name, info.backend
+                    )))
+                },
+                Ok,
+            )
+    }
+
+    /// Opens a device generation on `instance`: adapter pick, engine
+    /// device request and loss observation. A lost device's recreation
+    /// re-runs it on the lost generation's own instance, so the surfaces
+    /// the chain holds stay valid (water-rs/waterui#2742).
+    async fn open_generation(
+        instance: &wgpu::Instance,
+    ) -> Result<crate::platform::DeviceLoss, GpuError> {
+        let adapter = Self::pick_adapter(instance).await?;
         let required_limits = crate::platform::required_device_limits(&adapter);
         let required_features = crate::platform::required_media_features(adapter.features())
             | (adapter.features()
@@ -180,20 +187,26 @@ impl AndroidGpuContext {
             ))
         })?;
         let context_id = crate::platform::next_gpu_context_id();
-        let shared_device = cherenkov_gpu::interop::SharedDevice {
-            instance: instance.clone(),
-            adapter: adapter.clone(),
-            device: device.clone(),
-            queue: queue.clone(),
-        };
-        let device_loss = crate::platform::DeviceLoss::observe(shared_device, context_id);
-        Ok(Self {
-            inner: Arc::new(AndroidGpuContextInner {
-                instance,
+        Ok(crate::platform::DeviceLoss::observe(
+            cherenkov_gpu::interop::SharedDevice {
+                instance: instance.clone(),
                 adapter,
                 device,
                 queue,
-                device_loss,
+            },
+            context_id,
+        ))
+    }
+
+    async fn request_async() -> Result<Self, GpuError> {
+        // A Vulkan-only instance: no other GPU API is ever instantiated, and
+        // `create_surface` therefore only ever builds the Vulkan surface that
+        // claims the `ANativeWindow`'s single producer connection.
+        let instance = new_instance(wgpu::Backends::VULKAN);
+        let generation = Self::open_generation(&instance).await?;
+        Ok(Self {
+            inner: Arc::new(AndroidGpuContextInner {
+                gpu: crate::platform::RecoverableGpu::new(generation),
             }),
         })
     }
@@ -210,6 +223,10 @@ impl AndroidGpuContext {
 /// pointing at a released window.
 pub struct AndroidSurface {
     gpu: AndroidGpuContext,
+    /// The device generation this attachment renders on — a clone of the
+    /// context's live generation, adopted in `ensure_live`
+    /// (water-rs/waterui#2742).
+    handles: crate::platform::DeviceLoss,
     /// The generation the Kotlin host assigned this attachment; a stale
     /// `surfaceDestroyed` from an older `SurfaceHolder` callback is ignored.
     generation: u64,
@@ -245,9 +262,11 @@ struct WindowLease {
 }
 
 impl AndroidSurface {
-    pub const fn new(gpu: AndroidGpuContext) -> Self {
+    pub fn new(gpu: AndroidGpuContext) -> Self {
+        let handles = gpu.inner.gpu.generation();
         Self {
             gpu,
+            handles,
             generation: 0,
             surface: None,
             native_window: None,
@@ -313,8 +332,9 @@ impl AndroidSurface {
         // surface owns for its whole lifetime — it is released inside the
         // surface's drop, before this attachment's own lease can go away.
         let surface = self
-            .gpu
-            .inner
+            .handles
+            .gpu_context()
+            .shared_device
             .instance
             .create_surface(wgpu::SurfaceTarget::from_window_without_display(unsafe {
                 NativeWindow::clone_from_ptr(window.ptr())
@@ -326,8 +346,12 @@ impl AndroidSurface {
             })?;
         // The (format, colour space) pair, present mode and alpha mode
         // come from the one negotiation every Hydrolysis host uses (#2445).
-        let selection = negotiate_host_output(&surface, &self.gpu.inner.adapter, false)
-            .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?;
+        let selection = negotiate_host_output(
+            &surface,
+            &self.handles.gpu_context().shared_device.adapter,
+            false,
+        )
+        .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: selection.format,
@@ -339,7 +363,7 @@ impl AndroidSurface {
             alpha_mode: selection.alpha_mode,
             view_formats: vec![],
         };
-        surface.configure(&self.gpu.inner.device, &config);
+        surface.configure(&self.handles.gpu_context().shared_device.device, &config);
         self.config = Some(config);
         self.selection = Some(selection);
         self.surface = Some(surface);
@@ -384,9 +408,41 @@ impl AndroidSurface {
         if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
             config.width = width;
             config.height = height;
-            surface.configure(&self.gpu.inner.device, config);
+            surface.configure(&self.handles.gpu_context().shared_device.device, config);
         }
         Ok(())
+    }
+
+    /// Adopts the context's live device generation — rebuilding it when
+    /// the adopted one was lost — and puts the attached swapchain on the
+    /// new device's output contract (water-rs/waterui#2742). The
+    /// `wgpu::Surface` belongs to the instance, which recreation keeps;
+    /// the native window lease is untouched.
+    fn ensure_live(&mut self) {
+        let gpu = self.gpu.clone();
+        let generation = gpu.inner.gpu.ensure_live(|instance| {
+            pollster::block_on(AndroidGpuContext::open_generation(instance))
+                .map_err(|error| error.0)
+        });
+        if generation.gpu_context().context_id == self.handles.gpu_context().context_id {
+            return;
+        }
+        self.handles = generation;
+        let shared = &self.handles.gpu_context().shared_device;
+        if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
+            // A recreated adapter re-runs the output negotiation — the
+            // old device's pick is not assumed on the new one; a surface
+            // the new adapter cannot drive fails as explicitly as it
+            // does at attach.
+            let selection = negotiate_host_output(surface, &shared.adapter, false)
+                .unwrap_or_else(|error| panic!("hydrolysis android: {error}"));
+            config.format = selection.format;
+            config.color_space = selection.color_space;
+            config.present_mode = selection.present_mode;
+            config.alpha_mode = selection.alpha_mode;
+            surface.configure(&shared.device, config);
+            self.selection = Some(selection);
+        }
     }
 
     /// If `generation` names the live attachment, releases it. A stale
@@ -447,19 +503,19 @@ impl Drop for AndroidSurface {
 
 impl PresentationSurface for AndroidSurface {
     fn adapter(&self) -> &wgpu::Adapter {
-        &self.gpu.inner.adapter
+        &self.handles.gpu_context().shared_device.adapter
     }
 
     fn device(&self) -> &wgpu::Device {
-        &self.gpu.inner.device
+        &self.handles.gpu_context().shared_device.device
     }
 
     fn queue(&self) -> &wgpu::Queue {
-        &self.gpu.inner.queue
+        &self.handles.gpu_context().shared_device.queue
     }
 
     fn device_loss(&self) -> &crate::platform::DeviceLoss {
-        &self.gpu.inner.device_loss
+        &self.handles
     }
 
     fn size(&self) -> (u32, u32) {
@@ -467,6 +523,7 @@ impl PresentationSurface for AndroidSurface {
     }
 
     fn resize(&mut self, width: u32, height: u32) {
+        self.ensure_live();
         self.width = width;
         self.height = height;
         if width == 0 || height == 0 {
@@ -475,18 +532,22 @@ impl PresentationSurface for AndroidSurface {
         if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
             config.width = width;
             config.height = height;
-            surface.configure(&self.gpu.inner.device, config);
+            surface.configure(&self.handles.gpu_context().shared_device.device, config);
         }
+    }
+
+    fn ensure_live(&mut self) {
+        Self::ensure_live(self);
     }
 }
 
 impl SurfaceProvider for AndroidSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-        if self.gpu.inner.device_loss.is_lost() {
-            // Device loss is unrecoverable for this attachment — report it as
-            // the explicit error the plan asks for rather than silently
-            // failing every acquisition.
-            return Err(SurfaceError::Validation);
+        if self.handles.is_lost() {
+            // A dead generation a failed recreation left in place: report
+            // lost so the pump reschedules and the next frame retries the
+            // recovery under its budget (water-rs/waterui#2742).
+            return Err(SurfaceError::Lost);
         }
         let Some(surface) = self.surface.as_ref() else {
             // Between generations there is nothing to acquire against: the
