@@ -143,6 +143,7 @@ jobs:
           sweep: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Save Cargo sources
+        id: save-sources
         if: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/cargo-sources
         with:
@@ -150,8 +151,9 @@ jobs:
           primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
           limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      # A save the headroom check skipped (no room) keeps the old generation.
       - name: Retire superseded cache generations
-        if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
+        if: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.save-sources.outputs.saved != 'false' }}
         uses: ./.github/actions/retire-cargo-caches
         with:
           families: cargo-sources-${{ runner.os }}-
