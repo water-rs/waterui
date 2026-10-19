@@ -6,7 +6,9 @@ edition.workspace = true
 rust-version = "1.95"
 license.workspace = true
 repository.workspace = true
-publish = false
+readme = "../README.md"
+keywords = ["graphics", "2d", "display-list", "recording", "rendering"]
+categories = ["graphics", "rendering"]
 
 [features]
 serde = ["dep:serde", "color/serde", "kurbo/serde"]
@@ -15,7 +17,7 @@ serde = ["dep:serde", "color/serde", "kurbo/serde"]
 color = "0.3.3"
 # The working-space matrices (`filtrate_core::space`), the one definition
 # the engine's backends share.
-filtrate-core = { path = "../../filtrate/core" }
+filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
 kurbo = "0.13.1"
 nami-core = { version = "0.5", features = ["kurbo"] }
 rustc-hash = "2"

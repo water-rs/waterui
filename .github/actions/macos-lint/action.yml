@@ -65,7 +65,10 @@ runs:
     - name: Clippy (hydrolysis, checked feature set)
       if: inputs.target == '' && inputs.hydrolysis == 'true'
       shell: bash
-      run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+      # `webview-system` is the WKWebView bridge, which compiles on the macOS
+      # host alone — no other leg can lint it (water-rs/waterui#1795), and
+      # `--all-targets` with it on also lints the `real_engine_macos` target.
+      run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit,webview-system -- -D warnings
     - name: Clippy (hydrolysis, checked feature set, iOS simulator)
       if: inputs.target != '' && inputs.hydrolysis == 'true'
       shell: bash

@@ -21,12 +21,12 @@ compiled:
 
 ```bash
 # macOS and Linux
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/waterui/releases/download/cli-latest/waterui-cli-installer.sh | sh
 ```
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/waterui/releases/download/cli-latest/waterui-cli-installer.ps1 | iex"
 ```
 
 Then create and run a project:

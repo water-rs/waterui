@@ -3871,6 +3871,97 @@ mod tests {
         );
     }
 
+    /// A managed crate reached before the project first resolves — the
+    /// create-time font scans build it before the application's own
+    /// `Cargo.lock` exists — still receives the canonical lock's pins: a
+    /// certified registry identity the index no longer offers, like the
+    /// `waterkit-audio` release `waterui-ffi` requires, is a version Cargo
+    /// may only keep when a lock records it (#1240).
+    #[test]
+    fn the_canonical_lock_seeds_a_managed_crate_without_a_project_lockfile() {
+        let registry = "registry+https://github.com/rust-lang/crates.io-index";
+        let canonical_bytes = format!(
+            "version = 4\n\n\
+             [[package]]\nname = \"waterui\"\nversion = \"0.5.2\"\n\n\
+             [[package]]\nname = \"waterkit-audio\"\nversion = \"0.1.4\"\nsource = \"{registry}\"\n\n\
+             [[package]]\nname = \"project-only\"\nversion = \"3.0.0\"\nsource = \"{registry}\"\n"
+        );
+        let framework = crate::framework::test_fixtures::stable_framework_certifying(
+            canonical_bytes.as_bytes(),
+        );
+        let canonical = framework
+            .canonical_lock_of(canonical_bytes.into_bytes())
+            .expect("the certified bytes make the canonical lock");
+
+        smol::block_on(async {
+            let dir = tempfile::tempdir().expect("temporary seed dir");
+            let project_lock = dir.path().join("Cargo.lock");
+            let crate_dir = dir.path().join("managed_backends/apple-companion");
+            smol::fs::create_dir_all(&crate_dir)
+                .await
+                .expect("companion dir");
+
+            crate::templates::seed_lockfile(&crate_dir, &project_lock, Some(&canonical))
+                .await
+                .expect("seeding the managed lockfile should succeed");
+            let seeded: cargo_lock::Lockfile =
+                smol::fs::read_to_string(crate_dir.join("Cargo.lock"))
+                    .await
+                    .expect("the seeded Cargo.lock")
+                    .parse()
+                    .expect("the seeded lock parses");
+            for pin in &canonical
+                .lock()
+                .expect("the canonical lock parses")
+                .packages
+            {
+                assert!(
+                    seeded.packages.contains(pin),
+                    "the seed must carry the certified identity of {}",
+                    pin.name
+                );
+            }
+
+            // A project lockfile later appearing re-seeds on top of the
+            // canonical pins rather than replacing them.
+            smol::fs::write(
+                &project_lock,
+                format!(
+                    "version = 4\n\n[[package]]\nname = \"application-entry\"\nversion = \"1.0.0\"\nsource = \"{registry}\"\n"
+                ),
+            )
+            .await
+            .expect("project lock");
+            crate::templates::seed_lockfile(&crate_dir, &project_lock, Some(&canonical))
+                .await
+                .expect("re-seeding should succeed");
+            let reseeded: cargo_lock::Lockfile =
+                smol::fs::read_to_string(crate_dir.join("Cargo.lock"))
+                    .await
+                    .expect("the re-seeded Cargo.lock")
+                    .parse()
+                    .expect("the re-seeded lock parses");
+            for pin in &canonical
+                .lock()
+                .expect("the canonical lock parses")
+                .packages
+            {
+                assert!(
+                    reseeded.packages.contains(pin),
+                    "the re-seed keeps the certified identity of {}",
+                    pin.name
+                );
+            }
+            assert!(
+                reseeded
+                    .packages
+                    .iter()
+                    .any(|package| package.name.as_str() == "application-entry"),
+                "the project's own pin joins the seed"
+            );
+        });
+    }
+
     #[test]
     fn generated_companion_manifest_emits_only_linked_crate_types() {
         let temp = tempfile::tempdir().expect("temp dir");
@@ -6523,8 +6614,11 @@ const LOCKFILE_SEED_FORMAT: u32 = 3;
 /// (#2073). The stamp at [`LOCKFILE_SEED`] records the inputs instead, and
 /// the crate is re-seeded only when the project's lockfile or the canonical
 /// lock changed since the last seed, or when the crate has no `Cargo.lock`
-/// at all. A project without a lockfile has nothing to pin yet and is left
-/// to resolve on its own.
+/// at all. A project without a lockfile has nothing of its own to pin yet;
+/// the canonical lock still seeds when the channel carries one — the
+/// create-time font scans reach the managed crate before the project first
+/// resolves, and the certified pins the channel locks — a yanked registry
+/// release among them (#1240) — are the versions Cargo may keep.
 ///
 /// # Errors
 ///
@@ -6537,11 +6631,20 @@ pub async fn seed_lockfile(
     let seed = match fs::read(project_lockfile).await {
         Ok(seed) => seed,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if canonical.is_none() {
+                tracing::debug!(
+                    lockfile = %project_lockfile.display(),
+                    "project has no lockfile; the managed crate resolves on its own"
+                );
+                return Ok(());
+            }
             tracing::debug!(
                 lockfile = %project_lockfile.display(),
-                "project has no lockfile; the managed crate resolves on its own"
+                "project has no lockfile; the managed crate seeds from the canonical lock alone"
             );
-            return Ok(());
+            // An empty lockfile carries no project pins: the merge below
+            // fills it with the canonical entries alone.
+            b"version = 4\n".to_vec()
         }
         Err(error) => return Err(error),
     };

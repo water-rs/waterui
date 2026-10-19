@@ -19,8 +19,9 @@ use objc2::{ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, define_cl
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSMutableSet, NSObject, NSObjectProtocol};
 use objc2_ui_kit::{
-    UIEdgeInsets, UIEvent, UIGestureRecognizerState, UIHoverGestureRecognizer, UIPress,
-    UIPressesEvent, UITraitDisplayScale, UITraitEnvironment, UIView,
+    UIAccessibilityConvertFrameToScreenCoordinates, UIEdgeInsets, UIEvent,
+    UIGestureRecognizerState, UIHoverGestureRecognizer, UIPress, UIPressesEvent,
+    UITraitDisplayScale, UITraitEnvironment, UIView,
 };
 
 use super::trait_change::{TraitChangeObservation, register_trait_change};
@@ -105,6 +106,10 @@ pub struct HostViewIvars {
     capturable: crate::capture::CapturableSlot,
     /// The display-scale registration serving backing-scale subscribers.
     backing_changed: RefCell<Option<TraitChangeObservation>>,
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent a labelled layout container resolves
+    /// to — instead of the view's own frame (water-rs/waterui#1482).
+    reports_content_extent: Cell<bool>,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -139,6 +144,7 @@ impl fmt::Debug for HostViewIvars {
             )
             .field("key", &self.key.borrow().is_some())
             .field("backing_changed", &self.backing_changed.borrow().is_some())
+            .field("reports_content_extent", &self.reports_content_extent.get())
             .finish_non_exhaustive()
     }
 }
@@ -388,6 +394,21 @@ define_class!(
                 let _: () = unsafe { msg_send![super(self), setBounds: bounds] };
                 self.report_size();
             });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> CGRect {
+            guarded("HostView accessibilityFrame", || {
+                if !self.ivars().reports_content_extent.get() {
+                    // SAFETY: see the module safety note.
+                    return unsafe { msg_send![super(self), accessibilityFrame] };
+                }
+                UIAccessibilityConvertFrameToScreenCoordinates(
+                    self.content_extent(),
+                    self,
+                )
+            })
         }
 
         // SAFETY: see the module safety note.
@@ -745,6 +766,33 @@ impl HostView {
     }
 
     /// Moves and resizes the view to `frame`, in its superview's coordinates.
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent this container resolved its content
+    /// to — instead of the view's own frame. A labelled layout container
+    /// (`Frame`, `vstack`, …) is assigned the whole region but places its
+    /// content in the resolved box, so a label on it announces the
+    /// children's extent, not the assignment (water-rs/waterui#1482).
+    /// Computed live on every read; nothing is stored.
+    pub fn set_reports_content_extent(&self, reports: bool) {
+        self.ivars().reports_content_extent.set(reports);
+    }
+
+    /// The union of the direct, non-hidden subviews' frames — in this
+    /// view's coordinate space — or the view's own bounds when it has
+    /// none.
+    fn content_extent(&self) -> CGRect {
+        let mut extent: Option<CGRect> = None;
+        for subview in &self.subviews() {
+            if subview.isHidden() {
+                continue;
+            }
+            let frame = subview.frame();
+            extent = Some(extent.map_or(frame, |u| union(u, frame)));
+        }
+        extent.unwrap_or_else(|| self.bounds())
+    }
+
+    /// Moves the view to `frame`, in its superview's coordinates.
     pub fn set_frame(&self, frame: Rect) {
         self.setFrame(frame.into());
     }
@@ -860,4 +908,11 @@ pub fn window_root(mtm: MainThreadMarker) -> Retained<HostView> {
             ..HostViewIvars::default()
         },
     )
+}
+
+/// The smallest rect containing `a` and `b`.
+fn union(a: CGRect, b: CGRect) -> CGRect {
+    let min = CGPoint::new(a.min().x.min(b.min().x), a.min().y.min(b.min().y));
+    let max = CGPoint::new(a.max().x.max(b.max().x), a.max().y.max(b.max().y));
+    CGRect::new(min, CGSize::new(max.x - min.x, max.y - min.y))
 }
