@@ -3,15 +3,17 @@
 
 usage:
     run-with-deadline.py deadline --seconds N
-    run-with-deadline.py remaining --deadline-at T
+    run-with-deadline.py remaining --deadline-at T [--at-least S]
     run-with-deadline.py run --deadline-at T --receipt PATH --label NAME -- argv...
 
 `deadline` prints an absolute deadline on the system-wide CLOCK_MONOTONIC
 clock — the one epoch every process on the host reads identically, so a
 value computed once by the caller is a single budget that all later
 invocations draw down. `remaining` prints the seconds left and exits nonzero
-once the deadline has passed, so a shell loop can bound its iterations on
-the same clock the commands answer to. `run` executes argv (no shell),
+once the deadline has passed — or, with --at-least S, once less than S
+seconds remain, so a caller can refuse to start work the budget can no
+longer pay for instead of letting `run` kill it mid-command. `run` executes
+argv (no shell),
 waiting at most the remaining budget; on expiry it SIGTERMs, then SIGKILLs,
 only the child it spawned — never a process group, a simulator service, or
 anything else it does not own — and reaps it before returning.
@@ -112,7 +114,7 @@ def _cmd_deadline(args: argparse.Namespace) -> int:
 def _cmd_remaining(args: argparse.Namespace) -> int:
     remaining = args.deadline_at - _clock()
     print(f"{remaining:.3f}")
-    return 0 if remaining > 0 else 1
+    return 0 if remaining > args.at_least else 1
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -230,6 +232,10 @@ def main() -> None:
     remaining.add_argument(
         "--deadline-at", type=float, required=True,
         help="absolute deadline on the CLOCK_MONOTONIC clock")
+    remaining.add_argument(
+        "--at-least", type=float, default=0.0, metavar="S",
+        help="exit 1 once S or fewer seconds remain, not only once the "
+             "deadline has passed")
     run = sub.add_parser(
         "run", help="run argv under the shared deadline, recording a receipt")
     run.add_argument(
