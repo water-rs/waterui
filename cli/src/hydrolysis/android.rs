@@ -483,7 +483,7 @@ pub(crate) async fn resolve_declared_fonts(
 /// The artifacts and toolchain context produced by an Android launcher build.
 ///
 /// Includes the cargo result and the resolved NDK/SDK context for steps like
-/// `llvm-strip` and [`stage_runtime_libraries`]. Nothing is staged yet.
+/// `llvm-strip` and `stage_runtime_libraries`. Nothing is staged yet.
 #[derive(Debug)]
 pub struct HydrolysisAndroidBuild {
     /// The cargo build result — the cdylib artifact and its app symbols.
@@ -543,7 +543,7 @@ pub(crate) async fn build_prepared_into_jni_libs(
 ///
 /// The preview entry compiles with `waterui-preview-mode`, places the
 /// artifact itself and completes the directory with
-/// [`stage_runtime_libraries`]; [`build`] is this plus the Gradle
+/// `stage_runtime_libraries`; [`build`] is this plus the Gradle
 /// `jniLibs` staging.
 ///
 /// # Errors
