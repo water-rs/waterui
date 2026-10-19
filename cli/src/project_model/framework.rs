@@ -81,6 +81,14 @@ enum Source {
         /// written before the stable channel carried a manifest.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         release: Option<FrameworkRelease>,
+        /// The checksum of the `Water.lock` the selection certified — the
+        /// release's own `Cargo.lock` merged with the lock entries the
+        /// withheld scaffold packages' pins resolve to. Absent in
+        /// selections written before the stable channel carried a
+        /// canonical lock (#1240); those seed nothing, the behavior they
+        /// were created under.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lock_sha256: Option<String>,
     },
     Dev {
         repository: String,
@@ -156,13 +164,14 @@ impl fmt::Display for ResolvedFramework {
         match &self.source {
             Source::Stable {
                 release: Some(release),
+                ..
             } => write!(
                 formatter,
                 "stable {} ({})",
                 release.tag,
                 short(&release.revision)
             ),
-            Source::Stable { release: None } => formatter.write_str("stable"),
+            Source::Stable { release: None, .. } => formatter.write_str("stable"),
             Source::Nightly { tag, revision, .. } => {
                 write!(formatter, "nightly {tag} ({})", short(revision))
             }
@@ -612,7 +621,7 @@ impl ResolvedFramework {
     /// provenance.
     fn git_coordinates(&self) -> Result<Option<(&str, &str)>> {
         match &self.source {
-            Source::Stable { release } => {
+            Source::Stable { release, .. } => {
                 let Some(release) = release else {
                     bail!(
                         "the recorded stable framework selection predates release provenance; \
@@ -804,7 +813,7 @@ impl ResolvedFramework {
     /// diagnostic names it.
     fn origin(&self) -> String {
         match &self.source {
-            Source::Stable { release } => release.as_ref().map_or_else(
+            Source::Stable { release, .. } => release.as_ref().map_or_else(
                 || "the stable framework manifest".to_owned(),
                 |release| format!("the framework manifest certified by {}", release.tag),
             ),
@@ -1377,11 +1386,12 @@ impl ResolvedFramework {
                 .filter(|package| package.name.as_str() == "waterui")
                 .any(|package| !previous.contains(&LockedDependency::from(package)))
         });
-        let canonical = if self.channel() == Some(FrameworkChannel::Stable) {
-            None
-        } else {
-            Some(smol::fs::read(project.root().join("Water.lock")).await?)
-        };
+        // A stable selection written before the channel carried a canonical
+        // lock records no checksum to verify `Water.lock` against — its
+        // managed crates resolve unseeded, the behavior the selection was
+        // created under (#1240). Newer stable selections seed the
+        // certified resolution like the other channels.
+        let canonical = self.certified_lock_bytes(project.root()).await?;
         let canonical_lock = canonical
             .clone()
             .map(|contents| self.canonical_lock_of(contents))
@@ -1515,15 +1525,20 @@ impl ResolvedFramework {
 
     /// The channel's certified lock — `Water.lock` at the pinned revision,
     /// parsed with the framework's own source pin — where the channel carries
-    /// one. `stable` resolves the application's own `Cargo.lock`, so it returns
-    /// `None`. A local checkout certifies nothing either, but its own
-    /// `Cargo.lock` is still the pin the checkout resolved its transitive
-    /// dependencies to: without it a generated workspace resolves the
-    /// packages only it reaches — the video stack's `hyper-util`,
-    /// `rustls-platform-verifier`, `xcb` — at whatever the registry holds
-    /// newest, and the lock guard then rejects the drift. Only the sourced
-    /// entries apply: a source-less workspace member resolves by path inside
-    /// the generated workspace, where a seed entry would name nothing.
+    /// one. `stable` carries one too since #1240: the certified release's
+    /// `Cargo.lock` merged with the locks its withheld scaffold pins record,
+    /// so the application and its managed crates resolve the identities the
+    /// release was built and published against — including registry versions
+    /// the index no longer offers. A selection written before then records
+    /// no checksum to verify `Water.lock` against and returns `None`. A
+    /// local checkout certifies nothing either, but its own `Cargo.lock` is
+    /// still the pin the checkout resolved its transitive dependencies to:
+    /// without it a generated workspace resolves the packages only it
+    /// reaches — the video stack's `hyper-util`, `rustls-platform-verifier`,
+    /// `xcb` — at whatever the registry holds newest, and the lock guard
+    /// then rejects the drift. Only the sourced entries apply: a source-less
+    /// workspace member resolves by path inside the generated workspace,
+    /// where a seed entry would name nothing.
     ///
     /// # Errors
     ///
@@ -1540,13 +1555,32 @@ impl ResolvedFramework {
                 contents,
             }));
         }
-        if self.channel() != Some(FrameworkChannel::Dev)
-            && self.channel() != Some(FrameworkChannel::Nightly)
-        {
+        let Some(contents) = self.certified_lock_bytes(project_root).await? else {
+            return Ok(None);
+        };
+        Ok(Some(self.canonical_lock_of(contents)?))
+    }
+
+    /// The project's `Water.lock` bytes when the selection certifies a
+    /// canonical lock for them to check against — `None` for a stable
+    /// selection written before the channel carried one, whose
+    /// checksum-less record verifies nothing; its managed crates resolve
+    /// unseeded, the behavior the selection was created under (#1240).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `Water.lock` cannot be read.
+    async fn certified_lock_bytes(&self, project_root: &Path) -> Result<Option<Vec<u8>>> {
+        if matches!(
+            &self.source,
+            Source::Stable {
+                lock_sha256: None,
+                ..
+            }
+        ) {
             return Ok(None);
         }
-        let contents = smol::fs::read(project_root.join("Water.lock")).await?;
-        Ok(Some(self.canonical_lock_of(contents)?))
+        Ok(Some(smol::fs::read(project_root.join("Water.lock")).await?))
     }
 
     /// The canonical lock a channel's `Water.lock` `contents` carry, its
@@ -1555,8 +1589,8 @@ impl ResolvedFramework {
     ///
     /// # Errors
     ///
-    /// Returns an error when the selection is not a dev or nightly channel
-    /// or `contents` no longer match its checksum.
+    /// Returns an error when the selection records no lock checksum or
+    /// `contents` no longer match it.
     pub(crate) fn canonical_lock_of(&self, contents: Vec<u8>) -> Result<CanonicalLock<'_>> {
         let (revision, expected) = match &self.source {
             Source::Dev {
@@ -1568,12 +1602,25 @@ impl ResolvedFramework {
                 revision,
                 lock_sha256,
                 ..
-            } => (revision, lock_sha256),
-            Source::Stable { .. } => bail!("stable uses the application's Cargo.lock"),
+            } => (revision.as_str(), lock_sha256.as_str()),
+            Source::Stable {
+                release,
+                lock_sha256: Some(expected),
+            } => (
+                release
+                    .as_ref()
+                    .map_or("stable", |release| release.revision.as_str()),
+                expected.as_str(),
+            ),
+            Source::Stable { .. } => {
+                bail!(
+                    "a stable selection written before the channel carried a canonical lock has none"
+                )
+            }
             Source::Local { .. } => bail!("a local framework checkout has no canonical lock"),
         };
         let found = hex::encode(Sha256::digest(&contents));
-        if found != *expected {
+        if found != expected {
             return Err(self.lock_mismatch_error(revision, expected, &found));
         }
         Ok(CanonicalLock {
@@ -1583,8 +1630,29 @@ impl ResolvedFramework {
     }
 
     pub(crate) fn cargo_lock(&self, contents: &[u8]) -> Result<Lockfile> {
+        // `stable` resolves members from the registry — and its `*-path`
+        // members from the release's Git source — so its canonical lock
+        // annotates member identities accordingly instead of the
+        // git-source rewrite the certified channels apply.
+        if let Source::Stable {
+            release: Some(release),
+            lock_sha256: Some(expected),
+        } = &self.source
+        {
+            let found = hex::encode(Sha256::digest(contents));
+            if found != *expected {
+                return Err(self.lock_mismatch_error(&release.revision, expected, &found));
+            }
+            let mut lock: Lockfile = std::str::from_utf8(contents)?.parse()?;
+            annotate_stable_lock(&mut lock, release, &self.metadata)?;
+            return Ok(lock);
+        }
         let (repository, revision, expected) = match &self.source {
-            Source::Stable { .. } => bail!("stable uses the application's Cargo.lock"),
+            Source::Stable { .. } => {
+                bail!(
+                    "a stable selection written before the channel carried a canonical lock has none"
+                )
+            }
             Source::Local { .. } => {
                 bail!("a local framework checkout has no canonical lock")
             }
@@ -1835,20 +1903,7 @@ impl ResolvedFramework {
             validate_installed_cli(host, minimum, &update)?;
         }
 
-        // `.gitmodules` names each submodule path's repository at the
-        // revision; the pin's commit half comes from the tree's gitlinks
-        // (`dev`) or the certification (a certified channel). `stable`
-        // resolves from the registry and carries neither.
-        let submodule_repositories = match channel {
-            FrameworkChannel::Stable => BTreeMap::new(),
-            FrameworkChannel::Dev | FrameworkChannel::Nightly => {
-                match tree.optional_file(host, ".gitmodules").await? {
-                    Some(bytes) => parse_gitmodules(std::str::from_utf8(&bytes)?),
-                    // Every submodule was extracted; the revision records none.
-                    None => BTreeMap::new(),
-                }
-            }
-        };
+        let submodule_repositories = channel_submodule_repositories(host, tree, channel).await?;
 
         let (mut source, submodules) = if let Some(certification) = &certification {
             (
@@ -1877,13 +1932,27 @@ impl ResolvedFramework {
 
         let locked_versions = locked_package_versions(&lock);
         let (packages, patches, lockfile) = match channel {
-            // A stable project resolves its graph from the registry; nothing is
-            // pinned to the framework repository, so there is no package detail
-            // or canonical lock to persist.
+            // A stable project resolves its graph from the registry, so no
+            // package detail the certified channels carry applies — but
+            // the release's own `Cargo.lock` is still the certified
+            // resolution the project and its managed crates seed from:
+            // without it a package the release locked but the index no
+            // longer offers — a yanked `waterkit-audio` `waterui-ffi`
+            // requires (#1240) — cannot resolve at all.
             FrameworkChannel::Stable => (
                 BTreeMap::new(),
                 stable_member_substitutions(&root, &lock, repository, revision, &metadata)?,
-                None,
+                Some(
+                    stable_canonical_lock(
+                        host,
+                        &lock,
+                        lock_bytes,
+                        &experimental_packages,
+                        repository,
+                        &mut source,
+                    )
+                    .await?,
+                ),
             ),
             FrameworkChannel::Dev | FrameworkChannel::Nightly => {
                 let patches: PatchSet = root
@@ -1920,6 +1989,27 @@ impl ResolvedFramework {
             .validated()?,
             lockfile,
         ))
+    }
+}
+
+/// `.gitmodules` names each submodule path's repository at the revision; the
+/// pin's commit half comes from the tree's gitlinks (`dev`) or the
+/// certification (a certified channel). `stable` resolves from the registry
+/// and carries neither.
+async fn channel_submodule_repositories(
+    host: &Host,
+    tree: &FrameworkTree,
+    channel: FrameworkChannel,
+) -> Result<BTreeMap<String, String>> {
+    match channel {
+        FrameworkChannel::Stable => Ok(BTreeMap::new()),
+        FrameworkChannel::Dev | FrameworkChannel::Nightly => {
+            match tree.optional_file(host, ".gitmodules").await? {
+                Some(bytes) => Ok(parse_gitmodules(std::str::from_utf8(&bytes)?)),
+                // Every submodule was extracted; the revision records none.
+                None => Ok(BTreeMap::new()),
+            }
+        }
     }
 }
 
@@ -2507,6 +2597,11 @@ fn certified_source(
     Ok(match certification.channel {
         FrameworkChannel::Stable => Source::Stable {
             release: Some(release),
+            // The canonical lock's checksum is recorded once the foreign
+            // locks merge below — the certification proves the release's
+            // own `Cargo.lock` bytes, and `lock_sha256` names what the
+            // merge emits.
+            lock_sha256: None,
         },
         FrameworkChannel::Nightly => Source::Nightly {
             repository: repository.to_owned(),
@@ -3240,6 +3335,7 @@ pub(crate) mod test_fixtures {
                     revision: revision('a'),
                     tag: "v0.4.1".to_owned(),
                 }),
+                lock_sha256: None,
             },
             minimum_cli_version: None,
             rust_version: None,
@@ -3342,6 +3438,7 @@ pub(crate) mod test_fixtures {
                     revision: revision('a'),
                     tag: "v0.4.1".to_owned(),
                 }),
+                lock_sha256: None,
             },
             minimum_cli_version: None,
             rust_version: None,
@@ -3374,7 +3471,21 @@ pub(crate) mod test_fixtures {
                 revision: revision.to_owned(),
                 tag: "v0.4.1".to_owned(),
             }),
+            lock_sha256: None,
         };
+        framework
+    }
+
+    /// The stable resolution [`stable_framework`] emits, except the
+    /// selection records `contents`' checksum as the canonical lock it
+    /// certified — the shape a post-#1240 `Water.toml` takes, so
+    /// `canonical_lock_of` admits exactly those bytes.
+    pub fn stable_framework_certifying(contents: &[u8]) -> ResolvedFramework {
+        let mut framework = stable_framework();
+        let Source::Stable { lock_sha256, .. } = &mut framework.source else {
+            unreachable!()
+        };
+        *lock_sha256 = Some(hex::encode(Sha256::digest(contents)));
         framework
     }
 
@@ -3908,6 +4019,19 @@ struct SubmodulePin {
     commit: String,
 }
 
+/// The `*-path` members `metadata` declares — the crates a stable project
+/// links from the framework's own Git source rather than the registry:
+/// [`stable_member_substitutions`] substitutes their dependents' edges and
+/// [`annotate_stable_lock`] annotates their lock entries to the same set. A
+/// revision that declares none resolves nothing from the repository.
+fn git_sourced_members(metadata: &toml::Table) -> BTreeSet<&'static str> {
+    FRAMEWORK_MEMBERS
+        .iter()
+        .filter(|member| metadata.get(member.path_key).is_some())
+        .map(|member| member.package)
+        .collect()
+}
+
 /// The `[patch]` rows a `stable` project's Git-sourced members need.
 ///
 /// `[patch.crates-io]` carries the framework's own Git pins verbatim — the
@@ -3938,15 +4062,9 @@ fn stable_member_substitutions(
     metadata: &toml::Table,
 ) -> Result<PatchSet> {
     let mut patches = PatchSet::default();
-    // The `*-path` members this revision declares — the crates a generated
-    // crate links from the framework's own Git source. A revision that
-    // declares none resolves nothing from the repository, so nothing needs
-    // substituting.
-    let member_packages: BTreeSet<&str> = FRAMEWORK_MEMBERS
-        .iter()
-        .filter(|member| metadata.get(member.path_key).is_some())
-        .map(|member| member.package)
-        .collect();
+    // A revision that declares no `*-path` member resolves nothing from
+    // the repository, so nothing needs substituting.
+    let member_packages = git_sourced_members(metadata);
     if member_packages.is_empty() {
         return Ok(patches);
     }
@@ -4023,6 +4141,46 @@ fn stable_member_substitutions(
         patches.insert(repository.to_owned(), dependencies);
     }
     Ok(patches)
+}
+
+/// The canonical lock a `stable` resolution certifies — and records the
+/// checksum of — in `source`.
+///
+/// `stable` resolves the project and its managed crates from the registry,
+/// but the release's own `Cargo.lock` is still the resolution the release
+/// was built and published against: merged with the lock entries the
+/// withheld scaffold packages' foreign pins resolve to — the pins
+/// `experimental-packages` records in place of the package map the
+/// certified channels carry — it is the seed that keeps Cargo on the
+/// certified identities, including registry versions the index no longer
+/// offers (#1240).
+async fn stable_canonical_lock(
+    host: &Host,
+    lock: &Lockfile,
+    lock_bytes: Vec<u8>,
+    experimental_packages: &BTreeMap<String, ExperimentalPackage>,
+    repository: &str,
+    source: &mut Source,
+) -> Result<Vec<u8>> {
+    let pins: BTreeMap<String, DependencyDetail> = experimental_packages
+        .iter()
+        .map(|(name, package)| {
+            (
+                name.clone(),
+                DependencyDetail {
+                    git: Some(package.git.clone()),
+                    rev: Some(package.rev.clone()),
+                    ..DependencyDetail::default()
+                },
+            )
+        })
+        .collect();
+    let foreign = foreign_locked_packages(host, lock, &pins, repository).await?;
+    let lockfile = merge_foreign_lock(lock, lock_bytes, foreign, source);
+    if let Source::Stable { lock_sha256, .. } = source {
+        *lock_sha256 = Some(hex::encode(Sha256::digest(&lockfile)));
+    }
+    Ok(lockfile)
 }
 
 /// Rebase a fetched root manifest's `[patch]` tables onto the channel's own
@@ -4116,10 +4274,52 @@ fn patch_framework_members(
 fn annotate_workspace_lock(lock: &mut Lockfile, repository: &str, revision: &str) -> Result<()> {
     let source =
         format!("git+{repository}?rev={revision}#{revision}").parse::<cargo_lock::SourceId>()?;
+    annotate_member_sources(lock, |_| source.clone());
+    Ok(())
+}
+
+/// The stable-channel half of [`annotate_workspace_lock`]: a stable project
+/// resolves the `*-path` members (`waterui-apple`, `hydrolysis`) from the
+/// release's Git source — the substitution [`stable_member_substitutions`]
+/// writes — and every other member from the registry, where the release
+/// published it. Without the annotation a member package's source-less lock
+/// entry pins nothing outside the framework workspace.
+fn annotate_stable_lock(
+    lock: &mut Lockfile,
+    release: &FrameworkRelease,
+    metadata: &toml::Table,
+) -> Result<()> {
+    let git = format!(
+        "git+{}?rev={}#{}",
+        release.repository, release.revision, release.revision
+    )
+    .parse::<cargo_lock::SourceId>()?;
+    let registry = "registry+https://github.com/rust-lang/crates.io-index"
+        .parse::<cargo_lock::SourceId>()
+        .expect("the crates.io index source is valid");
+    let git_members = git_sourced_members(metadata);
+    annotate_member_sources(lock, |name| {
+        if git_members.contains(name) {
+            git.clone()
+        } else {
+            registry.clone()
+        }
+    });
+    Ok(())
+}
+
+/// Give every source-less lock package the source `member_source` names for
+/// it, and rewrite the source-less dependency edges that name one to point
+/// at the same identity — the rewrite [`annotate_workspace_lock`] and
+/// [`annotate_stable_lock`] share.
+fn annotate_member_sources(
+    lock: &mut Lockfile,
+    member_source: impl Fn(&str) -> cargo_lock::SourceId,
+) {
     let mut local = BTreeMap::new();
     for package in &mut lock.packages {
         if package.source.is_none() {
-            package.source = Some(source.clone());
+            package.source = Some(member_source(package.name.as_str()));
             local.insert(
                 (package.name.clone(), package.version.clone()),
                 LockedDependency::from(&*package),
@@ -4136,7 +4336,6 @@ fn annotate_workspace_lock(lock: &mut Lockfile, repository: &str, revision: &str
             }
         }
     }
-    Ok(())
 }
 
 /// The lock entries an extracted framework package's own `Cargo.lock` carries
@@ -6793,6 +6992,127 @@ hydrolysis-m3 = { git = "https://github.com/water-rs/hydrolysis-m3", rev = "d887
             stable_member_substitutions(&root, &lock, repository, &revision, &toml::Table::new())
                 .unwrap();
         assert!(patches.is_empty());
+    }
+
+    /// `stable` certifies a canonical lock the way `dev` and `nightly` do
+    /// (#1240): `cargo_lock` verifies the recorded checksum and annotates
+    /// the release lock's member identities the way a stable project
+    /// resolves them — a `*-path` member at the release's Git source,
+    /// every other member at the registry, and a member edge onto either
+    /// rewritten to the same identity — while a sourced package keeps the
+    /// pin that lets Cargo select a version the index no longer offers.
+    #[test]
+    fn a_stable_canonical_lock_annotates_member_identities() {
+        let repository = framework_repository();
+        let revision = 'a'.to_string().repeat(40);
+        let registry = "registry+https://github.com/rust-lang/crates.io-index";
+        let git = format!("git+{repository}?rev={revision}#{revision}");
+        let mut facade = package("waterui", "0.5.2", None);
+        let core = package("waterui-core", "0.5.2", None);
+        let apple = package("waterui-apple", "0.5.2", None);
+        facade.dependencies = vec![
+            LockedDependency::from(&core),
+            LockedDependency::from(&apple),
+        ];
+        let lock = Lockfile {
+            packages: vec![
+                facade,
+                core,
+                apple,
+                package("hydrolysis", "0.3.1", None),
+                package("waterkit-audio", "0.1.4", Some(registry)),
+            ],
+            version: cargo_lock::ResolveVersion::V4,
+            root: None,
+            metadata: BTreeMap::default(),
+            patch: cargo_lock::Patch::default(),
+        };
+        let contents = lock.to_string();
+        // The fixture's stable release already pins revision 'a'×40, the
+        // identity `git` above names.
+        let framework = test_fixtures::stable_framework_certifying(contents.as_bytes());
+        let parsed = framework
+            .cargo_lock(contents.as_bytes())
+            .expect("the recorded checksum admits the canonical lock");
+        let source_of = |name: &str| {
+            parsed
+                .packages
+                .iter()
+                .find(|package| package.name.as_str() == name)
+                .unwrap_or_else(|| panic!("the annotated lock carries {name}"))
+                .source
+                .as_ref()
+                .map(ToString::to_string)
+        };
+        assert_eq!(source_of("waterui").as_deref(), Some(registry));
+        assert_eq!(source_of("waterui-core").as_deref(), Some(registry));
+        assert_eq!(source_of("waterui-apple").as_deref(), Some(git.as_str()));
+        assert_eq!(source_of("hydrolysis").as_deref(), Some(git.as_str()));
+        assert_eq!(source_of("waterkit-audio").as_deref(), Some(registry));
+
+        // A member edge follows the member's annotated source: `waterui`'s
+        // `waterui-core` requirement resolves at the registry, its
+        // `waterui-apple` requirement at the release's Git source — the
+        // identities `stable_member_substitutions` writes.
+        let facade = parsed
+            .packages
+            .iter()
+            .find(|package| package.name.as_str() == "waterui")
+            .unwrap();
+        let edge = |name: &str| {
+            facade
+                .dependencies
+                .iter()
+                .find(|dependency| dependency.name.as_str() == name)
+                .unwrap_or_else(|| panic!("waterui names {name}"))
+                .source
+                .as_ref()
+                .map(ToString::to_string)
+        };
+        // A dependency edge carries the requirement's source form — the
+        // git source without its `#` precise fragment, as Cargo emits it.
+        let edge_git = format!("git+{repository}?rev={revision}");
+        assert_eq!(edge("waterui-core").as_deref(), Some(registry));
+        assert_eq!(edge("waterui-apple").as_deref(), Some(edge_git.as_str()));
+
+        // `Water.lock` bytes that drifted from the recorded checksum are
+        // rejected with the reconcile command — the same guard `dev` and
+        // `nightly` apply.
+        let mut drifted = lock;
+        drifted
+            .packages
+            .push(package("serde", "1.0.228", Some(registry)));
+        let error = framework
+            .cargo_lock(drifted.to_string().as_bytes())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("water channel stable"), "{error}");
+        assert!(error.contains(&revision), "{error}");
+    }
+
+    /// A stable selection written before the channel carried a canonical
+    /// lock records no checksum: `canonical_lock` finds no seed and
+    /// `canonical_lock_of` refuses one — the behavior those selections
+    /// were created under is preserved (#1240).
+    #[test]
+    fn a_stable_selection_without_a_lock_checksum_seeds_nothing() {
+        let framework = test_fixtures::stable_framework();
+        smol::block_on(async {
+            let directory = tempfile::tempdir().unwrap();
+            assert!(
+                framework
+                    .canonical_lock(directory.path())
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        });
+        let error = framework
+            .canonical_lock_of(b"version = 4\n".to_vec())
+            .err()
+            .expect("a checksum-less stable selection has no canonical lock")
+            .to_string();
+        assert!(error.contains("canonical lock"), "{error}");
     }
 
     /// The Hydrolysis Android host is the selected framework source itself:

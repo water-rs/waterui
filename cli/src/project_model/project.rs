@@ -235,18 +235,10 @@ impl Project {
             ));
             updates.push((path.join("Water.lock"), lockfile));
         }
-        let mut updates: Vec<_> = updates
+        let updates: Vec<_> = updates
             .into_iter()
             .map(|(file, contents)| (file, Some(contents)))
             .collect();
-        if channel == FrameworkChannel::Stable
-            && previous
-                .framework
-                .as_ref()
-                .is_some_and(|previous| previous.channel() != Some(FrameworkChannel::Stable))
-        {
-            updates.push((path.join("Water.lock"), None));
-        }
         apply_channel_selection(host, &path, framework, updates).await?;
         Self::open_for_preview_build(host, path)
             .await
