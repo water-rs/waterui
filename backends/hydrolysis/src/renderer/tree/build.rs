@@ -1187,6 +1187,7 @@ impl RenderNode {
             content: Rc::new(RefCell::new(content)),
             invalidator,
             association: Rc::new(RefCell::new(None)),
+            measured: Cell::new(None),
         }))
     }
 
@@ -1199,6 +1200,7 @@ impl RenderNode {
             accessibility_identity: Rc::new(()),
             core: renderer.new_core(),
             runtime: Rc::new(RefCell::new(GpuContentRuntime::new(view))),
+            measured: Cell::new(None),
         }))
     }
 
@@ -1210,6 +1212,7 @@ impl RenderNode {
             accessibility_identity: Rc::new(()),
             core: renderer.new_core(),
             runtime: Rc::new(RefCell::new(ExternalFrameRuntime::new(view))),
+            measured: Cell::new(None),
         }))
     }
 

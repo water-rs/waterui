@@ -449,7 +449,11 @@ async fn find_crash_report(
 ///
 /// This uses `log stream` with a predicate to filter logs.
 /// - By default, filters by the `WaterUI` subsystem ("dev.waterui").
-/// - If `native_logs` is true, filters by process ID instead to capture all native output.
+/// - If `native_logs` is true, captures all native output from the process.
+///
+/// The predicate keys on the process name rather than the PID so the stream
+/// can attach to the simulator's logd before `simctl launch` returns a PID —
+/// attaching after launch loses the app's first `os_log` entries.
 ///
 /// Returns a receiver for panic info that fires if a panic is detected, and
 /// the `log stream` process. It is spawned with `kill_on_drop` and the reader
@@ -459,7 +463,7 @@ fn start_log_stream(
     host: &Host,
     sender: Sender<DeviceEvent>,
     log_level: Option<LogLevel>,
-    pid: u32,
+    process_name: &str,
     native_logs: bool,
     udid: &str,
 ) -> eyre::Result<(Receiver<PanicInfo>, smol::process::Child)> {
@@ -469,11 +473,15 @@ fn start_log_stream(
     // Always stream at default level to capture errors/faults, even if user didn't request logs
     let stream_level = log_level.map_or("default", |l| l.to_apple_level());
 
-    // Build predicate: use processID for native logs, subsystem for WaterUI-only logs
+    // Build predicate: process alone for native logs, process plus the
+    // WaterUI subsystem otherwise. `process` resolves before launch so the
+    // stream attaches while the app is still starting; a PID-keyed predicate
+    // could only be built after `simctl launch` returned, by which time the
+    // launch window's entries are already past.
     let predicate = if native_logs {
-        format!("processID == {pid}")
+        format!("process == \"{process_name}\"")
     } else {
-        format!("processID == {pid} AND subsystem == \"dev.waterui\"")
+        format!("process == \"{process_name}\" AND subsystem == \"dev.waterui\"")
     };
 
     // The stream runs inside the simulator: the host logd records nothing for
@@ -934,21 +942,25 @@ impl Device for AppleSimulator {
         let native_logs = options.native_logs();
         let env_vars = simulator_env_vars(&options);
         let (mut running, sender, control) = Running::new();
-        let (child, pid) =
-            launch_simulator_app(host, &self.udid, &bundle_id, &env_vars, sender.clone()).await?;
 
-        // Start log streaming and get panic info receiver
-        // Uses WaterUI subsystem predicate by default, or processID if native_logs is enabled
+        // Attach the log stream before launching: `log stream` only forwards
+        // entries written after it reaches logd, so streaming that starts
+        // post-launch misses the launch window — the run marker, a fast
+        // panic, and the first os_log lines. The process-name predicate
+        // resolves without a PID, so nothing has to wait on launch.
         let (panic_rx, log_child) = start_log_stream(
             host,
             sender.clone(),
             log_level,
-            pid,
+            &process_name,
             native_logs,
             &self.udid,
         )
         .map_err(FailToRun::Launch)?;
         running.retain(log_child);
+
+        let (child, pid) =
+            launch_simulator_app(host, &self.udid, &bundle_id, &env_vars, sender.clone()).await?;
 
         // Monitor the actual app process and classify crash vs normal exit.
         spawn_simulator_exit_monitor(

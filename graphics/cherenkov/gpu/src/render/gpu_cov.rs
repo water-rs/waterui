@@ -91,6 +91,7 @@ struct Pipes {
     fragment_bins: wgpu::ComputePipeline,
     link_groups: wgpu::ComputePipeline,
     prefix: wgpu::ComputePipeline,
+    integrate_edges: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
     classify: wgpu::ComputePipeline,
     fill_cells: wgpu::ComputePipeline,
@@ -582,6 +583,8 @@ impl GpuCoverage {
             dispatch(&mut pass, self.fragment_total);
             pass.set_pipeline(&pipes.prefix);
             dispatch(&mut pass, strip_total);
+            pass.set_pipeline(&pipes.integrate_edges);
+            dispatch(&mut pass, self.fragment_total);
             pass.set_pipeline(&pipes.integrate);
             dispatch(&mut pass, self.fragment_total);
             pass.set_pipeline(&pipes.classify);
@@ -639,6 +642,7 @@ impl GpuCoverage {
             fragment_bins: make("fragment_bins"),
             link_groups: make("link_groups"),
             prefix: make("prefix"),
+            integrate_edges: make("integrate_edges"),
             integrate: make("integrate"),
             classify: make("classify"),
             fill_cells: make("fill_cells"),
@@ -654,7 +658,7 @@ impl GpuCoverage {
 /// Passes ping-pong between the sort buffers and the sorted keys must end
 /// in `sort_a`, so the count is even.
 const fn radix_passes(key_end: u32) -> u32 {
-    let digits = (u32::BITS - key_end.leading_zeros()).div_ceil(4);
+    let digits = key_end.bit_width().div_ceil(4);
     digits.div_ceil(2) * 2
 }
 

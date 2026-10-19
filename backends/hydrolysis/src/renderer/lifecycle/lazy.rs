@@ -204,7 +204,7 @@ impl VirtualExtentIndex {
         self.spacing = spacing;
         let estimated_stride = estimate + spacing;
         for (index, slot) in self.fenwick.iter_mut().enumerate().take(count + 1).skip(1) {
-            *slot = estimated_stride * crate::num_cast::usize_as_f64(index & index.wrapping_neg());
+            *slot = estimated_stride * crate::num_cast::usize_as_f64(index.isolate_lowest_one());
         }
     }
 
@@ -228,7 +228,7 @@ impl VirtualExtentIndex {
         let mut tree_index = index + 1;
         while tree_index < self.fenwick.len() {
             self.fenwick[tree_index] += delta;
-            tree_index += tree_index & tree_index.wrapping_neg();
+            tree_index += tree_index.isolate_lowest_one();
         }
     }
 
