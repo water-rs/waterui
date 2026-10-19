@@ -237,10 +237,24 @@ jobs:
       - name: Check dylib export budget
         run: |
           $env:RUSTFLAGS = "-Cprefer-dynamic"
-          cargo build --locked -p waterui-dylib
-          .github/scripts/check-dylib-exports.ps1
-          cargo build --locked -p waterui-dylib --all-features
-          .github/scripts/check-dylib-exports.ps1
+          # Check the images the build just produced — the artifact message's
+          # own paths, never a deps-dir glob that could count a stale DLL.
+          $dlls = @(
+            cargo build --locked -p waterui-dylib --message-format=json-render-diagnostics |
+              ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } |
+              Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -like 'waterui_dylib*' } |
+              ForEach-Object { $_.filenames | Where-Object { $_ -like '*.dll' } }
+          )
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .github/scripts/check-dylib-exports.ps1 -Dll $dlls
+          $dlls = @(
+            cargo build --locked -p waterui-dylib --all-features --message-format=json-render-diagnostics |
+              ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } |
+              Where-Object { $_.reason -eq 'compiler-artifact' -and $_.target.name -like 'waterui_dylib*' } |
+              ForEach-Object { $_.filenames | Where-Object { $_ -like '*.dll' } }
+          )
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          .github/scripts/check-dylib-exports.ps1 -Dll $dlls
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
