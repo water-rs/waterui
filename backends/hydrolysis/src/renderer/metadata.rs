@@ -459,8 +459,12 @@ impl HydrolysisRenderer {
                     })
                 };
                 claim_synthesized = !has_scope;
-                claimed_naming_node = renderer
-                    .register_accessibility_node(node, bounds, &env_for_claim, action_target);
+                claimed_naming_node = renderer.register_accessibility_node(
+                    node,
+                    bounds,
+                    &env_for_claim,
+                    action_target,
+                );
                 if claimed_naming_node.is_some() {
                     claim_env = Some(env_for_claim);
                 }

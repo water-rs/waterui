@@ -931,8 +931,7 @@ impl RenderNode {
                                     || claim.env.clone(),
                                     |mut walk_env| {
                                         if claim.synthesized {
-                                            walk_env
-                                                .remove::<AccessibilityNameFromContents>();
+                                            walk_env.remove::<AccessibilityNameFromContents>();
                                         }
                                         walk_env
                                     },
