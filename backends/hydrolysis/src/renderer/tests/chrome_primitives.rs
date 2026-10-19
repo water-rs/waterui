@@ -4,7 +4,7 @@
 //! operands — no chrome recording, no theme draw call.
 
 use core::time::Duration;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -16,7 +16,7 @@ use waterui_core::interaction::{InteractionState, StateValue};
 
 use super::{MinimalTestTheme, pumped_test_environment};
 use crate::HeadlessRuntime;
-use crate::platform::{InputEvent, PointerButton, PointerKind};
+use crate::platform::{InputEvent, KeyCode, KeyState, Modifiers, PointerButton, PointerKind};
 use crate::renderer::FrameWorkCounters;
 use crate::renderer::chrome::LiveChrome;
 use crate::runner::FrameCounters;
@@ -180,7 +180,6 @@ fn interaction_cycle_records_chrome_once() {
     assert_eq!(chrome.recordings(), 2, "press and release record no chrome");
     assert_eq!(draws.get(), 0, "the theme never draws the button's chrome");
 }
-
 /// water-rs/waterui#2940: a pointer press that moves keyboard focus onto a
 /// live-chrome control is pure bookkeeping — the focus indicator rides the
 /// chrome's live operands and the accessibility focus publishes as a
@@ -252,5 +251,168 @@ fn press_focus_move_needs_no_tree_pass() {
         update.nodes.is_empty(),
         "a focus move emits no node changes — {} nodes emitted",
         update.nodes.len()
+    );
+}
+
+/// water-rs/waterui#2941: a button tap's action reports only "the
+/// activation landed" — an ordinary action writes no signals, so the
+/// release frame raises no mark and does no tree work: no layout pass,
+/// no recorded contents, no semantic builds. Whatever the action does
+/// write marks its own readers, so a real change still relayouts.
+#[test]
+fn tap_release_needs_no_tree_pass() {
+    // A static tint, not a ripple: the press and release need no
+    // animation frames, so every mark this test may produce is the
+    // activation's — anything beyond the live operands is the bug.
+    let mut tap_chrome = chrome();
+    tap_chrome.press = PressFeedback::Tint;
+    let theme = MinimalTestTheme::default().with_button_chrome(tap_chrome);
+    let activations = Rc::new(Cell::new(0));
+    let tapped = Rc::clone(&activations);
+    let mut runtime = runtime_with(
+        button("Chrome").action(move || {
+            tapped.set(tapped.get() + 1);
+        }),
+        theme,
+    );
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    // Mount plus a few steady frames settle the scene before input lands.
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+
+    runtime.push_input_event(InputEvent::PointerDown {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x: CENTER,
+        y: CENTER,
+        button: PointerButton::Primary,
+    });
+    // Settle the press: the focus move and the press visuals take their
+    // frames here so the release pump's counts are the tap's alone.
+    for _ in 0..6 {
+        frames.pump(&mut runtime);
+    }
+    assert!(
+        the_chrome(&runtime)
+            .state()
+            .contains(InteractionState::PRESSED),
+        "the press landed on the live chrome"
+    );
+
+    runtime.push_input_event(InputEvent::PointerUp {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x: CENTER,
+        y: CENTER,
+        button: PointerButton::Primary,
+    });
+    let released = frames.pump(&mut runtime).frame_work;
+
+    assert_eq!(activations.get(), 1, "the release committed the tap");
+    assert_eq!(
+        tree_work(released),
+        [0, 0, 0],
+        "an ordinary tap records nothing and lays nothing out"
+    );
+    assert_eq!(
+        released.semantic_builds, 0,
+        "an ordinary tap builds nothing"
+    );
+}
+
+/// Pushes an Enter key event — the event lands on the next pumped frame,
+/// so a test can measure the key-up frame's counts alone.
+fn push_enter(runtime: &mut HeadlessRuntime, state: KeyState) {
+    runtime.push_input_event(InputEvent::Key {
+        logical_key: KeyCode::Named("Enter".into()).to_w3c_key(),
+        physical_code: keyboard_types::Code::Unidentified,
+        repeat: false,
+        key: KeyCode::Named("Enter".into()),
+        state,
+        modifiers: Modifiers::default(),
+    });
+}
+
+/// water-rs/waterui#2941: keyboard activation of the same press-slot
+/// target reports the same verdict — "the activation landed" — so its
+/// key-up frame does no tree work either: no layout pass, no recorded
+/// contents, no semantic builds.
+#[test]
+fn keyboard_activation_needs_no_tree_pass() {
+    // The same static-tint fixture as the tap's: no animation frames, so
+    // every mark is the activation's.
+    let mut tap_chrome = chrome();
+    tap_chrome.press = PressFeedback::Tint;
+    let theme = MinimalTestTheme::default().with_button_chrome(tap_chrome);
+    let activations = Rc::new(Cell::new(0));
+    let tapped = Rc::clone(&activations);
+    let mut runtime = runtime_with(
+        button("Chrome").action(move || {
+            tapped.set(tapped.get() + 1);
+        }),
+        theme,
+    );
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    // Mount plus a few steady frames settle the scene before input lands.
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
+    }
+
+    // A tap gives the button keyboard focus — and already commits once.
+    for event in [
+        InputEvent::PointerDown {
+            id: POINTER,
+            kind: PointerKind::Mouse,
+            x: CENTER,
+            y: CENTER,
+            button: PointerButton::Primary,
+        },
+        InputEvent::PointerUp {
+            id: POINTER,
+            kind: PointerKind::Mouse,
+            x: CENTER,
+            y: CENTER,
+            button: PointerButton::Primary,
+        },
+    ] {
+        runtime.push_input_event(event);
+        frames.pump(&mut runtime);
+    }
+    assert_eq!(
+        activations.get(),
+        1,
+        "the tap committed the first activation"
+    );
+
+    // The Enter press takes its own frames: the pressed affordance's marks
+    // settle there, so the key-up pump's counts are the activation's alone.
+    push_enter(&mut runtime, KeyState::Pressed);
+    for _ in 0..2 {
+        frames.pump(&mut runtime);
+    }
+
+    push_enter(&mut runtime, KeyState::Released);
+    let released = frames.pump(&mut runtime).frame_work;
+
+    assert_eq!(
+        activations.get(),
+        2,
+        "the key-up committed the keyboard activation"
+    );
+    assert_eq!(
+        tree_work(released),
+        [0, 0, 0],
+        "keyboard activation records nothing and lays nothing out"
+    );
+    assert_eq!(
+        released.semantic_builds, 0,
+        "keyboard activation builds nothing"
     );
 }
