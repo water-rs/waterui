@@ -620,9 +620,7 @@ fn gpu_content_under_clips_and_effects() {
     // the first whose mount stats list one.
     let mut mount_frame = None;
     for _ in 0..12 {
-        if renders.load(core::sync::atomic::Ordering::Relaxed) > 0
-            && mount_frame.is_some()
-        {
+        if renders.load(core::sync::atomic::Ordering::Relaxed) > 0 && mount_frame.is_some() {
             break;
         }
         let at = frames.at();
