@@ -405,6 +405,25 @@ class SessionTeardownTest {
     }
 
     @Test
+    fun anInTraversalPumpRendersWithoutAVsyncPost() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
+        // The IME progress pump runs the transaction inside the traversal
+        // that reported it — no Choreographer post, no idle looper step —
+        // so the buffer lands in the frame that moves the keyboard
+        // (water-rs/waterui#1913).
+        session.frameScheduler.pumpNow("ime-progress")
+        assertEquals(1, ShadowNativeBridge.frames)
+    }
+
+    @Test
+    fun anInTraversalPumpAfterTeardownReachesNothing() {
+        val session = HydrolysisSession(context, onCloseRequested = {})
+        session.destroy()
+        session.frameScheduler.pumpNow("ime-progress")
+        assertEquals(0, ShadowNativeBridge.frames)
+    }
+
+    @Test
     fun aVisibilityCallAfterDestroyIsIgnored() {
         val session = HydrolysisSession(context, onCloseRequested = {})
         session.destroy()

@@ -100,19 +100,14 @@ fn the_chrome(runtime: &HeadlessRuntime) -> Rc<LiveChrome> {
     chrome
 }
 
-/// The tree work done between two frames' counters. The renderer resets
-/// the counters only when it builds the scene, so between steady frames
-/// they accumulate; a reset in between means the interaction rebuilt it.
-fn tree_work(before: FrameWorkCounters, after: FrameWorkCounters) -> [u64; 3] {
-    let delta = |before: u64, after: u64| {
-        after
-            .checked_sub(before)
-            .expect("an interaction rebuilt the scene and reset the frame-work counters")
-    };
+/// The tree work one frame reports for itself. The counters reset at every
+/// presented frame's boundary, so a steady frame's counts are its own —
+/// no baseline to subtract.
+fn tree_work(counters: FrameWorkCounters) -> [u64; 3] {
     [
-        delta(before.live_recordings, after.live_recordings),
-        delta(before.recorded_view_contents, after.recorded_view_contents),
-        delta(before.layout_calls, after.layout_calls),
+        counters.live_recordings,
+        counters.recorded_view_contents,
+        counters.layout_calls,
     ]
 }
 
@@ -125,9 +120,9 @@ fn interaction_cycle_records_chrome_once() {
         start: Instant::now(),
         next: 0,
     };
-    let mut mounted = frames.pump(&mut runtime).frame_work;
-    for _ in 0..3 {
-        mounted = frames.pump(&mut runtime).frame_work;
+    // Mount plus a few steady frames settle the scene before input lands.
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
     }
     let chrome = the_chrome(&runtime);
     assert_eq!(
@@ -143,13 +138,13 @@ fn interaction_cycle_records_chrome_once() {
         x: CENTER,
         y: CENTER,
     });
-    let mut hovered = mounted;
+    let mut hovered = FrameWorkCounters::default();
     for _ in 0..16 {
         hovered = frames.pump(&mut runtime).frame_work;
     }
     assert_eq!(chrome.state(), InteractionState::HOVERED);
     assert_eq!(
-        tree_work(mounted, hovered),
+        tree_work(hovered),
         [0, 0, 0],
         "hover records nothing and walks no Hydrolysis tree"
     );
