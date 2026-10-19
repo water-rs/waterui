@@ -12,6 +12,7 @@ categories = ["gui", "multimedia::video"]
 
 [dependencies]
 waterui-core.workspace = true
+waterui-layout.workspace = true
 waterui-url.workspace = true
 nami.workspace = true
 thiserror.workspace = true

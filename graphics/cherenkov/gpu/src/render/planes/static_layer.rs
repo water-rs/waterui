@@ -55,10 +55,10 @@ pub struct Observation {
 
 impl Capture {
     pub fn bytes(&self) -> u64 {
-        self.source.as_ref().map_or(0, |_| {
+        self.source.as_ref().map_or(0, |(texture, _)| {
             u64::from(self.domain.size.0)
                 * u64::from(self.domain.size.1)
-                * crate::render::texel_bytes(crate::render::TARGET_FORMAT)
+                * crate::render::texel_bytes(texture.format())
         })
     }
 }
@@ -415,7 +415,7 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(domain.density, 1.25);
+        assert_eq!(domain.density.to_bits(), 1.25_f64.to_bits());
         assert!(domain.raster().is_finite());
     }
 
@@ -432,6 +432,6 @@ mod tests {
         }
         assert!(entry.observe(4, (0, 0), 1.25));
         assert!(!entry.observe(4, (0, 0), 1.25));
-        assert_eq!(entry.density, 1.25);
+        assert_eq!(entry.density.to_bits(), 1.25_f64.to_bits());
     }
 }

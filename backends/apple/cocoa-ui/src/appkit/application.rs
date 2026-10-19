@@ -7,6 +7,9 @@
 //! declares, `AppKit` sends them on the main thread, and the delegate stays
 //! alive for as long as the application runs with it, because
 //! [`Application::run`] owns it for that long.
+//!
+//! The menu module's standard items send their selectors with no target,
+//! so `AppKit` delivers them only to a responder that implements them.
 
 use std::cell::Cell;
 use std::fmt;
@@ -41,6 +44,20 @@ impl ActivationPolicy {
             Self::Regular => NSApplicationActivationPolicy::Regular,
             Self::Accessory => NSApplicationActivationPolicy::Accessory,
             Self::Prohibited => NSApplicationActivationPolicy::Prohibited,
+        }
+    }
+
+    /// The policy a native `NSApplicationActivationPolicy` reads —
+    /// [`Self::native`]'s inverse.
+    fn from_native(policy: NSApplicationActivationPolicy) -> Self {
+        if policy == NSApplicationActivationPolicy::Regular {
+            Self::Regular
+        } else if policy == NSApplicationActivationPolicy::Accessory {
+            Self::Accessory
+        } else {
+            // `Prohibited`, and anything the platform adds later — an
+            // unlisted policy is at least as hidden.
+            Self::Prohibited
         }
     }
 }
@@ -189,6 +206,12 @@ impl Application {
         }
     }
 
+    /// The policy the process currently holds — `activationPolicy`.
+    #[must_use]
+    pub fn activation_policy(&self) -> ActivationPolicy {
+        ActivationPolicy::from_native(self.app.activationPolicy())
+    }
+
     /// Sets how the application presents itself.
     ///
     /// Returns whether `AppKit` accepted the change. The system can refuse
@@ -197,6 +220,18 @@ impl Application {
     #[must_use]
     pub fn set_activation_policy(&self, policy: ActivationPolicy) -> bool {
         self.app.setActivationPolicy(policy.native())
+    }
+
+    /// Asks the system to make this the active application — the
+    /// cooperative `activate` macOS 14 introduced.
+    ///
+    /// Unlike the deprecated `activateIgnoringOtherApps:`, the system may
+    /// still decline the request: the app activates when it may, not
+    /// because it asked. Callers treat it as best-effort — activation
+    /// lands before the window that motivated it becomes key, but neither
+    /// is guaranteed.
+    pub fn activate(&self) {
+        self.app.activate();
     }
 
     /// Makes `menu` the menu bar: each of its items is one top-level menu,

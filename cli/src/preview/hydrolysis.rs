@@ -1,28 +1,27 @@
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use askama::Template;
-use eyre::{Context as _, Result, bail};
+use eyre::{Context as _, Result};
 
 use crate::artifact_symbols::ArtifactSymbols;
-use crate::backend::reinit_backend;
-use crate::build::{BuildOptions, BuildProfile, BuildProgress, BuiltTarget};
+use crate::build::{BuildOptions, BuildProgress, BuiltTarget};
 use crate::hydrolysis::backend::HydrolysisBackend;
 use crate::hydrolysis::platform::{
     build_hydrolysis_with_envs_and_features, stage_hydrolysis_shared_runtime,
 };
 use crate::platform::{TargetBackend, TargetPlatform};
-use crate::project::{ManagedBackends, Project};
+use crate::preview::run::{self, absolute_output_path, expect_nonempty_output, write_run_config};
+use crate::preview::{PreviewSource, PreviewTargetTemplate};
+use crate::project::Project;
 use crate::project_model::assets;
-use crate::utils::command;
 use waterui_assets_planner::{FontDeclaration, FontSource};
 
 const HYDROLYSIS_PREVIEW_FEATURE: &str = "waterui-preview-mode";
 const HYDROLYSIS_PREVIEW_TEST_FEATURE: &str = "waterui-preview-test-mode";
 
-use waterui_preview_protocol::hydrolysis::{
-    PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
-};
-pub use waterui_preview_protocol::hydrolysis::{
+use waterui_preview_protocol::run::{DEFAULT_CONTENT_DEADLINE, PreviewRunConfig, PreviewRunMode};
+pub use waterui_preview_protocol::run::{
     ScenarioEvent as HydrolysisPreviewScenarioEvent,
     ScenarioEventKind as HydrolysisPreviewEventKind,
     ScenarioPointerButton as HydrolysisPreviewPointerButton,
@@ -30,6 +29,7 @@ pub use waterui_preview_protocol::hydrolysis::{
 
 /// Theme package selected for Hydrolysis preview rendering.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HydrolysisPreviewTheme {
     /// Material Design 3 package.
     Material3,
@@ -46,26 +46,19 @@ impl HydrolysisPreviewTheme {
 
     fn font_declarations(self) -> Vec<FontDeclaration> {
         match self {
-            Self::Material3 => vec![FontDeclaration {
-                name: "Roboto".to_string(),
-                source: FontSource::BuiltIn,
-                crate_name: "hydrolysis-m3".to_string(),
-            }],
+            Self::Material3 => vec![FontDeclaration::new(
+                "Roboto".to_string(),
+                FontSource::BuiltIn,
+                "hydrolysis-m3".to_string(),
+                None,
+            )],
         }
     }
 }
 
-/// Source used to produce a Hydrolysis preview view.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HydrolysisPreviewSource<'a> {
-    /// Existing `#[preview]` export symbol.
-    Symbol(&'a str),
-    /// Inline Rust expression returning `impl View`.
-    Expression(&'a str),
-}
-
 /// Interactive capture scenario for Hydrolysis preview.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct HydrolysisPreviewScenario {
     /// Capture timestamps in milliseconds from scenario start.
     pub captures_ms: Vec<u64>,
@@ -75,44 +68,64 @@ pub struct HydrolysisPreviewScenario {
     pub output_dir: PathBuf,
 }
 
-#[derive(Template)]
-#[template(
-    path = "src/preview/hydrolysis_preview_bindings.rs.tpl",
-    escape = "none"
-)]
-struct HydrolysisPreviewBindingsTemplate<'a> {
-    expression_mode: bool,
-    preview_symbol: &'a str,
-    preview_expression: &'a str,
-    crate_name_ident: &'a str,
-    preview_theme_style: &'a str,
-    include_automation: bool,
-    semantic_automation_body: &'a str,
+impl HydrolysisPreviewScenario {
+    /// A scenario replaying `events` and capturing at each of `captures_ms`
+    /// into `output_dir`.
+    #[must_use]
+    pub const fn new(
+        captures_ms: Vec<u64>,
+        events: Vec<HydrolysisPreviewScenarioEvent>,
+        output_dir: PathBuf,
+    ) -> Self {
+        Self {
+            captures_ms,
+            events,
+            output_dir,
+        }
+    }
 }
 
 /// Common inputs for driving the managed Hydrolysis preview backend.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the terminal fills every field of the preview request; a new field must fail its build instead of taking a default"
+)]
 pub struct HydrolysisPreviewRequest<'a> {
+    /// The host the preview spawns on.
+    pub host: &'a crate::toolchain::Host,
     /// `WaterUI` project directory.
     pub project_path: &'a Path,
     /// Preview view source.
-    pub source: HydrolysisPreviewSource<'a>,
+    pub source: PreviewSource<'a>,
     /// Theme package the preview runtimes are constructed with.
     pub theme: HydrolysisPreviewTheme,
-    /// Desktop platform the preview binary builds and stages for — the same
-    /// target `water run` compiles the managed backend for on this host.
+    /// Platform the preview renders for — the desktop target `water run`
+    /// compiles the managed backend for on this host, or
+    /// `TargetPlatform::Android` for the device-side instrumentation render.
     pub platform: TargetPlatform,
     /// Viewport width in logical units.
     pub width: f32,
     /// Viewport height in logical units.
     pub height: f32,
+    /// How long a capture waits for the content its views owe — a decoding
+    /// image, a `Suspense` future — before the preview fails naming them.
+    pub content_deadline: Duration,
     /// `sccache` binary used for compilation caching, when available.
     pub sccache_path: Option<PathBuf>,
     /// Sink compile progress is reported to while the preview build runs cargo.
     pub progress: Option<BuildProgress>,
 }
 
-/// Render a preview via the managed Hydrolysis backend binary.
+/// Render a preview via the managed Hydrolysis backend.
+///
+/// A desktop `platform` builds and execs the backend binary; `Android`
+/// renders inside the preview host's instrumentation on a device — the
+/// request shape is identical, the dispatch lives here so every caller
+/// resolves one way. `kotlin_toolchain` is the toolchain
+/// [`crate::preview::request::check_toolchain_for_backend`] resolved, and
+/// `android` the device the caller's selection resolved — both required
+/// for `TargetPlatform::Android`, ignored elsewhere.
 ///
 /// # Errors
 /// Returns an error if the managed backend cannot be prepared, built, or executed.
@@ -120,16 +133,40 @@ pub async fn render_preview_with_hydrolysis(
     request: HydrolysisPreviewRequest<'_>,
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
+    kotlin_toolchain: Option<&crate::android::KotlinToolchain>,
+    android: Option<crate::android::device::AndroidTarget>,
 ) -> Result<()> {
-    let (width, height, theme) = (request.width, request.height, request.theme);
+    if request.platform == TargetPlatform::Android {
+        let kotlin = kotlin_toolchain.ok_or_else(|| {
+            eyre::eyre!("Internal error: Android preview has no resolved Kotlin toolchain")
+        })?;
+        let target = android
+            .ok_or_else(|| eyre::eyre!("Internal error: Android preview has no resolved device"))?;
+        return Box::pin(
+            crate::preview::hydrolysis_android::render_preview_with_hydrolysis_android(
+                &request,
+                output_path,
+                scenario,
+                kotlin,
+                &target,
+            ),
+        )
+        .await;
+    }
+    let theme = request.theme;
     let (project, built) = build_preview_session(&request, None).await?;
-    stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
+    stage_hydrolysis_resources(
+        &project,
+        request.platform,
+        theme,
+        &built.app_symbols().await?,
+    )
+    .await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
     run_preview_binary(
         &project,
-        &built.artifact,
-        width,
-        height,
+        built.executable()?,
+        &request,
         output_path,
         scenario,
     )
@@ -144,11 +181,17 @@ pub async fn test_preview_with_hydrolysis(
     request: HydrolysisPreviewRequest<'_>,
     automation_body: &str,
 ) -> Result<String> {
-    let (width, height, theme) = (request.width, request.height, request.theme);
+    let theme = request.theme;
     let (project, built) = build_preview_session(&request, Some(automation_body)).await?;
-    stage_hydrolysis_resources(&project, theme, &built.app_symbols()?).await?;
+    stage_hydrolysis_resources(
+        &project,
+        request.platform,
+        theme,
+        &built.app_symbols().await?,
+    )
+    .await?;
     stage_hydrolysis_shared_runtime(&project, &built, request.platform).await?;
-    run_preview_test_binary(&project, &built.artifact, width, height).await
+    run_preview_test_binary(&project, built.executable()?, &request).await
 }
 
 /// Build the managed hydrolysis binary for a preview request: write the
@@ -160,10 +203,11 @@ async fn build_preview_session(
     request: &HydrolysisPreviewRequest<'_>,
     automation_body: Option<&str>,
 ) -> Result<(Project, BuiltTarget)> {
-    let project = ensure_hydrolysis_backend_ready(request.project_path).await?;
+    let project =
+        crate::hydrolysis::backend::open_ready(request.host, request.project_path).await?;
     write_preview_bindings(&project, request.source, request.theme, automation_body).await?;
 
-    let mut build_options = BuildOptions::development(BuildProfile::Debug);
+    let mut build_options = BuildOptions::default_development(TargetBackend::Hydrolysis);
     if let Some(sccache_path) = request.sccache_path.clone() {
         build_options = build_options.with_sccache(sccache_path);
     }
@@ -197,6 +241,7 @@ async fn build_preview_session(
 /// Returns an error when the preview build fails or its artifact cannot be
 /// parsed.
 pub async fn discover_hydrolysis_preview_exports(
+    host: &crate::toolchain::Host,
     project_path: &Path,
     theme: HydrolysisPreviewTheme,
     platform: TargetPlatform,
@@ -204,17 +249,22 @@ pub async fn discover_hydrolysis_preview_exports(
     progress: Option<BuildProgress>,
 ) -> Result<Vec<String>> {
     let request = HydrolysisPreviewRequest {
+        host,
         project_path,
-        source: HydrolysisPreviewSource::Expression("text(\"\")"),
+        source: PreviewSource::Expression("text(\"\")"),
         theme,
         platform,
         width: 0.0,
         height: 0.0,
+        content_deadline: DEFAULT_CONTENT_DEADLINE,
         sccache_path,
         progress,
     };
     let (_project, built) = build_preview_session(&request, None).await?;
-    Ok(built.app_symbols()?.leaves_with_prefix("waterui_preview_"))
+    Ok(built
+        .app_symbols()
+        .await?
+        .leaves_with_prefix("waterui_preview_"))
 }
 
 /// Stages the project's assets and the selected theme's fonts into the
@@ -223,9 +273,10 @@ pub async fn discover_hydrolysis_preview_exports(
 /// produced — its `waterui_meta_bundle_*` statics declare the asset mounts.
 pub async fn stage_hydrolysis_resources(
     project: &Project,
+    platform: TargetPlatform,
     theme: HydrolysisPreviewTheme,
     symbols: &ArtifactSymbols,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let resources_dir = project
         .backend_path::<HydrolysisBackend>()
         .join("resources");
@@ -233,38 +284,30 @@ pub async fn stage_hydrolysis_resources(
         assets::stage_project_assets_for_gtk(project, &resources_dir, symbols, false).await?;
 
     let backend_path = project.backend_path::<HydrolysisBackend>();
-    let mut font_declarations =
-        assets::scan_fonts(project, &backend_path.join("Cargo.toml")).await?;
-    font_declarations.extend(theme.font_declarations());
-    let mut resolved_fonts = assets::resolve_fonts(font_declarations).await?;
-    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
-    if resolved_fonts.is_empty() {
-        return Ok(());
-    }
-
-    let fonts_dest = resources_dir.join("fonts");
-    assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
-    Ok(())
-}
-
-/// Opens the project and makes sure its managed Hydrolysis backend exists and
-/// matches the current templates. Shared by the preview and MCP flows.
-pub async fn ensure_hydrolysis_backend_ready(project_path: &Path) -> Result<Project> {
-    let project = Project::open(
-        project_path,
-        ManagedBackends::for_backend(TargetBackend::Hydrolysis),
+    let mut font_declarations = assets::scan_fonts(
+        project,
+        &backend_path.join("Cargo.toml"),
+        &[platform.font_platform()?],
     )
     .await?;
-    if HydrolysisBackend::requires_regeneration(&project).await? {
-        reinit_backend::<HydrolysisBackend>(&project).await?;
+    font_declarations.extend(theme.font_declarations());
+    let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;
+    resolved_fonts.extend(assets::scan_project_font_assets(&manifest)?);
+    if !resolved_fonts.is_empty() {
+        let fonts_dest = resources_dir.join("fonts");
+        assets::copy_fonts(&resolved_fonts, &fonts_dest).await?;
     }
 
-    Ok(project)
+    // The staged `waterui_assets` root — what `WATERUI_ASSETS_ROOT` must name
+    // for a launcher that runs the binary somewhere `resources/` does not sit
+    // beside the executable (the MCP child runs out of the shared Cargo
+    // profile directory).
+    Ok(resources_dir.join(assets::ASSET_ROOT_DIR))
 }
 
-async fn write_preview_bindings(
+pub async fn write_preview_bindings(
     project: &Project,
-    source: HydrolysisPreviewSource<'_>,
+    source: PreviewSource<'_>,
     theme: HydrolysisPreviewTheme,
     automation_body: Option<&str>,
 ) -> Result<()> {
@@ -278,91 +321,54 @@ async fn write_preview_bindings(
         .join("src")
         .join(file_name);
     let crate_name_ident = project.crate_name().rust_ident();
-    let (expression_mode, preview_symbol, preview_expression) = match source {
-        HydrolysisPreviewSource::Symbol(symbol) => (false, symbol, ""),
-        HydrolysisPreviewSource::Expression(expression) => (true, "", expression),
-    };
-    let rendered = HydrolysisPreviewBindingsTemplate {
-        expression_mode,
-        preview_symbol,
-        preview_expression,
-        crate_name_ident: crate_name_ident.as_str(),
-        preview_theme_style: theme.style(),
-        include_automation: automation_body.is_some(),
-        semantic_automation_body: automation_body.unwrap_or(""),
-    }
+    let rendered = PreviewTargetTemplate::hydrolysis(
+        source,
+        crate_name_ident.as_str(),
+        theme.style(),
+        automation_body,
+    )
     .render()
     .wrap_err("Failed to render hydrolysis preview bindings template")?;
-    smol::fs::write(&module_path, rendered)
+    crate::templates::write_file_if_changed(&module_path, rendered.as_bytes())
         .await
         .wrap_err_with(|| format!("Failed to write {}", module_path.display()))?;
     Ok(())
 }
 
-/// Writes the run config JSON next to the backend sources and returns its
-/// path; the file is overwritten per invocation.
-async fn write_run_config(project: &Project, config: &PreviewRunConfig) -> Result<PathBuf> {
-    let path = project
-        .backend_path::<HydrolysisBackend>()
-        .join("preview-run.json");
-    let json = serde_json::to_vec_pretty(config)
-        .wrap_err("Failed to serialize hydrolysis preview run config")?;
-    smol::fs::write(&path, json)
-        .await
-        .wrap_err_with(|| format!("Failed to write {}", path.display()))?;
-    Ok(path)
-}
-
 async fn run_preview_binary(
     project: &Project,
     binary_path: &Path,
-    width: f32,
-    height: f32,
+    request: &HydrolysisPreviewRequest<'_>,
     output_path: &Path,
     scenario: Option<&HydrolysisPreviewScenario>,
 ) -> Result<()> {
-    let mode = match scenario {
-        Some(scenario) => PreviewRunMode::Scenario {
-            output_dir: absolute_output_path(&scenario.output_dir)?,
+    let host = project.host();
+    let mode = scenario.map_or_else(
+        || PreviewRunMode::Image {
+            output: absolute_output_path(host, output_path),
+        },
+        |scenario| PreviewRunMode::Scenario {
+            output_dir: absolute_output_path(host, &scenario.output_dir),
             captures_ms: scenario.captures_ms.clone(),
             events: scenario.events.clone(),
         },
-        None => PreviewRunMode::Image {
-            output: absolute_output_path(output_path)?,
-        },
-    };
-    let config = PreviewRunConfig {
-        width,
-        height,
+    );
+    let config = PreviewRunConfig::new(
+        request.width,
+        request.height,
         mode,
-    };
-    let config_path = write_run_config(project, &config).await?;
+        request.content_deadline,
+    );
     let backend_path = project.backend_path::<HydrolysisBackend>();
-
-    let mut child = smol::process::Command::new(binary_path);
-    let child = command(&mut child);
-    child.current_dir(&backend_path);
-    child.env(PREVIEW_RUN_CONFIG_ENV, &config_path);
-
-    let output = child.output().await.wrap_err_with(|| {
-        format!(
-            "Failed to run hydrolysis preview binary {}",
-            binary_path.display()
-        )
-    })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let details = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("exit status {}", output.status)
-        };
-        bail!("Hydrolysis preview binary failed: {details}");
-    }
+    let config_path = write_run_config(&backend_path, &config).await?;
+    run::run_preview_binary(
+        host,
+        &backend_path,
+        binary_path,
+        &config_path,
+        "Hydrolysis preview",
+    )
+    .await?;
 
     match config.mode {
         PreviewRunMode::Scenario {
@@ -389,68 +395,28 @@ async fn run_preview_binary(
 async fn run_preview_test_binary(
     project: &Project,
     binary_path: &Path,
-    width: f32,
-    height: f32,
+    request: &HydrolysisPreviewRequest<'_>,
 ) -> Result<String> {
-    let config = PreviewRunConfig {
-        width,
-        height,
-        mode: PreviewRunMode::Semantic,
-    };
-    let config_path = write_run_config(project, &config).await?;
+    let config = PreviewRunConfig::new(
+        request.width,
+        request.height,
+        PreviewRunMode::Semantic,
+        request.content_deadline,
+    );
     let backend_path = project.backend_path::<HydrolysisBackend>();
+    let config_path = write_run_config(&backend_path, &config).await?;
+    let output = run::run_preview_binary(
+        project.host(),
+        &backend_path,
+        binary_path,
+        &config_path,
+        "Hydrolysis preview test",
+    )
+    .await?;
 
-    let mut child = smol::process::Command::new(binary_path);
-    let child = command(&mut child);
-    child.current_dir(&backend_path);
-    child.env(PREVIEW_RUN_CONFIG_ENV, &config_path);
-
-    let output = child.output().await.wrap_err_with(|| {
-        format!(
-            "Failed to run hydrolysis preview test binary {}",
-            binary_path.display()
-        )
-    })?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        let details = if !stderr.is_empty() {
-            stderr
-        } else if !stdout.is_empty() {
-            stdout
-        } else {
-            format!("exit status {}", output.status)
-        };
-        bail!("Hydrolysis preview test binary failed: {details}");
-    }
-
-    Ok(stdout)
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-async fn expect_nonempty_output(path: &Path, what: &str) -> Result<()> {
-    let metadata = smol::fs::metadata(path).await.wrap_err_with(|| {
-        format!(
-            "Hydrolysis preview did not produce {what} {}",
-            path.display()
-        )
-    })?;
-    if metadata.len() == 0 {
-        bail!(
-            "Hydrolysis preview wrote empty {what} to {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-fn scenario_frame_path(output_dir: &Path, capture_ms: u64) -> PathBuf {
+pub fn scenario_frame_path(output_dir: &Path, capture_ms: u64) -> PathBuf {
     output_dir.join(format!("frame-{capture_ms:04}ms.png"))
-}
-
-fn absolute_output_path(path: &Path) -> Result<PathBuf> {
-    if path.is_absolute() {
-        return Ok(path.to_path_buf());
-    }
-    Ok(std::env::current_dir()?.join(path))
 }

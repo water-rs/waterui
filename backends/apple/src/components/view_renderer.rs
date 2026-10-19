@@ -1,17 +1,21 @@
 //! The `view_renderer` service: the environment's `ViewRenderer` —
 //! `WuiViewRenderer.swift`'s `renderViewToRGBA`, ported.
 //!
-//! The rendered leaf is laid out at its measured size, then captured once
-//! into premultiplied RGBA8 — through the central native+GPU capture under
+//! The rendered leaf mounts under a fresh [`ContentLedger`], joins its
+//! capture window and is laid out under the request's proposal; the
+//! capture then awaits the content the leaf's views owe, lays the leaf out
+//! again at the size that content gives it and captures it once into
+//! premultiplied RGBA8 — through the central native+GPU capture under
 //! `gpu_surface`, the plain offscreen bitmap path in a native-only build —
 //! the `CustomViewRenderer` contract.
 
 use waterui_backend_core::Environment;
-use waterui_core::AnyView;
-use waterui_core::layout::ProposalSize;
+use waterui_core::env::With;
+use waterui_core::layout::{ProposalSize, Size};
 use waterui_core::view_renderer::{
-    CustomViewRenderer, RenderError, RenderResult, RenderSize, ViewRenderer,
+    CustomViewRenderer, RenderError, RenderRequest, RenderResult, ViewRenderer,
 };
+use waterui_core::{AnyView, ContentLedger};
 
 use crate::contract::{NativeLeaf, Renderer};
 
@@ -36,38 +40,22 @@ impl CustomViewRenderer for AppleViewRenderer {
     async fn render_to_rgba(
         &self,
         view: AnyView,
-        size: RenderSize,
+        request: RenderRequest,
     ) -> Result<RenderResult, RenderError> {
-        let leaf = self.renderer.render(view);
-        let (pixels, width, height) =
-            capture_leaf_to_rgba(&leaf, self.renderer.context().env(), size, self.mtm).await?;
-        Ok(RenderResult {
-            rgba_data: pixels,
-            width,
-            height,
-        })
+        let ledger = ContentLedger::new();
+        let leaf = self
+            .renderer
+            .render(AnyView::new(With::new(view, ledger.clone())));
+        let (pixels, width, height) = capture_leaf_to_rgba(
+            &leaf,
+            self.renderer.context().env(),
+            &ledger,
+            request,
+            self.mtm,
+        )
+        .await?;
+        Ok(RenderResult::new(pixels, width, height))
     }
-}
-
-/// Why the platform capture produced no bitmap.
-#[cfg(not(feature = "gpu_surface"))]
-#[derive(Debug, thiserror::Error)]
-enum CaptureError {
-    /// Core Graphics refused the destination bitmap context.
-    #[error("could not create a {width}x{height} RGBA bitmap context")]
-    BitmapContext { width: usize, height: usize },
-    /// `AppKit` gave the view no bitmap to cache its display into.
-    #[cfg(target_os = "macos")]
-    #[error("the view provided no bitmap representation to cache its display into")]
-    NoBitmapRep,
-    /// The cached display bitmap could not be read as an image.
-    #[cfg(target_os = "macos")]
-    #[error("the cached display bitmap has no CGImage")]
-    NoImage,
-    /// No connected window scene can host the offscreen capture window.
-    #[cfg(target_os = "ios")]
-    #[error("no UIWindowScene is connected to host the capture window")]
-    NoWindowScene,
 }
 
 /// The `RenderError` a central-capture failure answers.
@@ -103,20 +91,17 @@ pub fn install_service(env: &mut Environment) {
     env.insert(ViewRenderer::new(AppleViewRenderer { renderer, mtm }));
 }
 
-/// Captures `leaf` into premultiplied RGBA8 under `size`'s proposal —
-/// `captureViewToRGBA`.
+/// Captures `leaf` into premultiplied RGBA8 under `request`'s proposal once
+/// the content `ledger` records has arrived — `captureViewToRGBA`.
+///
+/// The leaf joins its capture window before it is measured: native controls
+/// build their parts — and report their real size — only inside a window.
+/// It is laid out under the proposal, the capture awaits the owed content,
+/// and the leaf is measured and laid out again, since content that arrived
+/// — a decoded photo — changes the size it fits.
 #[expect(
     clippy::future_not_send,
     reason = "the capture borrows the main-thread leaf across its await"
-)]
-#[cfg_attr(
-    not(feature = "gpu_surface"),
-    expect(
-        clippy::unused_async,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "the synchronous fallback keeps the async contract; a clamped positive extent fits"
-    )
 )]
 async fn capture_leaf_to_rgba(
     leaf: &NativeLeaf,
@@ -128,10 +113,47 @@ async fn capture_leaf_to_rgba(
         )
     )]
     env: &Environment,
-    size: RenderSize,
+    ledger: &ContentLedger,
+    request: RenderRequest,
     mtm: cocoa_ui::MainThreadMarker,
 ) -> Result<(alloc::vec::Vec<u8>, u32, u32), RenderError> {
     let view = leaf.view();
+    let proposed = cocoa_ui::Size::new(
+        f64::from(request.size.width),
+        f64::from(request.size.height),
+    );
+    cocoa_ui::view::set_frame(
+        view,
+        cocoa_ui::Rect::new(0.0, 0.0, proposed.width, proposed.height),
+    );
+    let host = host::CaptureHost::attach(view, proposed, mtm)?;
+    lay_out(view, request.size);
+    crate::content::await_content(ledger, view, request.content_deadline).await?;
+    lay_out(view, request.size);
+
+    #[cfg(feature = "gpu_surface")]
+    let captured = {
+        // The central capture owns the native+GPU composite and its
+        // lifecycle — a first-frame wait here could deadlock under
+        // link-only delivery on the screenless capture window.
+        let scale = cocoa_ui::view::backing_scale_factor(view);
+        crate::capture_image::capture_rgba(view, env, scale, mtm)
+            .await
+            .map(|captured| (captured.pixels, captured.width, captured.height))
+            .map_err(render_error)
+    };
+    #[cfg(not(feature = "gpu_surface"))]
+    let captured = crate::capture::capture_presented(view)
+        .await
+        .map(|result| (result.rgba_data, result.width, result.height))
+        .map_err(|error| RenderError::Capture(Box::new(error)));
+    drop(host);
+    captured
+}
+
+/// Measures `view` under the proposal `size` and lays it out at the size it
+/// fits — the full proposal on an axis it does not size.
+fn lay_out(view: &cocoa_ui::PlatformView, size: Size) {
     let proposed = cocoa_ui::Size::new(f64::from(size.width), f64::from(size.height));
 
     // Measure with the proposed size so stretchable views render correctly.
@@ -169,116 +191,101 @@ async fn capture_leaf_to_rgba(
         cocoa_ui::Rect::new(0.0, 0.0, actual.width, actual.height),
     );
     cocoa_ui::view::layout_immediately(view);
+}
 
-    let scale = cocoa_ui::view::backing_scale_factor(view);
-    #[cfg(feature = "gpu_surface")]
-    {
-        // The central capture owns the native+GPU composite and its
-        // window/lifecycle — a first-frame wait here could deadlock under
-        // link-only delivery on the screenless capture window.
-        let captured = crate::capture_image::capture_rgba(view, env, scale, mtm)
-            .await
-            .map_err(render_error)?;
-        Ok((captured.pixels, captured.width, captured.height))
+/// The capture window the leaf joins before it is measured.
+#[cfg(feature = "gpu_surface")]
+mod host {
+    use waterui_core::view_renderer::RenderError;
+
+    /// The central capture's re-host: the leaf moves into a never-ordered
+    /// (`AppKit`) or offscreen (`UIKit`) window and returns to its parent
+    /// on drop.
+    pub struct CaptureHost {
+        /// The re-host, `None` when the leaf already had a window.
+        _host: Option<crate::capture_image::WindowHost>,
     }
-    #[cfg(not(feature = "gpu_surface"))]
-    {
-        let pixel_width = usize::try_from((actual.width * scale).ceil().max(1.0) as u64)
-            .unwrap_or(usize::MAX)
-            .min((usize::MAX - 3) / 4);
-        let pixel_height = usize::try_from((actual.height * scale).ceil().max(1.0) as u64)
-            .unwrap_or(usize::MAX)
-            .min((usize::MAX - 3) / 4);
-        capture::capture(view, actual, scale, pixel_width, pixel_height, mtm)
-            .map_err(|error| RenderError::Capture(Box::new(error)))
+
+    impl CaptureHost {
+        /// Attaches `view`, already framed at the proposal, to a capture
+        /// window sized from it.
+        pub fn attach(
+            view: &cocoa_ui::PlatformView,
+            _proposed: cocoa_ui::Size,
+            mtm: cocoa_ui::MainThreadMarker,
+        ) -> Result<Self, RenderError> {
+            crate::capture_image::WindowHost::attach_if_windowless(
+                &cocoa_ui::view::retain_base(view),
+                mtm,
+            )
+            .map(|host| Self { _host: host })
+            .map_err(super::render_error)
+        }
     }
 }
 
+/// The capture window the leaf joins before it is measured.
 #[cfg(all(target_os = "macos", not(feature = "gpu_surface")))]
-mod capture {
-    use alloc::vec::Vec;
+mod host {
+    use waterui_core::view_renderer::RenderError;
 
-    use super::CaptureError;
+    /// `AppKit`: a window that never orders in hosts the leaf for
+    /// `crate::capture`'s bitmap readback — the `AppKit` half of
+    /// `captureViewToRGBA`.
+    pub struct CaptureHost {
+        /// The window, alive until the capture is read.
+        _window: cocoa_ui::Retained<cocoa_ui::objc2_app_kit::NSWindow>,
+    }
 
-    /// `AppKit`: offscreen borderless window, `cacheDisplay` bitmap — the
-    /// `AppKit` half of `captureViewToRGBA`.
-    #[allow(clippy::cast_possible_truncation)]
-    pub fn capture(
-        view: &cocoa_ui::PlatformView,
-        actual: cocoa_ui::Size,
-        scale: f64,
-        pixel_width: usize,
-        pixel_height: usize,
-        mtm: cocoa_ui::MainThreadMarker,
-    ) -> Result<(Vec<u8>, u32, u32), CaptureError> {
-        let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
-        let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height)
-            .ok_or(CaptureError::BitmapContext {
-                width: pixel_width,
-                height: pixel_height,
-            })?;
-        cocoa_ui::bitmap::scale_to_pixels(&context, scale);
-
-        let window = cocoa_ui::bitmap::make_offscreen_window(mtm, actual);
-        cocoa_ui::view::ensure_layer_backed(view);
-        let content_view = window.contentView().expect("offscreen window content");
-        cocoa_ui::view::add_subview(&content_view, view);
-        cocoa_ui::bitmap::show_capture_window(&window);
-        cocoa_ui::bitmap::force_text_fields_display(view);
-        let drawn = cocoa_ui::view::bitmap_rep_for_caching_display(view)
-            .ok_or(CaptureError::NoBitmapRep)
-            .and_then(|rep| {
-                cocoa_ui::view::cache_display(view, &rep);
-                let image = rep.CGImage().ok_or(CaptureError::NoImage)?;
-                cocoa_ui::bitmap::draw_image(
-                    &context,
-                    &image,
-                    cocoa_ui::Rect::new(0.0, 0.0, actual.width, actual.height),
-                );
-                Ok(())
-            });
-        cocoa_ui::bitmap::close_capture_window(&window);
-        drawn?;
-        Ok((pixels, pixel_width as u32, pixel_height as u32))
+    impl CaptureHost {
+        /// Attaches `view` to a never-ordered window sized `proposed`.
+        #[expect(
+            clippy::unnecessary_wraps,
+            reason = "only UIKit's window-scene lookup can fail; AppKit's offscreen window always attaches"
+        )]
+        pub fn attach(
+            view: &cocoa_ui::PlatformView,
+            proposed: cocoa_ui::Size,
+            mtm: cocoa_ui::MainThreadMarker,
+        ) -> Result<Self, RenderError> {
+            let window = cocoa_ui::bitmap::capture_window(mtm, proposed);
+            let content = window.contentView().expect("offscreen window content");
+            cocoa_ui::view::add_subview(&content, view);
+            Ok(Self { _window: window })
+        }
     }
 }
 
+/// The capture window the leaf joins before it is measured.
 #[cfg(all(target_os = "ios", not(feature = "gpu_surface")))]
-mod capture {
-    use alloc::vec::Vec;
+mod host {
+    use waterui_core::view_renderer::RenderError;
 
-    use super::CaptureError;
+    use crate::capture::CaptureError;
 
-    /// `UIKit`: offscreen `UIWindow`, `layer.render` into the context — the
-    /// `UIKit` half of `captureViewToRGBA`.
-    #[allow(clippy::cast_possible_truncation)]
-    pub fn capture(
-        view: &cocoa_ui::PlatformView,
-        actual: cocoa_ui::Size,
-        scale: f64,
-        pixel_width: usize,
-        pixel_height: usize,
-        mtm: cocoa_ui::MainThreadMarker,
-    ) -> Result<(Vec<u8>, u32, u32), CaptureError> {
-        let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
-        let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height)
-            .ok_or(CaptureError::BitmapContext {
-                width: pixel_width,
-                height: pixel_height,
-            })?;
-        cocoa_ui::bitmap::scale_to_pixels(&context, scale);
+    /// `UIKit`: an offscreen `UIWindow` in a connected scene hosts the
+    /// leaf while `crate::capture` renders its layer — the `UIKit` half of
+    /// `captureViewToRGBA`. Hidden again on drop.
+    pub struct CaptureHost(cocoa_ui::Retained<cocoa_ui::bitmap::CaptureWindow>);
 
-        let scene = cocoa_ui::bitmap::any_window_scene().ok_or(CaptureError::NoWindowScene)?;
-        let window = cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, actual);
-        cocoa_ui::bitmap::show_capture_window(&window, view, actual);
+    impl CaptureHost {
+        /// Attaches `view` to an offscreen window sized `proposed`.
+        pub fn attach(
+            view: &cocoa_ui::PlatformView,
+            proposed: cocoa_ui::Size,
+            mtm: cocoa_ui::MainThreadMarker,
+        ) -> Result<Self, RenderError> {
+            let scene = cocoa_ui::bitmap::any_window_scene()
+                .ok_or_else(|| RenderError::Capture(Box::new(CaptureError::NoWindowScene)))?;
+            let window = cocoa_ui::bitmap::make_offscreen_window(mtm, &scene, proposed);
+            cocoa_ui::bitmap::show_capture_window(&window, view, proposed);
+            Ok(Self(window))
+        }
+    }
 
-        cocoa_ui::bitmap::begin_layer_flip(&context, actual.height);
-        let layer = cocoa_ui::view::layer(view).expect("a UIKit view is always layer-backed");
-        cocoa_ui::bitmap::with_uikit_context(&context, || {
-            cocoa_ui::bitmap::render_layer(&layer, &context);
-        });
-        cocoa_ui::bitmap::end_layer_flip(&context);
-        cocoa_ui::bitmap::close_capture_window(&window);
-        Ok((pixels, pixel_width as u32, pixel_height as u32))
+    impl Drop for CaptureHost {
+        fn drop(&mut self) {
+            cocoa_ui::bitmap::close_capture_window(&self.0);
+        }
     }
 }

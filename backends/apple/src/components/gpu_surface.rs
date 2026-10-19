@@ -383,6 +383,13 @@ struct SurfaceState {
     /// hidden while nonzero (`beginCaptureSuppression`). The layer is the
     /// view's, not the presentation state's, so this stays a plain field.
     capture_suppression: Cell<u32>,
+    /// External-render scopes the mount's teardown orphaned: a capture's
+    /// `SurfaceRegistration` ends its external rendering on the frame's
+    /// settle or the map's part — on the main queue, possibly after the
+    /// mount is gone and `Presentation::detached` cleared the scope. The
+    /// teardown records how many ends are still owed so a late settle
+    /// closes quietly; an end beyond the count is still unbalanced.
+    orphaned_external_scopes: Cell<u32>,
     /// The explicit HDR preference `resolved_hdr_preference` produced.
     explicit_range: Option<cocoa_ui::dynamic_range::DynamicRange>,
     /// `rendererDynamicRange`'s latch: wgpu keeps the negotiated format
@@ -606,6 +613,7 @@ impl SurfaceState {
             wants_input_events,
             dirty: Cell::new(false),
             capture_suppression: Cell::new(0),
+            orphaned_external_scopes: Cell::new(0),
             explicit_range,
             latched_renderer_range: Cell::new(None),
             configured_range: Cell::new(None),
@@ -1049,7 +1057,6 @@ fn update_presentation_frame(state: &SurfaceState, view: &Retained<SurfaceView>)
 }
 
 /// Geometry + deferred allocation — `initializeGpuIfNeeded`.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
     let bounds = view.bounds_size();
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -1065,6 +1072,44 @@ fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
     let Some(scale) = view.backing_scale() else {
         return;
     };
+    if !prepare_presentation(state, view, scale) {
+        return;
+    }
+    // The presenter is created where a frame could actually be shown:
+    // laying out a covered window bought a link and drawables for frames
+    // that never came. A `Detached` epoch under an open capture scope or
+    // a parked wait does not re-enter through this door: the scope's or
+    // the wait's own contract resumes it.
+    if !can_present_now(view) {
+        return;
+    }
+    {
+        let slot = state.presentation.borrow();
+        if !matches!(slot.epoch, Epoch::Detached) || slot.capture.is_some() || state.park.is_held()
+        {
+            return;
+        }
+    }
+    attach(state, view);
+}
+
+/// The geometry and dynamic-range half of `initialize_gpu` — the part the
+/// capture drive shares. `scale` is the scale the presentation renders at:
+/// the window's backing scale on screen, the capture's off it.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the zero-bound guard keeps bounds positive, and a window's pixel size at its scale fits u32"
+)]
+fn prepare_presentation(
+    state: &Rc<SurfaceState>,
+    view: &Retained<SurfaceView>,
+    scale: f64,
+) -> bool {
+    let bounds = view.bounds_size();
+    if bounds.width <= 0.0 || bounds.height <= 0.0 {
+        return false;
+    }
 
     let requested = state
         .explicit_range
@@ -1099,23 +1144,7 @@ fn initialize_gpu(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
             .presenter
             .set_drawable_size(cocoa_ui::metal_presenter::drawable_size(width, height));
     }
-
-    // The presenter is created where a frame could actually be shown:
-    // laying out a covered window bought a link and drawables for frames
-    // that never came. A `Detached` epoch under an open capture scope or
-    // a parked wait does not re-enter through this door: the scope's or
-    // the wait's own contract resumes it.
-    if !can_present_now(view) {
-        return;
-    }
-    {
-        let slot = state.presentation.borrow();
-        if !matches!(slot.epoch, Epoch::Detached) || slot.capture.is_some() || state.park.is_held()
-        {
-            return;
-        }
-    }
-    attach(state, view);
+    true
 }
 
 /// Builds the `CAMetalLayer` presenter on the current context and owes the
@@ -1134,14 +1163,12 @@ fn attach(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
     let layer = view.presentation_layer();
     let weak = Rc::downgrade(state);
     let frame_view = view.clone();
-    let presenter = MetalPresenter::new(
-        layer,
-        Rc::new(move |frame| {
-            if let Some(state) = weak.upgrade() {
-                render_drawable(&state, &frame_view, frame);
-            }
-        }),
-    );
+    let on_frame = Rc::new(move |frame| {
+        if let Some(state) = weak.upgrade() {
+            render_drawable(&state, &frame_view, frame);
+        }
+    });
+    let presenter = MetalPresenter::new(layer, on_frame);
     let context = state.runtime.context();
     let device = crate::gpu_runtime::raw_metal_device(&context);
     presenter.set_device(&device);
@@ -1516,7 +1543,8 @@ fn settle_frame_completion(
             && matches!(&slot.epoch, Epoch::Attached(attached)
                 if state.capture_suppression.get() == 0
                     && can_present_now(view)
-                    && (is_effectively_visible(view) || attached.demand.first_paint_owed.get()))
+                    && (is_effectively_visible(view)
+                        || attached.demand.first_paint_owed.get()))
     };
     if !presentable {
         owe_and_reschedule(state, view);
@@ -1801,7 +1829,8 @@ fn install_input(
 // MARK: - Capturable (WuiMetalViewCapture's surface half)
 
 /// The surface installed on the view's capturable slot, for
-/// `ViewCapture`'s resolver and `view.ready()`.
+/// `ViewCapture`'s resolver, `view.ready()` and the capture drive's
+/// [`Presentation`].
 struct Capturable {
     state: Rc<SurfaceState>,
     view: Retained<SurfaceView>,
@@ -1897,14 +1926,26 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
     fn end_external_rendering(&self, resume: bool) {
         {
             let mut slot = self.state.presentation.borrow_mut();
-            let Some(external) = &mut slot.capture else {
-                panic!("GpuSurface external rendering scopes are unbalanced");
-            };
-            if let Some(remaining) = NonZeroU32::new(external.depth.get() - 1) {
-                external.depth = remaining;
+            if let Some(external) = &mut slot.capture {
+                if let Some(remaining) = NonZeroU32::new(external.depth.get() - 1) {
+                    external.depth = remaining;
+                    return;
+                }
+                slot.capture = None;
+            } else {
+                // The mount may be gone while a still-settling capture's
+                // registration still owes this end — teardown recorded the
+                // scopes it orphaned, so the late settle closes quietly.
+                // Nothing resumes on a dead surface, and an end beyond the
+                // recorded count is the unbalance the assert names.
+                let orphaned = self.state.orphaned_external_scopes.get();
+                assert!(
+                    orphaned > 0,
+                    "GpuSurface external rendering scopes are unbalanced"
+                );
+                self.state.orphaned_external_scopes.set(orphaned - 1);
                 return;
             }
-            slot.capture = None;
         }
         if resume {
             owe_and_reschedule(&self.state, &self.view);
@@ -1929,6 +1970,10 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
 
     fn register_ready_waiter(&self, waker: std::task::Waker) {
         self.register_waiter(waker);
+    }
+
+    fn presentation_failed(&self) -> bool {
+        self.state.park.is_failed()
     }
 
     fn render_prepared_external_texture(
@@ -2166,6 +2211,23 @@ impl fmt::Debug for MountGuard {
 
 impl Drop for MountGuard {
     fn drop(&mut self) {
+        // An open external-render scope outlives the mount: the capture's
+        // registration ends it on a later settle or map part, on this same
+        // queue, after the presentation reset below has cleared the scope.
+        // Recording the orphaned depth keeps that late end quiet — and
+        // still counted, so an end nobody is owed stays a panic.
+        let orphaned = self
+            .state
+            .presentation
+            .borrow()
+            .capture
+            .as_ref()
+            .map_or(0, |external| external.depth.get());
+        if orphaned > 0 {
+            self.state
+                .orphaned_external_scopes
+                .set(self.state.orphaned_external_scopes.get() + orphaned);
+        }
         *self.state.presentation.borrow_mut() = Presentation::detached();
         self.state.park.clear();
         self.state.observers.borrow_mut().clear();
@@ -2188,16 +2250,36 @@ impl Drop for MountGuard {
 /// `WuiAnyView.ready()`.
 #[allow(clippy::future_not_send)]
 pub async fn wait_for_first_frames(view: &cocoa_ui::PlatformView) {
+    // Non-participants (a hidden, clipped or unpresentable surface) never
+    // gate the reveal — and never owe a frame.
+    let mut surfaces = Vec::new();
+    cocoa_ui::capture::collect_capturables(view, &mut |surface| {
+        if surface.participates_in_first_paint() && !surface.has_presented_frame() {
+            surfaces.push(Rc::clone(surface));
+        }
+    });
+    wait_for_presented(&surfaces).await;
+}
+
+/// Waits until every surface in `surfaces` has presented its first
+/// frame — the wait [`wait_for_first_frames`] runs, covering only the set
+/// its caller collected. Each surface it waits on owes a frame whose
+/// every deferral
+/// — an in-flight replay, a parked device-loss rebuild — ends in a frame
+/// or a settled terminal failure: the wait always has an end condition.
+#[expect(
+    clippy::future_not_send,
+    reason = "the wait runs on the main thread; the Rc surfaces it holds are not Send"
+)]
+pub async fn wait_for_presented(surfaces: &[Rc<dyn cocoa_ui::capture::CapturableSurface>]) {
     core::future::poll_fn(|cx| {
         let mut pending = false;
-        cocoa_ui::capture::collect_capturables(view, &mut |surface| {
-            // Non-participants (a hidden, clipped or unpresentable surface)
-            // never gate the reveal — and never owe a frame.
-            if surface.participates_in_first_paint() && !surface.has_presented_frame() {
+        for surface in surfaces {
+            if !surface.has_presented_frame() && !surface.presentation_failed() {
                 surface.register_ready_waiter(cx.waker().clone());
                 pending = true;
             }
-        });
+        }
         if pending {
             core::task::Poll::Pending
         } else {
@@ -2898,6 +2980,25 @@ pub mod native_test {
         pub fn end_capture(&self, resume: bool) {
             use cocoa_ui::capture::CapturableSurface;
             self.capturable.end_external_rendering(resume);
+        }
+
+        /// Ends the mount — the owner dropping the leaf — while capture
+        /// scopes are still open, then delivers `ends` late ends through
+        /// the capturable the registration itself would still hold: the
+        /// settle ordering a still-in-flight frame produces when the
+        /// mount's owner lets go first.
+        ///
+        /// # Panics
+        ///
+        /// When `ends` exceeds the scopes teardown orphaned — the same
+        /// balance assert a live surface answers.
+        pub fn unmount_then_end_captures(self, ends: u32) {
+            let capturable = self.capturable.clone();
+            drop(self.leaf);
+            for _ in 0..ends {
+                use cocoa_ui::capture::CapturableSurface;
+                capturable.end_external_rendering(false);
+            }
         }
 
         /// Drives the production `park_for_publication` — the settle the

@@ -35,16 +35,28 @@ pub struct JsRequest {
 
 /// Extracts the payload as JSON, deserialized into `T`.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "extractor newtype destructured in handler parameters"
+)]
 pub struct Json<T>(pub T);
 
 /// Extracts the payload as raw bytes.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "extractor newtype destructured in handler parameters"
+)]
 pub struct Bytes(pub Vec<u8>);
 
 /// Extracts the handler name that was called.
 ///
 /// Useful when one closure serves several names.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "extractor newtype destructured in handler parameters"
+)]
 pub struct HandlerName(pub Str);
 
 fn request(env: &Environment) -> Result<JsRequest, Error> {
@@ -63,16 +75,21 @@ impl<T: DeserializeOwned + 'static> Extractor for Json<T> {
                 core::any::type_name::<T>()
             ))
         };
+        // `waterui.invoke(name)` with no argument arrives as zero bytes; to a
+        // JSON extractor that is `null`, the value "no argument" has on the
+        // wire.
+        let payload: &[u8] = if request.payload.is_empty() {
+            b"null"
+        } else {
+            &request.payload
+        };
         // The tag is a fixed key, so a payload without it has nothing to undo
         // and is deserialized straight from its bytes.
-        if !crate::big_integers::contains_tag(&request.payload) {
-            return serde_json::from_slice(&request.payload)
-                .map(Self)
-                .map_err(describe);
+        if !crate::big_integers::contains_tag(payload) {
+            return serde_json::from_slice(payload).map(Self).map_err(describe);
         }
 
-        let mut value: serde_json::Value =
-            serde_json::from_slice(&request.payload).map_err(describe)?;
+        let mut value: serde_json::Value = serde_json::from_slice(payload).map_err(describe)?;
         crate::big_integers::untag(&mut value);
         serde_json::from_value(value).map(Self).map_err(describe)
     }
@@ -109,6 +126,7 @@ impl Extractor for HandlerName {
 /// so it sent both as base64 and `await waterui.invoke(...)` resolved to a
 /// base64 string instead of to the value the handler returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JsReply {
     /// A serialized JSON value. The page receives the value itself.
     Json(Vec<u8>),
@@ -256,6 +274,14 @@ mod tests {
 
         let HandlerName(name) = Extractor::extract(&env).expect("extracts");
         assert_eq!(name.as_str(), "greet");
+    }
+
+    #[test]
+    fn a_call_without_an_argument_extracts_as_null() {
+        let env = env_with("hold", b"");
+        let Json(value): Json<serde_json::Value> = Extractor::extract(&env).expect("extracts");
+        assert_eq!(value, serde_json::Value::Null);
+        let Json(()): Json<()> = Extractor::extract(&env).expect("extracts");
     }
 
     #[test]

@@ -10,6 +10,7 @@ use crate::tree::NumberKind;
 
 /// Why an encoded schema payload could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum DecodeError {
     /// The payload is empty, so it does not even carry a version byte.
     #[error("the schema payload is empty")]
@@ -118,7 +119,7 @@ pub enum DecodeError {
         /// Where the member count starts.
         offset: usize,
     },
-    /// The payload is another kind. The three kinds share the format and are
+    /// The payload is another kind. The four kinds share the format and are
     /// told apart by the byte after the version.
     #[error("the payload is {found}, which `decode` does not read, not a props type tree")]
     NotATypeTree {
@@ -136,6 +137,15 @@ pub enum DecodeError {
     /// The payload is not a mount point.
     #[error("the payload is {found}, which `decode_mount` does not read, not a mount point")]
     NotAMountPoint {
+        /// What the payload turned out to be.
+        found: &'static str,
+    },
+    /// The payload is not a runtime fingerprint half.
+    #[error(
+        "the payload is {found}, which `decode_runtime_half` does not read, not a runtime \
+         fingerprint half"
+    )]
+    NotARuntimeHalf {
         /// What the payload turned out to be.
         found: &'static str,
     },
@@ -191,9 +201,11 @@ pub fn decode(payload: &[u8]) -> Result<owned::Schema, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
-    if matches!(payload.get(reader.pos), Some(&kind::CATALOG | &kind::MOUNT)) {
+    if let Some(&found @ (kind::CATALOG | kind::MOUNT | kind::RUNTIME_HALF)) =
+        payload.get(reader.pos)
+    {
         return Err(DecodeError::NotATypeTree {
-            found: crate::format::payload_kind(payload.get(reader.pos).copied()),
+            found: crate::format::payload_kind(found),
         });
     }
     let schema = reader.node()?;

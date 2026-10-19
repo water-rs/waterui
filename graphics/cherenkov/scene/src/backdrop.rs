@@ -43,6 +43,20 @@ use serde::{Deserialize, Serialize};
 /// texels present. Members read deeper levels through
 /// [`BackdropEffectSpec::Level`]'s trilinear sample, which a variable-blur
 /// material needs; `1` is the single-level capture.
+///
+/// A `union` smoothing distance `k` (device pixels, finite and above 0 —
+/// [`crate::Scene::load`] validates it) makes every member composite
+/// against one shared field: the quadratic smooth minimum of all member
+/// distances, folded in ascending order with `k`. Each member's
+/// composite coverage becomes its antialiased ownership weight — member
+/// `i` has `f_i = d₂ − d_i` (`d₂` the smallest distance among the other
+/// members) and weight `a_i = clamp(0.5 + f_i/|∇f_i|, 0, 1)`,
+/// `|∇f_i| = |∇d₂ − ∇d_i|` the ownership boundary's own slope,
+/// normalized to `a_i/Σ_j a_j` so the weights partition unity — times
+/// the antialiased coverage of `field < outer`,
+/// replacing the member's clip coverage (the member's own content stays
+/// clipped; see [`crate::Layer::backdrop_outer`]). Every member needs an
+/// analytic clip — a path clip fails `backdrop-effect-sdf-path`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct BackdropGroup {
     /// The id member layers reference.
@@ -58,12 +72,61 @@ pub struct BackdropGroup {
     /// capture.
     #[serde(default = "default_levels", skip_serializing_if = "is_default_levels")]
     pub levels: u32,
+    /// The [`crate::Layer::id`] of the layer the capture anchors at: the
+    /// capture is taken beneath that layer, at its paint-order position
+    /// before the layer's own content and children. Every member may be
+    /// any layer painting after the anchor in the anchor's
+    /// compositing canvas; any other member fails the render
+    /// (`backdrop-member-before-anchor` /
+    /// `backdrop-member-outside-anchor-canvas`). `None` (the default)
+    /// captures at the first member's paint-order position.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<std::num::NonZeroU32>,
+    /// The union field's smoothing distance `k` in device pixels
+    /// ([`crate::Scene::load`] validates it above 0); `None` composites
+    /// every member against its own clip only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub union: Option<f64>,
+    /// The space every member composites its sample onto its canvas in:
+    /// the sample at its coverage — antialiased edge and outer extent
+    /// included — and the canvas convert into it, blend source-over, and
+    /// the result converts back. [`BlendSpace::Linear`] (the default)
+    /// composites in the linear working space; a member's own content
+    /// composites as before either way.
+    ///
+    /// [`BlendSpace::Linear`]: crate::BlendSpace::Linear
+    #[serde(default, skip_serializing_if = "is_linear")]
+    pub blend_space: crate::BlendSpace,
 }
 
 impl BackdropGroup {
     /// The most pyramid levels a group declares; [`crate::Scene::load`]
     /// rejects a scene file asking for more.
     pub const MAX_LEVELS: u32 = 8;
+
+    /// A plain group description: unanchored, no union field, members
+    /// compositing in linear space — set `anchor`, `union` or
+    /// `blend_space` on the returned value to compose them.
+    #[must_use]
+    pub const fn new(id: u32, filters: Vec<BackdropFilter>, scale: f64, levels: u32) -> Self {
+        Self {
+            id,
+            filters,
+            scale,
+            levels,
+            anchor: None,
+            union: None,
+            blend_space: crate::BlendSpace::Linear,
+        }
+    }
+}
+
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if takes a reference"
+)]
+fn is_linear(space: &crate::BlendSpace) -> bool {
+    *space == crate::BlendSpace::Linear
 }
 
 const fn default_levels() -> u32 {
@@ -82,8 +145,9 @@ const fn is_default_levels(levels: &u32) -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "filter", content = "value", rename_all = "kebab-case")]
 pub enum BackdropFilter {
-    /// A separable Gaussian blur (filtrate's `GaussianBlur`): kernel radius
-    /// `⌈3σ⌉`, clamp-to-edge sampling at the capture boundary.
+    /// A separable Gaussian blur (filtrate's `GaussianBlur`) of standard
+    /// deviation `sigma`: the Gaussian integrated over each texel,
+    /// clamp-to-edge sampling at the capture boundary.
     GaussianBlur {
         /// The blur's standard deviation in capture texels.
         sigma: f64,

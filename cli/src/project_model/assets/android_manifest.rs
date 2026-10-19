@@ -3,9 +3,9 @@
 //! generated module's `AndroidManifest.xml`.
 //!
 //! A crate whose platform code needs an entry inside `<application>` —
-//! a `ContentProvider`, a `Service`, a `BroadcastReceiver`, or an
-//! application-level `<meta-data>` flag — declares it beside its Kotlin
-//! sources:
+//! an `Activity`, a `ContentProvider`, a `Service`, a
+//! `BroadcastReceiver`, or an application-level `<meta-data>` flag —
+//! declares it beside its Kotlin sources:
 //!
 //! ```toml
 //! [[package.metadata.waterui.android.provider]]
@@ -37,6 +37,38 @@ use smol::fs;
 pub(super) const MANIFEST_COMPONENTS_BEGIN: &str =
     "<!-- begin waterui android manifest components -->";
 pub(super) const MANIFEST_COMPONENTS_END: &str = "<!-- end waterui android manifest components -->";
+
+/// An `<activity>` — typically a non-exported trampoline a library owns so
+/// a platform API can deliver its result through `onActivityResult`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub(super) struct Activity {
+    /// Fully qualified `Activity` class.
+    name: String,
+    /// Whether other applications can launch the activity.
+    exported: bool,
+    /// `android:theme`, such as `@android:style/Theme.Translucent.NoTitleBar`.
+    #[serde(default)]
+    theme: Option<String>,
+    #[serde(default)]
+    exclude_from_recents: Option<bool>,
+    #[serde(default)]
+    launch_mode: Option<String>,
+    /// `android:configChanges` flags, rendered `|`-separated.
+    #[serde(default)]
+    config_changes: Vec<String>,
+    #[serde(default)]
+    intent_filter: Vec<IntentFilter>,
+    #[serde(default)]
+    meta_data: Vec<MetaData>,
+}
+
+impl Activity {
+    /// The `android:configChanges` value, when any flag is declared.
+    fn config_changes_attribute(&self) -> Option<String> {
+        (!self.config_changes.is_empty()).then(|| self.config_changes.join("|"))
+    }
+}
 
 /// A `<provider>`: a `ContentProvider` subclass and the authorities it
 /// serves.
@@ -286,19 +318,11 @@ impl MetaData {
 /// `[package.metadata.waterui.android]` table carries them.
 #[derive(Debug, Default)]
 pub(super) struct DeclaredComponents {
+    pub(super) activities: Vec<Activity>,
     pub(super) providers: Vec<Provider>,
     pub(super) services: Vec<Service>,
     pub(super) receivers: Vec<Receiver>,
     pub(super) meta_data: Vec<MetaData>,
-}
-
-impl DeclaredComponents {
-    pub(super) const fn is_empty(&self) -> bool {
-        self.providers.is_empty()
-            && self.services.is_empty()
-            && self.receivers.is_empty()
-            && self.meta_data.is_empty()
-    }
 }
 
 /// A merged entry and the crate that declared it first.
@@ -318,6 +342,7 @@ struct Declared<T> {
 /// ship and fail the merge with an error naming both crates.
 #[derive(Debug, Default)]
 pub struct ManifestComponents {
+    activities: BTreeMap<String, Declared<Activity>>,
     providers: BTreeMap<String, Declared<Provider>>,
     services: BTreeMap<String, Declared<Service>>,
     receivers: BTreeMap<String, Declared<Receiver>>,
@@ -339,6 +364,23 @@ impl ManifestComponents {
         crate_name: &str,
         declared: DeclaredComponents,
     ) -> eyre::Result<()> {
+        for activity in declared.activities {
+            check_class_name(crate_name, "activity", &activity.name)?;
+            check_intent_filters(
+                crate_name,
+                "activity",
+                &activity.name,
+                &activity.intent_filter,
+            )?;
+            check_meta_data(crate_name, "activity", &activity.name, &activity.meta_data)?;
+            insert(
+                &mut self.activities,
+                "activity",
+                crate_name,
+                activity.name.clone(),
+                activity,
+            )?;
+        }
         for provider in declared.providers {
             check_class_name(crate_name, "provider", &provider.name)?;
             eyre::ensure!(
@@ -419,6 +461,7 @@ impl ManifestComponents {
         let block = ManifestComponentsTemplate {
             begin: MANIFEST_COMPONENTS_BEGIN,
             end: MANIFEST_COMPONENTS_END,
+            activities: items(&self.activities),
             providers: items(&self.providers),
             services: items(&self.services),
             receivers: items(&self.receivers),
@@ -515,6 +558,7 @@ fn check_meta_data(
 struct ManifestComponentsTemplate<'a> {
     begin: &'static str,
     end: &'static str,
+    activities: Vec<&'a Activity>,
     providers: Vec<&'a Provider>,
     services: Vec<&'a Service>,
     receivers: Vec<&'a Receiver>,
@@ -587,6 +631,8 @@ mod tests {
         #[serde(rename_all = "kebab-case", deny_unknown_fields)]
         struct Tables {
             #[serde(default)]
+            activity: Vec<Activity>,
+            #[serde(default)]
             provider: Vec<Provider>,
             #[serde(default)]
             service: Vec<Service>,
@@ -597,6 +643,7 @@ mod tests {
         }
         let tables: Tables = toml::from_str(toml_text).expect("component tables parse");
         DeclaredComponents {
+            activities: tables.activity,
             providers: tables.provider,
             services: tables.service,
             receivers: tables.receiver,
@@ -613,6 +660,13 @@ grant-uri-permissions = true
 "#;
 
     const PUSH: &str = r#"
+[[activity]]
+name = "waterkit.wallet.SavePassesActivity"
+exported = false
+theme = "@android:style/Theme.Translucent.NoTitleBar"
+exclude-from-recents = true
+config-changes = ["orientation", "screenSize"]
+
 [[service]]
 name = "waterkit.push.PushMessagingService"
 exported = false
@@ -654,6 +708,12 @@ resource = "@integer/google_play_services_version"
             merged(&[("waterkit-push", PUSH), ("waterkit-clipboard", CLIPBOARD)]).expect("merge");
         let block = components.render_block().expect("render");
         let expected = r#"<!-- begin waterui android manifest components -->
+        <activity
+            android:name="waterkit.wallet.SavePassesActivity"
+            android:exported="false"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:configChanges="orientation|screenSize" />
         <provider
             android:name="waterkit.clipboard.ClipboardFileProvider"
             android:authorities="${applicationId}.waterkit.clipboard"

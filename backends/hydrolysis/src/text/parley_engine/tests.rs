@@ -1,6 +1,8 @@
 //! Engine tests: the moved shaping, truncation, family and glyph-bounds
 //! suites, each running against the parley engine directly.
 
+use parley::fontique::{Blob, Collection, CollectionOptions};
+
 use super::*;
 use crate::renderer::tests::test_environment;
 use crate::text::{TextService, resolve_text_layout_input};
@@ -9,6 +11,136 @@ use waterui_text::styled::StyledStr;
 
 fn test_input(env: &Environment, text: &'static str) -> ResolvedTextLayoutInput {
     resolve_text_layout_input(&StyledStr::plain(text), HorizontalAlignment::Leading, env)
+}
+
+#[test]
+fn declared_noto_sans_draws_missing_latin_marks_without_replacing_roboto() {
+    let roboto: Arc<[u8]> = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fonts/Roboto-Web-Variable.ttf"),
+    )
+    .expect("the test-fonts setup generates the real web Roboto face")
+    .into();
+    let noto = fonts::installed_font_bytes("Noto Sans");
+    assert!(
+        skrifa::FontRef::from_index(&noto, 0)
+            .expect("Noto Sans parses")
+            .charmap()
+            .map('\u{0350}')
+            .is_some(),
+        "the fallback face must really cover U+0350"
+    );
+    assert!(
+        skrifa::FontRef::from_index(&roboto, 0)
+            .expect("web Roboto parses")
+            .charmap()
+            .map('\u{0350}')
+            .is_none(),
+        "the primary web face must really need fallback for U+0350"
+    );
+    let mut font_cx = parley::FontContext {
+        collection: Collection::new(CollectionOptions {
+            shared: false,
+            system_fonts: false,
+        }),
+        source_cache: parley::fontique::SourceCache::default(),
+    };
+    let mut families = fonts::ResourceFontFamilies::default();
+    for (name, data) in [("Roboto", &roboto), ("Noto Sans", &noto)] {
+        let registered = font_cx
+            .collection
+            .register_fonts(Blob::new(Arc::new(data.to_vec())), None);
+        assert!(!registered.is_empty());
+        families.classify(name, &registered);
+    }
+    families.install(&mut font_cx.collection);
+    let engine = ParleyEngine::new(font_cx, FontFamilyResolution::Strict);
+    let env = test_environment();
+    let plain = engine.shape(&test_input(&env, "Z"), None);
+    let run = plain
+        .0
+        .layout
+        .get(0)
+        .expect("Latin line")
+        .runs()
+        .next()
+        .expect("Latin run");
+    assert!(
+        run.font().data.as_ref() == roboto.as_ref(),
+        "plain Latin must retain the primary Roboto face"
+    );
+
+    let combined = engine.shape(&test_input(&env, "Z\u{0350}"), None);
+    let line = combined.0.layout.get(0).expect("combining-mark line");
+    assert!(
+        line.runs()
+            .any(|run| run.font().data.as_ref() == noto.as_ref())
+    );
+    for run in line.runs() {
+        for cluster in run.clusters() {
+            assert!(cluster.glyphs().all(|glyph| glyph.id != 0));
+        }
+    }
+}
+
+#[test]
+fn recorded_glyph_positions_preserve_parley_mark_offsets_and_fragment_shift() {
+    let roboto: Arc<[u8]> = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fonts/Roboto-Regular.ttf"),
+    )
+    .expect("the test-fonts setup generates the pinned Roboto Regular face")
+    .into();
+    let mut font_cx = parley::FontContext {
+        collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
+            shared: false,
+            system_fonts: false,
+        }),
+        source_cache: parley::fontique::SourceCache::default(),
+    };
+    let registered = font_cx
+        .collection
+        .register_fonts(parley::fontique::Blob::new(Arc::new(roboto.to_vec())), None);
+    assert!(!registered.is_empty());
+    let mut families = fonts::ResourceFontFamilies::default();
+    families.classify("Roboto", &registered);
+    families.install(&mut font_cx.collection);
+    let engine = ParleyEngine::new(font_cx, FontFamilyResolution::Strict);
+    let env = test_environment();
+    let layout = engine.shape(&test_input(&env, "Z\u{0350}"), None);
+    let line = layout.0.layout.get(0).expect("combining-mark line");
+    assert!(
+        line.items().any(|item| {
+            if let parley::PositionedLayoutItem::GlyphRun(run) = item {
+                run.glyphs().any(|glyph| glyph.y.abs() > 0.0)
+            } else {
+                false
+            }
+        }),
+        "the real fixture must exercise a nonzero vertical shaping offset"
+    );
+
+    for x_shift in [0.0, 13.0] {
+        let expected: Vec<_> = line
+            .items()
+            .filter_map(|item| match item {
+                parley::PositionedLayoutItem::GlyphRun(run) => Some(run),
+                parley::PositionedLayoutItem::InlineBox(_) => None,
+            })
+            .flat_map(|run| {
+                run.positioned_glyphs()
+                    .map(|glyph| (glyph.id, (glyph.x + x_shift).to_bits(), glyph.y.to_bits()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut scene = Recording::new();
+        let mut counters = FrameWorkCounters::default();
+        encode_text_layout(&mut scene, &mut counters, &layout, None, x_shift);
+        let recorded: Vec<_> = scene
+            .glyph_runs()
+            .flat_map(|(_, glyphs)| glyphs)
+            .map(|glyph| (glyph.id, glyph.x.to_bits(), glyph.y.to_bits()))
+            .collect();
+        assert_eq!(recorded, expected, "fragment shift {x_shift}");
+    }
 }
 
 #[test]

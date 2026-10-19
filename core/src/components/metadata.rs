@@ -23,6 +23,10 @@ use crate::{AnyView, Environment, View};
 /// Metadata is transparent for layout system, it is not a native view.
 #[derive(Debug)]
 #[must_use]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a metadata view is exactly its content plus its value; renderers destructure it"
+)]
 pub struct Metadata<T: MetadataKey> {
     /// The view content wrapped by this metadata.
     pub content: AnyView,
@@ -72,6 +76,10 @@ impl<T: MetadataKey> View for Metadata<T> {
 ///
 /// Unlike `Metadata<T>`, this type won't panic if not caught by a renderer.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a metadata view is exactly its content plus its value; renderers destructure it"
+)]
 pub struct IgnorableMetadata<T: MetadataKey> {
     /// The view content wrapped by this ignorable metadata.
     pub content: AnyView,

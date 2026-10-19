@@ -116,6 +116,28 @@ pub fn frame(view: &PlatformView) -> Rect {
     view.frame().into()
 }
 
+/// The alignment rectangle `view`'s frame maps to.
+///
+/// This is the edge Auto Layout pins when it solves the view's anchors. A
+/// control's frame can overshoot it: a `UISwitch` frame runs 2 pt past its
+/// pinned trailing edge.
+#[must_use]
+pub fn alignment_frame(view: &PlatformView) -> Rect {
+    #[cfg(target_os = "ios")]
+    {
+        view.alignmentRectForFrame(view.frame()).into()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: `view` is a live `NSView`; `alignmentRectForFrame:` is a
+        // documented `NSView` method the `objc2-app-kit` bindings do not
+        // generate.
+        let rect: objc2_core_foundation::CGRect =
+            unsafe { objc2::msg_send![view, alignmentRectForFrame: view.frame()] };
+        rect.into()
+    }
+}
+
 /// The bounds in the view's own coordinate space.
 #[must_use]
 pub fn bounds(view: &PlatformView) -> Rect {
@@ -624,6 +646,44 @@ pub fn primary_content(view: &PlatformView) -> Option<Retained<PlatformView>> {
     }
 }
 
+/// Whether `view` declares itself a kit scroll surface through
+/// `cocoaUiIsScrollSurface`.
+///
+/// The `ScrollView` and `TableView` classes answer `true`; a foreign
+/// `UIScrollView` such as `UITextView` does not answer it, so a view
+/// nested inside one keeps its own region contract.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn is_scroll_surface(view: &PlatformView) -> bool {
+    view.respondsToSelector(objc2::sel!(cocoaUiIsScrollSurface))
+        // SAFETY: kit classes declaring `cocoaUiIsScrollSurface` declare
+        // it `-> bool`.
+        && unsafe { objc2::msg_send![view, cocoaUiIsScrollSurface] }
+}
+
+/// Whether a kit scroll surface sits above `view`.
+///
+/// This is the ancestor walk the keyboard-region marking refuses to
+/// descend: a scroll surface's subtree sees no keyboard region — the
+/// surface already moved its content clear — so nothing under it is a
+/// region reader, and a surface nested inside another neither insets
+/// nor scrolls for the keyboard itself (the field clears once, through
+/// the innermost surface that sees the band). A foreign `UIScrollView`
+/// — a `UITextView` — does not answer `cocoaUiIsScrollSurface` and does
+/// not count.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn inside_scroll_surface(view: &PlatformView) -> bool {
+    let mut ancestor = superview(view);
+    while let Some(current) = ancestor {
+        if is_scroll_surface(&current) {
+            return true;
+        }
+        ancestor = superview(&current);
+    }
+    false
+}
+
 /// The scroll-surface candidates `view` declares through
 /// `cocoaUiScrollSurfaceCandidates`.
 ///
@@ -791,4 +851,17 @@ pub fn set_accessibility_content(view: &PlatformView, label: Option<&str>, value
     if label.is_some() || value.is_some() {
         view.setIsAccessibilityElement(true, mtm);
     }
+}
+
+/// An associated-object storage key derived from a selector name.
+///
+/// Registering the same string yields the same key at every call, so a
+/// platform-side compatibility layer using the same name shares the
+/// association.
+#[must_use]
+pub fn association_key(name: &core::ffi::CStr) -> *const core::ffi::c_void {
+    let selector = objc2::runtime::Sel::register(name);
+    // SAFETY: `Sel` is `repr(transparent)` over the selector pointer the
+    // associated-object API expects as the key.
+    unsafe { core::mem::transmute::<objc2::runtime::Sel, *const core::ffi::c_void>(selector) }
 }

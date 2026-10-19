@@ -25,12 +25,12 @@ use waterui::animation::Animation;
 use waterui::component::list::{
     ListConfig, ListItem, ListSection, ListSelection, Move, OnDelete, OnMove,
 };
-use waterui::id::{Id as RawId, SelfId};
+use waterui::id::Id as RawId;
 use waterui::layout::padding::EdgeInsets;
 use waterui::layout::scroll::{ScrollController, ScrollRequest};
 use waterui::reactive::Signal;
 use waterui::reactive::binding::Binding;
-use waterui::reactive::collection::CollectionChange;
+use waterui::reactive::collection::{CollectionChange, diff, has_duplicate_ids};
 use waterui::reactive::watcher::{BoxWatcherGuard, Metadata};
 #[cfg(target_os = "macos")]
 use waterui::resolve::Resolvable;
@@ -39,6 +39,7 @@ use waterui::views::{AnyViewsSnapshot, SharedAnyViews, ViewSnapshot, Views};
 use waterui_backend_core::Environment;
 use waterui_backend_core::scroll::animated_row_scroll_approach;
 use waterui_core::Computed;
+use waterui_core::interaction::Disabled;
 use waterui_core::layout::{ProposalSize, Size, StretchAxis, SubView, ViewDimensions};
 
 use crate::contract::{Mounted, NativeLeaf, RenderContext, Renderer};
@@ -54,7 +55,7 @@ use cocoa_ui::uikit::{IndexPath, SectionKind, TableCell, TableSource, TableView}
 
 /// A row's identity: the collection id `SharedAnyViews` answers for an
 /// index.
-type ItemId = SelfId<RawId>;
+type ItemId = RawId;
 
 /// The table as its platform view — `UITableView` on `UIKit`, the wrapping
 /// `NSScrollView` on `AppKit`.
@@ -166,42 +167,64 @@ const fn is_single_plain_section(groups: &[SectionGroup]) -> bool {
     groups.len() == 1 && groups[0].label.is_none() && groups[0].footer.is_none()
 }
 
-/// `singleSectionRowDiff`: the `deletes`/`inserts` that turn `old` into
-/// `new`, or `None` when the change is a reorder or either list carries a
-/// duplicate id — batch row updates only model pure membership changes.
-fn single_section_row_diff(old: &[ItemId], new: &[ItemId]) -> Option<(Vec<usize>, Vec<usize>)> {
-    let old_set: HashSet<ItemId> = old.iter().copied().collect();
-    if old_set.len() != old.len() {
+/// The row edits that turn one plain section's rows into another's, in
+/// batch-update terms: `deletes` and the source of each move index the old
+/// rows; `inserts` and the destination of each move index the new rows.
+#[derive(Debug, PartialEq, Eq)]
+struct RowEdits {
+    deletes: Vec<usize>,
+    inserts: Vec<usize>,
+    moves: Vec<(usize, usize)>,
+}
+
+/// `singleSectionRowDiff`: the deletes, inserts and moves that turn `old`
+/// into `new`, aligned by id, or `None` when either list carries a duplicate
+/// id — a row update cannot name which of two equal ids moved.
+fn single_section_row_diff(old: &[ItemId], new: &[ItemId]) -> Option<RowEdits> {
+    if has_duplicate_ids(old, |_, id| *id) || has_duplicate_ids(new, |_, id| *id) {
         return None;
     }
-    let new_set: HashSet<ItemId> = new.iter().copied().collect();
-    if new_set.len() != new.len() {
-        return None;
-    }
-    let old_common: Vec<ItemId> = old
+    let change = diff(old, new, |_, id| *id, |_, _| true);
+    Some(RowEdits {
+        deletes: change.removals().flatten().collect(),
+        inserts: change.insertions().flatten().collect(),
+        moves: change.moves().collect(),
+    })
+}
+
+/// `AppKit` applies the edits of an update block one after another, each
+/// against the rows the previous one left: after removing the `removed` old
+/// ids, these are the moves — `(from, to)` in the current rows — that put the
+/// remaining rows in their `new` order, before the `inserted` new ids go in
+/// at their final positions.
+#[cfg(target_os = "macos")]
+fn sequential_moves(
+    old: &[ItemId],
+    new: &[ItemId],
+    removed: &HashSet<ItemId>,
+    inserted: &HashSet<ItemId>,
+) -> Vec<(usize, usize)> {
+    let mut current: Vec<ItemId> = old
         .iter()
         .copied()
-        .filter(|id| new_set.contains(id))
+        .filter(|id| !removed.contains(id))
         .collect();
-    let new_common: Vec<ItemId> = new
-        .iter()
-        .copied()
-        .filter(|id| old_set.contains(id))
-        .collect();
-    if old_common != new_common {
-        return None;
+    let target = new.iter().copied().filter(|id| !inserted.contains(id));
+    let mut moves = Vec::new();
+    for (to, id) in target.enumerate() {
+        if current[to] != id {
+            let from = to
+                + 1
+                + current[to + 1..]
+                    .iter()
+                    .position(|candidate| *candidate == id)
+                    .expect("a surviving row is still among the current rows");
+            current.remove(from);
+            current.insert(to, id);
+            moves.push((from, to));
+        }
     }
-    let deletes = old
-        .iter()
-        .enumerate()
-        .filter_map(|(index, id)| (!new_set.contains(id)).then_some(index))
-        .collect();
-    let inserts = new
-        .iter()
-        .enumerate()
-        .filter_map(|(index, id)| (!old_set.contains(id)).then_some(index))
-        .collect();
-    Some((deletes, inserts))
+    moves
 }
 
 /// The snapshot's ids, in order.
@@ -427,6 +450,10 @@ struct Shared {
     /// `measuredRowHeights`: the row contract the height delegate reports,
     /// refreshed from both `viewFor`/`cellForRow` layout passes.
     measured_heights: HashMap<ItemId, f64>,
+    /// The `Disabled` signal each rendered row resolved under, by item id —
+    /// recorded on the row's own render pass, so a `.disabled` binding flip
+    /// takes effect without a reload (water-rs/waterui#2244).
+    disabled_rows: RefCell<HashMap<ItemId, Computed<bool>>>,
 }
 
 impl fmt::Debug for Shared {
@@ -446,6 +473,9 @@ impl Shared {
         self.regroup();
         let seen: HashSet<ItemId> = self.item_ids.iter().copied().collect();
         self.measured_heights.retain(|id, _| seen.contains(id));
+        self.disabled_rows
+            .get_mut()
+            .retain(|id, _| seen.contains(id));
     }
 
     /// Regroups over the current `item_ids` — after a local delete or
@@ -458,6 +488,18 @@ impl Shared {
             self.uses_sections,
             &self.env,
         );
+    }
+
+    /// Whether `flat`'s row resolved under `.disabled` on its last render
+    /// — such a row is inert the way a disabled `Button` cannot be
+    /// pressed: pointer and accessibility-driven selection both refuse it
+    /// while its label and disabled state still report
+    /// (water-rs/waterui#2244). Rows never rendered answer `false`.
+    fn row_disabled(&self, flat: usize) -> bool {
+        self.disabled_rows
+            .borrow()
+            .get(&self.item_ids[flat])
+            .is_some_and(Signal::snapshot)
     }
 
     /// `writeSelectionFromTable`: `flat` item indexes selected on the
@@ -484,7 +526,12 @@ impl Shared {
             .expect("list item index is in bounds");
         let insets = item.insets;
         let deletable = item.deletable;
-        let leaf = self.renderer.render(item.content);
+        // The row's `Disabled` signal comes from the scope this render
+        // resolves the content under — the same pass, not a second walk.
+        let (leaf, resolved_env) = self.renderer.render_resolved(item.content);
+        self.disabled_rows
+            .borrow_mut()
+            .insert(self.item_ids[flat], Disabled::resolve(&resolved_env, false));
         (insets, deletable, leaf)
     }
 
@@ -551,9 +598,9 @@ struct PendingRows {
 
 impl PendingRows {
     /// Every recorded emission retains its own snapshot and marks the
-    /// positions it touched: `replaced` names occupants whose content
-    /// changed and `inserted` may reintroduce a surviving id across
-    /// coalesced emissions — both index this emission's own snapshot.
+    /// positions it touched: updates name occupants whose content changed
+    /// and insertions may reintroduce a surviving id across coalesced
+    /// emissions — both index this emission's own snapshot.
     fn record(
         &mut self,
         snapshot: AnyViewsSnapshot<ListItem>,
@@ -562,10 +609,9 @@ impl PendingRows {
     ) {
         self.dirty.extend(
             change
-                .replaced
-                .iter()
-                .chain(change.inserted.iter())
-                .flat_map(Clone::clone)
+                .updates()
+                .chain(change.insertions())
+                .flatten()
                 .filter_map(|index| snapshot.get_id(index)),
         );
         self.snapshot = Some(snapshot);
@@ -674,10 +720,10 @@ fn apply_contents_change(
         let diff = single_plain
             .then(|| single_section_row_diff(&old_ids, &borrowed.item_ids))
             .flatten();
-        // Surviving ids touched by `replaced`/`inserted` positions keep
-        // their mounted leaf unless re-materialized; the diff's inserts
-        // only name new ids, which re-materialize through their own path.
-        // The delete index is the id's previous (old-snapshot) position.
+        // Surviving ids whose content was updated keep their mounted leaf
+        // unless re-materialized; the diff's inserts only name new ids,
+        // which re-materialize through their own path. The delete index is
+        // the id's previous (old-snapshot) position.
         let reloads: Vec<(usize, usize)> = if single_plain {
             borrowed
                 .item_ids
@@ -697,25 +743,27 @@ fn apply_contents_change(
         } else {
             Vec::new()
         };
+        #[cfg(target_os = "macos")]
+        let new_ids = borrowed.item_ids.clone();
         drop(borrowed);
         if table_inner.in_window()
-            && let Some((deletes, inserts)) = diff
+            && let Some(edits) = diff
         {
             #[cfg(target_os = "ios")]
             {
-                let delete_paths: Vec<IndexPath> = deletes
+                let row = |row| IndexPath { section: 0, row };
+                let delete_paths: Vec<IndexPath> = edits.deletes.into_iter().map(row).collect();
+                let insert_paths: Vec<IndexPath> = edits.inserts.into_iter().map(row).collect();
+                let move_paths: Vec<(IndexPath, IndexPath)> = edits
+                    .moves
                     .into_iter()
-                    .map(|row| IndexPath { section: 0, row })
+                    .map(|(from, to)| (row(from), row(to)))
                     .collect();
-                let insert_paths: Vec<IndexPath> = inserts
-                    .into_iter()
-                    .map(|row| IndexPath { section: 0, row })
-                    .collect();
-                table_inner.apply_row_updates(&delete_paths, &insert_paths, true);
+                table_inner.apply_row_updates(&delete_paths, &insert_paths, &move_paths, true);
                 if !reloads.is_empty() {
                     let reload_paths: Vec<IndexPath> = reloads
                         .into_iter()
-                        .map(|(_, row)| IndexPath { section: 0, row })
+                        .map(|(_, new_row)| row(new_row))
                         .collect();
                     table_inner.reload_rows(&reload_paths, true);
                 }
@@ -723,13 +771,16 @@ fn apply_contents_change(
             #[cfg(target_os = "macos")]
             {
                 // AppKit re-materializes a row as delete+insert: the
-                // replaced rows join the same update block so `viewFor`
-                // rebuilds them.
-                let mut deletes = deletes;
-                let mut inserts = inserts;
+                // updated rows join the same update block so `viewFor`
+                // rebuilds them, and so take no part in the moves.
+                let mut deletes = edits.deletes;
+                let mut inserts = edits.inserts;
                 deletes.extend(reloads.iter().map(|&(old_row, _)| old_row));
                 inserts.extend(reloads.iter().map(|&(_, new_row)| new_row));
-                table_inner.apply_row_updates(&deletes, &inserts, true);
+                let removed: HashSet<ItemId> = deletes.iter().map(|&row| old_ids[row]).collect();
+                let inserted: HashSet<ItemId> = inserts.iter().map(|&row| new_ids[row]).collect();
+                let moves = sequential_moves(&old_ids, &new_ids, &removed, &inserted);
+                table_inner.apply_row_updates(&deletes, &moves, &inserts, true);
             }
         } else {
             table_inner.reload_data();
@@ -986,7 +1037,7 @@ mod platform_impl {
             if stale && let Some(table) = self.table.load() {
                 cocoa_ui::main_queue::enqueue_local(
                     cocoa_ui::MainThreadMarker::new().expect("row updates run on the main thread"),
-                    move |_mtm| table.apply_row_updates(&[], &[], false),
+                    move |_mtm| table.apply_row_updates(&[], &[], &[], false),
                 );
             }
             proposal::deliver(mounted.view(), proposal);
@@ -1027,6 +1078,11 @@ mod platform_impl {
         let Some(flat) = flat_index(&state.borrow().groups, index.section, index.row) else {
             return;
         };
+        // A `.disabled` row is inert — accessibility activation must not
+        // select it, the way a pointer press must not.
+        if state.borrow().row_disabled(flat) {
+            return;
+        }
         if selected.contains(&flat) {
             table.deselect_row(index, false);
         } else {
@@ -1258,6 +1314,10 @@ mod platform_impl {
             if let Some(on_move) = &state.on_move {
                 on_move(&state.env, Move::new(source, adjusted));
             }
+        }
+
+        fn should_select(&self, _table: &TableView, index: IndexPath) -> bool {
+            !self.state.borrow().row_disabled(self.flat(index))
         }
 
         fn did_select_row(&self, table: &TableView, index: IndexPath) {
@@ -1572,7 +1632,10 @@ mod platform_impl {
         fn should_select(&self, _table: &TableView, row: usize) -> bool {
             let state = self.state.borrow();
             state.selection.allows_selection()
-                && matches!(state.flat_layout.get(row), Some(FlatEntry::Row(_)))
+                && match state.flat_layout.get(row) {
+                    Some(&FlatEntry::Row(flat)) => !state.row_disabled(flat),
+                    _ => false,
+                }
         }
 
         fn selection_did_change(&self, table: &TableView) {
@@ -1803,6 +1866,18 @@ fn wire_controller(
 fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
     let mtm = ctx.mtm();
     let table = TableView::new(mtm);
+    // A navigation split marks its sidebar column with `SidebarContent`:
+    // the table takes the source-list chrome — clear background over the
+    // split's material, and the unemphasised selection rather than the
+    // accent fill (water-rs/waterui#1495).
+    #[cfg(target_os = "macos")]
+    if ctx
+        .env()
+        .get::<waterui::component::list::SidebarContent>()
+        .is_some()
+    {
+        table.set_sidebar(true);
+    }
     #[cfg(target_os = "ios")]
     let stock_height = {
         table.setSelfSizingInvalidation(
@@ -1845,6 +1920,7 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         theme_insets,
         resolved_min_height: min_row_height(config.min_row_height, stock_height),
         measured_heights: HashMap::new(),
+        disabled_rows: RefCell::new(HashMap::new()),
     }));
 
     #[cfg(target_os = "ios")]
@@ -1913,7 +1989,7 @@ fn render(config: ListConfig, ctx: &RenderContext<'_>) -> NativeLeaf {
         move |ctx, change| {
             let snapshot = ctx.value().clone();
             let metadata = ctx.metadata().clone();
-            pending.borrow_mut().record(snapshot, metadata, &change);
+            pending.borrow_mut().record(snapshot, metadata, change);
             schedule_contents_flush(&state, &pending, &table);
         }
     });
@@ -1965,35 +2041,57 @@ pub fn install(dispatcher: &mut crate::dispatch::Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn single_section_row_diff_computes_membership_changes() {
-        let old: Vec<ItemId> = vec![
-            SelfId::new(RawId::try_from(1).unwrap()),
-            SelfId::new(RawId::try_from(2).unwrap()),
-        ];
-        let new: Vec<ItemId> = vec![
-            SelfId::new(RawId::try_from(3).unwrap()),
-            SelfId::new(RawId::try_from(1).unwrap()),
-            SelfId::new(RawId::try_from(4).unwrap()),
-        ];
-        // 2 removed (index 1), 3 and 4 inserted (indexes 0 and 2).
-        let (deletes, inserts) =
-            single_section_row_diff(&old, &new).expect("membership change diffs");
-        assert_eq!(deletes, vec![1]);
-        assert_eq!(inserts, vec![0, 2]);
+    fn ids(raw: &[i32]) -> Vec<ItemId> {
+        raw.iter()
+            .map(|id| RawId::try_from(*id).expect("test ids are non-zero"))
+            .collect()
     }
 
     #[test]
-    fn single_section_row_diff_rejects_reorder() {
-        let a = SelfId::new(RawId::try_from(1).unwrap());
-        let b = SelfId::new(RawId::try_from(2).unwrap());
-        assert!(single_section_row_diff(&[a, b], &[b, a]).is_none());
+    fn single_section_row_diff_computes_membership_changes() {
+        // 2 removed (index 1), 3 and 4 inserted (indexes 0 and 2).
+        let edits =
+            single_section_row_diff(&ids(&[1, 2]), &ids(&[3, 1, 4])).expect("ids are unique");
+        assert_eq!(
+            edits,
+            RowEdits {
+                deletes: vec![1],
+                inserts: vec![0, 2],
+                moves: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn single_section_row_diff_reports_a_reorder_as_moves() {
+        let edits =
+            single_section_row_diff(&ids(&[1, 2, 3]), &ids(&[3, 1, 2])).expect("ids are unique");
+        assert_eq!(
+            edits,
+            RowEdits {
+                deletes: Vec::new(),
+                inserts: Vec::new(),
+                moves: vec![(2, 0)],
+            }
+        );
     }
 
     #[test]
     fn single_section_row_diff_rejects_duplicates() {
-        let a = SelfId::new(RawId::try_from(1).unwrap());
-        assert!(single_section_row_diff(&[a, a], &[a]).is_none());
+        assert!(single_section_row_diff(&ids(&[1, 1]), &ids(&[1])).is_none());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sequential_moves_replay_a_reorder_around_removals_and_insertions() {
+        let old = ids(&[1, 2, 3, 4]);
+        let new = ids(&[5, 4, 1, 3]);
+        let removed: HashSet<ItemId> = ids(&[2]).into_iter().collect();
+        let inserted: HashSet<ItemId> = ids(&[5]).into_iter().collect();
+        let moves = sequential_moves(&old, &new, &removed, &inserted);
+        // After removing 2 the rows are [1, 3, 4]; moving 4 to the front
+        // gives [4, 1, 3], and inserting 5 at 0 gives the new order.
+        assert_eq!(moves, vec![(2, 0)]);
     }
 
     #[test]

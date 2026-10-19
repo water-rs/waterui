@@ -27,14 +27,18 @@
 //!     .background(Material::UltraThin);
 //! ```
 
-use std::{fmt::Debug, rc::Rc};
+use std::{fmt::Debug, future::Future, rc::Rc, sync::Arc};
 
 use nami::{Binding, Computed, Signal, SignalExt as _, impl_constant, signal::IntoComputed};
 use suiteki::Str;
-use waterui_core::handler::{AnyViewBuilder, ViewBuilder};
+use waterui_core::handler::{AnyViewBuilder, Handler, ViewBuilder, boxed_action};
 use waterui_core::{AnyView, Dynamic, Environment, View, flatten_signal};
 use waterui_graphics::{Color, color::WorkingColor};
 use waterui_layout::{Point, Rect, Size};
+
+pub use super::window_close::CloseReply;
+use super::window_close::{CloseRequest, Question};
+use super::window_focus::FocusRequest;
 
 use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
@@ -194,6 +198,146 @@ pub struct Window {
     /// Platform support: hydrolysis/winit (X11 `WM_NORMAL_HINTS`, macOS),
     /// macOS (`NSWindow.contentResizeIncrements`). Others ignore it.
     pub resize_increments: Option<Computed<Size>>,
+    /// The window's own icon, or `None` for the application icon.
+    ///
+    /// Reactive: backends observe the binding and re-apply the icon to a
+    /// shown window, so an app can switch icons at runtime — following a
+    /// theme change, say — through [`WindowHandle::set_icon`] or its own
+    /// binding. `None`, the default, keeps the application icon the `water`
+    /// CLI stages next to the asset bundle, and setting the binding back to
+    /// `None` restores it.
+    ///
+    /// Platform support: hydrolysis/winit's `set_window_icon` realizes the
+    /// icon on X11, and on Windows alongside `set_taskbar_icon` (the
+    /// taskbar and Alt-Tab read the separate big icon). Wayland and macOS
+    /// are unsupported — winit 0.30 cannot set a window icon there — and
+    /// Hydrolysis on Android has no per-window icon. `AppKit` and `UIKit`
+    /// identify an application by one icon: unsupported there, not faked
+    /// through the Dock. The attribute does not cross the C ABI.
+    pub icon: Binding<Option<WindowIcon>>,
+    /// The close-request machine [`Self::on_close_request`] installs into,
+    /// shared by `Rc` with [`WindowHandle`] and armed by the backend when the
+    /// window is realized.
+    close_request: CloseRequest,
+    /// The focus machine [`WindowHandle::focus`] files into, shared by
+    /// `Rc` with [`WindowHandle`] and armed by the backend when the window
+    /// is realized.
+    focus_request: FocusRequest,
+}
+
+/// A window's own icon: straight-alpha sRGB RGBA8 pixels and their size.
+///
+/// Cloning shares the pixels, so a [`Binding`] snapshot is cheap. Platforms
+/// pick or scale the size they show; a square image of 32 or 64 pixels suits
+/// title bars and taskbars.
+#[derive(Clone)]
+pub struct WindowIcon {
+    width: u32,
+    height: u32,
+    rgba: Arc<[u8]>,
+}
+
+impl WindowIcon {
+    /// An icon of `width × height` pixels, `rgba` holding them row by row,
+    /// top to bottom, four bytes each — red, green, blue and straight
+    /// (non-premultiplied) alpha.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the icon has no pixels, or when `rgba` is not exactly
+    /// `width * height * 4` bytes long.
+    #[must_use]
+    pub fn new(width: u32, height: u32, rgba: impl Into<Arc<[u8]>>) -> Self {
+        let rgba = rgba.into();
+        assert!(
+            width > 0 && height > 0,
+            "WindowIcon::new: a window icon needs at least one pixel, got {width}x{height}"
+        );
+        let expected = usize::try_from(width)
+            .ok()
+            .and_then(|width| width.checked_mul(usize::try_from(height).ok()?))
+            .and_then(|pixels| pixels.checked_mul(4))
+            .unwrap_or_else(|| {
+                panic!("WindowIcon::new: a {width}x{height} icon does not fit in memory")
+            });
+        assert_eq!(
+            rgba.len(),
+            expected,
+            "WindowIcon::new: a {width}x{height} icon takes {expected} RGBA8 bytes, got {}",
+            rgba.len()
+        );
+        Self {
+            width,
+            height,
+            rgba,
+        }
+    }
+
+    /// Width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// The pixels, `width * height * 4` bytes of straight-alpha RGBA, row by
+    /// row from the top.
+    #[must_use]
+    pub fn rgba(&self) -> &[u8] {
+        &self.rgba
+    }
+}
+
+impl PartialEq for WindowIcon {
+    fn eq(&self, other: &Self) -> bool {
+        // Snapshots of one binding share their pixels, so the common
+        // comparison — has the icon changed since the last sync? — never
+        // reads them.
+        self.width == other.width
+            && self.height == other.height
+            && (Arc::ptr_eq(&self.rgba, &other.rgba) || self.rgba == other.rgba)
+    }
+}
+
+impl Eq for WindowIcon {}
+
+impl Debug for WindowIcon {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WindowIcon")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Converts a fixed icon or an application-owned icon binding into the
+/// reactive value carried by a [`Window`].
+pub trait IntoWindowIcon {
+    /// Converts this value into a window-icon binding.
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>>;
+}
+
+impl IntoWindowIcon for WindowIcon {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        Binding::container(Some(self))
+    }
+}
+
+impl IntoWindowIcon for Option<WindowIcon> {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        Binding::container(self)
+    }
+}
+
+impl IntoWindowIcon for Binding<Option<WindowIcon>> {
+    fn into_window_icon(self) -> Binding<Option<WindowIcon>> {
+        self
+    }
 }
 
 /// A connected display, as the backend resolved it for a window's placement.
@@ -203,6 +347,7 @@ pub struct Window {
 /// live handle — monitor geometry read elsewhere stays authoritative in the
 /// backend that produced it.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Monitor {
     /// Bounds in the global logical coordinate space window frames use.
     pub frame: Rect,
@@ -215,8 +360,32 @@ pub struct Monitor {
     pub name: Option<Str>,
 }
 
+impl Monitor {
+    /// A display spanning `frame`, of which `visible_frame` is free of
+    /// desktop chrome, at `scale_factor` physical pixels per logical point,
+    /// named `name` when the platform reports one.
+    #[must_use]
+    pub const fn new(
+        frame: Rect,
+        visible_frame: Rect,
+        scale_factor: f64,
+        name: Option<Str>,
+    ) -> Self {
+        Self {
+            frame,
+            visible_frame,
+            scale_factor,
+            name,
+        }
+    }
+}
+
 /// Which monitor a window is placed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends resolve each monitor selector variant by variant; a new selector must fail their build instead of falling into a wildcard arm"
+)]
 pub enum MonitorSelector {
     /// The platform's primary display (macOS: the one carrying the menu bar).
     #[default]
@@ -233,6 +402,7 @@ pub enum MonitorSelector {
 /// The backend resolves `monitor` each time the window is shown, calls `place`
 /// with the result, and writes the returned rect into `Window::frame` before
 /// the window becomes visible.
+#[non_exhaustive]
 pub struct WindowPlacement {
     /// The monitor a backend resolves before calling `place`.
     pub monitor: MonitorSelector,
@@ -258,6 +428,10 @@ impl Debug for WindowPlacement {
 /// doing — a drop-down terminal is the canonical case: it overlays focused
 /// work and takes the keyboard only when its policy says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each activation policy variant by variant on every desktop platform"
+)]
 pub enum Activation {
     /// Showing the window activates the app and focuses the window.
     #[default]
@@ -274,6 +448,10 @@ pub enum Activation {
 /// state binding represents a window that has not yet been shown. Setting
 /// the binding to [`Self::Normal`] is what triggers the window to open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window state variant by variant; a new window state must fail their build instead of falling into a wildcard arm"
+)]
 pub enum WindowState {
     /// The window is in its normal state.
     Normal,
@@ -291,6 +469,10 @@ pub enum WindowState {
 
 /// Where a window stacks relative to other applications' windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window level variant by variant; a new window level must fail their build instead of falling into a wildcard arm"
+)]
 pub enum WindowLevel {
     /// The window stacks with other windows as focus moves between them.
     #[default]
@@ -303,6 +485,10 @@ impl_constant!(WindowLevel);
 
 /// How urgently a window asks for the user's attention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each attention request variant by variant; a new attention request must fail their build instead of falling into a wildcard arm"
+)]
 pub enum UserAttention {
     /// Something the user may want to look at: a finished task, a mention.
     Informational,
@@ -314,6 +500,10 @@ pub enum UserAttention {
 
 /// The visual style of a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window style variant by variant; a new window style must fail their build instead of falling into a wildcard arm"
+)]
 pub enum WindowStyle {
     /// Standard window with title bar and controls.
     #[default]
@@ -340,6 +530,7 @@ pub enum WindowStyle {
 ///
 /// [`Material`](Self::Material) is described on the variant.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub enum WindowBackground {
     /// Opaque background in the theme's [`Background`] colour.
     #[default]
@@ -370,17 +561,19 @@ pub enum WindowBackground {
     ///   the closest source-over tint under the content; blurring the desktop
     ///   is the compositor's job. The desktop is blurred where the platform's
     ///   blur-behind is wired — an `NSVisualEffectView` behind the window on
-    ///   macOS — and shows through tinted but unblurred elsewhere; X11 and
-    ///   Wayland on Linux and the system backdrop on Windows are
-    ///   water-rs/waterui#1856, #1857 and #1858.
+    ///   macOS, the DWM's acrylic system backdrop on Windows 11 22H2 and
+    ///   later, `_KDE_NET_WM_BLUR_BEHIND_REGION` under a window manager that
+    ///   honours it (`KWin`) on X11, and `ext-background-effect-v1` on
+    ///   Wayland, whose compositor applies blur by its own policy — and
+    ///   shows through tinted but unblurred elsewhere: older Windows, other
+    ///   X11 window managers and Wayland compositors not advertising the
+    ///   global.
     /// - **Hydrolysis on Android**: a within-window level is realized as on a
     ///   desktop. Window transparency is not realized on Android yet, so a
     ///   behind-window level renders as an opaque window
     ///   (water-rs/waterui#1966).
-    /// - **Android (the Kotlin runtime)** and the experimental backends realize
-    ///   no material: the window is drawn opaque in the theme's background
-    ///   colour. Hydrolysis is the Android backend that realizes it
-    ///   (water-rs/waterui#1899).
+    /// - **Experimental backends** that do not implement material backgrounds
+    ///   draw the window opaque in the theme's background colour.
     Material(Material),
 }
 
@@ -406,6 +599,10 @@ impl From<WindowBackground> for Binding<WindowBackground> {
 /// concrete colour to paint behind the content, or the material to realize
 /// at the window.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window background variant by variant; a new window background must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ResolvedWindowBackground {
     /// Paint this colour behind the window's content. An opacity below one
     /// asks for a translucent window. [`WindowBackground::Opaque`] resolves
@@ -548,6 +745,7 @@ impl Window {
             AnyView::new(content)
         });
 
+        let close_request = CloseRequest::new(&state);
         Self {
             title: title.into_computed(),
             closable: true,
@@ -567,6 +765,9 @@ impl Window {
             level: Computed::constant(WindowLevel::Normal),
             attention: Binding::container(None),
             resize_increments: None,
+            icon: Binding::container(None),
+            close_request,
+            focus_request: FocusRequest::new(),
         }
     }
 
@@ -626,6 +827,18 @@ impl Window {
     #[must_use]
     pub fn resize_increments(mut self, increments: impl IntoComputed<Size>) -> Self {
         self.resize_increments = Some(increments.into_computed());
+        self
+    }
+
+    /// Set the window's own icon.
+    ///
+    /// Takes a [`WindowIcon`] for a fixed icon, an `Option<WindowIcon>`, or a
+    /// `Binding<Option<WindowIcon>>` the app keeps to change the icon after
+    /// the window is shown. See [`Self::icon`] for the default and platform
+    /// support notes.
+    #[must_use]
+    pub fn icon(mut self, icon: impl IntoWindowIcon) -> Self {
+        self.icon = icon.into_window_icon();
         self
     }
 
@@ -780,6 +993,81 @@ impl Window {
             .unwrap_or_else(|| self.display_app_id())
     }
 
+    /// Asks `handler` before the window closes.
+    ///
+    /// Every close request — the title-bar close button, the window
+    /// manager's close (X11 `WM_DELETE_WINDOW`, Wayland
+    /// `xdg_toplevel.close`, `WM_CLOSE`), a Close Window menu command,
+    /// `performClose:` or [`WindowHandle::request_close`] — runs the handler
+    /// and applies its [`CloseReply`]: [`Close`](CloseReply::Close) writes
+    /// `state =` [`WindowState::Closed`] and the normal teardown runs,
+    /// [`Cancel`](CloseReply::Cancel) leaves the window open and writes
+    /// nothing. A request arriving while a question is already open is
+    /// dropped — the machine asks one question per window.
+    ///
+    /// Writing `state` to [`WindowState::Closed`] yourself, or
+    /// [`WindowHandle::close`], is not a request and never runs the handler;
+    /// a programmatic close while a question is open drops its future,
+    /// cancelling it. `closable == false` drops a request before the handler
+    /// runs.
+    ///
+    /// The handler extracts from the environment the window renders under —
+    /// a `State`, a service — and its future runs on the runner's local
+    /// executor, so the reply never arrives inside a platform delegate call.
+    ///
+    /// Platform support: Hydrolysis desktop and `AppKit`. Hydrolysis Android,
+    /// `UIKit` and web have no window close request — the handler never runs
+    /// there, and [`WindowHandle::request_close`] panics.
+    #[must_use]
+    pub fn on_close_request<H, Args, Fut>(self, handler: H) -> Self
+    where
+        H: Handler<Args, Fut>,
+        Fut: Future<Output = CloseReply> + 'static,
+    {
+        let mut action = boxed_action(handler);
+        self.close_request
+            .set_hook(Box::new(move |env| Box::pin(action(env)) as Question));
+        self
+    }
+
+    /// Arms close requests with the environment the window renders under —
+    /// a backend calls it when it realizes the window, so
+    /// [`WindowHandle::request_close`] can file before any platform request
+    /// arrives.
+    #[doc(hidden)]
+    pub fn arm_close_requests(&self, env: &Environment) {
+        self.close_request.arm(env, self.closable);
+    }
+
+    /// Arms focus requests with `hook` — the platform call
+    /// [`WindowHandle::focus`] dispatches into. A backend calls it when it
+    /// realizes the window; a platform that cannot activate a mapped window
+    /// leaves the machine unarmed and the call panics.
+    #[doc(hidden)]
+    pub fn arm_focus_requests(&self, hook: impl FnMut() + 'static) {
+        self.focus_request.arm(hook);
+    }
+
+    /// Files a user close request — the one entry point a backend calls when
+    /// the platform asks to close the window. `env` is the environment the
+    /// window renders under; the call arms the machine with it, so the
+    /// handler extracts from it. `closable == false` drops the request before
+    /// the handler runs.
+    #[doc(hidden)]
+    pub fn request_close(&self, env: &Environment) {
+        self.arm_close_requests(env);
+        self.close_request.request();
+    }
+
+    /// Whether an [`on_close_request`](Self::on_close_request) handler is
+    /// installed — the synchronous verdict a delegate like
+    /// `windowShouldClose:` needs.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_close_handler(&self) -> bool {
+        self.close_request.has_handler()
+    }
+
     /// Get a handle to control the window after showing it.
     #[must_use]
     pub fn handle(&self) -> WindowHandle {
@@ -789,6 +1077,9 @@ impl Window {
             attention: self.attention.clone(),
             style: self.style.clone(),
             background: self.background.clone(),
+            icon: self.icon.clone(),
+            close_request: self.close_request.clone(),
+            focus_request: self.focus_request.clone(),
         }
     }
 
@@ -889,9 +1180,26 @@ pub struct WindowHandle {
     attention: Binding<Option<UserAttention>>,
     style: Binding<WindowStyle>,
     background: Binding<WindowBackground>,
+    icon: Binding<Option<WindowIcon>>,
+    close_request: CloseRequest,
+    focus_request: FocusRequest,
 }
 
 impl WindowHandle {
+    /// Files a close request the window's
+    /// [`on_close_request`](Window::on_close_request) handler decides, as the
+    /// title-bar close button would. With no handler installed the window
+    /// closes immediately; `closable == false` drops the request.
+    /// [`Self::close`] closes without asking.
+    ///
+    /// # Panics
+    ///
+    /// When the window has not been realized yet, and on the platforms with
+    /// no window close request — Hydrolysis Android, `UIKit` and web.
+    pub fn request_close(&self) {
+        self.close_request.request();
+    }
+
     /// Close the window.
     pub fn close(&self) {
         self.state.set(WindowState::Closed);
@@ -915,6 +1223,35 @@ impl WindowHandle {
     /// Restore the window to its normal state.
     pub fn restore(&self) {
         self.state.set(WindowState::Normal);
+    }
+
+    /// Bring the window in front and give it keyboard focus — the classic
+    /// "show me the existing settings window" request.
+    ///
+    /// Platform behaviour:
+    ///
+    /// - **macOS:** a miniaturized window deminiaturizes first, then
+    ///   `makeKeyAndOrderFront:` and `NSApp.activate()` — the cooperative
+    ///   activation macOS 14 introduced, which the system may still
+    ///   decline.
+    /// - **iOS:** `makeKeyAndVisible` — the window becomes its scene's
+    ///   key window.
+    /// - **Hydrolysis/winit:** `focus_window` — X11
+    ///   `_NET_ACTIVE_WINDOW` and Windows `SetForegroundWindow` behind
+    ///   it; the window manager may still decline, and on Wayland an
+    ///   activation token is required, which only exists when the request
+    ///   follows a user gesture — otherwise the request is best-effort.
+    /// - **Headless/semantic runners:** unarmed; the call panics.
+    ///
+    /// A handle that outlived its window's teardown files into nothing:
+    /// the request is a no-op.
+    ///
+    /// # Panics
+    ///
+    /// When the window has not been realized yet, and on the platforms
+    /// with no mapped-window activation — headless and semantic runners.
+    pub fn focus(&self) {
+        self.focus_request.request();
     }
 
     /// Ask the platform to draw the user's attention to the window, until
@@ -944,6 +1281,13 @@ impl WindowHandle {
     pub fn set_background(&self, background: impl Into<WindowBackground>) {
         self.background.set(background.into());
     }
+
+    /// Set the window's own icon, or `None` for the application icon; the
+    /// backend re-applies it to the shown window. See [`Window::icon`] for
+    /// platform support.
+    pub fn set_icon(&self, icon: impl Into<Option<WindowIcon>>) {
+        self.icon.set(icon.into());
+    }
 }
 
 #[cfg(test)]
@@ -958,7 +1302,8 @@ mod tests {
     };
 
     use super::{
-        ResolvedWindowBackground, Window, WindowBackground, WindowState, resolve_background,
+        ResolvedWindowBackground, Window, WindowBackground, WindowIcon, WindowState,
+        resolve_background,
     };
     use crate::background::Material;
     use crate::theme::{
@@ -1052,5 +1397,28 @@ mod tests {
         accent.set(red);
         assert_eq!(color(last()), red);
         assert_eq!(color(resolved.snapshot()), red);
+    }
+
+    /// The icon validates its pixel buffer against its size.
+    #[test]
+    #[should_panic(expected = "a 2x1 icon takes 8 RGBA8 bytes, got 4")]
+    fn window_icon_rejects_a_short_buffer() {
+        let _ = WindowIcon::new(2, 1, vec![0_u8; 4]);
+    }
+
+    /// An icon without pixels is rejected rather than handed to a platform.
+    #[test]
+    #[should_panic(expected = "at least one pixel")]
+    fn window_icon_rejects_an_empty_icon() {
+        let _ = WindowIcon::new(0, 4, Vec::<u8>::new());
+    }
+
+    /// Icons compare by their pixels, whether or not they share them.
+    #[test]
+    fn window_icons_compare_by_pixels() {
+        let icon = WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]);
+        assert_eq!(icon, icon.clone());
+        assert_eq!(icon, WindowIcon::new(1, 1, vec![1_u8, 2, 3, 4]));
+        assert_ne!(icon, WindowIcon::new(1, 1, vec![1_u8, 2, 3, 5]));
     }
 }

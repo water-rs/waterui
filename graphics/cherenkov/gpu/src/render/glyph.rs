@@ -13,7 +13,7 @@ use skrifa::outline::{DrawSettings, OutlinePen};
 use skrifa::raw::TableProvider;
 use skrifa::raw::types::F2Dot14;
 
-use crate::render::raster::Raster;
+use crate::render::raster::{self, Raster};
 use cherenkov::RenderError;
 
 /// Initial atlas edge length.
@@ -146,8 +146,17 @@ pub struct Entry {
     pub left: i32,
     /// Offset of the cell's top edge from the glyph's integer device origin.
     pub top: i32,
-    /// Shelf the cell lives on, for [`Atlas::begin_commit`] touches.
-    pub slot: u32,
+}
+
+/// A cached glyph: the cell the lowering reads and the shelf the cell
+/// lives on. A glyph with no outline is cached too, so its miss is not
+/// retried every frame, but it owns no cell and so names no shelf —
+/// `shelf` is `None` — and it sits in neither `live` nor `slot_keys`
+/// (#2327).
+#[derive(Clone, Copy)]
+struct CachedGlyph {
+    entry: Entry,
+    shelf: Option<u32>,
 }
 
 /// One atlas cell emitted by the path rasterizer: a device-space quad
@@ -265,7 +274,16 @@ pub const MASK_TEXTURE_TEXELS: u64 = 256 * 256;
 struct MaskTexture {
     /// The mask data; `cell.atlas` stays `[0, 0]` (unused).
     cell: MaskCell,
-    _texture: wgpu::Texture,
+    /// Retained so a native executor can transition the resource its
+    /// descriptor names, not just bind the view.
+    #[cfg_attr(
+        not(all(unix, not(target_vendor = "apple"))),
+        expect(
+            dead_code,
+            reason = "only the native Vulkan executor transitions these resources; Metal binds the views"
+        )
+    )]
+    texture: wgpu::Texture,
     view: wgpu::TextureView,
     /// `w` × `h`, the texture's GPU bytes.
     bytes: u64,
@@ -342,6 +360,17 @@ pub struct Atlas {
     /// The atlas texture — `None` until the first committed cell writes
     /// it; an idle engine holds no coverage storage (#170).
     texture: Option<wgpu::Texture>,
+    /// The 1×1 placeholder `view` binds until the first committed cell.
+    /// Retained so a native executor can transition the resource its
+    /// descriptor names, whether or not storage exists.
+    #[cfg_attr(
+        not(all(unix, not(target_vendor = "apple"))),
+        expect(
+            dead_code,
+            reason = "only the native Vulkan executor transitions these resources; Metal binds the views"
+        )
+    )]
+    placeholder: wgpu::Texture,
     /// The group-0 binding: the atlas view once allocated, otherwise a
     /// 1×1 `R8Unorm` placeholder — the minimal valid binding for a
     /// binding the frame's instances never sample (#170).
@@ -372,7 +401,7 @@ pub struct Atlas {
     evicting: bool,
     /// Bytes evicted this commit, drained by the caller for diagnostics.
     evicted: Vec<(u64, bool)>,
-    map: rustc_hash::FxHashMap<GlyphKey, Entry>,
+    map: rustc_hash::FxHashMap<GlyphKey, CachedGlyph>,
     /// Rasterized path emissions, keyed by content hash.
     paths: rustc_hash::FxHashMap<u64, PathEmit>,
     /// Slot lists the `PathEmit::slots` ranges address. Entries
@@ -431,22 +460,21 @@ impl Atlas {
     /// committed cell, and `view` binds a 1×1 placeholder until then
     /// (#170's "storage absent until the first atlas-backed primitive").
     pub fn new(device: &wgpu::Device, budget: u64) -> Self {
-        let view = device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some("glyph atlas placeholder"),
-                size: wgpu::Extent3d {
-                    width: 1,
-                    height: 1,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R8Unorm,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default());
+        let placeholder = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("glyph atlas placeholder"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = placeholder.create_view(&wgpu::TextureViewDescriptor::default());
         crate::diag::create(device, "glyph atlas placeholder", 1);
         let texture_limit = device.limits().max_texture_dimension_2d;
         #[expect(
@@ -461,6 +489,7 @@ impl Atlas {
             .max(ATLAS_START);
         Self {
             texture: None,
+            placeholder,
             view,
             size: ATLAS_START,
             cap,
@@ -537,6 +566,13 @@ impl Atlas {
         &self.view
     }
 
+    /// The texture `view` names: the atlas storage once a cell has
+    /// committed, the placeholder before that.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    pub fn texture(&self) -> &wgpu::Texture {
+        self.texture.as_ref().unwrap_or(&self.placeholder)
+    }
+
     /// Allocates the atlas texture at the first committed cell. The
     /// generation bump rebuilds group-0 bindings against the real view.
     fn ensure_storage(&mut self, device: &wgpu::Device) {
@@ -568,17 +604,20 @@ impl Atlas {
 
     /// Drops every cached glyph of `font`. The freed texels stay claimed
     /// in the shelf layout until eviction or a grow reclaims them; path
-    /// and mask cells are font-independent and stay.
+    /// and mask cells are font-independent and stay. An outline-less
+    /// glyph leaves only the map: it was never indexed or charged.
     pub fn remove_font(&mut self, font: u64) {
         let dropped: Vec<(u64, u64, usize)> = self
             .map
             .extract_if(|key, _| key.font == font)
-            .map(|(key, entry)| {
-                (
-                    live_hash(&key),
-                    u64::from(entry.w) * u64::from(entry.h),
-                    usize::try_from(entry.slot).expect("shelf count fits usize"),
-                )
+            .filter_map(|(key, cached)| {
+                cached.shelf.map(|slot| {
+                    (
+                        live_hash(&key),
+                        u64::from(cached.entry.w) * u64::from(cached.entry.h),
+                        usize::try_from(slot).expect("shelf count fits usize"),
+                    )
+                })
             })
             .collect();
         for (hk, bytes, slot) in dropped {
@@ -647,20 +686,28 @@ impl Atlas {
     /// claimed spans — and no full-size CPU shadow of the atlas is
     /// kept to assemble them (#169 A3). Each shelf's `base` marks where
     /// the commit started writing.
+    ///
+    /// The batch moves in: its texel arenas are copied into GPU staging
+    /// and dropped with the call, and the emptied container comes back
+    /// for the next commit to refill — only its list capacities are
+    /// retained (#2671).
     pub fn upload_committed(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        cells: &[CellWrite],
-    ) {
+        mut cells: CellWrites,
+    ) -> CellWrites {
         if cells.is_empty() {
-            return;
+            // A commit can stage an arena without placing a cell from it
+            // (a failed lowering, an empty batch); it still ends here.
+            cells.clear();
+            return cells;
         }
         self.ensure_storage(device);
         let n = self.layout.shelves.len();
         self.bucket_counts.clear();
         self.bucket_counts.resize(n, 0);
-        for cell in cells {
+        for cell in cells.cells() {
             self.bucket_counts[cell.shelf] += 1;
         }
         self.bucket_next.clear();
@@ -671,7 +718,7 @@ impl Atlas {
         }
         self.bucket_order.clear();
         self.bucket_order.resize(cells.len(), 0);
-        for (idx, cell) in cells.iter().enumerate() {
+        for (idx, cell) in cells.cells().iter().enumerate() {
             let slot = cell.shelf;
             self.bucket_order[self.bucket_next[slot] as usize] =
                 u32::try_from(idx).expect("upload batch fits u32");
@@ -692,22 +739,23 @@ impl Atlas {
             // texels without assembly.
             let single = match bucket {
                 &[idx] => {
-                    let cell = &cells[idx as usize];
+                    let cell = &cells.cells()[idx as usize];
                     (cell.x == x0 && cell.w == w && cell.h == h).then_some(cell)
                 }
                 _ => None,
             };
             let data: &[u8] = if let Some(cell) = single {
                 crate::diag::atlas_cell(device, (cell.x, cell.y, cell.w, cell.h));
-                cell.texels.as_slice()
+                cells.texels(cell)
             } else {
                 self.upload_scratch.clear();
                 self.upload_scratch.resize((w * h) as usize, 0);
                 for &idx in bucket {
-                    let cell = &cells[idx as usize];
+                    let cell = &cells.cells()[idx as usize];
                     let xo = (cell.x - x0) as usize;
                     let yo = (cell.y - shelf.y) as usize;
-                    for (row, line) in cell.texels.chunks_exact(cell.w as usize).enumerate() {
+                    for (row, line) in cells.texels(cell).chunks_exact(cell.w as usize).enumerate()
+                    {
                         let dst = (yo + row) * w as usize + xo;
                         self.upload_scratch[dst..dst + cell.w as usize].copy_from_slice(line);
                     }
@@ -745,6 +793,8 @@ impl Atlas {
                 Some((x0, shelf.y, w, h)),
             );
         }
+        cells.clear();
+        cells
     }
 
     /// The placement decision a pending batch's dry run supports
@@ -929,9 +979,12 @@ impl Atlas {
             let row = &self.layout.shelves[usize::try_from(slot).expect("shelf index")];
             row.live && row.last_used == tick
         };
-        for entry in self.map.values() {
-            if entry.w > 0 && touched(entry.slot) {
-                self.plan_all.push((u32::from(entry.w), u32::from(entry.h)));
+        for cached in self.map.values() {
+            if let Some(slot) = cached.shelf
+                && touched(slot)
+            {
+                self.plan_all
+                    .push((u32::from(cached.entry.w), u32::from(cached.entry.h)));
             }
         }
         for emit in self.paths.values() {
@@ -1005,7 +1058,8 @@ impl Atlas {
                 }
                 PendingRaster::MaskTexture { .. }
                 | PendingRaster::Colr { .. }
-                | PendingRaster::Bitmap { .. } => {}
+                | PendingRaster::Bitmap { .. }
+                | PendingRaster::GpuPath { .. } => {}
             }
         }
     }
@@ -1053,6 +1107,13 @@ impl Atlas {
     /// A cached mask texture's view, bound at group-1 binding 3.
     pub fn mask_texture_view(&self, key: u64) -> Option<&wgpu::TextureView> {
         self.mask_textures.get(&key).map(|t| &t.view)
+    }
+
+    /// The texture behind [`Self::mask_texture_view`], for the paths
+    /// that transition the resource rather than bind it.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
+    pub fn mask_texture_resource(&self, key: u64) -> Option<&wgpu::Texture> {
+        self.mask_textures.get(&key).map(|t| &t.texture)
     }
 
     /// Stores a mask on its own `w` × `h` `R8Unorm` texture, uploading
@@ -1121,7 +1182,7 @@ impl Atlas {
             key,
             MaskTexture {
                 cell,
-                _texture: texture,
+                texture,
                 view,
                 bytes,
             },
@@ -1198,21 +1259,23 @@ impl Atlas {
         h: u32,
         texels: &[u8],
     ) -> Option<(u32, u32)> {
-        let mut uploads = Vec::new();
+        let mut uploads = CellWrites::default();
         let hit = self.get(&key).is_some();
         self.begin_commit(&[]);
         let out = self.place_glyph(key, left, top, w, h, texels.to_vec(), &mut uploads);
-        self.upload_committed(device, queue, &uploads);
+        let _ = self.upload_committed(device, queue, uploads);
         if !hit && w == 0 {
             crate::diag::atlas_cell(device, (0, 0, 0, 0));
         }
-        out
+        out.map(|(origin, _)| origin)
     }
 
     /// The [`Self::store_glyph`] placement half: registers `key`'s cell
-    /// without uploading. On a miss the texels move into `writes` for
-    /// the batch's shelf-region uploads (#169 A3). `None` when the
-    /// cell does not fit — the caller plans first.
+    /// without uploading, returning its texel origin and the shelf it
+    /// lives on — `None` for a glyph with no outline, which owns no
+    /// cell (#2327). On a miss the texels move into `writes` for the
+    /// batch's shelf-region uploads (#169 A3). `None` when the cell
+    /// does not fit — the caller plans first.
     #[expect(
         clippy::too_many_arguments,
         reason = "the pending raster record's fields, passed through"
@@ -1229,22 +1292,32 @@ impl Atlas {
         w: u32,
         h: u32,
         texels: Vec<u8>,
-        writes: &mut Vec<CellWrite>,
-    ) -> Option<(u32, u32)> {
-        if let Some(entry) = self.get(&key) {
-            let (x, y, slot) = (u32::from(entry.x), u32::from(entry.y), entry.slot);
+        writes: &mut CellWrites,
+    ) -> Option<((u32, u32), Option<u32>)> {
+        if let Some(cached) = self.map.get(&key).copied() {
             // A pending raster can hit a cold entry the lowering never
             // pinned — keep it out of this commit's eviction set (#119).
-            self.touch(slot);
-            return Some((x, y));
+            // An outline-less glyph has no shelf to keep.
+            if let Some(slot) = cached.shelf {
+                self.touch(slot);
+            }
+            let origin = (u32::from(cached.entry.x), u32::from(cached.entry.y));
+            return Some((origin, cached.shelf));
         }
         if w == 0 {
-            self.map.insert(key, Entry::default());
-            return Some((0, 0));
+            self.map.insert(
+                key,
+                CachedGlyph {
+                    entry: Entry::default(),
+                    shelf: None,
+                },
+            );
+            return Some(((0, 0), None));
         }
         let (cx, cy, slot) = self.alloc(w, h)?;
         self.cpu_bytes += u64::from(w) * u64::from(h) + LIVE_ENTRY_BYTES;
         let hk = live_hash(&key);
+        let cell_shelf = u32::try_from(slot).expect("shelf count fits u32");
         let entry = Entry {
             x: cx as u16,
             y: cy as u16,
@@ -1252,9 +1325,14 @@ impl Atlas {
             h: h as u16,
             left,
             top,
-            slot: slot as u32,
         };
-        self.map.insert(key, entry);
+        self.map.insert(
+            key,
+            CachedGlyph {
+                entry,
+                shelf: Some(cell_shelf),
+            },
+        );
         self.live.insert(
             hk,
             LiveEntry {
@@ -1262,21 +1340,25 @@ impl Atlas {
             },
         );
         self.slot_keys[slot].insert(hk);
+        let len = texels.len();
+        let arena = writes.push_arena(texels);
         writes.push(CellWrite {
             shelf: slot,
             x: cx,
             y: cy,
             w,
             h,
-            texels,
+            arena,
+            texels: 0..len,
         });
-        Some((cx, cy))
+        Some(((cx, cy), Some(cell_shelf)))
     }
 
     /// The [`Self::store_path`] placement half: allocates each cell and
-    /// patches its origin without uploading; texels move into `writes`
-    /// (#169 A3). `None` when a cell does not fit — the caller plans
-    /// first.
+    /// patches its origin without uploading; `arena` is the batch's
+    /// texel arena the cells' byte ranges index, already staged in
+    /// `writes` (#169 A3). `None` when a cell does not fit — the caller
+    /// plans first.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "atlas cells fit u16: the atlas is at most 64kpx per axis"
@@ -1286,7 +1368,8 @@ impl Atlas {
         key: u64,
         emit: PathEmit,
         cells: Vec<CellTexels>,
-        writes: &mut Vec<CellWrite>,
+        arena: u32,
+        writes: &mut CellWrites,
     ) -> Option<()> {
         if let Some(emit) = self.paths.get(&key) {
             // Same: the hit's bands may be cold — pin them or a later
@@ -1314,6 +1397,7 @@ impl Atlas {
                 y: cy,
                 w,
                 h,
+                arena,
                 texels,
             });
         }
@@ -1345,10 +1429,10 @@ impl Atlas {
         h: u32,
         texels: &[u8],
     ) -> Option<()> {
-        let mut uploads = Vec::new();
+        let mut uploads = CellWrites::default();
         self.begin_commit(&[]);
         let out = self.place_mask(key, mask, w, h, texels.to_vec(), &mut uploads);
-        self.upload_committed(device, queue, &uploads);
+        let _ = self.upload_committed(device, queue, uploads);
         out
     }
 
@@ -1366,7 +1450,7 @@ impl Atlas {
         w: u32,
         h: u32,
         texels: Vec<u8>,
-        writes: &mut Vec<CellWrite>,
+        writes: &mut CellWrites,
     ) -> Option<()> {
         if let Some(mask) = self.masks.get(&key) {
             // Same: pin the slot so this commit cannot evict it (#119).
@@ -1385,13 +1469,16 @@ impl Atlas {
         );
         self.slot_keys[slot].insert(key);
         self.insert_mask(key, mask);
+        let len = texels.len();
+        let arena = writes.push_arena(texels);
         writes.push(CellWrite {
             shelf: slot,
             x: cx,
             y: cy,
             w,
             h,
-            texels,
+            arena,
+            texels: 0..len,
         });
         Some(())
     }
@@ -1563,6 +1650,13 @@ impl Atlas {
     /// Bands never overlap in y within a page, so the scan hits at
     /// most once; shelves from dead-band splits sit at any index, so
     /// the search is a filter rather than a binary search.
+    ///
+    /// Kept out of line: the commit's pin walk calls the hint check
+    /// from four nested loops, and inlined there at opt-level 3 the
+    /// scan's position counter is spilled to the stack, so every shelf
+    /// pays a store-to-load round trip (#2852). In its own frame the
+    /// counter stays in a register.
+    #[inline(never)]
     fn shelf_hit(&self, y: u32, x: u32) -> Option<u32> {
         let page = y / self.size;
         self.layout
@@ -1614,8 +1708,9 @@ impl Atlas {
             };
             match live.kind {
                 LiveKind::Glyph(key) => {
-                    if let Some(entry) = self.map.remove(&key) {
-                        bytes += u64::from(entry.w) * u64::from(entry.h) + LIVE_ENTRY_BYTES;
+                    if let Some(cached) = self.map.remove(&key) {
+                        bytes += u64::from(cached.entry.w) * u64::from(cached.entry.h)
+                            + LIVE_ENTRY_BYTES;
                     }
                 }
                 LiveKind::Path => {
@@ -1766,6 +1861,14 @@ fn alloc_on(
     w: u32,
     h: u32,
 ) -> Option<(u32, u32, usize)> {
+    // Every band — a live shelf, a dead band, virgin rows — spans one
+    // page's width, so a cell wider than the edge places nowhere. It
+    // fails here, before any branch, so the plan grows the edge (#234)
+    // instead of a reclaimed band taking it and the shelf upload
+    // overrunning the texture's x extent (#2396).
+    if w + 2 * PAD > size {
+        return None;
+    }
     // Shelf height classes are multiples of 8.
     let class = band(h);
     for (i, shelf) in layout.shelves.iter_mut().enumerate() {
@@ -1819,31 +1922,27 @@ fn alloc_on(
         layout.next_epoch += 1;
         return Some((PAD, shelf.y + PAD, slot));
     }
-    // A new shelf also needs the cell's width: a cell wider than the
-    // page edge must fail here so the caller grows (or reclaims)
-    // instead of writing past the texture edge. The virgin scan fills
-    // pages front to back; no room on any page fails the placement.
-    if w + 2 * PAD <= size {
-        for (page, top) in layout.tops.iter_mut().enumerate() {
-            if *top + class > size {
-                continue;
-            }
-            let base = u32::try_from(page).expect("pages fit u32") * size;
-            let i = layout.shelves.len();
-            layout.shelves.push(Shelf {
-                y: base + *top,
-                h: class,
-                x: w + 2 * PAD,
-                base: 0,
-                last_used: tick,
-                hits: 0,
-                live: true,
-                epoch: layout.next_epoch,
-            });
-            layout.next_epoch += 1;
-            *top += class;
-            return Some((PAD, base + *top - class + PAD, i));
+    // The virgin scan fills pages front to back; no room on any page
+    // fails the placement.
+    for (page, top) in layout.tops.iter_mut().enumerate() {
+        if *top + class > size {
+            continue;
         }
+        let base = u32::try_from(page).expect("pages fit u32") * size;
+        let i = layout.shelves.len();
+        layout.shelves.push(Shelf {
+            y: base + *top,
+            h: class,
+            x: w + 2 * PAD,
+            base: 0,
+            last_used: tick,
+            hits: 0,
+            live: true,
+            epoch: layout.next_epoch,
+        });
+        layout.next_epoch += 1;
+        *top += class;
+        return Some((PAD, base + *top - class + PAD, i));
     }
     None
 }
@@ -1902,8 +2001,9 @@ struct CellRaster {
     texels: Vec<u8>,
 }
 
-/// One path cell's raster pending its atlas origin: `(w, h, texels)`.
-pub type CellTexels = (u32, u32, Vec<u8>);
+/// One path cell's raster pending its atlas origin: `(w, h, texels)` —
+/// `texels` a byte range of the lowering batch's arena, `w * h` long.
+pub type CellTexels = (u32, u32, Range<usize>);
 
 /// A committed cell's texels, uploaded with its shelf's newly
 /// allocated region rather than on its own (#169 A3).
@@ -1918,8 +2018,86 @@ pub struct CellWrite {
     pub w: u32,
     /// Cell height in texels.
     pub h: u32,
-    /// `w` × `h` coverage texels.
-    pub texels: Vec<u8>,
+    /// The [`CellWrites`] arena `texels` indexes.
+    pub arena: u32,
+    /// `w` × `h` coverage texels as a byte range of `arena`.
+    pub texels: Range<usize>,
+}
+
+/// One commit's staged atlas writes and the texel arenas their byte
+/// ranges index: one arena per lowering batch for path cells, one
+/// owned raster per glyph or mask write.
+///
+/// An arena's bytes are consumed by [`Atlas::upload_committed`], which
+/// copies them into the upload ring's GPU staging — the batch moves
+/// into the upload and comes back emptied, so no arena survives it:
+/// only the container's list capacities are retained across commits,
+/// and CPU buffers never alias the ring's in-flight staging copies,
+/// whose lifetime is the ring's (see `upload.rs`).
+#[derive(Default)]
+pub struct CellWrites {
+    /// Texel arenas the staged `texels` ranges index.
+    arenas: Vec<Vec<u8>>,
+    /// The staged writes in commit order.
+    cells: Vec<CellWrite>,
+}
+
+impl CellWrites {
+    /// Moves `arena` in and returns its index for [`CellWrite::arena`].
+    /// The buffer is dropped when the commit's upload consumes the
+    /// batch.
+    pub fn push_arena(&mut self, arena: Vec<u8>) -> u32 {
+        let idx = u32::try_from(self.arenas.len()).expect("commit arenas fit u32");
+        self.arenas.push(arena);
+        idx
+    }
+
+    /// Stages a write.
+    pub fn push(&mut self, cell: CellWrite) {
+        self.cells.push(cell);
+    }
+
+    /// The staged writes in commit order.
+    pub fn cells(&self) -> &[CellWrite] {
+        &self.cells
+    }
+
+    /// The staged write count.
+    pub const fn len(&self) -> usize {
+        self.cells.len()
+    }
+
+    /// Whether the commit staged no writes.
+    pub const fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
+    /// Clears the staged writes, dropping every arena with the commit.
+    pub fn clear(&mut self) {
+        self.cells.clear();
+        self.arenas.clear();
+    }
+
+    /// Heap bytes the staged arena buffers alone retain — the ranges
+    /// the commit's writes index, without the list capacities below.
+    fn arena_heap_bytes(&self) -> u64 {
+        self.arenas.iter().map(Vec::capacity).sum::<usize>() as u64
+    }
+
+    /// Heap bytes the container owns: the staged arenas plus the
+    /// `cells` and `arenas` list capacities an emptied container keeps
+    /// at their peak for the next commit to refill — retained for the
+    /// engine's life until a trim replaces the container (#2711).
+    pub fn heap_bytes(&self) -> u64 {
+        (self.cells.capacity() * size_of::<CellWrite>()
+            + self.arenas.capacity() * size_of::<Vec<u8>>()) as u64
+            + self.arena_heap_bytes()
+    }
+
+    /// The cell's `w` × `h` texel bytes.
+    pub fn texels(&self, cell: &CellWrite) -> &[u8] {
+        &self.arenas[cell.arena as usize][cell.texels.clone()]
+    }
 }
 
 /// The batch placement decision [`Atlas::plan`] reaches (#169 A3).
@@ -1947,7 +2125,10 @@ impl PendingRaster {
         match self {
             Self::Glyph { w, .. } | Self::Mask { w, .. } => usize::from(*w > 0),
             Self::Path { cells, .. } => cells.len(),
-            Self::MaskTexture { .. } | Self::Colr { .. } | Self::Bitmap { .. } => 0,
+            Self::MaskTexture { .. }
+            | Self::Colr { .. }
+            | Self::Bitmap { .. }
+            | Self::GpuPath { .. } => 0,
         }
     }
 }
@@ -1977,7 +2158,7 @@ pub enum PendingRaster {
         texels: Vec<u8>,
     },
     /// A path emission whose cells were rasterized cell by cell; each
-    /// entry of `cells` pairs one `(w, h, texels)` with the cell in
+    /// entry of `cells` pairs one `(w, h, byte range)` with the cell in
     /// `emit` at the same index.
     Path {
         /// The content-hash key.
@@ -1985,7 +2166,8 @@ pub enum PendingRaster {
         /// Spans and cells; each cell's `x`/`y` is set when it is
         /// stored.
         emit: PathEmit,
-        /// Per-cell `(width, height, texels)` in emission order.
+        /// Per-cell `(width, height, byte range)` in emission order,
+        /// indexing the lowering batch's texel arena.
         cells: Vec<CellTexels>,
     },
     /// A path-clip mask; `mask.atlas` is set when it is stored.
@@ -2037,6 +2219,27 @@ pub enum PendingRaster {
         /// Premultiplied linear-P3 f16 texels.
         texels: Vec<u8>,
     },
+    /// A path routed to the GPU coverage kernels (issue #2543, decision
+    /// S3): the lowering recorded its curve elements, fill rule, device
+    /// transform and template instance — the CPU never flattened it and
+    /// nothing is rasterized or stored in the atlas. The record joins
+    /// the frame's compute input at apply time.
+    GpuPath {
+        /// `FillRule` as the kernel's `rule` field (0 non-zero,
+        /// 1 even-odd).
+        rule: u32,
+        /// Local → device transform the kernels apply.
+        raster: kurbo::Affine,
+        /// The target surface size the grid bounds clip to.
+        surface: (u32, u32),
+        /// The instance template `classify` copies per emitted span or
+        /// cell — the same bytes `replay` would stamp.
+        template: Box<crate::render::instance::Instance>,
+        /// Curve elements encoded for the compute input buffer.
+        elements: Vec<crate::render::path::GpuElement>,
+        /// Decision R2's bound over those elements.
+        bound: crate::render::path::GpuBound,
+    },
 }
 
 /// The glyph's atlas cell. On a cache hit the entry is returned with
@@ -2087,7 +2290,6 @@ pub fn entry(
             h: h as u16,
             left,
             top,
-            slot: 0,
         },
         Some(idx),
     ))
@@ -2186,7 +2388,8 @@ fn rasterize_texels(
     }
     // Overlapping contours resolve to the union's boundary edges, like
     // `path::rasterize`: `None` keeps the glyph bit-identical.
-    let resolved = cherenkov::lowering::resolve_winding(&segments, cherenkov::FillRule::NonZero);
+    let resolved = cherenkov::lowering::resolve_winding(&segments, cherenkov::FillRule::NonZero)
+        .into_resolved();
     let segments = resolved.as_deref().unwrap_or(&segments);
     let left = bbox.x0.floor() as i32 - 1;
     let top = bbox.y0.floor() as i32 - 1;
@@ -2202,10 +2405,7 @@ fn rasterize_texels(
         raster.draw_line(x0 - ox, y0 - oy, x1 - ox, y1 - oy);
     }
     let coverage = raster.coverage();
-    let texels: Vec<u8> = coverage
-        .iter()
-        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8)
-        .collect();
+    let texels: Vec<u8> = coverage.iter().copied().map(raster::texel).collect();
     Ok(Some(CellRaster {
         left,
         top,
@@ -2350,7 +2550,7 @@ pub fn glyph_key(
 /// The atlas's map lookup.
 impl Atlas {
     pub fn get(&self, key: &GlyphKey) -> Option<Entry> {
-        self.map.get(key).copied()
+        self.map.get(key).map(|cached| cached.entry)
     }
 }
 
@@ -2542,6 +2742,95 @@ mod tests {
         assert_eq!(parallel.mask_origin(0xdead), Some(stored));
     }
 
+    /// A glyph with no outline is cached without a cell, so it names no
+    /// shelf (#2327). Parallel lowerings read an atlas that does not see
+    /// their own admissions, so one batch can carry the same outline-less
+    /// glyph twice; the second apply is a hit, and a hit pins its shelf.
+    /// On an atlas with no shelves yet — the first commit, or the first
+    /// after a resize cleared the layout — that pin must not index one.
+    #[test]
+    fn an_outline_less_glyph_names_no_shelf() {
+        let Some((device, _queue)) = device_and_queue() else {
+            return;
+        };
+        let mut atlas = Atlas::new(&device, u64::MAX);
+        let key = |glyph: u32| GlyphKey {
+            font: 7,
+            glyph,
+            size_bits: (16.0f32 * 64.0).to_bits(),
+            subpixel: 0,
+            matrix: [
+                1.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                1.0f32.to_bits(),
+            ],
+            coords_hash: 0,
+        };
+        let (space, ink) = (key(3), key(4));
+        let other = GlyphKey { font: 8, ..ink };
+        let mut writes = CellWrites::default();
+        // One batch on an empty layout: the outline-less glyph twice
+        // before any cell opens a shelf.
+        atlas.begin_commit(&[]);
+        assert_eq!(
+            atlas.place_glyph(space, 0, 0, 0, 0, Vec::new(), &mut writes),
+            Some(((0, 0), None))
+        );
+        assert_eq!(
+            atlas.place_glyph(space, 0, 0, 0, 0, Vec::new(), &mut writes),
+            Some(((0, 0), None)),
+            "the duplicate resolves to the cached outline-less glyph"
+        );
+        assert!(writes.is_empty(), "an outline-less glyph writes no texels");
+        assert!(atlas.layout.shelves.is_empty());
+        // A later commit opens shelf 0; hitting the outline-less glyph
+        // again must not pin it, so an evicting commit may still reclaim
+        // it.
+        assert!(
+            atlas
+                .place_glyph(ink, 0, 0, 4, 4, vec![0; 16], &mut writes)
+                .is_some()
+        );
+        assert!(
+            atlas
+                .place_glyph(other, 0, 0, 4, 4, vec![0; 16], &mut writes)
+                .is_some()
+        );
+        atlas.begin_commit(&[]);
+        let pinned = atlas.layout.shelves[0].last_used;
+        assert!(
+            atlas
+                .place_glyph(space, 0, 0, 0, 0, Vec::new(), &mut writes)
+                .is_some()
+        );
+        assert_eq!(
+            atlas.layout.shelves[0].last_used, pinned,
+            "an outline-less hit pins no shelf"
+        );
+        // Dropping the font drops the outline-less glyph with it, and
+        // releases only the bytes its cells were charged: the other
+        // font's cell keeps its shelf key and its share.
+        atlas.remove_font(7);
+        assert!(atlas.get(&space).is_none() && atlas.get(&ink).is_none());
+        assert_eq!(
+            atlas.slot_keys[0].iter().copied().collect::<Vec<_>>(),
+            [live_hash(&other)]
+        );
+        assert_eq!(atlas.cpu_bytes(), 16 + LIVE_ENTRY_BYTES);
+        // The same after a reset: a fresh layout holds only the
+        // outline-less glyph, and dropping its font touches no shelf.
+        atlas.clear();
+        atlas.begin_commit(&[]);
+        assert!(
+            atlas
+                .place_glyph(space, 0, 0, 0, 0, Vec::new(), &mut writes)
+                .is_some()
+        );
+        atlas.remove_font(7);
+        assert!(atlas.get(&space).is_none());
+    }
+
     /// Masks over `MASK_TEXTURE_TEXELS` leave the atlas for a dedicated
     /// texture.
     #[test]
@@ -2605,12 +2894,9 @@ mod tests {
             64,
             "the layout is full"
         );
-        let [slot_a, slot_b, slot_c, slot_e] = [
-            atlas.get(&key_a).expect("a").slot,
-            atlas.get(&key_b).expect("b").slot,
-            atlas.get(&key_c).expect("c").slot,
-            atlas.get(&key_e).expect("e").slot,
-        ];
+        let shelf = |key: &GlyphKey| atlas.map[key].shelf.expect("an outlined glyph has a shelf");
+        let [slot_a, slot_b, slot_c, slot_e] =
+            [shelf(&key_a), shelf(&key_b), shelf(&key_c), shelf(&key_e)];
         let epoch_a = atlas.shelf_epoch(slot_a);
         let epoch_b = atlas.shelf_epoch(slot_b);
         // Commit 2: the hits pin A, C and E; B's shelf is untouched. A
@@ -2618,7 +2904,7 @@ mod tests {
         // must reclaim B's band rather than any pinned shelf.
         atlas.begin_commit(&[slot_a, slot_c, slot_e]);
         atlas.enable_evicting();
-        let mut writes = Vec::new();
+        let mut writes = CellWrites::default();
         let key_d = key(4);
         assert!(
             atlas
@@ -2865,7 +3151,10 @@ mod tests {
                     .collect(),
                 ..PathEmit::default()
             },
-            cells: vec![(cw, ch, vec![0x80; (cw * ch) as usize]); count],
+            cells: {
+                let n = (cw * ch) as usize;
+                (0..count).map(|i| (cw, ch, i * n..(i + 1) * n)).collect()
+            },
         };
         let refs = [&raster];
         let AtlasPlan::Resize(size, pages) = atlas.plan(&refs) else {
@@ -2874,12 +3163,15 @@ mod tests {
         assert!(size >= 2048, "the grown edge must take a 1600-wide cell");
         atlas.resize_to(&device, size, pages);
         atlas.begin_commit(&[]);
-        let mut writes = Vec::new();
+        let mut writes = CellWrites::default();
         let PendingRaster::Path { key, emit, cells } = raster else {
             unreachable!("path pending only")
         };
+        let arena = writes.push_arena(vec![0x80; (cw * ch) as usize * count]);
         assert!(
-            atlas.place_path(key, emit, cells, &mut writes).is_some(),
+            atlas
+                .place_path(key, emit, cells, arena, &mut writes)
+                .is_some(),
             "every cell of a batch that grew for its edge must place"
         );
     }
@@ -2914,12 +3206,82 @@ mod tests {
                     .collect(),
                 ..PathEmit::default()
             },
-            cells: vec![(cw, ch, vec![0x80; (cw * ch) as usize]); count],
+            cells: vec![(cw, ch, 0..(cw * ch) as usize); count],
         };
         let refs = [&raster];
         assert!(
             matches!(atlas.plan(&refs), AtlasPlan::Recycle),
             "a batch exceeding cap × max_pages must still recycle"
+        );
+    }
+
+    #[test]
+    fn clear_drops_every_arena_with_the_commit() {
+        let mut writes = CellWrites::default();
+        for _ in 0..8 {
+            for _ in 0..64 {
+                writes.push_arena(vec![0xAB; 256]);
+            }
+            writes.clear();
+            // `clear` empties the staged arenas; the list capacities
+            // stay for reuse, so `heap_bytes` still counts them.
+            assert_eq!(writes.arena_heap_bytes(), 0);
+        }
+    }
+
+    /// The upload consumes its batch: the arenas it copied into GPU
+    /// staging are dropped with the call, so the container the renderer
+    /// keeps across the idle span that follows — the emptied shell the
+    /// next commit refills — retains no source-arena bytes (#2671).
+    #[test]
+    fn upload_releases_the_source_arenas() {
+        let Some((device, queue)) = device_and_queue() else {
+            return;
+        };
+        let mut atlas = Atlas::new(&device, u64::MAX);
+        let key = GlyphKey {
+            font: 7,
+            glyph: 3,
+            size_bits: (16.0f32 * 64.0).to_bits(),
+            subpixel: 0,
+            matrix: [
+                1.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                1.0f32.to_bits(),
+            ],
+            coords_hash: 0,
+        };
+        let mut writes = CellWrites::default();
+        atlas.begin_commit(&[]);
+        assert!(
+            atlas
+                .place_glyph(key, 0, 0, 4, 4, vec![0xAB; 16], &mut writes)
+                .is_some()
+        );
+        assert!(writes.heap_bytes() > 0);
+        let writes = atlas.upload_committed(&device, &queue, writes);
+        assert_eq!(
+            writes.arena_heap_bytes(),
+            0,
+            "no source-arena capacity outlives the upload"
+        );
+        assert!(writes.is_empty(), "the returned shell stages nothing");
+        // The emptied shell keeps its `cells`/`arenas` list capacities
+        // for the next commit — `heap_bytes` reports them (#2711).
+        assert!(
+            writes.heap_bytes() > 0,
+            "the reusable list capacity is retained by design"
+        );
+
+        // An arena staged without a placed cell ends with the upload too.
+        let mut writes = writes;
+        writes.push_arena(vec![0xCD; 64]);
+        let writes = atlas.upload_committed(&device, &queue, writes);
+        assert_eq!(
+            writes.arena_heap_bytes(),
+            0,
+            "a cell-less arena is not retained"
         );
     }
 }

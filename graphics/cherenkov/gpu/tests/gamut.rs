@@ -11,16 +11,8 @@ use cherenkov::{
 use cherenkov_gpu::interop::{
     OutputAlpha, OutputColor, Presenter, TextureOutput, shader_delivery, wgpu,
 };
-use cherenkov_oracle::color::srgb_encode;
+use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_encode};
 use cherenkov_oracle::gamut::gamut_map_srgb_analytic;
-
-/// The present shader's simplified P3 → linear sRGB matrix (the same
-/// constants, in `f64`).
-const P3_TO_LINEAR_SRGB: [[f64; 3]; 3] = [
-    [1.224_940_2, -0.224_940_2, 0.0],
-    [-0.042_056_95, 1.042_056_9, 0.0],
-    [-0.019_637_55, -0.078_636_05, 1.098_273_6],
-];
 
 split_fn! {
 fn shared_device()
@@ -52,12 +44,7 @@ fn expected_bytes(headroom: f64, p3: [f64; 3]) -> [u8; 4] {
     // An sRGB destination's ceiling caps the tone-map target at 1, and
     // the shoulder runs in the working space.
     let p3 = cherenkov_oracle::tone::tone_map(headroom.min(1.0), p3);
-    let srgb: [f64; 3] = P3_TO_LINEAR_SRGB
-        .iter()
-        .map(|row| row[0].mul_add(p3[0], row[1].mul_add(p3[1], row[2] * p3[2])))
-        .collect::<Vec<_>>()
-        .try_into()
-        .unwrap();
+    let srgb = linear_p3_to_linear_srgb(p3);
     let in_gamut = srgb.iter().all(|&c| (0.0..=1.0).contains(&c));
     let mapped = gamut_map_srgb_analytic(srgb);
     let byte = |c: f64| (srgb_encode(c).clamp(0.0, 1.0) * 255.0).round() as u8;

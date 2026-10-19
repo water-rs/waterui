@@ -15,6 +15,10 @@ use crate::scene::resources::RecordingResources;
 
 /// Environment marker: render `SceneView` directly in the backend scene.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less environment marker inserted by name"
+)]
 pub struct SceneViewMergeToParent;
 
 /// Callback used by scene content to request another frame.
@@ -69,7 +73,9 @@ pub trait SceneContent: 'static {
     /// A new registration is validated on the calling thread and queued on
     /// the target — an image beyond
     /// [`RecordingResources::image_limits`](crate::resources::RecordingResources::image_limits)
-    /// fails right there with `ResourceError::TooLarge`; see the contract on
+    /// fails right there with `ResourceError::TooLarge`, and one that does
+    /// not fit the image budget beside the images already registered with
+    /// `ResourceError::OverBudget`; see the contract on
     /// [`SceneResources`](crate::resources::SceneResources#blocking).
     /// The id to record comes from [`RecordingResources::name`], which holds
     /// the registration for this recording. It is the only way to get an id
@@ -295,9 +301,12 @@ fn scale_across(named: f32, natural_along: f32, natural_across: f32) -> f32 {
 ///
 /// Content with no size of its own takes whatever it is offered, exactly as it
 /// always has. Content that *is* a size is content-sized and claims no leftover
-/// space: an icon in a row must not eat the row, and a container that wants it
-/// bigger says so with a frame, which [`resolve_scene_proposal`] then honours.
-/// This is the rule `waterui-image` already measures its own surfaces by.
+/// space: an icon in a row must not eat the row. [`resolve_scene_proposal`]
+/// honours finite proposals for the scene itself; `waterui-image` adds its own
+/// non-resizable layout, which answers the natural size to an unspecified
+/// proposal and only scales down under smaller finite proposals, preserving
+/// the aspect ratio. It never scales up and remains `StretchAxis::None`.
+/// A `.resizable()` image instead fills the proposal per its `content_mode`.
 #[must_use]
 pub const fn scene_stretch_axis(intrinsic: Option<Size>) -> StretchAxis {
     if intrinsic.is_some() {

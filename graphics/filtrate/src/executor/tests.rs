@@ -19,9 +19,11 @@ use crate::{
     CpuKernel, Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRenderError, EffectSetupError, Filter, FilterExt, FilterParam, Footprint, ImageVisitor,
     Interpolator, OperatingSpace, ParamArray, ParamSource, Placed, ShaderEffect, ShapeInput,
-    ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace,
-    cpu::{P3_TO_SRGB, SRGB_TO_P3, srgb_decode, srgb_encode, transform},
-    filters, kind,
+    ShapeTextures, SpatialFilter, SpatialStage, StageCollector, WatchGuard, WorkingSpace, filters,
+    kind,
+};
+use filtrate_core::space::{
+    P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
 };
 
 // ============================================================================
@@ -88,31 +90,30 @@ impl SpatialFilter for UndeclaredShape {
     }
 }
 
-/// Inverts in sRGB, the way a CSS `invert()` does.
+/// The premultiplied `a - rgb` invert: the identity on encoded values plus
+/// a known encoded-space operation — the kernel the reproduction uses to
+/// see what space it was handed.
+fn encoded_invert(_: [f32; 0], _space: &WorkingSpace, pixels: &mut [[f32; 4]]) {
+    for pixel in pixels {
+        let [r, g, b, a] = *pixel;
+        *pixel = [a - r, a - g, a - b, a];
+    }
+}
+
+/// Inverts in sRGB, the way a CSS `invert()` does — and the reproduction
+/// of #1942: an sRGB stage whose kernel is the identity on encoded values
+/// plus a known encoded-space operation, so the CPU path must convert into
+/// the stage's declared space before the kernel and back after it, like
+/// the GPU executor's conversion bracket.
+#[derive(Filter)]
+#[filter(
+    color,
+    shader = "color/transform/invert.wgsl",
+    linear = false,
+    space = srgb,
+    cpu = encoded_invert
+)]
 struct CssInvert;
-
-impl Filter for CssInvert {
-    type Kind = kind::Color;
-    type Params = [f32; 0];
-
-    fn params(&self) -> [f32; 0] {
-        []
-    }
-
-    fn collect_stages<C: StageCollector>(&self, collector: &mut C) {
-        const STAGE: ColorStage = ColorStage {
-            name: "css_invert",
-            source: include_str!("../shaders/color/transform/invert.wgsl"),
-            params: &[],
-            space: OperatingSpace::Srgb,
-        };
-        collector.color(Placed::new(&STAGE));
-    }
-}
-
-impl ColorFilter for CssInvert {
-    const LINEAR: bool = false;
-}
 
 /// One filtered sample at `uv * 0.5` — a pure bilinear read of the input.
 struct SampleHalf;
@@ -638,18 +639,30 @@ fn linear_colour_filters_are_linear_maps() {
     assert_linear("photo_effect_tonal", &PhotoEffectTonal);
 }
 
-/// Runs a filter's CPU kernel and its shader on the same pixels.
+/// Runs a filter's CPU kernel and its shader on the same pixels. An sRGB
+/// stage's shader is evaluated inside the conversion bracket the GPU
+/// executor plans and the CPU kernel applies (the CPU conversion — the
+/// evaluator does not evaluate the conversion stages' matrices).
 fn assert_kernel_matches_shader<F: CpuKernel>(name: &str, filter: &F) {
     let stage = colour_stage(filter);
     let params = filter.params();
     let mut flattened = vec![0.0; <F::Params as ParamArray>::LEN];
     params.write_to(&mut flattened);
+    let srgb = stage.space == OperatingSpace::Srgb;
     let mut pixels = COLOURS;
     F::apply_cpu(&params, &WorkingSpace::LINEAR_DISPLAY_P3, &mut pixels);
     for (cpu, colour) in pixels.iter().zip(COLOURS) {
+        let mut expected = [colour];
+        if srgb {
+            to_srgb(&mut expected);
+        }
+        expected[0] = evaluate(stage, &flattened, expected[0]);
+        if srgb {
+            from_srgb(&mut expected);
+        }
         assert_close(
             *cpu,
-            evaluate(stage, &flattened, colour),
+            expected[0],
             &format!("{name}'s CPU kernel disagrees with its shader"),
         );
     }
@@ -669,8 +682,18 @@ fn cpu_kernels_match_their_shaders() {
             0.9_f32, 0.1, 0.0, 0.05, 0.1, 0.8, 0.1, -0.02, 0.0, 0.2, 0.7, 0.1,
         ]),
     );
-    // A chain's kernel runs its halves in order.
-    let chain = Saturation(0.5_f32).then(Brightness(0.1_f32));
+    // sRGB kernels: the generated `apply_cpu` converts into the declared
+    // space before the kernel and back after it.
+    assert_kernel_matches_shader("css_invert", &CssInvert);
+    assert_kernel_matches_shader(
+        "luma_curve",
+        &luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1),
+    );
+    // A chain's kernel runs its halves in order, each link converting to
+    // its own operating space.
+    let chain = Saturation(0.5_f32)
+        .then(Brightness(0.1_f32))
+        .then(luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1));
     let mut chained = COLOURS;
     <filters::Saturation<f32> as CpuKernel>::apply_cpu(
         &[0.5],
@@ -679,6 +702,11 @@ fn cpu_kernels_match_their_shaders() {
     );
     <filters::Brightness<f32> as CpuKernel>::apply_cpu(
         &[0.1],
+        &WorkingSpace::LINEAR_DISPLAY_P3,
+        &mut chained,
+    );
+    <filters::LumaCurve<f32> as CpuKernel>::apply_cpu(
+        &[0.9, 0.83, 0.925, 0.815, 0.75, 0.375, 0.1],
         &WorkingSpace::LINEAR_DISPLAY_P3,
         &mut chained,
     );
@@ -1350,7 +1378,9 @@ fn gpu_chains_match_their_cpu_kernels() {
     let chain = filters::Saturation(1.4_f32)
         .then(filters::Grayscale(0.3_f32))
         .then(filters::HueRotation(60.0_f32))
-        .then(filters::Brightness(-0.1_f32));
+        .then(filters::Brightness(-0.1_f32))
+        .then(CssInvert)
+        .then(luma_curve([0.9, 0.83, 0.925, 0.815], 0.75, 0.375, 0.1));
     let mut pixels: Vec<[f32; 4]> = rgba
         .chunks(4)
         .map(|texel| core::array::from_fn(|i| from_unorm(texel[i])))
@@ -1366,7 +1396,7 @@ fn gpu_chains_match_their_cpu_kernels() {
         &output,
         &expected,
         1,
-        "saturation, grayscale, hue rotation, brightness",
+        "saturation, grayscale, hue rotation, brightness, css invert, luma curve",
     );
 }
 
@@ -1426,6 +1456,22 @@ fn gpu_srgb_stages_run_in_srgb() {
         .collect();
     let output = run(&gpu, CssInvert, size, &rgba, ShapeTextures::default());
     assert_rgba8_close(&output, &expected, 2, "invert in sRGB");
+
+    // The reproduction of #1942: the stage's CPU kernel runs on the sRGB
+    // pixels its declared space hands it, and the CPU output matches the
+    // GPU's.
+    let mut cpu_pixels: Vec<[f32; 4]> = rgba
+        .chunks(4)
+        .map(|texel| core::array::from_fn(|i| from_unorm(texel[i])))
+        .collect();
+    CssInvert.apply_cpu_now(&WorkingSpace::LINEAR_DISPLAY_P3, &mut cpu_pixels);
+    let cpu_output: Vec<u8> = cpu_pixels
+        .iter()
+        .flatten()
+        .map(|&value| to_unorm(value))
+        .collect();
+    assert_rgba8_close(&cpu_output, &expected, 2, "invert in sRGB on the CPU");
+    assert_rgba8_close(&cpu_output, &output, 1, "CPU kernel vs GPU output");
 }
 
 /// The executor's manual bilinear, as a CPU reference over f32 texels.
@@ -3130,5 +3176,301 @@ fn gpu_shader_effect_sampling_requires_a_filterable_input() {
         &[64, 128, 191, 255].repeat(4),
         1,
         "loaded texels",
+    );
+}
+
+// ============================================================================
+// Overscroll stretch
+// ============================================================================
+
+/// HWUI's `computeOverscroll` (`frameworks/base`
+/// `libs/hwui/effects/StretchEffect.cpp`, `stretchShader`), transcribed in
+/// `f64` branch for branch, with the uniforms `StretchEffect::getShader`
+/// sets for a node `extent` long on this axis: `uStretchAffectedDist =
+/// extent`, `uInverseDistanceStretched = 1 / extent`, `uDistanceStretched =
+/// extent / (1 + |overscroll|)`, `uDistDiff = uDistanceStretched − extent`
+/// and `uInterpolationStrength = INTERPOLATION_STRENGTH_VALUE = 0.7`.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "a branch-for-branch transcription of the SkSL"
+)]
+fn hwui_compute_overscroll(in_pos: f64, overscroll: f64, extent: f64) -> f64 {
+    let stretch_affected_dist = extent;
+    let inverse_stretch_affected_dist = 1.0 / extent;
+    let distance_stretched = extent / (1.0 + overscroll.abs());
+    let distance_diff = distance_stretched - extent;
+    let interpolation_strength = 0.7;
+    let mix = |x: f64, y: f64, a: f64| x * (1.0 - a) + y * a;
+    let ease_in = |t: f64, d: f64| t * d;
+    if overscroll > 0.0 {
+        if in_pos <= stretch_affected_dist {
+            // computeOverscrollStart
+            let offset_pos = stretch_affected_dist - in_pos;
+            let pos_based_variation = mix(
+                1.0,
+                ease_in(offset_pos, inverse_stretch_affected_dist),
+                interpolation_strength,
+            );
+            let stretch_intensity = overscroll * pos_based_variation;
+            distance_stretched - (offset_pos / (1.0 + stretch_intensity))
+        } else {
+            distance_diff + in_pos
+        }
+    } else if overscroll < 0.0 {
+        let reverse_stretch_dist = extent - stretch_affected_dist;
+        if in_pos >= reverse_stretch_dist {
+            // computeOverscrollEnd
+            let offset_pos = in_pos - reverse_stretch_dist;
+            let pos_based_variation = mix(
+                1.0,
+                ease_in(offset_pos, inverse_stretch_affected_dist),
+                interpolation_strength,
+            );
+            let stretch_intensity = (-overscroll) * pos_based_variation;
+            extent - (distance_stretched - (offset_pos / (1.0 + stretch_intensity)))
+        } else {
+            -distance_diff + in_pos
+        }
+    } else {
+        in_pos
+    }
+}
+
+#[test]
+fn the_hwui_transcription_matches_hand_computed_values() {
+    // Evaluated outside this crate from the same SkSL.
+    for (in_pos, overscroll, extent, expected) in [
+        (0.5, 0.03, 60.0, 0.475_620_445_456_961_25),
+        (30.5, 0.03, 60.0, 29.311_706_609_575_77),
+        (59.5, 0.03, 60.0, 57.756_972_976_821_15),
+        (0.5, -0.03, 60.0, 2.243_027_023_178_847),
+        (30.5, -0.03, 60.0, 31.659_064_222_109_613),
+        (59.5, -0.03, 60.0, 59.524_379_554_543_04),
+        (10.0, 0.032, 2000.0, 9.480_627_487_124_593),
+    ] {
+        let actual = hwui_compute_overscroll(in_pos, overscroll, extent);
+        assert!(
+            (actual - expected).abs() < 1e-12,
+            "computeOverscroll({in_pos}, {overscroll}, {extent}) = {actual}, expected {expected}"
+        );
+    }
+}
+
+/// One overscroll stretch case: the image, the frame, its size and the
+/// stretch.
+struct StretchCase {
+    label: &'static str,
+    image: (usize, usize),
+    frame: [f64; 6],
+    size: [f64; 2],
+    stretch: [f64; 2],
+}
+
+impl StretchCase {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the filter takes f32 parameters"
+    )]
+    fn filter(&self) -> filters::OverscrollStretch<f32> {
+        filters::OverscrollStretch {
+            frame: self.frame.map(|value| value as f32),
+            size: self.size.map(|value| value as f32),
+            stretch: self.stretch.map(|value| value as f32),
+        }
+    }
+
+    /// The input pixel position the output position `pixel` samples per
+    /// HWUI: the frame's inverse, `computeOverscroll` per axis inside the
+    /// frame, and the frame back — or `pixel` itself outside it.
+    #[expect(
+        clippy::many_single_char_names,
+        clippy::suboptimal_flops,
+        reason = "plain affine arithmetic, written out over the frame's coefficients"
+    )]
+    fn source(&self, pixel: [f64; 2]) -> [f64; 2] {
+        let [a, b, c, d, e, f] = self.frame;
+        let determinant = a * d - b * c;
+        let relative = [pixel[0] - e, pixel[1] - f];
+        let local = [
+            (d * relative[0] - c * relative[1]) / determinant,
+            (a * relative[1] - b * relative[0]) / determinant,
+        ];
+        if !(0.0..=self.size[0]).contains(&local[0]) || !(0.0..=self.size[1]).contains(&local[1]) {
+            return pixel;
+        }
+        // HWUI's content sampler clamps to the snapshot's edge texels:
+        // half a pixel inside the frame along each of its axes.
+        let inset = [0.5 / a.hypot(b), 0.5 / c.hypot(d)];
+        let warped = [
+            hwui_compute_overscroll(local[0], self.stretch[0], self.size[0])
+                .max(inset[0])
+                .min(self.size[0] - inset[0]),
+            hwui_compute_overscroll(local[1], self.stretch[1], self.size[1])
+                .max(inset[1])
+                .min(self.size[1] - inset[1]),
+        ];
+        [
+            a * warped[0] + c * warped[1] + e,
+            b * warped[0] + d * warped[1] + f,
+        ]
+    }
+}
+
+/// A ramp whose bilinear sample at any position reads the position back:
+/// red is the row centre over the height and green the column centre over
+/// the width, so a clamped bilinear sample at `(x, y)` is
+/// `clamp(y, ½, h − ½) / h` in red and `clamp(x, ½, w − ½) / w` in green.
+#[expect(clippy::cast_precision_loss, reason = "test images are small")]
+fn stretch_ramp((width, height): (usize, usize)) -> Vec<[f32; 4]> {
+    (0..width * height)
+        .map(|index| {
+            let (x, y) = (index % width, index / width);
+            [
+                (y as f32 + 0.5) / height as f32,
+                (x as f32 + 0.5) / width as f32,
+                0.25,
+                1.0,
+            ]
+        })
+        .collect()
+}
+
+/// Checks every pixel of `output` — the filter applied to
+/// [`stretch_ramp`] — against HWUI's sample position for its centre, and
+/// returns the largest distance a sample moved, in pixels.
+#[expect(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    reason = "test images are small"
+)]
+fn assert_stretch_rows(case: &StretchCase, output: &[[f32; 4]], tolerance: f32, what: &str) -> f64 {
+    let (width, height) = case.image;
+    let (w, h) = (width as f64, height as f64);
+    let mut reach = 0.0_f64;
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = [x as f64 + 0.5, y as f64 + 0.5];
+            let source = case.source(pixel);
+            reach = reach
+                .max((source[0] - pixel[0]).abs())
+                .max((source[1] - pixel[1]).abs());
+            let expected = [
+                (source[1].clamp(0.5, h - 0.5) / h) as f32,
+                (source[0].clamp(0.5, w - 0.5) / w) as f32,
+            ];
+            let actual = output[y * width + x];
+            assert!(
+                (actual[0] - expected[0]).abs() <= tolerance
+                    && (actual[1] - expected[1]).abs() <= tolerance,
+                "{}, {what}: pixel ({x}, {y}) reads {:?}, HWUI samples ({}, {}) = {expected:?}",
+                case.label,
+                &actual[..2],
+                source[0],
+                source[1],
+            );
+        }
+    }
+    reach
+}
+
+fn stretch_cases() -> [StretchCase; 4] {
+    [
+        StretchCase {
+            label: "top edge",
+            image: (40, 72),
+            frame: [1.0, 0.0, 0.0, 1.0, 4.0, 6.0],
+            size: [32.0, 60.0],
+            stretch: [0.0, 0.03],
+        },
+        StretchCase {
+            label: "bottom edge at scale 2",
+            image: (40, 72),
+            frame: [2.0, 0.0, 0.0, 2.0, 4.0, 6.0],
+            size: [16.0, 30.0],
+            stretch: [0.0, -0.03],
+        },
+        StretchCase {
+            label: "both axes",
+            image: (40, 72),
+            frame: [1.0, 0.0, 0.0, 1.0, 4.0, 6.0],
+            size: [32.0, 60.0],
+            stretch: [-0.025, 0.032],
+        },
+        // The frame's x axis runs down the image: a stretch of the frame's
+        // left edge pulls the image's top rows.
+        StretchCase {
+            label: "a quarter-turned frame",
+            image: (40, 72),
+            frame: [0.0, 1.0, -1.0, 0.0, 36.0, 6.0],
+            size: [60.0, 32.0],
+            stretch: [0.03, -0.02],
+        },
+    ]
+}
+
+#[test]
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the footprint is a small whole number of pixels"
+)]
+fn cpu_overscroll_stretch_samples_where_hwui_does() {
+    for case in stretch_cases() {
+        let filter = case.filter();
+        let mut output = stretch_ramp(case.image);
+        filter
+            .apply_cpu_image(
+                &filter.params(),
+                &WorkingSpace::LINEAR_DISPLAY_P3,
+                &mut CpuImage {
+                    pixels: &mut output,
+                    top: 0,
+                    size: case.image,
+                },
+            )
+            .expect("the CPU stretch runs");
+        let reach = assert_stretch_rows(&case, &output, 1e-5, "CPU");
+        // The footprint covers the reach plus the bilinear neighbour.
+        let footprint = filtrate_core::SpatialFilter::footprint(&filter);
+        assert!(
+            f64::from(footprint.pixels) >= reach + 1.0 && footprint.extent == 0.0,
+            "{}: footprint {footprint:?} below the reach {reach}",
+            case.label
+        );
+        let apron = footprint.pixels as usize;
+        assert_window_matches_full(&filter, &stretch_ramp(case.image), case.image, apron);
+    }
+}
+
+#[test]
+fn gpu_overscroll_stretch_samples_where_hwui_does() {
+    let gpu = create_test_device();
+    for case in stretch_cases() {
+        let size = (
+            u32::try_from(case.image.0).expect("width fits u32"),
+            u32::try_from(case.image.1).expect("height fits u32"),
+        );
+        let output = assert_f16_matches_cpu(
+            &gpu,
+            case.filter(),
+            size,
+            &stretch_ramp(case.image),
+            F16_TOLERANCE,
+            case.label,
+        );
+        assert_stretch_rows(&case, &output, 2e-3, "GPU");
+    }
+}
+
+#[test]
+fn an_unstretched_frame_reads_nothing_beyond_its_own_texel() {
+    let filter = filters::OverscrollStretch {
+        frame: [1.0_f32, 0.0, 0.0, 1.0, 4.0, 6.0],
+        size: [32.0, 60.0],
+        stretch: [0.0, 0.0],
+    };
+    assert_eq!(
+        filtrate_core::SpatialFilter::footprint(&filter),
+        Footprint::ZERO
     );
 }

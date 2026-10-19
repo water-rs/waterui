@@ -76,6 +76,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host_view: &PlatformView = &host;
 
         let mounted = ctx.render(metadata.content).mount(host_view);
+
         view::set_translates_autoresizing(mounted.view(), true);
 
         let state = Rc::new(RetainState { child: mounted });

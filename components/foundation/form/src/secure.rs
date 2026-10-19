@@ -88,6 +88,7 @@ impl Drop for Secure {
 
 /// Configuration for a secure field component.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct SecureFieldConfig {
     /// The label displayed for the secure field.
     pub label: Label,

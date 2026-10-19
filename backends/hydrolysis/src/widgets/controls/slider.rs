@@ -4,7 +4,7 @@ use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::slider_step_for_range;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, WidgetRenderContext,
-    measure_slider_intrinsic, slider_value_epsilon, transformed_rect,
+    measure_slider_intrinsic, slider_value_epsilon,
 };
 #[cfg(feature = "accessibility")]
 use accesskit::{
@@ -82,6 +82,15 @@ impl SliderRenderState {
         self.min_value_label.ensure_built(renderer, env);
         self.max_value_label.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-views' layout-dirty marks: their measured sizes
+    /// feed the slider's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+            | self.min_value_label.take_layout_dirty_if_built()
+            | self.max_value_label.take_layout_dirty_if_built()
+    }
 }
 
 impl HydroNativeView for Native<SliderConfig> {
@@ -89,7 +98,7 @@ impl HydroNativeView for Native<SliderConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_slider_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -172,7 +181,7 @@ pub fn measure_slider_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let metrics = theme.slider_metrics(render_state.size);
     let label_size = render_state.label_view.measure_built(state, env, theme);
@@ -281,8 +290,12 @@ pub fn render_slider_parts(
         // `slider_accessibility_parts`, so the sub-view flushes visual-only.
         // The min/max value labels below stay exposed: their text (e.g.
         // "Dark"/"Bright") is not carried by the slider node.
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             label_rect,
             |ctx| {
@@ -291,7 +304,7 @@ pub fn render_slider_parts(
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        label_view.flush_in_rect(
+                        label_view.place(
                             renderer,
                             render_ctx,
                             env,
@@ -346,14 +359,18 @@ pub fn render_slider_parts(
             track_rect,
             f64::from(min_label_size.height),
         );
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "min-label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             min_label_rect,
             |ctx| {
                 let render_ctx = ctx.render_context();
                 let label_area = ctx.safe_area_for(min_label_rect);
-                state.min_value_label.flush_in_rect(
+                state.min_value_label.place(
                     ctx.renderer_mut(),
                     render_ctx,
                     env,
@@ -372,14 +389,18 @@ pub fn render_slider_parts(
             track_rect,
             f64::from(max_label_size.height),
         );
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "max-label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             max_label_rect,
             |ctx| {
                 let render_ctx = ctx.render_context();
                 let label_area = ctx.safe_area_for(max_label_rect);
-                state.max_value_label.flush_in_rect(
+                state.max_value_label.place(
                     ctx.renderer_mut(),
                     render_ctx,
                     env,
@@ -412,14 +433,11 @@ pub fn render_slider_parts(
         fill_right,
         track_center_y + metrics.track_height / 2.0,
     );
-    let hit_bounds = transformed_rect(
-        ctx.hit_transform,
-        kurbo::Rect::new(
-            track_left - metrics.handle_overhang(),
-            control_top,
-            track_right + metrics.handle_overhang(),
-            control_bottom,
-        ),
+    let hit_bounds = kurbo::Rect::new(
+        track_left - metrics.handle_overhang(),
+        control_top,
+        track_right + metrics.handle_overhang(),
+        control_bottom,
     );
     let (interaction, press_slot, _) = ctx.renderer_mut().bind_control_interaction_target(
         interaction_key,
@@ -428,7 +446,8 @@ pub fn render_slider_parts(
         disabled,
     );
     let thumb_center = kurbo::Point::new(fill_right, track_center_y);
-    let interaction = local_interaction_state(interaction, ctx.hit_transform);
+    let interaction =
+        local_interaction_state(interaction, ctx.renderer_mut().current_hit_transform());
     {
         ctx.draw_context(|draw| {
             theme.draw_slider_track(&mut *draw, track_rect, fill_rect, state.size, interaction);
@@ -501,11 +520,10 @@ pub fn render_slider_parts(
             bubble.y1,
         );
         let text_ctx = RenderContext {
-            transform: ctx.transform,
-            hit_transform: ctx.hit_transform,
+            local: ctx.local,
             bounds: text_rect,
         };
-        let (hydro, scene) = ctx.renderer_mut().state_and_scene_mut();
+        let (hydro, scene) = ctx.renderer_mut().state_and_run_mut();
         HydrolysisRenderer::render_styled_text(
             hydro,
             scene,
@@ -526,7 +544,12 @@ pub fn render_slider_parts(
     if disabled {
         return;
     }
-    let inverse_transform = ctx.hit_transform.inverse();
+    // The drag's point lands in window space and the track is node-local:
+    // resolve the inverse through the region's live placement at invoke
+    // time. The registration outlives this record, so a transform captured
+    // here goes stale the moment an ancestor moves the slider without
+    // re-recording it (a scroll, a transition).
+    let placement = ctx.renderer_mut().current_placement();
     let value_epsilon = slider_value_epsilon(span, usable_track);
     let keyboard_value = value_binding.clone();
     let keyboard_step = span / 100.0;
@@ -534,7 +557,7 @@ pub fn render_slider_parts(
         hit_bounds,
         press_slot,
         move |_renderer, point, _env| {
-            let local_point = inverse_transform * point;
+            let local_point = placement.resolved_transform(true).inverse() * point;
             let x = local_point.x.clamp(track_left, track_right);
             let t = (x - track_left) / usable_track;
             let next = span.mul_add(t, range_start);

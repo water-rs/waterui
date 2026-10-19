@@ -22,6 +22,11 @@
 //! });
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 #[cfg(feature = "bench")]
 pub mod bench;
@@ -29,6 +34,9 @@ pub mod interop;
 mod names;
 mod render;
 
+/// The composition-attribution diagnostic: what each epoch keeps on chip
+/// and why the rest is materialized (issue #2547).
+pub use render::composition;
 /// The allocation-event diagnostic sink (issue #169).
 pub use render::diag;
 /// The registered-effect module text the renderer compiles; exposed for
@@ -159,7 +167,8 @@ pub enum TimestampSupport {
 
 /// The texture format used for intermediate (isolation) render targets.
 ///
-/// The surface itself stays `Rgba16Float` regardless; this only picks the
+/// The surface keeps its own format — `Rgba16Float`, or the `Rgba32Float`
+/// an offscreen target can request — regardless; this only picks the
 /// precision of offscreen layers the compositor reads back in the same
 /// frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -175,6 +184,9 @@ pub enum ScratchFormat {
 /// Configuration for the GPU engine.
 #[derive(Clone, Debug)]
 pub struct GpuConfig {
+    /// Per-engine route override for the internal differential harness.
+    #[cfg(test)]
+    pub(crate) force_gpu_coverage: bool,
     /// Uses an existing host device. Handles must share one creation chain.
     /// Device limits and enabled features govern engine capabilities.
     pub device: Option<interop::SharedDevice>,
@@ -207,6 +219,17 @@ pub struct GpuConfig {
     /// this sink. Diagnostics only; the per-event allocator snapshot is
     /// deliberately expensive, so keep it out of timed runs.
     pub alloc_diag: Option<diag::Sink>,
+    /// When set, each encoded surface records one
+    /// [`composition::FrameReport`]: the frame's tile epochs, every
+    /// materialized logical image with the reason the planner decided,
+    /// the attachment storage split into memoryless and backed, the
+    /// logical intermediate traffic, and the tile pipelines created on
+    /// first use (issue #2547).
+    ///
+    /// Diagnostics only, like [`GpuConfig::alloc_diag`] — with no sink
+    /// nothing is collected. No report is recorded where the on-chip
+    /// composition planner is not built (#2191).
+    pub composition_diag: Option<composition::Sink>,
     /// When set, creation reports each [`CreationPhase`] boundary to the
     /// observer — issue #170's creation ledger. Diagnostics only.
     pub creation_probe: Option<CreationProbe>,
@@ -215,6 +238,8 @@ pub struct GpuConfig {
 impl Default for GpuConfig {
     fn default() -> Self {
         Self {
+            #[cfg(test)]
+            force_gpu_coverage: false,
             device: None,
             backends: wgpu::Backends::all(),
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -224,6 +249,7 @@ impl Default for GpuConfig {
             pipeline_cache: None,
             scratch_format: ScratchFormat::default(),
             alloc_diag: None,
+            composition_diag: None,
             creation_probe: None,
         }
     }
@@ -249,6 +275,10 @@ pub enum GpuTarget {
     /// DMA-BUF images with sync-file acquire/release fences (#1687).
     #[cfg(target_os = "linux")]
     Dmabuf(interop::dmabuf::DmabufTarget),
+    /// Canvases and the host's elements under a host element of the page,
+    /// with DOM planes for hosted content.
+    #[cfg(target_arch = "wasm32")]
+    Dom(interop::web::DomTarget),
 }
 
 /// A window the engine presents on: a raw window handle and the drawable
@@ -291,7 +321,7 @@ impl WindowTarget {
             refresh: cherenkov::DEFAULT_REFRESH,
             output: render::present::OutputRequest {
                 transparent: false,
-                color_space: None,
+                color_space: render::present::ColorSpaceRequest::Best,
                 sync: DisplaySync::Synchronized,
             },
             probe: None,
@@ -308,19 +338,23 @@ impl WindowTarget {
         self
     }
 
-    /// Requires the swapchain's colour space (#98). Without it the engine
+    /// Sets the swapchain's colour-space request (#98, #2445). The
+    /// default, [`ColorSpaceRequest::Best`](interop::ColorSpaceRequest::Best),
     /// negotiates the surface's best advertised pair — an extended or HDR
-    /// space where offered, otherwise a reported SDR selection. With it,
-    /// the surface fails with [`SurfaceError::UnsupportedTarget`] when no
-    /// format is advertised for the space: at creation, or on Apple, where
-    /// the engine creates its layers on the main queue, as the first
-    /// render's [`RenderError::Render`].
+    /// space where offered, otherwise a reported SDR selection.
+    /// [`Range`](interop::ColorSpaceRequest::Range) takes the best pair
+    /// inside a [`ColorRangeInterval`](interop::ColorRangeInterval) of
+    /// classes, and [`Exact`](interop::ColorSpaceRequest::Exact) one space.
+    /// The surface fails with [`SurfaceError::UnsupportedTarget`] when
+    /// nothing it advertises meets the request, never substituting a pair
+    /// — at creation, or on Apple, where the engine creates its layers on
+    /// the main queue, as the first render's [`RenderError::Render`].
     ///
     /// [`SurfaceError::UnsupportedTarget`]: cherenkov::SurfaceError::UnsupportedTarget
     /// [`RenderError::Render`]: cherenkov::RenderError::Render
     #[must_use]
-    pub const fn require_color_space(mut self, color_space: wgpu::SurfaceColorSpace) -> Self {
-        self.output.color_space = Some(color_space);
+    pub const fn color_space(mut self, request: interop::ColorSpaceRequest) -> Self {
+        self.output.color_space = request;
         self
     }
 
@@ -438,9 +472,9 @@ impl Backend for Gpu {
     }
 
     #[cfg(target_arch = "wasm32")]
-    #[expect(
+    #[allow(
         clippy::future_not_send,
-        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+        reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
     )]
     async fn init(config: GpuConfig) -> Result<(Self::Renderer, Self::Info), EngineError> {
         render::init(config).await
@@ -449,6 +483,9 @@ impl Backend for Gpu {
 
 impl Uploads<Rgba8> for Gpu {}
 impl Uploads<Rgba16F> for Gpu {}
+impl Uploads<cherenkov::Astc4x4> for Gpu {}
+impl Uploads<cherenkov::Bc7> for Gpu {}
+impl Uploads<cherenkov::Etc2Rgba> for Gpu {}
 
 // HDR output (#97): `LinearDisplayP3` texture output and window
 // presentation tone-map to the display's `Display::headroom` in the
@@ -456,9 +493,29 @@ impl Uploads<Rgba16F> for Gpu {}
 impl cherenkov::HdrOutput for Gpu {}
 
 // System-compositor planes (#90): eligible layers of an Apple window surface
-// are promoted to Core Animation layers — see `render::planes`.
-#[cfg(target_vendor = "apple")]
+// are promoted to Core Animation layers, of an Android surface-control
+// surface to child surface controls, and of a DOM surface to DOM elements —
+// see `render::planes`.
+#[cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))]
 impl cherenkov::Planes for Gpu {}
+
+// Hosted system layers (#2199): the host's `NSView` (macOS), `CALayer` (iOS),
+// `SurfaceControl` or DOM element (web) is placed on a plane of its own, never composited —
+// see `render::planes`.
+#[cfg(any(target_vendor = "apple", target_os = "android", target_arch = "wasm32"))]
+impl cherenkov::HostedLayers for Gpu {
+    type Object = render::planes::Hosted;
+
+    fn bind_hosted(
+        r: &mut Self::Renderer,
+        surface: cherenkov::SurfaceId,
+        layer: cherenkov::LayerId,
+        object: Self::Object,
+        size: kurbo::Size,
+    ) {
+        r.bind_hosted(surface, layer, object, size);
+    }
+}
 
 impl cherenkov::BackdropSampling for Gpu {}
 

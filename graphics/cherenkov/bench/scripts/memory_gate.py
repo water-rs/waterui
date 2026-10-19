@@ -3,7 +3,7 @@
 
 For Lavapipe, export
 VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-XDG_RUNTIME_DIR=/tmp/runtime-ubuntu RUST_LOG=error before running this
+XDG_RUNTIME_DIR=/tmp/runtime-$USER RUST_LOG=error before running this
 script. It passes the caller's environment through unchanged.
 """
 
@@ -22,7 +22,9 @@ import tempfile
 from typing import Any
 
 
-SCENES = ("map", "chart", "text-page", "ui-list", "effects")
+SCENES = ("map", "chart", "text-page", "ui-list", "effects", "road-network", "brick-grid")
+ENGINE_PATH = Path("graphics/cherenkov")
+BENCH_PATH = ENGINE_PATH / "bench"
 DEFAULT_ENGINES = ("cherenkov", "cherenkov-cpu")
 # Lifecycle snapshots compared per scene, in report order (#169 A5).
 # Older reports lack `preparation`, `warmup_peak` and `post_retire`; a
@@ -150,7 +152,7 @@ def ensure_clean_except_owned_files(path: Path, *, allow_bench: bool) -> None:
         name = line[3:]
         if name == WORKTREE_MARKER:
             continue
-        if allow_bench and (name == "bench" or name.startswith("bench/")):
+        if allow_bench and (name == str(BENCH_PATH) or name.startswith(f"{BENCH_PATH}/")):
             continue
         unexpected.append(line)
     if unexpected:
@@ -161,7 +163,7 @@ def ensure_clean_except_owned_files(path: Path, *, allow_bench: bool) -> None:
 
 def overlay_bench(repo: Path, harness: str, base: Path) -> None:
     result = command(
-        ["git", "-C", str(repo), "archive", "--format=tar", harness, "bench"],
+        ["git", "-C", str(repo), "archive", "--format=tar", harness, str(BENCH_PATH)],
         binary_output=True,
     )
     if result.returncode:
@@ -186,11 +188,11 @@ def overlay_bench(repo: Path, harness: str, base: Path) -> None:
         except (OSError, tarfile.TarError) as error:
             raise GateError(f"could not extract harness bench archive: {error}") from error
 
-        replacement = temporary_path / "bench"
+        replacement = temporary_path / BENCH_PATH
         if not replacement.is_dir():
-            raise GateError(f"harness {harness} contains no bench directory")
-        destination = base / "bench"
-        backup = base / ".memory-gate-bench-old"
+            raise GateError(f"harness {harness} contains no {BENCH_PATH} directory")
+        destination = base / BENCH_PATH
+        backup = base / ENGINE_PATH / ".memory-gate-bench-old"
         if backup.exists():
             raise GateError(f"refusing to replace leftover path {backup}")
         destination.rename(backup)
@@ -210,6 +212,20 @@ def cargo_target_directory(path: Path) -> Path:
         raise GateError(f"cargo metadata failed in {path}:\n{result.stdout}{result.stderr}")
     metadata = json.loads(result.stdout)
     return Path(metadata["target_directory"])
+
+
+def generate_scenes(path: Path, out: Path, side: str, *, fonts_only: bool) -> None:
+    args = [
+        "uv", "run", "--python", "3.12", "--with-requirements",
+        "scenes/fonts/tools/requirements.txt", "python", "scenes/tools/generate.py",
+    ]
+    if fonts_only:
+        args.append("--fonts-only")
+    result = command(args, cwd=path / ENGINE_PATH)
+    log = out / f"generate-{side}.log"
+    log.write_text(result.stdout + result.stderr, encoding="utf-8")
+    if result.returncode:
+        raise GateError(f"scene generation failed for {side}; see {log}")
 
 
 def build(path: Path, out: Path, side: str) -> Path:
@@ -267,21 +283,26 @@ def counter_engine_memory(
     ):
         raise GateError(f"{report_path} has invalid CPU/GPU engine memory counters")
     measured = {"cpu_bytes": cpu_bytes, "gpu_bytes": gpu_bytes}
-    # `backdrop_capture_bytes` is optional: binaries predating its
-    # introduction do not serialize it, and adapters without backdrop
-    # groups may leave it out.
-    if "memory_backdrop_capture_bytes" in counters:
-        captures = counters["memory_backdrop_capture_bytes"]
-        if captures is not None:
+    # `backdrop_capture_bytes` and `filter_target_bytes` are optional:
+    # binaries predating their introduction do not serialize them, and
+    # adapters without the feature may leave them out.
+    for counter, key in (
+        ("memory_backdrop_capture_bytes", "backdrop_capture_bytes"),
+        ("memory_filter_target_bytes", "filter_target_bytes"),
+    ):
+        if counter not in counters:
+            continue
+        value = counters[counter]
+        if value is not None:
             if (
-                not isinstance(captures, int)
-                or isinstance(captures, bool)
-                or captures < 0
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < 0
             ):
                 raise GateError(
-                    f"{report_path} has an invalid backdrop capture counter"
+                    f"{report_path} has an invalid {key} counter"
                 )
-            measured["backdrop_capture_bytes"] = captures
+            measured[key] = value
     return {"measured": measured}
 
 
@@ -302,7 +323,8 @@ def read_phase_memory(report_path: Path, report: dict) -> dict[str, Any]:
     """Per-phase engine and wgpu-allocator readings of one report.
 
     Returns `{phase: {"engine": {...}, "allocator": {...}}}` — engine
-    entries keep the `{cpu_bytes, gpu_bytes[, backdrop_capture_bytes]}`
+    entries keep the
+    `{cpu_bytes, gpu_bytes[, backdrop_capture_bytes[, filter_target_bytes]]}`
     shape; allocator entries keep `{allocated_bytes, reserved_bytes,
     allocations, blocks}`. A required reading that reports `unavailable`
     fails the gate through `unavailable:` — it is not a pass (#169 A5).
@@ -338,17 +360,18 @@ def read_phase_memory(report_path: Path, report: dict) -> dict[str, Any]:
                 ):
                     raise GateError(f"{report_path} has invalid {phase} CPU/GPU engine bytes")
                 measured = {"cpu_bytes": cpu_bytes, "gpu_bytes": gpu_bytes}
-                captures = engine.get("backdrop_capture_bytes")
-                if captures is not None:
-                    if (
-                        not isinstance(captures, int)
-                        or isinstance(captures, bool)
-                        or captures < 0
-                    ):
-                        raise GateError(
-                            f"{report_path} has invalid {phase} backdrop capture bytes"
-                        )
-                    measured["backdrop_capture_bytes"] = captures
+                for key in ("backdrop_capture_bytes", "filter_target_bytes"):
+                    value = engine.get(key)
+                    if value is not None:
+                        if (
+                            not isinstance(value, int)
+                            or isinstance(value, bool)
+                            or value < 0
+                        ):
+                            raise GateError(
+                                f"{report_path} has invalid {phase} {key}"
+                            )
+                        measured[key] = value
                 entry["engine"] = measured
         allocator = read_reading(
             snapshot.get("wgpu_allocator"), report_path, f"{phase} wgpu allocator"
@@ -635,7 +658,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", type=int, default=30)
     parser.add_argument("--out", type=Path, help="report output directory")
     parser.add_argument(
-        "--work", type=Path, default=Path("/home/ubuntu/memory-gate")
+        "--work",
+        type=Path,
+        help="directory for the gate's worktrees; "
+        "defaults to a fresh temporary directory",
     )
     return parser.parse_args()
 
@@ -664,7 +690,29 @@ def main() -> int:
 
     repo = Path(__file__).resolve().parents[2]
     repo = Path(git_output(repo, "rev-parse", "--show-toplevel")).resolve()
-    work_root = args.work.expanduser().resolve()
+    if args.work is None:
+        with tempfile.TemporaryDirectory(prefix="cherenkov-memory-gate-") as work:
+            work_root = Path(work).resolve()
+            try:
+                return run(args, repo, work_root, engines)
+            finally:
+                # The temporary directory removes the checkouts; drop
+                # their git worktree registrations first so the caller's
+                # repository keeps no stale entries.
+                for path in sorted(work_root.iterdir()):
+                    if (path / WORKTREE_MARKER).is_file():
+                        command(
+                            [
+                                "git", "-C", str(repo), "worktree", "remove",
+                                "--force", str(path),
+                            ]
+                        )
+    return run(args, repo, args.work.expanduser().resolve(), engines)
+
+
+def run(
+    args: argparse.Namespace, repo: Path, work_root: Path, engines: tuple[str, ...]
+) -> int:
     out = args.out.expanduser().resolve()
     out.mkdir(parents=True, exist_ok=True)
     ensure_work_root(work_root, repo)
@@ -679,12 +727,19 @@ def main() -> int:
     if harness_commit is not None:
         overlay_bench(repo, harness_commit, base)
 
-    scene_root = head
-    if not all(
-        (scene_root / "scenes" / "perf" / scene / "scene.json").is_file()
+    generate_scenes(base, out, "base", fonts_only=True)
+    generate_scenes(head, out, "head", fonts_only=False)
+    scene_root = head / ENGINE_PATH
+    missing = [
+        scene
         for scene in SCENES
-    ):
-        raise GateError(f"head worktree {head} is missing one or more perf scenes")
+        if not (scene_root / "scenes" / "perf" / scene / "scene.json").is_file()
+    ]
+    if missing:
+        raise GateError(
+            f"head worktree {head} is missing perf scenes "
+            f"{', '.join(missing)}; scenes/tools/generate.py did not produce them"
+        )
 
     base_binary = build(base, out, "base")
     base_readings = measure_side(

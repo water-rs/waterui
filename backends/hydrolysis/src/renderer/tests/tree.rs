@@ -1,7 +1,7 @@
 //! Phase 1 unit tests for the persistent retained render tree.
 
 use super::{MinimalTestTheme, test_environment, test_renderer};
-use crate::renderer::{ContainerNode, RenderContext, RenderId, RenderNode, TextNode};
+use crate::renderer::{ContainerNode, NodeCore, RenderContext, RenderNode, TextNode};
 use core::cell::{Cell, RefCell};
 use kurbo::{Affine, Rect};
 use nami::Computed;
@@ -11,14 +11,12 @@ use waterui::ViewExt as _;
 use waterui_controls::button::button;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size};
 use waterui_core::{AnyView, SignalExt as _};
-use waterui_testing::TestArtifacts;
-
-/// Where this module's visual evidence is written: `waterui-testing`'s
-/// canonical `<root>/hydrolysis/<case>/<stage>.png` layout, with the root from
+/// Where this module's visual evidence is written: the canonical
+/// `<root>/hydrolysis/<case>/<stage>.png` layout, with the root from
 /// `WATERUI_TEST_ARTIFACTS_DIR` when CI sets it (uploaded with every run) and
 /// the platform temp directory otherwise.
 fn export_path(case: &str, stage: &str) -> std::path::PathBuf {
-    let path = TestArtifacts::new("hydrolysis").snapshot_path(case, stage);
+    let path = crate::testing::artifact_snapshot_path("hydrolysis", case, stage);
     std::fs::create_dir_all(path.parent().expect("a snapshot path has a case directory"))
         .expect("the export directory must be creatable");
     path
@@ -33,7 +31,7 @@ fn text_node(content: &'static str) -> RenderNode {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
-        render_id: RenderId::next(),
+        core: NodeCore::detached(),
         _guards: [content.watch(|_| {}), alignment.watch(|_| {})],
         content,
         alignment,
@@ -51,7 +49,7 @@ fn render_node_container_lays_out_and_flushes_text() {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
-        render_id: RenderId::next(),
+        core: NodeCore::detached(),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),
@@ -95,12 +93,13 @@ fn render_node_container_lays_out_and_flushes_text() {
         _ => panic!("expected a container node"),
     }
 
-    let ctx = RenderContext::with_transforms(bounds, Affine::IDENTITY, Affine::IDENTITY);
-    node.flush(&mut renderer, ctx, &env);
-    // Check before `finish_rebuild_frame`, which moves the scene into the
-    // compositor's layer stack (leaving `renderer.scene` reset).
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds,
+    };
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "flushing two text nodes must draw glyphs into the scene"
     );
     renderer.finish_rebuild_frame();
@@ -115,7 +114,7 @@ fn geometry_static_flush_reuses_cached_placement() {
         memo_gate: Cell::default(),
         memo_slots: RefCell::default(),
         accessibility_identity: Rc::new(()),
-        render_id: RenderId::next(),
+        core: NodeCore::detached(),
         layout: Box::new(VStackLayout {
             alignment: HorizontalAlignment::Center,
             spacing: Computed::constant(8.0),
@@ -148,11 +147,14 @@ fn geometry_static_flush_reuses_cached_placement() {
 
     // A geometry-static frame re-encodes without re-running layout; the cached
     // placement must survive untouched across flushes.
-    let ctx = RenderContext::with_transforms(bounds, Affine::IDENTITY, Affine::IDENTITY);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds,
+    };
     renderer.reset_scene();
-    node.flush(&mut renderer, ctx, &env);
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     renderer.reset_scene();
-    node.flush(&mut renderer, ctx, &env);
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     renderer.finish_rebuild_frame();
 
     match &node {
@@ -191,10 +193,13 @@ fn opacity_wrapper_builds_and_flushes_via_dsl() {
         ProposalSize::new(Some(window.width), Some(window.height)),
         window,
     );
-    let ctx = RenderContext::with_transforms(bounds, Affine::IDENTITY, Affine::IDENTITY);
-    node.flush(&mut renderer, ctx, &env);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds,
+    };
+    node.flush(&mut renderer, ctx, &env, kurbo::Affine::IDENTITY);
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "an opacity-wrapped text must still draw glyphs"
     );
     renderer.finish_rebuild_frame();
@@ -216,7 +221,7 @@ fn capture_window_tree_renders_mixed_widgets() {
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(view, &env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(
-        !renderer.scene_is_empty(),
+        renderer.commit_mirror().created > 0,
         "the render-tree path must draw a mixed text + widget view"
     );
     renderer.finish_rebuild_frame();
@@ -241,7 +246,7 @@ fn flush_window_tree_reuses_retained_tree() {
     // scene into the compositor's layer stack), so verify a scene segment resulted.
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "a retained tree must be present to flush");
-    let scene_layers = renderer.render_layer_stats().scene_segments;
+    let scene_layers = renderer.commit_mirror().scene_segments;
     assert!(
         scene_layers > 0,
         "re-flushing the retained tree must produce a scene segment layer"
@@ -1207,7 +1212,7 @@ fn applied_filter_renders_through_retained_tree() {
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "the retained tree must re-flush");
     assert_eq!(
-        renderer.render_layer_stats().filtered_subtrees,
+        renderer.commit_mirror().filtered,
         1,
         "a .blur() view must mount a node-owned filtered layer on the retained tree, \
          not fall through to a dispatch/capture path"
@@ -1218,7 +1223,7 @@ fn applied_filter_renders_through_retained_tree() {
     let flushed = renderer.flush_window_tree(&env, bounds, Affine::IDENTITY, Affine::IDENTITY);
     assert!(flushed, "the retained tree must re-flush a second time");
     assert_eq!(
-        renderer.render_layer_stats().filtered_subtrees,
+        renderer.commit_mirror().filtered,
         1,
         "the node-owned filter mount must survive a geometry-static re-flush \
          (the retained FilteredView node keeps owning it across frames)"
@@ -1678,7 +1683,7 @@ fn when_subtree_and_shared_signal_text_present_one_frame_state() {
     // it reads `unwrap_or_default` — both derive from the same `Binding`.
     let label = binding(Some(Str::from("HELLO")));
     // `armed` flags the write `MidFlushWrite::get` performs inside the flush;
-    // `drive` only raises `patch_requested` so the pump runs a refresh frame.
+    // `drive` only marks the reading cell so the pump runs a refresh frame.
     let armed = Rc::new(Cell::new(0u8));
     let drive = binding::<u32>(0u32);
     let builder = {

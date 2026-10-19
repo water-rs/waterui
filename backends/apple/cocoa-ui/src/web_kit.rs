@@ -38,17 +38,16 @@ use objc2::{
 };
 use objc2_core_foundation::CFError;
 use objc2_foundation::{
-    NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger,
-    NSJSONSerialization, NSJSONWritingOptions, NSObject, NSRect, NSString, NSURL,
-    NSURLAuthenticationChallenge, NSURLCredential, NSURLRequest,
+    NSArray, NSData, NSDictionary, NSError, NSHTTPCookie, NSHTTPURLResponse, NSInteger, NSObject,
+    NSRect, NSString, NSURL, NSURLAuthenticationChallenge, NSURLCredential, NSURLRequest,
     NSURLSessionAuthChallengeDisposition,
 };
 use objc2_security::SecTrust;
 use objc2_web_kit::{
     WKContentWorld, WKFrameInfo, WKNavigation, WKNavigationAction, WKNavigationActionPolicy,
     WKNavigationDelegate, WKNavigationResponse, WKNavigationResponsePolicy, WKScriptMessage,
-    WKScriptMessageHandler, WKUIDelegate, WKURLSchemeHandler, WKURLSchemeTask, WKUserScript,
-    WKUserScriptInjectionTime, WKWebViewConfiguration, WKWindowFeatures,
+    WKScriptMessageHandlerWithReply, WKUIDelegate, WKURLSchemeHandler, WKURLSchemeTask,
+    WKUserScript, WKUserScriptInjectionTime, WKWebViewConfiguration, WKWindowFeatures,
 };
 
 #[cfg(target_os = "macos")]
@@ -356,6 +355,86 @@ pub struct ScriptMessage {
     pub frame_port: i64,
 }
 
+/// The reply channel `WebKit` hands a script-message handler registered with
+/// `addScriptMessageHandlerWithReply:contentWorld:name:`.
+///
+/// `WebKit` requires the reply handler block to be invoked exactly once, so
+/// the copied block lives here: [`resolve`](Self::resolve) and
+/// [`reject`](Self::reject) consume the value, and `Drop` answers with an
+/// error for a handler future that was dropped because its web view went
+/// away. The channel is bound to the document that sent the message — if it
+/// navigated away before the answer arrives, the engine drops the reply
+/// instead of delivering it to the successor document.
+pub struct ScriptReply {
+    /// Taken by the one answer, so a second cannot happen.
+    block: Option<RcBlock<dyn Fn(*mut AnyObject, *mut NSString)>>,
+}
+
+impl ScriptReply {
+    /// Copies the reply handler `WebKit` passed the callback, so it can be
+    /// held across an `await`.
+    fn new(reply_handler: &block2::DynBlock<dyn Fn(*mut AnyObject, *mut NSString)>) -> Self {
+        Self {
+            block: Some(reply_handler.copy()),
+        }
+    }
+
+    /// Delivers `json` — a serialized `bridge::Reply` — as the value the
+    /// page's `postMessage` promise resolves with.
+    pub fn resolve(mut self, json: &str) {
+        if let Some(block) = self.block.take() {
+            Self::answer(&block, Some(&NSString::from_str(json)), None);
+        }
+    }
+
+    /// Rejects the page's `postMessage` promise with `message`.
+    pub fn reject(mut self, message: &str) {
+        if let Some(block) = self.block.take() {
+            Self::answer(&block, None, Some(&NSString::from_str(message)));
+        }
+    }
+
+    /// Invokes the block; the borrows are enough because `WebKit` reads both
+    /// arguments synchronously.
+    fn answer(
+        block: &RcBlock<dyn Fn(*mut AnyObject, *mut NSString)>,
+        reply: Option<&NSString>,
+        error: Option<&NSString>,
+    ) {
+        let reply = reply.map_or(std::ptr::null_mut(), |text| {
+            std::ptr::from_ref(text).cast_mut().cast::<AnyObject>()
+        });
+        let error = error.map_or(std::ptr::null_mut(), |text| {
+            std::ptr::from_ref(text).cast_mut()
+        });
+        block.call((reply, error));
+    }
+}
+
+impl Drop for ScriptReply {
+    fn drop(&mut self) {
+        // `WebKit` requires the reply handler to run once, so a dropped
+        // handler future still owes the document an answer.
+        if let Some(block) = self.block.take() {
+            Self::answer(
+                &block,
+                None,
+                Some(&NSString::from_str(
+                    "the WaterUI web view was closed before the handler answered",
+                )),
+            );
+        }
+    }
+}
+
+impl std::fmt::Debug for ScriptReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ScriptReply")
+            .field("answered", &self.block.is_none())
+            .finish_non_exhaustive()
+    }
+}
+
 /// A request a [`SchemeHandler`] answers.
 #[derive(Debug)]
 pub struct SchemeRequest {
@@ -559,7 +638,7 @@ impl Drop for ProgressToken {
 
 /// Ivars for the `ScriptMessageHandler` class.
 struct ScriptHandlerIvars {
-    handler: Rc<dyn Fn(ScriptMessage)>,
+    handler: Rc<dyn Fn(ScriptMessage, ScriptReply)>,
 }
 
 impl std::fmt::Debug for ScriptHandlerIvars {
@@ -575,21 +654,23 @@ define_class!(
     #[name = "CocoaUIWebViewScriptHandler"]
     #[ivars = ScriptHandlerIvars]
     #[derive(Debug)]
-    /// A `WKScriptMessageHandler` that forwards to a closure.
+    /// A `WKScriptMessageHandlerWithReply` that forwards to a closure.
     struct ScriptMessageHandler;
 
     // SAFETY: `NSObjectProtocol` asks nothing of an `NSObject` subclass.
     unsafe impl NSObjectProtocol for ScriptMessageHandler {}
 
-    // SAFETY: `userContentController:didReceiveScriptMessage:` is the whole
-    // `WKScriptMessageHandler` contract; the generated trait does not ship
-    // it for iOS, but declaring the protocol method directly is valid.
-    unsafe impl WKScriptMessageHandler for ScriptMessageHandler {
-        #[unsafe(method(userContentController:didReceiveScriptMessage:))]
+    // SAFETY: `userContentController:didReceiveScriptMessage:replyHandler:`
+    // is the whole `WKScriptMessageHandlerWithReply` contract; the generated
+    // trait does not ship it for iOS, but declaring the protocol method
+    // directly is valid.
+    unsafe impl WKScriptMessageHandlerWithReply for ScriptMessageHandler {
+        #[unsafe(method(userContentController:didReceiveScriptMessage:replyHandler:))]
         fn did_receive_script_message(
             &self,
             _controller: &objc2_web_kit::WKUserContentController,
             message: &WKScriptMessage,
+            reply_handler: &block2::DynBlock<dyn Fn(*mut AnyObject, *mut NSString)>,
         ) {
             // SAFETY: see the module safety note.
             let body = unsafe { message.body() }
@@ -610,14 +691,20 @@ define_class!(
                 // SAFETY: see the module safety note.
                 frame_port: unsafe { security_origin.port() } as i64,
             };
+            let reply = ScriptReply::new(reply_handler);
             let handler = self.ivars().handler.clone();
-            crate::callback::guarded("web view script message handler", || handler(delivered));
+            crate::callback::guarded("web view script message handler", || {
+                handler(delivered, reply);
+            });
         }
     }
 );
 
 impl ScriptMessageHandler {
-    fn new(mtm: MainThreadMarker, handler: Rc<dyn Fn(ScriptMessage)>) -> Retained<Self> {
+    fn new(
+        mtm: MainThreadMarker,
+        handler: Rc<dyn Fn(ScriptMessage, ScriptReply)>,
+    ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ScriptHandlerIvars { handler });
         // SAFETY: `this` is a live, allocated `NSObject` subclass.
         unsafe { msg_send![super(this), init] }
@@ -1193,9 +1280,12 @@ impl WebViewController {
             .set_custom_user_agent(user_agent.map(NSString::from_str).as_deref());
     }
 
-    /// Runs `script` in the default world; `done` receives the result
-    /// JSON-serialized (top-level non-JSON values fall back to their
-    /// `description`) or the error's localized description.
+    /// Runs `script` in the default world; `done` receives the string it
+    /// evaluated to, or the error's localized description.
+    ///
+    /// The script must evaluate to a string: a value of any other kind is
+    /// reported as an error rather than converted, because the caller encodes
+    /// in the page what it wants back.
     pub fn evaluate_javascript(
         &self,
         script: &str,
@@ -1218,7 +1308,9 @@ impl WebViewController {
 
     /// Calls `function_body` in the page content world — the entry point
     /// `callAsyncJavaScript` is required for, since `evaluateJavaScript`
-    /// returns the promise object itself.
+    /// returns the promise object itself. `done` receives the string the
+    /// function resolved with; like [`Self::evaluate_javascript`], any other
+    /// value is an error.
     pub fn call_async_javascript(
         &self,
         function_body: &str,
@@ -1289,19 +1381,30 @@ impl WebViewController {
         }
     }
 
-    /// Registers `handler` for `name` under `webkit.messageHandlers`. The
-    /// controller retains the handler object; re-adding a name first removes
-    /// the previous handler.
-    pub fn add_script_message_handler(&self, name: &str, handler: Rc<dyn Fn(ScriptMessage)>) {
+    /// Registers `handler` for `name` under `webkit.messageHandlers` on the
+    /// reply channel: the handler answers each message through the
+    /// [`ScriptReply`] it is handed, which `WebKit` binds to the sending
+    /// document and drops when that document is gone. The controller retains
+    /// the handler object; re-adding a name first removes the previous
+    /// handler.
+    pub fn add_script_message_handler(
+        &self,
+        name: &str,
+        handler: Rc<dyn Fn(ScriptMessage, ScriptReply)>,
+    ) {
         self.remove_script_message_handler(name);
         let mtm = MainThreadMarker::from(&*self.view);
         let object = ScriptMessageHandler::new(mtm, handler);
         // SAFETY: see the module safety note.
         let user_content = unsafe { self.view.configuration().userContentController() };
-        // SAFETY: `object` is a live `WKScriptMessageHandler`.
+        // SAFETY: `mtm` is the main-thread marker `pageWorld` requires.
+        let world = unsafe { WKContentWorld::pageWorld(mtm) };
+        // SAFETY: `object` is a live `WKScriptMessageHandlerWithReply`, and
+        // `world` is a live `WKContentWorld`.
         unsafe {
-            user_content.addScriptMessageHandler_name(
+            user_content.addScriptMessageHandlerWithReply_contentWorld_name(
                 ProtocolObject::from_ref(&*object),
+                &world,
                 &NSString::from_str(name),
             );
         }
@@ -1450,39 +1553,33 @@ pub fn evaluate_server_trust(trust: &SecTrust) -> Result<(), String> {
     ))
 }
 
-/// Turns an evaluated result into the reply string the bridge expects.
+/// The string an evaluation produced, or why there is none.
+///
+/// Both evaluation paths run scripts that encode their answer in the page, so
+/// the value is a string and is returned as it is. Anything else — `nil` for
+/// `undefined`, a bridged number or dictionary — means the script broke that
+/// contract, and is reported rather than re-encoded here.
 fn script_result(result: *mut AnyObject, error: *mut NSError) -> Result<String, String> {
     if !error.is_null() {
         // SAFETY: a non-null `NSError` from WebKit is a live object.
         let error = unsafe { &*error };
         return Err(error.localizedDescription().to_string());
     }
-    if result.is_null() {
-        return Ok(String::from("null"));
-    }
-    // SAFETY: a non-null `AnyObject` from WebKit is a live object.
-    let result = unsafe { &*result };
-    Ok(json_string(result))
-}
-
-/// JSON-serializes `object`, falling back to `description` when it is not a
-/// valid JSON object — the shape `evaluateJavaScript` replies with.
-fn json_string(object: &AnyObject) -> String {
-    // SAFETY: `object` is a live object.
-    if unsafe { NSJSONSerialization::isValidJSONObject(object) } {
-        // SAFETY: `object` passed `isValidJSONObject`.
-        if let Ok(data) = unsafe {
-            NSJSONSerialization::dataWithJSONObject_options_error(object, NSJSONWritingOptions(0))
-        } && let Ok(text) = String::from_utf8(data.to_vec())
-        {
-            return text;
-        }
-    }
-    // SAFETY: `object` is a live object; `description` is `NSObject`.
-    let description: Option<Retained<NSString>> = unsafe { msg_send![object, description] };
-    description.map_or_else(
-        || String::from("null"),
-        |description| description.to_string(),
+    // SAFETY: a non-null `AnyObject` from WebKit is a live object; `as_ref`
+    // is the null check.
+    let Some(result) = (unsafe { result.as_ref() }) else {
+        return Err(String::from(
+            "the script evaluated to `undefined`, not the string it must answer",
+        ));
+    };
+    result.downcast_ref::<NSString>().map_or_else(
+        || {
+            Err(format!(
+                "the script evaluated to a `{}`, not the string it must answer",
+                result.class().name().to_string_lossy()
+            ))
+        },
+        |string| Ok(string.to_string()),
     )
 }
 

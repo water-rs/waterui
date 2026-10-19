@@ -29,8 +29,9 @@ pub trait ShaderPaint: Backend {
     /// [`ResourceError::Shader`] when the source fails validation.
     fn validate_shader(source: &ShaderSource) -> Result<(), ResourceError>;
     /// Registers a shader [`ShaderPaint::validate_shader`] accepted, on the
-    /// render thread. A rejection fails every later render that draws the
-    /// shader with [`RenderError::Rejected`](crate::RenderError::Rejected).
+    /// render thread. A rejection leaves every surface whose content draws
+    /// the shader out of later frames, reported as
+    /// [`RenderError::Rejected`](crate::RenderError::Rejected).
     ///
     /// # Errors
     /// [`ResourceError::Shader`] when pipeline creation fails.
@@ -245,8 +246,8 @@ pub trait BackdropShaders: Backdrop {
     /// Registers a backdrop effect shader
     /// [`BackdropShaders::validate_backdrop_shader`] accepted, on the render
     /// thread, compiled for the composite contract; the pipeline is built
-    /// here, never at draw time. A rejection fails every later render that
-    /// samples the shader with
+    /// here, never at draw time. A rejection leaves every surface that
+    /// samples the shader out of later frames, reported as
     /// [`RenderError::Rejected`](crate::RenderError::Rejected).
     ///
     /// # Errors
@@ -281,6 +282,37 @@ pub trait HdrOutput: Backend {}
 
 /// The backend presents on multiple hardware planes.
 pub trait Planes: Backend {}
+
+/// The backend shows system layers the host supplies — a system web view,
+/// an embedded platform view — in the layer tree, through
+/// [`Hosted::at`](crate::Hosted::at).
+///
+/// A hosted layer is always realized on a system-compositor plane of its
+/// own and never composited by the engine. [`Object`](Self::Object) is the
+/// platform object itself, not pixels: no engine path samples, filters,
+/// caches or reads it back, because none can reach it. Its eligibility is
+/// the mandatory-plane rule — a hosted layer that cannot be placed on a
+/// plane fails the render with
+/// [`RenderError::Unplaceable`](crate::RenderError::Unplaceable), never
+/// falls back to composition.
+pub trait HostedLayers: Planes + GpuInstalls {
+    /// The platform object the host hands over: an `NSView` on macOS, a
+    /// `CALayer` on iOS, a `SurfaceControl` on Android, an `HtmlElement` on
+    /// the web.
+    type Object: Clone + crate::RenderTransfer + 'static;
+    /// Binds `object` as the content of `layer` on `surface`, its own
+    /// coordinate space mapped onto the layer's content space with
+    /// `(0, 0)..size` as its extent. Replaces the layer's other content; a
+    /// rebinding of the same object on the same layer keeps its plane and
+    /// moves only its geometry.
+    fn bind_hosted(
+        r: &mut Self::Renderer,
+        surface: SurfaceId,
+        layer: LayerId,
+        object: Self::Object,
+        size: kurbo::Size,
+    );
+}
 
 /// A user shader's WGSL fragment source.
 #[derive(Clone, Debug)]

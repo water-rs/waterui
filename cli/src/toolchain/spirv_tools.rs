@@ -18,6 +18,10 @@ use crate::{
 
 /// Toolchain for `spirv-opt`, the SPIR-V optimizer `cherenkov-gpu` builds invoke.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct SpirvTools;
 
 impl SpirvTools {
@@ -118,6 +122,7 @@ impl Toolchain for SpirvTools {
 
 /// Installation plan for `spirv-opt` — the strategy `check` selected.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum SpirvToolsInstallation {
     /// `brew install spirv-tools`.
     Brew,
@@ -142,6 +147,7 @@ impl SpirvToolsInstallation {
 
 /// Errors that can occur while installing SPIRV-Tools.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallSpirvTools {
     /// Homebrew is required for the selected plan but unavailable.
     #[error("Homebrew not found. Please install Homebrew to proceed.")]

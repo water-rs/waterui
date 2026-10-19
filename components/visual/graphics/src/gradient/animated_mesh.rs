@@ -23,6 +23,7 @@ const UNIFORM_LEN: usize = 4 + ANIMATED_MESH_PALETTE_LEN * 3;
 
 /// Configuration for an [`AnimatedMeshGradient`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct AnimatedMeshGradientConfig {
     /// Animation speed multiplier on the engine's clock; `0.0` holds the
     /// gradient still and lets the engine idle.

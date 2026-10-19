@@ -7,7 +7,9 @@
 //! pointers carried as `jlong` and driven only on the UI thread, which the
 //! Kotlin host guarantees.
 
+use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::ptr::addr_of;
 use std::sync::OnceLock;
 
 use jni::objects::{GlobalRef, JClass, JObject, JString};
@@ -18,7 +20,7 @@ use crate::platform::{
     BackEdge, BackNavigation, InputEvent, Modifiers, PointerButton, PointerKind,
 };
 
-use super::host::{AndroidSession, MetricsSnapshot};
+use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 
 /// The JNI schema this build of the runner speaks — `nativeInit` returns it
 /// and the Kotlin `NativeBridge` refuses a mismatch, so a stale native
@@ -42,8 +44,22 @@ use super::host::{AndroidSession, MetricsSnapshot};
 /// and report whether a back target is registered; 10 = `nativeSetMetrics`
 /// splits the window insets into the container and keyboard regions of
 /// layout-spec.md §7.1, and the host's `WindowInsetsAnimationCompat` progress
-/// pushes each IME animation frame.
-pub const JNI_SCHEMA: jint = 10;
+/// pushes each IME animation frame; 11 = `nativeUiThreadServices` creates
+/// the one executor per UI thread at load time, and `nativeCreateSession`
+/// takes its handle so every session shares it; 12 = `nativeSetHighRefresh`
+/// takes a typed `active` flag in place of the `-1f` sentinel float the
+/// runner decoded as a release, and `nativeSurfaceAttached` carries the
+/// display's peak refresh rate that flag asks for; 13 = a platform-view
+/// placement names either a factory `kind` or a registered `instance`, and
+/// the `HydrolysisWebView` natives join the edge; 14 =
+/// `nativePlatformViewFocus` reported whether a mounted platform-view child
+/// held UI focus; 15 = the report reads through the frame instead —
+/// `onNativePlatformViewFocus` / `platform_view_focus_inside` replaces the
+/// pushed native, which left with it; 16 = `onNativeFatalError` leaves the
+/// table — a lost GPU device is recreated instead of ending the session
+/// (water-rs/waterui#2742), and a recreation that exhausts its loss budget
+/// already reaches Kotlin as the frame call's `IllegalStateException`.
+pub const JNI_SCHEMA: jint = 16;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]
@@ -66,6 +82,16 @@ impl From<super::gpu::GpuError> for JniError {
 /// attach envs through it.
 static JAVA_VM: OnceLock<JavaVM> = OnceLock::new();
 
+/// The process's `JavaVM`, captured at `nativeInit`. Entry points receive a
+/// `JNIEnv` from their caller, but code that runs outside a Java-to-native
+/// entry point — the executor's `ALooper` fd callback — resolves the env
+/// through this.
+pub(super) fn java_vm() -> &'static JavaVM {
+    JAVA_VM
+        .get()
+        .expect("hydrolysis android: nativeInit sets JAVA_VM before any session exists")
+}
+
 /// The `Application` published to `ndk_context`, held as a JNI global
 /// reference for the life of the process.
 ///
@@ -87,7 +113,7 @@ static APPLICATION_CONTEXT: OnceLock<GlobalRef> = OnceLock::new();
 /// fails the session instead of replacing (and leaking) the published
 /// reference. Sessions are created only on the UI thread, so the check and
 /// the publish do not race.
-fn publish_application_context(
+pub(super) fn publish_application_context(
     env: &mut JNIEnv,
     vm: &JavaVM,
     context: &JObject,
@@ -130,19 +156,110 @@ fn publish_application_context(
     Ok(())
 }
 
-/// Decodes a session pointer. The host passes exactly what
-/// `nativeCreateSession` returned; anything else is a programming error.
-fn session(ptr: jlong) -> &'static mut AndroidSession {
+/// The heap allocation a session `jlong` points at. The Kotlin host owns
+/// it for the session's life; every entry point borrows `session` through
+/// [`session`], which `entered` makes exclusive.
+///
+/// `entered` sits beside `session` rather than inside it: a borrow is
+/// checked and cleared through `&Cell` on the flag's own field while the
+/// disjoint `session` field is lent mutably — the two never overlap.
+struct SessionBox {
+    entered: Cell<bool>,
+    session: AndroidSession,
+}
+
+/// One JNI call's exclusive borrow of the session [`session`] names.
+///
+/// While the guard lives, a re-entrant [`session`] call — a Kotlin
+/// callback synchronously invoking a native entry point under a session
+/// call — panics rather than minting a second `&mut AndroidSession`
+/// (water-rs/waterui#2953); `guard` reports the panic to that nested
+/// caller as `IllegalStateException`, the same surface every entry
+/// failure takes. Dropping the guard releases the borrow.
+struct SessionGuard {
+    entry: *mut SessionBox,
+}
+
+impl SessionGuard {
+    /// The `entered` flag of this guard's box, read through a field
+    /// projection so the shared borrow never covers the disjoint
+    /// `session` field this guard lends mutably.
+    fn entered(&self) -> &Cell<bool> {
+        // SAFETY: `addr_of!` projects to the `entered` field without
+        // borrowing the whole box, so this `&Cell` never aliases the
+        // `&mut AndroidSession` derived from the disjoint `session`
+        // field below.
+        unsafe { &*addr_of!((*self.entry).entered) }
+    }
+}
+
+impl std::ops::Deref for SessionGuard {
+    type Target = AndroidSession;
+    fn deref(&self) -> &AndroidSession {
+        // SAFETY: `session()` proves no other borrow was live when it
+        // minted this guard, and `entered` keeps a second guard from
+        // existing until this one drops.
+        unsafe { &(*self.entry).session }
+    }
+}
+
+impl std::ops::DerefMut for SessionGuard {
+    fn deref_mut(&mut self) -> &mut AndroidSession {
+        // SAFETY: same argument as `deref` — the guard is the exclusive
+        // borrow for the whole JNI call.
+        unsafe { &mut (*self.entry).session }
+    }
+}
+
+impl Drop for SessionGuard {
+    fn drop(&mut self) {
+        self.entered().set(false);
+    }
+}
+
+/// Decodes a session pointer and borrows its session for this call.
+/// The host passes exactly what `nativeCreateSession` returned; anything
+/// else is a programming error.
+///
+/// # Panics
+/// Panics when a borrow is already live: a Kotlin callback re-entered
+/// JNI under a running session call, where minting a second `&mut
+/// AndroidSession` would alias the first.
+fn session(ptr: jlong) -> SessionGuard {
     assert!(ptr != 0, "hydrolysis android: null session pointer");
-    // SAFETY: the pointer came from Box::into_raw on a session that the
-    // Kotlin host owns, and every entry point runs on the UI thread, so no
-    // aliased &mut ever coexists.
-    unsafe { &mut *(ptr as *mut AndroidSession) }
+    // SAFETY: the pointer came from `Box::into_raw` on a `SessionBox` in
+    // `nativeCreateSession`, and the Kotlin host keeps it alive until
+    // `nativeDestroySession`.
+    let entry = ptr as *mut SessionBox;
+    // Read and set the flag before the guard exists: a failed assertion
+    // has no guard to drop, so the live borrow's `entered` stays set
+    // instead of being released under it.
+    //
+    // SAFETY: same projection argument as `SessionGuard::entered` — the
+    // flag field never overlaps the disjoint `session` field.
+    let entered = unsafe { &*addr_of!((*entry).entered) };
+    assert!(
+        !entered.replace(true),
+        "hydrolysis android: a Kotlin callback re-entered JNI while a \
+         session call was still running"
+    );
+    SessionGuard { entry }
+}
+
+/// Decodes the UI-thread services pointer. The host passes exactly what
+/// `nativeUiThreadServices` returned — a process-lifetime object the load
+/// hook created once.
+fn services(ptr: jlong) -> &'static UiThreadServices {
+    assert!(ptr != 0, "hydrolysis android: null services pointer");
+    // SAFETY: the pointer came from Box::into_raw on the UiThreadServices
+    // the load hook created and the Kotlin host keeps for the process's
+    // life; sessions only ever read it, on the UI thread.
+    unsafe { &*(ptr as *const UiThreadServices) }
 }
 
 /// Runs `f` on the session, mapping `JniError` → `IllegalStateException` and a
 /// panic → `IllegalStateException` (with the panic payload in the message).
-fn guard<F>(env: &mut JNIEnv, f: F)
+pub fn guard<F>(env: &mut JNIEnv, f: F)
 where
     F: FnOnce(&mut JNIEnv) -> Result<(), JniError>,
 {
@@ -167,7 +284,7 @@ where
 
 /// `guard` for calls returning a value — the error path throws and returns
 /// `default`.
-fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
+pub fn guard_val<F, T>(env: &mut JNIEnv, default: T, f: F) -> T
 where
     F: FnOnce(&mut JNIEnv) -> Result<T, JniError>,
 {
@@ -181,7 +298,7 @@ where
 
 /// `guard` for calls returning a value the caller converts first — throws
 /// and returns `default` on failure.
-fn guard_string<F>(env: &mut JNIEnv, f: F) -> jstring
+pub fn guard_string<F>(env: &mut JNIEnv, f: F) -> jstring
 where
     F: FnOnce(&mut JNIEnv) -> Result<Option<String>, JniError>,
 {
@@ -214,26 +331,56 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeInit(
     log_level: JString,
 ) -> jint {
     guard_val(&mut env, 0, |env| {
-        let vm = env.get_java_vm()?;
-        let _ = JAVA_VM.set(vm);
+        // A null `waterui.log.level` extra keeps the INFO default.
         let level = if log_level.as_raw().is_null() {
             None
         } else {
-            let level = get_string(env, &log_level)?;
-            Some(
-                level
-                    .parse::<tracing::level_filters::LevelFilter>()
-                    .map_err(|_| {
-                        JniError(format!(
-                            "hydrolysis android: unrecognized log level {level:?} \
-                             in the launch intent"
-                        ))
-                    })?,
-            )
+            Some(get_string(env, &log_level)?)
         };
-        super::init_logging(level);
+        init_process(env, level.as_deref())?;
         Ok(JNI_SCHEMA)
     })
+}
+
+/// The load hook's second half, after the schema handshake: creates the
+/// UI-thread services — the one executor per UI thread, registered with the
+/// main `ALooper`, plus the process environment that carries the
+/// inspector — and returns them as an opaque handle the Kotlin `NativeBridge`
+/// keeps for the process's life and hands to every `nativeCreateSession`.
+///
+/// Called once, on the UI thread (its main looper must already exist).
+/// The returned pointer is process-owned and never freed.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeUiThreadServices(
+    mut env: JNIEnv,
+    _class: JClass,
+) -> jlong {
+    guard_val(&mut env, 0, |_env| {
+        let services = UiThreadServices::init()?;
+        Ok(Box::into_raw(Box::new(services)) as jlong)
+    })
+}
+
+/// The one-time process setup every Hydrolysis JNI entry runs first: capture
+/// the `JavaVM` for the host's later calls, parse the caller's optional
+/// `tracing` level name (`None` keeps [`super::init_logging`]'s default), and
+/// install logging.
+pub(super) fn init_process(env: &mut JNIEnv, log_level: Option<&str>) -> Result<(), JniError> {
+    let vm = env.get_java_vm()?;
+    let _ = JAVA_VM.set(vm);
+    let level = log_level
+        .map(|level| {
+            level
+                .parse::<tracing::level_filters::LevelFilter>()
+                .map_err(|_| {
+                    JniError(format!(
+                        "hydrolysis android: unrecognized log level {level:?}"
+                    ))
+                })
+        })
+        .transpose()?;
+    super::init_logging(level);
+    Ok(())
 }
 
 #[unsafe(no_mangle)]
@@ -242,6 +389,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
     _class: JClass,
     host_view: JObject,
     context: JObject,
+    services_ptr: jlong,
 ) -> jlong {
     guard_val(&mut env, 0, |env| {
         let vm = env.get_java_vm()?;
@@ -263,25 +411,41 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeCreateSess
             max_fling_velocity_px: 0.0,
             scroll_friction: 0.0,
         };
-        let session = AndroidSession::create(vm, host_view, metrics)?;
-        Ok(Box::into_raw(session) as jlong)
+        let session = AndroidSession::create(env, vm, host_view, metrics, services(services_ptr))?;
+        Ok(Box::into_raw(Box::new(SessionBox {
+            entered: Cell::new(false),
+            session: *session,
+        })) as jlong)
     })
 }
 
+/// Frees the session. A panic while its state drops is reported to the
+/// Kotlin caller as `IllegalStateException`, like every other entry point:
+/// a teardown that failed halfway is a defect to see, not one to discard.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeDestroySession(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     session_ptr: jlong,
 ) {
-    if session_ptr == 0 {
-        return;
-    }
-    // SAFETY: the pointer came from nativeCreateSession and this is the
-    // single destroy call per session, on the UI thread.
-    let _ = catch_unwind(AssertUnwindSafe(|| unsafe {
-        drop(Box::from_raw(session_ptr as *mut AndroidSession));
-    }));
+    guard(&mut env, |_env| {
+        assert!(session_ptr != 0, "hydrolysis android: null session pointer");
+        let entry = session_ptr as *mut SessionBox;
+        assert!(
+            // SAFETY: the pointer came from nativeCreateSession, and the
+            // Kotlin session hands it here exactly once, on the UI thread,
+            // after closing its accessor. The flag read is the same
+            // disjoint-field projection `session` uses.
+            !unsafe { &*addr_of!((*entry).entered) }.get(),
+            "hydrolysis android: destroying a session while a call into \
+             it is still running"
+        );
+        // SAFETY: same pointer and exclusivity as the flag read above —
+        // `entered` being clear means no borrow of `session` is still live,
+        // so reclaiming the box frees nothing a borrow points into.
+        drop(unsafe { Box::from_raw(entry) });
+        Ok(())
+    });
 }
 
 #[unsafe(no_mangle)]
@@ -353,15 +517,13 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeOnFrame(
 
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeFrameDeadlineInNanos(
-    _env: JNIEnv,
+    mut env: JNIEnv,
     _class: JClass,
     session_ptr: jlong,
 ) -> jlong {
-    if session_ptr == 0 {
-        -1
-    } else {
-        session(session_ptr).frame_deadline_in_nanos()
-    }
+    guard_val(&mut env, -1, |_env| {
+        Ok(session(session_ptr).frame_deadline_in_nanos())
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -370,11 +532,18 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
     _class: JClass,
     session_ptr: jlong,
     surface: JObject,
+    peak_refresh_hz: jfloat,
     width: jint,
     height: jint,
     generation: jlong,
 ) -> jboolean {
     guard_val(&mut env, 0, |env| {
+        if !(peak_refresh_hz.is_finite() && peak_refresh_hz > 0.0) {
+            return Err(JniError(format!(
+                "hydrolysis android: surface attached with peak refresh rate {peak_refresh_hz} Hz; \
+                 the host must report its display's positive peak rate"
+            )));
+        }
         let window = unsafe {
             // SAFETY: env is a live JNIEnv and `surface` is the
             // android.view.Surface the band just produced; the call acquires
@@ -392,6 +561,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSurfaceAtt
         session(session_ptr)
             .surface_attached_with_generation(
                 window,
+                peak_refresh_hz,
                 crate::num_cast::i32_as_u32(width.max(0)),
                 crate::num_cast::i32_as_u32(height.max(0)),
                 crate::num_cast::i64_as_u64(generation),
@@ -449,16 +619,22 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetVisible
     });
 }
 
+/// The scheduler's high-refresh demand: `active` asks the surface for its
+/// display's peak rate — reported with the surface attach — for as long as
+/// the pump runs or a touch is held; a cleared flag releases the request.
+/// The session holds the demand across surface generations, so a
+/// re-attached band gets it back without a demand change.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeSetHighRefresh(
     mut env: JNIEnv,
     _class: JClass,
     session_ptr: jlong,
-    fps: jfloat,
+    active: jboolean,
 ) {
     guard(&mut env, |_env| {
-        session(session_ptr).set_high_refresh_demand((fps > 0.0).then_some(fps));
-        Ok(())
+        session(session_ptr)
+            .set_high_refresh_demand(active != 0)
+            .map_err(JniError)
     });
 }
 
@@ -605,7 +781,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeKeyEvent(
             alt: alt != 0,
             super_key: meta != 0,
         };
-        let session = session(session_ptr);
+        let mut session = session(session_ptr);
         super::ime::ImeBridge::key_event(
             &mut session.runtime.platform,
             &key,
@@ -738,7 +914,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativeAccessibil
     guard_val(&mut env, 0, |env| {
         let text = get_string(env, &text)?;
         Ok(u8::from(super::accessibility::perform_action(
-            session(session_ptr),
+            &mut session(session_ptr),
             virtual_view_id,
             action,
             arg1,
@@ -757,7 +933,7 @@ pub extern "system" fn Java_dev_waterui_hydrolysis_NativeBridge_nativePlatformVi
     session_ptr: jlong,
 ) -> jstring {
     guard_string(&mut env, |_env| {
-        Ok(Some(super::platform_views::placements_json(session(
+        Ok(Some(super::platform_views::placements_json(&session(
             session_ptr,
         ))?))
     })

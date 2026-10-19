@@ -361,7 +361,8 @@ impl Engine for VelloHybrid {
         Ok(Submit {
             image,
             gpu: GpuSample::whole_frame(frame, gpu_seconds),
-            phases: None,
+            phases: Vec::new(),
+            composition: None,
             render_seconds: Some(render_seconds),
             readback_seconds: readback_flag.then(|| readback_at.elapsed().as_secs_f64()),
         })

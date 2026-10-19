@@ -10,13 +10,14 @@
 //! does. No action can reach an object that does not understand it.
 //!
 //! `with_action` instead installs a private target object on the item that
-//! invokes a Rust closure; the item's weak target reference is kept alive
-//! by the [`MenuItem`] itself. The attributed-title attribute used by
+//! invokes a Rust closure and answers `validateMenuItem:` from the item's
+//! own enabled state; the item's weak target reference is kept alive by the
+//! [`MenuItem`] itself. The attributed-title attribute used by
 //! `with_destructive` is a static the platform exports, applied over the
 //! item's whole title range, and `setTarget:`/`setAction:` are the
 //! documented target/action setters.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::rc::Rc;
 
@@ -128,11 +129,31 @@ impl MenuItem {
         self
     }
 
+    /// An item from a [`Command`] that sends `action` — a standard
+    /// platform command — untargeted up the responder chain when chosen,
+    /// the way `AppKit`'s own menu items act: `AppKit` greys it out while
+    /// no responder implements the action. The command's presentation
+    /// fields apply as for [`MenuItem::command`].
+    #[must_use]
+    pub fn standard(mtm: MainThreadMarker, command: &Command, action: MenuAction) -> Self {
+        // SAFETY: see the module safety note.
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str(&command.label),
+                Some(action.selector()),
+                &NSString::from_str(&command.key_equivalent),
+            )
+        };
+        Self::apply_presentation(&item, command)
+    }
+
     /// The same item, invoking `handler` when chosen instead of sending a
-    /// standard action up the responder chain.
+    /// standard action up the responder chain. It keeps the enabled state
+    /// it had, which its target reports when a menu validates its items.
     #[must_use]
     pub fn with_action(mut self, handler: impl Fn() + 'static) -> Self {
-        let target = MenuItemTarget::new(self.item.mtm(), Rc::new(handler));
+        let target = MenuItemTarget::new(self.item.mtm(), Rc::new(handler), self.item.isEnabled());
         // SAFETY: `setTarget:`/`setAction:` are the documented way to point
         // an item at a per-item receiver; `menuItemFired:` is defined by the
         // target. The item holds the target weakly, so `self.action_target`
@@ -154,10 +175,14 @@ impl MenuItem {
         self
     }
 
-    /// The same item, greyed out and unselectable when `enabled` is false.
+    /// The same item, greyed out and unselectable when `enabled` is false —
+    /// the answer its callback target gives a validating menu, too.
     #[must_use]
     pub fn with_enabled(self, enabled: bool) -> Self {
         self.item.setEnabled(enabled);
+        if let Some(target) = &self.action_target {
+            target.ivars().enabled.set(enabled);
+        }
         self
     }
 
@@ -228,13 +253,14 @@ pub struct MenuButton {
 impl MenuButton {
     /// A pull-down button showing an empty menu.
     ///
-    /// Item enabling is manual: `autoenablesItems` would re-validate items
-    /// whose `enabled` state callers manage themselves.
+    /// Items validate whenever the menu opens: a callback row answers from
+    /// its command's enabled state, and a standard row through the
+    /// responder chain — Close greys out while the key window cannot close.
     #[must_use]
     pub fn new(mtm: MainThreadMarker) -> Self {
         let button =
             NSPopUpButton::initWithFrame_pullsDown(NSPopUpButton::alloc(mtm), NSRect::ZERO, true);
-        button.setAutoenablesItems(false);
+        button.setAutoenablesItems(true);
         Self { button }
     }
 
@@ -257,8 +283,8 @@ impl AsRef<NSView> for MenuButton {
 }
 
 /// A standard command a menu item sends to whichever object currently
-/// handles it: the focused text view for editing commands, the key window for
-/// window commands, the application for the rest.
+/// handles it: the focused text view for editing commands, the key window
+/// for window commands, the application for the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum MenuAction {
     /// Shows the standard About panel.
@@ -285,6 +311,10 @@ pub enum MenuAction {
     Delete,
     /// Selects everything.
     SelectAll,
+    /// Closes the key window as its close button would: `performClose:`,
+    /// which asks the window's delegate first and does nothing for a window
+    /// without a close button.
+    CloseWindow,
     /// Minimizes the key window into the Dock.
     Minimize,
     /// Toggles the key window between its standard and its user size.
@@ -294,6 +324,7 @@ pub enum MenuAction {
 }
 
 impl MenuAction {
+    /// The responder-chain selector the command sends.
     fn selector(self) -> Sel {
         match self {
             Self::About => sel!(orderFrontStandardAboutPanel:),
@@ -308,6 +339,7 @@ impl MenuAction {
             Self::Paste => sel!(paste:),
             Self::Delete => sel!(delete:),
             Self::SelectAll => sel!(selectAll:),
+            Self::CloseWindow => sel!(performClose:),
             Self::Minimize => sel!(miniaturize:),
             Self::Zoom => sel!(zoom:),
             Self::BringAllToFront => sel!(arrangeInFront:),
@@ -346,6 +378,8 @@ mod tests {
 pub struct MenuItemTargetIvars {
     /// Called when the item is chosen.
     action: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The item's enabled state — `validateMenuItem:`'s answer.
+    enabled: Cell<bool>,
 }
 
 impl fmt::Debug for MenuItemTargetIvars {
@@ -379,13 +413,21 @@ define_class!(
                 }
             });
         }
+
+        // SAFETY: `validateMenuItem:` is `NSMenuItemValidation`'s method —
+        // it takes the item and answers a `BOOL`.
+        #[unsafe(method(validateMenuItem:))]
+        fn validate_menu_item(&self, _item: &NSMenuItem) -> bool {
+            self.ivars().enabled.get()
+        }
     }
 );
 
 impl MenuItemTarget {
-    fn new(mtm: MainThreadMarker, handler: Rc<dyn Fn()>) -> Retained<Self> {
+    fn new(mtm: MainThreadMarker, handler: Rc<dyn Fn()>, enabled: bool) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(MenuItemTargetIvars {
             action: RefCell::new(Some(handler)),
+            enabled: Cell::new(enabled),
         });
         // SAFETY: `init` is `NSObject`'s designated initializer.
         unsafe { msg_send![super(this), init] }
@@ -405,7 +447,7 @@ impl MenuItem {
                 &NSString::from_str(&command.key_equivalent),
             )
         };
-        let target = MenuItemTarget::new(mtm, action);
+        let target = MenuItemTarget::new(mtm, action, command.enabled);
         // SAFETY: `setTarget:` accepts any object; the item holds it weakly,
         // so the target is retained as the item's `representedObject` as well.
         unsafe {
@@ -444,12 +486,21 @@ impl MenuItem {
         Self::apply_command(&item, command)
     }
 
-    /// Applies a [`Command`]'s presentation to the item: enabled state,
-    /// checkmark, key modifiers, symbol image, subtitle and the destructive
-    /// style — `AppKit` draws a destructive command with the system-red
-    /// title.
+    /// Applies a [`Command`]'s presentation to the item, `enabled`
+    /// included — for a row carrying a Rust callback, which only the
+    /// command itself may enable or disable.
     fn apply_command(item: &NSMenuItem, command: &Command) -> Self {
         item.setEnabled(command.enabled);
+        Self::apply_presentation(item, command)
+    }
+
+    /// Applies a [`Command`]'s presentation to the item: checkmark, key
+    /// modifiers, symbol image, subtitle and the destructive style —
+    /// `AppKit` draws a destructive command with the system-red title.
+    /// `enabled` is left to the caller: a [`MenuTreeNode::Standard`] row's
+    /// enabled state is the responder chain's answer, computed per
+    /// `validateUserInterfaceItem`.
+    fn apply_presentation(item: &NSMenuItem, command: &Command) -> Self {
         item.setState(if command.selected {
             objc2_app_kit::NSControlStateValueOn
         } else {
@@ -506,6 +557,9 @@ impl Menu {
                 MenuTreeNode::Divider => self.add_separator(),
                 MenuTreeNode::Command(command, action) => {
                     self.add_item(MenuItem::command(mtm, command, action.clone()));
+                }
+                MenuTreeNode::Standard(command, action) => {
+                    self.add_item(MenuItem::standard(mtm, command, *action));
                 }
                 MenuTreeNode::Submenu(command, children) => {
                     let submenu = Self::new(mtm, &command.label);

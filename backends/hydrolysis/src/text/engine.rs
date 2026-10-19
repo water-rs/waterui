@@ -100,9 +100,10 @@ pub trait TextLayout: Clone + Send + Sync + 'static {
     fn line_metrics(&self, line: usize) -> LineMetrics;
     /// The laid-out height.
     fn height(&self) -> f32;
-    /// The selection an anchor/focus pair forms, snapped to clusters.
+    /// The selection an anchor/focus pair forms, each end moved back to the
+    /// start of the extended grapheme cluster it falls inside.
     fn selection(&self, anchor: TextPosition, focus: TextPosition) -> TextSelection;
-    /// The position a point hits.
+    /// The grapheme boundary a point hits.
     fn hit_test(&self, x: f32, y: f32) -> TextPosition;
     /// The word under a point.
     fn word_at(&self, x: f32, y: f32) -> TextSelection;
@@ -112,9 +113,11 @@ pub trait TextLayout: Clone + Send + Sync + 'static {
     fn caret_rect(&self, at: TextPosition) -> kurbo::Rect;
     /// Runs `each` on every rectangle `selection` covers.
     fn selection_rects(&self, selection: TextSelection, each: impl FnMut(kurbo::Rect));
-    /// The selection with its focus at the previous cluster in visual order.
+    /// The selection with its focus at the previous grapheme boundary in
+    /// visual order.
     fn previous_visual(&self, selection: TextSelection, extend: bool) -> TextSelection;
-    /// The selection with its focus at the next cluster in visual order.
+    /// The selection with its focus at the next grapheme boundary in visual
+    /// order.
     fn next_visual(&self, selection: TextSelection, extend: bool) -> TextSelection;
 }
 
@@ -126,7 +129,8 @@ pub trait TextEngine: Send + Sync + 'static {
     /// A layout carrying no text: zero lines.
     fn empty_layout(&self) -> Self::Layout;
 
-    /// Shape `input` at `max_width`; never called with empty input.
+    /// Shape `input` at `max_width`. An empty input lays out one empty line
+    /// in its default style — the line a caret in an empty field occupies.
     fn shape(&self, input: &ResolvedTextLayoutInput, max_width: Option<f32>) -> Self::Layout;
 
     /// At most `max_lines`, the last ending in an ellipsis when the text
@@ -156,6 +160,11 @@ pub trait TextEngine: Send + Sync + 'static {
         scene: &mut Recording,
         counters: &mut FrameWorkCounters,
     );
+
+    /// The collection the engine shapes with gained faces: drops every
+    /// result the engine keeps that was made against the old set.
+    #[cfg(all(target_arch = "wasm32", feature = "web"))]
+    fn fonts_changed(&self);
 }
 
 /// How a named font family the collection cannot resolve is treated.
@@ -169,6 +178,7 @@ pub trait TextEngine: Send + Sync + 'static {
 /// ([`crate::DeclaredFonts`]) is a missing declaration — the shape panics
 /// naming the family instead of silently measuring a substitute face.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FontFamilyResolution {
     /// An unresolved named family falls through to the next list entry.
     #[default]

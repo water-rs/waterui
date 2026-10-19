@@ -1,15 +1,16 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::renderer::mount::RetainedScopes;
 
+#[cfg(feature = "accessibility")]
+use crate::theme::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
 use std::collections::{BTreeSet, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
-#[cfg(feature = "accessibility")]
-use waterui_backend_core::widget::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
 
@@ -215,7 +216,7 @@ pub const WINDOW_ID_STRIDE: u64 = 1 << 32;
 /// `accesskit` has no property for what a text field's content *means*, so
 /// the declaration travels beside the tree instead of on the node: every
 /// publish carries this map next to the merged `TreeUpdate`, with popup ids
-/// offset by [`WINDOW_ID_STRIDE`] exactly as the tree's are.
+/// offset by `WINDOW_ID_STRIDE` exactly as the tree's are.
 #[cfg(feature = "accessibility")]
 pub type AccessibilityContentTypes = BTreeMap<AccessibilityNodeId, ContentType>;
 
@@ -259,10 +260,13 @@ pub type AccessibilityActivation = Rc<RefCell<dyn FnMut(&mut SemanticCore, &Envi
 /// [`SemanticCore::accessibility_activation_point`] can project the logical
 /// rectangle into the fragment a pointer can actually reach.
 #[cfg(feature = "accessibility")]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct NodePlacement {
-    pub(crate) bounds: kurbo::Rect,
-    pub(crate) clip: Option<kurbo::Rect>,
+    /// The node's rect in its registering node's local space, through that
+    /// node's placement — `finalize_tree_update` resolves it to window
+    /// space, so a placement move re-resolves the published bounds without
+    /// re-recording (§B.4).
+    pub(crate) region: crate::renderer::mount::Region,
 }
 
 /// An activation a silenced interaction owner donated to a claiming node,
@@ -342,7 +346,12 @@ pub enum AccessibilityActionTarget {
     /// navigation between rows is built on these actions
     /// (water-rs/waterui#1223).
     ListRow {
+        /// The row's index in the list's row set.
         index: usize,
+        /// The row's position in the list's extent index: removal ghosts
+        /// still holding their slots (layout-spec.md §4.5) shift it past
+        /// `index`.
+        position: usize,
         handle: ScrollHandle,
         extents: Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
         /// §7.1's touched-edge extension the list's handle was rebound with:
@@ -364,6 +373,9 @@ pub enum AccessibilityActionTarget {
 #[cfg(feature = "accessibility")]
 pub struct AccessibilityBuilder {
     pub nodes: Vec<(AccessibilityNodeId, AccessibilityNode)>,
+    /// `id -> position in nodes`: lookups are index hits, never list
+    /// scans. Maintained on push and rebuilt by `retire_nodes`.
+    node_index: std::collections::BTreeMap<AccessibilityNodeId, usize>,
     pub(crate) root_children: Vec<AccessibilityNodeId>,
     pub(crate) actions: BTreeMap<AccessibilityNodeId, AccessibilityActionTarget>,
     /// The [`InteractionFocusBinding`] a node was emitted under, keyed by node
@@ -415,6 +427,27 @@ pub struct AccessibilityBuilder {
     pub(crate) focus: AccessibilityNodeId,
     pub(crate) pending_text_input_nodes: VecDeque<AccessibilityNodeId>,
     pub(crate) parent_stack: Vec<AccessibilityNodeId>,
+    /// The registering cell of each emitted node — the owner the unit rule
+    /// diffs emissions by (§B.3 "owner-tagged"). Cleared at `reset_scene`
+    /// like `interaction_nodes`.
+    pub(crate) node_owners:
+        std::collections::BTreeMap<AccessibilityNodeId, std::rc::Weak<crate::renderer::NodeCell>>,
+    /// Each emitted node's `Region`, resolved to window space at
+    /// `finalize_tree_update` so a placement move re-publishes bounds
+    /// without a re-record.
+    pub(crate) node_regions:
+        std::collections::BTreeMap<AccessibilityNodeId, crate::renderer::mount::Region>,
+    /// Window-space bounds a post-registration edit fixed on a node — the
+    /// single-child collapse's resolved extent, or a suppressed leaf's
+    /// element box — which `finalize_tree_update` reports verbatim instead
+    /// of re-resolving the region (dev's static registration bounds let
+    /// those edits persist; the region model must honour them).
+    node_bounds_overrides: std::collections::BTreeMap<AccessibilityNodeId, kurbo::Rect>,
+    /// The cell emissions attribute to — the innermost record's cell; the
+    /// semantic walk leaves it dead. Each pushed node id also lands in the
+    /// owner's `a11y_emitted`, the set §B.4 diffs at record end — stored on
+    /// the cell so it dies with the node, never keyed by a reusable address.
+    pub(crate) emit_owner: std::rc::Weak<crate::renderer::NodeCell>,
     pub(crate) suppression_depth: usize,
     pub(crate) consumed_identifier_scopes: BTreeSet<usize>,
     /// Naming scopes ([`ScopedAccessibilitySemantics`]) already claimed by a node
@@ -440,6 +473,7 @@ impl Default for AccessibilityBuilder {
     fn default() -> Self {
         Self {
             nodes: Vec::new(),
+            node_index: std::collections::BTreeMap::new(),
             root_children: Vec::new(),
             actions: BTreeMap::new(),
             focus_bindings: BTreeMap::new(),
@@ -458,6 +492,10 @@ impl Default for AccessibilityBuilder {
             focus: ACCESSIBILITY_ROOT_NODE_ID,
             pending_text_input_nodes: VecDeque::new(),
             parent_stack: Vec::new(),
+            node_owners: std::collections::BTreeMap::new(),
+            node_regions: std::collections::BTreeMap::new(),
+            node_bounds_overrides: std::collections::BTreeMap::new(),
+            emit_owner: std::rc::Weak::new(),
             suppression_depth: 0,
             consumed_identifier_scopes: BTreeSet::new(),
             consumed_semantics_scopes: BTreeSet::new(),
@@ -487,7 +525,15 @@ impl AccessibilityBuilder {
     /// handler lookup) need.
     pub(crate) fn reset_scene(&mut self) {
         self.pending_tree_update = None;
+        // `a11y_retired` is NOT rebuilt here: it stores each owner
+        // cell's a11y set as its record left it (before bounds and claimed
+        // labels resolve at publish), so it is written at record end in
+        // `check_a11y_unit_diff`, not swept out of the published nodes.
         self.nodes.clear();
+        self.node_index.clear();
+        self.node_owners.clear();
+        self.node_regions.clear();
+        self.node_bounds_overrides.clear();
         self.root_children.clear();
         self.actions.clear();
         self.focus_bindings.clear();
@@ -509,6 +555,49 @@ impl AccessibilityBuilder {
 
     pub(crate) fn begin_rebuild_frame(&mut self) {
         self.reset_scene();
+    }
+
+    /// The node emitted under `id` — an index hit, never a list scan.
+    /// §B.4's unit rule looks emitted nodes up by id at every record end.
+    pub(crate) fn node(&self, id: AccessibilityNodeId) -> Option<&AccessibilityNode> {
+        self.node_index
+            .get(&id)
+            .and_then(|index| self.nodes.get(*index))
+            .and_then(|(nid, node)| (*nid == id).then_some(node))
+    }
+
+    /// Rebuilds `node_index` after an in-place edit that shifted positions
+    /// (`Vec::remove`, a bulk retire). One pass, called only on those paths.
+    fn rebuild_node_index(&mut self) {
+        self.node_index.clear();
+        for (index, (id, _)) in self.nodes.iter().enumerate() {
+            self.node_index.insert(*id, index);
+        }
+    }
+
+    /// Retires the emitted nodes `ids`: the record that owned them is gone
+    /// (an unplaced subtree, §D), so they leave the published tree and
+    /// every per-id side table. O(nodes) — the index rebuilds once.
+    pub(crate) fn retire_nodes(&mut self, ids: &[AccessibilityNodeId]) {
+        if ids.is_empty() {
+            return;
+        }
+        let dead: std::collections::BTreeSet<AccessibilityNodeId> = ids.iter().copied().collect();
+        self.nodes.retain(|(id, _)| !dead.contains(id));
+        self.root_children.retain(|id| !dead.contains(id));
+        for id in &dead {
+            self.actions.remove(id);
+            self.node_owners.remove(id);
+            self.node_regions.remove(id);
+            self.node_bounds_overrides.remove(id);
+            self.node_clips.remove(id);
+            self.focus_bindings.remove(id);
+            self.delegated_activations.remove(id);
+        }
+        if dead.contains(&self.focus) {
+            self.focus = ACCESSIBILITY_ROOT_NODE_ID;
+        }
+        self.rebuild_node_index();
     }
 
     /// The most specific node covering `point` that `include` admits, in
@@ -669,8 +758,8 @@ impl AccessibilityBuilder {
         if self.suppression_depth > 0 {
             return None;
         }
-        if placement.is_some_and(|placement| {
-            placement.bounds.width() <= 0.0 || placement.bounds.height() <= 0.0
+        if placement.as_ref().is_some_and(|placement| {
+            placement.region.local.width() <= 0.0 || placement.region.local.height() <= 0.0
         }) {
             return None;
         }
@@ -701,11 +790,16 @@ impl AccessibilityBuilder {
         }
         let node_id = self.stable_node_id(semantic_key);
         if let Some(placement) = placement {
-            node.set_bounds(kurbo_rect_to_accesskit_rect(placement.bounds));
-            if let Some(clip) = placement.clip {
-                self.node_clips.insert(node_id, clip);
-            }
+            self.node_regions.insert(node_id, placement.region);
         }
+        // A re-record replaces the node's geometry, so a bounds edit the
+        // collapse or suppressed-leaf path pinned last flush lapses.
+        self.node_bounds_overrides.remove(&node_id);
+        self.node_owners.insert(node_id, self.emit_owner.clone());
+        if let Some(owner) = self.emit_owner.upgrade() {
+            owner.a11y_emitted.borrow_mut().push(node_id);
+        }
+        self.node_index.insert(node_id, self.nodes.len());
         self.nodes.push((node_id, node));
         if attach_to_root {
             if let Some(parent_id) = self.parent_stack.last().copied() {
@@ -763,7 +857,7 @@ impl AccessibilityBuilder {
                     // interaction owner's real placement. Geometry upgrades,
                     // never downgrades — the first donor's placement stands.
                     if stored.interaction.is_none() {
-                        stored.interaction = donation.interaction;
+                        stored.interaction.clone_from(&donation.interaction);
                     }
                 })
                 .or_insert(donation);
@@ -827,9 +921,14 @@ impl AccessibilityBuilder {
         resolved_bounds: Option<kurbo::Rect>,
     ) {
         let container_index = self
-            .nodes
-            .iter()
-            .position(|(id, _)| *id == container_id)
+            .node_index
+            .get(&container_id)
+            .copied()
+            .filter(|index| {
+                self.nodes
+                    .get(*index)
+                    .is_some_and(|(id, _)| *id == container_id)
+            })
             .expect("hydrolysis accessibility container to collapse is not registered");
         let container = &self.nodes[container_index].1;
         let [child_id] = *container.children() else {
@@ -902,6 +1001,7 @@ impl AccessibilityBuilder {
             && resolved.height() > 0.0
         {
             child.set_bounds(kurbo_rect_to_accesskit_rect(resolved));
+            self.node_bounds_overrides.insert(child_id, resolved);
         }
         // The child takes the container's place under its parent.
         if let Some(slot) = self
@@ -927,7 +1027,10 @@ impl AccessibilityBuilder {
             children[position] = child_id;
             parent.set_children(children);
         }
+        // `remove` shifts every later node down a slot — rebuild the
+        // id-index so the bounds pass at finalize still lands on them.
         self.nodes.remove(container_index);
+        self.rebuild_node_index();
         if self.focus == container_id {
             self.focus = child_id;
         }
@@ -937,25 +1040,91 @@ impl AccessibilityBuilder {
     /// root over the registered nodes, with the current focus. Factored so
     /// the merged multi-window path can re-emit a quiet window's last state
     /// from the live registry instead of cloning a stored update.
+    ///
+    /// A modal node — a presented dialog's alert — makes the rest of the
+    /// window inert: the root holds that node alone, and only its subtree is
+    /// published, with focus kept inside it.
     fn assembled_tree_update(&self) -> AccessibilityTreeUpdate {
         let mut root = AccessibilityNode::new(AccessibilityNodeRole::Window);
         root.set_label(self.root_label.clone());
         if self.root_bounds.width() > 0.0 && self.root_bounds.height() > 0.0 {
             root.set_bounds(kurbo_rect_to_accesskit_rect(self.root_bounds));
         }
-        root.set_children(self.root_children.clone());
-        let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
+        let modal = self
+            .nodes
+            .iter()
+            .find_map(|(id, node)| node.is_modal().then_some(*id));
+        let Some(modal) = modal else {
+            root.set_children(self.root_children.clone());
+            let mut nodes = Vec::with_capacity(self.nodes.len() + 1);
+            nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
+            nodes.extend(self.nodes.iter().cloned());
+            return AccessibilityTreeUpdate {
+                nodes,
+                tree: Some(AccessibilityTree::new(ACCESSIBILITY_ROOT_NODE_ID)),
+                tree_id: AccessibilityTreeId::ROOT,
+                focus: self.focus,
+            };
+        };
+        root.set_children(vec![modal]);
+        let mut reachable = BTreeSet::new();
+        let mut pending = vec![modal];
+        while let Some(id) = pending.pop() {
+            if reachable.insert(id)
+                && let Some(node) = self.node(id)
+            {
+                pending.extend_from_slice(node.children());
+            }
+        }
+        let mut nodes = Vec::with_capacity(reachable.len() + 1);
         nodes.push((ACCESSIBILITY_ROOT_NODE_ID, root));
-        nodes.extend(self.nodes.iter().cloned());
+        nodes.extend(
+            self.nodes
+                .iter()
+                .filter(|(id, _)| reachable.contains(id))
+                .cloned(),
+        );
+        let focus = if reachable.contains(&self.focus) {
+            self.focus
+        } else {
+            modal
+        };
         AccessibilityTreeUpdate {
             nodes,
             tree: Some(AccessibilityTree::new(ACCESSIBILITY_ROOT_NODE_ID)),
             tree_id: AccessibilityTreeId::ROOT,
-            focus: self.focus,
+            focus,
         }
     }
 
     pub(crate) fn finalize_tree_update(&mut self) {
+        // §B.4: regions resolve now — a placement moved since the record
+        // re-publishes bounds through the same chain the registrations use.
+        // Bounds are the paint-chain transform of the node's local rect with
+        // no clip fold and no hit gate: `hittable = false` and zero-alpha
+        // scopes still publish their logical rectangle, and the clip stays
+        // out of the reported bounds (water-rs/waterui#1323 §4).
+        for (id, region) in &self.node_regions {
+            let bounds = self
+                .node_bounds_overrides
+                .get(id)
+                .copied()
+                .unwrap_or_else(|| {
+                    let (transform, _, _) = region.placement.resolved_chain(false);
+                    crate::renderer::transformed_rect(transform, region.local)
+                });
+            let (_, clip, _) = region.placement.resolved_chain(false);
+            if let Some(index) = self.node_index.get(id).copied()
+                && let Some((_, node)) = self.nodes.get_mut(index)
+            {
+                node.set_bounds(kurbo_rect_to_accesskit_rect(bounds));
+            }
+            // The clip is the raw chain clip, not folded into `rect`: the
+            // activation-point query projects the logical rect through it.
+            if let Some(clip) = clip {
+                self.node_clips.insert(*id, clip);
+            }
+        }
         self.node_ids
             .retain(|key, _| self.active_node_keys.contains(key));
         if !self.nodes.iter().any(|(id, _)| *id == self.focus) {
@@ -1063,6 +1232,37 @@ impl SemanticCore {
         self.accessibility.pending_tree_update.take()
     }
 
+    /// Publishes an accessibility focus move as a focus-only tree update:
+    /// only the focus field changed, so the update carries no nodes and no
+    /// tree structure — the host applies it incrementally. A full update
+    /// still pending is corrected in place instead. Returns `false` when a
+    /// quiet publish cannot describe the move and the caller must arm the
+    /// normal flush: focus landing on a node the last emit never produced
+    /// (`accessibility.focus` still updated — the next emit carries it), or
+    /// an open modal scope, whose reachable-subtree focus clamp only
+    /// `assembled_tree_update` resolves (water-rs/waterui#2940).
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn publish_accessibility_focus(&mut self, focus: AccessibilityNodeId) -> bool {
+        if let Some(update) = self.accessibility.pending_tree_update.as_mut() {
+            update.focus = focus;
+            return true;
+        }
+        let emitted = &self.accessibility.nodes;
+        let focus_is_emitted =
+            focus == ACCESSIBILITY_ROOT_NODE_ID || emitted.iter().any(|(id, _)| *id == focus);
+        let modal_open = emitted.iter().any(|(_, node)| node.is_modal());
+        if emitted.is_empty() || !focus_is_emitted || modal_open {
+            return false;
+        }
+        self.accessibility.pending_tree_update = Some(AccessibilityTreeUpdate {
+            nodes: Vec::new(),
+            tree: None,
+            tree_id: AccessibilityTreeId::ROOT,
+            focus,
+        });
+        true
+    }
+
     /// The tree this window would publish if it emitted now: the last
     /// emitted node set with the current focus, rebuilt from the live
     /// registry. A clean frame has nothing new to say, but the merged
@@ -1129,7 +1329,7 @@ impl SemanticCore {
     ///
     /// The content types ride the same merge: each window's builder map is
     /// keyed by that core's node ids, so a popup's entries shift by the same
-    /// [`WINDOW_ID_STRIDE`] its tree nodes do.
+    /// `WINDOW_ID_STRIDE` its tree nodes do.
     #[cfg(feature = "accessibility")]
     fn merged_accessibility_tree_update<'a>(
         &mut self,
@@ -1163,6 +1363,14 @@ impl SemanticCore {
                 tree_update: merged,
                 content_types,
             });
+        }
+        // A focus-only main update carries no root for the popup graft —
+        // rebuild the main window's full emission and keep the moved focus.
+        if merged.nodes.is_empty()
+            && let Some(mut full) = self.current_accessibility_tree_update()
+        {
+            full.focus = merged.focus;
+            merged = full;
         }
 
         let mut root_children = merged
@@ -1352,10 +1560,11 @@ impl SemanticCore {
                 handle_accessibility_picker_select_action(&selection, target, action)
             }
             AccessibilityActionTarget::Scroll { handle, axis } => {
-                handle_accessibility_scroll_action(&handle, axis, action)
+                handle_accessibility_scroll_action(self, &handle, axis, action, target_node)
             }
             AccessibilityActionTarget::ListRow {
                 index,
+                position,
                 handle,
                 extents,
                 extension,
@@ -1363,7 +1572,13 @@ impl SemanticCore {
                 selection,
             } => match action {
                 AccessibilityAction::Focus => {
-                    Self::scroll_list_row_into_view(index, &handle, &extents, extension);
+                    self.scroll_list_row_into_view(
+                        position,
+                        &handle,
+                        &extents,
+                        extension,
+                        target_node,
+                    );
                     true
                 }
                 AccessibilityAction::Click => {
@@ -1380,9 +1595,13 @@ impl SemanticCore {
                         clicked
                     }
                 }
-                AccessibilityAction::ScrollIntoView => {
-                    Self::scroll_list_row_into_view(index, &handle, &extents, extension)
-                }
+                AccessibilityAction::ScrollIntoView => self.scroll_list_row_into_view(
+                    position,
+                    &handle,
+                    &extents,
+                    extension,
+                    target_node,
+                ),
                 _ => panic!("hydrolysis accessibility list row does not support action {action:?}"),
             },
         };
@@ -1500,7 +1719,7 @@ impl SemanticCore {
     /// interaction owner (a `List` row standing in for its `on_tap` strip),
     /// that owner's own hit region and clip; otherwise the node's logical
     /// rectangle intersected with the clip chain in effect when it
-    /// registered (the same [`HitTestState::hit_clip_stack`] data the pointer
+    /// registered (the same placement clip-chain data the pointer
     /// path clips hit regions with, water-rs/hydrolysis#252) — either way,
     /// intersected with the window bounds (water-rs/waterui#1323 §5). The
     /// callers that must produce a real point — a testing `tap_at`, an
@@ -1539,9 +1758,19 @@ impl SemanticCore {
             .accessibility
             .delegated_activations
             .get(&node_id)
-            .and_then(|donation| donation.interaction)
+            .and_then(|donation| donation.interaction.clone())
         {
-            (placement.bounds, placement.clip)
+            let Some(resolved) = placement
+                .region
+                .placement
+                .resolve_hit(placement.region.local)
+            else {
+                return Err(AccessibilityActivationPointError::NoBounds);
+            };
+            (
+                resolved.rect,
+                placement.region.placement.resolved_chain(true).1,
+            )
         } else {
             let Some(bounds) = node.bounds() else {
                 // The semantic walk emits nodes with no geometry at all —
@@ -1586,17 +1815,22 @@ impl SemanticCore {
     /// reveal `ScrollIntoView` performs on any scrollable container. The row
     /// shares the list's extent index, so semantic lists reveal in row
     /// units and rendered lists in pixels. Reports the action handled.
+    /// A scroll the handle accepts marks the `ScrollTarget`'s owner,
+    /// looked up through the registry — never the root — or, with no
+    /// target registered (the semantic runtime), the row node's owner.
     #[cfg(feature = "accessibility")]
     pub(crate) fn scroll_list_row_into_view(
-        index: usize,
+        &self,
+        position: usize,
         handle: &ScrollHandle,
         extents: &Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
         extension: crate::renderer::EdgeOffsets,
+        node: AccessibilityNodeId,
     ) -> bool {
         let metrics = handle.metrics();
         let extents = extents.borrow();
-        let row_start = extents.offset_of(index);
-        let row_end = extents.offset_of(index + 1);
+        let row_start = extents.offset_of(position);
+        let row_end = extents.offset_of(position + 1);
         // The rebound viewport covers the §7.1 extension into the avoided
         // bands; the reveal resolves against the laid-out frame's window —
         // a screen-reader focus move must not land a row under the band.
@@ -1609,7 +1843,9 @@ impl SemanticCore {
         } else {
             return true;
         };
-        let _ = handle.user_scroll_to(metrics.offset_x, target);
+        if handle.user_scroll_to(metrics.offset_x, target) {
+            self.mark_scroll_owner_of_node(handle, node, Dirty::LAYOUT);
+        }
         true
     }
 
@@ -1710,6 +1946,28 @@ impl SemanticCore {
         resolved_bounds: Option<kurbo::Rect>,
         env: &Environment,
     ) -> AccessibilityContainerScope {
+        let scope = self.begin_accessibility_container_impl(bounds, resolved_bounds, env);
+        // §B.3/§B.4: the container's parent/suppression pushes go into the
+        // recording node's RetainedScopes for a partial descent to replay,
+        // and the record marks this cell an accessibility unit.
+        self.mark_a11y_unit();
+        if scope.parent_pushed
+            && let Some(id) = scope.container_node
+        {
+            self.record_scope(|scopes| scopes.push_a11y_parent(id));
+        }
+        if scope.suppression_pushed {
+            self.record_scope(RetainedScopes::push_a11y_suppression);
+        }
+        scope
+    }
+
+    fn begin_accessibility_container_impl(
+        &mut self,
+        bounds: Option<kurbo::Rect>,
+        resolved_bounds: Option<kurbo::Rect>,
+        env: &Environment,
+    ) -> AccessibilityContainerScope {
         debug_assert!(
             accessibility_container_child_environment(env).is_some(),
             "hydrolysis accessibility container scope requires a role, a label, or a value"
@@ -1741,6 +1999,17 @@ impl SemanticCore {
             env,
             AccessibilityNodeRole::Group,
         ));
+        // A presented dialog's card: the window's modal alert. Publication
+        // keeps a modal node alone under the window, so the content beneath
+        // the modal layer is inert for assistive technology.
+        if node.role() == AccessibilityNodeRole::Dialog
+            && env
+                .get::<crate::renderer::input::DialogLayerScope>()
+                .is_some()
+        {
+            node.set_role(AccessibilityNodeRole::AlertDialog);
+            node.set_modal();
+        }
         if let Some(label) = self.resolve_accessibility_label(env, None) {
             node.set_label(label);
         }
@@ -1765,8 +2034,10 @@ impl SemanticCore {
         }
         self.watch_accessibility_state(env);
         let placement = bounds.map(|bounds| NodePlacement {
-            bounds,
-            clip: self.hit_test.hit_clip_stack.last().copied(),
+            region: crate::renderer::mount::Region {
+                local: bounds,
+                placement: self.current_placement(),
+            },
         });
         let Some(node_id) = self
             .accessibility
@@ -1873,10 +2144,29 @@ impl SemanticCore {
         node_id: AccessibilityNodeId,
         env: &Environment,
     ) -> bool {
+        // The unit claim lands only when a claim actually finds a scope —
+        // marking before the lookup would flag a cell that claimed nothing.
         let Some(scope) = env.get::<ScopedAccessibilitySemantics>() else {
             return false;
         };
+        self.mark_a11y_unit();
         self.drain_scope_donations(scope, node_id)
+    }
+
+    /// Collapse a tap gesture's synthesized claim around exactly one wrapped
+    /// node into that node — the wrapped element keeps its own identity and
+    /// any real action it registered, and takes the claim's `Click`, `Focus`
+    /// and activation (water-rs/waterui#1070). No bounds travel with it: a
+    /// claim the gesture synthesized carries the frame it was assigned, and
+    /// the wrapped node's own bounds are already the honest answer.
+    ///
+    /// A no-op unless the claim has exactly one semantic child — zero or
+    /// several leave the claim's node standing as the composite's
+    /// representative.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn collapse_synthesized_claim(&mut self, node_id: AccessibilityNodeId) {
+        self.accessibility
+            .collapse_single_child_container(node_id, None);
     }
 
     #[cfg(feature = "accessibility")]
@@ -1886,9 +2176,11 @@ impl SemanticCore {
     )]
     pub(crate) fn end_accessibility_container(&mut self, scope: AccessibilityContainerScope) {
         if scope.suppression_pushed {
+            self.record_scope(RetainedScopes::pop_a11y_suppression);
             self.pop_accessibility_suppression();
         }
         if scope.parent_pushed {
+            self.record_scope(RetainedScopes::pop_a11y_parent);
             self.accessibility
                 .parent_stack
                 .pop()
@@ -1942,6 +2234,9 @@ impl SemanticCore {
                     .filter(|resolved| resolved.width() > 0.0 && resolved.height() > 0.0)
                     .unwrap_or(bounds);
                 node.set_bounds(kurbo_rect_to_accesskit_rect(element));
+                self.accessibility
+                    .node_bounds_overrides
+                    .insert(container_id, element);
                 if node.role() == AccessibilityNodeRole::Group {
                     node.set_role(AccessibilityNodeRole::Image);
                 }
@@ -1959,8 +2254,10 @@ impl SemanticCore {
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         let placement = NodePlacement {
-            bounds,
-            clip: self.hit_test.hit_clip_stack.last().copied(),
+            region: crate::renderer::mount::Region {
+                local: bounds,
+                placement: self.current_placement(),
+            },
         };
         self.accessibility.register_node_internal(
             node,
@@ -1984,12 +2281,7 @@ impl SemanticCore {
         action_target: Option<AccessibilityActionTarget>,
     ) -> Option<AccessibilityNodeId> {
         match ctx {
-            Some(ctx) => self.register_accessibility_node(
-                node,
-                crate::renderer::transformed_rect(ctx.hit_transform, ctx.bounds),
-                env,
-                action_target,
-            ),
+            Some(ctx) => self.register_accessibility_node(node, ctx.bounds, env, action_target),
             None => self.register_accessibility_node_semantic(node, env, action_target),
         }
     }
@@ -2018,7 +2310,7 @@ impl SemanticCore {
         let Some(&parent) = self.accessibility.parent_stack.last() else {
             return;
         };
-        let bounds = crate::renderer::transformed_rect(ctx.hit_transform, ctx.bounds);
+        let bounds = ctx.bounds;
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
             return;
         }
@@ -2069,8 +2361,10 @@ impl SemanticCore {
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         let placement = NodePlacement {
-            bounds,
-            clip: self.hit_test.hit_clip_stack.last().copied(),
+            region: crate::renderer::mount::Region {
+                local: bounds,
+                placement: self.current_placement(),
+            },
         };
         self.accessibility.register_node_internal(
             node,
@@ -2105,8 +2399,10 @@ impl SemanticCore {
     ) -> Option<AccessibilityNodeId> {
         self.watch_accessibility_state(env);
         let placement = NodePlacement {
-            bounds,
-            clip: self.hit_test.hit_clip_stack.last().copied(),
+            region: crate::renderer::mount::Region {
+                local: bounds,
+                placement: self.current_placement(),
+            },
         };
         self.accessibility.register_node_internal(
             node,
@@ -2423,9 +2719,11 @@ const ACCESSIBILITY_SCROLL_STEP: f32 = crate::num_cast::f64_as_f32(crate::scroll
 
 #[cfg(feature = "accessibility")]
 fn handle_accessibility_scroll_action(
+    renderer: &SemanticCore,
     handle: &ScrollHandle,
     axis: ScrollAxis,
     action: AccessibilityAction,
+    node: AccessibilityNodeId,
 ) -> bool {
     if matches!(action, AccessibilityAction::Focus) {
         return true;
@@ -2457,7 +2755,9 @@ fn handle_accessibility_scroll_action(
     };
     match delta {
         Some((dx, dy)) => {
-            let _ = handle.apply_scroll_delta(dx, dy, false);
+            if handle.apply_scroll_delta(dx, dy, false) {
+                renderer.mark_scroll_owner_of_node(handle, node, Dirty::LAYOUT);
+            }
             true
         }
         None => false,

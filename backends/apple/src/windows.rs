@@ -25,8 +25,8 @@ mod imp {
     use waterui::animation::Animation;
     use waterui::reactive::{Binding, Computed, Signal};
     use waterui::window::{
-        ResolvedWindowBackground, UserAttention, Window, WindowBackground, WindowLevel,
-        WindowState, WindowStyle as WuiStyle, resolve_background,
+        ResolvedWindowBackground, UserAttention, Window, WindowBackground, WindowHandle,
+        WindowLevel, WindowState, WindowStyle as WuiStyle, resolve_background,
     };
     use waterui_backend_core::Environment;
 
@@ -103,6 +103,8 @@ mod imp {
     pub fn realize(declaration: Window, env: &Environment, mtm: MainThreadMarker) -> WindowHost {
         let mut keepalive = KeepAlive::default();
 
+        declaration.arm_close_requests(env);
+
         let style = style_mask(
             declaration.style.snapshot(),
             declaration.closable,
@@ -118,6 +120,7 @@ mod imp {
             into_kit_rect(frame),
             style,
         ));
+        wire_focus_requests(&declaration, &window, mtm);
         window.set_accepts_mouse_moved_events(true);
         window.set_alpha_value(0.0);
 
@@ -186,6 +189,9 @@ mod imp {
             let publish = publish_state.clone();
             move || publish(WindowState::Closed)
         });
+        if declaration.has_close_handler() {
+            window.on_should_close(close_gate(declaration.handle()));
+        }
         window.on_miniaturized({
             let publish = publish_state.clone();
             move || publish(WindowState::Minimized)
@@ -265,7 +271,8 @@ mod imp {
             let host_view: &cocoa_ui::PlatformView = host;
             // SAFETY: `content_frame` borrows the views for the call;
             // `leaf_view` holds the retain for the host's lifetime.
-            let frame = crate::native_layout::content_frame(&leaf_view, host_view);
+            let frame =
+                crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
             cocoa_ui::view::set_frame(&leaf_view, frame);
         });
         window.set_content_view(&host);
@@ -360,8 +367,16 @@ mod imp {
     /// watchers — the platform delegate hooks fire only while the kit window
     /// wrapper lives, which the host guarantees for its own window.
     pub struct RootWindowBinding {
-        _window: Rc<cocoa_ui::appkit::Window>,
+        window: Rc<cocoa_ui::appkit::Window>,
         _keepalive: Rc<RefCell<Option<KeepAlive>>>,
+    }
+
+    impl RootWindowBinding {
+        /// The adopted window — the embed path arms the declaration's
+        /// focus hook against it after `bind_root_window` returns.
+        pub const fn window(&self) -> &Rc<cocoa_ui::appkit::Window> {
+            &self.window
+        }
     }
 
     /// `WuiRootWindowBinding`'s port: binds the app's first declared window to
@@ -392,6 +407,7 @@ mod imp {
         background: &Computed<WindowBackground>,
         closable: bool,
         resizable: bool,
+        close_requests: Option<WindowHandle>,
         mtm: MainThreadMarker,
     ) -> RootWindowBinding {
         let window = Rc::new(cocoa_ui::appkit::Window::adopt(mtm, window));
@@ -442,8 +458,12 @@ mod imp {
         wire_frame(&window, &mut keepalive, frame, &publish_state);
         let keepalive = wire_state(&window, keepalive, state, applying_state, publish_state);
 
+        if let Some(handle) = close_requests {
+            window.on_should_close(close_gate(handle));
+        }
+
         RootWindowBinding {
-            _window: window,
+            window,
             _keepalive: keepalive,
         }
     }
@@ -579,6 +599,49 @@ mod imp {
                 WindowState::Normal
             });
         }
+    }
+
+    /// The `windowShouldClose:` answer of a window with an `on_close_request`
+    /// handler, for both window kinds: file the request through the armed
+    /// window's handle and veto the platform close. The handler answers on
+    /// the runner's executor; a `Close` reply writes `Closed`, and the state
+    /// wiring turns it into `NSWindow.close`, which does not ask again.
+    /// Without a handler no gate is installed and `AppKit` closes outright.
+    fn close_gate(handle: WindowHandle) -> impl Fn() -> bool + 'static {
+        move || {
+            handle.request_close();
+            false
+        }
+    }
+
+    /// `WindowHandle::focus`: the armed hook `realize` installs, and the
+    /// embed path's `bind_root` installs after `bind_root_window` returns.
+    /// Focus restores a miniaturized window first, makes it key and asks
+    /// for app activation — the cooperative `activate` the system may
+    /// still decline, as the handle's docs say. The hook holds the window
+    /// weakly: the machine outlives teardown in a `WindowHandle`, and a
+    /// request filed there must no-op rather than order a closed window
+    /// back on screen — the same post-teardown answer the winit hook's
+    /// weak reference gives.
+    pub fn wire_focus_requests(
+        declaration: &Window,
+        window: &Rc<cocoa_ui::appkit::Window>,
+        mtm: MainThreadMarker,
+    ) {
+        declaration.arm_focus_requests({
+            let window = Rc::downgrade(window);
+            let application = cocoa_ui::appkit::Application::shared(mtm);
+            move || {
+                let Some(window) = window.upgrade() else {
+                    return;
+                };
+                if window.is_miniaturized() {
+                    window.deminiaturize();
+                }
+                window.make_key_and_order_front();
+                application.activate();
+            }
+        });
     }
 
     /// Applies `state` to the platform window — `applyState`'s switch.
@@ -1078,6 +1141,18 @@ mod imp {
         mtm: MainThreadMarker,
     ) -> WindowHost {
         let mut keepalive = KeepAlive::default();
+        // `WindowHandle::focus`: `UIKit` keeps one primitive —
+        // `makeKeyAndVisible` orders the window front and makes it key.
+        // The hook holds the window weakly: a request filed through a
+        // handle that outlived its scene finds nothing to act on.
+        declaration.arm_focus_requests({
+            let window = cocoa_ui::objc2::rc::Weak::from_retained(&pending.window);
+            move || {
+                if let Some(window) = window.load() {
+                    window.makeKeyAndVisible();
+                }
+            }
+        });
         let host: Retained<HostView> = Retained::from(pending.controller.host_view());
 
         // Background: the framework resolves the reactive background to a
@@ -1136,7 +1211,8 @@ mod imp {
             let host_view: &cocoa_ui::PlatformView = host;
             // SAFETY: `content_frame` borrows the views for the call;
             // `leaf_view` holds the retain for the host's lifetime.
-            let frame = crate::native_layout::content_frame(&leaf_view, host_view);
+            let frame =
+                crate::native_layout::LayoutContext::of(host_view).content_frame(&leaf_view);
             cocoa_ui::view::set_frame(&leaf_view, frame);
         });
         keepalive.keep(leaf);
@@ -1184,6 +1260,8 @@ mod imp {
 }
 
 pub use imp::install_manager;
+#[cfg(target_os = "macos")]
+pub use imp::wire_focus_requests;
 #[cfg(target_os = "ios")]
 pub use imp::{Scenes, bind_background, connect, connect_embedded, declare};
 #[cfg(target_os = "macos")]

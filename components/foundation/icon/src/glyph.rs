@@ -68,6 +68,7 @@ fn codepoint_to_string(codepoint: char) -> Str {
 /// ```
 #[derive(Debug, Clone, Copy)]
 #[must_use = "an `IconGlyph` does nothing unless it is rendered as part of a view"]
+#[non_exhaustive]
 pub struct IconGlyph {
     /// The Unicode codepoint for this icon in the font.
     pub codepoint: char,

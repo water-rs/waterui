@@ -191,7 +191,7 @@ let open = binding(false);
 button("Options")
     .action({ let open = open.clone(); move || open.toggle() })
     .anchored_overlay(
-        AnchoredOverlay::new(&open, popover_body())   // AnyView content, measured at ideal size
+        AnchoredOverlay::new(&open, move || popover_body()) // a fresh view per presentation
             .edge(AnchorEdge::Top)                     // Top / Bottom / Leading / Trailing
             .alignment(EdgeAlignment::Center)          // Start / Center / End along the edge
             .gap(4.0)                                  // points away from the anchor
@@ -203,8 +203,10 @@ button("Options")
 
 Leading/trailing follow the layout direction; `Start`/`End` are leading/trailing along
 the top and bottom edges and top/bottom along the leading and trailing edges. Unlike
-`.context_menu`, the overlay takes arbitrary `impl View` content — this is the popover
-primitive (the M3 tooltip rides it: top edge, center, 4 pt gap, flip, 2 pt clamp).
+`.context_menu`, the overlay takes a `move ||` builder producing arbitrary `impl View`
+content — every presentation calls it, so state shared between presentations lives in
+`Binding`s the caller owns and the builder captures. This is the popover primitive (the
+M3 tooltip rides it: top edge, center, 4 pt gap, flip, 2 pt clamp).
 
 ## Scrolling
 
@@ -286,6 +288,11 @@ Style shorthands on `Button` — `.plain()`, `.link()`, `.borderless()`, `.borde
 type parameter. `.borderless()` is the idiomatic toolbar-button style; `Link` shows the
 pointing-hand cursor on pointer platforms. Switch and checkbox map to different
 accessibility roles (`SWITCH` vs `CHECKBOX`), which matters to tests.
+`ToggleStyle::Automatic` is the platform's style — a switch on iOS and Android, a
+checkbox on macOS — so a test that must pass on every host queries a default toggle
+with `Role::toggle(ToggleStyle::Automatic)`. A switch with a visible label fills the
+width it is offered (label leading, switch trailing); a checkbox and a toggle with a
+hidden label are content-sized.
 
 `Label` composes text with an icon; `Label::new` makes a whole composed row read as one
 accessibility node:
@@ -327,6 +334,17 @@ button. `Command` has its own builder chain: `.state(&value)`, `.disabled(signal
 `Shortcut::new('s').command()`, `Shortcut::new(NamedKey::Delete)`. A `Button` also
 converts into `MenuItem` and
 `Command`, so one definition can serve a toolbar, a menu, and a keyboard shortcut.
+
+Two items stand for platform commands instead of carrying an action: `MenuItem::Quit`
+and `MenuItem::CloseWindow`. Declare them in `App::menu_bar` (or any menu) and each
+renders with the platform's own label and chord — ⌘Q and the close chord on macOS —
+acting through the termination machine or the window's own close path. A platform that
+cannot quit or close a window omits them, so a portable menu declares them
+unconditionally. The close chord is decided once for the whole application from its
+declared menu bar, and every Close Window item carries it. ⌘W is not reserved — an
+application may bind it on its own commands (a tabbed app's Close Tab): the chord is
+then ⇧⌘W when no declared command binds ⇧⌘W, and no chord at all when the application
+binds both.
 
 `.context_menu(items)` attaches a long-press / right-click menu to ANY view and takes the
 same `MenuView` content. Attach `.state(..)` to each command, not to the menu:
@@ -437,7 +455,7 @@ Lazy::hstack(ForEach::new(records.clone(), row))
 
 List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
     .editing(is_editing.clone())          // impl IntoComputed<bool>
-    .on_delete(|ListDelete(i), s: AppState| { let _ = s.rows.remove(i); })
+    .on_delete(|ListDelete(i), mut s: AppState| { let _ = s.rows.remove(i); })
     .on_move(|ListMove(m), s: AppState| { /* m.from(), m.to() */ })
     .scroll_controller(&controller)
 ```
@@ -446,15 +464,19 @@ List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
 `AppState` is an owned `#[state]` type (SKILL.md rule 3), so handlers take it bare.
 
 For a reactive collection rendered as an ordinary (non-lazy) stack that still takes stack
-modifiers, `VStack`/`HStack` have `for_each` too, and `collection_transition` animates
-membership changes (insert/remove fade and collapse along the stack axis):
+modifiers, `VStack`/`HStack` have `for_each` too; membership animation is declared per row
+with `.transition(...)` plus `.animation(...)` (a removed row's ghost holds its slot
+while it fades). `.transition(...)` must be the outermost modifier of the row — or of a
+`when`/`watch` branch, or of the conditional itself; one beneath `.padding()`, `.frame()`
+or any other modifier is never picked up and panics, so put it last:
 
 ```rust
-use waterui::layout::collection_transition;
 use waterui::layout::stack::VStack;
 
+let row_view = |row: Row| text(row.title)
+    .transition(PropertyTransition::opacity())
+    .animation(Animation::ease_in_out(Duration::from_millis(250)));
 let drawer = VStack::for_each(rows.clone(), row_view).spacing(4.0);
-collection_transition(drawer, Animation::ease_in_out(Duration::from_millis(250)))
 ```
 
 Heterogeneous / sectioned static content — rows are *builders*, so the list can rebuild a
@@ -477,11 +499,18 @@ List::content((
 `ListItem` modifiers: `.deletable(signal)`, `.section(section)`. Selection lives on the
 list itself, keyed by row identity — `.selection(&Binding<Option<V::Id>>)` or
 `.multi_selection(&Binding<BTreeSet<V::Id>>)` on both `List` and `ListBuilder`; for
-`List::content` rows `V::Id` is `SelfId<usize>`, for `List::for_each` it is
-`Identifiable::Id`. At most one mode per list: a later call replaces an earlier one.
-`List::for_each` requires `C::Item: Identifiable`; `List::content` takes the structural
-tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
+`List::content` rows `V::Id` is the row index (`usize`), for `List::for_each` it is the
+collection's id: `Identifiable::Id` for a `List`/`Vec`/`SignalCollection`, the index for an
+array or static slice. At most one mode per list: a later call replaces an earlier one.
+`List::for_each` takes any collection whose items are `Clone`; `List::content` takes the
+structural tree above. An enum row type implements `Identifiable` by hand (`type Id; fn id(&self)`),
 keeping the id ranges of different variants disjoint.
+
+A row whose content sits under `.disabled(true)` is inert to selection the way a
+disabled `Button` cannot be pressed: pointer, keyboard and accessibility input leave
+the selection unchanged, and the row's accessibility node reports disabled without
+offering the click action. There is no per-item selectable flag — selection follows
+the row content's own disabled state.
 
 When the row set is *derived* — filtered or sorted from other state — do not fall back to
 `watch`: wrap the derived signal in `SignalCollection` (see
@@ -610,3 +639,34 @@ build it with `Label::new(semantic_text, || content)`, which does this for you.
 `.a11y_id` is the escape hatch for views that are hard to label meaningfully; the same
 identifier is what `waterui-testing` queries with `.identifier(..)`. Prefer a real label
 where one exists — the label serves users, the id only serves tests.
+
+## Dialogs (alerts, confirmations)
+
+`.dialog(...)` presents a window-modal alert while its `Binding<bool>` is true — the
+platform's native alert on Apple (`NSAlert` sheet on AppKit, `UIAlertController` on
+UIKit), and elsewhere the self-drawn card on a modal layer that dims the window with
+the `Scrim` theme colour and leaves the wrapped content inert for pointer, keyboard
+and the accessibility tree. Actions declare their role — `Default`, `Cancel`,
+`Destructive` — and the platform does the ordering: the primary (first `Default`)
+action sits rightmost and answers Return, `Cancel` is visually separated on
+iOS, and declaration order holds within each role. Tapping an action runs its handler
+then writes `false` to the binding; writing `false` yourself dismisses without a
+handler. Escape, Android back and the scrim tap are the *cancel path*: they run the
+`Cancel` action's handler, and are no-ops when no `Cancel` exists. At most one
+`Cancel` action is allowed — a second panics; no actions at all gains a single
+acknowledgement in the platform's wording. One dialog presents per window at a time; a
+second one presented meanwhile waits until the first closes.
+
+```rust
+use waterui::dialog::{Dialog, DialogAction};
+
+let presented = binding(false);
+button("Delete")
+    .action({ let presented = presented.clone(); move || presented.set(true) })
+    .dialog(
+        Dialog::new(&presented, "Delete photo?")        // title takes impl IntoText
+            .message("This cannot be undone.")          // optional, also IntoText
+            .action(DialogAction::cancel("Cancel", || {}))
+            .action(DialogAction::destructive("Delete", |_: Environment| trash_photo())),
+    )
+```

@@ -5,8 +5,6 @@ use std::path::Path;
 
 use eyre::{Context as _, Result, bail};
 
-use crate::utils::run_command_os;
-
 pub const INSTALL_NAME: &str = "@rpath/libwaterui_dylib.dylib";
 
 /// The `-l` link name `staged_name` implies — the recorded runtime file
@@ -34,10 +32,10 @@ pub fn runtime_link_name(staged_name: &str) -> String {
     }
 }
 
-pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
+pub async fn prepare_host_runtime(host: &crate::toolchain::Host, path: &Path) -> Result<()> {
     require_runtime(path)?;
     if install_name(path).await? != INSTALL_NAME {
-        run_command_os(
+        host.run(
             "install_name_tool",
             [
                 OsStr::new("-id"),
@@ -60,13 +58,13 @@ pub async fn prepare_host_runtime(path: &Path) -> Result<()> {
 
 /// Give a module the canonical `@rpath/<file>` install name a bundled
 /// executable binds when it links the file by path. Idempotent.
-pub async fn canonicalize_install_name(path: &Path) -> Result<()> {
+pub async fn canonicalize_install_name(host: &crate::toolchain::Host, path: &Path) -> Result<()> {
     let file_name = path
         .file_name()
         .ok_or_else(|| eyre::eyre!("Module {} has no file name", path.display()))?;
     let wanted = format!("@rpath/{}", file_name.to_string_lossy());
     if install_name(path).await? != wanted {
-        run_command_os(
+        host.run(
             "install_name_tool",
             [
                 OsStr::new("-id"),
@@ -87,11 +85,15 @@ pub async fn canonicalize_install_name(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub async fn retarget_module(module_path: &Path, runtime_path: &Path) -> Result<()> {
+pub async fn retarget_module(
+    host: &crate::toolchain::Host,
+    module_path: &Path,
+    runtime_path: &Path,
+) -> Result<()> {
     require_runtime(runtime_path)?;
     let current_install_name = install_name(runtime_path).await?;
     if current_install_name != INSTALL_NAME {
-        run_command_os(
+        host.run(
             "install_name_tool",
             [
                 OsStr::new("-change"),
@@ -104,7 +106,8 @@ pub async fn retarget_module(module_path: &Path, runtime_path: &Path) -> Result<
         .wrap_err("Failed to redirect preview module to the host WaterUI runtime")?;
     }
 
-    let output = run_command_os("otool", [OsStr::new("-L"), module_path.as_os_str()])
+    let output = host
+        .run("otool", [OsStr::new("-L"), module_path.as_os_str()])
         .await
         .wrap_err("Failed to inspect preview module linkage")?;
     let references = linked_libraries(&output)
@@ -128,17 +131,46 @@ fn require_runtime(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The `LC_ID_DYLIB` install name the 64-bit Mach-O dylib at `path`
+/// records for itself, read from its load commands alone — the image
+/// itself (tens of megabytes for the shared runtime) is never read.
 async fn install_name(path: &Path) -> Result<String> {
-    let output = run_command_os("otool", [OsStr::new("-D"), path.as_os_str()])
-        .await
-        .wrap_err_with(|| format!("Failed to inspect dynamic library {}", path.display()))?;
-    output
-        .lines()
-        .skip(1)
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(str::to_string)
-        .ok_or_else(|| eyre::eyre!("Dynamic library {} has no install name", path.display()))
+    let path = path.to_path_buf();
+    smol::unblock(move || {
+        recorded_install_name(&path)
+            .wrap_err_with(|| format!("Failed to inspect dynamic library {}", path.display()))?
+            .ok_or_else(|| eyre::eyre!("Dynamic library {} has no install name", path.display()))
+    })
+    .await
+}
+
+fn recorded_install_name(path: &Path) -> Result<Option<String>> {
+    use object::read::macho::{LoadCommandVariant, MachHeader as _};
+
+    let cache = object::ReadCache::new(std::fs::File::open(path)?);
+    let header = object::macho::MachHeader64::<object::Endianness>::parse(&cache, 0)
+        .map_err(|error| eyre::eyre!("not a 64-bit Mach-O image: {error}"))?;
+    let endian = header
+        .endian()
+        .map_err(|error| eyre::eyre!("unreadable Mach-O header: {error}"))?;
+    let mut commands = header
+        .load_commands(endian, &cache, 0)
+        .map_err(|error| eyre::eyre!("unreadable load commands: {error}"))?;
+    while let Some(command) = commands
+        .next()
+        .map_err(|error| eyre::eyre!("unreadable load command: {error}"))?
+    {
+        if let LoadCommandVariant::IdDylib(dylib) = command
+            .variant()
+            .map_err(|error| eyre::eyre!("unreadable load command: {error}"))?
+        {
+            let name = command
+                .string(endian, dylib.dylib.name)
+                .map_err(|error| eyre::eyre!("unreadable install name: {error}"))?;
+            return Ok(Some(String::from_utf8_lossy(name).into_owned()));
+        }
+    }
+    Ok(None)
 }
 
 fn linked_libraries(output: &str) -> impl Iterator<Item = &str> {

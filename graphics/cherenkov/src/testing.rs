@@ -63,6 +63,8 @@ pub enum Event {
     RetireProducer(crate::ProducerId),
     /// `drain_gpu_producers` ran.
     DrainProducers,
+    /// `bind_hosted` ran, with the bound extent.
+    BindHosted(SurfaceId, LayerId, kurbo::Size),
     /// `remove_layer` ran.
     RemoveLayer(SurfaceId, LayerId),
     /// `set_visibility` ran.
@@ -207,6 +209,26 @@ struct NullProducer {
 }
 
 impl NullRenderer {
+    fn register_image(&mut self, id: ImageId, _image: &ImageUpload) -> Result<(), ResourceError> {
+        if self.reject.contains(&NullReject::Image) {
+            return Err(ResourceError::Image("injected rejection".into()));
+        }
+        self.images.insert(id);
+        let _ = self.events.send(Event::AddImage(id));
+        Ok(())
+    }
+
+    fn swap_image(&self, id: ImageId, image: &ImageUpload) {
+        assert!(
+            self.images.contains(&id),
+            "replace of unregistered image {}",
+            id.raw()
+        );
+        let _ = self
+            .events
+            .send(Event::ReplaceImage(id, (image.width, image.height)));
+    }
+
     /// Releases the binding every producer holds on `(surface, layer)`,
     /// like `set_content` and `remove_layer` dropping the layer's other
     /// content.
@@ -288,6 +310,7 @@ impl Backend for Null {
 impl Renderer for NullRenderer {
     type Target = NullTarget;
     type Font = FontData;
+    type FrameCommit = ();
 
     fn create_surface(
         &mut self,
@@ -367,25 +390,34 @@ impl Renderer for NullRenderer {
         self.image_limits
     }
 
-    fn add_image(&mut self, id: ImageId, _image: ImageUpload) -> Result<(), ResourceError> {
-        if self.reject.contains(&NullReject::Image) {
-            return Err(ResourceError::Image("injected rejection".into()));
-        }
-        self.images.insert(id);
-        let _ = self.events.send(Event::AddImage(id));
+    #[cfg(not(target_arch = "wasm32"))]
+    fn add_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        self.register_image(id, &image)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn add_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        core::future::ready(self.register_image(id, &image))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
+        self.swap_image(id, &image);
         Ok(())
     }
 
-    fn replace_image(&mut self, id: ImageId, image: ImageUpload) -> Result<(), ResourceError> {
-        assert!(
-            self.images.contains(&id),
-            "replace of unregistered image {}",
-            id.raw()
-        );
-        let _ = self
-            .events
-            .send(Event::ReplaceImage(id, (image.width, image.height)));
-        Ok(())
+    #[cfg(target_arch = "wasm32")]
+    fn replace_image(
+        &mut self,
+        id: ImageId,
+        image: ImageUpload,
+    ) -> impl core::future::Future<Output = Result<(), ResourceError>> {
+        self.swap_image(id, &image);
+        core::future::ready(Ok(()))
     }
 
     fn samples(&self, surface: SurfaceId, resource: ResourceId) -> bool {
@@ -446,7 +478,7 @@ impl Renderer for NullRenderer {
         &mut self,
         frame: &Frame<'_>,
         _stats: &mut crate::FrameStats,
-    ) -> Result<FrameRedraw, RenderError> {
+    ) -> Result<(FrameRedraw, Self::FrameCommit), RenderError> {
         self.assert_frame_contract(frame);
         for surface in frame.surfaces {
             let layers = surface
@@ -474,7 +506,7 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        Ok(FrameRedraw::default())
+        Ok((FrameRedraw::default(), ()))
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -482,7 +514,8 @@ impl Renderer for NullRenderer {
         &mut self,
         frame: &Frame<'_>,
         _stats: &mut crate::FrameStats,
-    ) -> impl core::future::Future<Output = Result<FrameRedraw, RenderError>> {
+    ) -> impl core::future::Future<Output = Result<(FrameRedraw, Self::FrameCommit), RenderError>>
+    {
         self.assert_frame_contract(frame);
         for surface in frame.surfaces {
             let layers = surface
@@ -510,7 +543,7 @@ impl Renderer for NullRenderer {
                 layers,
             }));
         }
-        core::future::ready(Ok(FrameRedraw::default()))
+        core::future::ready(Ok((FrameRedraw::default(), ())))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -593,6 +626,24 @@ impl ShaderPaint for Null {
 
 impl Uploads<Rgba8> for Null {}
 impl Uploads<Rgba16F> for Null {}
+
+impl crate::Planes for Null {}
+
+/// `Null` hosts nothing — it has no planes to place an object on — and
+/// records the binding, enough to exercise `Hosted::at`'s install.
+impl crate::HostedLayers for Null {
+    type Object = ();
+
+    fn bind_hosted(
+        r: &mut NullRenderer,
+        surface: SurfaceId,
+        layer: LayerId,
+        _object: (),
+        size: kurbo::Size,
+    ) {
+        let _ = r.events.send(Event::BindHosted(surface, layer, size));
+    }
+}
 
 /// `Null` retains no producer state beyond the bindings `submit_frame`
 /// needs to name its layers — enough for `frame_producer` to exercise the
@@ -1567,6 +1618,80 @@ mod tests {
         );
     }
 
+    /// Registered images share the image budget, decided on the calling
+    /// thread: a registration or a growing replacement that would take
+    /// the live images past `max_texels` fails with `OverBudget`, queues
+    /// nothing and keeps the previous pixels; a shrinking replacement
+    /// and the last handle's drop return texels, and a clone holds none
+    /// of its own.
+    #[test]
+    fn registered_images_share_the_image_budget() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let limits = crate::ImageLimits {
+            max_dimension: 4,
+            max_texels: 16,
+        };
+        let engine = Engine::<Null>::new(NullConfig {
+            events: tx,
+            reject: HashSet::new(),
+            image_limits: limits,
+        })
+        .expect("init");
+        let image = |w: u32, h: u32| {
+            let len = usize::try_from(w * h * 4).expect("a small image");
+            ImageData::<Rgba8>::new(w, h, vec![0u8; len]).expect("image data")
+        };
+        let over = |result: Result<_, ResourceError>| match result {
+            Err(ResourceError::OverBudget {
+                width,
+                height,
+                available,
+                limits: rejected,
+            }) => {
+                assert_eq!(rejected, limits);
+                (width, height, available)
+            }
+            other => panic!("an image past the budget was admitted: {other:?}"),
+        };
+
+        let a = engine.image(image(4, 2)).expect("a");
+        let b = engine.image(image(4, 2)).expect("b");
+        // Each fits alone; the budget is spent.
+        assert_eq!(over(engine.image(image(1, 1)).map(drop)), (1, 1, 0));
+        // A shrinking replacement returns texels at once.
+        a.replace(image(4, 1)).expect("shrink");
+        let c = engine.image(image(2, 2)).expect("c");
+        // A growing replacement is admitted in place of its own pixels:
+        // 12 texels beside a and c's 8 do not fit.
+        assert_eq!(over(b.replace(image(4, 3))), (4, 3, 8));
+        // A clone holds nothing of its own: dropping it returns nothing.
+        drop(a.clone());
+        assert_eq!(over(b.replace(image(4, 3))), (4, 3, 8));
+        // The last handle's drop does.
+        drop(a);
+        b.replace(image(4, 3)).expect("grow");
+
+        // Only the admitted operations reached the render thread.
+        let _ = engine.memory();
+        let events: Vec<Event> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter(|event| !matches!(event, Event::RemoveImage(_)))
+            .collect();
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    Event::AddImage(_),
+                    Event::AddImage(_),
+                    Event::ReplaceImage(_, (4, 1)),
+                    Event::AddImage(_),
+                    Event::ReplaceImage(_, (4, 3)),
+                ]
+            ),
+            "{events:?}"
+        );
+        drop((b, c));
+    }
+
     fn frames(rx: &std::sync::mpsc::Receiver<Event>) -> Vec<FrameRecord> {
         let mut out = Vec::new();
         while let Ok(event) = rx.try_recv() {
@@ -1891,6 +2016,39 @@ mod tests {
         let record = frames(&rx).pop().expect("a frame record");
         assert!(!record.changed);
         assert_eq!(record.plane_frames, None);
+    }
+
+    /// `Hosted::at` installs the object on the layer it is set on, at its
+    /// extent.
+    #[test]
+    fn hosted_content_binds_the_layer_at_its_extent() {
+        let (engine, rx) = engine();
+        let surface = engine
+            .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
+            .expect("surface");
+        let web = surface.layer();
+        let hosted = crate::Hosted::<Null>::new(());
+        surface.update(|tx| {
+            tx[surface.root()].push(&web);
+            tx[&web].content(hosted.at(kurbo::Size::new(300.5, 200.0)));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                Event::BindHosted(s, l, size)
+                    if (*s, *l) == (surface.id(), web.id())
+                        && *size == kurbo::Size::new(300.5, 200.0)
+            )),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "a hosted extent is a finite, non-negative size")]
+    fn a_hosted_extent_must_be_finite() {
+        let _ = crate::Hosted::<Null>::new(()).at(kurbo::Size::new(f64::NAN, 1.0));
     }
 
     #[test]
@@ -2438,9 +2596,10 @@ mod tests {
         balance::assert_balanced(&rx);
     }
 
-    /// An upload the backend rejects after its handle was returned fails
-    /// every render that draws it, naming the resource and the backend's
-    /// reason; renders that do not draw it succeed.
+    /// An upload the backend rejects after its handle was returned leaves
+    /// the surface that draws it out of every render, naming the surface,
+    /// the resource and the backend's reason; renders that do not draw it
+    /// succeed.
     #[test]
     fn a_backend_rejected_upload_fails_the_render_that_draws_it() {
         use crate::{Draw as _, RenderError, ResourceId, Sampling, ShaderPaint};
@@ -2463,12 +2622,13 @@ mod tests {
 
         let assert_rejected =
             |expected: ResourceId, reason: &str| match engine.render(FrameTime::now()) {
-                Err(RenderError::Rejected {
-                    resource,
-                    reason: actual,
-                }) => {
-                    assert_eq!(resource, expected);
-                    assert_eq!(actual.to_string(), reason);
+                Err(RenderError::Rejected { surfaces, .. }) => {
+                    let [rejection] = surfaces.as_slice() else {
+                        panic!("one surface draws {expected}: {surfaces:?}");
+                    };
+                    assert_eq!(rejection.surface, surface.id());
+                    assert_eq!(rejection.resource, expected);
+                    assert_eq!(rejection.reason.to_string(), reason);
                 }
                 other => panic!("{expected} drawn: {other:?}"),
             };
@@ -2506,6 +2666,70 @@ mod tests {
         engine
             .render(FrameTime::now())
             .expect("content that no longer draws a rejected resource renders");
+    }
+
+    /// A rejection is scoped to the surfaces that draw the resource: the
+    /// frame leaves them out, keeping their changes pending, and draws
+    /// every other surface; `render` names only the surfaces left out, and
+    /// once the content stops drawing the resource the surface draws again.
+    #[test]
+    fn a_rejected_resource_leaves_out_only_the_surfaces_that_draw_it() {
+        use crate::{Draw as _, RenderError, ResourceId, Sampling};
+
+        let (engine, rx) = engine_rejecting(HashSet::from([NullReject::Image]));
+        let image = engine
+            .image(ImageData::<Rgba8>::new(1, 1, vec![0u8; 4]).expect("image data"))
+            .expect("the image is queued");
+        let offscreen = || Offscreen::new((8, 8), OffscreenFormat::LinearF16);
+        let rejected = engine.surface(offscreen(), || {}).expect("surface");
+        let unrelated = engine.surface(offscreen(), || {}).expect("surface");
+        let rect = kurbo::Rect::new(0., 0., 8., 8.);
+        let fill = |surface: &crate::Surface<Null>| {
+            surface.update(|tx| {
+                tx[surface.root()].record(|c| c.fill(rect, crate::WorkingColor::WHITE));
+            });
+        };
+        let drawn = || -> Vec<SurfaceId> {
+            rx.try_iter()
+                .filter_map(|event| match event {
+                    Event::Frame(record) if record.changed => Some(record.surface),
+                    _ => None,
+                })
+                .collect()
+        };
+        engine.render(FrameTime::now()).expect("first frame");
+        let _ = drawn();
+
+        rejected.update(|tx| {
+            tx[rejected.root()].record(|c| c.image(image.id(), rect, Sampling::Nearest));
+        });
+        fill(&unrelated);
+        for _ in 0..2 {
+            match engine.render(FrameTime::now()) {
+                Err(RenderError::Rejected { surfaces, .. }) => {
+                    let [rejection] = surfaces.as_slice() else {
+                        panic!("only the surface drawing the image is left out: {surfaces:?}");
+                    };
+                    assert_eq!(rejection.surface, rejected.id());
+                    assert_eq!(rejection.resource, ResourceId::Image(image.id()));
+                }
+                other => panic!("rejected image drawn: {other:?}"),
+            }
+            assert!(
+                !drawn().contains(&rejected.id()),
+                "the surface drawing the rejected image is left out"
+            );
+            // The unrelated surface keeps rendering its changes.
+            fill(&unrelated);
+        }
+        assert_eq!(rejected.next_frame(), crate::Next::Idle);
+
+        fill(&rejected);
+        engine
+            .render(FrameTime::now())
+            .expect("content that no longer draws the image renders");
+        let frames = drawn();
+        assert!(frames.contains(&rejected.id()) && frames.contains(&unrelated.id()));
     }
 
     /// The position of the first event matching `f`.
@@ -2960,8 +3184,128 @@ mod tests {
     }
 }
 
+/// The union field's quadratic smooth-min fold of two distances.
+///
+/// The step is `m ← min(m, d) − h²·k/4` with `h = max(k − |m − d|, 0)/k`,
+/// applied to distances sorted ascending as in the shader. Shared by the GPU
+/// and CPU backdrop test suites.
+#[must_use]
+pub fn smin(field: f32, dist: f32, smoothing: f32) -> f32 {
+    let blend = (smoothing - (field - dist).abs()).max(0.0) / smoothing;
+    (blend * blend * smoothing).mul_add(-0.25, field.min(dist))
+}
+
+/// Signed distance to an axis-aligned rect — the clip's analytic SDF.
+/// Shared by the GPU and CPU backdrop test suites.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "test geometry stays well inside f32"
+)]
+#[must_use]
+pub fn rect_sdf(px: f32, py: f32, rect: kurbo::Rect) -> f32 {
+    let qx = (f64::from(px) - rect.x0.midpoint(rect.x1)).abs() - (rect.x1 - rect.x0) / 2.0;
+    let qy = (f64::from(py) - rect.y0.midpoint(rect.y1)).abs() - (rect.y1 - rect.y0) / 2.0;
+    (qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0)) as f32
+}
+
+/// Antialiased coverage of `m < 0` at pixel-centre distance `m`.
+///
+/// `coverage(m, 1)` in the shader: the fold is a unit-gradient field
+/// along the axis the tests measure on. Shared by the GPU and CPU
+/// backdrop test suites.
+#[must_use]
+pub fn cover(field: f32) -> f32 {
+    (0.5 - field).clamp(0.0, 1.0)
+}
+
+/// Signed distance and unit outward normal of a circle's analytic SDF —
+/// the clip's `sdf_sample` result. Shared by the GPU and CPU backdrop
+/// test suites.
+#[must_use]
+pub fn circle_field(px: f32, py: f32, cx: f32, cy: f32, r: f32) -> (f32, [f32; 2]) {
+    let dx = px - cx;
+    let dy = py - cy;
+    let len = dx.hypot(dy).max(1e-6);
+    (len - r, [dx / len, dy / len])
+}
+
+/// Signed distance and unit outward normal of an axis-aligned rect's
+/// analytic SDF — the clip's `sdf_sample` result. Shared by the GPU and
+/// CPU backdrop test suites.
+#[must_use]
+#[expect(clippy::cast_possible_truncation, reason = "test coords stay small")]
+pub fn rect_field(px: f32, py: f32, rect: kurbo::Rect) -> (f32, [f32; 2]) {
+    let qx = (f64::from(px) - rect.x0.midpoint(rect.x1)).abs() - (rect.x1 - rect.x0) / 2.0;
+    let qy = (f64::from(py) - rect.y0.midpoint(rect.y1)).abs() - (rect.y1 - rect.y0) / 2.0;
+    let d = (qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0)) as f32;
+    let sx = if px >= rect.x0.midpoint(rect.x1) as f32 {
+        1.0
+    } else {
+        -1.0
+    };
+    let sy = if py >= rect.y0.midpoint(rect.y1) as f32 {
+        1.0
+    } else {
+        -1.0
+    };
+    let (ox, oy) = (qx.max(0.0) as f32 * sx, qy.max(0.0) as f32 * sy);
+    let len = ox.hypot(oy);
+    if len > 1e-6 {
+        (d, [ox / len, oy / len])
+    } else if qx > qy {
+        (d, [sx, 0.0])
+    } else {
+        (d, [0.0, sy])
+    }
+}
+
+/// The ownership weight of `members[member]` under the union contract.
+///
+/// `a_i = clamp(0.5 + f_i/|∇f_i|, 0, 1)` with `f_i = d₂ − d_i`, `d₂` the
+/// smallest distance among the other members, `|∇f_i| = |∇d₂ − ∇d_i|`;
+/// the weight is `a_i / Σ_j a_j`. Only where the boundary degenerates
+/// (`|∇f_i| < 1e-6`, coincident shapes) is ownership a hard step, an
+/// exact tie going to the earlier member in paint order — the members
+/// are in paint order. Shared by the GPU and CPU backdrop test suites.
+#[must_use]
+pub fn ownership(members: &[(f32, [f32; 2])], member: usize) -> f32 {
+    let mut order: Vec<usize> = (0..members.len()).collect();
+    order.sort_by(|&a, &b| members[a].0.total_cmp(&members[b].0));
+    let mut sum = 0.0f32;
+    let mut own = 0.0f32;
+    for (j, &(dj, gj)) in members.iter().enumerate() {
+        let other = if order[0] == j { order[1] } else { order[0] };
+        let (do2, go2) = members[other];
+        let f = do2 - dj;
+        let slope = (go2[0] - gj[0]).hypot(go2[1] - gj[1]);
+        let a = if slope < 1e-6 {
+            if f > 0.0 || (f == 0.0 && j == order[0]) {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            (0.5 + f / slope).clamp(0.0, 1.0)
+        };
+        sum += a;
+        if j == member {
+            own = a;
+        }
+    }
+    own / sum
+}
+
 /// Retained-lowering equivalence checks for first-party backends.
 pub mod incremental;
+
+/// A surface wake-up with no host behind it, for a harness that drives a
+/// renderer directly and renders on its own schedule.
+#[must_use]
+pub fn unhosted_waker() -> crate::CompletionWaker {
+    crate::CompletionWaker::new(&std::sync::Arc::new(crate::engine::SurfaceWaker::new(
+        || {},
+    )))
+}
 
 /// The browser executor's registration lifetimes (#150). Resource
 /// registration is synchronous and queued in order, so its handle owns the
@@ -3239,9 +3583,10 @@ mod wasm_tests {
         balance::assert_balanced(&rx);
     }
 
-    /// An upload the backend rejects after its handle was returned fails
-    /// the render that draws it, naming the resource and the backend's
-    /// reason. Registration and recording happen with no await between.
+    /// An upload the backend rejects after its handle was returned leaves
+    /// the surface that draws it out of the render, naming the surface,
+    /// the resource and the backend's reason. Registration and recording
+    /// happen with no await between.
     #[wasm_bindgen_test]
     #[expect(
         clippy::future_not_send,
@@ -3262,9 +3607,13 @@ mod wasm_tests {
             tx[surface.root()].record(|c| c.image(image.id(), rect, Sampling::Nearest));
         });
         match engine.render(FrameTime::now()).await {
-            Err(RenderError::Rejected { resource, reason }) => {
-                assert_eq!(resource, ResourceId::Image(image.id()));
-                assert_eq!(reason.to_string(), "image: injected rejection");
+            Err(RenderError::Rejected { surfaces, .. }) => {
+                let [rejection] = surfaces.as_slice() else {
+                    panic!("one surface draws the image: {surfaces:?}");
+                };
+                assert_eq!(rejection.surface, surface.id());
+                assert_eq!(rejection.resource, ResourceId::Image(image.id()));
+                assert_eq!(rejection.reason.to_string(), "image: injected rejection");
             }
             other => panic!("rejected image drawn: {other:?}"),
         }
@@ -3283,9 +3632,13 @@ mod wasm_tests {
             });
         });
         match engine.render(FrameTime::now()).await {
-            Err(RenderError::Rejected { resource, reason }) => {
-                assert_eq!(resource, ResourceId::Shader(shader.id()));
-                assert_eq!(reason.to_string(), "shader: injected rejection");
+            Err(RenderError::Rejected { surfaces, .. }) => {
+                let [rejection] = surfaces.as_slice() else {
+                    panic!("one surface draws the shader: {surfaces:?}");
+                };
+                assert_eq!(rejection.surface, surface.id());
+                assert_eq!(rejection.resource, ResourceId::Shader(shader.id()));
+                assert_eq!(rejection.reason.to_string(), "shader: injected rejection");
             }
             other => panic!("rejected shader drawn: {other:?}"),
         }

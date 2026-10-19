@@ -85,38 +85,9 @@ impl Dispatcher {
     /// A `register_view` handler typically owns no platform view of its own:
     /// it applies `T`'s effect (an environment overlay, an attribute on the
     /// child's platform view) and returns the leaf its child rendered.
-    #[cfg(any(
-        feature = "accessibility_identifier",
-        feature = "accessibility_metadata",
-        feature = "anchored_overlay",
-        feature = "border",
-        feature = "clip_shape",
-        feature = "context_menu",
-        feature = "cursor",
-        feature = "draggable",
-        feature = "drop_destination",
-        feature = "dynamic_range",
-        feature = "focused",
-        feature = "gesture",
-        feature = "glass_background",
-        feature = "hittable",
-        feature = "ignore_safe_area",
-        feature = "layout_priority",
-        feature = "lifecycle_hook",
-        feature = "material_background",
-        feature = "multi_date_picker",
-        feature = "navigation",
-        feature = "offset",
-        feature = "on_event",
-        feature = "on_key_press",
-        feature = "opacity",
-        feature = "retain",
-        feature = "rotation",
-        feature = "scale",
-        feature = "secure",
-        feature = "shadow",
-        feature = "env"
-    ))]
+    ///
+    /// Always compiled: the unconditional `Metadata<TransitionSpec>` claim
+    /// uses it, so it is not feature-gated like `install` call sites.
     pub(crate) fn register_view<T: 'static>(
         &mut self,
         handler: impl Fn(T, &RenderContext<'_>) -> NativeLeaf + 'static,
@@ -150,6 +121,14 @@ impl Dispatcher {
     /// The handler claiming `type_id`, if any.
     fn handler(&self, type_id: TypeId) -> Option<&Handler> {
         self.handlers.get(&type_id)
+    }
+
+    /// Whether a registered handler claims `view` — distinguishes a
+    /// handler-owned leaf (a `Native` payload or a claimed metadata
+    /// wrapper) from a composite that still needs `body()` expansion,
+    /// without evaluating the view.
+    pub(crate) fn claims(&self, view: &AnyView) -> bool {
+        self.handler(view.type_id()).is_some()
     }
 
     /// Renders `view` under `env` into the platform view it becomes.

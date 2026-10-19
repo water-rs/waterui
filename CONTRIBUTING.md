@@ -55,7 +55,7 @@ The part of the workspace the issue touches.
 | `core` | `waterui-core` and the `waterui` facade: runtime, reactivity, layout, environment. |
 | `components` | Component crates under `components/` (foundation, visual, multimedia, platform, …). |
 | `ffi` | The C ABI layer, header generation, and per-backend FFI glue. |
-| `graphics` | Rendering: `waterui-graphics`, dew, GPU surfaces, shaders, color. |
+| `graphics` | Rendering: `waterui-graphics`, GPU surfaces, shaders, color. |
 | `devtools` | Inspector, MCP server, preview tooling under `components/devtools/`. |
 | `macros` | Procedural macros and code generation. |
 | `testing` | Test infrastructure, snapshot baselines, example verification. |

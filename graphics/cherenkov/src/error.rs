@@ -11,8 +11,8 @@ use std::sync::Arc;
 
 pub use cherenkov_record::ResourceError;
 
-use crate::frame::OffscreenFormat;
-use cherenkov_record::{Extend, ResourceId};
+use crate::frame::{Next, OffscreenFormat};
+use cherenkov_record::{Extend, ResourceId, SurfaceId};
 
 /// Engine initialization or engine-wide failure.
 #[derive(Debug, thiserror::Error)]
@@ -44,9 +44,16 @@ pub enum SurfaceError {
     /// The target kind is not drawable by this backend.
     #[error("unsupported surface target: {0}")]
     UnsupportedTarget(String),
-    /// The requested [`OffscreenFormat`] is not renderable by this backend.
-    #[error("unsupported offscreen format: {0:?}")]
-    UnsupportedFormat(OffscreenFormat),
+    /// The requested [`OffscreenFormat`] is not renderable on this device.
+    /// A backend never substitutes another format for the one requested.
+    #[error("unsupported offscreen format {format:?}: the device lacks {missing}")]
+    UnsupportedFormat {
+        /// The requested format.
+        format: OffscreenFormat,
+        /// The device capabilities the format needs and the device lacks,
+        /// in the backend's own names.
+        missing: String,
+    },
     /// A zero-size surface cannot hold a target.
     #[error("surface size must be non-zero")]
     ZeroSize,
@@ -130,16 +137,52 @@ pub enum RenderError {
         /// What limit was exceeded, with the required size.
         reason: String,
     },
-    /// A draw names a resource the backend rejected after its handle was
-    /// returned: its registration, or an image's latest replacement.
-    /// Every render that draws the resource fails this way until the
-    /// resource is replaced successfully, or its last handle has dropped
-    /// and no installed content draws it any more.
-    #[error("{resource} was rejected by the backend: {reason}")]
-    Rejected {
-        /// The rejected resource.
-        resource: ResourceId,
-        /// The backend's reason.
-        reason: Arc<ResourceError>,
+    /// A layer whose content is shown only on a system-compositor plane —
+    /// a [`Hosted`](crate::Hosted) system layer — cannot be placed on one:
+    /// the surface has no system-compositor parent, or the layer fails the
+    /// mandatory-plane rule (a backdrop sampled on or above it, a
+    /// non-default blend, a filter or isolating opacity on its path, a
+    /// transform, clip or opacity the system layer cannot carry, or a spent
+    /// plane budget). There is no fallback to engine composition.
+    #[error("layer {layer:?} is shown only on a system-compositor plane, but {reason}")]
+    Unplaceable {
+        /// The layer.
+        layer: crate::LayerId,
+        /// The rule it fails.
+        reason: String,
     },
+    /// Surfaces whose content draws a resource the backend rejected after
+    /// its handle was returned — its registration, or an image's latest
+    /// replacement — were left out of the frame. Every other visible
+    /// surface rendered and presented as on success, and `next` is what
+    /// `Ok` would have returned.
+    ///
+    /// A rejected surface is neither drawn nor presented and keeps its
+    /// previous pixels; its changes stay pending. Every render reports it
+    /// this way until the resource is replaced successfully or the
+    /// surface's content stops drawing it.
+    #[error(
+        "{} surface(s) left out of the frame; {}",
+        .surfaces.len(),
+        .surfaces[0]
+    )]
+    Rejected {
+        /// Each surface left out, never empty.
+        surfaces: Vec<SurfaceRejection>,
+        /// The frame's schedule for the surfaces that rendered.
+        next: Next,
+    },
+}
+
+/// A surface left out of a frame because its content draws a resource the
+/// backend rejected: [`RenderError::Rejected`].
+#[derive(Clone, Debug, thiserror::Error)]
+#[error("surface {} draws {resource}, which the backend rejected: {reason}", .surface.raw())]
+pub struct SurfaceRejection {
+    /// The surface.
+    pub surface: SurfaceId,
+    /// A rejected resource its content draws.
+    pub resource: ResourceId,
+    /// The backend's reason.
+    pub reason: Arc<ResourceError>,
 }

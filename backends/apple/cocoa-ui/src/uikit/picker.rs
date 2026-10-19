@@ -251,7 +251,7 @@ impl Picker {
         }));
         let (control, delegate) = match style {
             PickerStyle::Menu => {
-                let button = UIButton::new(mtm);
+                let button = crate::uikit::button::CocoaUiButton::new(mtm).into_super();
                 let configuration = UIButtonConfiguration::plainButtonConfiguration(mtm);
                 configuration
                     .setImage(UIImage::systemImageNamed(&NSString::from_str(CHEVRON)).as_deref());

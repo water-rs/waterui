@@ -68,7 +68,53 @@ fn trials() -> Vec<Trial> {
                 window::bind_root_window_wires_a_live_window(mtm());
                 Ok(())
             }),
+            Trial::test(
+                "menus::the_window_menu_opens_with_the_standard_close_item",
+                || {
+                    menus::the_window_menu_opens_with_the_standard_close_item();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "menus::a_pull_down_validates_its_callback_rows_from_their_command",
+                || {
+                    menus::a_pull_down_validates_its_callback_rows_from_their_command();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "navigation::a_searchable_page_rests_its_field_in_the_titlebar_row",
+                || {
+                    navigation::a_searchable_page_rests_its_field_in_the_titlebar_row();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space",
+                || {
+                    navigation::a_hidden_tab_split_releases_the_toolbar_sidebar_space();
+                    Ok(())
+                },
+            ),
+            Trial::test(
+                "navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics",
+                || {
+                    navigation::a_toolbar_tab_picker_uses_the_extra_large_metrics();
+                    Ok(())
+                },
+            ),
+            Trial::test("split::a_sidebar_list_takes_the_source_list_chrome", || {
+                split::a_sidebar_list_takes_the_source_list_chrome();
+                Ok(())
+            }),
+            Trial::test("split::a_plain_list_keeps_the_regular_chrome", || {
+                split::a_plain_list_keeps_the_regular_chrome();
+                Ok(())
+            }),
         ]);
+        tests.extend(list_ax::trials());
+        tests.extend(gesture_ax::trials());
+        tests.extend(a11y_extent::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -78,12 +124,17 @@ fn trials() -> Vec<Trial> {
     #[cfg(target_os = "ios")]
     {
         tests.extend(tabs::trials());
+        tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
+        tests.extend(safe_area::trials());
+        tests.extend(offset::trials());
     }
     tests.extend(migration::trials());
     tests.extend(owner_lifetimes::trials());
     tests.extend(scroll::trials());
     tests.extend(list_scroll::trials());
+    #[cfg(feature = "webview")]
+    tests.extend(webview::trials());
     tests
 }
 
@@ -144,6 +195,33 @@ fn base_trials() -> Vec<Trial> {
                 Ok(())
             },
         ),
+        Trial::test(
+            "resolve::control_leaves_answer_their_intrinsic_height",
+            || {
+                resolve::control_leaves_answer_their_intrinsic_height();
+                Ok(())
+            },
+        ),
+        Trial::test("resolve::toggle_leaves_follow_the_stretch_rule", || {
+            resolve::toggle_leaves_follow_the_stretch_rule();
+            Ok(())
+        }),
+        Trial::test("resolve::stepper_leaves_follow_the_stretch_rule", || {
+            resolve::stepper_leaves_follow_the_stretch_rule();
+            Ok(())
+        }),
+        Trial::test("resolve::picker_leaves_follow_the_stretch_rule", || {
+            resolve::picker_leaves_follow_the_stretch_rule();
+            Ok(())
+        }),
+        Trial::test("resolve::toggle_rows_place_the_control_by_kind", || {
+            resolve::toggle_rows_place_the_control_by_kind();
+            Ok(())
+        }),
+        Trial::test("resolve::a_label_leaves_8pt_between_icon_and_title", || {
+            resolve::a_label_leaves_8pt_between_icon_and_title();
+            Ok(())
+        }),
         Trial::test(
             "picture::a_laid_out_picture_rasterizes_at_its_bounds",
             || {
@@ -670,11 +748,12 @@ mod leaf {
                 )
             ]
         };
+        // Content mounts directly — the window's keyboard region needs
+        // no host ancestor. `addSubview` alone leaves the content at its
+        // zero frame, so surfaces that read their viewport (lazy
+        // containers especially) would see an empty window — size it the
+        // way `set_content_view` does on macOS.
         window.addSubview(content);
-        // Size the content to the window's bounds the way
-        // `set_content_view` does on macOS — `addSubview` alone leaves it
-        // at its zero frame, so surfaces that read their viewport (lazy
-        // containers especially) would see an empty window.
         cocoa_ui::view::set_frame(content, cocoa_ui::view::bounds(&window));
         window
     }
@@ -685,8 +764,19 @@ mod leaf {
 /// to hand it back to), so a spurious empty render could not masquerade as
 /// a pass.
 mod resolve {
+    use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::form::picker::{PickerItem, PickerStyle, picker};
+    use waterui::component::form::secure::{Secure, SecureField};
+    use waterui::component::label::label;
+    use waterui::component::slider::slider;
+    use waterui::component::stepper::stepper;
+    use waterui::component::text_field::TextField;
+    use waterui::component::toggle::Toggle;
     use waterui::filter::Opacity;
+    use waterui::icon::SystemIcon;
     use waterui::layout::Spacer;
+    use waterui::reactive::binding;
     use waterui_apple::contract::NativeLeaf;
     use waterui_backend_core::{AnyView, View};
     use waterui_core::layout::{ProposalSize, Size, StretchAxis};
@@ -822,6 +912,380 @@ mod resolve {
         render(());
         render(Spacer::new(8.0));
         render(IgnorableMetadata::new((), Unregistered));
+    }
+
+    /// §6's control contract: a finite height offer is advice, not an
+    /// allocation. The slider, the default-style picker and both text
+    /// fields answer their intrinsic height to it — a `VStack` above them
+    /// cannot starve a trailing `ScrollView` by handing out space that
+    /// only exists because the control claimed it.
+    pub fn control_leaves_answer_their_intrinsic_height() {
+        let volume = binding(0.5_f64);
+        let selection = binding("Alpha");
+        let text_value = binding(Str::from(""));
+        let secret = binding(Secure::new(String::new()));
+        let items: Vec<PickerItem<&'static str>> = vec![
+            waterui::text!("Alpha").tag("Alpha"),
+            waterui::text!("Beta").tag("Beta"),
+            waterui::text!("Gamma").tag("Gamma"),
+        ];
+        let leaves = [
+            ("slider", render(slider("Volume", &volume))),
+            ("picker", render(picker("Letter", items, &selection))),
+            ("text field", render(TextField::new("Name", &text_value))),
+            (
+                "secure field",
+                render(SecureField::new("Password", &secret)),
+            ),
+        ];
+        for (name, leaf) in leaves {
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), Some(500.0)))
+                .size;
+            let unspecified = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), None))
+                .size;
+            assert_eq!(
+                offered.height.to_bits(),
+                unspecified.height.to_bits(),
+                "{name} answers a finite height offer with its intrinsic height"
+            );
+            assert!(
+                offered.height < 500.0,
+                "{name} must not grow into the offered height"
+            );
+        }
+    }
+
+    /// `docs/layout-spec.md` §3 and §6 over the style × label-visibility
+    /// matrix: only a switch with a visible label is `Horizontal` and
+    /// answers the proposed width; a checkbox and a hidden label answer the
+    /// row's intrinsic size. `Automatic` is the platform's default first —
+    /// a switch on iOS, a checkbox on macOS.
+    pub fn toggle_leaves_follow_the_stretch_rule() {
+        let on = binding(false);
+        #[cfg(target_os = "ios")]
+        let automatic = StretchAxis::Horizontal;
+        #[cfg(target_os = "macos")]
+        let automatic = StretchAxis::None;
+        let cases = [
+            (
+                "switch",
+                Toggle::new("Wi-Fi", &on).switch(),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "hidden-label switch",
+                Toggle::new("Wi-Fi", &on).switch().hide_label(),
+                StretchAxis::None,
+            ),
+            (
+                "checkbox",
+                Toggle::new("Wi-Fi", &on).checkbox(),
+                StretchAxis::None,
+            ),
+            (
+                "hidden-label checkbox",
+                Toggle::new("Wi-Fi", &on).checkbox().hide_label(),
+                StretchAxis::None,
+            ),
+            ("automatic", Toggle::new("Wi-Fi", &on), automatic),
+            (
+                "hidden-label automatic",
+                Toggle::new("Wi-Fi", &on).hide_label(),
+                StretchAxis::None,
+            ),
+        ];
+        for (name, toggle, axis) in cases {
+            let leaf = render(toggle);
+            assert_eq!(leaf.layout().stretch_axis(), axis, "{name}: stretch axis");
+            let intrinsic = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+            assert!(
+                intrinsic.width < 400.0,
+                "{name}: intrinsic width {} must be narrower than the offer",
+                intrinsic.width
+            );
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(400.0), None))
+                .size;
+            let expected = if axis == StretchAxis::Horizontal {
+                400.0_f32
+            } else {
+                intrinsic.width
+            };
+            assert_eq!(
+                offered.width.to_bits(),
+                expected.to_bits(),
+                "{name}: width under a 400 pt offer"
+            );
+            assert_eq!(
+                offered.height.to_bits(),
+                intrinsic.height.to_bits(),
+                "{name}: height stays intrinsic"
+            );
+        }
+    }
+
+    /// `docs/layout-spec.md` §3 and §6 over label visibility: a stepper is
+    /// `Horizontal` and answers the proposed width only while its label is
+    /// visible; a hidden label answers the buttons' intrinsic size
+    /// (water-rs/waterui#2364).
+    pub fn stepper_leaves_follow_the_stretch_rule() {
+        let quantity = binding(3_i32);
+        let cases = [
+            (
+                "visible label",
+                stepper("Quantity", &quantity),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "hidden label",
+                stepper("Quantity", &quantity).hide_label(),
+                StretchAxis::None,
+            ),
+        ];
+        for (name, stepper, axis) in cases {
+            let leaf = render(stepper);
+            assert_eq!(leaf.layout().stretch_axis(), axis, "{name}: stretch axis");
+            let intrinsic = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+            assert!(
+                intrinsic.width < 400.0,
+                "{name}: intrinsic width {} must be narrower than the offer",
+                intrinsic.width
+            );
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(400.0), None))
+                .size;
+            let expected = if axis == StretchAxis::Horizontal {
+                400.0_f32
+            } else {
+                intrinsic.width
+            };
+            assert_eq!(
+                offered.width.to_bits(),
+                expected.to_bits(),
+                "{name}: width under a 400 pt offer"
+            );
+            assert_eq!(
+                offered.height.to_bits(),
+                intrinsic.height.to_bits(),
+                "{name}: height stays intrinsic"
+            );
+        }
+    }
+
+    /// `docs/layout-spec.md` §3 and §6: a segmented picker is `Horizontal`
+    /// and answers the proposed width; every other style answers its
+    /// intrinsic size.
+    pub fn picker_leaves_follow_the_stretch_rule() {
+        let selection = binding(0_i32);
+        let items = || -> Vec<PickerItem<i32>> {
+            vec![
+                waterui::text!("One").tag(0),
+                waterui::text!("Two").tag(1),
+                waterui::text!("Three").tag(2),
+            ]
+        };
+        let cases = [
+            (
+                "segmented",
+                picker("Mode", items(), &selection).segmented(),
+                StretchAxis::Horizontal,
+            ),
+            (
+                "menu",
+                picker("Mode", items(), &selection).style(PickerStyle::Menu),
+                StretchAxis::None,
+            ),
+        ];
+        for (name, picker, axis) in cases {
+            let leaf = render(picker);
+            assert_eq!(leaf.layout().stretch_axis(), axis, "{name}: stretch axis");
+            let intrinsic = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+            assert!(
+                intrinsic.width < 300.0,
+                "{name}: intrinsic width {} must be narrower than the offer",
+                intrinsic.width
+            );
+            let offered = leaf
+                .layout()
+                .measure(ProposalSize::new(Some(300.0), None))
+                .size;
+            let expected = if axis == StretchAxis::Horizontal {
+                300.0_f32
+            } else {
+                intrinsic.width
+            };
+            assert_eq!(
+                offered.width.to_bits(),
+                expected.to_bits(),
+                "{name}: width under a 300 pt offer"
+            );
+            assert_eq!(
+                offered.height.to_bits(),
+                intrinsic.height.to_bits(),
+                "{name}: height stays intrinsic"
+            );
+        }
+    }
+
+    /// A switch row puts the label at the leading edge and the switch at
+    /// the trailing edge of the full width; a checkbox row reads box first,
+    /// then the label `LABEL_SPACING` after it.
+    pub fn toggle_rows_place_the_control_by_kind() {
+        #[cfg(target_os = "macos")]
+        use cocoa_ui::appkit::toggle::LABEL_SPACING;
+        #[cfg(target_os = "ios")]
+        use cocoa_ui::uikit::toggle::LABEL_SPACING;
+
+        // Auto Layout snaps frames to the backing scale's pixel grid.
+        fn assert_near(actual: f64, expected: f64, what: &str, name: &str) {
+            assert!(
+                (actual - expected).abs() < 0.5,
+                "{name}: {what} — expected {expected}, got {actual}"
+            );
+        }
+
+        let on = binding(false);
+        for (name, toggle, switch) in [
+            ("switch", Toggle::new("Wi-Fi", &on).switch(), true),
+            ("checkbox", Toggle::new("Wi-Fi", &on).checkbox(), false),
+        ] {
+            let leaf = render(toggle);
+            let height = f64::from(leaf.layout().measure(ProposalSize::UNSPECIFIED).size.height);
+            let row = leaf.view();
+            cocoa_ui::view::set_frame(row, cocoa_ui::Rect::new(0.0, 0.0, 400.0, height));
+            cocoa_ui::view::layout_immediately(row);
+            let subviews = cocoa_ui::view::subviews(row);
+            assert_eq!(
+                subviews.len(),
+                2,
+                "{name}: the row holds the label and the control"
+            );
+            let label = cocoa_ui::view::frame(&subviews[0]);
+            // The constraints pin the control's alignment rect, not its
+            // frame: a UISwitch frame overshoots the pinned trailing edge
+            // by 2 pt, so the edge Auto Layout placed is the alignment
+            // rect's.
+            let control = cocoa_ui::view::alignment_frame(&subviews[1]);
+            let control_trailing = control.origin.x + control.size.width;
+            if switch {
+                assert_near(label.origin.x, 0.0_f64, "label leading", name);
+                assert_near(
+                    control_trailing,
+                    400.0_f64,
+                    "switch at the trailing edge",
+                    name,
+                );
+            } else {
+                assert_near(control.origin.x, 0.0_f64, "box leading", name);
+                assert_near(
+                    label.origin.x,
+                    control_trailing + LABEL_SPACING,
+                    "label after the box",
+                    name,
+                );
+            }
+        }
+    }
+
+    /// water-rs/waterui#1101: a semantic label leaves 8 pt between its
+    /// icon and its title — the `SwiftUI` `Label` and Material 3 default
+    /// the composition reproduces on every backend.
+    pub fn a_label_leaves_8pt_between_icon_and_title() {
+        let leaf = render(label("Play").icon(SystemIcon::new("play.fill")));
+        let size = leaf.layout().measure(ProposalSize::UNSPECIFIED).size;
+        let row = leaf.view();
+        cocoa_ui::view::set_frame(
+            row,
+            cocoa_ui::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        );
+        cocoa_ui::view::layout_immediately(row);
+        // The leaf's host view wraps the hstack's own host view, whose
+        // subviews are the icon and the title in one coordinate space.
+        let stack = cocoa_ui::view::subviews(row);
+        assert_eq!(stack.len(), 1, "the label leaf hosts one stack view");
+        let subviews = cocoa_ui::view::subviews(&stack[0]);
+        assert_eq!(
+            subviews.len(),
+            2,
+            "an icon label holds the icon and the title"
+        );
+        let icon = cocoa_ui::view::frame(&subviews[0]);
+        let title = cocoa_ui::view::frame(&subviews[1]);
+        // Auto Layout snaps frames to the backing scale's pixel grid.
+        let gap = title.origin.x - (icon.origin.x + icon.size.width);
+        assert!(
+            (gap - 8.0).abs() < 0.5,
+            "icon-to-title gap — expected 8 pt, got {gap}"
+        );
+    }
+}
+
+/// `Metadata<Offset>` on `UIKit`: the content moves visually through its
+/// `transform`, and the wrapper's layout pass positions its bounds and
+/// center. `UIKit` resolves `frame`/`center` writes under a non-identity
+/// transform through the autoresizing-mask constraints it synthesizes for
+/// a translated view — a re-layout can absorb part of the translation and
+/// the content lands short of its declared offset (#2713).
+#[cfg(target_os = "ios")]
+mod offset {
+    use cocoa_ui::view;
+    use waterui::style::Offset;
+    use waterui_apple::native_test_support::{mount_uikit, render_environment};
+    use waterui_backend_core::AnyView;
+    use waterui_core::Metadata;
+
+    use super::mtm;
+
+    fn t(name: &'static str, body: fn()) -> libtest_mimic::Trial {
+        libtest_mimic::Trial::test(format!("offset::{name}"), move || {
+            body();
+            Ok(())
+        })
+    }
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![t(
+            "relayout_keeps_the_full_translation",
+            relayout_keeps_the_full_translation,
+        )]
+    }
+
+    /// Two layout passes must leave the declared translation whole and the
+    /// content centered in the wrapper's untransformed space — the state the
+    /// offset contract resolves to, whatever path the passes took there.
+    fn relayout_keeps_the_full_translation() {
+        let mount = mount_uikit(
+            mtm(),
+            AnyView::new(Metadata::new("x", Offset::new(-120.0, -160.0))),
+            &render_environment(),
+        );
+        for _ in 0..2 {
+            mount.window.layoutIfNeeded();
+        }
+        let wrapper = view::retain_base(mount.content.view());
+        let content = &view::subviews(&wrapper)[0];
+        let bounds = view::bounds(&wrapper);
+
+        // The anchor sits at the wrapper's midpoint; the transform carries
+        // the offset on top of it.
+        let position = content.layer().position();
+        assert_eq!(position.x, bounds.size.width / 2.0);
+        assert_eq!(position.y, bounds.size.height / 2.0);
+
+        let transform = content.transform();
+        assert_eq!(transform.tx, -120.0);
+        assert_eq!(transform.ty, -160.0);
+
+        // A manually positioned, transform-moved child must not let the
+        // autoresizing mask pin its frame — the pinned frame is the channel
+        // the absorption came through.
+        assert!(!content.translatesAutoresizingMaskIntoConstraints());
     }
 }
 
@@ -1512,6 +1976,526 @@ mod window {
     };
 }
 
+/// The standard menu bar's content, read back off the installed `NSMenu`s.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod menus {
+    use std::rc::Rc;
+
+    use cocoa_ui::appkit::{Command, Menu, MenuButton, MenuItem};
+    use cocoa_ui::objc2_app_kit::{NSApplication, NSEventModifierFlags};
+    use waterui::component::menu::{CloseWindowPlacement, Shortcut};
+    use waterui_apple::native_test_support::menus::window_menu_rows;
+
+    use crate::mtm;
+
+    /// `build_default`'s Window menu starts with the standard Close item —
+    /// ⌘W, untargeted `performClose:`, disabled while no key window takes
+    /// it — unless a declared menu carries Close, when the Window menu has
+    /// none.
+    pub fn the_window_menu_opens_with_the_standard_close_item() {
+        let rows = window_menu_rows(
+            mtm(),
+            CloseWindowPlacement::WindowMenu,
+            Some(Shortcut::new('w').command()).as_ref(),
+        );
+        let first = rows.first().expect("the Window menu has rows");
+        assert_eq!(first.title, "Close");
+        assert_eq!(first.key_equivalent, "w");
+        assert_eq!(first.action.as_deref(), Some("performClose:"));
+        assert!(first.modifiers.contains(NSEventModifierFlags::Command));
+        assert!(!first.enabled, "no key window takes `performClose:`");
+
+        let declared = window_menu_rows(mtm(), CloseWindowPlacement::Declared, None);
+        assert!(!declared.is_empty(), "the Window menu keeps its other rows");
+        assert!(
+            declared
+                .iter()
+                .all(|row| row.title != "Close" && row.action.as_deref() != Some("performClose:")),
+            "a declared Close is never repeated in the Window menu: {declared:?}"
+        );
+    }
+
+    /// A mounted pull-down validates its rows each time it opens, and a
+    /// callback row answers from its command's enabled state — set on the
+    /// item before or after its action, or carried by the [`Command`].
+    pub fn a_pull_down_validates_its_callback_rows_from_their_command() {
+        let mtm = mtm();
+        // Validation asks the application for each row's target, as it
+        // does in a launched app.
+        let _app = NSApplication::sharedApplication(mtm);
+        let button = MenuButton::new(mtm);
+        let menu = Menu::new(mtm, "");
+        menu.add_item(MenuItem::new(mtm, "", None, ""));
+        menu.add_item(
+            MenuItem::new(mtm, "on", None, "")
+                .with_enabled(true)
+                .with_action(|| {}),
+        );
+        menu.add_item(
+            MenuItem::new(mtm, "off", None, "")
+                .with_enabled(false)
+                .with_action(|| {}),
+        );
+        menu.add_item(
+            MenuItem::new(mtm, "off after", None, "")
+                .with_action(|| {})
+                .with_enabled(false),
+        );
+        let off_command = Command {
+            label: "off command".to_owned(),
+            enabled: false,
+            ..Command::default()
+        };
+        menu.add_item(MenuItem::command(mtm, &off_command, Rc::new(|| {})));
+        button.set_menu(&menu);
+
+        let native = menu.menu();
+        assert!(
+            native.autoenablesItems(),
+            "the pull-down validates its rows"
+        );
+        native.update();
+        let enabled: Vec<bool> = (1..native.numberOfItems())
+            .map(|index| {
+                native
+                    .itemAtIndex(index)
+                    .expect("a row at every index")
+                    .isEnabled()
+            })
+            .collect();
+        assert_eq!(enabled, [true, false, false, false]);
+    }
+}
+
+/// Navigation-chrome trials on `AppKit` against a real titled `NSWindow`: a
+/// `.searchable` page rests its field in the titlebar's bottom accessory
+/// row at the platform's metrics, a `NavigationSplitView` in a hidden tab
+/// releases the toolbar space its sidebar claims, and the toolbar tab
+/// picker uses the system extra-large metrics — the same `navigation::`
+/// namespace the `UIKit` cases own on iOS.
+#[cfg(all(target_os = "macos", feature = "native-test"))]
+mod navigation {
+    use cocoa_ui::appkit::{Segment, SegmentedControl};
+    use cocoa_ui::objc2_app_kit::{
+        NSControlSize, NSLayoutAttribute, NSSearchField, NSSegmentDistribution, NSSegmentStyle,
+        NSSegmentedControl, NSSplitView, NSSplitViewController, NSTrackingSeparatorToolbarItem,
+    };
+    use cocoa_ui::{PlatformView, Retained, view};
+    use objc2::ClassType as _;
+    use objc2::runtime::NSObjectProtocol as _;
+    use waterui::Str;
+    use waterui::navigation::{
+        NavigationSplitView, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView, Tab, Tabs,
+    };
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    use super::{leaf, mtm, resolve};
+
+    /// The platform's `.searchable` on a titled window without a sidebar
+    /// installs a bottom titlebar accessory row 38 pt tall, the field 28 pt
+    /// tall at 41 % of the window's width, centred, drawn in the 11 pt
+    /// system font. The assertions read the row's live `AppKit` objects so
+    /// each metric — attribute, height, font, size, centring — is checked
+    /// the way the platform's row was measured.
+    pub fn a_searchable_page_rests_its_field_in_the_titlebar_row() {
+        let mtm = mtm();
+        let query = binding(Str::from(""));
+        let page = resolve::render(
+            NavigationView::new("Title", text("body")).searchable(&query, "Search mail"),
+        );
+        let window = leaf::attach(mtm, page.view());
+        // The platform's reference window: the metrics were measured at an
+        // 800 pt window.
+        window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 800.0, 600.0), false);
+        window.order_front();
+        let native = window.native();
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                native.titlebarAccessoryViewControllers().count() == 1
+            }),
+            "the searchable page must install exactly one titlebar accessory"
+        );
+        let accessory = native.titlebarAccessoryViewControllers().objectAtIndex(0);
+        assert_eq!(
+            accessory.layoutAttribute(),
+            NSLayoutAttribute::Bottom,
+            "the platform pins the search row to the titlebar's bottom"
+        );
+        accessory.view().layoutSubtreeIfNeeded();
+        let row = accessory.view().frame();
+        assert_eq!(
+            row.size.height.to_bits(),
+            38.0_f64.to_bits(),
+            "the platform's search row is 38 pt tall"
+        );
+        let field = accessory
+            .view()
+            .subviews()
+            .iter()
+            .find_map(|sub| sub.downcast::<NSSearchField>().ok())
+            .expect("the accessory row hosts an NSSearchField");
+        assert_eq!(
+            field
+                .font()
+                .expect("the field carries a font")
+                .pointSize()
+                .to_bits(),
+            11.0_f64.to_bits(),
+            "the platform's .searchable row draws the field at 11 pt"
+        );
+        let frame = field.frame();
+        assert!(
+            (frame.size.height - 28.0).abs() <= 1.0,
+            "the platform's field is 28 pt tall, got {}",
+            frame.size.height
+        );
+        let window_width = native.frame().size.width;
+        let expected_width = 0.41 * window_width;
+        assert!(
+            (frame.size.width - expected_width).abs() <= 1.0,
+            "the platform's field spans 41 % of the window's width, got {}",
+            frame.size.width
+        );
+        let in_window = field.convertRect_toView(field.bounds(), None);
+        let field_center_x = in_window.origin.x + in_window.size.width / 2.0;
+        let window_center_x = window_width / 2.0;
+        assert!(
+            (field_center_x - window_center_x).abs() <= 1.0,
+            "the platform centres the field in the window: field at {field_center_x}, window at {window_center_x}"
+        );
+    }
+
+    /// The `NSSplitView` mounted anywhere under `root`, depth-first — the
+    /// fixture mounts exactly one.
+    fn split_view_in(root: &PlatformView) -> Option<Retained<NSSplitView>> {
+        for sub in view::subviews(root) {
+            if let Ok(split) = sub.clone().downcast::<NSSplitView>() {
+                return Some(split);
+            }
+            if let Some(found) = split_view_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The `NSSplitViewController` that owns `split_view`, found by walking
+    /// the responder chain up from the view, the way `AppKit` dispatches
+    /// the controller's own actions such as `toggleSidebar:`.
+    fn split_controller(split_view: &NSSplitView) -> Retained<NSSplitViewController> {
+        let mut chain = Vec::new();
+        // SAFETY: `nextResponder` is an ordinary responder-chain read on
+        // the main thread.
+        let mut responder = unsafe { split_view.nextResponder() };
+        while let Some(current) = responder {
+            match current.downcast::<NSSplitViewController>() {
+                Ok(controller) => return controller,
+                Err(current) => {
+                    chain.push(current.class().name().to_string_lossy().into_owned());
+                    // SAFETY: as above.
+                    responder = unsafe { current.nextResponder() };
+                }
+            }
+        }
+        panic!("no NSSplitViewController in the split view's responder chain: {chain:?}");
+    }
+
+    /// Whether the window toolbar carries the split's tracking separator —
+    /// the sidebar chrome a visible split pane offers the window.
+    fn has_tracking_separator(window: &cocoa_ui::appkit::Window) -> bool {
+        window.native().toolbar().is_some_and(|toolbar| {
+            toolbar
+                .items()
+                .iter()
+                .any(|item| item.isKindOfClass(NSTrackingSeparatorToolbarItem::class()))
+        })
+    }
+
+    /// Whether the window toolbar exists and has laid out at least one
+    /// view-backed item — the point where item frames read real positions.
+    fn toolbar_laid_out(window: &cocoa_ui::appkit::Window) -> bool {
+        window.native().toolbar().is_some_and(|toolbar| {
+            toolbar
+                .items()
+                .iter()
+                .filter_map(|item| item.view())
+                .any(|view| view.frame().size.width > 0.0)
+        })
+    }
+
+    /// A `Tabs` whose selected pane is a `NavigationView` page carrying a
+    /// `TopBarLeading` item, while the unselected pane holds a
+    /// `NavigationSplitView`. An expanded `allowsFullHeightLayout` sidebar
+    /// item claims the toolbar's leading region even while its view is
+    /// hidden, so the pane collapses the item to release that space,
+    /// expands it when the pane shows, and — after a user collapse —
+    /// restores the user's own collapse state instead of forcing the
+    /// sidebar open.
+    pub fn a_hidden_tab_split_releases_the_toolbar_sidebar_space() {
+        let tab = binding(0i32);
+        let detail = binding(Some(1_i32));
+        let leaf = resolve::render(Tabs::new(
+            &tab,
+            vec![
+                Tab::new(0i32, "Inbox", move || {
+                    NavigationView::new("Inbox", text("inbox")).navigation_toolbar(
+                        NavigationToolbar::new(vec![NavigationToolbarItem::action(
+                            NavigationToolbarPlacement::TopBarLeading,
+                            "Edit",
+                            || {},
+                        )]),
+                    )
+                }),
+                Tab::container(1i32, "Split", move || {
+                    NavigationSplitView::new(&detail, text("Sidebar"), |id: i32| {
+                        NavigationView::new(format!("Detail {id}"), text("detail"))
+                    })
+                }),
+            ],
+        ));
+        let window = super::mount_and_order_front(leaf.view());
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || toolbar_laid_out(&window)),
+            "the window toolbar laid out its items"
+        );
+        let content = window
+            .native()
+            .contentView()
+            .expect("a titled window has a content view");
+        let split_view = split_view_in(&content).expect("the split pane mounts an NSSplitView");
+        let split = split_controller(&split_view);
+        let sidebar = split
+            .splitViewItems()
+            .firstObject()
+            .expect("the split's first item is the sidebar");
+
+        // A hidden pane contributes no sidebar chrome and no hidden claim
+        // on the titlebar either — collapsing the item is what releases
+        // the space the expanded one reserves.
+        assert!(
+            !has_tracking_separator(&window),
+            "a hidden split's toolbar carries no tracking separator"
+        );
+        assert!(
+            sidebar.isCollapsed(),
+            "the hidden split's sidebar item collapses to release its titlebar claim"
+        );
+
+        // The page's leading item hugs the window's leading edge: with the
+        // claim left standing it sat right of the sidebar — the declared
+        // default sidebar is 240-480 pt wide, so a pushed item lands past
+        // 150.
+        let item_view = window
+            .native()
+            .toolbar()
+            .expect("the window toolbar")
+            .items()
+            .iter()
+            .find_map(|item| item.view())
+            .expect("the leading item hosts a view");
+        let min_x = view::convert_rect(&item_view, view::bounds(&item_view), None)
+            .origin
+            .x;
+        assert!(
+            min_x < 150.0,
+            "the leading toolbar item sits at the window's leading edge — minX {min_x}"
+        );
+
+        // Selecting the split's tab brings its chrome back: the sidebar
+        // expands and the toolbar aligns to it with the tracking
+        // separator.
+        tab.set(1i32);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                !sidebar.isCollapsed() && has_tracking_separator(&window)
+            }),
+            "showing the pane expands the sidebar and aligns the toolbar to it"
+        );
+
+        // Collapse the sidebar the way the toolbar's own toggle does, then
+        // cycle the pane away and back. The user's collapse is the state
+        // to restore — the forced collapse while hidden must not
+        // overwrite it, and the show must not force the sidebar open.
+        // SAFETY: `toggleSidebar:` is the controller's documented sidebar
+        // toggle; a nil sender on the main thread.
+        unsafe { split.toggleSidebar(None) };
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || sidebar.isCollapsed()),
+            "the user's collapse lands on the sidebar item"
+        );
+        tab.set(0i32);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !has_tracking_separator(&window)),
+            "hiding the pane withdraws the sidebar chrome again"
+        );
+        tab.set(1i32);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                sidebar.isCollapsed() && has_tracking_separator(&window)
+            }),
+            "the restored pane keeps the user's collapsed sidebar"
+        );
+    }
+
+    /// The toolbar tab picker is the system one: an extra-large segmented
+    /// control whose segments fill equally. Joining the unified toolbar
+    /// narrows that control below the size it reports while free, and the
+    /// item follows the intrinsic size rather than freezing the free one.
+    /// The window stays unordered; the metrics were read that way.
+    pub fn a_toolbar_tab_picker_uses_the_extra_large_metrics() {
+        let mtm = mtm();
+        let pane = binding(0i32);
+        let labels = ["Inbox", "Library", "Gallery", "Settings"];
+        let leaf = resolve::render(Tabs::new(
+            &pane,
+            labels
+                .iter()
+                .enumerate()
+                .map(|(index, label)| {
+                    let title = (*label).to_string();
+                    let id = i32::try_from(index).expect("the four tabs fit in i32");
+                    Tab::new(id, *label, move || {
+                        NavigationView::new(title.clone(), text(title.clone()))
+                    })
+                })
+                .collect(),
+        ));
+        let window = leaf::attach(mtm, leaf.view());
+        window.set_content_rect(cocoa_ui::Rect::new(0.0, 0.0, 700.0, 520.0), false);
+
+        let free = SegmentedControl::new(mtm);
+        free.set_segments(
+            &labels
+                .iter()
+                .map(|label| Segment {
+                    label: label.to_string(),
+                    enabled: true,
+                    ..Segment::default()
+                })
+                .collect::<Vec<_>>(),
+        );
+        let free_size = free.fitting_size();
+
+        let laid_out = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            toolbar_segmented(&window).is_some_and(|control| {
+                let bounds = control.bounds().size;
+                bounds.height > free_size.height - 0.5 && bounds.width + 8.0 < free_size.width
+            })
+        });
+        assert!(
+            laid_out,
+            "the toolbar tab picker adopts the unified-toolbar metrics"
+        );
+
+        let control = toolbar_segmented(&window).expect("the toolbar hosts the tab picker");
+        assert_eq!(control.controlSize(), NSControlSize::ExtraLarge);
+        assert_eq!(
+            control.segmentDistribution(),
+            NSSegmentDistribution::FillEqually
+        );
+        assert_eq!(control.segmentStyle(), NSSegmentStyle::Automatic);
+        let bounds = control.bounds().size;
+        let intrinsic = control.intrinsicContentSize();
+        assert!(
+            (bounds.width - intrinsic.width).abs() < 0.5,
+            "the item follows the intrinsic width {} rather than a frozen fitting size {}",
+            intrinsic.width,
+            bounds.width
+        );
+        assert!(
+            (bounds.height - intrinsic.height).abs() < 0.5
+                && (bounds.height - free_size.height).abs() < 0.5,
+            "the picker is the extra-large height"
+        );
+
+        let frame = view::convert_rect(&control, view::bounds(&control), None);
+        let center = frame.origin.x + frame.size.width / 2.0;
+        assert!(
+            (center - 350.0).abs() < 4.0,
+            "the picker stays centred in the 700 pt window, centre {center}"
+        );
+    }
+
+    /// The segmented control the window toolbar is hosting, when it has one.
+    fn toolbar_segmented(
+        window: &cocoa_ui::appkit::Window,
+    ) -> Option<Retained<NSSegmentedControl>> {
+        window.native().toolbar().and_then(|toolbar| {
+            toolbar.items().iter().find_map(|item| {
+                item.view()
+                    .and_then(|view| view.downcast::<NSSegmentedControl>().ok())
+            })
+        })
+    }
+}
+
+/// A `NavigationSplitView` sidebar column is marked `SidebarContent`: the
+/// lists inside take the source-list chrome — clear background over the
+/// split's material and the unemphasised selection pill — while a list
+/// outside the sidebar keeps the regular fill (water-rs/waterui#1495).
+#[cfg(target_os = "macos")]
+mod split {
+    use cocoa_ui::appkit::ListTableView;
+    use cocoa_ui::objc2_app_kit::NSTableViewStyle;
+    use cocoa_ui::{PlatformView, view};
+    use waterui::component::list::{List, ListItem};
+    use waterui::navigation::{NavigationSplitView, NavigationView};
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+
+    use super::resolve;
+
+    /// The `ListTableView` inside `view`'s subtree, depth-first.
+    fn sidebar_table(view: &PlatformView) -> Option<cocoa_ui::Retained<ListTableView>> {
+        let mut stack = vec![view::retain_base(view)];
+        while let Some(view) = stack.pop() {
+            stack.extend(view::subviews(&view));
+            if let Ok(table) = view.downcast::<ListTableView>() {
+                return Some(table);
+            }
+        }
+        None
+    }
+
+    /// The split's sidebar list is the one `set_sidebar` marks — the
+    /// source-list style is what draws the grey selection pill.
+    pub fn a_sidebar_list_takes_the_source_list_chrome() {
+        let selection = binding(Some(0_i32));
+        let leaf = resolve::render(NavigationSplitView::new(
+            &selection,
+            move || {
+                List::content((|| ListItem::new(text("row")),)).selection(&binding(Some(0_usize)))
+            },
+            |_id: i32| NavigationView::new("Detail", text("detail")),
+        ));
+        let table = sidebar_table(leaf.view()).expect("the sidebar mounts a list");
+        assert!(
+            table.is_sidebar(),
+            "the sidebar list draws source-list chrome"
+        );
+        assert_eq!(
+            table.table_view().style(),
+            NSTableViewStyle::SourceList,
+            "the sidebar list takes the source-list style"
+        );
+    }
+
+    /// The same list outside a split keeps the regular table chrome.
+    pub fn a_plain_list_keeps_the_regular_chrome() {
+        let selection = binding(Some(0_usize));
+        let leaf =
+            resolve::render(List::content((|| ListItem::new(text("row")),)).selection(&selection));
+        let table = sidebar_table(leaf.view()).expect("the list mounts a table");
+        assert!(
+            !table.is_sidebar(),
+            "a list outside a sidebar keeps the regular fill"
+        );
+    }
+}
+
 /// GPU-surface ownership regression coverage (#1725): a real mounted
 /// `SceneView` — production `build_surface`, `SurfaceState`,
 /// `SceneRenderer`/`SceneEngine` — driven through the capturable
@@ -1557,6 +2541,14 @@ mod gpu_surface {
             Trial::test(
                 "gpu_surface::capture_opening_over_a_failed_hold_balances",
                 capture_opening_over_a_failed_hold_balances,
+            ),
+            Trial::test(
+                "gpu_surface::a_scope_end_after_teardown_settles_quietly",
+                a_scope_end_after_teardown_settles_quietly,
+            ),
+            Trial::test(
+                "gpu_surface::a_scope_end_beyond_the_orphaned_count_still_panics",
+                a_scope_end_beyond_the_orphaned_count_still_panics,
             ),
             Trial::test(
                 "gpu_surface::a_failed_child_answers_the_terminal_capture_outcome_once",
@@ -1766,6 +2758,47 @@ mod gpu_surface {
         assert!(
             !mounted.first_paint_participation(),
             "the failed hold survives the scope's open and close"
+        );
+        Ok(())
+    }
+
+    /// A capture's registration can owe the surface an `end` after the
+    /// mount is gone — a frame still in flight settles on the main
+    /// queue whenever the GPU finishes with it, which may follow the
+    /// owner's teardown. Two open scopes deepen the count teardown
+    /// orphans; both late ends then settle quietly instead of tripping
+    /// the balance assert a live surface answers.
+    pub fn a_scope_end_after_teardown_settles_quietly() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        mounted.begin_capture(Rc::new(|| {}));
+        mounted.begin_capture(Rc::new(|| {}));
+        // Unmounts mid-scope and delivers both owed ends — a panic here
+        // is the pre-fix crash a late-settling registration produced.
+        mounted.unmount_then_end_captures(2);
+        Ok(())
+    }
+
+    /// The orphaned count keeps the balance honest: an end beyond what
+    /// teardown recorded is still the unbalanced scope the assert
+    /// names, not a quiet drop.
+    pub fn a_scope_end_beyond_the_orphaned_count_still_panics() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        mounted.begin_capture(Rc::new(|| {}));
+        // One scope was open at teardown; the second late end is owed
+        // by nobody.
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                mounted.unmount_then_end_captures(2);
+            }))
+            .is_err(),
+            "a scope end beyond the orphaned count still panics"
         );
         Ok(())
     }
@@ -2005,7 +3038,7 @@ mod gpu_surface {
             GpuRuntime, HostedLayerError, install_service, scene_engine,
         };
         use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderError, RenderSize, ViewRenderer};
+        use waterui_core::view_renderer::{RenderError, RenderRequest, ViewRenderer};
         use waterui_graphics::cherenkov::SurfaceError;
 
         let (runtime, mut env) = pollster::block_on(async {
@@ -2040,7 +3073,10 @@ mod gpu_surface {
             30.0,
             renderer.render(
                 AnyView::new(fixture_scene_view()),
-                RenderSize::new(64.0, 64.0),
+                RenderRequest::new(
+                    waterui_core::layout::Size::new(64.0, 64.0),
+                    std::time::Duration::from_secs(10),
+                ),
             ),
         ) else {
             return Err(
@@ -2076,7 +3112,7 @@ mod gpu_surface {
         use waterui_apple::native_test_support::gpu_surface::{fixture_env, fixture_scene_view};
         use waterui_apple::native_test_support::view_renderer::{GpuRuntime, install_service};
         use waterui_backend_core::AnyView;
-        use waterui_core::view_renderer::{RenderSize, ViewRenderer};
+        use waterui_core::view_renderer::{RenderRequest, ViewRenderer};
 
         let (_runtime, mut env) = pollster::block_on(async {
             let runtime = GpuRuntime::new().await.map_err(|error| error.to_string())?;
@@ -2094,7 +3130,10 @@ mod gpu_surface {
             30.0,
             renderer.render(
                 AnyView::new(fixture_scene_view()),
-                RenderSize::new(64.0, 64.0),
+                RenderRequest::new(
+                    waterui_core::layout::Size::new(64.0, 64.0),
+                    std::time::Duration::from_secs(10),
+                ),
             ),
         )
         .map_err(|error| format!("a render over the healthy GPU child resolves Ok: {error}"))?;
@@ -2276,8 +3315,15 @@ mod filtered {
                 && !filtered.render_in_flight()),
             "the first frame's capture defers on the nested filter's pending setup"
         );
+        // A redraw the scene child requested during the flight legitimately
+        // resumes the link for one recapture through the `Deferred` arm —
+        // the contract is the settled state, not the first sampled instant.
+        // `paused && nothing in flight` is unreachable inside that resumed
+        // window, and unreachable entirely if the link recaptured at display
+        // rate: under that bug the pump times out instead of passing.
         assert!(
-            filtered.link_paused(),
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.link_paused()
+                && !filtered.render_in_flight()),
             "a live-context deferral leaves the link paused — no display-rate recapture"
         );
         assert!(
@@ -2655,7 +3701,2289 @@ mod controller_bounds {
     }
 }
 
-/// Mounted-owner lifetimes (#1575): a real dispatcher-mounted hierarchy —
+/// §7.1's two safe-area regions on `UIKit`: the container region
+/// `safeAreaInsets` reports and the keyboard region the window's
+/// `KeyboardRegion` object derives from the real `UIKeyboard`
+/// notifications. Hydrolysis's
+/// `tests/safe_area.rs` is the reference — these trials mount the same
+/// view shapes through `mount_uikit` and assert laid-out frames, content
+/// insets and scroll offsets, never pixels.
+#[cfg(target_os = "ios")]
+mod safe_area {
+    use cocoa_ui::objc2_core_foundation::{CGPoint, CGRect, CGSize};
+    use cocoa_ui::objc2_foundation::{
+        NSDictionary, NSNotificationCenter, NSNumber, NSObjectProtocol, NSString, NSValue,
+    };
+    use cocoa_ui::objc2_ui_kit::{
+        UIBarPosition, UIBarPositioning, UIEdgeInsets, UIKeyboardAnimationCurveUserInfoKey,
+        UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
+        UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification,
+        UIKeyboardWillShowNotification, UINavigationBar, UINavigationController, UIScrollView,
+        UITabBar, UITextView, UIView,
+    };
+    use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::uikit::{
+        ColorView, Label, NavContentController, ScrollView, TableView, TextField, keyboard,
+    };
+    use cocoa_ui::{PlatformView, Retained, view};
+    use objc2::runtime::AnyObject;
+    use objc2::{MainThreadOnly, msg_send};
+    use waterui::component::list::{List, ListItem};
+    use waterui::graphics::color::Srgb;
+    use waterui::id::SelfId;
+    use waterui::layout::safe_area::{EdgeSet, SafeAreaRegions};
+    use waterui::navigation::{
+        NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView, Tab, Tabs,
+    };
+    use waterui::prelude::*;
+    use waterui::reactive::{Binding, binding};
+    use waterui::{AnyView, Color, Str};
+    use waterui_apple::native_test_support::{
+        MAIN_QUEUE_DEADLINE, UIKitMount, mount_uikit, mount_uikit_embedded, mount_uikit_window,
+        pump_main_until, render_environment, spawned_window,
+    };
+
+    use super::mtm;
+
+    /// One `safe_area::` trial entry.
+    fn t(name: &'static str, body: fn()) -> libtest_mimic::Trial {
+        libtest_mimic::Trial::test(format!("safe_area::{name}"), move || {
+            body();
+            Ok(())
+        })
+    }
+
+    /// The container-region and `IgnoreSafeArea` declaration trials.
+    fn container_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            t(
+                "root_content_stays_inside_the_safe_area",
+                root_content_stays_inside_the_safe_area,
+            ),
+            t(
+                "ignore_safe_area_all_reaches_the_window_origin",
+                ignore_safe_area_all_reaches_the_window_origin,
+            ),
+            t(
+                "ignore_safe_area_releases_only_the_flagged_edges",
+                ignore_safe_area_releases_only_the_flagged_edges,
+            ),
+            t(
+                "an_ignore_releases_only_on_an_edge_the_frame_touches",
+                an_ignore_releases_only_on_an_edge_the_frame_touches,
+            ),
+            t(
+                "a_safe_area_change_relays_out_the_root",
+                a_safe_area_change_relays_out_the_root,
+            ),
+            t(
+                "ignoring_only_the_keyboard_region_keeps_the_container_inset",
+                ignoring_only_the_keyboard_region_keeps_the_container_inset,
+            ),
+            t(
+                "ignoring_only_the_container_region_releases_nothing_under_the_keyboard",
+                ignoring_only_the_container_region_releases_nothing_under_the_keyboard,
+            ),
+            t(
+                "a_fractional_keyboard_still_touches_the_boundary",
+                a_fractional_keyboard_still_touches_the_boundary,
+            ),
+        ]
+    }
+
+    /// The background-slot fill extension trials.
+    fn fill_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            t(
+                "a_fill_background_paints_under_the_keyboard_region",
+                a_fill_background_paints_under_the_keyboard_region,
+            ),
+            t(
+                "a_fill_inside_opacity_still_extends",
+                a_fill_inside_opacity_still_extends,
+            ),
+            t(
+                "a_fill_with_an_empty_ignore_extends_nowhere",
+                a_fill_with_an_empty_ignore_extends_nowhere,
+            ),
+            t(
+                "a_fill_ignore_names_the_only_edge_that_extends",
+                a_fill_ignore_names_the_only_edge_that_extends,
+            ),
+            t(
+                "non_fill_leaves_at_an_edge_do_not_extend",
+                non_fill_leaves_at_an_edge_do_not_extend,
+            ),
+            t(
+                "a_non_fill_background_stays_inside_the_keyboard_region",
+                a_non_fill_background_stays_inside_the_keyboard_region,
+            ),
+            t(
+                "a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom",
+                a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom,
+            ),
+            t(
+                "a_moving_container_re_extends_its_fill_to_each_region_boundary",
+                a_moving_container_re_extends_its_fill_to_each_region_boundary,
+            ),
+            t(
+                "a_navigation_page_touching_the_bottom_still_extends_its_fill",
+                a_navigation_page_touching_the_bottom_still_extends_its_fill,
+            ),
+            t(
+                "a_navigation_page_background_stays_below_the_bar",
+                a_navigation_page_background_stays_below_the_bar,
+            ),
+            t(
+                "an_ignore_top_inside_navigation_content_stays_below_the_bar",
+                an_ignore_top_inside_navigation_content_stays_below_the_bar,
+            ),
+        ]
+    }
+
+    /// The scroll-surface, focused-field and window-region trials.
+    fn scroll_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            t(
+                "a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard",
+                a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard,
+            ),
+            t(
+                "a_keyboard_inset_change_clears_the_field_on_that_frame",
+                a_keyboard_inset_change_clears_the_field_on_that_frame,
+            ),
+            t(
+                "a_field_in_a_nested_scroll_is_cleared_once",
+                a_field_in_a_nested_scroll_is_cleared_once,
+            ),
+            t(
+                "a_focused_field_clears_to_the_surface_frame_above_a_toolbar",
+                a_focused_field_clears_to_the_surface_frame_above_a_toolbar,
+            ),
+            t(
+                "a_list_row_field_scrolls_clear_of_the_keyboard",
+                a_list_row_field_scrolls_clear_of_the_keyboard,
+            ),
+            t(
+                "a_form_inside_navigation_content_clears_the_focused_field",
+                a_form_inside_navigation_content_clears_the_focused_field,
+            ),
+            t(
+                "a_composer_hstack_keeps_its_intrinsic_height_under_the_keyboard",
+                a_composer_hstack_keeps_its_intrinsic_height_under_the_keyboard,
+            ),
+            t(
+                "a_scroll_above_a_composer_keeps_a_zero_keyboard_inset",
+                a_scroll_above_a_composer_keeps_a_zero_keyboard_inset,
+            ),
+            t(
+                "a_text_view_inside_the_tree_is_not_a_scroll_surface",
+                a_text_view_inside_the_tree_is_not_a_scroll_surface,
+            ),
+            t(
+                "a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass",
+                a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass,
+            ),
+            t(
+                "nested_hosts_and_a_scroll_share_the_windows_keyboard_region",
+                nested_hosts_and_a_scroll_share_the_windows_keyboard_region,
+            ),
+            t(
+                "a_page_pushed_over_the_keyboard_returns_keyboard_free",
+                a_page_pushed_over_the_keyboard_returns_keyboard_free,
+            ),
+            t(
+                "a_scroll_pushed_into_the_band_at_constant_size_updates_its_inset",
+                a_scroll_pushed_into_the_band_at_constant_size_updates_its_inset,
+            ),
+            t(
+                "a_toolbar_appearing_while_the_keyboard_is_up_rederives_the_inset",
+                a_toolbar_appearing_while_the_keyboard_is_up_rederives_the_inset,
+            ),
+            t(
+                "a_keyboard_notification_before_mount_is_not_replayed",
+                a_keyboard_notification_before_mount_is_not_replayed,
+            ),
+            t(
+                "a_guide_frame_equal_to_the_bottom_band_seeds_zero",
+                a_guide_frame_equal_to_the_bottom_band_seeds_zero,
+            ),
+            t(
+                "a_guide_frame_above_the_bottom_band_seeds_the_frame",
+                a_guide_frame_above_the_bottom_band_seeds_the_frame,
+            ),
+            t(
+                "a_stacks_only_window_seeds_its_region_and_replaces_above_the_band",
+                a_stacks_only_window_seeds_its_region_and_replaces_above_the_band,
+            ),
+        ]
+    }
+
+    /// The chrome-docking trials under navigation and tab hosts.
+    fn chrome_trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            t(
+                "a_tab_bar_stays_docked_under_the_keyboard",
+                a_tab_bar_stays_docked_under_the_keyboard,
+            ),
+            t(
+                "a_navigation_page_without_a_bar_passes_the_edge_through",
+                a_navigation_page_without_a_bar_passes_the_edge_through,
+            ),
+            t(
+                "a_navigation_bottom_toolbar_stays_docked_under_the_keyboard",
+                a_navigation_bottom_toolbar_stays_docked_under_the_keyboard,
+            ),
+            t(
+                "a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar",
+                a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar,
+            ),
+            t(
+                "a_fixed_height_tabs_inside_tab_content_docks_its_own_bar",
+                a_fixed_height_tabs_inside_tab_content_docks_its_own_bar,
+            ),
+        ]
+    }
+
+    /// The `safe_area::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        [
+            container_trials(),
+            fill_trials(),
+            scroll_trials(),
+            chrome_trials(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    /// The keyboard band's height — the layout-spec's worked examples
+    /// use 336 points — at the window's real screen width.
+    const KEYBOARD_HEIGHT: f64 = 336.0;
+
+    /// The end frame a keyboard `height` points tall reports against
+    /// `window`'s screen — screen coordinates, the whole screen width.
+    fn keyboard_end_sized(window: &cocoa_ui::objc2_ui_kit::UIWindow, height: f64) -> CGRect {
+        let screen = window.screen().bounds();
+        CGRect::new(
+            CGPoint::new(0.0, screen.size.height - height),
+            CGSize::new(screen.size.width, height),
+        )
+    }
+
+    /// The end frame a keyboard occupying the bottom `KEYBOARD_HEIGHT`
+    /// points reports.
+    fn keyboard_end(window: &cocoa_ui::objc2_ui_kit::UIWindow) -> CGRect {
+        keyboard_end_sized(window, KEYBOARD_HEIGHT)
+    }
+
+    /// The end frame `UIKeyboardWillHideNotification` reports: the
+    /// keyboard slid to just under the screen's bottom edge, overlapping
+    /// the window not at all.
+    fn keyboard_hide_end(window: &cocoa_ui::objc2_ui_kit::UIWindow) -> CGRect {
+        let screen = window.screen().bounds();
+        CGRect::new(
+            CGPoint::new(0.0, screen.size.height),
+            CGSize::new(screen.size.width, KEYBOARD_HEIGHT),
+        )
+    }
+
+    /// Frame-comparison slack — within one point of the expected edge.
+    const TOLERANCE: f64 = 1.0;
+
+    /// Mounts `content` through the real embedding path and lays the
+    /// window out once. The window takes the screen's bounds, so it
+    /// carries the device's real `safeAreaInsets` — the notch band
+    /// above and the home-indicator band below — and the covered chrome
+    /// bands, the navigation bar's band and the home indicator stay
+    /// exercised by the container region the window itself reports.
+    ///
+    /// # Panics
+    ///
+    /// When the window never reports a nonzero top and bottom container
+    /// band — the device type the suite is pinned to must carry both.
+    fn mount(content: impl View) -> UIKitMount {
+        let env = render_environment();
+        let mount = mount_uikit(mtm(), AnyView::new(content), &env);
+        let bands = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            mount.host.safeAreaInsets().top > 0.0 && mount.host.safeAreaInsets().bottom > 0.0
+        });
+        assert!(
+            bands,
+            "the test window must report nonzero top and bottom container bands"
+        );
+        mount
+    }
+
+    /// The first view of type `T` in a depth-first walk of `view`'s subtree.
+    fn find_view<T: objc2::DowncastTarget>(view: &PlatformView) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if sub.downcast_ref::<T>().is_some() {
+                return Some(sub);
+            }
+            if let Some(found) = find_view::<T>(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The first text leaf showing `text` in a depth-first walk — a
+    /// `Label` whose rendered string matches exactly.
+    fn find_label(view: &PlatformView, text: &str) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if let Some(label) = sub.downcast_ref::<Label>()
+                && label.text().map(|t| t.to_string()).as_deref() == Some(text)
+            {
+                return Some(sub);
+            }
+            if let Some(found) = find_label(&sub, text) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// `view`'s frame in window coordinates.
+    fn window_frame(view: &PlatformView) -> CGRect {
+        view.convertRect_toView(view.bounds(), None)
+    }
+
+    /// The mounted leaf's view — what `mount_uikit` mounted into the host.
+    fn leaf(mount: &UIKitMount) -> Retained<PlatformView> {
+        Retained::from(mount.content.view())
+    }
+
+    /// Descends `view` through single-subview wrappers — the containers a
+    /// mounted leaf passes through on its way into the host — to the
+    /// first view that fans out to two or more children.
+    fn fanned(view: &PlatformView) -> Retained<PlatformView> {
+        let mut current = Retained::from(view);
+        loop {
+            let children = view::subviews(&current);
+            if children.len() != 1 {
+                return current;
+            }
+            current = children
+                .into_iter()
+                .next()
+                .expect("a single-subview chain continues");
+        }
+    }
+
+    /// The children of `mount`'s leaf, descending the transparent
+    /// single-subview wrappers a mounted tree adds between the leaf and
+    /// the real container.
+    fn children(mount: &UIKitMount) -> Vec<Retained<PlatformView>> {
+        view::subviews(&fanned(&leaf(mount)))
+    }
+
+    /// The container region's top boundary: the root host's
+    /// `safeAreaInsets` — the window's ambient insets — the same
+    /// boundary the layout's region context reads.
+    fn container_top(mount: &UIKitMount) -> f64 {
+        mount.host.safeAreaInsets().top
+    }
+
+    /// The container region's bottom boundary.
+    fn container_bottom(mount: &UIKitMount) -> f64 {
+        mount.host.bounds().size.height - mount.host.safeAreaInsets().bottom
+    }
+
+    /// The window's keyboard region frame — `CGRect::ZERO` until a
+    /// notification lands or the first layout pass seeds it.
+    fn region_frame(view: &UIView) -> CGRect {
+        keyboard::window_keyboard(view)
+            .expect("a windowed view reports its window's region")
+            .0
+    }
+
+    /// The keyboard region's top boundary — `window.height` once the
+    /// keyboard is gone.
+    fn keyboard_top(mount: &UIKitMount) -> f64 {
+        region_frame(&mount.host).origin.y
+    }
+
+    /// The `userInfo` a real keyboard notification carries: the end frame
+    /// in screen coordinates, the duration and the animation curve.
+    fn keyboard_user_info(end_frame: CGRect, duration: f64, curve: i64) -> Retained<NSDictionary> {
+        let frame = NSValue::new(end_frame);
+        let duration = NSNumber::new_f64(duration);
+        let curve = NSNumber::new_i64(curve);
+        let dict = NSDictionary::<NSString, AnyObject>::from_retained_objects(
+            &[
+                // SAFETY: `UIKit` exports the keys as `NSString`
+                // constants for the process's lifetime.
+                unsafe { UIKeyboardFrameEndUserInfoKey },
+                // SAFETY: `UIKit` exports the keys as `NSString`
+                // constants for the process's lifetime.
+                unsafe { UIKeyboardAnimationDurationUserInfoKey },
+                // SAFETY: `UIKit` exports the keys as `NSString`
+                // constants for the process's lifetime.
+                unsafe { UIKeyboardAnimationCurveUserInfoKey },
+            ],
+            &[
+                // SAFETY: every `NSObject` is an `AnyObject`; the cast
+                // only erases the concrete class.
+                unsafe { Retained::cast_unchecked::<AnyObject>(frame) },
+                // SAFETY: every `NSObject` is an `AnyObject`; the cast
+                // only erases the concrete class.
+                unsafe { Retained::cast_unchecked::<AnyObject>(duration) },
+                // SAFETY: every `NSObject` is an `AnyObject`; the cast
+                // only erases the concrete class.
+                unsafe { Retained::cast_unchecked::<AnyObject>(curve) },
+            ],
+        );
+        // SAFETY: the generic key and value parameters are erased at the
+        // class boundary — the same `NSDictionary` `UIKit` hands the
+        // observer.
+        unsafe { Retained::cast_unchecked(dict) }
+    }
+
+    /// The animation a real keyboard notification reports: 250 ms on
+    /// the keyboard's own curve — `UIViewAnimationCurveKeyboard`, which
+    /// `UIKit` posts for keyboard transitions.
+    const KEYBOARD_ANIMATION: (f64, i64) = (0.25, 7);
+
+    /// Posts a keyboard `notification` with `end_frame` into `window` —
+    /// the way `UIKit` announces the keyboard, duration and curve
+    /// included — and pumps the main queue until `applied` holds, the
+    /// region frame or laid-out geometry the caller waits on. `UIKit`
+    /// posts `UIKeyboardWillChangeFrameNotification` for every
+    /// transition alongside the semantic name, so the post sends both
+    /// when the semantic name is not the frame change itself.
+    fn post_keyboard_raw(
+        window: &cocoa_ui::objc2_ui_kit::UIWindow,
+        name: &'static NSString,
+        end_frame: CGRect,
+        applied: impl Fn() -> bool,
+    ) {
+        let user_info = keyboard_user_info(end_frame, KEYBOARD_ANIMATION.0, KEYBOARD_ANIMATION.1);
+        // SAFETY: `UIKit` exports the name as a constant.
+        let frame_change: &'static NSString = unsafe { UIKeyboardWillChangeFrameNotification };
+        let names: &[&'static NSString] = if std::ptr::eq(name, frame_change) {
+            &[name]
+        } else {
+            &[name, frame_change]
+        };
+        for notification in names {
+            // SAFETY: a real keyboard notification — a name `UIKit`
+            // exports, the `userInfo` shape it documents.
+            unsafe {
+                NSNotificationCenter::defaultCenter().postNotificationName_object_userInfo(
+                    notification,
+                    None,
+                    Some(&user_info),
+                );
+            }
+        }
+        let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            applied()
+        });
+        assert!(landed, "the keyboard frame never reached its region");
+    }
+
+    /// Posts `notification` into `mount`'s window and pumps until the
+    /// window root has applied the end frame.
+    fn post_keyboard(mount: &UIKitMount, name: &'static NSString, end_frame: CGRect) {
+        post_keyboard_raw(&mount.window, name, end_frame, || {
+            region_frame(&mount.host) == end_frame
+        });
+    }
+
+    /// Posts `UIKeyboardWillShowNotification` for the window's keyboard
+    /// end frame.
+    fn show_keyboard(mount: &UIKitMount) {
+        let end_frame = keyboard_end(&mount.window);
+        // SAFETY: `UIKit` exports the name as a constant.
+        post_keyboard(mount, unsafe { UIKeyboardWillShowNotification }, end_frame);
+    }
+
+    /// Posts `UIKeyboardWillChangeFrameNotification` for `end_frame`.
+    fn change_keyboard(mount: &UIKitMount, end_frame: CGRect) {
+        // SAFETY: `UIKit` exports the name as a constant.
+        post_keyboard(
+            mount,
+            unsafe { UIKeyboardWillChangeFrameNotification },
+            end_frame,
+        );
+    }
+
+    /// Posts `UIKeyboardWillHideNotification`: the keyboard slides to just
+    /// under the window's bottom edge and the region empties.
+    fn hide_keyboard(mount: &UIKitMount) {
+        // SAFETY: `UIKit` exports the name as a constant.
+        post_keyboard(
+            mount,
+            unsafe { UIKeyboardWillHideNotification },
+            keyboard_hide_end(&mount.window),
+        );
+    }
+
+    /// Lays the window out again and pumps until `predicate` holds — the
+    /// completion signal for the `UIView` animation the backend applies
+    /// the inset change inside.
+    fn pump_layout(mount: &UIKitMount, predicate: impl Fn() -> bool) {
+        let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            predicate()
+        });
+        assert!(landed, "the layout never settled to the expected frame");
+    }
+
+    /// Pumps until `view`'s frame bottom in window coordinates sits on
+    /// `boundary` — within the sub-pixel touch slack.
+    fn pump_until_bottom_on(mount: &UIKitMount, view: &PlatformView, boundary: f64) {
+        let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            let frame = window_frame(view);
+            (frame.origin.y + frame.size.height - boundary).abs() <= 0.5
+        });
+        assert!(
+            landed,
+            "the bottom never landed on {boundary} — frame {:?}",
+            window_frame(view),
+        );
+    }
+
+    /// Focuses a field inside the mounted scroll — `becomeFirstResponder`
+    /// fires the real `UITextFieldTextDidBeginEditingNotification` the
+    /// surface's observer scrolls on — and pumps until the animated
+    /// clearance lands the field's frame bottom on `boundary()`, read
+    /// live so a keyboard that moves during the pump stays the target.
+    fn focus_and_clear(mount: &UIKitMount, field: &PlatformView, boundary: impl Fn() -> f64) {
+        assert!(field.becomeFirstResponder(), "the field must accept focus");
+        pump_layout(mount, || (window_bottom(field) - boundary()).abs() <= 0.5);
+    }
+
+    /// A messenger-style panel: a scrollable conversation over the
+    /// composer `hstack` the `keyboard_panel` example builds — a
+    /// stretching text field beside a button.
+    fn conversation_panel(draft: &Binding<Str>) -> impl View {
+        vstack((
+            scroll(vstack((
+                text("Are we still on for Saturday?"),
+                text("Nine works. The weather is supposed to be clear."),
+            ))),
+            hstack({
+                let draft = draft.clone();
+                (
+                    field("Message", &draft),
+                    button("Send").action(move || draft.set(Str::from(""))),
+                )
+            })
+            .padding_with(12.0)
+            .background(waterui::graphics::color::Srgb::from_hex("#F7F7F9")),
+        ))
+    }
+
+    /// The composer keeps the height its content measures: the field
+    /// stretches horizontally, so its height must be its own intrinsic
+    /// answer under every proposal — never the offered height echoed
+    /// back. When the keyboard shrinks the panel's region the field must
+    /// stay one field tall beside the Send button, not split the window
+    /// in two. (The `d6171eed2` bug shape: the field answered its own
+    /// open offer, so the `hstack` claimed the whole band.)
+    fn a_composer_hstack_keeps_its_intrinsic_height_under_the_keyboard() {
+        let draft = binding(Str::from(""));
+        let mount = mount(conversation_panel(&draft));
+
+        let field = find_view::<cocoa_ui::uikit::TextField>(&mount.host)
+            .expect("the composer mounts a text field");
+        let field_host = field
+            .superview()
+            .expect("the field sits inside its leaf host");
+        let hstack = field_host
+            .superview()
+            .expect("the field sits inside the composer's hstack");
+        let composer = hstack
+            .superview()
+            .and_then(|padding| padding.superview())
+            .expect("padding and background wrap the composer's hstack");
+
+        // The same answers the leaf's measure gives `sizeThatFits`: the
+        // proposals the negotiation probes — minimum, a finite offer and
+        // the maximum probe §2 reserves an INFINITY answer for on the
+        // axis the field stretches.
+        let probes = [
+            CGSize::new(366.0, 0.0),
+            CGSize::new(366.0, 200.0),
+            CGSize::new(366.0, f64::INFINITY),
+        ]
+        .map(|size| field_host.sizeThatFits(size));
+
+        // Every level's measure answers for the same probes: the level
+        // that first echoes a finite offer up the chain is where the
+        // band claim starts.
+        let chain: Vec<(CGRect, [CGSize; 3])> = std::iter::once(field_host.clone())
+            .chain(std::iter::successors(field_host.superview(), |v| {
+                v.superview()
+            }))
+            .map(|host| {
+                (
+                    host.frame(),
+                    [
+                        CGSize::new(366.0, 0.0),
+                        CGSize::new(366.0, 200.0),
+                        CGSize::new(366.0, f64::INFINITY),
+                    ]
+                    .map(|size| host.sizeThatFits(size)),
+                )
+            })
+            .collect();
+
+        assert!(
+            view::frame(&field_host).size.height < 120.0,
+            "the field must stay near its intrinsic height — frame {:?}, composer {:?}, probes {probes:?}, chain {chain:?}",
+            field_host.frame(),
+            composer.frame(),
+        );
+        assert!(
+            view::frame(&hstack).size.height < 120.0,
+            "the composer row must not claim the band — frame {:?}, probes {probes:?}",
+            hstack.frame(),
+        );
+
+        show_keyboard(&mount);
+        let chain_after: Vec<(CGRect, [CGSize; 3])> = std::iter::once(field_host.clone())
+            .chain(std::iter::successors(field_host.superview(), |v| {
+                v.superview()
+            }))
+            .map(|host| {
+                (
+                    host.frame(),
+                    [
+                        CGSize::new(366.0, 0.0),
+                        CGSize::new(366.0, 200.0),
+                        CGSize::new(366.0, f64::INFINITY),
+                    ]
+                    .map(|size| host.sizeThatFits(size)),
+                )
+            })
+            .collect();
+        assert!(
+            view::frame(&field_host).size.height < 120.0,
+            "under the keyboard the field must still be one field tall — frame {:?}, probes {probes:?}, chain {chain_after:?}",
+            field_host.frame(),
+        );
+        assert!(
+            view::frame(&hstack).size.height < 120.0,
+            "under the keyboard the composer row must still be its own height — frame {:?}, probes {probes:?}, chain {chain_after:?}",
+            hstack.frame(),
+        );
+        // The composer's container manages the safe area and touches
+        // the keyboard edge, so it extends under the band (the panel's
+        // fill behind the translucent keyboard) — but only downward:
+        // its top edge still sits inside the content region.
+        assert!(
+            window_frame(&composer).origin.y < keyboard_top(&mount) - 20.0,
+            "the composer must not grow upward into the region — frame {:?}",
+            composer.frame(),
+        );
+    }
+
+    /// A styled card: a `body` label padded inside a fill background —
+    /// the same building block the Hydrolysis suite uses.
+    fn card(label: &'static str) -> impl View {
+        text(label)
+            .body()
+            .padding_with(8.0)
+            .background(Color::new(Srgb::new(0.0, 0.35, 0.85)))
+    }
+
+    /// A labelled probe carrying an `.ignore_safe_area` release — the
+    /// host's frame lands on the released boundary only when the edge its
+    /// frame touches is reachable; a covered edge releases nothing.
+    fn edge_probe(
+        view: impl View,
+        label: &'static str,
+        ignore: impl Into<waterui::layout::safe_area::IgnoreSafeArea>,
+    ) -> impl View {
+        view.ignore_safe_area(ignore).a11y_id(label)
+    }
+
+    /// The first view carrying `accessibilityIdentifier` in a depth-first
+    /// walk — how the probes are located without pixel hunting.
+    fn find_id(view: &PlatformView, label: &str) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if view::accessibility_identifier(&sub).as_deref() == Some(label) {
+                return Some(sub);
+            }
+            if let Some(found) = find_id(&sub, label) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// The first view whose Objective-C class is literally `name` —
+    /// how a `UIToolbar` is found when the vendored `objc2-ui-kit`
+    /// carries no binding for the class.
+    fn find_class(
+        view: &PlatformView,
+        name: &'static std::ffi::CStr,
+    ) -> Option<Retained<PlatformView>> {
+        for sub in view::subviews(view) {
+            if sub.class().name() == name {
+                return Some(sub);
+            }
+            if let Some(found) = find_class(&sub, name) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// Every view of type `T` in `view`'s subtree, ancestors first.
+    fn find_views<T: objc2::DowncastTarget>(view: &PlatformView) -> Vec<Retained<PlatformView>> {
+        let mut found = Vec::new();
+        for sub in view::subviews(view) {
+            if sub.downcast_ref::<T>().is_some() {
+                found.push(sub.clone());
+            }
+            found.extend(find_views::<T>(&sub));
+        }
+        found
+    }
+
+    /// `view`'s frame bottom in window coordinates.
+    fn window_bottom(view: &PlatformView) -> f64 {
+        let frame = window_frame(view);
+        frame.origin.y + frame.size.height
+    }
+
+    /// `view`'s frame top in window coordinates.
+    fn window_top(view: &PlatformView) -> f64 {
+        window_frame(view).origin.y
+    }
+
+    /// Asserts `view`'s window-space bottom lands within `TOLERANCE` of
+    /// `expected`.
+    fn expect_bottom(view: &PlatformView, expected: f64, note: &str) {
+        let bottom = window_bottom(view);
+        assert!(
+            (bottom - expected).abs() <= TOLERANCE,
+            "{note}: bottom {bottom} differs from {expected} by more than {TOLERANCE}"
+        );
+    }
+
+    /// Asserts `view`'s window-space top lands within `TOLERANCE` of
+    /// `expected`.
+    fn expect_top(view: &PlatformView, expected: f64, note: &str) {
+        let top = window_top(view);
+        assert!(
+            (top - expected).abs() <= TOLERANCE,
+            "{note}: top {top} differs from {expected} by more than {TOLERANCE}"
+        );
+    }
+
+    /// The scroll above the composer ends above the keyboard band — the
+    /// band covers none of its frame — so its content inset takes no
+    /// keyboard contribution and stays zero, and the delta-write never
+    /// rewrites another `contentInset.bottom` term.
+    fn a_scroll_above_a_composer_keeps_a_zero_keyboard_inset() {
+        let draft = binding(Str::from(""));
+        let mount = mount(conversation_panel(&draft));
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        show_keyboard(&mount);
+        assert!(
+            window_bottom(&surface) <= keyboard_top(&mount) + TOLERANCE,
+            "precondition: the scroll ends above the keyboard band — bottom {}, band top {}",
+            window_bottom(&surface),
+            keyboard_top(&mount),
+        );
+        assert!(
+            scroll_view.contentInset().bottom.abs() <= f64::EPSILON,
+            "the scroll keeps a zero keyboard inset — contentInset {:?}",
+            scroll_view.contentInset(),
+        );
+    }
+
+    /// A `UITextView` is a `UIScrollView` but not a kit scroll surface —
+    /// the `cocoaUiIsScrollSurface` marker, not the class chain, is what
+    /// counts. Parked around a real surface it must not claim the
+    /// enclosing-surface role: the inner surface still computes its own
+    /// keyboard inset and still clears a focused field.
+    fn a_text_view_inside_the_tree_is_not_a_scroll_surface() {
+        let value = binding(Str::from(""));
+        let mount = mount(scroll(vstack((
+            spacer().size(390.0, 560.0),
+            field("Message", &value).size(350.0, 44.0),
+            spacer().size(390.0, 380.0),
+        ))));
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
+
+        // A raw `UITextView` wrapped around the surface, spanning the
+        // window — a foreign `UIScrollView` the surface check must not
+        // count as an enclosing scroll surface.
+        // SAFETY: `initWithFrame:` is `UITextView`'s designated
+        // initializer — a plain untracked text view.
+        let text_view: Retained<UITextView> = unsafe {
+            msg_send![
+                UITextView::alloc(mtm()),
+                initWithFrame: mount.window.bounds()
+            ]
+        };
+        mount.host.addSubview(&text_view);
+        let frame = window_frame(&surface);
+        surface.removeFromSuperview();
+        text_view.addSubview(&surface);
+        // The text view's bounds share the window's origin, so the
+        // surface's window frame is its frame in the new parent.
+        view::set_frame(&surface, frame.into());
+
+        assert!(
+            !text_view.respondsToSelector(cocoa_ui::objc2::sel!(cocoaUiIsScrollSurface)),
+            "a `UITextView` does not answer the kit scroll-surface marker",
+        );
+        show_keyboard(&mount);
+        let cover = window_bottom(&surface) - keyboard_top(&mount);
+        let want = (cover - surface.safeAreaInsets().bottom).max(0.0);
+        // The notification's own mark walk crosses the foreign parent —
+        // no manual drive: the surface's pass must apply the inset, and
+        // `nested_in_scroll` must not count the `UITextView` as an
+        // enclosing surface.
+        pump_layout(&mount, || {
+            (scroll_view.contentInset().bottom - want).abs() <= TOLERANCE
+        });
+        focus_and_clear(&mount, &field, || keyboard_top(&mount));
+    }
+
+    /// The region mark reaches a background-slot container that moves
+    /// without resizing: pinned at the region's bottom, the strip holds
+    /// its height while the keyboard band lifts its position — a pure
+    /// move gives the container no `layoutSubviews` of its own, so the
+    /// tracking owner's per-notification mark is what re-places the
+    /// fill against each new boundary.
+    fn a_moving_container_re_extends_its_fill_to_each_region_boundary() {
+        let mount = mount(vstack((
+            spacer(),
+            spacer()
+                .size(390.0, 48.0)
+                .background(Color::new(Srgb::new(0.3, 0.5, 0.9))),
+        )));
+        let fill = find_view::<ColorView>(&mount.host).expect("the fill is mounted");
+        let window_bottom_edge = mount.window.bounds().size.height;
+        show_keyboard(&mount);
+        expect_top(
+            &fill,
+            keyboard_top(&mount) - 48.0,
+            "the fill follows the moved container to the keyboard band",
+        );
+        expect_bottom(
+            &fill,
+            window_bottom_edge,
+            "the fill still paints to the window's bottom edge",
+        );
+        hide_keyboard(&mount);
+        expect_top(
+            &fill,
+            container_bottom(&mount) - 48.0,
+            "the fill re-extends when the container moves back",
+        );
+        expect_bottom(
+            &fill,
+            window_bottom_edge,
+            "the fill still paints to the window's bottom edge",
+        );
+    }
+
+    /// A user scroll that pushes the focused field under the keyboard
+    /// is not undone by the layout pass: the pass re-clears the field
+    /// only when the keyboard contribution itself changes — never
+    /// because a content-offset change re-ran it.
+    fn a_user_scroll_under_the_keyboard_is_not_undone_by_the_layout_pass() {
+        let value = binding(Str::from(""));
+        let mount = mount(scroll(vstack((
+            spacer().size(390.0, 560.0),
+            field("Message", &value).size(350.0, 44.0),
+            spacer().size(390.0, 380.0),
+        ))));
+        show_keyboard(&mount);
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
+        focus_and_clear(&mount, &field, || keyboard_top(&mount));
+
+        // The user's own scroll pushes the field back under the band.
+        scroll_view.setContentOffset_animated(CGPoint::new(0.0, 0.0), false);
+        assert!(
+            window_bottom(&field) > keyboard_top(&mount) + TOLERANCE,
+            "precondition: the offset pushed the field back under the keyboard"
+        );
+        mount.window.layoutIfNeeded();
+        assert!(
+            scroll_view.contentOffset().y.abs() <= TOLERANCE,
+            "the layout pass left the user's offset alone — {:?}",
+            scroll_view.contentOffset(),
+        );
+    }
+
+    /// A window owns exactly one keyboard region however the host
+    /// reaches it: content carrying nested hosts — the page inside a
+    /// `NavigationStack` — and a scroll mounts into an embedded host
+    /// before and after the host joins the windowed tree; both orders
+    /// read the same region object and the scroll takes the same
+    /// inset.
+    fn nested_hosts_and_a_scroll_share_the_windows_keyboard_region() {
+        for content_first in [true, false] {
+            let value = binding(Str::from(""));
+            let env = render_environment();
+            let mount = mount_uikit_embedded(
+                mtm(),
+                AnyView::new(NavigationStack::new(NavigationView::new(
+                    "Form",
+                    scroll(vstack((
+                        spacer().size(390.0, 560.0),
+                        field("Message", &value).size(350.0, 44.0),
+                        spacer().size(390.0, 380.0),
+                    ))),
+                ))),
+                &env,
+                content_first,
+            );
+            mount.window.layoutIfNeeded();
+            let end = keyboard_end(&mount.window);
+            post_keyboard_raw(
+                &mount.window,
+                // SAFETY: `UIKit` exports the name as a constant.
+                unsafe { UIKeyboardWillShowNotification },
+                end,
+                || region_frame(&mount.host) == end,
+            );
+            let surface =
+                find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+            let scroll_view = surface
+                .downcast_ref::<ScrollView>()
+                .expect("the found view is a scroll view");
+            let cover = window_bottom(&surface) - end.origin.y;
+            let want = (cover - surface.safeAreaInsets().bottom).max(0.0);
+            let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                mount.window.layoutIfNeeded();
+                (scroll_view.contentInset().bottom - want).abs() <= TOLERANCE
+            });
+            assert!(
+                landed,
+                "the scroll read the window's keyboard region — {} vs {want}",
+                scroll_view.contentInset().bottom,
+            );
+        }
+    }
+
+    /// The `UINavigationController` owning a view in the subtree —
+    /// either the view's own controller is the nav controller, or the
+    /// page controller answers one.
+    fn nav_controller_in(view: &PlatformView) -> Option<Retained<UINavigationController>> {
+        if let Some(controller) = owning_controller(view) {
+            if let Ok(nav) = controller.clone().downcast() {
+                return Some(nav);
+            }
+            if let Some(nav) = controller.navigationController() {
+                return Some(nav);
+            }
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = nav_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    /// A surface pushed into the keyboard band at a constant size — a
+    /// banner moving it down — recomputes the covered depth from its
+    /// new window frame without a notification. The wrapper case is the
+    /// real shape: a container the vstack translates gives its scroll no
+    /// `setFrame:` of its own, so the wrapper's `setFrame:` marks the
+    /// region readers in its subtree — the surface re-reads the band it
+    /// moved into, and the wrapper's own fill re-extends. The bare case
+    /// — the surface's own `setFrame:` — keeps its mark too.
+    fn a_scroll_pushed_into_the_band_at_constant_size_updates_its_inset() {
+        // The scroll sits inside a background wrapper the container
+        // region pushes down at constant size — a banner's exact move.
+        let mount = mount(vstack((
+            scroll(vstack((
+                spacer().size(390.0, 240.0),
+                card("row"),
+                spacer().size(390.0, 240.0),
+            )))
+            .size(390.0, 300.0)
+            .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
+            spacer(),
+        )));
+        show_keyboard(&mount);
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        let clear = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            scroll_view.contentInset().bottom.abs() <= TOLERANCE
+        });
+        assert!(clear, "precondition: the band does not reach the scroll");
+        // The wrapper's fill is the ColorView sibling of the scroll's
+        // surface; its frame is the container's own while it touches no
+        // region edge.
+        let fill = find_view::<ColorView>(&mount.host).expect("the wrapper mounts its fill");
+        let wrapper = fill.superview().expect("the fill sits inside the wrapper");
+        assert!(
+            (window_top(&fill) - window_top(&wrapper)).abs() <= TOLERANCE,
+            "precondition: the fill covers the wrapper — {:?} vs {:?}",
+            window_frame(&fill),
+            window_frame(&wrapper),
+        );
+
+        // The push: the wrapper goes down 300pt at constant size — the
+        // scroll's own `setFrame:` never runs (its superview-relative
+        // frame is unchanged), so the wrapper's mark is the only path.
+        let frame = window_frame(&wrapper);
+        view::set_frame(
+            &wrapper,
+            cocoa_ui::Rect::new(
+                frame.origin.x,
+                frame.origin.y + 300.0,
+                frame.size.width,
+                frame.size.height,
+            ),
+        );
+        let grew = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            scroll_view.contentInset().bottom > TOLERANCE
+        });
+        assert!(
+            grew,
+            "the wrapper's move re-derived the scroll's inset — {}",
+            scroll_view.contentInset().bottom,
+        );
+        // The wrapper's own pass re-derived its fill: the moved
+        // container's bottom edge now sits inside the keyboard band, so
+        // the fill releases through it to the window's bottom edge — a
+        // stale fill would still end at the old container bottom.
+        assert!(
+            (window_bottom(&fill) - mount.window.bounds().size.height).abs() <= TOLERANCE,
+            "the wrapper's fill re-extended to the window's bottom edge — {:?}",
+            window_frame(&fill),
+        );
+
+        // The bare surface: its own `setFrame:` marks it.
+        let mtm = mtm();
+        let scroll = ScrollView::new(mtm, true, false);
+        let window = crate::leaf::attach(mtm, &scroll);
+        view::set_frame(&scroll, cocoa_ui::Rect::new(0.0, 100.0, 390.0, 400.0));
+        window.layoutIfNeeded();
+        let end = keyboard_end(&window);
+        post_keyboard_raw(
+            &window,
+            // SAFETY: `UIKit` exports the name as a constant.
+            unsafe { UIKeyboardWillShowNotification },
+            end,
+            || region_frame(&scroll) == end,
+        );
+        let clear = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            scroll.contentInset().bottom.abs() <= TOLERANCE
+        });
+        assert!(clear, "precondition: the band does not reach the scroll");
+        let before = scroll.contentInset().bottom;
+
+        view::set_frame(&scroll, cocoa_ui::Rect::new(0.0, 200.0, 390.0, 400.0));
+        let grown = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            window.layoutIfNeeded();
+            scroll.contentInset().bottom >= before + 50.0
+        });
+        assert!(
+            grown,
+            "a same-size move into the band re-derived the inset — {before} vs {}",
+            scroll.contentInset().bottom,
+        );
+        window.setHidden(true);
+    }
+
+    /// A safe-area change at the same frame — a toolbar appearing while
+    /// the keyboard is up — changes the depth the surface must inset
+    /// for: the gate reads the bottom safe-area inset too, or the band
+    /// would be counted twice.
+    fn a_toolbar_appearing_while_the_keyboard_is_up_rederives_the_inset() {
+        let mount = mount(scroll(vstack((
+            spacer().size(390.0, 560.0),
+            card("tail"),
+            spacer().size(390.0, 380.0),
+        ))));
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        show_keyboard(&mount);
+        let applied = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            scroll_view.contentInset().bottom > TOLERANCE
+        });
+        assert!(applied, "precondition: the keyboard covers the scroll");
+        let inset_before = scroll_view.contentInset().bottom;
+        let safe_before = surface.safeAreaInsets().bottom;
+
+        // The toolbar arriving is an `additionalSafeAreaInsets` change —
+        // the surface's frame does not move.
+        mount
+            .window
+            .rootViewController()
+            .expect("the mount window has a root controller")
+            .setAdditionalSafeAreaInsets(UIEdgeInsets {
+                top: 0.0,
+                left: 0.0,
+                bottom: 40.0,
+                right: 0.0,
+            });
+        let grew = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            surface.safeAreaInsets().bottom >= safe_before + 40.0 - TOLERANCE
+        });
+        assert!(grew, "precondition: the added safe area reached the scroll");
+        let landed = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            (scroll_view.contentInset().bottom - (inset_before - 40.0)).abs() <= TOLERANCE
+        });
+        assert!(
+            landed,
+            "a same-frame safe-area change re-derived the inset — {inset_before} vs {}",
+            scroll_view.contentInset().bottom,
+        );
+    }
+
+    /// A keyboard notification posted before the first `WaterUI` view
+    /// reaches a window is not replayed: the region comes into
+    /// existence with the mount and stays `CGRect::ZERO` — nothing is
+    /// docked in this harness — until the first real notification after
+    /// it arrives, which lands on time.
+    fn a_keyboard_notification_before_mount_is_not_replayed() {
+        let mtm = mtm();
+        let env = render_environment();
+        let window = spawned_window(mtm);
+        window.makeKeyAndVisible();
+        let end = keyboard_end(&window);
+        // Shown before any `WaterUI` view reaches the window: no region
+        // exists to hear it.
+        post_keyboard_raw(
+            &window,
+            // SAFETY: `UIKit` exports the name as a constant.
+            unsafe { UIKeyboardWillShowNotification },
+            end,
+            || true,
+        );
+        let mount = mount_uikit_window(
+            mtm,
+            AnyView::new(scroll(vstack((spacer().size(390.0, 1200.0),)))),
+            &env,
+            window,
+        );
+        assert_eq!(
+            region_frame(&mount.host),
+            CGRect::ZERO,
+            "a pre-mount notification must not replay into the region",
+        );
+        show_keyboard(&mount);
+        assert_eq!(
+            region_frame(&mount.host),
+            end,
+            "the first notification after the mount lands on time",
+        );
+    }
+
+    /// The resting `keyboardLayoutGuide` reports the window's bottom
+    /// safe-area band — `usesBottomSafeArea` parks it there while no
+    /// keyboard is docked — and a band-equal guide frame must seed
+    /// nothing: it is the parked guide, not a keyboard.
+    fn a_guide_frame_equal_to_the_bottom_band_seeds_zero() {
+        let mtm = mtm();
+        let window = spawned_window(mtm);
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let band_top = window.bounds().size.height - window.safeAreaInsets().bottom;
+        let band = CGRect::new(
+            CGPoint::new(0.0, band_top),
+            CGSize::new(window.bounds().size.width, window.safeAreaInsets().bottom),
+        );
+        assert_eq!(
+            keyboard::guide_seed_frame(&window, band),
+            CGRect::ZERO,
+            "a frame parked inside the band is not a keyboard",
+        );
+        window.setHidden(true);
+    }
+
+    /// A `keyboardLayoutGuide` frame whose top edge sits above the
+    /// window's bottom safe-area band reports a docked keyboard and
+    /// seeds the region with the frame the guide reports.
+    fn a_guide_frame_above_the_bottom_band_seeds_the_frame() {
+        let mtm = mtm();
+        let window = spawned_window(mtm);
+        window.makeKeyAndVisible();
+        window.layoutIfNeeded();
+        let keyboard = CGRect::new(
+            CGPoint::new(0.0, 300.0),
+            CGSize::new(window.bounds().size.width, 200.0),
+        );
+        assert_eq!(
+            keyboard::guide_seed_frame(&window, keyboard),
+            keyboard,
+            "a frame above the band seeds as the docked keyboard",
+        );
+        window.setHidden(true);
+    }
+
+    /// A window with no kit scroll surface still seeds its keyboard
+    /// region: a `window_keyboard` read resolves the guide — here, the
+    /// frame a resolved guide would report — and a non-zero seed marks
+    /// the window's readers once, so the next pass re-places the
+    /// stacks-only content above the band. A spawned simulator
+    /// window's guide never resolves at all, so the trial asserts the
+    /// unresolved contract on the real reads and feeds the resolved
+    /// frame through the same function the read applies.
+    fn a_stacks_only_window_seeds_its_region_and_replaces_above_the_band() {
+        let draft = binding(Str::from(""));
+        // Stacks only — a spacer over a composer row; no scroll
+        // surface anywhere in the tree.
+        let mount = mount(vstack((
+            spacer(),
+            hstack((
+                field("Message", &draft),
+                button("Send").action(move || draft.set(Str::from(""))),
+            ))
+            .padding_with(12.0),
+        )));
+        let field = find_view::<cocoa_ui::uikit::TextField>(&mount.host)
+            .expect("the composer mounts a text field");
+        let resting = window_bottom(&field);
+        assert!(
+            resting > 700.0,
+            "precondition: the composer sits at the window's bottom — {resting}",
+        );
+
+        // The real guide read: a spawned simulator window's guide
+        // never resolves — every `window_keyboard` read logs
+        // `resolved = false` — so the region must stay unseeded. A
+        // real app window's guide does resolve (the device capture):
+        // that branch asserts its rest position seeded no keyboard.
+        let guide_frame = mount.window.keyboardLayoutGuide().layoutFrame();
+        if guide_frame.size.width <= 0.0 {
+            assert!(
+                !keyboard::seeded(&mount.window),
+                "an unresolved guide must not seed",
+            );
+        } else {
+            assert!(
+                keyboard::seeded(&mount.window),
+                "a resolved guide seeds on a mount pass",
+            );
+        }
+        assert_eq!(
+            region_frame(&mount.host),
+            CGRect::ZERO,
+            "no docked keyboard seeds nothing",
+        );
+
+        // The frame the guide would report for a docked keyboard.
+        let keyboard = keyboard_end(&mount.window);
+        keyboard::feed_guide_frame(&mount.window, keyboard);
+        assert_eq!(
+            region_frame(&mount.host),
+            keyboard,
+            "the feed seeds the window's region",
+        );
+        let band_top = keyboard.origin.y;
+        let above = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            window_bottom(&field) <= band_top + TOLERANCE
+        });
+        assert!(
+            above,
+            "the seeded region re-placed the stacks content above the band — field {:?}",
+            window_frame(&field),
+        );
+    }
+
+    /// A page pushed over while the keyboard is up and hidden under
+    /// while it is away misses no change: on pop the field page's
+    /// scroll inset and its fill are back at the keyboard-free values
+    /// — the window's one region object marked every reader and the
+    /// re-entering views re-read it.
+    fn a_page_pushed_over_the_keyboard_returns_keyboard_free() {
+        let value = binding(Str::from(""));
+        let mount = mount(NavigationStack::new(NavigationView::new(
+            "Form",
+            scroll(vstack((
+                spacer().size(390.0, 560.0),
+                field("Message", &value).size(350.0, 44.0),
+                spacer().size(390.0, 380.0),
+            )))
+            .background(Color::new(Srgb::new(0.2, 0.4, 0.8))),
+        )));
+        let nav = nav_controller_in(&mount.host).expect("a stack mounts the nav controller");
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+        let fill = find_view::<ColorView>(&mount.host).expect("the fill is mounted");
+        let free_inset = scroll_view.contentInset().bottom;
+
+        show_keyboard(&mount);
+        let covered = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            scroll_view.contentInset().bottom > free_inset + 1.0
+        });
+        assert!(covered, "precondition: the keyboard covers the scroll");
+
+        // A page hides the field's page; the keyboard goes away while
+        // the page is out of the visible stack.
+        let cover_scroll = UIScrollView::new(mtm());
+        let cover_page = NavContentController::new(mtm(), &cover_scroll);
+        nav.pushViewController_animated(&cover_page, false);
+        mount.window.layoutIfNeeded();
+        assert!(
+            surface.window().is_none() && fill.window().is_none(),
+            "precondition: the push carried the field's page out of the window",
+        );
+        hide_keyboard(&mount);
+        nav.popViewControllerAnimated(false);
+
+        let restored = pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            mount.window.layoutIfNeeded();
+            (scroll_view.contentInset().bottom - free_inset).abs() <= TOLERANCE
+        });
+        assert!(
+            restored,
+            "the returning page's scroll inset is keyboard-free — {} vs {free_inset}",
+            scroll_view.contentInset().bottom,
+        );
+        expect_bottom(
+            &fill,
+            mount.window.bounds().size.height,
+            "the returning page's fill re-extends to the window's bottom edge",
+        );
+    }
+
+    /// §7.1 "Layout avoids the regions": the root leaf's children lay
+    /// out inside the deepest region on every edge — the window's
+    /// `safeAreaInsets` form the container region and the keyboard band
+    /// sits deeper still. The leaf itself is a safe-area manager and
+    /// fills the window; its children carry the bound.
+    fn root_content_stays_inside_the_safe_area() {
+        let mount = mount(vstack((card("content"), spacer())));
+        let children = children(&mount);
+        let spacer = &children[1];
+        let label = find_label(&mount.host, "content").expect("the label is mounted");
+
+        expect_top(
+            &label,
+            container_top(&mount) + 8.0,
+            "the card content clears the container top band",
+        );
+        expect_bottom(
+            spacer,
+            container_bottom(&mount),
+            "the stack's content clears the container bottom band",
+        );
+
+        show_keyboard(&mount);
+        pump_until_bottom_on(&mount, spacer, keyboard_top(&mount));
+    }
+
+    /// `IgnoreSafeArea::ALL` releases every region on every edge — the
+    /// released stack's children reach the window bounds even while the
+    /// keyboard is up; the plain stack's children still stop at the
+    /// keyboard boundary. A released leaf fills the window either way,
+    /// so the assertion lands on the children the regions still bind.
+    fn ignore_safe_area_all_reaches_the_window_origin() {
+        let released = mount(vstack((card("released"), spacer())).ignore_safe_area(EdgeSet::ALL));
+        let plain = mount(vstack((card("plain"), spacer())));
+        show_keyboard(&released);
+        show_keyboard(&plain);
+        let bounds = released.window.bounds();
+        let frame = window_frame(&leaf(&released));
+        assert!(
+            (frame.origin.x - bounds.origin.x).abs() <= TOLERANCE
+                && (frame.origin.y - bounds.origin.y).abs() <= TOLERANCE
+                && (frame.size.width - bounds.size.width).abs() <= TOLERANCE
+                && (frame.size.height - bounds.size.height).abs() <= TOLERANCE,
+            "an all-edges release reaches the window bounds — frame {frame:?}, bounds {bounds:?}"
+        );
+        expect_bottom(
+            &children(&released)[1],
+            bounds.size.height,
+            "the released stack's children reach the window bottom",
+        );
+        expect_bottom(
+            &children(&plain)[1],
+            keyboard_top(&plain),
+            "the plain stack's children stay bound by the keyboard",
+        );
+    }
+
+    /// Naming only `TOP` releases the top band alone: the leaf's bottom
+    /// still stops at the keyboard region.
+    fn ignore_safe_area_releases_only_the_flagged_edges() {
+        let mount = mount(vstack((card("content"), spacer())).ignore_safe_area(EdgeSet::TOP));
+        show_keyboard(&mount);
+        let leaf = leaf(&mount);
+        expect_top(
+            &leaf,
+            mount.window.bounds().origin.y,
+            "the named edge releases",
+        );
+        expect_bottom(
+            &leaf,
+            keyboard_top(&mount),
+            "an edge the declaration does not name stays bound",
+        );
+    }
+
+    /// A release fires only on an edge the laid-out frame touches: the
+    /// top-touching probe releases to the window top, the bottom sibling
+    /// — which does not touch the edge it names — stays put.
+    fn an_ignore_releases_only_on_an_edge_the_frame_touches() {
+        let mount = mount(vstack((
+            edge_probe(card("touches"), "top-edge", EdgeSet::TOP),
+            spacer(),
+            card("plain"),
+        )));
+        show_keyboard(&mount);
+        let probe = find_id(&mount.host, "top-edge").expect("the probe is mounted");
+        expect_top(
+            &probe,
+            mount.window.bounds().origin.y,
+            "a touched edge releases through the container band",
+        );
+        let sibling = find_label(&mount.host, "plain").expect("the sibling is mounted");
+        expect_bottom(
+            &sibling,
+            keyboard_top(&mount) - 8.0,
+            "the sibling names no edge and stays bound",
+        );
+    }
+
+    /// A keyboard frame change relays the root out again: bottom region
+    /// down → up → grown → hidden, the stack's bound child follows every
+    /// frame — the leaf itself is a safe-area manager and fills the
+    /// window regardless.
+    fn a_safe_area_change_relays_out_the_root() {
+        let mount = mount(vstack((card("content"), spacer())));
+        let spacer = children(&mount).swap_remove(1);
+        expect_bottom(&spacer, container_bottom(&mount), "keyboard down");
+
+        show_keyboard(&mount);
+        expect_bottom(&spacer, keyboard_top(&mount), "keyboard shown");
+
+        let grown = keyboard_end_sized(&mount.window, 400.0);
+        change_keyboard(&mount, grown);
+        expect_bottom(&spacer, grown.origin.y, "the grown band lifts the content");
+
+        hide_keyboard(&mount);
+        expect_bottom(&spacer, container_bottom(&mount), "keyboard hidden");
+    }
+
+    /// `KEYBOARD.on(BOTTOM)` releases through the keyboard band down to the
+    /// container boundary — the deepest region it does not name. A plain
+    /// sibling at the same edge stays bound by the keyboard region.
+    fn ignoring_only_the_keyboard_region_keeps_the_container_inset() {
+        let mount = mount(vstack((
+            card("plain"),
+            spacer(),
+            hstack((
+                text("ref").body(),
+                edge_probe(
+                    text("released").body(),
+                    "bottom-edge",
+                    SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM),
+                ),
+            )),
+        )));
+        show_keyboard(&mount);
+        let probe = find_id(&mount.host, "bottom-edge").expect("the probe is mounted");
+        expect_bottom(
+            &probe,
+            container_bottom(&mount),
+            "the keyboard release reaches through to the container boundary",
+        );
+        let sibling = find_label(&mount.host, "ref").expect("the sibling is mounted");
+        expect_bottom(
+            &sibling,
+            keyboard_top(&mount),
+            "the sibling naming nothing still stops at the keyboard",
+        );
+    }
+
+    /// `CONTAINER.on(BOTTOM)` names the container band, not the keyboard —
+    /// under the keyboard nothing is released and the leaf stops at the
+    /// keyboard top; hiding the keyboard releases it to the window bottom.
+    fn ignoring_only_the_container_region_releases_nothing_under_the_keyboard() {
+        let mount = mount(
+            vstack((spacer(), card("content")))
+                .ignore_safe_area(SafeAreaRegions::CONTAINER.on(EdgeSet::BOTTOM)),
+        );
+        let leaf = leaf(&mount);
+        show_keyboard(&mount);
+        expect_bottom(
+            &leaf,
+            keyboard_top(&mount),
+            "a container-only release clears nothing under the keyboard",
+        );
+        hide_keyboard(&mount);
+        expect_bottom(
+            &leaf,
+            mount.window.bounds().size.height,
+            "with the keyboard gone the named container band releases",
+        );
+    }
+
+    /// A fractional keyboard frame is still a boundary the layout reads
+    /// exactly — the bound child's bottom lands on the reported end
+    /// frame's top.
+    fn a_fractional_keyboard_still_touches_the_boundary() {
+        let mount = mount(vstack((card("content"), spacer())));
+        let spacer = children(&mount).swap_remove(1);
+        let fractional = CGRect::new(
+            CGPoint::new(0.0, mount.window.bounds().size.height - 336.25),
+            CGSize::new(mount.window.bounds().size.width, 336.25),
+        );
+        change_keyboard(&mount, fractional);
+        expect_bottom(
+            &spacer,
+            fractional.origin.y,
+            "the fractional band is the boundary",
+        );
+    }
+
+    /// A fill in a `.background` slot paints through the keyboard and the
+    /// container band to the window edge, while the composer's laid-out
+    /// content still ends on the keyboard boundary and the label rides
+    /// above it. The composer container itself is a safe-area manager —
+    /// its frame extends to the window edge it touches, carrying the fill.
+    fn a_fill_background_paints_under_the_keyboard_region() {
+        let mount = mount(vstack((spacer(), card("composer"))));
+        show_keyboard(&mount);
+        let children = children(&mount);
+        let composer = &children[1];
+        let fill = view::subviews(composer)
+            .into_iter()
+            .next()
+            .expect("a background container holds its fill first");
+        expect_bottom(
+            &fill,
+            mount.window.bounds().size.height,
+            "the fill extends through both regions",
+        );
+        let label = find_label(&mount.host, "composer").expect("the label is mounted");
+        expect_bottom(
+            &label,
+            keyboard_top(&mount) - 8.0,
+            "the label keeps its padding above the boundary",
+        );
+    }
+
+    /// An `.opacity` wrapper is transparent to the fill pass — the color
+    /// inside still extends past the laid-out frame to the window edge,
+    /// while the composer's content stays bound by the keyboard region.
+    fn a_fill_inside_opacity_still_extends() {
+        let mount = mount(vstack((
+            spacer(),
+            text("composer")
+                .body()
+                .padding_with(8.0)
+                .background(Color::new(Srgb::new(0.85, 0.2, 0.3)).opacity(0.6)),
+        )));
+        show_keyboard(&mount);
+        let fill = find_view::<ColorView>(&mount.host).expect("the opacity wrap keeps a ColorView");
+        expect_bottom(
+            &fill,
+            mount.window.bounds().size.height,
+            "the fill still extends under the keyboard",
+        );
+        let label = find_label(&mount.host, "composer").expect("the label is mounted");
+        expect_bottom(
+            &label,
+            keyboard_top(&mount) - 8.0,
+            "the content keeps its padding above the boundary",
+        );
+    }
+
+    /// An `IgnoreSafeArea` on the fill replaces the default extension with
+    /// what it names — `EdgeSet::NONE` names nothing, so the fill stops at
+    /// the laid-out frame like any other leaf.
+    fn a_fill_with_an_empty_ignore_extends_nowhere() {
+        let mount = mount(vstack((
+            spacer(),
+            text("composer")
+                .body()
+                .padding_with(8.0)
+                .background(Color::new(Srgb::new(0.2, 0.6, 0.4)).ignore_safe_area(EdgeSet::NONE)),
+        )));
+        show_keyboard(&mount);
+        let fill = find_view::<ColorView>(&mount.host).expect("the fill is mounted");
+        expect_bottom(
+            &fill,
+            keyboard_top(&mount),
+            "an empty ignore name-set extends nowhere",
+        );
+    }
+
+    /// The fill's own `.ignore_safe_area` names the only edges it extends
+    /// on: `BOTTOM` extends it to the window bottom — through both bands —
+    /// while its other edges stay at the laid-out frame and the hosted
+    /// content still stops at the keyboard region.
+    fn a_fill_ignore_names_the_only_edge_that_extends() {
+        let mount = mount(
+            vstack((spacer(), text("content").body()))
+                .background(Color::new(Srgb::new(0.9, 0.7, 0.1)).ignore_safe_area(EdgeSet::BOTTOM)),
+        );
+        show_keyboard(&mount);
+        let children = children(&mount);
+        let fill = &children[0];
+        expect_bottom(
+            fill,
+            mount.window.bounds().size.height,
+            "the named edge extends to the window edge",
+        );
+        expect_top(
+            fill,
+            container_top(&mount),
+            "an edge the fill does not name stays at the container boundary",
+        );
+        let label = find_label(&mount.host, "content").expect("the label is mounted");
+        expect_bottom(
+            &label,
+            keyboard_top(&mount),
+            "the hosted content still stops at the keyboard",
+        );
+    }
+
+    /// A color leaf in a plain slot — not a `.background` fill — is an
+    /// ordinary leaf: its frame ends on the keyboard boundary without
+    /// extending under it.
+    fn non_fill_leaves_at_an_edge_do_not_extend() {
+        let mount = mount(vstack((
+            spacer(),
+            Color::new(Srgb::new(0.7, 0.2, 0.8)).size(390.0, 4.0),
+        )));
+        show_keyboard(&mount);
+        let strip = find_view::<ColorView>(&mount.host).expect("the color strip mounts");
+        expect_bottom(
+            &strip,
+            keyboard_top(&mount),
+            "a non-fill leaf does not extend",
+        );
+    }
+
+    /// A background slot holding anything other than a fill — another
+    /// view — extends nowhere by default; it is bound by the same regions.
+    fn a_non_fill_background_stays_inside_the_keyboard_region() {
+        let mount = mount(vstack((
+            spacer(),
+            text("content")
+                .body()
+                .padding_with(8.0)
+                .background(text("panel")),
+        )));
+        show_keyboard(&mount);
+        let background = view::subviews(&children(&mount)[1])
+            .into_iter()
+            .next()
+            .expect("the background slot holds the panel leaf");
+        expect_bottom(
+            &background,
+            keyboard_top(&mount),
+            "a non-fill background stays inside the region",
+        );
+    }
+
+    /// An ancestor's `TOP` release moves the hosted stack's top edge to
+    /// the window; the fill it carries still extends through the bottom
+    /// bands it touches — extension follows the laid-out frame, not the
+    /// ancestor's declaration.
+    fn a_fill_under_an_ancestor_top_ignore_still_extends_at_the_bottom() {
+        let mount = mount(
+            vstack((card("content"), spacer()))
+                .ignore_safe_area(EdgeSet::TOP)
+                .background(Color::new(Srgb::new(0.3, 0.5, 0.9))),
+        );
+        show_keyboard(&mount);
+        let children = children(&mount);
+        let (fill, content) = (&children[0], &children[1]);
+        expect_top(content, 0.0, "the ancestor's named edge releases the top");
+        let inner = view::subviews(&fanned(content));
+        expect_bottom(
+            &inner[1],
+            keyboard_top(&mount),
+            "the unnamed bottom still stops at the keyboard",
+        );
+        expect_bottom(
+            fill,
+            mount.window.bounds().size.height,
+            "the fill extends on the touched bottom edge",
+        );
+    }
+
+    /// A scroll surface extends under the touched edge and insets its
+    /// content by the band; focusing a covered field scrolls the minimum
+    /// distance that brings its frame clear of the keyboard region.
+    fn a_scroll_surface_scrolls_the_focused_field_clear_of_the_keyboard() {
+        let value = binding(Str::from(""));
+        let mount = mount(scroll(vstack((
+            spacer().size(390.0, 560.0),
+            field("Message", &value).size(350.0, 44.0),
+            spacer().size(390.0, 380.0),
+        ))));
+        show_keyboard(&mount);
+
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
+        let scroll_view = surface
+            .downcast_ref::<ScrollView>()
+            .expect("the found view is a scroll view");
+
+        expect_bottom(
+            &surface,
+            mount.window.bounds().size.height,
+            "the surface extends under the touched edge",
+        );
+        let cover = window_bottom(&surface) - keyboard_top(&mount);
+        assert!(
+            (scroll_view.contentInset().bottom
+                - (cover - surface.safeAreaInsets().bottom).max(0.0))
+            .abs()
+                <= TOLERANCE,
+            "the content inset carries the covered band minus the surface's own inset"
+        );
+        assert!(
+            window_bottom(&field) > keyboard_top(&mount) + TOLERANCE,
+            "precondition: the field starts under the keyboard region"
+        );
+
+        focus_and_clear(&mount, &field, || keyboard_top(&mount));
+    }
+
+    /// The keyboard region growing while a field holds focus re-runs the
+    /// same minimum-scroll clearance against the deeper boundary — the
+    /// field's frame lands on the new keyboard top on that frame.
+    fn a_keyboard_inset_change_clears_the_field_on_that_frame() {
+        let value = binding(Str::from(""));
+        let mount = mount(scroll(vstack((
+            spacer().size(390.0, 560.0),
+            field("Message", &value).size(350.0, 44.0),
+            spacer().size(390.0, 380.0),
+        ))));
+        show_keyboard(&mount);
+        let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
+        focus_and_clear(&mount, &field, || keyboard_top(&mount));
+
+        let grown = keyboard_end_sized(&mount.window, 400.0);
+        change_keyboard(&mount, grown);
+        pump_until_bottom_on(&mount, &field, grown.origin.y);
+    }
+
+    /// A field nested inside a second scroll is cleared once — by the
+    /// innermost surface that can, which is the outermost one here because
+    /// the keyboard band sits below the inner surface's own frame.
+    fn a_field_in_a_nested_scroll_is_cleared_once() {
+        let value = binding(Str::from(""));
+        let mount = mount(scroll(vstack((
+            spacer().size(390.0, 430.0),
+            scroll(vstack((
+                spacer().size(350.0, 120.0),
+                field("Nested", &value).size(350.0, 44.0),
+                spacer().size(350.0, 300.0),
+            )))
+            .size(350.0, 200.0),
+            spacer().size(390.0, 380.0),
+        ))));
+        show_keyboard(&mount);
+
+        let surfaces = find_views::<ScrollView>(&mount.host);
+        assert!(
+            surfaces.len() == 2,
+            "the form mounts an outer and an inner surface"
+        );
+        let (outer, inner) = (&surfaces[0], &surfaces[1]);
+        let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
+        assert!(
+            window_bottom(&field) > keyboard_top(&mount) + TOLERANCE,
+            "precondition: the nested field starts under the keyboard region"
+        );
+
+        focus_and_clear(&mount, &field, || keyboard_top(&mount));
+        let outer_inset = outer
+            .downcast_ref::<ScrollView>()
+            .expect("a scroll view")
+            .contentInset()
+            .bottom;
+        assert!(
+            outer_inset > TOLERANCE,
+            "the outermost surface carries the keyboard inset — {outer_inset}"
+        );
+        assert!(
+            inner
+                .downcast_ref::<ScrollView>()
+                .expect("a scroll view")
+                .contentInset()
+                .bottom
+                <= TOLERANCE,
+            "the inner surface the band does not reach stays untouched"
+        );
+    }
+
+    /// The clearance boundary is the nearer of the keyboard top and the
+    /// surface's own frame: a toolbar card under the scroll keeps the
+    /// field clearing to the surface's bottom edge, not the keyboard's.
+    fn a_focused_field_clears_to_the_surface_frame_above_a_toolbar() {
+        let value = binding(Str::from(""));
+        let mount = mount(vstack((
+            scroll(vstack((
+                spacer().size(390.0, 560.0),
+                field("Message", &value).size(350.0, 44.0),
+                spacer().size(390.0, 380.0),
+            ))),
+            card("toolbar").size(390.0, 56.0),
+        )));
+        show_keyboard(&mount);
+        let surface = find_view::<ScrollView>(&mount.host).expect("scroll mounts a UIScrollView");
+        let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
+        let surface_bottom = window_bottom(&surface);
+        assert!(
+            surface_bottom < keyboard_top(&mount) - TOLERANCE,
+            "the toolbar holds the surface above the keyboard region"
+        );
+        focus_and_clear(&mount, &field, || surface_bottom);
+    }
+
+    /// A `List` is a scroll surface too: a focused row field scrolls
+    /// clear of the keyboard and the `UITableView` carries the inset.
+    fn a_list_row_field_scrolls_clear_of_the_keyboard() {
+        let value = binding(Str::from(""));
+        let field_row = 10usize;
+        let mount = mount(List::for_each(
+            (0..40).map(SelfId::new).collect::<Vec<_>>(),
+            move |item| {
+                if *item == field_row {
+                    ListItem::new(AnyView::new(field("Notes", &value).size(350.0, 44.0)))
+                } else {
+                    ListItem::new(text(format!("row-{}", *item)))
+                }
+            },
+        ));
+        show_keyboard(&mount);
+
+        let table = find_view::<TableView>(&mount.host).expect("the list mounts a UITableView");
+        let field = find_view::<TextField>(&mount.host).expect("the row field is mounted");
+        assert!(
+            window_bottom(&field) > keyboard_top(&mount) + TOLERANCE,
+            "precondition: the row field starts under the keyboard region"
+        );
+
+        focus_and_clear(&mount, &field, || keyboard_top(&mount));
+        let cover = window_bottom(&table) - keyboard_top(&mount);
+        assert!(
+            (table
+                .downcast_ref::<TableView>()
+                .expect("a table view")
+                .contentInset()
+                .bottom
+                - (cover - table.safeAreaInsets().bottom).max(0.0))
+            .abs()
+                <= TOLERANCE,
+            "the table carries the keyboard inset",
+        );
+    }
+
+    /// The tab bar stays docked clear of the container region only — the
+    /// keyboard covers it instead of lifting it — while the hosted
+    /// content's bottom edge binds to the deeper of the two boundaries.
+    fn a_tab_bar_stays_docked_under_the_keyboard() {
+        let selection = binding(0i32);
+        let mount = mount(Tabs::new(
+            &selection,
+            vec![Tab::new(0i32, "Messages", move || {
+                NavigationView::new(
+                    "Messages",
+                    vstack((
+                        card("conversation"),
+                        spacer(),
+                        edge_probe(
+                            card("edge"),
+                            "bottom-edge",
+                            SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM),
+                        ),
+                    )),
+                )
+            })],
+        ));
+        let tab_bar = find_view::<UITabBar>(&mount.host).expect("the tabs mount a UITabBar");
+        pump_layout(&mount, || window_bottom(&tab_bar) > TOLERANCE);
+        let docked = window_bottom(&tab_bar);
+        assert!(
+            (docked - container_bottom(&mount)).abs() <= TOLERANCE
+                || (docked - mount.window.bounds().size.height).abs() <= TOLERANCE,
+            "the bar docks at the container boundary — bottom {docked}"
+        );
+
+        show_keyboard(&mount);
+        pump_layout(&mount, || {
+            (window_bottom(&tab_bar) - docked).abs() <= TOLERANCE
+        });
+        assert!(
+            window_top(&tab_bar) > keyboard_top(&mount),
+            "the keyboard covers the docked bar rather than lifting it"
+        );
+        let probe = find_id(&mount.host, "bottom-edge").expect("the probe is mounted");
+        pump_until_bottom_on(&mount, &probe, keyboard_top(&mount));
+    }
+
+    /// With the navigation bar hidden the page's top edge passes straight
+    /// through to the window — a released `TOP` reaches the window origin
+    /// — and the bottom content still binds the keyboard.
+    fn a_navigation_page_without_a_bar_passes_the_edge_through() {
+        let mount = mount(
+            NavigationView::new(
+                "Home",
+                vstack((
+                    edge_probe(card("hero"), "top-edge", EdgeSet::TOP),
+                    card("content"),
+                    spacer(),
+                    text("tail").body(),
+                ))
+                .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
+            )
+            .navigation_bar_visibility(false),
+        );
+        show_keyboard(&mount);
+        let probe = find_id(&mount.host, "top-edge").expect("the probe is mounted");
+        expect_top(
+            &probe,
+            mount.window.bounds().origin.y,
+            "a pass-through edge releases to the window top",
+        );
+        let tail = find_label(&mount.host, "tail").expect("the tail is mounted");
+        expect_bottom(
+            &tail,
+            keyboard_top(&mount),
+            "the page's bottom still stops at the keyboard",
+        );
+    }
+
+    /// A navigation page whose laid-out frame touches the bottom edge
+    /// still extends its fill through it — the fill reaches the window
+    /// bottom under the keyboard while the hosted content stops at the
+    /// boundary.
+    fn a_navigation_page_touching_the_bottom_still_extends_its_fill() {
+        let mount = mount(NavigationView::new(
+            "Home",
+            vstack((text("content").body(), spacer(), text("tail").body()))
+                .background(Color::new(Srgb::new(0.5, 0.3, 0.7))),
+        ));
+        show_keyboard(&mount);
+        let tail = find_label(&mount.host, "tail").expect("the tail is mounted");
+        expect_bottom(
+            &tail,
+            keyboard_top(&mount),
+            "the hosted page still stops at the keyboard",
+        );
+        let fill = find_view::<ColorView>(&mount.host).expect("the page mounts its fill");
+        expect_bottom(
+            &fill,
+            mount.window.bounds().size.height,
+            "the page fill extends through the touched bottom edge",
+        );
+    }
+
+    /// The navigation bar covers the top edge for the page's content: a
+    /// `TOP` release inside reaches no deeper than the band the bar
+    /// occupies — the probe stops at the bar's bottom, not the origin.
+    fn an_ignore_top_inside_navigation_content_stays_below_the_bar() {
+        let mount = mount(NavigationView::new(
+            "Home",
+            vstack((edge_probe(card("hero"), "top-edge", EdgeSet::TOP), spacer()))
+                .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
+        ));
+        let bar = find_view::<UINavigationBar>(&mount.host)
+            .expect("the page mounts a nav bar")
+            .downcast::<UINavigationBar>()
+            .expect("the found view is a navigation bar");
+        assert_eq!(
+            bar.barPosition(),
+            UIBarPosition::TopAttached,
+            "the bar keeps the top-attached position that extends its \
+             background over the status-bar band",
+        );
+        let background = view::subviews(&bar).into_iter().find(|sub| {
+            let frame = window_frame(sub);
+            frame.origin.y <= TOLERANCE
+                && (frame.size.width - window_frame(&bar).size.width).abs() <= TOLERANCE
+        });
+        assert!(
+            background.is_some(),
+            "the bar's background reaches the window's top edge spanning its width",
+        );
+        let bar_bottom = window_bottom(&bar);
+        assert!(
+            bar_bottom > TOLERANCE,
+            "precondition: the bar covers the top edge"
+        );
+        let probe = find_id(&mount.host, "top-edge").expect("the probe is mounted");
+        expect_top(
+            &probe,
+            bar_bottom,
+            "a covered edge releases nothing past the covering band",
+        );
+    }
+
+    /// The page's own background starts at its laid-out frame — below the
+    /// bar the host draws — and still extends through the bottom edge the
+    /// frame touches.
+    fn a_navigation_page_background_stays_below_the_bar() {
+        let mount = mount(NavigationView::new(
+            "Home",
+            vstack((text("content").body(), spacer(), text("tail").body()))
+                .background(Color::new(Srgb::new(0.5, 0.3, 0.7))),
+        ));
+        let bar = find_view::<UINavigationBar>(&mount.host).expect("the page mounts a nav bar");
+        let fill = find_view::<ColorView>(&mount.host).expect("the page mounts its fill");
+        expect_top(
+            &fill,
+            window_bottom(&bar),
+            "the page background starts below the covering bar",
+        );
+        show_keyboard(&mount);
+        let tail = find_label(&mount.host, "tail").expect("the tail is mounted");
+        expect_bottom(
+            &tail,
+            keyboard_top(&mount),
+            "the hosted page still stops at the keyboard",
+        );
+        expect_bottom(
+            &fill,
+            mount.window.bounds().size.height,
+            "the fill extends through the touched bottom edge",
+        );
+    }
+
+    /// A bottom toolbar docks clear of the container region only: the
+    /// keyboard covers it rather than lifting it, and the hosted
+    /// content's released bottom reaches the deeper of the two
+    /// boundaries — the keyboard top.
+    fn a_navigation_bottom_toolbar_stays_docked_under_the_keyboard() {
+        let mount = mount(NavigationStack::new(
+            NavigationView::new(
+                "Home",
+                vstack((
+                    card("content"),
+                    spacer(),
+                    edge_probe(
+                        card("edge"),
+                        "bottom-edge",
+                        SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM),
+                    ),
+                ))
+                .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
+            )
+            .navigation_toolbar(NavigationToolbar::new(vec![
+                NavigationToolbarItem::action(NavigationToolbarPlacement::BottomBar, "New", || {}),
+            ])),
+        ));
+        // iOS 26 draws the page's bottom bar as a floating glass capsule,
+        // not a `UIToolbar` — the item's own control is the bar's proof.
+        let item =
+            find_class(&mount.host, c"CocoaUiBarButton").expect("the page mounts its bar item");
+        let docked = window_frame(&item);
+        assert!(
+            docked.origin.y + docked.size.height > container_bottom(&mount) - 80.0,
+            "the bar item docks at the bottom edge — frame {docked:?}"
+        );
+
+        show_keyboard(&mount);
+        pump_layout(&mount, || keyboard_top(&mount) > TOLERANCE);
+        let covered = window_frame(&item);
+        assert!(
+            (covered.origin.y - docked.origin.y).abs() <= TOLERANCE,
+            "the keyboard covers the docked bar item rather than lifting it — {docked:?} -> {covered:?}"
+        );
+        assert!(
+            covered.origin.y > keyboard_top(&mount),
+            "the bar item stays inside the keyboard band — {covered:?}"
+        );
+        let probe = find_id(&mount.host, "bottom-edge").expect("the probe is mounted");
+        pump_until_bottom_on(&mount, &probe, keyboard_top(&mount));
+    }
+
+    /// A page toolbar inside a tab stacks on the docked tab bar: the
+    /// toolbar sits on the tab bar's top, the tab bar on the container
+    /// boundary, and the content binds the deeper boundary under the
+    /// keyboard.
+    fn a_stack_page_toolbar_inside_a_tab_stacks_on_the_docked_tab_bar() {
+        let selection = binding(0i32);
+        let mount = mount(Tabs::new(
+            &selection,
+            vec![Tab::container(0i32, "Home", move || {
+                NavigationStack::new(
+                    NavigationView::new(
+                        "Home",
+                        vstack((
+                            card("content"),
+                            spacer(),
+                            edge_probe(
+                                card("edge"),
+                                "bottom-edge",
+                                SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM),
+                            ),
+                        ))
+                        .background(Color::new(Srgb::new(0.2, 0.4, 0.7))),
+                    )
+                    .navigation_toolbar(NavigationToolbar::new(vec![
+                        NavigationToolbarItem::action(
+                            NavigationToolbarPlacement::BottomBar,
+                            "New",
+                            || {},
+                        ),
+                    ])),
+                )
+            })],
+        ));
+        let tab_bar = find_view::<UITabBar>(&mount.host).expect("the tabs mount a UITabBar");
+        pump_layout(&mount, || window_bottom(&tab_bar) > TOLERANCE);
+        // iOS 26 draws the page's bottom bar as a floating glass capsule,
+        // not a `UIToolbar` — the item's own control is the bar's proof.
+        let item =
+            find_class(&mount.host, c"CocoaUiBarButton").expect("the page mounts its bar item");
+        let docked = window_frame(&item);
+        assert!(
+            docked.origin.y + docked.size.height > container_bottom(&mount) - 80.0,
+            "the bar item docks at the bottom edge — frame {docked:?}"
+        );
+
+        show_keyboard(&mount);
+        pump_layout(&mount, || keyboard_top(&mount) > TOLERANCE);
+        let covered = window_frame(&item);
+        assert!(
+            (covered.origin.y - docked.origin.y).abs() <= TOLERANCE,
+            "the keyboard covers the docked bar item rather than lifting it — {docked:?} -> {covered:?}"
+        );
+        assert!(
+            window_top(&tab_bar) > keyboard_top(&mount),
+            "the keyboard covers the stacked bars rather than lifting them"
+        );
+        let probe = find_id(&mount.host, "bottom-edge").expect("the probe is mounted");
+        pump_until_bottom_on(&mount, &probe, keyboard_top(&mount));
+    }
+
+    /// A fixed-height `Tabs` inside a page docks its own bar at its own
+    /// frame — a bar docks at the boundary of the edge it touches, which
+    /// for a mid-window bar is the frame its host gave it.
+    fn a_fixed_height_tabs_inside_tab_content_docks_its_own_bar() {
+        let selection = binding(0i32);
+        let inner_selection = binding(0i32);
+        let mount = mount(Tabs::new(
+            &selection,
+            vec![
+                Tab::new(0i32, "Outer", move || {
+                    NavigationView::new(
+                        "Outer",
+                        vstack((
+                            Tabs::new(
+                                &inner_selection,
+                                vec![
+                                    Tab::new(1i32, "Inner A", move || {
+                                        NavigationView::new("A", text("a"))
+                                    }),
+                                    Tab::new(2i32, "Inner B", move || {
+                                        NavigationView::new("B", text("b"))
+                                    }),
+                                ],
+                            )
+                            .size(390.0, 200.0),
+                            card("below").a11y_id("below-inner"),
+                            spacer(),
+                        )),
+                    )
+                }),
+                Tab::new(3i32, "Other", move || {
+                    NavigationView::new("Other", text("other"))
+                }),
+            ],
+        ));
+        // Two bars: the inner controller's inside its 200pt host and the
+        // outer one docked at the window bottom — order them by where
+        // they landed rather than the tree walk's order.
+        let mut bars = find_views::<UITabBar>(&mount.host);
+        bars.sort_by(|a, b| {
+            window_top(a)
+                .partial_cmp(&window_top(b))
+                .unwrap_or(core::cmp::Ordering::Equal)
+        });
+        assert!(bars.len() == 2, "the two tab controllers mount two bars");
+        let (inner_bar, outer_bar) = (bars[0].clone(), bars[1].clone());
+        let below = find_id(&mount.host, "below-inner").expect("the sibling card mounts");
+        assert!(
+            window_bottom(&inner_bar) <= window_top(&below) + TOLERANCE,
+            "a nested bar that does not reach the dock stays inside its \
+             own frame, above the next sibling — inner {:?}, sibling {:?}",
+            window_frame(&inner_bar),
+            window_frame(&below),
+        );
+        assert!(
+            (window_bottom(&outer_bar) - container_bottom(&mount)).abs() <= TOLERANCE
+                || (window_bottom(&outer_bar) - mount.window.bounds().size.height).abs()
+                    <= TOLERANCE,
+            "the outer bar docks on the container boundary — {:?}",
+            window_frame(&outer_bar),
+        );
+
+        show_keyboard(&mount);
+        pump_layout(&mount, || keyboard_top(&mount) > TOLERANCE);
+        assert!(
+            window_bottom(&inner_bar) <= window_top(&below) + TOLERANCE,
+            "keyboard up: the nested bar still stays inside its own frame"
+        );
+        assert!(
+            (window_bottom(&outer_bar) - container_bottom(&mount)).abs() <= TOLERANCE
+                || (window_bottom(&outer_bar) - mount.window.bounds().size.height).abs()
+                    <= TOLERANCE,
+            "keyboard up: the outer bar stays docked on the boundary — {:?}",
+            window_frame(&outer_bar),
+        );
+    }
+
+    /// A form hosted inside navigation content clears its focused field
+    /// to the deeper boundary under the keyboard — chrome hosting does not
+    /// change the scroll surface's contract.
+    fn a_form_inside_navigation_content_clears_the_focused_field() {
+        let value = binding(Str::from(""));
+        let mount = mount(NavigationView::new(
+            "Form",
+            scroll(vstack((
+                spacer().size(390.0, 560.0),
+                field("Message", &value).size(350.0, 44.0),
+                spacer().size(390.0, 380.0),
+            ))),
+        ));
+        show_keyboard(&mount);
+        let field = find_view::<TextField>(&mount.host).expect("the form mounts the field");
+        assert!(
+            window_bottom(&field) > keyboard_top(&mount) + TOLERANCE,
+            "precondition: the field starts under the keyboard region"
+        );
+        focus_and_clear(&mount, &field, || keyboard_top(&mount));
+    }
+}
 /// `.size`/`padding`/`hstack`/`zstack` containers plus a lazy `ForEach`
 /// membership — must release its owners, child guards and host views when
 /// the mounted tree drops. Weak handles into the tree's views die after
@@ -2838,7 +6166,7 @@ mod owner_lifetimes {
         // afterwards names a real retainer, not a pooled autorelease.
         let mut env = resolve::env();
         let track = binding(String::from("first"));
-        let items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
+        let mut items = ReactiveList::from(vec![Row { id: 1 }, Row { id: 2 }]);
         // The theme `Foreground` slot backs every unstyled chunk — the
         // `label_leaf` default watcher this fix touches. Reinstall it
         // from a binding the test keeps, so a live update is reachable.
@@ -4277,5 +7605,1128 @@ mod list_scroll {
             Box::new(a_bare_request_takes_over_an_in_flight_animation),
         ));
         trial_each(named)
+    }
+}
+
+/// Navigation-chrome trials: the bar intents a page records in
+/// `set_page` apply through the stack's `UINavigationControllerDelegate`.
+#[cfg(target_os = "ios")]
+mod navigation {
+    use cocoa_ui::objc2_ui_kit::{
+        UIBarButtonItem, UINavigationController, UIView, UIViewController,
+    };
+    use cocoa_ui::uikit::view_controller::owning_controller;
+    use cocoa_ui::uikit::{NavContentController, NavPage};
+    use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::toggle::toggle;
+    use waterui::component::{ButtonStyle, button};
+    use waterui::icon::SystemIcon;
+    use waterui::navigation::{
+        NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
+        NavigationView, ToolbarItemIcon,
+    };
+    use waterui::prelude::text;
+    use waterui::reactive::binding;
+    use waterui_apple::native_test_support::{MAIN_QUEUE_DEADLINE, pump_main_until};
+
+    use super::{mtm, resolve};
+
+    /// The `UINavigationController` owning a view in the subtree,
+    /// depth-first — either the view's own controller is the nav
+    /// controller, or the page controller answers one.
+    fn nav_controller_in(view: &PlatformView) -> Option<Retained<UINavigationController>> {
+        if let Some(controller) = owning_controller(view) {
+            if let Ok(nav) = controller.clone().downcast() {
+                return Some(nav);
+            }
+            if let Some(nav) = controller.navigationController() {
+                return Some(nav);
+            }
+        }
+        for sub in view::subviews(view) {
+            if let Some(found) = nav_controller_in(&sub) {
+                return Some(found);
+            }
+        }
+        None
+    }
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![
+            libtest_mimic::Trial::test(
+                "navigation::a_first_page_bottom_bar_unhides_the_toolbar",
+                || {
+                    a_first_page_bottom_bar_unhides_the_toolbar();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::the_top_page_drives_the_navigation_bar",
+                || {
+                    the_top_page_drives_the_navigation_bar();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_buried_pages_set_page_leaves_the_bar_alone",
+                || {
+                    a_buried_pages_set_page_leaves_the_bar_alone();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::the_top_pages_reactive_hidden_writes_and_rides_transitions",
+                || {
+                    the_top_pages_reactive_hidden_writes_and_rides_transitions();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_buried_pages_reactive_hidden_leaves_the_bar_alone",
+                || {
+                    a_buried_pages_reactive_hidden_leaves_the_bar_alone();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test("navigation::a_text_toolbar_button_draws_its_title", || {
+                a_text_toolbar_button_draws_its_title();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "navigation::a_text_toolbar_item_follows_its_button_disabled_state",
+                || {
+                    a_text_toolbar_item_follows_its_button_disabled_state();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_symbol_toolbar_item_follows_its_button_disabled_state",
+                || {
+                    a_symbol_toolbar_item_follows_its_button_disabled_state();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_checkbox_toolbar_item_follows_its_disabled_state",
+                || {
+                    a_checkbox_toolbar_item_follows_its_disabled_state();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// The bar item's title as a plain string.
+    fn bar_item_title(item: &UIBarButtonItem) -> String {
+        item.title()
+            .map(|text| text.to_string())
+            .unwrap_or_default()
+    }
+
+    /// A leading text button is the bar's own title item, and the title
+    /// follows the label. Hosting the button would hand the bar a `UIButton`
+    /// whose configuration carries no title, which the bar draws as an empty
+    /// capsule. Plain text beside it stays a hosted view.
+    fn a_text_toolbar_button_draws_its_title() {
+        let title = binding(Str::from("Edit"));
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarLeading,
+                        button(waterui::text!("{title}")).style(ButtonStyle::Plain),
+                    ),
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarTrailing,
+                        text("12 unread"),
+                    ),
+                ],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let leading = top
+            .navigationItem()
+            .leftBarButtonItems()
+            .expect("the leading text button is a bar item");
+        assert_eq!(leading.count(), 1, "the root page has one leading item");
+        let leading = leading.objectAtIndex(0);
+        assert_eq!(bar_item_title(&leading), "Edit");
+        assert!(
+            leading.customView().is_none(),
+            "the word is the bar item's title, not a hosted view"
+        );
+
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the trailing caption is a bar item");
+        assert!(
+            trailing.objectAtIndex(0).customView().is_some(),
+            "plain text stays a hosted view"
+        );
+
+        title.set(Str::from("Done"));
+        assert_eq!(bar_item_title(&leading), "Done");
+    }
+
+    /// A leading text button's bar item follows the button's `disabled`
+    /// state: `sendActions` ignores `isEnabled`, so the bar item is what
+    /// the bar disables — it must start disabled and re-enable with the
+    /// button.
+    fn a_text_toolbar_item_follows_its_button_disabled_state() {
+        let disabled = binding(true);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::TopBarLeading,
+                    button("Save")
+                        .style(ButtonStyle::Plain)
+                        .disabled(disabled.clone()),
+                )],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let leading = top
+            .navigationItem()
+            .leftBarButtonItems()
+            .expect("the leading text button is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            !leading.isEnabled(),
+            "the bar item starts disabled with the button"
+        );
+        disabled.set(false);
+        assert!(
+            leading.isEnabled(),
+            "the bar item follows the button back to enabled"
+        );
+    }
+
+    /// A trailing symbol item follows the same rule: the bar-drawn item
+    /// tracks the content button's `disabled` state.
+    fn a_symbol_toolbar_item_follows_its_button_disabled_state() {
+        let disabled = binding(true);
+        let mut item = NavigationToolbarItem::new(
+            NavigationToolbarPlacement::TopBarTrailing,
+            button("Save")
+                .style(ButtonStyle::Plain)
+                .disabled(disabled.clone()),
+        );
+        item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("checkmark")));
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root"))
+                .navigation_toolbar(NavigationToolbar::new(vec![item])),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the trailing symbol item is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            !trailing.isEnabled(),
+            "the bar item starts disabled with the button"
+        );
+        disabled.set(false);
+        assert!(
+            trailing.isEnabled(),
+            "the bar item follows the button back to enabled"
+        );
+    }
+
+    /// The enabled mirror does not depend on the content being a `button`:
+    /// a checkbox toggle's control is a `UIButton` in the leaf's subtree,
+    /// so the item's icon follows its `disabled` state like any other.
+    fn a_checkbox_toolbar_item_follows_its_disabled_state() {
+        let disabled = binding(true);
+        let checked = binding(false);
+        let mut item = NavigationToolbarItem::new(
+            NavigationToolbarPlacement::TopBarTrailing,
+            toggle("Done", &checked)
+                .checkbox()
+                .disabled(disabled.clone()),
+        );
+        item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("checkmark")));
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root"))
+                .navigation_toolbar(NavigationToolbar::new(vec![item])),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the trailing icon item is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            !trailing.isEnabled(),
+            "the bar item starts disabled with the checkbox"
+        );
+        disabled.set(false);
+        assert!(
+            trailing.isEnabled(),
+            "the bar item follows the checkbox back to enabled"
+        );
+    }
+
+    /// The root page's intent is recorded in `set_page` while
+    /// `navigationController()` is still nil — a first page declaring
+    /// bottom items must still unhide the stack's toolbar once the page
+    /// resolves. Without it the iOS 26 floating bottom bar never mounts.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn a_first_page_bottom_bar_unhides_the_toolbar() {
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::BottomBar,
+                    text("Action"),
+                )],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            !nav.isToolbarHidden(),
+            "the first page's bottom bar unhides the toolbar"
+        );
+    }
+
+    /// A stack whose root page hides the navigation bar — the fixture
+    /// the bar trials push onto. The leaf mounts in a key window:
+    /// `UINavigationController` only delivers its transition delegate
+    /// callbacks to an attached view hierarchy. The returned leaf and
+    /// window keep the driver and the hierarchy alive; the controller
+    /// is the stack's `UINavigationController`.
+    fn hidden_root_stack() -> (
+        waterui_apple::contract::NativeLeaf,
+        Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+        Retained<UINavigationController>,
+    ) {
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(false),
+        ));
+        let window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        (leaf, window, nav)
+    }
+
+    /// A pushed page carrying its own `hidden` intent — chrome the
+    /// harness installs natively, the way the driver installs the
+    /// model's pushed pages.
+    fn pushed_page(hidden: bool) -> Retained<NavContentController> {
+        let page = NavContentController::new(mtm(), &UIView::new(mtm()));
+        page.set_page(&NavPage {
+            hidden,
+            ..NavPage::default()
+        });
+        page
+    }
+
+    /// Root hides the bar, a pushed page shows it: each transition
+    /// applies the incoming page's recorded intent — the bar is shown
+    /// after the push and hidden again after the pop. `willShow` lands
+    /// inside the transition's main-queue delivery, so the assertions
+    /// pump the run loop rather than read the flag mid-flush.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn the_top_page_drives_the_navigation_bar() {
+        let (_leaf, _window, nav) = hidden_root_stack();
+        assert!(
+            nav.isNavigationBarHidden(),
+            "the root page's hidden intent applies at mount"
+        );
+
+        nav.pushViewController_animated(&pushed_page(false), false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "the pushed page's shown intent rides the push"
+        );
+
+        nav.popViewControllerAnimated(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || nav.isNavigationBarHidden()),
+            "the pop applies the root page's hidden intent"
+        );
+    }
+
+    /// `set_page` on a page under the top records intent without
+    /// writing the bar — a re-rendered root page never touches the
+    /// chrome the pushed page shows.
+    fn a_buried_pages_set_page_leaves_the_bar_alone() {
+        let (_leaf, _window, nav) = hidden_root_stack();
+        nav.pushViewController_animated(&pushed_page(false), false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "precondition: the pushed page shows the bar"
+        );
+
+        let root = nav
+            .viewControllers()
+            .objectAtIndex(0)
+            .downcast::<NavContentController>()
+            .expect("the root page is a NavContentController");
+        root.set_page(&NavPage {
+            hidden: true,
+            ..NavPage::default()
+        });
+        assert!(
+            !pump_main_until(0.5, || nav.isNavigationBarHidden()),
+            "a buried page's set_page never reaches the bar"
+        );
+
+        // The re-run still recorded the intent: popping back applies it.
+        nav.popViewControllerAnimated(false);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || nav.isNavigationBarHidden()),
+            "the re-rendered root's intent applies when it becomes top"
+        );
+    }
+
+    /// Pumps the main queue until `page` is `nav`'s top, the bar reads
+    /// `hidden`, and the transition coordinator has torn down — the
+    /// three flushes arrive unordered: `topViewController` can re-point
+    /// either before or after `willShow` applies the incoming page's
+    /// intent, and a bar write issued while the coordinator is still
+    /// live is swallowed with it.
+    fn settles_with_bar(
+        nav: &UINavigationController,
+        page: &UIViewController,
+        hidden: bool,
+    ) -> bool {
+        pump_main_until(MAIN_QUEUE_DEADLINE, || {
+            nav.topViewController()
+                .is_some_and(|top| core::ptr::eq(Retained::as_ptr(&top), page))
+                && nav.isNavigationBarHidden() == hidden
+                && nav.transitionCoordinator().is_none()
+        })
+    }
+
+    /// The top page's reactive `hidden` signal writes the bar at once
+    /// — and what it records is what a later round trip re-applies:
+    /// show reactively on top, hide by pushing, and the pop back shows
+    /// the bar — the record the reactive path kept, not the
+    /// mount-time flag.
+    ///
+    /// The reactive write goes first: a harness-driven pop reports a
+    /// model pop that drops the popped `Entry` — and the binding
+    /// watcher with it — so no reactive write can follow one.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn the_top_pages_reactive_hidden_writes_and_rides_transitions() {
+        let visible = binding(false);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(visible.clone()),
+        ));
+        let _window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            nav.isNavigationBarHidden(),
+            "precondition: the root page hides the bar"
+        );
+
+        // The top page's reactive change writes the bar at once.
+        visible.set(true);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || !nav.isNavigationBarHidden()),
+            "the top page's reactive show reaches the bar"
+        );
+
+        // Push a hiding page, then pop: the willShow intent the pop
+        // re-applies is the reactively-kept record — the bar shows.
+        let pushed = pushed_page(true);
+        nav.pushViewController_animated(&pushed, false);
+        assert!(
+            settles_with_bar(&nav, &pushed, true),
+            "precondition: the push settles on the pushed page hiding the bar"
+        );
+        nav.popViewControllerAnimated(false);
+        let root = nav.viewControllers().objectAtIndex(0);
+        assert!(
+            settles_with_bar(&nav, &root, false),
+            "the top page's reactive intent survives the push/pop round trip"
+        );
+    }
+
+    /// A buried page's reactive `hidden` change stays recorded-only
+    /// while another page is top — the bar keeps the pushed page's
+    /// shown intent — and the record applies when the pop shows the
+    /// page again.
+    ///
+    /// A cancelled interactive pop cannot be driven here: starting one
+    /// needs the edge pan's `UITouch` stream, and `UITouch` has no
+    /// public initializer the harness can construct.
+    fn a_buried_pages_reactive_hidden_leaves_the_bar_alone() {
+        let visible = binding(true);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Root", text("root")).navigation_bar_visibility(visible.clone()),
+        ));
+        let _window = super::mount_and_order_front(leaf.view());
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        assert!(
+            !nav.isNavigationBarHidden(),
+            "precondition: the root page shows the bar"
+        );
+
+        let pushed = pushed_page(false);
+        nav.pushViewController_animated(&pushed, false);
+        assert!(
+            settles_with_bar(&nav, &pushed, false),
+            "precondition: the push settles on the pushed page showing the bar"
+        );
+
+        // The buried root asks for a hidden bar — intent only: the
+        // pushed page's chrome stays up.
+        visible.set(false);
+        assert!(
+            !pump_main_until(0.5, || nav.isNavigationBarHidden()),
+            "a buried page's reactive change leaves the bar alone"
+        );
+
+        nav.popViewControllerAnimated(false);
+        let root = nav.viewControllers().objectAtIndex(0);
+        assert!(
+            settles_with_bar(&nav, &root, true),
+            "the buried page's recorded intent applies when it shows again"
+        );
+    }
+}
+
+/// The web view leaf's real-engine cases.
+///
+/// Bridge admission is decided inside `WebKit` at navigation time, so only
+/// a genuine `WKWebView` proves a non-admitted document never receives the
+/// bridge — a mock of the handle's own bookkeeping would merely restate it.
+#[cfg(feature = "webview")]
+mod webview {
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+
+    use libtest_mimic::Trial;
+    use waterui_apple::native_test_support::{block_on_main, pump_main_until};
+    use waterui_webview::{
+        AnyWebViewHandle, BackendEvent, BridgeOrigins, JsReply, OriginPolicy, ScriptInjectionTime,
+        Url, UserScript, WatcherGuard, WebViewConfig, WebViewEvent,
+    };
+
+    use super::mtm;
+
+    /// The bound every wait on the real engine gets: a navigation, an
+    /// evaluation, or a whole conformance scenario.
+    ///
+    /// Each of these crosses `WebKit`'s web content, GPU and network
+    /// processes, and a view's first navigation launches them. On a freshly
+    /// created simulator — which CI provisions for every run — that launch
+    /// competes with the device's own first-boot work and with the suite's
+    /// other test processes, so it takes seconds to tens of seconds — not
+    /// the few run-loop turns the main-queue drain bound
+    /// [`MAIN_QUEUE_DEADLINE`](waterui_apple::native_test_support::MAIN_QUEUE_DEADLINE)
+    /// gives one deferred piece of work. Every wait still ends on the
+    /// engine's own completion signal; this only bounds how long a stuck
+    /// engine is given.
+    const ENGINE_DEADLINE: f64 = 180.0;
+
+    pub fn trials() -> Vec<Trial> {
+        vec![
+            Trial::test(
+                "webview::a_non_admitted_document_gets_no_bridge_globals",
+                || {
+                    a_non_admitted_document_gets_no_bridge_globals();
+                    Ok(())
+                },
+            ),
+            Trial::test("webview::raw_evaluation_answers_json", || {
+                raw_evaluation_answers_json();
+                Ok(())
+            }),
+            Trial::test(
+                "webview::mirrored_state_reaches_only_admitted_documents",
+                || {
+                    mirrored_state_reaches_only_admitted_documents();
+                    Ok(())
+                },
+            ),
+        ]
+    }
+
+    /// What a view reported about its loads: every event, in order, and how
+    /// many loads finished. The guard keeps the record subscribed.
+    struct Loads {
+        finished: Rc<Cell<u32>>,
+        events: Rc<RefCell<Vec<String>>>,
+        _guard: WatcherGuard,
+    }
+
+    impl Loads {
+        fn watch(handle: &AnyWebViewHandle) -> Self {
+            let finished = Rc::new(Cell::new(0_u32));
+            let events = Rc::new(RefCell::new(Vec::new()));
+            let guard = handle.watch({
+                let finished = Rc::clone(&finished);
+                let events = Rc::clone(&events);
+                move |event| {
+                    if matches!(event, BackendEvent::Event(WebViewEvent::Loaded)) {
+                        finished.set(finished.get() + 1);
+                    }
+                    events.borrow_mut().push(format!("{event:?}"));
+                }
+            });
+            Self {
+                finished,
+                events,
+                _guard: guard,
+            }
+        }
+    }
+
+    /// Navigates to `destination` and waits for the engine to report the
+    /// load finished — delegate callbacks arrive on the main run loop,
+    /// which `pump_main_until` turns. A load that fails, or is cancelled by
+    /// a navigation policy, reports an error event; that ends the wait, and
+    /// the failure names every event the view reported.
+    fn navigate(handle: &AnyWebViewHandle, destination: &str, loads: &Loads) {
+        let before = loads.finished.get();
+        let reported = loads.events.borrow().len();
+        let failed = || {
+            loads.events.borrow()[reported..]
+                .iter()
+                .any(|event| event.contains("Error"))
+        };
+        let url: Url = destination
+            .parse()
+            .unwrap_or_else(|error| panic!("{destination} must parse: {error}"));
+        handle.go_to(&url);
+        let settled = pump_main_until(ENGINE_DEADLINE, || {
+            loads.finished.get() > before || failed()
+        });
+        assert!(
+            settled && !failed(),
+            "the engine never finished loading {destination}; it reported {:?}",
+            &loads.events.borrow()[reported..]
+        );
+    }
+
+    /// The `typeof` of every global the bridge installs, evaluated in the
+    /// document currently loaded — `waterui`, the `__wateruiEval` wrapper
+    /// and the `__wateruiState` store from the document-start script, plus
+    /// the `__wateruiProbe` the case itself injects, riding the creation-time
+    /// scripts the mirrored-state seed is one of. The probe answers an
+    /// array, whose reply is its JSON encoding on every engine.
+    fn bridge_globals(handle: &AnyWebViewHandle) -> Vec<String> {
+        let globals = block_on_main(
+            ENGINE_DEADLINE,
+            handle.run_javascript(
+                "[typeof waterui, typeof __wateruiEval, typeof __wateruiState, typeof __wateruiProbe]",
+            ),
+        )
+        .unwrap_or_else(|error| panic!("the globals probe must evaluate: {error}"));
+        serde_json::from_str(&globals).unwrap_or_else(|error| {
+            panic!("the globals probe answered {globals}, not a string array: {error}")
+        })
+    }
+
+    /// A view created under `origins` with the probe script and a handler,
+    /// and the record of its loads.
+    fn probed_view(origins: BridgeOrigins) -> (AnyWebViewHandle, Loads) {
+        let initial: Url = "https://waterui.dev".parse().expect("parses");
+        let webview = waterui_apple::native_test_support::webview::controller(mtm()).open_with(
+            WebViewConfig::default()
+                .with_bridge_origins(OriginPolicy::new(origins, &initial))
+                .with_scripts(vec![UserScript::new(
+                    "waterui:test-probe",
+                    "globalThis.__wateruiProbe = true;",
+                    ScriptInjectionTime::DocumentStart,
+                )]),
+        );
+        let handle = webview.handle().clone();
+        let loads = Loads::watch(&handle);
+
+        handle.add_handler(
+            "noop",
+            Box::new(|_| -> waterui_webview::HandlerFuture {
+                Box::pin(async { Ok(JsReply::Json(b"null".to_vec())) })
+            }),
+        );
+        (handle, loads)
+    }
+
+    /// A document outside the admission policy must receive none of the
+    /// bridge: no `waterui` object, no `__wateruiEval`, no `__wateruiState`,
+    /// and none of the creation-time scripts the state seed is one of.
+    ///
+    /// The first view is created under `BridgeOrigins::Any` so the globals
+    /// are expected present — without it, a build that simply never
+    /// installed anything would pass too. Both views load `data:` documents,
+    /// so the policy is the only difference between them. Neither is
+    /// `about:blank`: a fresh view's first `about:blank` navigation reuses
+    /// the initial empty document, which runs no document-start script.
+    fn a_non_admitted_document_gets_no_bridge_globals() {
+        let (admitting, loads) = probed_view(BridgeOrigins::Any);
+        navigate(&admitting, "data:text/html,admitted", &loads);
+        assert_eq!(
+            bridge_globals(&admitting),
+            ["object", "function", "object", "boolean"],
+            "an admitted document must receive the whole bridge"
+        );
+
+        // The default policy — only the origin the view was opened at —
+        // admits nothing a `data:` document could report, so the document
+        // must be left with no bridge at all.
+        let (refusing, loads) = probed_view(BridgeOrigins::Initial);
+        navigate(&refusing, "data:text/plain,elsewhere", &loads);
+        assert_eq!(
+            bridge_globals(&refusing),
+            ["undefined", "undefined", "undefined", "undefined"],
+            "a document outside the admission policy must get no bridge globals"
+        );
+    }
+
+    /// `run_javascript` answers the JSON encoding of the evaluated value —
+    /// a string quoted, a boolean `true`/`false`, `undefined` as `null` —
+    /// checked against a real `WKWebView` through the shared conformance
+    /// case, on a document that has loaded.
+    fn raw_evaluation_answers_json() {
+        let webview = waterui_apple::native_test_support::webview::open(mtm());
+        let handle = webview.handle().clone();
+        let loads = Loads::watch(&handle);
+        navigate(&handle, "data:text/html,conformance", &loads);
+        block_on_main(
+            ENGINE_DEADLINE,
+            waterui_webview::conformance::raw_evaluation_answers_json(async |script| {
+                handle.run_javascript(script).await
+            }),
+        );
+    }
+
+    /// Mirrored state and bridge replies reach only the documents the
+    /// admission policy admits — the shared conformance case, run on two
+    /// real `WKWebView`s opened through the leaf's own controller.
+    ///
+    /// The case's handler futures and mirrored-state flushes run on the
+    /// local executor, which on this backend lands on the main dispatch
+    /// queue; `block_on_main` keeps the run loop turning so they advance
+    /// while it drives the case's future.
+    fn mirrored_state_reaches_only_admitted_documents() {
+        // The local executor is process-global: `initialize_process` installs
+        // a monitored one when the GPU-surface fixtures run, and this install
+        // is a no-op then; otherwise the plain main-queue executor answers
+        // the same contract.
+        let _ = executor_core::try_init_local_executor(
+            native_executor::NativeMainExecutor::new()
+                .expect("the native suite runs on the process's main thread"),
+        );
+        let controller = waterui_apple::native_test_support::webview::controller(mtm());
+        block_on_main(
+            ENGINE_DEADLINE,
+            waterui_webview::conformance::mirrored_state_reaches_only_admitted_documents(
+                &controller,
+            ),
+        );
+    }
+}
+
+/// `AppKit` accessibility coverage for the list — regression tests for
+/// water-rs/waterui#1489. The table vends an `NSTableRow` proxy for every
+/// row, and an unrealized row's cell child materializes the row when an
+/// assistive client asks it for children, so the rows the table exposes
+/// through the generic tree must stay bounded to the realized ones.
+#[cfg(target_os = "macos")]
+mod list_ax {
+    use objc2::msg_send;
+    use objc2::runtime::AnyObject;
+    use objc2_app_kit::{NSAccessibilityChildrenAttribute, NSTableView};
+    use objc2_foundation::{NSArray, NSIndexSet};
+    use waterui::component::list::ListItem;
+    use waterui::layout::scroll::ScrollController;
+    use waterui_apple::native_test_support::{row_item, row_list};
+
+    use super::{AttachedWindow, Retained, leaf, mtm, trial_each};
+
+    /// `examples/edge_list`'s row count — the list the issue's tree walk
+    /// timed out on.
+    const ROWS: usize = 200_000;
+
+    /// The slack the table's non-row children take: `AppKit` adds a column
+    /// element and, where present, header chrome beside the rows.
+    const NON_ROW_CHILDREN: usize = 16;
+
+    /// The rows the table has materialized so far — `rowViewAtRow:` with
+    /// `makeIfNecessary:NO` reads the realized set without touching it.
+    fn realized_rows(table: &NSTableView) -> usize {
+        (0..table.numberOfRows())
+            .filter(|row| table.rowViewAtRow_makeIfNecessary(*row, false).is_some())
+            .count()
+    }
+
+    /// The row elements `accessibilityRows` answers.
+    fn ax_rows(table: &NSTableView) -> Retained<NSArray> {
+        // SAFETY: the query answers an object array.
+        let rows: Option<Retained<NSArray>> = unsafe { msg_send![table, accessibilityRows] };
+        rows.unwrap_or_else(|| NSArray::from_retained_slice(&[]))
+    }
+
+    /// The elements `accessibilityChildren` answers.
+    fn ax_children(table: &NSTableView) -> Retained<NSArray> {
+        // SAFETY: the query answers an object array.
+        let children: Option<Retained<NSArray>> =
+            unsafe { msg_send![table, accessibilityChildren] };
+        children.unwrap_or_else(|| NSArray::from_retained_slice(&[]))
+    }
+
+    /// The elements `accessibilitySelectedRows` answers.
+    fn ax_selected_rows(table: &NSTableView) -> Retained<NSArray> {
+        // SAFETY: the query answers an object array.
+        let rows: Option<Retained<NSArray>> =
+            unsafe { msg_send![table, accessibilitySelectedRows] };
+        rows.unwrap_or_else(|| NSArray::from_retained_slice(&[]))
+    }
+
+    /// A laid-out 200k-row list, its leaf and window alive but never
+    /// ordered in.
+    struct Fixture {
+        table: Retained<NSTableView>,
+        _leaf: waterui_apple::contract::NativeLeaf,
+        _window: AttachedWindow,
+    }
+
+    fn mounted() -> Fixture {
+        let controller = ScrollController::new(0usize);
+        let (leaf, surface) = row_list(vec![row_item as fn() -> ListItem; ROWS], &controller);
+        let window = leaf::attach(mtm(), leaf.view());
+        leaf.view().setNeedsLayout(true);
+        leaf.view().layoutSubtreeIfNeeded();
+        Fixture {
+            table: surface.table_view(),
+            _leaf: leaf,
+            _window: window,
+        }
+    }
+
+    /// A laid-out 200k-row list must expose only realized rows through the
+    /// generic children tree, and walking the exposed elements must
+    /// materialize nothing: before the fix the walk reached every row's
+    /// cell mock, which realized its row — O(rows) materialization.
+    fn a_large_list_walk_materializes_no_rows() {
+        let fixture = mounted();
+        let table = &*fixture.table;
+        assert_eq!(table.numberOfRows(), ROWS.cast_signed());
+        let realized = realized_rows(table);
+        assert!(
+            realized < ROWS / 10,
+            "a freshly laid-out list must virtualize, not realize all {ROWS} rows"
+        );
+
+        let rows = ax_rows(table);
+        assert_eq!(
+            rows.count(),
+            realized,
+            "accessibilityRows must expose only the realized rows"
+        );
+        let children = ax_children(table);
+        assert!(
+            children.count() <= realized + NON_ROW_CHILDREN,
+            "accessibilityChildren must expose only realized rows and the table's chrome"
+        );
+
+        // The walk an assistive client performs: each exposed element's
+        // children. No cell mock for an unrealized row can be reached, so
+        // the realized set must not grow.
+        for element in &children {
+            // SAFETY: the generic attribute getter answers an object.
+            let _: Option<Retained<AnyObject>> = unsafe {
+                msg_send![&*element, accessibilityAttributeValue: NSAccessibilityChildrenAttribute]
+            };
+        }
+        assert_eq!(
+            realized_rows(table),
+            realized,
+            "walking the exposed children must not materialize more rows"
+        );
+    }
+
+    /// A selected-but-unrealized row stays in the row model —
+    /// `accessibilityRows` and `accessibilitySelectedRows` — without
+    /// joining the walkable children.
+    fn a_selected_row_stays_reachable_without_joining_the_walk() {
+        let fixture = mounted();
+        let table = &*fixture.table;
+        let selected = 150_000usize;
+        table
+            .selectRowIndexes_byExtendingSelection(&NSIndexSet::indexSetWithIndex(selected), false);
+
+        let realized = realized_rows(table);
+        let rows = ax_rows(table);
+        assert_eq!(
+            rows.count(),
+            realized + 1,
+            "the selected row must stay in the row model"
+        );
+        let selected_rows = ax_selected_rows(table);
+        assert_eq!(
+            selected_rows.count(),
+            1,
+            "the unrealized selection must remain reportable"
+        );
+        let children = ax_children(table);
+        assert!(
+            children.count() <= realized + NON_ROW_CHILDREN,
+            "the generic children must not gain the unrealized selected row"
+        );
+    }
+
+    /// The `list_ax::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        trial_each(vec![
+            (
+                "list_ax::a_large_list_walk_materializes_no_rows".to_owned(),
+                Box::new(a_large_list_walk_materializes_no_rows),
+            ),
+            (
+                "list_ax::a_selected_row_stays_reachable_without_joining_the_walk".to_owned(),
+                Box::new(a_selected_row_stays_reachable_without_joining_the_walk),
+            ),
+        ])
+    }
+}
+
+/// `AppKit` accessibility coverage for gestures — regression tests for
+/// water-rs/waterui#1490. `NSClickGestureRecognizer` gives an `on_tap`
+/// view no assistive affordance, so the wrapper the gesture renders must
+/// itself be an element answering `accessibilityPerformPress` — the
+/// `AXPress` action `AppKit` puts on an element whose class overrides it.
+#[cfg(target_os = "macos")]
+mod gesture_ax {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::objc2::runtime::ProtocolObject;
+    use cocoa_ui::objc2::{msg_send, sel};
+    use cocoa_ui::objc2_app_kit::NSAccessibility;
+    use waterui::ViewExt as _;
+    use waterui::prelude::text;
+
+    use super::{resolve, trial_each};
+
+    /// What an assistive client gets for `press` — the answer
+    /// `accessibilityPerformPress` returns.
+    fn perform_press(view: &PlatformView) -> bool {
+        // SAFETY: `accessibilityPerformPress` answers a `BOOL`.
+        unsafe { msg_send![view, accessibilityPerformPress] }
+    }
+
+    /// Whether the element offers `AXPress` to an assistive client.
+    fn press_allowed(view: &PlatformView) -> bool {
+        // SAFETY: `isAccessibilitySelectorAllowed:` takes a selector and
+        // answers a `BOOL`.
+        unsafe { msg_send![view, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)] }
+    }
+
+    /// The gesture's `HostView` is an element whose press runs the tap's
+    /// action.
+    fn a_tap_gesture_answers_accessibility_perform_press() {
+        let pressed = Rc::new(Cell::new(0u32));
+        let leaf = resolve::render({
+            let pressed = Rc::clone(&pressed);
+            text("tap").on_tap(move || pressed.set(pressed.get() + 1))
+        });
+        let host = leaf.view();
+        let element = ProtocolObject::<dyn NSAccessibility>::from_ref(host);
+        assert!(
+            element.isAccessibilityElement(),
+            "the tap host must sit in the accessibility tree"
+        );
+        assert!(press_allowed(host), "the tap host must offer AXPress");
+        assert!(perform_press(host), "the tap host must handle a press");
+        assert_eq!(pressed.get(), 1, "the press must run the tap's action");
+    }
+
+    /// A long-press host claims no `AXPress`: a press does not stand in
+    /// for a hold.
+    fn a_long_press_gesture_keeps_the_default_press_answer() {
+        let pressed = Rc::new(Cell::new(0u32));
+        let leaf = resolve::render({
+            let pressed = Rc::clone(&pressed);
+            text("hold").on_long_press_gesture(500, move || {
+                pressed.set(pressed.get() + 1);
+            })
+        });
+        let host = leaf.view();
+        assert!(
+            !press_allowed(host),
+            "a long-press host must not offer AXPress"
+        );
+        assert!(
+            !perform_press(host),
+            "a long-press host must not claim a press"
+        );
+        assert_eq!(pressed.get(), 0);
+    }
+
+    /// The `gesture_ax::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        trial_each(vec![
+            (
+                "gesture_ax::a_tap_gesture_answers_accessibility_perform_press".to_owned(),
+                Box::new(a_tap_gesture_answers_accessibility_perform_press),
+            ),
+            (
+                "gesture_ax::a_long_press_gesture_keeps_the_default_press_answer".to_owned(),
+                Box::new(a_long_press_gesture_keeps_the_default_press_answer),
+            ),
+        ])
+    }
+}
+
+/// `AppKit` accessibility coverage for the labelled-container frame —
+/// water-rs/waterui#1482: a labelled layout container announces the
+/// region its content resolved to, not the frame its parent assigned it.
+#[cfg(target_os = "macos")]
+mod a11y_extent {
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::objc2::runtime::ProtocolObject;
+    use cocoa_ui::objc2_app_kit::{NSAccessibility, NSAccessibilityFrameInView};
+    use cocoa_ui::objc2_foundation::{NSRect, NSSize};
+    use waterui::ViewExt as _;
+    use waterui::prelude::text;
+    use waterui_backend_core::AnyView;
+
+    use super::{HostView, leaf, mtm, resolve, trial_each};
+
+    /// The frame an assistive client reads for `view`.
+    fn ax_frame(view: &PlatformView) -> NSRect {
+        ProtocolObject::<dyn NSAccessibility>::from_ref(view).accessibilityFrame()
+    }
+
+    /// `view`'s own bounds reported in the screen space
+    /// `accessibilityFrame` answers.
+    fn own_frame(view: &PlatformView) -> NSRect {
+        NSAccessibilityFrameInView(view, view.bounds())
+    }
+
+    /// #1482: a `view.size(8, 8).a11y_label("Sized")` under the window's
+    /// `Overlay` is assigned the whole window while its content is placed
+    /// in the resolved 8×8 — the labelled element must report the placed
+    /// region, not the window.
+    fn a_labelled_container_reports_its_content_extent() {
+        let leaf = resolve::render(
+            AnyView::new(AnyView::new(text("x")).size(8.0, 8.0))
+                .size(8.0, 8.0)
+                .a11y_label("Sized"),
+        );
+        let view = leaf.view();
+        let _window = leaf::attach(mtm(), view);
+        view.setNeedsLayout(true);
+        view.layoutSubtreeIfNeeded();
+
+        let content = view
+            .subviews()
+            .iter()
+            .next()
+            .expect("the frame container mounts its content as a subview");
+        let reported = ax_frame(view);
+        assert_eq!(
+            reported.size,
+            NSSize::new(8.0, 8.0),
+            "the labelled element reports the resolved 8x8, not the window"
+        );
+        assert_eq!(
+            reported,
+            NSAccessibilityFrameInView(view, content.frame()),
+            "the reported frame is where the content was placed"
+        );
+        assert_ne!(
+            reported,
+            own_frame(view),
+            "the reported frame is not the assigned bounds"
+        );
+    }
+
+    /// A labelled leaf that is no `HostView` keeps reporting its own
+    /// frame — the flag never lands on it.
+    fn a_labelled_plain_leaf_keeps_its_own_frame() {
+        let on = waterui::reactive::binding(false);
+        let leaf = resolve::render(
+            waterui::component::toggle::Toggle::new("Wi-Fi", &on).a11y_label("Plain"),
+        );
+        let view = leaf.view();
+        assert!(
+            view.downcast_ref::<HostView>().is_none(),
+            "a switch leaf is no host view"
+        );
+        let _window = leaf::attach(mtm(), view);
+        view.setNeedsLayout(true);
+        view.layoutSubtreeIfNeeded();
+        assert_eq!(ax_frame(view), own_frame(view));
+    }
+
+    /// A host view without the flag reports what `NSView` reports; with
+    /// the flag it reports the union of its non-hidden children — or its
+    /// own bounds when it has none.
+    fn a_host_view_reports_content_extent_only_when_marked() {
+        let mtm = mtm();
+        let host = HostView::new(mtm, cocoa_ui::Rect::new(0.0, 0.0, 200.0, 100.0));
+        let _window = leaf::attach(mtm, &host);
+        assert_eq!(
+            ax_frame(&host),
+            own_frame(&host),
+            "an unmarked host reports `super`'s frame"
+        );
+
+        host.set_reports_content_extent(true);
+        assert_eq!(
+            ax_frame(&host),
+            own_frame(&host),
+            "with no children the extent falls back to the view's bounds"
+        );
+
+        let child = HostView::new(mtm, cocoa_ui::Rect::new(10.0, 20.0, 30.0, 40.0));
+        let hidden = HostView::new(mtm, cocoa_ui::Rect::new(100.0, 100.0, 50.0, 50.0));
+        cocoa_ui::view::set_hidden(&hidden, true);
+        host.set_layout_handler(|_| {});
+        cocoa_ui::view::add_subview(&host, &hidden);
+        cocoa_ui::view::add_subview(&host, &child);
+        let expected = NSAccessibilityFrameInView(&host, child.frame());
+        assert_eq!(
+            ax_frame(&host),
+            expected,
+            "the extent is the union of the non-hidden children's frames"
+        );
+    }
+
+    /// The `a11y_extent::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        trial_each(vec![
+            (
+                "a11y_extent::a_labelled_container_reports_its_content_extent".to_owned(),
+                Box::new(a_labelled_container_reports_its_content_extent),
+            ),
+            (
+                "a11y_extent::a_labelled_plain_leaf_keeps_its_own_frame".to_owned(),
+                Box::new(a_labelled_plain_leaf_keeps_its_own_frame),
+            ),
+            (
+                "a11y_extent::a_host_view_reports_content_extent_only_when_marked".to_owned(),
+                Box::new(a_host_view_reports_content_extent_only_when_marked),
+            ),
+        ])
     }
 }

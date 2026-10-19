@@ -6,7 +6,6 @@
 //!
 //! ```toml
 //! [package.metadata.waterui.apple]
-//! required-feature = "remote"
 //! environment-entitlements = ["aps-environment"]
 //!
 //! [package.metadata.waterui.apple.entitlements]
@@ -14,6 +13,14 @@
 //!
 //! [package.metadata.waterui.apple.info-plist]
 //! UIBackgroundModes = ["remote-notification"]
+//! ```
+//!
+//! Declarations meant only while a cargo feature is enabled on the crate go
+//! in a `feature.<cargo-feature>` subtable carrying the same keys:
+//!
+//! ```toml
+//! [package.metadata.waterui.apple.feature.remote.info-plist]
+//! UIBackgroundModes = ["processing"]
 //! ```
 //!
 //! Entitlements whose value is the APNs or App Attest environment are not
@@ -29,6 +36,7 @@ use std::fmt;
 
 use serde::Deserialize;
 
+use super::FeatureTables;
 use super::app_values::{AppValueKey, AppValuesConfig, RequiredAppValues};
 use crate::platform::TargetPlatform;
 
@@ -191,13 +199,18 @@ impl DeclaredValue {
     }
 }
 
-/// One crate's `[package.metadata.waterui.apple]` table.
+/// One crate's `[package.metadata.waterui.apple]` table: an unconditional
+/// base plus `feature.<cargo-feature>` subtables carrying the same keys.
+pub(super) type AppleMetadata = FeatureTables<AppleTable>;
+
+/// The keys of one crate's `[package.metadata.waterui.apple]` table and of
+/// each `[package.metadata.waterui.apple.feature.<cargo-feature>]` subtable.
 ///
 /// Every key is the CLI's, so an unknown one is an error rather than a
 /// declaration silently dropped from the app.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-pub(super) struct AppleMetadata {
+pub(super) struct AppleTable {
     /// Literal entitlements the signature claims.
     #[serde(default)]
     entitlements: BTreeMap<EntitlementKey, DeclaredValue>,
@@ -207,13 +220,9 @@ pub(super) struct AppleMetadata {
     /// Keys merged into the generated `Info.plist`.
     #[serde(default)]
     info_plist: BTreeMap<InfoPlistKey, DeclaredValue>,
-    /// Only required when this cargo feature is enabled on the declaring
-    /// crate; gates every key of the table.
-    #[serde(default)]
-    pub(super) required_feature: Option<String>,
 }
 
-impl AppleMetadata {
+impl AppleTable {
     /// Whether the table declares nothing.
     pub(super) fn is_empty(&self) -> bool {
         self.entitlements.is_empty()
@@ -230,7 +239,7 @@ struct Declared {
 }
 
 /// The entitlements and `Info.plist` keys the whole dependency graph
-/// declares, after `required-feature` gating.
+/// declares, after `feature.<cargo-feature>` gating.
 #[derive(Debug, Default)]
 pub struct AppleDeclarations {
     entitlements: BTreeMap<String, Declared>,
@@ -275,7 +284,7 @@ impl AppleDeclarations {
     ///
     /// Returns an error naming both crates when two crates give one key
     /// different scalar values, or values of different shapes.
-    pub(super) fn merge(&mut self, crate_name: &str, table: AppleMetadata) -> eyre::Result<()> {
+    pub(super) fn merge(&mut self, crate_name: &str, table: AppleTable) -> eyre::Result<()> {
         for (key, value) in table.entitlements {
             merge_declared(
                 &mut self.entitlements,
@@ -455,7 +464,7 @@ impl fmt::Display for DisplayValue<'_> {
 mod tests {
     use super::*;
 
-    fn table(toml_text: &str) -> AppleMetadata {
+    fn table(toml_text: &str) -> AppleTable {
         toml::from_str(toml_text).expect("apple table parses")
     }
 
@@ -706,7 +715,7 @@ mod tests {
             "[info-plist]\nUIScene = { a = 1 }\n",
         ] {
             assert!(
-                toml::from_str::<AppleMetadata>(text).is_err(),
+                toml::from_str::<AppleTable>(text).is_err(),
                 "must reject: {text}"
             );
         }

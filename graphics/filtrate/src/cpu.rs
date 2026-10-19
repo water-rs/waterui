@@ -1,17 +1,26 @@
 //! SIMD CPU kernels for colour filters.
 //!
-//! Every kernel here is a linear map on premultiplied RGBA, so each builds a
-//! 4x4 matrix from its parameters and runs the shared SIMD loop: one `f32x4`
-//! per pixel, the output accumulated column by column with fused
-//! multiply-adds.
+//! A kernel runs on premultiplied RGBA in its stage's operating space. Most
+//! kernels are linear maps in the linear working space itself, so each
+//! builds a 4x4 matrix from its parameters and runs the shared SIMD loop:
+//! one `f32x4` per pixel, the output accumulated column by column with
+//! fused multiply-adds. A kernel whose stage declares
+//! [`OperatingSpace::Srgb`] runs on sRGB-encoded pixels; the generated
+//! `apply_cpu` brackets it in `filtrate_core`'s [`to_srgb`]/[`from_srgb`],
+//! the CPU twins of the executor's `to_srgb`/`from_srgb` conversion stages
+//! (`filtrate_core::space::{TO_SRGB_WGSL, FROM_SRGB_WGSL}`).
 
 use filtrate_core::{
     AuxData, AuxFormat, AuxImage, CpuFilter, CpuFilterError, CpuImage, FilterParam, OperatingSpace,
     SpatialFilter, WorkingSpace,
+    space::{convert, from_srgb, to_srgb},
 };
 use wide::f32x4;
 
-use crate::filters::{BlendWithImage, Blur, GAUSSIAN_RADIUS_PER_SIGMA, GaussianBlur};
+use crate::filters::{
+    BlendWithImage, Blur, GAUSSIAN_RADIUS_PER_SIGMA, GaussianBlur, OverscrollStretch, SRGB_LUMA,
+    STRETCH_INTERPOLATION_STRENGTH,
+};
 
 /// A 4x4 matrix on premultiplied RGBA, stored as columns: the output is
 /// `c[0] * r + c[1] * g + c[2] * b + c[3] * a`.
@@ -121,6 +130,30 @@ pub fn color_matrix(params: [f32; 12], _space: &WorkingSpace, pixels: &mut [[f32
     .apply(pixels);
 }
 
+/// [`LumaCurve`](crate::filters::LumaCurve): the Bézier tone curve on the
+/// sRGB luma plus the chroma gain, on premultiplied sRGB colour — the
+/// stage's declared operating space is sRGB, so the kernel runs between
+/// [`to_srgb`](filtrate_core::space::to_srgb) and
+/// [`from_srgb`](filtrate_core::space::from_srgb).
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "preserves the WGSL Bézier evaluation order"
+)]
+pub fn luma_curve(params: [f32; 7], _space: &WorkingSpace, pixels: &mut [[f32; 4]]) {
+    let [v0, v1, v2, v3, amount, chroma, offset] = params;
+    convert(pixels, |straight| {
+        let luma = straight[0].mul_add(
+            SRGB_LUMA[0],
+            straight[1].mul_add(SRGB_LUMA[1], straight[2] * SRGB_LUMA[2]),
+        );
+        let t = luma.clamp(0.0, 1.0);
+        let u = 1.0 - t;
+        let curve = u * u * u * v0 + 3.0 * t * u * u * v1 + 3.0 * t * t * u * v2 + t * t * t * v3;
+        let tone = amount.mul_add(curve - luma, luma) + offset;
+        straight.map(|channel| tone + chroma * (channel - luma))
+    });
+}
+
 impl<T: FilterParam> CpuFilter for GaussianBlur<T> {
     fn cpu_footprint(params: &Self::Params) -> filtrate_core::Footprint {
         Self::footprint_of(params)
@@ -186,77 +219,117 @@ impl<A: FilterParam> CpuFilter for BlendWithImage<A> {
     }
 }
 
-/// Linear Display P3 to linear sRGB (both D65), rows first: the matrix of
-/// `shaders/space/to_srgb.wgsl`.
-pub const P3_TO_SRGB: [[f32; 3]; 3] = [
-    [1.224_940_2, -0.224_940_2, 0.0],
-    [-0.042_057, 1.042_057, 0.0],
-    [-0.019_637_6, -0.078_636, 1.098_273_6],
-];
+impl<T: FilterParam> CpuFilter for OverscrollStretch<T> {
+    fn cpu_footprint(params: &Self::Params) -> filtrate_core::Footprint {
+        Self::footprint_of(params)
+    }
 
-/// Linear sRGB to linear Display P3 (both D65), rows first: the matrix of
-/// `shaders/space/from_srgb.wgsl`.
-pub const SRGB_TO_P3: [[f32; 3]; 3] = [
-    [0.822_462, 0.177_538, 0.0],
-    [0.033_194_2, 0.966_805_8, 0.0],
-    [0.017_082_6, 0.072_397_4, 0.910_519_9],
-];
-
-/// The executor's `to_srgb` stage on the CPU: premultiplied working-space
-/// pixels to premultiplied sRGB, the transfer mirrored through zero so
-/// extended values stay extended.
-fn to_srgb(pixels: &mut [[f32; 4]]) {
-    convert(pixels, |straight| {
-        transform(&P3_TO_SRGB, straight).map(srgb_encode)
-    });
-}
-
-/// The executor's `from_srgb` stage on the CPU: premultiplied sRGB back to
-/// premultiplied working-space pixels.
-fn from_srgb(pixels: &mut [[f32; 4]]) {
-    convert(pixels, |straight| {
-        transform(&SRGB_TO_P3, straight.map(srgb_decode))
-    });
-}
-
-/// The sRGB transfer of one linear channel, mirrored through zero.
-pub fn srgb_encode(linear: f32) -> f32 {
-    let magnitude = linear.abs();
-    let curve = if magnitude > 0.003_130_8 {
-        1.055f32.mul_add(magnitude.powf(1.0 / 2.4), -0.055)
-    } else {
-        magnitude * 12.92
-    };
-    curve.copysign(linear)
-}
-
-/// The inverse of [`srgb_encode`]: one encoded channel back to linear,
-/// mirrored through zero.
-pub fn srgb_decode(encoded: f32) -> f32 {
-    let magnitude = encoded.abs();
-    let curve = if magnitude > 0.040_45 {
-        ((magnitude + 0.055) / 1.055).powf(2.4)
-    } else {
-        magnitude / 12.92
-    };
-    curve.copysign(encoded)
-}
-
-/// Applies `map` to each pixel's straight-alpha colour, as the conversion
-/// stages do: the colour is unpremultiplied by `max(alpha, 1e-6)` and
-/// premultiplied again by alpha.
-fn convert(pixels: &mut [[f32; 4]], map: impl Fn([f32; 3]) -> [f32; 3]) {
-    for pixel in pixels {
-        let alpha = pixel[3];
-        let divisor = alpha.max(1.0e-6);
-        let [r, g, b] = map([pixel[0] / divisor, pixel[1] / divisor, pixel[2] / divisor]);
-        *pixel = [r * alpha, g * alpha, b * alpha, alpha];
+    fn apply_cpu_image(
+        &self,
+        params: &Self::Params,
+        _space: &WorkingSpace,
+        image: &mut CpuImage<'_>,
+    ) -> Result<(), CpuFilterError> {
+        overscroll_stretch(*params, image);
+        Ok(())
     }
 }
 
-/// `matrix * rgb`, `matrix` given rows first.
-pub fn transform(matrix: &[[f32; 3]; 3], rgb: [f32; 3]) -> [f32; 3] {
-    matrix.map(|row| row[0].mul_add(rgb[0], row[1].mul_add(rgb[1], row[2] * rgb[2])))
+/// The stage's `stretch_axis`: HWUI's `computeOverscroll` for a position
+/// inside `[0, extent]`.
+#[expect(
+    clippy::suboptimal_flops,
+    reason = "mirrors the WGSL stage's evaluation order"
+)]
+fn stretch_axis(position: f32, overscroll: f32, extent: f32) -> f32 {
+    // `mix(1, offset / extent, strength)`.
+    let mix = |offset: f32| {
+        (1.0 - STRETCH_INTERPOLATION_STRENGTH)
+            + offset * (1.0 / extent) * STRETCH_INTERPOLATION_STRENGTH
+    };
+    let stretched = extent / (1.0 + overscroll.abs());
+    if overscroll > 0.0 {
+        let offset = extent - position;
+        stretched - offset / (1.0 + overscroll * mix(offset))
+    } else if overscroll < 0.0 {
+        let offset = position;
+        extent - (stretched - offset / (1.0 - overscroll * mix(offset)))
+    } else {
+        position
+    }
+}
+
+/// [`OverscrollStretch`]: each pixel inside the frame takes the bilinear
+/// sample at its warped position, read from the window's input and clamped
+/// like [`CpuImage`] samples; pixels outside the frame keep their value.
+///
+/// # Panics
+/// If the frame is not invertible.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_possible_wrap,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::many_single_char_names,
+    clippy::suboptimal_flops,
+    reason = "surface coordinates fit f32 and i64; the frame mapping mirrors the WGSL stage's `frame_a`..`frame_f`"
+)]
+fn overscroll_stretch(params: [f32; 10], image: &mut CpuImage<'_>) {
+    let [a, b, c, d, e, f, width, height, stretch_x, stretch_y] = params;
+    let determinant = a * d - b * c;
+    assert!(
+        determinant.is_finite() && determinant != 0.0,
+        "OverscrollStretch: the frame [{a}, {b}, {c}, {d}, {e}, {f}] is not invertible"
+    );
+    let columns = image.size.0;
+    let rows = image.pixels.len().checked_div(columns).unwrap_or(0);
+    if rows == 0 {
+        return;
+    }
+    // Half a pixel along each frame axis: the stage's edge-texel clamp.
+    let inset = [0.5 / a.hypot(b), 0.5 / c.hypot(d)];
+    let input = image.pixels.to_vec();
+    let texel = |x: i64, y: i64| {
+        let x = x.clamp(0, columns as i64 - 1) as usize;
+        let y = (y - image.top as i64).clamp(0, rows as i64 - 1) as usize;
+        input[y * columns + x]
+    };
+    for row in 0..rows {
+        let pixel_y = (image.top + row) as f32 + 0.5;
+        for column in 0..columns {
+            let relative = [column as f32 + 0.5 - e, pixel_y - f];
+            let local = [
+                (d * relative[0] - c * relative[1]) / determinant,
+                (a * relative[1] - b * relative[0]) / determinant,
+            ];
+            if !(0.0..=width).contains(&local[0]) || !(0.0..=height).contains(&local[1]) {
+                continue;
+            }
+            let warped = [
+                stretch_axis(local[0], stretch_x, width)
+                    .max(inset[0])
+                    .min(width - inset[0]),
+                stretch_axis(local[1], stretch_y, height)
+                    .max(inset[1])
+                    .min(height - inset[1]),
+            ];
+            let source = [
+                a * warped[0] + c * warped[1] + e - 0.5,
+                b * warped[0] + d * warped[1] + f - 0.5,
+            ];
+            let base = [source[0].floor(), source[1].floor()];
+            let t = [source[0] - base[0], source[1] - base[1]];
+            let (x0, y0) = (base[0] as i64, base[1] as i64);
+            let lerp = |p: [f32; 4], q: [f32; 4], t: f32| -> [f32; 4] {
+                std::array::from_fn(|channel| p[channel] * (1.0 - t) + q[channel] * t)
+            };
+            image.pixels[row * columns + column] = lerp(
+                lerp(texel(x0, y0), texel(x0 + 1, y0), t[0]),
+                lerp(texel(x0, y0 + 1), texel(x0 + 1, y0 + 1), t[0]),
+                t[1],
+            );
+        }
+    }
 }
 
 #[expect(

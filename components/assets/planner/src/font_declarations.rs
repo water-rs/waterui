@@ -9,12 +9,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use cargo_metadata::{DependencyKind, Metadata, PackageId, Resolve};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 /// A font declaration — from `[[assets.font]]` in `Water.toml` or a crate's
 /// `[package.metadata.waterui.assets.font]` Cargo.toml metadata.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct FontDeclaration {
     /// Font family name (used as `font_family` in Text).
     pub name: String,
@@ -22,10 +23,93 @@ pub struct FontDeclaration {
     pub source: FontSource,
     /// Crate or project that declared this font.
     pub crate_name: String,
+    /// The platforms whose builds bundle this font; `None` bundles it on
+    /// every platform.
+    pub platforms: Option<Vec<FontPlatform>>,
+}
+
+impl FontDeclaration {
+    /// The family `name`, loaded from `source`, declared by `crate_name`, and
+    /// bundled on `platforms` (every platform when `None`).
+    #[must_use]
+    pub const fn new(
+        name: String,
+        source: FontSource,
+        crate_name: String,
+        platforms: Option<Vec<FontPlatform>>,
+    ) -> Self {
+        Self {
+            name,
+            source,
+            crate_name,
+            platforms,
+        }
+    }
+
+    /// Whether a build for `platform` bundles this font.
+    #[must_use]
+    pub fn bundled_on(&self, platform: FontPlatform) -> bool {
+        self.platforms
+            .as_ref()
+            .is_none_or(|platforms| platforms.contains(&platform))
+    }
+}
+
+/// A platform a font declaration can be scoped to with `platforms`.
+///
+/// A name outside this set fails to parse, so a misspelt platform is an error
+/// instead of a font that silently never ships.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum FontPlatform {
+    /// iPhone and iPad.
+    Ios,
+    /// macOS, Mac Catalyst included.
+    Macos,
+    /// tvOS.
+    Tvos,
+    /// watchOS.
+    Watchos,
+    /// visionOS.
+    Visionos,
+    /// Android.
+    Android,
+    /// Desktop Linux.
+    Linux,
+    /// Windows.
+    Windows,
+    /// The browser.
+    Web,
+}
+
+/// The platform scope one declaration carries: every platform when it names
+/// none, the named ones otherwise. An empty list names a font no build would
+/// ever bundle, which is an error.
+///
+/// # Errors
+///
+/// [`FontDeclarationError::EmptyPlatforms`] if `platforms` is an empty list.
+pub fn font_platform_scope(
+    platforms: Option<Vec<FontPlatform>>,
+    crate_name: &str,
+    family: &str,
+) -> Result<Option<Vec<FontPlatform>>, FontDeclarationError> {
+    match platforms {
+        Some(platforms) if platforms.is_empty() => Err(FontDeclarationError::EmptyPlatforms {
+            crate_name: crate_name.to_owned(),
+            family: family.to_owned(),
+        }),
+        platforms => Ok(platforms),
+    }
 }
 
 /// Source of a font file.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the CLI resolves each font source variant by variant; a new source must fail its build instead of falling into a wildcard arm"
+)]
 pub enum FontSource {
     /// Font bundled with the crate at a local path.
     Local {
@@ -98,6 +182,7 @@ impl FontSource {
 
 /// A package's font declarations that cannot be read.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum FontDeclarationError {
     /// The package's `[package.metadata.waterui]` table does not parse.
     #[error("crate {crate_name} declares malformed `[package.metadata.waterui]`: {source}")]
@@ -132,6 +217,17 @@ pub enum FontDeclarationError {
         /// The declared family.
         family: String,
     },
+    /// A declaration's `platforms` is an empty list.
+    #[error(
+        "crate {crate_name} declares font `{family}` with an empty `platforms` list; name the \
+         platforms that bundle it, or leave `platforms` out to bundle it everywhere"
+    )]
+    EmptyPlatforms {
+        /// The declaring package.
+        crate_name: String,
+        /// The declared family.
+        family: String,
+    },
     /// The metadata was produced without dependency resolution (`--no-deps`),
     /// so a declaration's `required-feature` cannot be checked.
     #[error(
@@ -152,6 +248,7 @@ pub enum FontDeclarationError {
 /// The dependency closure [`dependency_font_declarations`] walks from the
 /// resolved graph's root package.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum GraphScope {
     /// An application's graph: the root's normal dependencies transitively —
     /// the packages a build compiles. The `water` CLI resolves in this scope
@@ -188,6 +285,10 @@ struct FontMetadata {
     /// be declared.
     #[serde(default, rename = "required-feature")]
     required_feature: Option<String>,
+    /// The platforms whose builds bundle the font; absent bundles it on
+    /// every platform.
+    #[serde(default)]
+    platforms: Option<Vec<FontPlatform>>,
 }
 
 /// The packages `scope` reaches from `resolve`'s root over `dep_kinds`
@@ -308,10 +409,12 @@ pub fn dependency_font_declarations(
                 package.name.as_ref(),
                 &font.name,
             )?;
+            let platforms = font_platform_scope(font.platforms, package.name.as_ref(), &font.name)?;
             fonts.push(FontDeclaration {
                 name: font.name,
                 source,
                 crate_name: package.name.to_string(),
+                platforms,
             });
         }
     }
@@ -478,6 +581,46 @@ mod tests {
         };
         assert_eq!(crate_root, &PathBuf::from("/ws/app"));
         assert_eq!(relative_path, &PathBuf::from("fonts/app.ttf"));
+    }
+
+    #[test]
+    fn a_platform_scope_limits_the_builds_that_bundle_a_font() {
+        let mut value = fixture(&[]);
+        value["packages"][1]["metadata"]["waterui"]["assets"]["font"][0]["platforms"] =
+            serde_json::json!(["web", "android"]);
+        let declarations = dependency_font_declarations(&metadata(value), GraphScope::Build)
+            .expect("the fixture's declarations resolve");
+        let lib_font = declarations
+            .iter()
+            .find(|declaration| declaration.name == "LibFont")
+            .expect("`LibFont` is declared");
+        assert!(lib_font.bundled_on(FontPlatform::Web));
+        assert!(lib_font.bundled_on(FontPlatform::Android));
+        assert!(!lib_font.bundled_on(FontPlatform::Macos));
+        let app_font = &declarations[0];
+        assert!(app_font.bundled_on(FontPlatform::Macos));
+    }
+
+    #[test]
+    fn an_unknown_platform_is_an_error() {
+        let mut value = fixture(&[]);
+        value["packages"][1]["metadata"]["waterui"]["assets"]["font"][0]["platforms"] =
+            serde_json::json!(["webassembly"]);
+        assert!(matches!(
+            dependency_font_declarations(&metadata(value), GraphScope::Build),
+            Err(FontDeclarationError::Malformed { .. })
+        ));
+    }
+
+    #[test]
+    fn an_empty_platform_list_is_an_error() {
+        let mut value = fixture(&[]);
+        value["packages"][1]["metadata"]["waterui"]["assets"]["font"][0]["platforms"] =
+            serde_json::json!([]);
+        assert!(matches!(
+            dependency_font_declarations(&metadata(value), GraphScope::Build),
+            Err(FontDeclarationError::EmptyPlatforms { .. })
+        ));
     }
 
     #[test]

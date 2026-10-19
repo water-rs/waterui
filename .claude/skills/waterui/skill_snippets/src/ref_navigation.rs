@@ -358,7 +358,7 @@ pub fn navigation_block_10() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 11/13
+// navigation.md § "## Windows" — rust block 11/14
 // ---------------------------------------------------------------------------
 #[expect(
     clippy::redundant_closure,
@@ -393,7 +393,8 @@ pub fn navigation_block_11(env: Environment) -> App {
 // with a `WindowStyle` or a `Binding<WindowStyle>`, `handle().set_style(..)`,
 // `.background(..)` with a `Binding<WindowBackground>`, `set_background(..)`
 // with a colour and a material, `.background(..)` with a Color or a Material,
-// the three `WindowBackground` variants, `.resizable(bool)`,
+// the three `WindowBackground` variants, `.icon(..)` with a `WindowIcon` or a
+// `Binding<Option<WindowIcon>>`, `set_icon(..)`, `.resizable(bool)`,
 // `.min_size(..)` / `.max_size(..)` (one `impl IntoComputed<Size>` each),
 // `.level(..)` / `.resize_increments(..)`, the `WindowState` variants, and the
 // `WindowHandle` controls. Not counted as a rust block.
@@ -401,7 +402,7 @@ pub fn navigation_block_11(env: Environment) -> App {
 pub fn navigation_window_builder_prose() {
     use waterui::background::Material;
     use waterui::window::{
-        UserAttention, Window, WindowBackground, WindowLevel, WindowState, WindowStyle,
+        UserAttention, Window, WindowBackground, WindowIcon, WindowLevel, WindowState, WindowStyle,
     };
 
     let state = binding::<WindowState>(WindowState::default());
@@ -416,6 +417,7 @@ pub fn navigation_window_builder_prose() {
         .resize_increments(Size::new(80.0, 24.0));
     let handle = window.handle();
     handle.maximize();
+    handle.request_close();
     handle.request_attention(UserAttention::Informational);
     handle.cancel_attention();
     let _ = Window::new("W", state.clone(), || text("c"))
@@ -433,6 +435,13 @@ pub fn navigation_window_builder_prose() {
     window.handle().set_background(Material::UltraThin);
     background.set(WindowBackground::Material(Material::Thin));
     background.set(WindowBackground::Color(Color::transparent()));
+    let icon = WindowIcon::new(1, 1, vec![255_u8, 0, 0, 255]);
+    let themed_icon = binding(None::<WindowIcon>);
+    let _ = Window::new("W", binding(WindowState::Closed), || text("c")).icon(icon.clone());
+    let window =
+        Window::new("W", binding(WindowState::Closed), || text("c")).icon(themed_icon.clone());
+    window.handle().set_icon(icon);
+    window.handle().set_icon(None);
 
     let _ = WindowStyle::FullSizeContentView;
     let _ = WindowState::Normal;
@@ -443,7 +452,7 @@ pub fn navigation_window_builder_prose() {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows" — rust block 12/13
+// navigation.md § "## Windows" — rust block 12/14
 // ---------------------------------------------------------------------------
 pub fn navigation_block_12() -> impl View {
     use waterui::window::WindowState;
@@ -456,9 +465,39 @@ pub fn navigation_block_12() -> impl View {
 }
 
 // ---------------------------------------------------------------------------
-// navigation.md § "## Windows that open and close" — rust block 13/13
+// navigation.md § "## Windows" — rust block 13/14
 // ---------------------------------------------------------------------------
-pub fn navigation_block_13() -> impl View {
+pub fn navigation_block_13() -> waterui::window::Window {
+    fn editor_content() -> impl View {
+        text("editor")
+    }
+
+    use waterui::window::CloseReply;
+    use waterui::window::{Window, WindowState};
+
+    let unsaved = binding(true);
+    // While set, the editor shows a "Discard changes?" prompt whose Discard button
+    // writes `WindowState::Closed` — a close that does not ask again.
+    let confirm_discard = binding(false);
+    let window_state = binding(WindowState::Normal);
+
+    Window::new("Editor", window_state.clone(), editor_content).on_close_request(move || {
+        let ask = unsaved.snapshot();
+        confirm_discard.set(ask);
+        async move {
+            if ask {
+                CloseReply::Cancel
+            } else {
+                CloseReply::Close
+            }
+        }
+    })
+}
+
+// ---------------------------------------------------------------------------
+// navigation.md § "## Windows that open and close" — rust block 14/14
+// ---------------------------------------------------------------------------
+pub fn navigation_block_14() -> impl View {
     fn inspector_content() -> impl View {
         text("inspector")
     }

@@ -190,28 +190,54 @@ impl Drop for UIKitMount {
     }
 }
 
-/// Hosts real content through embedding's shared mount/primary-content/layout path.
+/// The scene-less `UIWindow` the spawned test process mounts into.
+///
+/// `initWithFrame:` is the only construction outside a window scene —
+/// the spawned test binary owns no scene — so this is the one site the
+/// deprecation is expected at. The window takes the screen's bounds, so
+/// its ambient `safeAreaInsets` — the notch band above, the
+/// home-indicator band below — are the real ones a `WaterUI` app sees.
 #[cfg(target_os = "ios")]
 #[expect(
     deprecated,
     reason = "the native test process supplies its own window without a scene"
 )]
 #[must_use]
-pub fn mount_uikit(
+pub fn spawned_window(
+    mtm: MainThreadMarker,
+) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow> {
+    use objc2::MainThreadOnly;
+    let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithFrame(
+        cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
+        cocoa_ui::objc2_core_foundation::CGRect::ZERO,
+    );
+    window.setFrame(window.screen().bounds());
+    window
+}
+
+/// Hosts real content through embedding's shared mount/primary-content/layout path.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn mount_uikit(mtm: MainThreadMarker, view: waterui::AnyView, env: &Environment) -> UIKitMount {
+    mount_uikit_window(mtm, view, env, spawned_window(mtm))
+}
+
+/// `mount_uikit` into a window the caller already owns — a trial that
+/// must reach the window before the first mount (the keyboard can be
+/// up first) uses this.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn mount_uikit_window(
     mtm: MainThreadMarker,
     view: waterui::AnyView,
     env: &Environment,
-    frame: cocoa_ui::Rect,
+    window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
 ) -> UIKitMount {
-    use objc2::{MainThreadOnly, Message};
+    use objc2::Message;
     let controller = cocoa_ui::uikit::ViewController::new(mtm, cocoa_ui::uikit::window_root(mtm));
     let host = controller.host_view().retain();
-    let window = cocoa_ui::objc2_ui_kit::UIWindow::initWithFrame(
-        cocoa_ui::objc2_ui_kit::UIWindow::alloc(mtm),
-        frame.into(),
-    );
     window.setRootViewController(Some(&controller));
-    cocoa_ui::view::set_frame(&host, frame);
+    cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&window));
     let mut keepalive = crate::contract::KeepAlive::default();
     let mut env = env.clone();
     crate::theme::install_controller(&mut env, &controller, &mut keepalive);
@@ -223,6 +249,102 @@ pub fn mount_uikit(
         content,
         window,
         _controller: controller,
+        _keepalive: keepalive,
+    }
+}
+
+/// `mount_uikit` at a fixed window frame — trials that assert geometry
+/// inside a window sized for the case rather than the screen's.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn mount_uikit_in(
+    mtm: MainThreadMarker,
+    view: waterui::AnyView,
+    env: &Environment,
+    frame: cocoa_ui::Rect,
+) -> UIKitMount {
+    let mount = mount_uikit(mtm, view, env);
+    mount.window.setFrame(frame.into());
+    cocoa_ui::view::set_frame(&mount.host, frame);
+    mount.window.layoutIfNeeded();
+    mount
+}
+
+/// A kit subtree embedded under a foreign window root.
+///
+/// The window's root view controller is a plain `UIViewController` and
+/// the `HostView` sits inside a plain `UIView` container — every host
+/// in the window shares the window's own keyboard region regardless.
+#[cfg(target_os = "ios")]
+#[derive(Debug)]
+pub struct EmbeddedMount {
+    /// The embedded host.
+    pub host: cocoa_ui::Retained<cocoa_ui::uikit::HostView>,
+    /// The foreign-rooted window holding the subtree.
+    pub window: cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIWindow>,
+    /// The mounted content inside `host`.
+    pub content: alloc::rc::Rc<crate::contract::Mounted>,
+    _keepalive: crate::contract::KeepAlive,
+}
+
+#[cfg(target_os = "ios")]
+impl Drop for EmbeddedMount {
+    fn drop(&mut self) {
+        self.window.setHidden(true);
+        self.window.setRootViewController(None);
+    }
+}
+
+/// Mounts `view` into an embedded `HostView` under a foreign window
+/// root in either content-mount order.
+///
+/// `content_first` mounts the content while the host is still detached
+/// and only then reaches the window; otherwise the host joins the
+/// already-windowed container first and mounts after — proving the
+/// window's keyboard region answers the same either way.
+#[cfg(target_os = "ios")]
+#[must_use]
+pub fn mount_uikit_embedded(
+    mtm: MainThreadMarker,
+    view: waterui::AnyView,
+    env: &Environment,
+    content_first: bool,
+) -> EmbeddedMount {
+    use cocoa_ui::objc2_ui_kit::{UIView, UIViewController};
+    use cocoa_ui::uikit::HostView;
+    use objc2::{MainThreadOnly, msg_send};
+
+    // SAFETY: `init` is `UIViewController`'s plain designated initializer.
+    let foreign: cocoa_ui::Retained<UIViewController> =
+        unsafe { msg_send![UIViewController::alloc(mtm), init] };
+    let window = spawned_window(mtm);
+    let container = UIView::initWithFrame(UIView::alloc(mtm), window.screen().bounds());
+    let host = HostView::new(mtm, cocoa_ui::Rect::ZERO);
+    let mut view = Some(view);
+    let mut keepalive = crate::contract::KeepAlive::default();
+    let mut mount = |host: &_, env: &_, keepalive: &mut _| {
+        crate::embedding::mount_content(
+            host,
+            view.take().expect("the view mounts once"),
+            env,
+            keepalive,
+        )
+    };
+    let content = content_first.then(|| mount(&host, env, &mut keepalive));
+    window.setRootViewController(Some(&foreign));
+    foreign
+        .view()
+        .expect("a root view controller creates its view")
+        .addSubview(&container);
+    container.addSubview(&host);
+    cocoa_ui::view::set_frame(&host, cocoa_ui::view::bounds(&container));
+    let content = content.unwrap_or_else(|| mount(&host, env, &mut keepalive));
+    window.makeKeyAndVisible();
+    window.layoutIfNeeded();
+    EmbeddedMount {
+        host,
+        window,
+        content,
         _keepalive: keepalive,
     }
 }
@@ -336,6 +458,11 @@ pub fn bind_root_window_wires_a_live_window(mtm: MainThreadMarker) {
         &background,
         true,
         true,
+        // The declaration this models registers no `on_close_request`
+        // handler, so the embed path's
+        // `has_close_handler().then(|| declaration.handle())` is `None` —
+        // the host window's close button stays unconditional.
+        None,
         mtm,
     );
 
@@ -424,6 +551,41 @@ pub mod filtered {
     pub use crate::components::filtered::native_test::{MountedFilteredSurface, WakeProbe};
 }
 
+/// The web view leaf's harness reach.
+///
+/// Opens a real `WKWebView` through the same late install an application
+/// gets — `install_service` fills the environment's `WebViewController`
+/// slot exactly the way `embedding::mount` does — so a case can drive the
+/// engine without mounting a view tree.
+#[cfg(feature = "webview")]
+pub mod webview {
+    use cocoa_ui::MainThreadMarker;
+    use waterui_backend_core::Environment;
+
+    /// The `WebViewController` the leaf's `install_service` installs.
+    ///
+    /// This is the same construction `open` drives, so a case that opens
+    /// several views shares the one service install. `mtm` is the proof
+    /// the call happened on the real main thread, which `WKWebView`
+    /// requires.
+    #[must_use]
+    pub fn controller(_mtm: MainThreadMarker) -> waterui_webview::WebViewController {
+        let mut env = Environment::new();
+        crate::components::webview::install_service(&mut env);
+        env.get::<waterui_webview::WebViewController>()
+            .expect("the webview leaf installs its WebViewController")
+            .clone()
+    }
+
+    /// A fresh `WebView` backed by the backend's own `WKWebView`, never
+    /// mounted. `mtm` is the proof the call happened on the real main
+    /// thread, which `WKWebView` requires.
+    #[must_use]
+    pub fn open(mtm: MainThreadMarker) -> waterui_webview::WebView {
+        controller(mtm).open()
+    }
+}
+
 /// Counts `tracing` ERROR events one module emits — a settle contract
 /// that must log exactly once per failure asserts on the count.
 ///
@@ -506,6 +668,11 @@ pub fn render_environment() -> Environment {
         black(),
     );
     waterui::theme::install_color_signal::<waterui::theme::color::Accent>(&mut env, black());
+    // A selectable list's rows re-theme onto the selection role.
+    waterui::theme::install_color_signal::<waterui::theme::color::SelectionForeground>(
+        &mut env,
+        black(),
+    );
     waterui::theme::install_font_signal::<Body>(&mut env, binding(Body::DEFAULT).computed());
     waterui::theme::install_font_signal::<Caption>(&mut env, binding(Caption::DEFAULT).computed());
     waterui::theme::install_font_signal::<Subheadline>(
@@ -616,4 +783,77 @@ pub fn row_list(
         .expect("a List renders the kit's table surface")
         .retain();
     (leaf, table)
+}
+
+/// Reads the standard menu bar as `menus::install` builds it — for the
+/// native suite to assert the standard items' rows without an `AppKit`
+/// handle of its own.
+#[cfg(target_os = "macos")]
+pub mod menus {
+    use cocoa_ui::MainThreadMarker;
+    use cocoa_ui::appkit::Application;
+    use cocoa_ui::objc2_app_kit::{NSApplication, NSEventModifierFlags};
+    use cocoa_ui::objc2_foundation::NSString;
+    use waterui::component::menu::{CloseWindowPlacement, Shortcut};
+
+    /// One row of a built menu — what a case asserts without touching
+    /// `NSMenuItem`.
+    #[derive(Debug)]
+    #[non_exhaustive]
+    pub struct MenuRow {
+        /// The row's title.
+        pub title: String,
+        /// Its key equivalent — `""` for none.
+        pub key_equivalent: String,
+        /// The modifiers its key equivalent takes.
+        pub modifiers: NSEventModifierFlags,
+        /// The name of the selector the row sends, when it sends one —
+        /// `performClose:` on the standard Close item.
+        pub action: Option<String>,
+        /// Whether the row reports enabled after a validation pass.
+        pub enabled: bool,
+        /// Whether the row is a separator.
+        pub separator: bool,
+    }
+
+    /// The Window menu's rows in the standard bar `menus::install` builds.
+    ///
+    /// Installs that bar — the default menus plus nothing declared, with
+    /// `close_chord` the chord its Close item carries — then runs an
+    /// `update()` validation pass on the Window menu, so `enabled`
+    /// answers what the responder chain can take.
+    #[must_use]
+    pub fn window_menu_rows(
+        mtm: MainThreadMarker,
+        close_window: CloseWindowPlacement,
+        close_chord: Option<&Shortcut>,
+    ) -> Vec<MenuRow> {
+        let application = Application::shared(mtm);
+        crate::menus::install(mtm, &application, &[], close_window, close_chord);
+        let main = NSApplication::sharedApplication(mtm)
+            .mainMenu()
+            .expect("install sets the main menu");
+        let window_menu = main
+            .itemWithTitle(&NSString::from_str("Window"))
+            .and_then(|item| item.submenu())
+            .expect("the standard bar's Window item opens a submenu");
+        window_menu.update();
+        window_menu
+            .itemArray()
+            .iter()
+            .map(|item| MenuRow {
+                title: item.title().to_string(),
+                key_equivalent: item.keyEquivalent().to_string(),
+                modifiers: item.keyEquivalentModifierMask(),
+                action: item.action().map(|sel| {
+                    sel.name()
+                        .to_str()
+                        .expect("selector names are ASCII")
+                        .into()
+                }),
+                enabled: item.isEnabled(),
+                separator: item.isSeparatorItem(),
+            })
+            .collect()
+    }
 }

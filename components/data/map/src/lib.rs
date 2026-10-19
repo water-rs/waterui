@@ -37,6 +37,10 @@ pub use waterkit_location::{Latitude, Location, Longitude, OutOfRange, Timestamp
 
 /// A geographic coordinate with latitude and longitude.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a geographic coordinate: latitude and longitude are the whole value"
+)]
 pub struct Coordinate {
     /// Latitude in degrees (-90 to 90).
     pub latitude: Latitude,
@@ -98,6 +102,7 @@ impl Default for Coordinate {
 
 /// A map region defined by a center coordinate and span.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct Region {
     /// The center coordinate of the region.
     pub center: Coordinate,
@@ -141,6 +146,7 @@ impl_constant!(Coordinate, Region, Annotation, MapStyle, MapStatus);
 
 /// A map annotation (pin marker).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Annotation {
     /// The coordinate where the annotation is placed.
     pub coordinate: Coordinate,
@@ -177,6 +183,10 @@ impl Annotation {
 /// `hybrid_style_url`). The map reports a load failure when it did not, rather
 /// than silently drawing the standard style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the map realizations load each style variant by variant; a new style must fail their build instead of falling into a wildcard arm"
+)]
 pub enum MapStyle {
     /// Standard road map.
     #[default]
@@ -194,6 +204,7 @@ pub enum MapStyle {
 /// Realizations that draw from a platform map report the platform's own
 /// load callbacks.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum MapStatus {
     /// The map is fetching the data it needs to draw.
     #[default]
@@ -226,6 +237,7 @@ impl MapStatus {
 
 /// Generic visibility toggle for optional map chrome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MapVisibility {
     /// Hide the feature.
     Hidden,
@@ -247,6 +259,7 @@ impl MapVisibility {
 
 /// Controls whether the user can pan and zoom the map.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MapInteractivity {
     /// Disable direct map interaction.
     ReadOnly,
@@ -272,6 +285,7 @@ impl MapInteractivity {
 
 /// Configuration for the Map component.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct MapConfig {
     /// The region to display.
     pub region: Computed<Region>,

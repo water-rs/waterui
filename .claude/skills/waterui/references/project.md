@@ -22,12 +22,12 @@ is never what a user of the framework wants.
 
 ```bash
 # macOS and Linux
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/waterui/releases/download/cli-latest/waterui-cli-installer.sh | sh
 ```
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/waterui/releases/download/cli-latest/waterui-cli-installer.ps1 | iex"
 ```
 
 `water update` replaces the binary with the newest release; `water update --check`
@@ -42,7 +42,6 @@ CLI keeps it consistent with the backends it builds.
 ```bash
 water create "My App"
 water create "My App" --bundle-id dev.example.myapp
-water create "My App" --backends apple,android,hydrolysis
 ```
 
 There are no modes or package types to choose: every project is entry-owning — WaterUI
@@ -97,8 +96,8 @@ Generated projects carry a `dev` feature that forwards to `waterui/dynamic_linki
 dev = ["waterui/dynamic_linking"]
 ```
 
-Keep it. `dynamic_linking` builds the app as a dylib against a shared framework copy,
-which is what `water preview` and the fast dev loop link against — the difference between
+Keep it. `dynamic_linking` links the app against a shared framework runtime,
+which is what `water preview` and the fast dev loop reuse — the difference between
 a seconds-scale and a minutes-scale edit-to-render cycle. Every compiled example in the
 WaterUI repository declares exactly this stanza; a hand-added crate that omits it gets
 cold static builds and a preview pipeline that cannot load it. It is a build strategy,
@@ -116,6 +115,9 @@ name = "My App"
 bundle_identifier = "dev.example.myapp"
 # assets_path = "assets"                  # default
 # accessory = false                       # macOS: build as a headless accessory app
+
+[platforms.linux]                         # optional
+backend = "hydrolysis"
 
 [theme]
 background = "#0B0B0F"
@@ -142,6 +144,10 @@ description = "Required to show user location on the map"
 
 The `[theme]` slots seed the same tokens described in `references/styling.md`, so setting
 them once here themes the whole app on every backend.
+
+The optional `[platforms.<platform>]` tables declare the project's backend for each
+platform; see [Platforms and backends](#platforms-and-backends). `water create` writes
+no declarations.
 
 When developing against a local WaterUI checkout, add `waterui_path = "../.."` at the top
 level so backends resolve locally instead of from the registry.
@@ -240,6 +246,7 @@ water run --native-logs                # include native platform logs too — no
 
 water build <target>                   # compile the Rust library for a platform
 water package                          # package the production (release) build; --debug for an unoptimized one
+water package --platform ios --device <udid>  # provision the package for a specific device
 water devices                          # list simulators and devices
 water doctor                           # check the toolchain
 water clean
@@ -252,19 +259,43 @@ the app crashed** — read the log tail rather than treating it as success.
 
 ## Platforms and backends
 
+Declare a backend once in `Water.toml` with `[platforms.linux]` and
+`backend = "hydrolysis"`, for example. The platform names are `ios`,
+`ios-simulator`, `macos`, `android`, `linux`, `windows`, `web`, `esp32s3`,
+`esp32c3`, and `esp32p4`; backend names are `apple`, `android`, `gtk4`,
+`hydrolysis`, and `winui`, exactly as in CLI flags. Unknown names and backends
+unsupported on the selected platform are manifest errors. ESP32 currently has no
+supported backend, so it cannot carry a backend declaration.
+
+`water build`, `water run`, `water package`, and CLI/MCP previews use the declaration.
+An explicit `--backend` (MCP: `backend`) may equal it, but a different value is an error
+before building. Without a declaration an explicit backend wins; without either,
+the defaults below apply. `water create` leaves the tables absent.
+
 | Platform | Default backend | Also possible |
 |---|---|---|
-| macOS, iOS, tvOS, watchOS, visionOS (+ simulators) | `apple` (UIKit/AppKit) | `hydrolysis` |
-| Android | `android` (Android View) | `hydrolysis` |
+| macOS | `apple` (AppKit) | `hydrolysis` |
+| iOS (+ simulator) | `apple` (UIKit) | — |
+| Android | `hydrolysis` | — |
 | Linux | `gtk4` | `hydrolysis` |
-| Windows | `hydrolysis` | — |
-| Web | WASM + WebGPU | — |
-| ESP32-S3 | `dew` | — |
+| Windows | `hydrolysis` | `winui` |
+| Web | `hydrolysis` (WASM + WebGPU) | — |
 
-Native backends bridge to real platform widgets. `hydrolysis` and `dew` are WaterUI's own
-renderers: `hydrolysis` is GPU-required and targets high-refresh modern hardware; `dew` is
-CPU-first for constrained devices. Choosing a self-drawn renderer is a deliberate decision,
-never a fallback for a native path that failed.
+Previews support only `apple` on iOS/macOS and `hydrolysis` on macOS/Linux/Windows/Android.
+A resolved backend without preview support is an error, not a fallback. For Linux
+previews, declare `hydrolysis` or pass `--backend hydrolysis` on an undeclared project.
+`water preview test` requires Hydrolysis and rejects a conflicting declaration too.
+
+Native backends bridge to real platform widgets. `hydrolysis` is WaterUI's own
+renderer: it is GPU-required and targets high-refresh modern hardware. Choosing a
+self-drawn renderer is a deliberate decision, never a fallback for a native path that
+failed.
+
+TypeScript views (`tsx!`) run on an embedded JavaScript engine that differs by platform:
+JavaScriptCore on iOS, macOS, tvOS and visionOS; QuickJS-NG on Android, Linux and Windows;
+unsupported on watchOS — the platform ships no JavaScriptCore and embedding QuickJS-NG
+there is not supported. The asymmetry is documented, not faked: the `ts` feature does
+not build on watchOS, a compile error rather than a fallback.
 
 The same view code runs on all of them. Platform-specific behavior belongs in the backend,
 not in conditional app code.
@@ -290,23 +321,3 @@ water run --logs debug
 view tree, layout bounds, and the accessibility tree. When a layout looks wrong, read the
 accessibility bounds rather than eyeballing the picture — bounds tell you which container
 mis-sized a child; a screenshot only tells you something is off.
-
-## Embedded targets (Dew)
-
-WaterUI runs on microcontrollers through the Dew backend: CPU rasterization, no GPU, and
-dirty-region flushes sized for SPI panels, so peak pixel memory is one band rather than a
-full frame. The same views, bindings, and `text!` reactivity work unchanged.
-
-Develop against the desktop panel simulator — the full embedded rendering path in a native
-window, no cross-compilation:
-
-```bash
-cargo run -p waterui-dew --example watch_sim --features embedded-simulator
-```
-
-Headless snapshot: `waterui_dew::render_view_png(builder, env, w, h)`.
-
-Dew supports a deliberately narrow set of views (stacks, padding, colors, spacers, text,
-navigation and shape primitives). An unsupported view panics immediately with a clear
-message rather than rendering something wrong — treat that panic as the accurate answer
-about what the target can do, not as a bug to route around.

@@ -6,34 +6,53 @@ use naga::back::{hlsl, msl, spv};
 use naga::valid::{Capabilities, ValidationFlags, Validator};
 use naga::{Module, front::wgsl};
 
-const SHADER: &str = include_str!("../src/render/shader.wgsl");
-const SHARED: &str = include_str!("../src/render/shared.wgsl");
+/// The seven engine modules exactly as `build.rs` composed, validated
+/// and emitted them — read from `OUT_DIR` so the test exercises the
+/// shipped source rather than a copy of its composition logic.
+const ENGINE_SOURCES: [&str; 7] = [
+    include_str!(concat!(env!("OUT_DIR"), "/engine0.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine1.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine2.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine3.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine4.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine5.wgsl")),
+    include_str!(concat!(env!("OUT_DIR"), "/engine6.wgsl")),
+];
+const SHARED: &str = include_str!(concat!(env!("OUT_DIR"), "/shared.wgsl"));
 const BLEND: &str = include_str!("../src/render/blend.wgsl");
 const PROJECTIVE: &str = include_str!("../src/render/projective.wgsl");
 const MIP: &str = include_str!("../src/render/mip.wgsl");
 const RESOLVE: &str = include_str!("../src/render/resolve.wgsl");
 
+/// The Metal language version `build.rs` precompiles the engine modules
+/// at: 2.3, the first to take `-ftexture-write-rounding-mode` (#2773).
+const ENGINE_MSL_VERSION: (u8, u8) = (2, 3);
+
 /// The oldest Metal language version wgpu selects on a supported macOS
-/// (10.13 → 2.0), which is where `instance_id` and friends became legal.
+/// (10.13 → 2.0) for the modules it compiles at run time, such as backdrop
+/// effects, which is where `instance_id` and friends became legal.
 const MSL_VERSION: (u8, u8) = (2, 0);
 
-fn composed(variant: u32) -> (Module, naga::valid::ModuleInfo) {
-    // The engine module is `shared.wgsl`, `shader.wgsl` then `blend.wgsl`,
-    // as in build.rs.
-    let source = format!("const VARIANT: u32 = {variant}u;\n{SHARED}\n{SHADER}\n{BLEND}");
-    let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
+fn composed(variant: usize) -> (Module, naga::valid::ModuleInfo) {
+    let source = ENGINE_SOURCES[variant];
+    let module = wgsl::parse_str(source).unwrap_or_else(|e| panic!("variant {variant}: {e}"));
+    // The capabilities `build.rs` validates every engine module with: the
+    // image-source conversion rounds through `quantizeToF16`.
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("variant {variant}: {e:?}"));
     (module, info)
 }
 
 split_test! {
 fn every_variant_emits_msl() {
-    for variant in 0..3 {
+    for variant in 0..ENGINE_SOURCES.len() {
         let (module, info) = composed(variant);
         let options = msl::Options {
-            lang_version: MSL_VERSION,
+            lang_version: ENGINE_MSL_VERSION,
             ..msl::Options::default()
         };
         msl::write_string(&module, &info, &options, &msl::PipelineOptions::default())
@@ -44,7 +63,7 @@ fn every_variant_emits_msl() {
 
 split_test! {
 fn every_variant_emits_spirv() {
-    for variant in 0..3 {
+    for variant in 0..ENGINE_SOURCES.len() {
         let (module, info) = composed(variant);
         let mut writer = spv::Writer::new(&spv::Options::default())
             .unwrap_or_else(|e| panic!("variant {variant}: spv: {e}"));
@@ -59,7 +78,7 @@ fn every_variant_emits_spirv() {
 
 split_test! {
 fn every_variant_emits_hlsl() {
-    for variant in 0..3 {
+    for variant in 0..ENGINE_SOURCES.len() {
         let (module, info) = composed(variant);
         let options = hlsl::Options::default();
         let mut out = String::new();
@@ -78,11 +97,25 @@ fn every_variant_emits_hlsl() {
 /// renderer feeds `create_shader_module`, so an invalid module surfaces
 /// here before any device exists.
 fn effect_module(name: &str, user: &str) -> (Module, naga::valid::ModuleInfo) {
-    let text = cherenkov_gpu::backdrop_effect_text(user);
+    // A member may draw under a union: the union-shape module validates
+    // on the same user source before the plain one is emitted below.
+    let union_text = cherenkov_gpu::backdrop_effect_text(user, true);
+    let union_module =
+        wgsl::parse_str(&union_text).unwrap_or_else(|e| panic!("{name} (union): {e}"));
+    Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&union_module)
+    .unwrap_or_else(|e| panic!("{name} (union): {e:?}"));
+    let text = cherenkov_gpu::backdrop_effect_text(user, false);
     let module = wgsl::parse_str(&text).unwrap_or_else(|e| panic!("{name}: {e}"));
-    let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
-        .validate(&module)
-        .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+    let info = Validator::new(
+        ValidationFlags::all(),
+        Capabilities::SHADER_FLOAT16_IN_FLOAT32,
+    )
+    .validate(&module)
+    .unwrap_or_else(|e| panic!("{name}: {e:?}"));
     (module, info)
 }
 
@@ -112,6 +145,15 @@ fn effect_emits(name: &str, module: &Module, info: &naga::valid::ModuleInfo) {
 }
 
 split_test! {
+fn silhouette_shadow_emits() {
+    let module = wgsl::parse_str(include_str!("../src/render/shadow.wgsl")).expect("silhouette WGSL");
+    let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32)
+        .validate(&module).expect("valid silhouette module");
+    effect_emits("silhouette shadow", &module, &info);
+}
+}
+
+split_test! {
 /// The registered-effect module parses, validates and translates through
 /// every naga backend — for each built-in effect kind's semantics as a
 /// user source would use them (sample, SDF normal and displacement), and
@@ -123,8 +165,8 @@ fn backdrop_effect_text_emits() {
         // BackdropEffect::Color: a premultiplied matrix multiply.
         (
             "color-matrix",
-            "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-                let c = backdrop_sample(p);
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                let c = backdrop_sample(px.p);
                 return vec4<f32>(
                     c.rgb * params[0].xyz + params[1].xyz * c.a,
                     c.a
@@ -134,24 +176,24 @@ fn backdrop_effect_text_emits() {
         // BackdropEffect::Refraction: displaced sample along the normal.
         (
             "refraction-displace",
-            "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-                let t = clamp(1.0 + sdf / params[0].y, 0.0, 1.0);
-                return backdrop_sample(p - normal * params[0].x * t * t);
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                let t = clamp(1.0 + px.sdf / params[0].y, 0.0, 1.0);
+                return backdrop_sample(px.p - px.normal * params[0].x * t * t);
             }",
         ),
         // BackdropEffect::Rim: a highlight scaled by the inside distance.
         (
             "rim-light",
-            "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-                let rim = clamp(1.0 + sdf / 4.0, 0.0, 1.0);
-                return vec4<f32>(backdrop_sample(p).rgb * (1.0 + params[0].x * rim), backdrop_sample(p).a);
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                let rim = clamp(1.0 + px.sdf / 4.0, 0.0, 1.0);
+                return vec4<f32>(backdrop_sample(px.p).rgb * (1.0 + params[0].x * rim), backdrop_sample(px.p).a);
             }",
         ),
         // A representative BackdropEffect::Shader source.
         (
             "user-size",
-            "fn backdrop_effect(p: vec2<f32>, sdf: f32, normal: vec2<f32>, size: vec2<f32>, params: array<vec4<f32>, 16>) -> vec4<f32> {
-                return vec4<f32>(size.x / 256.0, size.y / 256.0, 0.0, 1.0);
+            "fn backdrop_effect(px: BackdropPixel, params: array<vec4<f32>, 16>) -> vec4<f32> {
+                return vec4<f32>(px.size.x / 256.0, px.size.y / 256.0, 0.0, 1.0);
             }",
         ),
     ];
@@ -173,7 +215,7 @@ fn standalone_modules_emit() {
         ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));
-        let info = Validator::new(ValidationFlags::all(), Capabilities::empty())
+        let info = Validator::new(ValidationFlags::all(), Capabilities::SHADER_FLOAT16_IN_FLOAT32)
             .validate(&module)
             .unwrap_or_else(|e| panic!("{name}: {e:?}"));
         effect_emits(name, &module, &info);

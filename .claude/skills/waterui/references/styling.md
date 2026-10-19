@@ -316,8 +316,8 @@ Hydrolysis (the self-drawn GPU renderer) is styled by construction: every entry 
 takes a `hydrolysis::Style` value, and `Material3` is the Material Design 3 one:
 
 ```rust
-hydrolysis::run(app(env), hydrolysis_m3::Material3::defaults());   // light+dark baseline
-hydrolysis::run(app(env), hydrolysis_m3::Material3::dark());
+hydrolysis::run(app, env, hydrolysis_m3::Material3::defaults());   // light+dark baseline
+hydrolysis::run(app, env, hydrolysis_m3::Material3::dark());
 ```
 
 Tests take the same style through `theme =` — see `references/testing.md`:
@@ -358,6 +358,10 @@ prefer the portable ones in views that should also run on native backends, and u
 Material roles only where the design is specifically Material.
 
 To see it:
+
+Declare `backend = "hydrolysis"` under `[platforms.<platform>]` in `Water.toml`,
+or use the flag below if that platform has no declaration. A conflicting declaration
+is an error; see [backend selection](project.md#platforms-and-backends).
 
 ```bash
 water preview my_view --backend hydrolysis --theme material3 --output preview.png

@@ -77,19 +77,33 @@ impl Gtk4Backend {
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
         let framework = project.resolved_framework().await?;
+        let linux_triples = crate::platform::linux_target_triples();
+        let (project_packages, linux) = futures_util::future::try_join(
+            project.project_packages(framework, &linux_triples),
+            project.native_browser_answers(
+                crate::platform::NativeOs::Linux,
+                crate::project::GraphSection {
+                    manifest: "the generated GTK4 manifest",
+                    table: "[dependencies]",
+                    remedy: "the dependency graph answers differently per target, so that table \
+                             needs a per-target split — `cfg(target_env = ...)` sections \
+                             separate the disagreeing Linux targets",
+                },
+            ),
+        )
+        .await?;
         Ok(TemplateContext::for_project_manifest(
+            project.host(),
             manifest,
             project.crate_name().clone(),
             app_name,
-            &framework,
+            framework,
             project.local_sources(),
         )
         .with_backend_project_path(project.backend_path::<Self>())
         .with_project_root_path(project.root().to_path_buf())
-        .with_project_packages(project.project_packages(&framework).await?)
-        .with_webview_enabled(project.uses_standard_webview().await?)
-        .with_chromium_enabled(project.links_runtime_package("waterui-chromium").await?)
-        .with_browser_engine(project.linked_browser_engine().await?))
+        .with_project_packages(project_packages)
+        .with_browser(crate::templates::BrowserTemplateContext::linux(linux)))
     }
 }
 
@@ -139,7 +153,11 @@ impl Backend for Gtk4Backend {
         options: BuildOptions,
     ) -> eyre::Result<crate::build::BuiltTarget> {
         project
-            .browser_runtime_plan(TargetPlatform::Linux, TargetBackend::Gtk4)
+            .browser_runtime_plan(
+                TargetPlatform::Linux,
+                TargetBackend::Gtk4,
+                &TargetPlatform::Linux.triple(),
+            )
             .await?;
         build_gtk4(project, options).await
     }

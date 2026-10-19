@@ -4,10 +4,9 @@
 //! parent–child structure, while `perform_accessibility_action` is asserted to
 //! mutate the bound state each action targets.
 //!
-//! These cannot run until `waterui-testing` (a dev-dependency every test
-//! target links) carries the `waterui#1130` driver side; they are written
-//! against the pinned waterui API so they compile and run unchanged after the
-//! repin.
+//! They run on [`SemanticRuntime`] directly — no `waterui-testing` driver —
+//! which keeps this crate's own coverage free of a testing-harness
+//! dependency (water-rs/waterui#1673).
 
 use accesskit::{
     Action, ActionData, ActionRequest, Node, NodeId, Role, Toggled, TreeId, TreeUpdate,
@@ -210,7 +209,7 @@ fn toggle_emits_and_click_flips() {
     let on = Binding::container(false);
     let on_for_view = on.clone();
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
-        AnyView::new(vstack((toggle("Airplane mode", &on_for_view),)))
+        AnyView::new(vstack((toggle("Airplane mode", &on_for_view).switch(),)))
     }));
 
     let update = pumped(&mut runtime);
@@ -905,7 +904,7 @@ fn list_toggle_row_emits_actionable_switch() {
     let mut runtime = mount(AnyViewBuilder::<AnyView>::new(move || {
         let on_for_row = on_for_view.clone();
         AnyView::new(List::content((move || {
-            ListItem::new(toggle("Wi-Fi", &on_for_row))
+            ListItem::new(toggle("Wi-Fi", &on_for_row).switch())
         },)))
     }));
 
@@ -1267,7 +1266,7 @@ fn tab_traverses_the_semantic_tree_and_activation_dispatches_click() {
         let tapped = tapped_for_view.clone();
         AnyView::new(vstack((
             button("First").action(move || tapped.set(true)),
-            toggle("Mode", &on_for_view),
+            toggle("Mode", &on_for_view).switch(),
             field("Name", &value_for_view),
             button("Last"),
         )))

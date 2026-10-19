@@ -31,8 +31,7 @@ pub struct FrameStageTimes {
     pub update: Duration,
     /// Measure and layout of the retained tree.
     pub layout: Duration,
-    /// The retained tree's flush into `Recording` and the scene-layer
-    /// bookkeeping up to `flush_scene_layer`.
+    /// The retained tree's record into its nodes' programs.
     pub encode: Duration,
     /// Timestamped span covering the frame's layer-content submits — the
     /// engine's render and the effect passes around it. `None` when the
@@ -199,11 +198,26 @@ impl HydrolysisRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) {
-        let Some(profiler) = self
-            .cherenkov_windows
-            .get(&gpu_context_id)
-            .and_then(|window| window.gpu_profiler.as_ref())
-        else {
+        let Some(window) = self.cherenkov_window.take() else {
+            return;
+        };
+        if window.context_id() == gpu_context_id {
+            self.finish_gpu_frame_profile_with(window.gpu_profiler.as_ref(), device, queue);
+        }
+        self.cherenkov_window = Some(window);
+    }
+
+    /// Resolves `profiler`'s markers into `frame_stage_times`, blocking
+    /// until the GPU drains the frame's submits; a no-op without a profiler.
+    /// The engine-presented macOS window calls it with its own window's
+    /// profiler, which lives outside the renderer.
+    pub(crate) fn finish_gpu_frame_profile_with(
+        &mut self,
+        profiler: Option<&GpuFrameProfiler>,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) {
+        let Some(profiler) = profiler else {
             return;
         };
         let wait_started_at = Instant::now();

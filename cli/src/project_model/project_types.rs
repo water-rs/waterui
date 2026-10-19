@@ -535,6 +535,7 @@ impl fmt::Display for AndroidPermissionName {
 /// Logical permission keys that scaffold platform-specific manifest entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum PermissionKey {
     /// Network access.
     Internet,

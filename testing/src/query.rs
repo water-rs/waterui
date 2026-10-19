@@ -106,6 +106,18 @@ impl<R: RuntimeDriver> Query<'_, R> {
         self
     }
 
+    /// Restricts the query to nodes with exactly matching placeholders.
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.selector = self.selector.placeholder(placeholder);
+        self
+    }
+
+    /// Restricts the query to nodes whose placeholders contain the provided text.
+    pub fn placeholder_contains(mut self, placeholder: impl Into<String>) -> Self {
+        self.selector = self.selector.placeholder_contains(placeholder);
+        self
+    }
+
     /// Includes or excludes hidden nodes.
     pub fn hidden(mut self, hidden: bool) -> Self {
         self.selector = self.selector.hidden(hidden);

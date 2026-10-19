@@ -1,7 +1,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::engine::WidgetTheme;
+use crate::theme::WidgetTheme;
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -54,7 +54,7 @@ impl<'a> HydroSubview<'a> {
         let resolved_text =
             try_resolve_text_leaf(view, env).map(|(input, max_lines)| ResolvedTextMeasure {
                 input,
-                service: Arc::clone(&state.borrow().text),
+                service: Arc::clone(state.borrow_mut().measuring_text()),
                 max_lines,
             });
         Self {

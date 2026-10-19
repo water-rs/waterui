@@ -24,7 +24,7 @@ use waterui_core::{AnyView, Environment, Str};
 use waterui_layout::padding::EdgeInsets;
 use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
-use waterui_navigation::tab::{Tab, Tabs};
+use waterui_navigation::tab::{Tab, Tabs, tab_style};
 use waterui_navigation::{
     NavigationPath, NavigationSplitView, NavigationStack, NavigationToolbar, NavigationToolbarItem,
     NavigationToolbarPlacement, NavigationView,
@@ -73,6 +73,7 @@ fn render_frame_in(
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(view, env, window, Affine::IDENTITY, Affine::IDENTITY);
     renderer.finish_rebuild_frame();
+    renderer.commit_mirror();
 }
 
 fn render_frame(renderer: &mut HydrolysisRenderer, view: AnyView, env: &Environment) {
@@ -109,10 +110,7 @@ fn capture_in(
 /// got.
 fn content_extents(renderer: &HydrolysisRenderer) -> (Vec<f64>, Vec<Rect>) {
     let mut ys = Vec::new();
-    for recording in renderer
-        .painted_recordings()
-        .chain(std::iter::once(renderer.scene()))
-    {
+    for recording in std::iter::once(&renderer.painted_scene()) {
         for (transform, glyphs) in recording.glyph_runs() {
             for glyph in glyphs {
                 let point = transform * Point::new(f64::from(glyph.x), f64::from(glyph.y));
@@ -293,6 +291,72 @@ fn tab_bar_and_nested_navigation_bar_extend() {
         f64::from(TOP_INSET),
         WINDOW.y1 - f64::from(BOTTOM_INSET),
         "tabs under insets",
+    );
+}
+
+/// A `Tabs` view styled `Sidebar` docks its strip on the leading edge: the
+/// strip's surface reaches the window's top edge through the status band —
+/// and keeps reaching the bottom edge — while its divider is the 1 px
+/// column on the strip's inner (trailing) edge, spanning the surface's
+/// full reach (water-rs/waterui#1982).
+#[test]
+fn sidebar_strip_extends_through_the_top_inset_with_a_trailing_divider() {
+    let theme = MinimalTestTheme::default();
+    let tab_draws = Rc::clone(&theme.tabs_bar_draws);
+    let divider_draws = Rc::clone(&theme.tabs_bar_divider_draws);
+    let selection = Binding::container(0i32);
+    let _renderer = capture(
+        Tabs::new(
+            &selection,
+            vec![
+                Tab::new(0, "First", || NavigationView::new("One", text("one"))),
+                Tab::new(1, "Second", || NavigationView::new("Two", text("two"))),
+            ],
+        )
+        .style(tab_style::Sidebar),
+        &env_with_insets(edge_insets(), EdgeInsets::default()),
+        theme,
+    );
+
+    // In the strip's draw space the window's top edge sits at `-TOP_INSET`
+    // and its bottom edge at `content_height + BOTTOM_INSET`, the same
+    // measure the bottom-bar cases use.
+    let content_height = WINDOW.height() - f64::from(TOP_INSET) - f64::from(BOTTOM_INSET);
+    let window_bottom = content_height + f64::from(BOTTOM_INSET);
+    let tab_draws = tab_draws.borrow();
+    assert_eq!(
+        tab_draws.len(),
+        1,
+        "the tab strip draws once: {tab_draws:?}"
+    );
+    let strip = tab_draws[0];
+    assert!(
+        (strip.y0 + f64::from(TOP_INSET)).abs() <= EDGE_EPS,
+        "the strip's surface must reach the window's top edge through the \
+         status band: {strip:?}"
+    );
+    assert!(
+        (strip.y1 - window_bottom).abs() <= EDGE_EPS,
+        "the strip's surface must reach the window's bottom edge through \
+         the navigation band: {strip:?}"
+    );
+
+    let divider_draws = divider_draws.borrow();
+    assert_eq!(
+        divider_draws.len(),
+        1,
+        "the strip's divider draws once: {divider_draws:?}"
+    );
+    let divider = divider_draws[0];
+    assert!(
+        (divider.width() - 1.0).abs() <= EDGE_EPS && (divider.x1 - strip.x1).abs() <= EDGE_EPS,
+        "the divider must be the 1 px column on the strip's trailing edge: \
+         {divider:?} vs {strip:?}"
+    );
+    assert!(
+        (divider.y0 - strip.y0).abs() <= EDGE_EPS && (divider.y1 - strip.y1).abs() <= EDGE_EPS,
+        "the divider must span the strip's surface reach, top edge to \
+         bottom edge: {divider:?} vs {strip:?}"
     );
 }
 
@@ -558,9 +622,7 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
         // Every clip scope the frame pushed, in window space — the page
         // scopes among them are stack-sized and must cover the edges their
         // surfaces paint to.
-        let clips: Vec<Rect> = renderer
-            .painted_recordings()
-            .chain(std::iter::once(renderer.scene()))
+        let clips: Vec<Rect> = std::iter::once(&renderer.painted_scene())
             .flat_map(crate::renderer::recording::Recording::clip_scopes)
             .map(|(transform, clip)| transform.transform_rect_bbox(clip))
             .collect();
@@ -579,9 +641,7 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
     // The stack's backdrop fill covers the same reach the clips do — a
     // stack-sized fill that reaches the window edges, so an extended bar
     // surface never lands on the window background.
-    let fills: Vec<Rect> = renderer
-        .painted_recordings()
-        .chain(std::iter::once(renderer.scene()))
+    let fills: Vec<Rect> = std::iter::once(&renderer.painted_scene())
         .flat_map(crate::renderer::recording::Recording::fill_bounds)
         .map(|(transform, shape)| transform.transform_rect_bbox(shape))
         .collect();
@@ -633,9 +693,7 @@ fn a_transitioning_page_clip_covers_the_extended_surfaces() {
             .expect("test frame instant overflow"),
     );
     render_frame(&mut renderer, AnyView::new(()), &env);
-    let clips: Vec<Rect> = renderer
-        .painted_recordings()
-        .chain(std::iter::once(renderer.scene()))
+    let clips: Vec<Rect> = std::iter::once(&renderer.painted_scene())
         .flat_map(crate::renderer::recording::Recording::clip_scopes)
         .map(|(transform, clip)| transform.transform_rect_bbox(clip))
         .collect();
@@ -661,12 +719,9 @@ impl waterui_navigation::NavigationTransition for SlideUpTransition {
         _progress: f32,
         _direction: waterui_navigation::NavigationTransitionDirection,
     ) -> waterui_navigation::NavigationTransitionFrame {
-        waterui_navigation::NavigationTransitionFrame {
-            outgoing: waterui_navigation::NavigationTransitionLayer::IDENTITY,
-            incoming: waterui_navigation::NavigationTransitionLayer {
-                offset_y: 1.0,
-                ..waterui_navigation::NavigationTransitionLayer::IDENTITY
-            },
-        }
+        waterui_navigation::NavigationTransitionFrame::new(
+            waterui_navigation::NavigationTransitionLayer::IDENTITY,
+            waterui_navigation::NavigationTransitionLayer::new(0.0, 1.0, 1.0, 1.0),
+        )
     }
 }

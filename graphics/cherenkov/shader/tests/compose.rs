@@ -585,13 +585,7 @@ fn a_library_needs_the_snippets_variants() {
     }";
     let error = Snippet::parse(
         &SnippetSource::new("user", SnippetKind::Color, USES_LIB)
-            .variant(
-                Variant {
-                    precision: Precision::F16,
-                    subgroups: false,
-                },
-                USES_LIB_F16,
-            )
+            .variant(Variant::new(Precision::F16, false), USES_LIB_F16)
             .library(LibrarySource::new("boosters", LIB)),
     )
     .expect_err("the library has no f16 source");
@@ -758,13 +752,8 @@ fn fold_cost_counts_helper_expressions() {
 #[test]
 fn every_composed_module_emits_for_every_back_end() {
     let brightness = Snippet::parse(
-        &SnippetSource::new("brightness", SnippetKind::Color, BRIGHTNESS).variant(
-            Variant {
-                precision: Precision::F16,
-                subgroups: false,
-            },
-            BRIGHTNESS_F16,
-        ),
+        &SnippetSource::new("brightness", SnippetKind::Color, BRIGHTNESS)
+            .variant(Variant::new(Precision::F16, false), BRIGHTNESS_F16),
     )
     .expect("both variants are valid");
     let saturation = parse("saturation", SnippetKind::Color, SATURATION);
@@ -777,10 +766,7 @@ fn every_composed_module_emits_for_every_back_end() {
             Stage::new(&kernel),
             Stage::new(&invert),
         ],
-        ComposeOptions {
-            precision: Precision::F16,
-            subgroups: false,
-        },
+        ComposeOptions::new(Precision::F16, false),
     )
     .expect("the chain composes");
 
@@ -819,35 +805,18 @@ fn every_composed_module_emits_for_every_back_end() {
 #[test]
 fn subgroup_variants_are_used_where_declared() {
     let brightness = Snippet::parse(
-        &SnippetSource::new("brightness", SnippetKind::Color, BRIGHTNESS).variant(
-            Variant {
-                precision: Precision::F32,
-                subgroups: true,
-            },
-            BRIGHTNESS_SUBGROUPS,
-        ),
+        &SnippetSource::new("brightness", SnippetKind::Color, BRIGHTNESS)
+            .variant(Variant::new(Precision::F32, true), BRIGHTNESS_SUBGROUPS),
     )
     .expect("both variants are valid");
     let invert = parse("invert", SnippetKind::Color, INVERT);
     let stages = [Stage::new(&brightness), Stage::new(&invert)];
 
-    let with = compose(
-        &stages,
-        ComposeOptions {
-            precision: Precision::F32,
-            subgroups: true,
-        },
-    )
-    .expect("the chain composes");
+    let with =
+        compose(&stages, ComposeOptions::new(Precision::F32, true)).expect("the chain composes");
     assert_eq!(
         only_colour(&with).variants,
-        [
-            Variant {
-                precision: Precision::F32,
-                subgroups: true
-            },
-            Variant::BASE
-        ]
+        [Variant::new(Precision::F32, true), Variant::BASE]
     );
     assert!(with.capabilities().contains(Capabilities::SUBGROUP));
 
@@ -1041,22 +1010,13 @@ fn an_f16_library_parses_and_composes() {
     }";
     let snippet = Snippet::parse(
         &SnippetSource::new("user", SnippetKind::Color, USES_LIB)
-            .variant(
-                Variant {
-                    precision: Precision::F16,
-                    subgroups: false,
-                },
-                USES_LIB_F16,
-            )
+            .variant(Variant::new(Precision::F16, false), USES_LIB_F16)
             .library(LibrarySource::new("boosters", LIB_F32).f16(LIB_F16)),
     )
     .expect("the f16 library parses");
     let composition = compose(
         &[Stage::new(&snippet)],
-        ComposeOptions {
-            precision: Precision::F16,
-            subgroups: false,
-        },
+        ComposeOptions::new(Precision::F16, false),
     )
     .expect("the chain composes");
     let copies = composition
@@ -1351,10 +1311,7 @@ fn library_conflicts_are_checked_at_the_composed_precision() {
     let a = Snippet::parse(
         &SnippetSource::new("a", SnippetKind::Color, USES_A)
             .variant(
-                Variant {
-                    precision: Precision::F16,
-                    subgroups: false,
-                },
+                Variant::new(Precision::F16, false),
                 "enable f16;\nfn apply(color: vec4<f16>) -> vec4<f16> { return only_a(color); }",
             )
             .library(LibrarySource::new("a", A_F32).f16(A_F16)),
@@ -1375,10 +1332,7 @@ fn library_conflicts_are_checked_at_the_composed_precision() {
     // The two names really do collide there.
     let f16 = compose(
         &[Stage::new(&a), Stage::new(&b)],
-        ComposeOptions {
-            precision: Precision::F16,
-            subgroups: false,
-        },
+        ComposeOptions::new(Precision::F16, false),
     );
     assert!(
         matches!(f16, Err(ComposeError::LibraryConflict { .. })),

@@ -2,9 +2,9 @@
 
 pub use crate::render::filter::EffectBox;
 pub use crate::render::present::{
-    DestinationPrimaries, DisplayProbe, OutputAlpha, OutputColor, OutputRequest, OutputSelection,
-    Presenter, SelectionReason, TextureOutput, TransferEncoding, select_output,
-    surface_output_alpha,
+    ColorRange, ColorRangeInterval, ColorSpaceRequest, DestinationPrimaries, DisplayProbe,
+    OutputAlpha, OutputColor, OutputRequest, OutputSelection, Presenter, SelectionReason,
+    TextureOutput, TransferEncoding, select_output, surface_output_alpha,
 };
 pub use crate::render::shaders::{ShaderDelivery, delivery as shader_delivery};
 use std::future::Future;
@@ -198,6 +198,54 @@ pub struct SharedDevice {
     pub queue: wgpu::Queue,
 }
 
+impl SharedDevice {
+    /// Whether the device can run compute passes.
+    ///
+    /// Compute is a capability, not part of the engine's hardware floor:
+    /// strategies that can use it — the GPU coverage route of #2536 —
+    /// read it here, and every raster path runs without it. The flag is
+    /// read off the adapter of this creation chain, the same source the
+    /// device's own `COMPUTE_SHADERS` support comes from.
+    #[must_use]
+    pub fn has_compute(&self) -> bool {
+        supports_compute(
+            self.adapter.get_downlevel_capabilities().flags,
+            &self.adapter.limits(),
+        )
+    }
+}
+
+/// Opens a Vulkan device for a [`SharedDevice`] the engine composes on.
+///
+/// A host that creates its own Vulkan device with `request_device` gets a
+/// device without the engine's capabilities: the external-frame and YCbCr
+/// extensions of issue #166, and the dynamic-rendering local-read and
+/// rasterization-order attachment access of issue #2191. None of them can
+/// be turned on after `vkCreateDevice`, so a device opened any other way
+/// composes every intermediate through memory for the rest of its life.
+/// This is the engine's own creation path, exported for exactly that
+/// handoff: pass the same descriptor a host would pass to
+/// `Adapter::request_device`, and put the device and queue it answers
+/// with into [`SharedDevice`].
+///
+/// # Errors
+/// [`EngineError`](crate::EngineError) when `adapter` is not a Vulkan
+/// adapter, or when the device cannot be created.
+#[cfg(all(unix, not(target_vendor = "apple"), not(target_arch = "wasm32")))]
+pub fn open_vulkan_device(
+    adapter: &wgpu::Adapter,
+    descriptor: &wgpu::DeviceDescriptor<'_>,
+) -> Result<(wgpu::Device, wgpu::Queue), crate::EngineError> {
+    crate::render::create_vulkan_device(adapter, descriptor)
+}
+
+/// The compute predicate: wgpu reports the stage as a downlevel flag plus
+/// the workgroup limits it dispatches on.
+const fn supports_compute(flags: wgpu::DownlevelFlags, limits: &wgpu::Limits) -> bool {
+    flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS)
+        && limits.max_compute_workgroups_per_dimension > 0
+}
+
 /// A surface whose engine-owned linear P3 texture is handed to a native host.
 ///
 /// The host receives a new texture only on creation and resize, then samples
@@ -257,7 +305,11 @@ pub fn shader_module(device: &wgpu::Device, label: &str, source: &str) -> wgpu::
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(
-            format!("{}\n{source}", include_str!("render/color.wgsl")).into(),
+            format!(
+                "{}\n{source}",
+                include_str!(concat!(env!("OUT_DIR"), "/color.wgsl"))
+            )
+            .into(),
         ),
     })
 }
@@ -456,7 +508,7 @@ impl FrameColor {
         reference_white: 203.0,
         hlg_peak: 0.0,
     };
-    /// BT.2020 full-range video with PQ transfer on BT.2020 primaries.
+    /// BT.2020 studio-range video with PQ transfer on BT.2020 primaries.
     pub const BT2020_PQ: Self = Self {
         matrix: YuvMatrix::Bt2020,
         range: YuvRange::Video,
@@ -996,6 +1048,7 @@ pub mod dmabuf {
 #[cfg(target_os = "android")]
 pub mod android {
     pub use crate::render::surface_control::ffi::{ASurfaceControl, CreateFailed, SurfaceControl};
+    pub use crate::render::surface_control::planes::HostedSurface;
 
     /// A surface realized as child surface controls of a host's parent
     /// surface control.
@@ -1061,6 +1114,15 @@ pub mod android {
             Self::SurfaceControl(target)
         }
     }
+}
+
+/// Apple interop: system objects hosted on the engine's planes.
+#[cfg(target_vendor = "apple")]
+pub mod apple {
+    #[cfg(not(target_os = "macos"))]
+    pub use crate::render::planes::apple::HostedLayer;
+    #[cfg(target_os = "macos")]
+    pub use crate::render::planes::apple::HostedView;
 }
 
 /// Apple interop: importing Metal resources onto the shared device.
@@ -1155,6 +1217,8 @@ pub mod metal {
 /// same thread, and nothing is boxed behind an unsafe `Send`.
 #[cfg(target_arch = "wasm32")]
 pub mod web {
+    pub use crate::render::planes::web::{DomTarget, HostedElement};
+
     use super::{InvalidFrame, wgpu};
     use wasm_bindgen::JsCast;
     use wgpu::webgpu;
@@ -1318,11 +1382,12 @@ pub mod web {
     ///
     /// The provider contract is validated by reflection (format, size,
     /// usage, mip and sample count, owning device token) and by a
-    /// submission probe: an empty pass bound to the wrapper inside a
+    /// submission probe: an empty render pass bound to the wrapper inside a
     /// validation error scope is the only place a destroyed or cross-device
     /// `GPUTexture` provably errors, since JavaScript exposes no liveness
-    /// flag and creation-time calls accept destroyed textures. A rejection
-    /// releases the lease before returning.
+    /// flag and creation-time calls accept destroyed textures. The pass
+    /// stays a render pass so the probe asks nothing of the device's
+    /// compute support. A rejection releases the lease before returning.
     ///
     /// `queue` must be the engine's submission queue, so the probe orders
     /// behind the producer's pending work on the same device.
@@ -1372,7 +1437,7 @@ pub mod web {
                 label: Some("external frame probe"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -1391,10 +1456,43 @@ pub mod web {
                     ),
                 }],
             });
+            // The 1×1 attachment exists only so the pass has one: what the
+            // probe needs is a submitted pass that references the wrapper's
+            // bind group, and a render pass asks nothing of the device's
+            // compute support.
+            let target = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("external frame probe"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
             let mut encoder =
                 device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
             {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor::default());
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("external frame probe"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target.create_view(&wgpu::TextureViewDescriptor::default()),
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
                 pass.set_bind_group(0, &group, &[]);
             }
             queue.submit([encoder.finish()]);
@@ -1405,5 +1503,31 @@ pub mod web {
             return Err(InvalidWebTexture::Unusable);
         }
         Ok(wrapped)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_needs_the_flag_and_a_workgroup_dimension() {
+        // A WebGPU-capable adapter reports both.
+        assert!(supports_compute(
+            wgpu::DownlevelFlags::COMPUTE_SHADERS,
+            &wgpu::Limits::default()
+        ));
+        // A WebGL2-class adapter has no compute at all: no flag and zero
+        // workgroup dimensions.
+        assert!(!supports_compute(
+            wgpu::DownlevelFlags::empty(),
+            &wgpu::Limits::downlevel_webgl2_defaults()
+        ));
+        // The flag alone is not enough — an adapter can advertise the stage
+        // yet report no workgroup dimension to dispatch on.
+        assert!(!supports_compute(
+            wgpu::DownlevelFlags::COMPUTE_SHADERS,
+            &wgpu::Limits::downlevel_webgl2_defaults()
+        ));
     }
 }

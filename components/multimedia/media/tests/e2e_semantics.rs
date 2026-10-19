@@ -11,6 +11,7 @@ use waterui_media::{
     LivePhoto, Media, Photo, Url, live::LivePhotoSource, photo::Event as PhotoEvent,
 };
 use waterui_testing::{Role, Selector, UiBuilder, WaitOptions, WaitResult};
+use waterui_testing::{RuntimeDriver, SemanticApp, TestStyle};
 
 fn sample_image_path() -> String {
     let unique = std::time::SystemTime::now()
@@ -58,7 +59,7 @@ fn live_photo_view(source: LivePhotoSource) -> impl waterui::View {
         .a11y_label("Sample live photo")
 }
 
-fn assert_image_eventually_exists(app: &mut UiTestApp, label: &str) {
+fn assert_image_eventually_exists<R: RuntimeDriver>(app: &mut SemanticApp<R>, label: &str) {
     if app.wait_for(
         &[app.expect_exists(Selector::default().role(Role::IMAGE).label(label))],
         WaitOptions::new(Duration::from_millis(750)),
@@ -94,7 +95,10 @@ fn photo_exposes_accessibility_image_after_load(ui: UiBuilder) {
     let last_event = Binding::container(String::new());
     let loaded_for_view = loaded.clone();
     let last_event_for_view = last_event.clone();
-    let mut app = ui.mount(move || {
+    // `Event::Loaded` waits for the frame's registration with the engine,
+    // which only the rendered runtime performs — the semantic runtime never
+    // records a scene.
+    let mut app = ui.theme(TestStyle::default()).mount_offscreen(move || {
         let loaded_for_event = loaded_for_view.clone();
         let last_event_for_event = last_event_for_view.clone();
         Photo::from_path(sample_path.clone())
@@ -106,12 +110,13 @@ fn photo_exposes_accessibility_image_after_load(ui: UiBuilder) {
                 PhotoEvent::Error(message) => {
                     last_event_for_event.set(format!("error:{message}"));
                 }
+                other => panic!("unexpected photo event {other:?}"),
             })
             .a11y_role(AccessibilityRole::Image)
             .a11y_label("Sample photo")
     });
 
-    assert_image_eventually_exists(&mut app, "Sample photo");
+    assert_image_eventually_exists(app.semantic_mut(), "Sample photo");
     assert!(
         !last_event.snapshot().starts_with("error:"),
         "photo_exposes_accessibility_image_after_load: {event}",

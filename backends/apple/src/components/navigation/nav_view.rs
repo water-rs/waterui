@@ -104,6 +104,12 @@ mod platform {
             return leaf;
         }
 
+        // The page owns chrome: the host extends under the regions of the
+        // edge its bar touches — a managing leaf — so the bar's surface
+        // covers the container band while the bar itself docks clear of
+        // it, and the hosted content stays clear of both regions (§7.1).
+        host.set_manages_safe_area(true);
+
         let bar = BarState::new(&mut view.bar, ctx);
         let bar_view = NavBar::new(mtm);
         view::add_subview(&host, &bar_view);
@@ -153,11 +159,17 @@ mod platform {
                 if !hidden.snapshot() {
                     let size = bar_view
                         .sizeThatFits(cocoa_ui::geometry::Size::new(bounds.size.width, 0.0).into());
+                    // §7.1's chrome split: the bar docks clear of the
+                    // container region the host's top edge reaches — the
+                    // host's own inset on that edge — at its intrinsic
+                    // height, and its `TopAttached` background extends
+                    // upward to cover the band.
+                    let band = host.safeAreaInsets().top;
                     view::set_frame(
                         &bar_view,
-                        Rect::new(bounds.origin.x, top, bounds.size.width, size.height),
+                        Rect::new(bounds.origin.x, top + band, bounds.size.width, size.height),
                     );
-                    top += size.height;
+                    top += size.height + band;
                 }
                 if let Some(field) = &search_bar {
                     let size = field
@@ -190,6 +202,10 @@ mod platform {
                 }
             }
         });
+
+        // The items' actions and live titles live on the bar's leaves. A
+        // title item does not host the button, so the page keeps the bar.
+        keep.keep(bar);
 
         let mut leaf = NativeLeaf::new(&*host, Fill);
         leaf.keep(keep);
@@ -239,16 +255,18 @@ mod platform {
         }
     }
 
-    /// A bar item: the rendered content's own control provides the action;
-    /// a symbol icon becomes a `UIBarButtonItem` image; a view icon or a bare
-    /// view is hosted as the item's custom view.
+    /// A bar item. A symbol icon becomes a `UIBarButtonItem` image. A single
+    /// text button is a title item the bar draws. A view icon or any other
+    /// content is hosted as the item's custom view; the rendered control
+    /// provides the action.
     fn button(
         item: &BarItem,
         keep: &mut KeepAlive,
         env: &waterui::Environment,
     ) -> cocoa_ui::Retained<cocoa_ui::objc2_ui_kit::UIBarButtonItem> {
         let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
-        let action = cocoa_ui::uikit::first_button(item.leaf.view()).map(|button| {
+        let leaf_button = cocoa_ui::uikit::first_button(item.leaf.view());
+        let action = leaf_button.clone().map(|button| {
             alloc::rc::Rc::new(move || {
                 button.sendActionsForControlEvents(
                     cocoa_ui::objc2_ui_kit::UIControlEvents::PrimaryActionTriggered,
@@ -282,12 +300,24 @@ mod platform {
                 view_icon_item(item, icon, action, env, keep, mtm)
             }
             None => {
-                // A hosted item must arrive with a real frame: the bar wraps
-                // it as the item's customView and never lays it out itself.
-                cocoa_ui::view::set_frame(item.leaf.view(), bar_item_frame(item));
-                cocoa_ui::uikit::bar_item(mtm, None, Some(item.leaf.view()), None)
+                // A `UIButton` whose configuration carries no title is what
+                // the bar draws as an empty capsule. A single text label
+                // becomes the title the bar draws itself; anything else is
+                // hosted, and must arrive with a real frame because the bar
+                // never lays a custom view out.
+                crate::components::navigation::text_button_bar_item(item, action, mtm)
+                    .unwrap_or_else(|| {
+                        cocoa_ui::view::set_frame(item.leaf.view(), bar_item_frame(item));
+                        cocoa_ui::uikit::bar_item(mtm, None, Some(item.leaf.view()), None)
+                    })
             }
         };
+        // A bar item the chrome draws follows the button's enabled state —
+        // the programmatic `sendActions` the action runs ignores
+        // `isEnabled`, so the bar item is what disables it.
+        if let Some(leaf_button) = &leaf_button {
+            cocoa_ui::uikit::mirror_enabled(leaf_button, &button);
+        }
         if let Some(title) = &item.title {
             keep.bind(title, {
                 let button = button.clone();

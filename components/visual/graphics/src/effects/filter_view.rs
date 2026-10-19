@@ -21,6 +21,12 @@
 //! watcher. The engine consumes its own `crate::draw::Animation`, so the
 //! metadata type is mapped through the public `curve()`/`duration()`
 //! contract at the watcher boundary.
+//!
+//! With the `gpu` feature, [`WithEffect`] pairs a view with an arbitrary
+//! [`Effect`](filtrate::Effect) — a [`filtrate::ShaderEffect`], whose
+//! [`param`](WithEffect::param) and [`animated`](WithEffect::animated)
+//! bindings feed the same [`Reactive`] slots — and erases to the same
+//! [`FilteredView`].
 
 extern crate alloc;
 
@@ -33,6 +39,7 @@ use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use core::time::Duration;
 
+use crate::animation::engine_animation;
 use crate::draw::{curve_value, settled, spring_step};
 
 /// Values crossing the render-thread boundary, mirroring the engine's
@@ -54,9 +61,10 @@ use filtrate::{
     SignalVisitor, SpatialStage, StageCollector, WatchGuard,
 };
 pub use filtrate::{FilterImage, LutImage};
+#[cfg(feature = "gpu")]
+use nami::SignalExt;
 use nami::{Signal, signal::IntoComputed};
 use waterui_core::animation::Animation;
-use waterui_core::easing::EasingCurve;
 use waterui_core::layout::StretchAxis;
 use waterui_core::{AnyView, Environment, IntoSignalF32, View};
 
@@ -168,6 +176,7 @@ impl fmt::Debug for ParamGuards {
 
 /// The pixel dimensions of a filtered view's output texture.
 #[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[non_exhaustive]
 pub enum OutputSize {
     /// Match the captured input dimensions.
     #[default]
@@ -224,6 +233,14 @@ struct OutputSizeState {
     watchers: Arc<Watchers<ChangeCallback>>,
 }
 
+impl fmt::Debug for OutputSizeState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OutputSizeState")
+            .field("declared", &self.declared())
+            .finish_non_exhaustive()
+    }
+}
+
 impl OutputSizeState {
     fn new() -> Self {
         Self {
@@ -269,7 +286,7 @@ impl ParamGuards {
             let animation = context
                 .metadata()
                 .try_get::<Animation>()
-                .map(|animation| cherenkov_animation(&animation));
+                .map(|animation| engine_animation(&animation));
             let value = context.into_value();
             target.value.store(value.to_bits(), Ordering::Release);
             target.watchers.for_each(|callback| {
@@ -285,28 +302,13 @@ impl ParamGuards {
         Reactive(slot)
     }
 
+    /// Retains a UI-side subscription until this filtered view is dropped.
+    pub fn retain(&mut self, guard: impl Any) {
+        self.0.push(Box::new(guard));
+    }
+
     fn extend(&mut self, other: Self) {
         self.0.extend(other.0);
-    }
-}
-
-/// Maps the public [`Animation`] onto the engine's execution type through
-/// its `curve()`/`duration()` contract — [`Animation::Default`] resolves
-/// through those accessors to the documented ease-in-out 250 ms.
-fn cherenkov_animation(animation: &Animation) -> crate::draw::Animation {
-    match animation.curve() {
-        EasingCurve::CubicBezier(x1, y1, x2, y2) => {
-            crate::draw::Animation::Curve(crate::draw::Curve::bezier(
-                animation.duration(),
-                f64::from(x1),
-                f64::from(y1),
-                f64::from(x2),
-                f64::from(y2),
-            ))
-        }
-        EasingCurve::Spring { stiffness, damping } => crate::draw::Animation::Spring(
-            crate::draw::Spring::from_physics(f64::from(stiffness), f64::from(damping)),
-        ),
     }
 }
 
@@ -786,6 +788,10 @@ impl<V: View, F: Filter + RenderTransfer> View for Filtered<V, F> {
 /// registering it with its engine (`Engine::effect`) — and keeps `guards`
 /// alive as long as the realization.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole filtered view, so a new field must fail their build instead of being ignored"
+)]
 pub struct FilteredView {
     /// The filtered subtree.
     pub content: AnyView,
@@ -820,6 +826,101 @@ impl View for FilteredView {
 
     fn stretch_axis(&self) -> StretchAxis {
         self.content.stretch_axis()
+    }
+}
+
+/// A view with an arbitrary GPU effect applied to its rendered subtree.
+///
+/// Unlike [`Filtered`], which carries a portable [`Filter`], `WithEffect`
+/// pairs the view with an [`Effect`](filtrate::Effect) only a GPU can run:
+/// its body erases both into a [`FilteredView`] whose
+/// [`description`](AnyEffect::description) is `None`. The subscriptions of
+/// the effect's reactive parameters live in `guards` and cross to the
+/// backend with the lowered view, exactly as a filter's do.
+///
+/// For a [`filtrate::ShaderEffect`], [`param`](Self::param) and
+/// [`animated`](Self::animated) bind reactive parameters without rebuilding
+/// the view.
+#[cfg(feature = "gpu")]
+#[derive(Debug)]
+pub struct WithEffect<V, E> {
+    view: V,
+    effect: E,
+    guards: ParamGuards,
+    /// The declared output-size policy; the erased [`AnyEffect`] adopts it.
+    output_size: OutputSizeState,
+}
+
+#[cfg(feature = "gpu")]
+impl<V: View, E: filtrate::Effect + RenderTransfer> WithEffect<V, E> {
+    /// Applies `effect` to `view`.
+    pub fn new(view: V, effect: E) -> Self {
+        Self {
+            view,
+            effect,
+            guards: ParamGuards::default(),
+            output_size: OutputSizeState::new(),
+        }
+    }
+
+    /// Sets the output texture dimensions without changing layout.
+    #[must_use]
+    pub fn output_size(mut self, size: impl IntoComputed<OutputSize>) -> Self {
+        self.output_size.bind(size, &mut self.guards);
+        self
+    }
+
+    /// Erases the view and the effect into the form a backend receives.
+    fn erase(self) -> FilteredView {
+        let mut effect = AnyEffect::new(self.effect);
+        effect.output_size = self.output_size;
+        FilteredView {
+            content: AnyView::new(self.view),
+            effect,
+            guards: self.guards,
+        }
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl<V: View> WithEffect<V, filtrate::ShaderEffect> {
+    /// Adds a reactive parameter, readable in the shader as `effect_param(n)`
+    /// where `n` counts the parameters added before it — including any
+    /// constants the effect already carries.
+    ///
+    /// Each change follows the animation the signal carries, and the
+    /// subscription lives in the lowered [`FilteredView`] for as long as the
+    /// backend keeps the effect.
+    #[must_use]
+    pub fn param(mut self, value: impl IntoSignalF32) -> Self {
+        let param = self.guards.bind(value);
+        let (effect, guard) = self.effect.watch_param(&param);
+        self.effect = effect;
+        self.guards.retain(guard);
+        self
+    }
+
+    /// Drives the effect's animation flag: while `animated` holds `true` the
+    /// effect asks its host for another frame after each one it renders —
+    /// the reactive form of [`filtrate::ShaderEffect::animated`].
+    #[must_use]
+    pub fn animated(mut self, animated: impl IntoComputed<bool>) -> Self {
+        let flag = self.guards.bind(animated.into_computed().map(f32::from));
+        let (effect, guard) = self.effect.watch_animated(&flag);
+        self.effect = effect;
+        self.guards.retain(guard);
+        self
+    }
+}
+
+#[cfg(feature = "gpu")]
+impl<V: View, E: filtrate::Effect + RenderTransfer> View for WithEffect<V, E> {
+    fn body(self, _env: &Environment) -> impl View {
+        self.erase()
+    }
+
+    fn stretch_axis(&self) -> StretchAxis {
+        self.view.stretch_axis()
     }
 }
 
@@ -1016,10 +1117,13 @@ pub trait FilterViewExt: View + Sized {
     /// Apply a custom `filtrate` effect to this view.
     ///
     /// An arbitrary effect has no portable description, so only a backend
-    /// that runs effects on a GPU can realize it.
+    /// that runs effects on a GPU can realize it. For a
+    /// [`filtrate::ShaderEffect`], the returned [`WithEffect`] binds
+    /// reactive parameters through [`WithEffect::param`] and
+    /// [`WithEffect::animated`].
     #[cfg(feature = "gpu")]
-    fn effect(self, effect: impl filtrate::Effect + RenderTransfer) -> FilteredView {
-        FilteredView::new(self, effect)
+    fn effect<E: filtrate::Effect + RenderTransfer>(self, effect: E) -> WithEffect<Self, E> {
+        WithEffect::new(self, effect)
     }
 
     /// Apply a blur filter.
@@ -1925,8 +2029,9 @@ mod tests {
     use super::{
         AnimationInterpolator, Brightness, ColorStage, FilterLink, FilterParam as _, FilterSignal,
         FilterViewExt as _, FilteredView, GaussianBlur, OutputSize, ParamGuards, Placed,
-        SPRING_LIMIT, SpatialStage, StageCollector, cherenkov_animation,
+        SPRING_LIMIT, SpatialStage, StageCollector,
     };
+    use crate::animation::engine_animation;
     use core::time::Duration;
     use filtrate::Interpolator as _;
     use nami::SignalExt as _;
@@ -2045,6 +2150,12 @@ mod tests {
         ) -> filtrate::EffectRenderResult {
             Ok(false)
         }
+
+        fn retained_memory(&self) -> filtrate::RetainedMemory {
+            filtrate::RetainedMemory::default()
+        }
+
+        fn trim(&mut self) {}
     }
 
     #[cfg(feature = "gpu")]
@@ -2104,7 +2215,76 @@ mod tests {
     fn effect_view_reports_its_content_stretch_axis() {
         let effected = HorizontalRule.effect(NoopEffect);
         assert_eq!(View::stretch_axis(&effected), StretchAxis::Horizontal);
-        assert_eq!(NativeView::stretch_axis(&effected), StretchAxis::Horizontal);
+        let erased = effected.erase();
+        assert_eq!(View::stretch_axis(&erased), StretchAxis::Horizontal);
+        assert_eq!(NativeView::stretch_axis(&erased), StretchAxis::Horizontal);
+    }
+
+    /// A shader effect's reactive parameter reaches the built effect: the
+    /// binding's change crosses the lowered view's subscriptions and wakes
+    /// the engine's redraw callback, exactly as a filter parameter does.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn shader_effect_param_updates_reach_the_built_effect() {
+        let strength = nami::binding(0.25_f32);
+        let shader = filtrate::ShaderEffect::new(
+            "@fragment
+            fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+                return textureSample(input_texture, input_sampler, in.uv);
+            }",
+        )
+        .expect("the test shader is valid WGSL");
+        let FilteredView { effect, guards, .. } = ().effect(shader).param(strength.clone()).erase();
+        let mut effect = effect.build();
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        strength.set(0.75);
+        assert_eq!(
+            redraws.load(Ordering::Relaxed),
+            1,
+            "the update wakes the host"
+        );
+        assert!(effect.redraw_hint(), "the update wants a frame");
+        drop(guards);
+    }
+
+    /// The reactive animation flag reaches the render side through the built
+    /// effect: toggling it wakes the host and flips the redraw hint.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn shader_effect_animated_signal_reaches_the_render_side() {
+        let animated = nami::binding(false);
+        let shader = filtrate::ShaderEffect::new(
+            "@fragment
+            fn main(in: VertexOutput) -> @location(0) vec4<f32> {
+                return textureSample(input_texture, input_sampler, in.uv);
+            }",
+        )
+        .expect("the test shader is valid WGSL");
+        let FilteredView { effect, guards, .. } =
+            ().effect(shader).animated(animated.clone()).erase();
+        let mut effect = effect.build();
+        let redraws = Arc::new(AtomicUsize::new(0));
+        let count = Arc::clone(&redraws);
+        effect.set_redraw_callback(Arc::new(move || {
+            count.fetch_add(1, Ordering::Relaxed);
+        }));
+
+        animated.set(true);
+        assert_eq!(
+            redraws.load(Ordering::Relaxed),
+            1,
+            "the toggle wakes the host"
+        );
+        assert!(effect.redraw_hint(), "the flag is set on the render side");
+
+        animated.set(false);
+        assert_eq!(redraws.load(Ordering::Relaxed), 2);
+        drop(guards);
     }
 
     #[test]
@@ -2265,7 +2445,7 @@ mod tests {
 
     #[test]
     fn animation_default_resolves_documented_ease_in_out() {
-        let interpolator = AnimationInterpolator(cherenkov_animation(&Animation::Default));
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::Default));
         assert_eq!(interpolator.duration(), Duration::from_millis(250));
         let mid = interpolator.interpolate(0.0, 1.0, Duration::from_millis(125));
         assert!(
@@ -2276,7 +2456,7 @@ mod tests {
 
     #[test]
     fn animation_bezier_preserves_duration_and_shape() {
-        let interpolator = AnimationInterpolator(cherenkov_animation(&Animation::bezier(
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::bezier(
             Duration::from_millis(400),
             0.25,
             0.1,
@@ -2299,8 +2479,7 @@ mod tests {
 
     #[test]
     fn animation_spring_uses_engine_physics() {
-        let interpolator =
-            AnimationInterpolator(cherenkov_animation(&Animation::spring(200.0, 15.0)));
+        let interpolator = AnimationInterpolator(engine_animation(&Animation::spring(200.0, 15.0)));
         assert_eq!(interpolator.duration(), SPRING_LIMIT);
         let early = interpolator.interpolate(0.0, 1.0, Duration::from_millis(30));
         assert!(

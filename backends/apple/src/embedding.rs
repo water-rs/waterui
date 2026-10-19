@@ -269,7 +269,7 @@ pub(crate) fn mount_content(
     let placed = Rc::clone(&content);
     crate::inspector::install(root, env, keepalive);
     root.set_layout_handler(move |root| {
-        let frame = crate::native_layout::content_frame(placed.view(), root);
+        let frame = crate::native_layout::LayoutContext::of(root).content_frame(placed.view());
         #[expect(
             clippy::cast_possible_truncation,
             reason = "the layout contract uses f32 points"
@@ -308,7 +308,8 @@ fn bind_root(
         };
         let mut declaration = declaration.borrow_mut();
         let toolbar = declaration.toolbar.take();
-        *observed_binding.borrow_mut() = Some(crate::windows::bind_root_window(
+        declaration.arm_close_requests(&observed_env);
+        let bound = crate::windows::bind_root_window(
             window,
             root,
             &observed_env,
@@ -323,8 +324,15 @@ fn bind_root(
             &declaration.background.computed(),
             declaration.closable,
             declaration.resizable,
+            declaration
+                .has_close_handler()
+                .then(|| declaration.handle()),
             mtm,
-        ));
+        );
+        // `WindowHandle::focus` — armed here, where the declaration and the
+        // realized window meet.
+        crate::windows::wire_focus_requests(&declaration, bound.window(), mtm);
+        *observed_binding.borrow_mut() = Some(bound);
     });
     let on_window = attach.clone();
     root.set_window_handler(move |root| on_window(root));

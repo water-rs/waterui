@@ -18,9 +18,9 @@ pub type FrameReplySender<T> = SyncSender<T>;
 
 use cherenkov_record::{ChangeSet, LayerId, ResourceId, SurfaceId};
 
-use crate::backend::{Backend, Display, SurfaceInfo};
+use crate::backend::{Backend, Display, Renderer, SurfaceInfo};
 use crate::config::{MemoryUsage, Pressure};
-use crate::error::{RenderError, ResourceError, SurfaceError};
+use crate::error::{RenderError, ResourceError, SurfaceError, SurfaceRejection};
 use crate::frame::{FrameStats, FrameTime, FrameTiming, Next, Readback};
 use crate::image::ImageUpload;
 use crate::paint::ImageId;
@@ -109,20 +109,55 @@ impl std::fmt::Debug for FontData {
     }
 }
 
+/// What one rendered frame produces.
+pub struct RenderedFrame<B: Backend> {
+    /// The aggregate [`Next`].
+    pub next: Next,
+    /// Each rendered surface's own deadline.
+    pub surface_next: rustc_hash::FxHashMap<SurfaceId, Next>,
+    /// The frame's stats.
+    pub stats: FrameStats,
+    /// The work the awaiting caller applies on its own thread before
+    /// `render` returns (a window surface's main-thread present).
+    pub commit: <<B as Backend>::Renderer as Renderer>::FrameCommit,
+    /// The surfaces left out of the frame because their content draws a
+    /// rejected resource; `render` reports them as
+    /// [`RenderError::Rejected`] once the frame is applied.
+    pub rejected: Vec<SurfaceRejection>,
+}
+
+impl<B: Backend> std::fmt::Debug for RenderedFrame<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderedFrame")
+            .field("next", &self.next)
+            .field("rejected", &self.rejected)
+            .finish_non_exhaustive()
+    }
+}
+
+/// The rendered frame, or the error that failed the whole frame.
+pub type RenderOutcome<B> = Result<RenderedFrame<B>, RenderError>;
+
 /// The render result and drained buffers returned to the UI thread.
-#[derive(Debug)]
 pub struct RenderReply<B: Backend> {
-    /// The result of rendering the frame: the aggregate [`Next`] and,
-    /// per surface the frame listed, that surface's own deadline —
-    /// the values the engine publishes through
-    /// [`Surface::next_frame`](crate::Surface::next_frame).
-    pub result: Result<(Next, rustc_hash::FxHashMap<SurfaceId, Next>, FrameStats), RenderError>,
+    /// The result of rendering the frame — the deadlines the engine
+    /// publishes through [`Surface::next_frame`](crate::Surface::next_frame).
+    pub result: RenderOutcome<B>,
     /// The drained commits, including their reusable empty op vectors.
     pub commits: Vec<(SurfaceId, ChangeSet<B>)>,
     /// The persistent reply sender, returned so a disconnected render thread
     /// releases the receiver.
     #[cfg(not(target_arch = "wasm32"))]
     pub sender: FrameReplySender<Self>,
+}
+
+impl<B: Backend> std::fmt::Debug for RenderReply<B> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RenderReply")
+            .field("ok", &self.result.is_ok())
+            .field("commits", &self.commits.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// Memory usage and its persistent reply sender.
@@ -201,8 +236,8 @@ pub enum Message<B: Backend> {
         apply: ProducerApply<B>,
     },
     /// Register a resource the backend may reject. A rejection is recorded
-    /// against `resource`, and every render that draws it fails with
-    /// [`RenderError::Rejected`].
+    /// against `resource`, and every surface whose content draws it is
+    /// left out of the frame, reported as [`RenderError::Rejected`].
     Register {
         /// The resource being registered.
         resource: ResourceId,

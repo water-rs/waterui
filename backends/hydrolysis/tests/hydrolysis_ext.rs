@@ -1,22 +1,31 @@
 //! End-to-end checks for the public `hydrolysis` API surface consumed
 //! through the `waterui` facade: GPU content views, environments, and frames.
 
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use hydrolysis::testing::TestStyle;
+use hydrolysis::{
+    FontFamilyResolution, HydrolysisRenderTarget, HydrolysisRenderer, OffscreenGpuContext,
+    OffscreenWindow, readback_texture_rgba8,
+};
 use waterui::Color;
 use waterui::View;
+use waterui::color::WorkingColor;
 use waterui::env::Environment;
 use waterui::graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui::graphics::{GpuContent, GpuContentView};
 use waterui::prelude::zstack;
 use waterui::shape::RoundedRectangle;
 use waterui::{FilterViewExt, ViewExt};
+use waterui_core::AnyView;
 use waterui_graphics::FilteredView;
 use waterui_graphics::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
+    RetainedMemory,
 };
-use waterui_testing::TestHost;
+use waterui_graphics::scene_view::SceneViewMergeToParent;
 
 #[derive(Clone)]
 struct CloneableRect;
@@ -131,6 +140,12 @@ impl Effect for CopyTextureEffect {
         );
         Ok(false)
     }
+
+    fn retained_memory(&self) -> RetainedMemory {
+        RetainedMemory::default()
+    }
+
+    fn trim(&mut self) {}
 }
 
 #[derive(Clone)]
@@ -261,15 +276,75 @@ fn assert_pixel_close(actual: &[u8], expected: [u8; 4], message: &str) {
     );
 }
 
-/// An offscreen host at pixel size `width`x`height` under the Material3 style —
-/// the render harness `render_offscreen` used to drive by hand.
-fn host(width: u32, height: u32) -> TestHost {
-    TestHost::new(
-        Environment::new(),
+/// A captured frame: dimensions plus raw RGBA8 pixels, top-left origin.
+struct Snapshot {
+    width: u32,
+    height: u32,
+    rgba8: Vec<u8>,
+}
+
+/// Renders `view` into an offscreen RGBA8 texture under [`TestStyle`] and
+/// reads it back — the same capture pipeline `waterui_testing`'s `TestHost`
+/// runs, expressed against Hydrolysis's public surface: a shared offscreen
+/// GPU context, an `OffscreenWindow`, a `HydrolysisRenderer` and a
+/// transparent-base `render_scene_to_texture`.
+fn render(view: impl View, width: u32, height: u32) -> Snapshot {
+    let width = width.max(1);
+    let height = height.max(1);
+    let style = TestStyle::new();
+    let mut env = Environment::new();
+    waterui_core::install_application_resources(&mut env);
+    hydrolysis::theme::install_default_tokens(&mut env);
+    hydrolysis::Style::install_tokens(&style, &mut env);
+    let fonts = hydrolysis::native_collection(&env);
+    fonts.clone().install(&mut env);
+
+    let gpu = OffscreenGpuContext::new_for_tests_blocking();
+    let mut platform =
+        OffscreenWindow::on_context(gpu.clone(), width, height, wgpu::TextureFormat::Rgba8Unorm);
+    let mut renderer =
+        HydrolysisRenderer::with_fonts(Rc::new(style), &fonts, FontFamilyResolution::Strict);
+    let bounds = kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+
+    let surface = platform.surface();
+    renderer.reset_scene();
+    renderer.begin_rebuild_frame();
+    let env = env.extending(SceneViewMergeToParent);
+    renderer.capture_window_tree(
+        AnyView::new(view),
+        &env,
+        bounds,
+        kurbo::Affine::IDENTITY,
+        kurbo::Affine::IDENTITY,
+    );
+    renderer.finish_rebuild_frame();
+
+    let frame = surface.acquire();
+    renderer
+        .render_scene_to_texture(HydrolysisRenderTarget {
+            adapter: surface.adapter(),
+            device: surface.device(),
+            queue: surface.queue(),
+            device_loss: surface.device_loss().clone(),
+            texture: frame.texture(),
+            format: surface.format(),
+            width,
+            height,
+            base_color: WorkingColor::TRANSPARENT,
+        })
+        .unwrap_or_else(|error| panic!("offscreen render failed: {error}"));
+    let rgba8 = readback_texture_rgba8(&*surface, frame.texture(), width, height)
+        .unwrap_or_else(|error| panic!("frame readback failed: {error}"));
+    surface.present(frame);
+    drop(renderer);
+    drop(platform);
+    gpu.reclaim();
+
+    Snapshot {
         width,
         height,
-        hydrolysis_m3::Material3::defaults(),
-    )
+        rgba8,
+    }
 }
 
 fn center_pixel(rgba8: &[u8], width: u32, height: u32) -> &[u8] {
@@ -279,8 +354,7 @@ fn center_pixel(rgba8: &[u8], width: u32, height: u32) -> &[u8] {
 
 #[test]
 fn hydrolysis_ext_renders_offscreen() {
-    let host = host(400, 300);
-    let output = host.render(CloneableRect);
+    let output = render(CloneableRect, 400, 300);
 
     assert_eq!(output.width, 400);
     assert_eq!(output.height, 300);
@@ -295,8 +369,7 @@ fn hydrolysis_ext_renders_offscreen() {
 
 #[test]
 fn hydrolysis_ext_renders_gpu_surface_inside_opacity_layer() {
-    let host = host(96, 72);
-    let output = host.render(GpuSurfaceOpacityView);
+    let output = render(GpuSurfaceOpacityView, 96, 72);
 
     let center =
         ((output.width as usize / 2) + (output.height as usize / 2) * output.width as usize) * 4;
@@ -309,8 +382,7 @@ fn hydrolysis_ext_renders_gpu_surface_inside_opacity_layer() {
 
 #[test]
 fn hydrolysis_ext_preserves_gpu_surface_under_overlay() {
-    let host = host(96, 72);
-    let output = host.render(GpuSurfaceUnderOverlayView);
+    let output = render(GpuSurfaceUnderOverlayView, 96, 72);
 
     // The probe clears (0.9, 0.3, 0.2) in linear Display P3; presented back to
     // sRGB that is [255, 143, 117] — the fill survives, gamut-mapped.
@@ -324,10 +396,13 @@ fn hydrolysis_ext_preserves_gpu_surface_under_overlay() {
 #[test]
 fn hydrolysis_ext_skips_transparent_gpu_surface_inside_opacity_layer() {
     let calls = Arc::new(AtomicU32::new(0));
-    let host = host(96, 72);
-    let output = host.render(TransparentGpuSurfaceOpacityView {
-        calls: Arc::clone(&calls),
-    });
+    let output = render(
+        TransparentGpuSurfaceOpacityView {
+            calls: Arc::clone(&calls),
+        },
+        96,
+        72,
+    );
 
     assert_eq!(
         calls.load(Ordering::Relaxed),
@@ -342,8 +417,7 @@ fn hydrolysis_ext_skips_transparent_gpu_surface_inside_opacity_layer() {
 
 #[test]
 fn hydrolysis_ext_renders_gpu_surface_inside_clip_shape() {
-    let host = host(96, 72);
-    let output = host.render(GpuSurfaceClipView);
+    let output = render(GpuSurfaceClipView, 96, 72);
 
     let center_alpha = center_pixel(&output.rgba8, output.width, output.height)[3];
     let corner_alpha = output.rgba8[3];
@@ -359,8 +433,7 @@ fn hydrolysis_ext_renders_gpu_surface_inside_clip_shape() {
 
 #[test]
 fn hydrolysis_ext_captures_gpu_surface_inside_filtered_view() {
-    let host = host(96, 72);
-    let output = host.render(GpuSurfaceFilteredView);
+    let output = render(GpuSurfaceFilteredView, 96, 72);
 
     let center_alpha = center_pixel(&output.rgba8, output.width, output.height)[3];
     assert!(
@@ -371,8 +444,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_filtered_view() {
 
 #[test]
 fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
-    let host = host(96, 72);
-    let output = host.render(GpuSurfaceAppliedFilterView);
+    let output = render(GpuSurfaceAppliedFilterView, 96, 72);
 
     let center_alpha = center_pixel(&output.rgba8, output.width, output.height)[3];
     assert!(
@@ -385,7 +457,7 @@ fn hydrolysis_ext_captures_gpu_surface_inside_applied_filter() {
 /// the logical layout, so previews are sharp on `HiDPI` displays.
 #[test]
 fn offscreen_window_scale_factor_scales_the_surface_only() {
-    use hydrolysis::{PlatformWindow as _, SurfaceProvider as _};
+    use hydrolysis::PlatformWindow as _;
 
     let window =
         hydrolysis::OffscreenWindow::new_for_tests(320, 200, wgpu::TextureFormat::Rgba8Unorm);

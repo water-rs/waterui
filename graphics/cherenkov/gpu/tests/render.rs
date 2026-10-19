@@ -2,9 +2,13 @@
 //! available, which CI may not have.
 
 use cherenkov::kurbo::{BezPath, Rect};
-use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
+use cherenkov::{
+    __engine_block as block, __engine_fn as split_fn, __engine_test as split_test,
+    __engine_wait as wait,
+};
 use cherenkov::{Draw, WorkingColor};
-use cherenkov::{Engine, EngineError, Next, Offscreen, OffscreenFormat, RenderError};
+use cherenkov::{Engine, EngineError, Next, Offscreen, OffscreenFormat, RenderError, SurfaceError};
+use cherenkov_gpu::interop::{SharedDevice, wgpu};
 use cherenkov_gpu::{Gpu, GpuConfig};
 
 split_fn! {
@@ -63,7 +67,11 @@ fn a_red_rect_renders_and_reads_back() -> Result<(), Box<dyn std::error::Error>>
         (r - 1.0).abs() < 1e-2 && g.abs() < 1e-2 && b.abs() < 1e-2 && (a - 1.0).abs() < 1e-2,
         "center pixel: {r} {g} {b} {a}"
     );
-    assert_eq!(px(2, 2), [0.0; 4], "corner pixel must be the clear colour");
+    assert_eq!(
+        px(2, 2).map(f32::to_bits),
+        [0.0_f32; 4].map(f32::to_bits),
+        "corner pixel must be the clear colour"
+    );
     Ok(())
 }
 }
@@ -495,8 +503,8 @@ fn variants_split_ranges_but_not_pixels() -> Result<(), Box<dyn std::error::Erro
     let readback = wait!(surface.readback())?;
     let px = |x: u32, y: u32| readback.pixels[(y * readback.width + x) as usize];
     assert_eq!(
-        px(32, 32),
-        [1.0, 0.0, 0.0, 1.0],
+        px(32, 32).map(f32::to_bits),
+        [1.0_f32, 0.0, 0.0, 1.0].map(f32::to_bits),
         "solid fill centre must be exactly opaque red"
     );
     let [r, g, b, a] = px(100, 30);
@@ -509,8 +517,8 @@ fn variants_split_ranges_but_not_pixels() -> Result<(), Box<dyn std::error::Erro
         "gradient under clip at (100,30): {r} {g} {b} {a}, t {t}"
     );
     assert_eq!(
-        px(125, 80),
-        [0.0; 4],
+        px(125, 80).map(f32::to_bits),
+        [0.0_f32; 4].map(f32::to_bits),
         "inside the fill rect but outside the clip: nothing"
     );
     Ok(())
@@ -545,5 +553,110 @@ fn retained_painter_commands_follow_content_revisions() -> Result<(), Box<dyn st
         assert_eq!(pixels, wait!(fresh.readback())?.pixels, "painter revision with {count} cards");
     }
     Ok(())
+}
+}
+
+/// The readback of a ramp and its two ends, or the error creating its
+/// surface.
+type Ramp = Result<(cherenkov::Readback, f32, f32), SurfaceError>;
+
+split_fn! {
+/// A `LinearF32` surface of `engine` holding a ramp across one f16 step
+/// above 0.5.
+fn sub_f16_ramp(engine: &Engine<Gpu>) -> Result<Ramp, Box<dyn std::error::Error>> {
+    // f16 holds no value strictly between these two.
+    let (low, high) = (0.5_f32, 0.5 + 2_f32.powi(-11));
+    let surface =
+        match wait!(engine.surface(Offscreen::new((64, 4), OffscreenFormat::LinearF32), || {})) {
+            Ok(surface) => surface,
+            Err(error) => return Ok(Err(error)),
+        };
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.fill(
+                Rect::new(0., 0., 64., 4.),
+                cherenkov::LinearGradient::new((0., 0.), (64., 0.))
+                    .stop(0.0, WorkingColor::new([low, low, low, 1.]))
+                    .stop(1.0, WorkingColor::new([high, high, high, 1.])),
+            );
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    Ok(Ok((wait!(surface.readback())?, low, high)))
+}
+}
+
+split_test! {
+/// A `LinearF32` target stores what the engine computed: a ramp whose
+/// steps are finer than f16 reads back at f32 precision. A device that
+/// cannot blend into or filter `Rgba32Float` refuses the surface by
+/// naming the missing features — here a host device opened without them
+/// — and never renders it in another format.
+fn a_linear_f32_target_keeps_values_finer_than_f16() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    match wait!(sub_f16_ramp(&engine))? {
+        Ok((readback, low, high)) => {
+            let span = f64::from(high - low);
+            for x in 0..readback.width {
+                let [red, .., alpha] = readback.pixels[(readback.width + x) as usize];
+                let want = f64::from(low) + span * (f64::from(x) + 0.5) / 64.0;
+                assert!(
+                    (f64::from(red) - want).abs() < span / 16.0 && alpha.to_bits() == 1.0_f32.to_bits(),
+                    "pixel {x}: {red} {alpha}, expected {want}"
+                );
+            }
+            let finer = readback.pixels[..readback.width as usize]
+                .iter()
+                .filter(|px| half::f16::from_f32(px[0]).to_f32().to_bits() != px[0].to_bits())
+                .count();
+            assert!(
+                finer > readback.width as usize / 2,
+                "only {finer} pixels hold a value f16 cannot: the target stored f16"
+            );
+        }
+        Err(error) => assert!(
+            matches!(&error, SurfaceError::UnsupportedFormat { format: OffscreenFormat::LinearF32, missing } if !missing.is_empty()),
+            "unexpected surface error: {error}"
+        ),
+    }
+    let (instance, adapter, device, queue) = wait!(plain_device())?;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
+        device: Some(SharedDevice {
+            instance,
+            adapter,
+            device,
+            queue,
+        }),
+        ..GpuConfig::default()
+    }))?;
+    let error = wait!(sub_f16_ramp(&engine))?
+        .expect_err("a device without float32 features renders no LinearF32 target");
+    assert!(
+        matches!(&error, SurfaceError::UnsupportedFormat { format: OffscreenFormat::LinearF32, missing } if missing.contains("FLOAT32_BLENDABLE") && missing.contains("FLOAT32_FILTERABLE")),
+        "unexpected surface error: {error}"
+    );
+    Ok(())
+}
+}
+
+split_fn! {
+/// A host device opened with only what the engine requires
+/// (`PASSTHROUGH_SHADERS` for its precompiled shaders, issue #57): no
+/// float32 features.
+fn plain_device()
+-> Result<(wgpu::Instance, wgpu::Adapter, wgpu::Device, wgpu::Queue), Box<dyn std::error::Error>> {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let adapter = block!(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))?;
+    let required_features = match adapter.get_info().backend {
+        wgpu::Backend::Vulkan | wgpu::Backend::Metal => wgpu::Features::PASSTHROUGH_SHADERS,
+        _ => wgpu::Features::empty(),
+    };
+    let (device, queue) = block!(adapter.request_device(&wgpu::DeviceDescriptor {
+        required_features,
+        ..wgpu::DeviceDescriptor::default()
+    }))?;
+    Ok((instance, adapter, device, queue))
 }
 }

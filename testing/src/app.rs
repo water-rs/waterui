@@ -14,7 +14,7 @@ use waterui::app::{App, AppParts};
 use waterui::window::Window;
 use waterui::{Plugin, ViewExt as _};
 use waterui_core::handler::AnyViewBuilder;
-use waterui_core::{AnyView, Environment, View};
+use waterui_core::{AnyView, ContentLedger, Environment, View};
 
 use crate::artifacts::{CapturedSnapshot, TestArtifacts};
 use crate::driver::{
@@ -31,6 +31,10 @@ use crate::wait::{Expectation, ExpectationKind, WaitOptions, WaitResult};
 /// point. A `UiBuilder<NoStyle>` mounts only the semantic runtime — geometry,
 /// pointer and capture belong to the styled builder.
 #[derive(Clone, Copy, Debug, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less builder state used by name"
+)]
 pub struct NoStyle;
 
 /// The style state of a [`UiBuilder`] that carries a `hydrolysis` [`Style`].
@@ -57,7 +61,7 @@ pub fn ui() -> UiBuilder {
 }
 
 /// Mounts a whole [`App`] on the rendered runtime and returns the offscreen
-/// session, taking `style` the way `hydrolysis::run(app, style)` does.
+/// session, taking `style` the way `hydrolysis::run(app, env, style)` does.
 ///
 /// The session mounts at the window's declared frame on the default builder
 /// configuration — [`RuntimeFlavor::Test`] and scale factor 1. When the
@@ -101,6 +105,7 @@ fn frame_points_as_u32(points: f32) -> u32 {
 
 /// Which Hydrolysis headless runtime backs a session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RuntimeFlavor {
     /// Software adapters permitted (the default for tests). Fonts resolve the
     /// application's way on every flavor — the system collection plus the
@@ -210,7 +215,7 @@ impl UiBuilder<NoStyle> {
         F: Fn() -> V + 'static,
     {
         self.mount_semantic(
-            AnyViewBuilder::new(move || AnyView::new(view_fn())),
+            AnyViewBuilder::new(move || Self::with_session_runtime(view_fn())),
             FontFamilyResolution::Lenient,
         )
     }
@@ -295,6 +300,21 @@ impl<S> UiBuilder<S> {
         env
     }
 
+    /// `view` with the session's TypeScript runtime installed for its
+    /// subtree, so a view that reaches a `tsx!` mount finds the runtime
+    /// loaded from the bundle `water test` named.
+    ///
+    /// The install is scoped to the mounted view, not to
+    /// [`Self::mount_env`]: a module reads the host's theme out of the
+    /// environment its runtime was created in, and the theme is installed by
+    /// the Hydrolysis runtime and the builder's style, both of which sit
+    /// above the builder environment.
+    fn with_session_runtime(view: impl View + 'static) -> AnyView {
+        #[cfg(feature = "ts")]
+        let view = crate::ts::with_configured_runtime(view);
+        AnyView::new(view)
+    }
+
     /// Mounts `content` on the semantic runtime — the construction shared by
     /// both builders' `mount`, whose difference is only how the view builder
     /// is assembled. `family_resolution` is [`FontFamilyResolution::Lenient`]
@@ -305,10 +325,11 @@ impl<S> UiBuilder<S> {
         content: AnyViewBuilder<AnyView>,
         family_resolution: FontFamilyResolution,
     ) -> SemanticApp {
-        let env = self.mount_env();
+        let ledger = ContentLedger::new();
+        let env = self.mount_env().extending(ledger.clone());
         let runtime =
             SemanticRuntime::new(env, content, self.width, self.height, family_resolution);
-        SemanticApp::new(runtime, (self.width, self.height))
+        SemanticApp::new(runtime, (self.width, self.height), ledger)
     }
 }
 
@@ -383,7 +404,12 @@ impl<S: Style> UiBuilder<Styled<S>> {
         let style = Rc::new(style);
         builder.mount_semantic(
             AnyViewBuilder::new(move || {
-                AnyView::new(view_fn().install(StyleTokens(Rc::clone(&style))))
+                // The style's tokens go on outside the runtime install, so a
+                // module reads the colours this session's style package
+                // resolves rather than only the framework defaults.
+                AnyView::new(
+                    Self::with_session_runtime(view_fn()).install(StyleTokens(Rc::clone(&style))),
+                )
             }),
             FontFamilyResolution::Strict,
         )
@@ -403,7 +429,10 @@ impl<S: Style> UiBuilder<Styled<S>> {
         F: Fn() -> V + 'static,
     {
         let env = self.mount_env();
-        self.mount_rendered(env, AnyViewBuilder::new(move || AnyView::new(view_fn())))
+        self.mount_rendered(
+            env,
+            AnyViewBuilder::new(move || Self::with_session_runtime(view_fn())),
+        )
     }
 
     /// Mounts a whole [`App`] on the rendered runtime and returns the
@@ -457,7 +486,11 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// Mounts `content` on the rendered runtime — the mount a view-only
     /// `mount_offscreen` performs, wrapped in the runtime's synthetic
     /// default window.
-    fn mount_rendered(self, env: Environment, content: AnyViewBuilder<AnyView>) -> OffscreenApp {
+    fn mount_rendered(
+        self,
+        mut env: Environment,
+        content: AnyViewBuilder<AnyView>,
+    ) -> OffscreenApp {
         let Self {
             width,
             height,
@@ -466,6 +499,8 @@ impl<S: Style> UiBuilder<Styled<S>> {
             scale_factor,
             ..
         } = self;
+        let ledger = ContentLedger::new();
+        env.insert(ledger.clone());
         let runtime = match flavor {
             RuntimeFlavor::Test => {
                 HeadlessRuntime::new_for_tests(env, content, width, height, style.style)
@@ -479,7 +514,7 @@ impl<S: Style> UiBuilder<Styled<S>> {
                 FontFamilyResolution::Strict,
             ),
         };
-        Self::wrap_rendered(runtime, width, height, scale_factor)
+        Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
     /// Mounts the app's own [`Window`] — the mount the window runner
@@ -489,7 +524,7 @@ impl<S: Style> UiBuilder<Styled<S>> {
     /// app's `frame` binding at its initial value, so every signal derived
     /// from it — a `max_width` computed from the frame, a `when()` keyed on
     /// width — would resolve against a size the mounted viewport never had.
-    fn mount_rendered_window(self, env: Environment, window: Window) -> OffscreenApp {
+    fn mount_rendered_window(self, mut env: Environment, window: Window) -> OffscreenApp {
         let Self {
             width,
             height,
@@ -498,6 +533,8 @@ impl<S: Style> UiBuilder<Styled<S>> {
             scale_factor,
             ..
         } = self;
+        let ledger = ContentLedger::new();
+        env.insert(ledger.clone());
         let runtime = match flavor {
             RuntimeFlavor::Test => {
                 HeadlessRuntime::new_for_tests_with_window(env, window, width, height, style.style)
@@ -511,7 +548,7 @@ impl<S: Style> UiBuilder<Styled<S>> {
                 FontFamilyResolution::Strict,
             ),
         };
-        Self::wrap_rendered(runtime, width, height, scale_factor)
+        Self::wrap_rendered(runtime, width, height, scale_factor, ledger)
     }
 
     /// Wraps a rendered runtime in the offscreen session — the tail shared by
@@ -521,13 +558,18 @@ impl<S: Style> UiBuilder<Styled<S>> {
         width: u32,
         height: u32,
         scale_factor: f64,
+        ledger: ContentLedger,
     ) -> OffscreenApp {
         assert!(
             scale_factor.is_finite() && scale_factor > 0.0,
             "waterui-testing scale_factor must be finite and greater than zero, got {scale_factor}"
         );
         OffscreenApp {
-            app: SemanticApp::new(runtime.with_scale_factor(scale_factor), (width, height)),
+            app: SemanticApp::new(
+                runtime.with_scale_factor(scale_factor),
+                (width, height),
+                ledger,
+            ),
         }
     }
 
@@ -564,6 +606,7 @@ impl<S: Style> UiBuilder<Styled<S>> {
 
 /// Options controlling synthetic drag gestures.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DragOptions {
     /// Number of intermediate pointer-move samples (at least 1).
     pub steps: u16,
@@ -587,6 +630,29 @@ impl Default for DragOptions {
             frame_per_step: false,
             pointer: PointerKind::Mouse,
         }
+    }
+}
+
+impl DragOptions {
+    /// Replaces the number of intermediate pointer-move samples.
+    #[must_use]
+    pub const fn with_steps(mut self, steps: u16) -> Self {
+        self.steps = steps;
+        self
+    }
+
+    /// Sets whether one virtual frame is pumped between samples.
+    #[must_use]
+    pub const fn with_frame_per_step(mut self, frame_per_step: bool) -> Self {
+        self.frame_per_step = frame_per_step;
+        self
+    }
+
+    /// Replaces the pointer kind the drag dispatches.
+    #[must_use]
+    pub const fn with_pointer(mut self, pointer: PointerKind) -> Self {
+        self.pointer = pointer;
+        self
     }
 }
 
@@ -632,14 +698,15 @@ impl OffscreenApp {
         }
     }
 
-    /// Pumps frames in real time, running work `spawn_local` parked, until
-    /// `ready` reports the app has what it needs or `timeout` elapses.
+    /// Pumps frames, running work `spawn_local` parked, until `ready`
+    /// reports the app has what it needs or `timeout` elapses.
     ///
     /// [`Self::pump_for`] advances a virtual clock, which is right for
     /// animation but cannot let real I/O finish: a component that loads over
-    /// the network never progresses, because no wall-clock time passes and the
-    /// test executor parks its futures. This drives both, so an offscreen
-    /// visual test can cover a component that has to fetch something first.
+    /// the network progresses only when its fetch wakes it. This drives both:
+    /// once the runtime is quiescent it blocks on the local executor's wake
+    /// edge until the fetch re-queues its task, so an offscreen visual test
+    /// can cover a component that has to fetch something first.
     ///
     /// Returns whether `ready` became true before the timeout.
     pub fn pump_until(&mut self, timeout: Duration, mut ready: impl FnMut() -> bool) -> bool {
@@ -650,12 +717,13 @@ impl OffscreenApp {
             if ready() {
                 return true;
             }
-            if Instant::now() >= deadline {
+            let now = Instant::now();
+            if now >= deadline {
                 return false;
             }
-            // Per-frame pacing inside a pump loop: this is what lets real I/O
-            // make progress between frames.
-            std::thread::sleep(VIRTUAL_FRAME);
+            if self.app.runtime.is_settled() {
+                let _ = self.app.wait_for_local_work(deadline - now);
+            }
         }
     }
 
@@ -744,6 +812,8 @@ pub struct SemanticApp<R = SemanticRuntime> {
     /// monotone.
     pub(crate) clock: Option<Instant>,
     pub(crate) resources: ResourceSampler,
+    /// The content the mounted views owe: settling waits on it.
+    pub(crate) ledger: ContentLedger,
 }
 
 impl<R> core::fmt::Debug for SemanticApp<R> {
@@ -795,7 +865,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// # Panics
     ///
     /// Panics if the initial pump does not produce a semantic tree.
-    pub(crate) fn new(runtime: R, viewport: (u32, u32)) -> Self {
+    pub(crate) fn new(runtime: R, viewport: (u32, u32), ledger: ContentLedger) -> Self {
         let mut app = Self {
             runtime,
             tree: TreeSnapshot::empty(),
@@ -804,6 +874,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             viewport,
             clock: None,
             resources: ResourceSampler::new(),
+            ledger,
         };
         let rebuilt = app.pump_once();
         assert!(
@@ -936,6 +1007,51 @@ impl<R: RuntimeDriver> SemanticApp<R> {
 
     /// Waits for expectations using XCTest-like semantics.
     pub fn wait_for(&mut self, expectations: &[Expectation], options: WaitOptions) -> WaitResult {
+        self.wait_bounded(
+            expectations,
+            options.enforce_order,
+            WaitBound::WallClock(Instant::now() + options.timeout),
+        )
+    }
+
+    /// Waits for expectations using XCTest-like semantics, bounded in pumped
+    /// frames rather than wall-clock time.
+    ///
+    /// Use this for readiness produced entirely inside the runtime — a
+    /// gesture deadline, a mount, a rebuild — where the number of frames the
+    /// cascade needs is fixed by the semantics under test, not by how fast
+    /// the host runs each pump. A wall-clock bound makes that wait load
+    /// dependent: under load the same fixed number of pumps costs more real
+    /// time than the budget allowed, and the wait gives up on work still in
+    /// flight. A frame bound counts the work itself, so host speed changes
+    /// only how long the wait takes, never whether it completes
+    /// (water-rs/waterui#2501).
+    ///
+    /// The wait ends early when the runtime settles with an expectation still
+    /// unfulfilled: nothing remains in flight that could produce it, so more
+    /// pumping can only delay the failure report. Readiness that arrives from
+    /// outside the runtime — a decoder worker, a network fetch — is not
+    /// visible to a frame bound while the runtime idles; those need
+    /// [`Self::wait_for`]'s wall-clock deadline.
+    ///
+    /// [`WaitOptions::enforce_order`] does not apply; frame-bounded waits
+    /// observe one cascade, not an ordered sequence.
+    pub fn wait_for_frames(
+        &mut self,
+        expectations: &[Expectation],
+        frame_budget: usize,
+    ) -> WaitResult {
+        self.wait_bounded(expectations, false, WaitBound::Frames(frame_budget))
+    }
+
+    /// The shared [`Self::wait_for`] loop, bounded by either a wall-clock
+    /// deadline or a count of frames the runtime may still pump.
+    fn wait_bounded(
+        &mut self,
+        expectations: &[Expectation],
+        enforce_order: bool,
+        bound: WaitBound,
+    ) -> WaitResult {
         const MIN_IDLE_BACKOFF: Duration = Duration::from_millis(1);
         const MAX_IDLE_BACKOFF: Duration = Duration::from_millis(16);
 
@@ -945,75 +1061,33 @@ impl<R: RuntimeDriver> SemanticApp<R> {
         );
 
         let has_inverted = expectations.iter().any(|e| e.inverted);
-        // Order enforcement applies to non-inverted expectations only: an
-        // inverted expectation never "fulfills", so it holds no position in
-        // the required order.
-        let order_ranks = {
-            let mut rank = 0usize;
-            expectations
-                .iter()
-                .map(|expectation| {
-                    if expectation.inverted {
-                        None
-                    } else {
-                        let current = rank;
-                        rank += 1;
-                        Some(current)
-                    }
-                })
-                .collect::<Vec<_>>()
-        };
-        let mut fulfilled = vec![false; expectations.len()];
-        let mut next_order_rank = 0usize;
-        let deadline = Instant::now() + options.timeout;
+        let mut progress = WaitProgress::new(expectations);
+        let mut bound = bound;
         let mut idle_backoff = Duration::ZERO;
 
         loop {
-            for (idx, expectation) in expectations.iter().enumerate() {
-                let condition = self.evaluate_expectation(expectation);
-                if expectation.inverted {
-                    if condition {
-                        return WaitResult::InvertedFulfillment;
-                    }
-                    continue;
-                }
-
-                if fulfilled[idx] {
-                    continue;
-                }
-
-                if condition {
-                    if options.enforce_order {
-                        let rank = order_ranks[idx]
-                            .expect("non-inverted expectation must carry an order rank");
-                        if rank != next_order_rank {
-                            return WaitResult::IncorrectOrder;
-                        }
-                        next_order_rank += 1;
-                    }
-                    fulfilled[idx] = true;
-                }
+            if let Some(result) = self.poll_expectations(expectations, enforce_order, &mut progress)
+            {
+                return result;
             }
 
-            let all_non_inverted = expectations
-                .iter()
-                .enumerate()
-                .all(|(idx, expectation)| expectation.inverted || fulfilled[idx]);
-
+            let all_non_inverted = progress.all_non_inverted(expectations);
             if all_non_inverted && !has_inverted {
                 return WaitResult::Completed;
             }
 
-            let now = Instant::now();
-            if now >= deadline {
-                return if all_non_inverted {
-                    WaitResult::Completed
-                } else {
-                    WaitResult::TimedOut
-                };
+            let bound_spent = match &bound {
+                WaitBound::WallClock(deadline) => Instant::now() >= *deadline,
+                WaitBound::Frames(remaining) => *remaining == 0,
+            };
+            if bound_spent {
+                return wait_bound_outcome(all_non_inverted);
             }
 
             let _ = self.pump_once();
+            if let WaitBound::Frames(remaining) = &mut bound {
+                *remaining = remaining.saturating_sub(1);
+            }
             if !self.runtime.is_settled() {
                 // Scheduled work remains (animations, patches, queued input):
                 // keep pumping virtual frames without wall-clock sleeps.
@@ -1021,26 +1095,77 @@ impl<R: RuntimeDriver> SemanticApp<R> {
                 continue;
             }
 
-            // Quiescent but unfulfilled: the awaited change can only arrive
-            // from outside the runtime (a worker thread, wall-clock async), so
-            // yield real time with exponential backoff.
-            let next_backoff = if idle_backoff.is_zero() {
-                MIN_IDLE_BACKOFF
-            } else {
-                idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
-            };
-            idle_backoff = next_backoff;
+            // Quiescent but unfulfilled: what happens next depends on which
+            // bound the wait runs under.
+            match bound {
+                WaitBound::WallClock(deadline) => {
+                    // The awaited change can only arrive from outside the
+                    // runtime (a worker thread, wall-clock async), so yield
+                    // real time with exponential backoff.
+                    let next_backoff = if idle_backoff.is_zero() {
+                        MIN_IDLE_BACKOFF
+                    } else {
+                        idle_backoff.saturating_mul(2).min(MAX_IDLE_BACKOFF)
+                    };
+                    idle_backoff = next_backoff;
 
-            let now = Instant::now();
-            if now >= deadline {
-                continue;
-            }
-            let remaining = deadline.saturating_duration_since(now);
-            let sleep_for = next_backoff.min(remaining);
-            if !sleep_for.is_zero() {
-                std::thread::sleep(sleep_for);
+                    let now = Instant::now();
+                    if now >= deadline {
+                        continue;
+                    }
+                    let remaining = deadline.saturating_duration_since(now);
+                    let sleep_for = next_backoff.min(remaining);
+                    if !sleep_for.is_zero() {
+                        std::thread::sleep(sleep_for);
+                    }
+                }
+                WaitBound::Frames(_) => {
+                    // A quiescent runtime has nothing in flight that could
+                    // still produce a missing expectation, so the frames
+                    // left buy nothing. Take one more pass through the
+                    // evaluation above before reporting it, though: the pump
+                    // that just settled may itself have landed the awaited
+                    // change, and `all_non_inverted` predates that pump.
+                    bound = WaitBound::Frames(0);
+                }
             }
         }
+    }
+
+    /// Runs one evaluation pass over `expectations`, marking landed
+    /// non-inverted expectations in `progress`, and returns the terminal
+    /// result when an inverted expectation fulfilled or enforced order was
+    /// violated.
+    fn poll_expectations(
+        &mut self,
+        expectations: &[Expectation],
+        enforce_order: bool,
+        progress: &mut WaitProgress,
+    ) -> Option<WaitResult> {
+        for (idx, expectation) in expectations.iter().enumerate() {
+            let condition = self.evaluate_expectation(expectation);
+            if expectation.inverted {
+                if condition {
+                    return Some(WaitResult::InvertedFulfillment);
+                }
+                continue;
+            }
+
+            if progress.fulfilled[idx] || !condition {
+                continue;
+            }
+
+            if enforce_order {
+                let rank = progress.order_ranks[idx]
+                    .expect("non-inverted expectation must carry an order rank");
+                if rank != progress.next_order_rank {
+                    return Some(WaitResult::IncorrectOrder);
+                }
+                progress.next_order_rank += 1;
+            }
+            progress.fulfilled[idx] = true;
+        }
+        None
     }
 
     /// Convenience API mirroring `XCTest` `waitForExistence`.
@@ -1128,6 +1253,12 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// This waits on unapplied work only, never on work that continues by
     /// itself: an app with a running animation is never settled, so settling
     /// here would spend the full pump budget on every query.
+    ///
+    /// Reading the tree never advances time: every pump here is held at the
+    /// current virtual instant. Animations and glides sample the same instant
+    /// to the same values, so the update lands in the phase the clock already
+    /// shows, and only [`OffscreenApp::pump_for`] and the other explicit
+    /// pumping paths move the clock.
     fn sync_tree(&mut self) {
         /// Enough pumps for a change to cascade (a patch that schedules the
         /// next), far below anything a real update needs. Exceeding it means
@@ -1139,7 +1270,7 @@ impl<R: RuntimeDriver> SemanticApp<R> {
             if !self.runtime.has_pending_semantic_update() {
                 return;
             }
-            self.pump_once();
+            self.pump_held();
         }
     }
 
@@ -1338,15 +1469,18 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// input, no spawned work awaiting a drain, and no renderer-scheduled
     /// semantic work — or until the virtual cap elapses.
     ///
-    /// Quiescence alone is not the whole story: a `spawn_local` task parked on
-    /// a wall-clock timer or in-flight I/O holds no queued runnable, so the
-    /// runtime cannot see it. While [`waterui::task::outstanding_local_tasks`]
-    /// reports such work, settling paces real time — each pump runs whatever
-    /// the last wake re-queued — until the task publishes its result or the
-    /// wall-clock cap elapses. This is what lets a `Photo` fetch or an
-    /// `avatar` image that completes after real I/O reach the tree.
+    /// Quiescence alone is not the whole story: a view whose content arrives
+    /// through a load — a `Photo` fetch or decode, a `Suspense` future — holds
+    /// no queued runnable while the load is in flight, so the runtime cannot
+    /// see it. While the session's [`ContentLedger`] reports content still
+    /// owed, settling blocks on the local executor's wake edge — the load
+    /// re-queues its task when it completes — and pumps what arrived, until
+    /// the ledger is empty or the wall-clock cap elapses. This is what lets a
+    /// `Photo` fetch or an `avatar` image that completes after real I/O reach
+    /// the tree. A load that fails resolves its entry too; the failure shows
+    /// in the tree, not as a settle error.
     ///
-    /// Pacing holds the virtual clock still. The scene is quiescent at that
+    /// Waiting holds the virtual clock still. The scene is quiescent at that
     /// point, so nothing it schedules needs a frame, and moving the clock
     /// while a test waits on the outside world would run gestures, timers and
     /// playback ahead of the assertions that follow: a long press held while
@@ -1354,12 +1488,11 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     /// Once a paced pump changes the tree, settling returns to advancing
     /// frames so whatever the change scheduled can run.
     ///
-    /// In-flight work is waited for, whatever its length: a playback task
-    /// or a stream keeps settling busy until it ends or the wall-clock cap
-    /// elapses. A test that has to observe such a transient — motion that
-    /// plays while a press is held — dispatches the press with
-    /// [`Self::queue_pointer_down_at`] and waits on the tree instead of
-    /// settling.
+    /// Only owed content is waited for: a playback task or a stream that
+    /// owes the ledger nothing does not hold settling, and a test that has to
+    /// observe such a transient — motion that plays while a press is held —
+    /// dispatches the press with [`Self::queue_pointer_down_at`] and waits on
+    /// the tree instead of settling.
     ///
     /// The virtual cap exists solely for perpetual animations (an
     /// indeterminate progress spinner keeps the animation controller active
@@ -1374,9 +1507,9 @@ impl<R: RuntimeDriver> SemanticApp<R> {
     pub fn settle(&mut self) {
         /// Virtual time budget for perpetual animations; ~62 pumps at 16ms.
         const SETTLE_CAP: Duration = Duration::from_secs(1);
-        /// Wall-clock budget for local tasks parked on real I/O or timers.
-        /// Long enough for a remote fetch on a slow link; bounded so a
-        /// permanently parked task cannot hang the caller forever.
+        /// Wall-clock budget for content still owed once the scene is
+        /// quiescent. Long enough for a remote fetch on a slow link; bounded
+        /// so a load that never completes cannot hang the caller forever.
         const SETTLE_WALL_CAP: Duration = Duration::from_secs(5);
 
         let mut remaining = SETTLE_CAP;
@@ -1390,20 +1523,29 @@ impl<R: RuntimeDriver> SemanticApp<R> {
                 }
                 continue;
             }
-            // Quiescent but a local task may be parked on a wall-clock wake:
-            // give it real time, then run what it re-queued at the same
-            // virtual instant.
+            // Quiescent but a view may still owe content its load has not
+            // delivered: block until the load re-queues its task, then run it
+            // at the same virtual instant.
             loop {
-                if waterui::task::outstanding_local_tasks() == 0 || Instant::now() >= wall_deadline
-                {
+                let now = Instant::now();
+                if self.ledger.outstanding().is_empty() || now >= wall_deadline {
                     return;
                 }
-                std::thread::sleep(VIRTUAL_FRAME);
+                let _ = self.wait_for_local_work(wall_deadline - now);
                 if self.pump_held() || !self.runtime.is_settled() {
                     break;
                 }
             }
         }
+    }
+
+    /// Blocks until a task parked on an external wake re-queues on this
+    /// thread's local executor — the parked test queue when
+    /// [`crate::install_test_executor`] installed it, the runtime's own
+    /// executor otherwise — returning whether one arrived within `timeout`.
+    fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        crate::executor::wait_parked_local_work(timeout)
+            .unwrap_or_else(|| self.runtime.wait_for_local_work(timeout))
     }
 
     /// Pumps one frame without advancing the virtual clock, returning whether
@@ -1862,5 +2004,74 @@ impl SemanticApp<HeadlessRuntime> {
         };
         let _ = self.apply_pump_result(outcome);
         timing
+    }
+}
+
+/// How a [`SemanticApp::wait_for`]-family wait is bounded.
+///
+/// A wall-clock deadline counts real elapsed time; use it for changes that
+/// arrive from outside the runtime, where pumped frames only poll. A frame
+/// count bounds the pumped frames the runtime may still spend; each pump
+/// advances the virtual clock one [`VIRTUAL_FRAME`], so the bound counts the
+/// in-runtime work the cascade still has to do instead of how fast the host
+/// runs it.
+enum WaitBound {
+    /// The wall-clock instant after which the wait gives up.
+    WallClock(Instant),
+    /// Frame pumps still available to the wait.
+    Frames(usize),
+}
+
+/// The fulfillment bookkeeping one `wait_for`-family wait carries between
+/// evaluation passes.
+struct WaitProgress {
+    /// Each expectation's rank in the required order (`None` for inverted
+    /// expectations, which never "fulfill" and so hold no position in it).
+    order_ranks: Vec<Option<usize>>,
+    /// Which non-inverted expectations have already landed.
+    fulfilled: Vec<bool>,
+    /// The order rank the next fulfillment must carry.
+    next_order_rank: usize,
+}
+
+impl WaitProgress {
+    fn new(expectations: &[Expectation]) -> Self {
+        let mut rank = 0usize;
+        let order_ranks = expectations
+            .iter()
+            .map(|expectation| {
+                if expectation.inverted {
+                    None
+                } else {
+                    let current = rank;
+                    rank += 1;
+                    Some(current)
+                }
+            })
+            .collect();
+        Self {
+            order_ranks,
+            fulfilled: vec![false; expectations.len()],
+            next_order_rank: 0,
+        }
+    }
+
+    /// Whether every non-inverted expectation has fulfilled.
+    fn all_non_inverted(&self, expectations: &[Expectation]) -> bool {
+        expectations
+            .iter()
+            .enumerate()
+            .all(|(idx, expectation)| expectation.inverted || self.fulfilled[idx])
+    }
+}
+
+/// What a wait reports when its bound runs out: `Completed` when every
+/// non-inverted expectation landed — inverted ones fulfill by staying
+/// unfulfilled for the whole wait — `TimedOut` otherwise.
+const fn wait_bound_outcome(all_non_inverted: bool) -> WaitResult {
+    if all_non_inverted {
+        WaitResult::Completed
+    } else {
+        WaitResult::TimedOut
     }
 }

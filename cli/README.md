@@ -129,6 +129,8 @@ A build target is a `TargetPlatform` — an enum of the concrete targets
 is fixed and known, so an enum says so, and the per-target work — scanning for
 devices, building for the triple, packaging into a `.app` or `.apk`, cleaning —
 lives in the module for that platform rather than behind an associated type.
+Android's default backend is `Hydrolysis` (self-drawn on HWUI); `--backend
+android` selects the Kotlin Android-View runtime instead.
 
 ```text
 pub enum TargetPlatform {
@@ -195,7 +197,7 @@ pub trait Installation: Send + Sync {
 }
 ```
 
-Example: `AppleToolchain` checks for Xcode, simulators, and rust targets. `AndroidToolchain` checks for Android SDK, NDK, and JDK.
+Example: `Xcode` and `AppleSdk` check the Apple toolchain; `AndroidSdk`, `AndroidNdk`, `Java`, and `Kotlin` cover the Android SDK chain every Android backend builds through.
 
 ## Examples
 
@@ -241,17 +243,16 @@ water clean --all  # Clean all platforms
 ### Check Development Environment
 
 ```bash
-water doctor --platform ios
-water doctor --platform android
+water doctor
 ```
 
-This validates toolchain dependencies (Xcode, Android SDK, Rust targets).
+This validates toolchain dependencies (Xcode, the Android SDK chain, Rust targets). Inside a project every backend is in scope; outside one, doctor checks what the host can build.
 
 ## API Overview
 
 ### Library (`src/lib.rs`)
 
-- **`platform`**: Platform trait and implementations (Apple, Android)
+- **`platform`**: `TargetPlatform`/`TargetBackend` target model
 - **`device`**: Device trait, device types, run options, and events
 - **`project`**: Project management, manifest parsing, create/open
 - **`build`**: Rust build orchestration with cargo

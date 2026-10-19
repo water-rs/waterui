@@ -6,8 +6,6 @@ use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize
 use waterui_core::{Environment, Native};
 use waterui_text::styled::StyledStr;
 
-#[cfg(feature = "accessibility")]
-use crate::renderer::transformed_rect;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RenderContext, RetainedSubview,
     WidgetRenderContext, measure_transient_view_intrinsic, measure_view_dimensions_with_proposal,
@@ -44,19 +42,26 @@ impl BadgeRenderState {
     ) {
         self.content.ensure_built(renderer, env);
     }
+
+    /// Consume the content sub-view's layout-dirty marks: its measured size
+    /// feeds the badge's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.content.take_layout_dirty_if_built()
+    }
 }
 
 fn badge_content_size(
     state: &mut HydroState,
     badge: &Native<BadgeConfig>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let content = normalize_view_for_render(badge.as_inner().content.build(), env);
     measure_transient_view_intrinsic(&content, state, env, theme)
 }
 
-fn badge_large_label(value: i32, theme: &Rc<dyn crate::engine::WidgetTheme>) -> StyledStr {
+fn badge_large_label(value: i32, theme: &Rc<dyn crate::theme::WidgetTheme>) -> StyledStr {
     StyledStr::plain(value.to_string())
         .font(theme.badge_label_font())
         .foreground(theme.badge_label_color())
@@ -67,7 +72,7 @@ impl HydroNativeView for Native<BadgeConfig> {
         state: &mut HydroState,
         badge: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         badge_content_size(state, badge, env, theme)
     }
@@ -76,7 +81,7 @@ impl HydroNativeView for Native<BadgeConfig> {
         state: &mut HydroState,
         badge: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let content = normalize_view_for_render(badge.as_inner().content.build(), env);
@@ -91,7 +96,7 @@ pub fn measure_badge_node(
     _proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     ViewDimensions::new(state.content.measure_built(hydro, env, theme))
 }
@@ -107,10 +112,6 @@ pub fn render_badge_node(
     render_badge_parts(ctx, state, env);
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the render sequence is one continuous scenario; splitting it would obscure the order"
-)]
 pub fn render_badge_parts(
     ctx: &mut WidgetRenderContext<'_>,
     state: &Rc<RefCell<BadgeRenderState>>,
@@ -121,7 +122,7 @@ pub fn render_badge_parts(
         let render_ctx = ctx.render_context();
         let mut state = state.borrow_mut();
         let content_area = ctx.safe_area_for(bounds);
-        state.content.flush_in_rect(
+        state.content.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
@@ -203,7 +204,7 @@ pub fn render_badge_parts(
     {
         let mut node = AccessibilityNode::new(AccessibilityNodeRole::Label);
         node.set_label(value.to_string());
-        let node_bounds = transformed_rect(ctx.hit_transform, rect);
+        let node_bounds = rect;
         let _ = ctx
             .renderer_mut()
             .register_accessibility_node(node, node_bounds, env, None);
@@ -217,11 +218,10 @@ pub fn render_badge_parts(
         rect.y1,
     );
     let text_ctx = RenderContext {
-        transform: ctx.transform,
-        hit_transform: ctx.hit_transform,
+        local: ctx.local,
         bounds: text_rect,
     };
-    let (hydro, scene) = ctx.renderer_mut().state_and_scene_mut();
+    let (hydro, scene) = ctx.renderer_mut().state_and_run_mut();
     HydrolysisRenderer::render_styled_text(
         hydro,
         scene,

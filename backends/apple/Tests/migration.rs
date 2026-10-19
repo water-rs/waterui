@@ -63,7 +63,7 @@ pub fn trials() -> Vec<Trial> {
                 Ok(())
             }),
             Trial::test("migration::uikit::compact_split", || {
-                uikit_surface::compact_split_shows_the_sidebar();
+                uikit_surface::compact_split_follows_selection();
                 Ok(())
             }),
             Trial::test("migration::uikit::stable_id_row_replace", || {
@@ -332,7 +332,7 @@ mod uikit_surface {
     use std::cell::Cell;
     use std::rc::Rc;
     use waterui::Identifiable;
-    use waterui::reactive::collection::{Collection, List as ReactiveList};
+    use waterui::reactive::collection::List as ReactiveList;
 
     /// `id`-keyed row whose payload flips between a short label and a tall
     /// one — the stable-id replace regression probe.
@@ -352,7 +352,7 @@ mod uikit_surface {
     }
 
     impl waterui::View for ReentrantRow {
-        fn body(self, _env: &waterui::Environment) -> impl waterui::View {
+        fn body(mut self, _env: &waterui::Environment) -> impl waterui::View {
             if !self.fired.replace(true) {
                 let _ = self.items.set(0, ProbeRow { id: 20, tall: true });
             }
@@ -370,7 +370,7 @@ mod uikit_surface {
     }
 
     impl waterui::View for RemovingRow {
-        fn body(self, _env: &waterui::Environment) -> impl waterui::View {
+        fn body(mut self, _env: &waterui::Environment) -> impl waterui::View {
             if !self.fired.replace(true) {
                 let _ = self.items.remove(0);
             }
@@ -490,7 +490,7 @@ mod uikit_surface {
     /// intersecting frame, including the nested inbox stacks.
     pub fn list_cells_give_nested_text_real_frames() {
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(inbox()),
             &env,
@@ -534,7 +534,7 @@ mod uikit_surface {
     pub fn text_field_renders_plain_with_a_real_height() {
         let value = binding(Str::from("x"));
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(TextField::new("", &value)),
             &env,
@@ -572,7 +572,7 @@ mod uikit_surface {
     pub fn list_row_height_pitches_and_respects_the_floor() {
         for (height, metric) in [(24.0_f32, "row24Height"), (4.0, "row4Height")] {
             let env = crate::resolve::env();
-            let mount = waterui_apple::native_test_support::mount_uikit(
+            let mount = waterui_apple::native_test_support::mount_uikit_in(
                 mtm(),
                 AnyView::new(List::content((move || {
                     ListItem::new(Color::srgb(255, 0, 0).height(height))
@@ -606,15 +606,44 @@ mod uikit_surface {
         }
     }
 
-    pub fn compact_split_shows_the_sidebar() {
-        use cocoa_ui::objc2_ui_kit::{UISplitViewController, UISplitViewControllerColumn};
+    pub fn compact_split_follows_selection() {
+        use cocoa_ui::objc2_ui_kit::{
+            UINavigationController, UISplitViewController, UISplitViewControllerColumn,
+            UIViewController,
+        };
         use waterui::navigation::{NavigationSplitView, NavigationView};
+
+        fn column_root(
+            split: &UISplitViewController,
+            column: UISplitViewControllerColumn,
+        ) -> Retained<UIViewController> {
+            let controller = split
+                .viewControllerForColumn(column)
+                .expect("column exists");
+            controller
+                .downcast_ref::<UINavigationController>()
+                .map_or_else(
+                    || controller.clone(),
+                    |nav| {
+                        nav.viewControllers()
+                            .firstObject()
+                            .expect("column root exists")
+                    },
+                )
+        }
+
+        fn visible(controller: &UIViewController) -> bool {
+            controller.viewIfLoaded().is_some_and(|view| {
+                view.window().is_some() && !cocoa_ui::view::is_hidden_in_hierarchy(&view)
+            })
+        }
+
         let selection = binding(Some(1_i32));
         let split = NavigationSplitView::new(&selection, text("Sidebar"), |id: i32| {
             NavigationView::new(format!("Detail {id}"), text("detail"))
         });
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(split),
             &env,
@@ -631,32 +660,61 @@ mod uikit_surface {
             controller.isCollapsed(),
             "a compact window collapses the split"
         );
-        let sidebar = controller
-            .viewControllerForColumn(UISplitViewControllerColumn::Primary)
-            .expect("the primary column exists");
+        let sidebar = column_root(&controller, UISplitViewControllerColumn::Primary);
+        let detail = column_root(&controller, UISplitViewControllerColumn::Secondary);
         assert!(
-            sidebar
-                .viewIfLoaded()
-                .is_some_and(|view| view.window().is_some()),
-            "the collapsed sidebar is attached to the window"
+            pump_main_until(MAIN_QUEUE_DEADLINE, || visible(&detail)
+                && !visible(&sidebar)
+                && detail.transitionCoordinator().is_none()),
+            "Some initially shows only the detail"
         );
-        if let Some(detail) =
-            controller.viewControllerForColumn(UISplitViewControllerColumn::Secondary)
-        {
-            assert!(
-                detail
-                    .viewIfLoaded()
-                    .is_none_or(|view| view.window().is_none()),
-                "an existing secondary column must not be visible"
-            );
-        }
+        assert_eq!(selection.snapshot(), Some(1));
+
+        selection.set(None);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || visible(&sidebar)
+                && !visible(&detail)
+                && sidebar.transitionCoordinator().is_none()),
+            "setting None returns to only the sidebar"
+        );
+
+        selection.set(Some(2));
+        assert!(
+            drain_main_queue(mtm()),
+            "the selection update drains the main queue"
+        );
+        let detail = column_root(&controller, UISplitViewControllerColumn::Secondary);
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || visible(&detail)
+                && !visible(&sidebar)
+                && detail.transitionCoordinator().is_none()),
+            "setting Some opens only the new detail"
+        );
+        assert_eq!(selection.snapshot(), Some(2));
+
+        let nav = controller
+            .childViewControllers()
+            .firstObject()
+            .expect("the compact split has a child controller")
+            .downcast::<UINavigationController>()
+            .expect("the compact split navigates between its columns");
+        assert!(
+            nav.popViewControllerAnimated(false).is_some(),
+            "native back pops the detail column"
+        );
+        assert!(
+            pump_main_until(MAIN_QUEUE_DEADLINE, || selection.snapshot().is_none()
+                && visible(&sidebar)
+                && !visible(&detail)),
+            "native back clears selection and returns to only the sidebar"
+        );
     }
 
     /// `items.set` on a surviving `ItemId` is a `replaced` change: the row's
     /// mounted leaf must be re-materialized and its measured contract
     /// re-derived, not reused — the `#306` regression.
     pub fn stable_id_payload_replace_remateries_the_row() {
-        let items = ReactiveList::from(vec![
+        let mut items = ReactiveList::from(vec![
             ProbeRow { id: 1, tall: false },
             ProbeRow { id: 2, tall: false },
         ]);
@@ -669,7 +727,7 @@ mod uikit_surface {
             ListItem::new(content)
         });
         let env = crate::resolve::env();
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
@@ -740,7 +798,7 @@ mod uikit_surface {
             "the reinserted row does not keep the replaced leaf"
         );
 
-        mixed_membership_turn_lands_each_contract(&mount, &table, &items, &first_row, short);
+        mixed_membership_turn_lands_each_contract(&mount, &table, &mut items, &first_row, short);
     }
 
     /// Mixed replacement + membership + new id in one turn: the newest
@@ -748,7 +806,7 @@ mod uikit_surface {
     fn mixed_membership_turn_lands_each_contract(
         mount: &waterui_apple::native_test_support::UIKitMount,
         table: &UITableView,
-        items: &ReactiveList<ProbeRow>,
+        items: &mut ReactiveList<ProbeRow>,
         first_row: &NSIndexPath,
         short: f64,
     ) {
@@ -799,7 +857,7 @@ mod uikit_surface {
         // Sectioned shape: a section marker produces a multi-group list,
         // which applies changes through the whole-table `reloadData` path —
         // a stable-id replace must still evict the row's measured contract.
-        let sectioned = ReactiveList::from(vec![
+        let mut sectioned = ReactiveList::from(vec![
             ProbeRow { id: 10, tall: true },
             ProbeRow {
                 id: 11,
@@ -822,7 +880,7 @@ mod uikit_surface {
                 }
             },
         ));
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
@@ -890,7 +948,7 @@ mod uikit_surface {
     pub fn stable_id_payload_replace_under_reentrant_emission() {
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
-        let items = ReactiveList::from(vec![
+        let mut items = ReactiveList::from(vec![
             ProbeRow {
                 id: 20,
                 tall: false,
@@ -917,7 +975,7 @@ mod uikit_surface {
                 ListItem::new(content)
             }
         });
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
@@ -1036,7 +1094,7 @@ mod uikit_surface {
                 ListItem::new(content)
             }
         });
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(list),
             &env,
@@ -1165,12 +1223,12 @@ mod uikit_surface {
         let container = Lazy::vstack(ForEach::new(items.clone(), {
             move |row: ProbeRow| {
                 if !fired.replace(true) {
-                    let _ = items.remove(0);
+                    let _ = items.clone().remove(0);
                 }
                 text(format!("row {}", row.id))
             }
         }));
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(container),
             &env,
@@ -1202,7 +1260,7 @@ mod uikit_surface {
         let env = crate::resolve::env();
         let first = Rc::new(Cell::new(false));
         let second = Rc::new(Cell::new(false));
-        let items = ReactiveList::from(vec![
+        let mut items = ReactiveList::from(vec![
             ProbeRow {
                 id: 50,
                 tall: false,
@@ -1218,12 +1276,12 @@ mod uikit_surface {
             let second = Rc::clone(&second);
             move |row: ProbeRow| {
                 if !first.replace(true) {
-                    items.push(ProbeRow {
+                    items.clone().push(ProbeRow {
                         id: 52,
                         tall: false,
                     });
                 } else if row.id == 53 && !second.replace(true) {
-                    items.push(ProbeRow {
+                    items.clone().push(ProbeRow {
                         id: 54,
                         tall: false,
                     });
@@ -1232,7 +1290,7 @@ mod uikit_surface {
             }
         });
         let view = table(vec![col("c", rows)]);
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(view),
             &env,
@@ -1280,7 +1338,7 @@ mod uikit_surface {
         let env = crate::resolve::env();
         let fired = Rc::new(Cell::new(false));
         let cross = Rc::new(Cell::new(false));
-        let items = ReactiveList::from(vec![ProbeRow {
+        let mut items = ReactiveList::from(vec![ProbeRow {
             id: 60,
             tall: false,
         }]);
@@ -1315,7 +1373,7 @@ mod uikit_surface {
                                     // a cross-column emission recorded
                                     // mid-drain must still deliver.
                                     if !cross.replace(true) {
-                                        items.push(ProbeRow {
+                                        items.clone().push(ProbeRow {
                                             id: 62,
                                             tall: false,
                                         });
@@ -1334,7 +1392,7 @@ mod uikit_surface {
         let _ = first_column.set(column.clone());
         columns.set(vec![column]);
         let view = table(columns);
-        let mount = waterui_apple::native_test_support::mount_uikit(
+        let mount = waterui_apple::native_test_support::mount_uikit_in(
             mtm(),
             AnyView::new(view),
             &env,

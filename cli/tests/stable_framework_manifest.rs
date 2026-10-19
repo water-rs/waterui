@@ -1,7 +1,8 @@
 //! `water create` against the published stable `framework.json`.
 //!
 //! The fixture is the `framework.json` attached to the v0.5.2 framework
-//! release, verbatim. That release pins its Apple backend as the separate
+//! release, minus the Kotlin Android runtime pins this CLI no longer reads.
+//! That release pins its Apple backend as the separate
 //! Swift `apple-backend` package and its Hydrolysis backend as a registry
 //! crate, so it declares neither `apple-backend-path` nor
 //! `hydrolysis-path`. This CLI scaffolds only a framework that carries
@@ -21,21 +22,21 @@ fn create_rejects_the_published_stable_manifest_without_backend_members() {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/framework_manifest_v0.5.2.json");
     let directory = tempfile::tempdir().expect("scratch directory");
     let project = directory.path().join("stable-probe");
+    // A scratch home keeps the create's build-cache work off the real
+    // `~/.water`.
+    let water_home = directory.path().join("water-home");
+    std::fs::create_dir_all(&water_home).expect("create hermetic home");
+    let host = waterui_cli::toolchain::Host::current().with_home(water_home);
 
     let result = smol::block_on(Project::create(
+        &host,
         &project,
-        CreateOptions {
-            name: "Stable Probe".to_owned(),
-            bundle_identifier: BundleIdentifier::try_from("dev.waterui.stableProbe")
-                .expect("valid bundle identifier"),
-            waterui_path: None,
-            channel: None,
-            framework_manifest: Some(manifest),
-            framework: None,
-            framework_lock: None,
-            author: "waterui-test".to_owned(),
-            web: None,
-        },
+        CreateOptions::new(
+            "Stable Probe".to_owned(),
+            BundleIdentifier::try_from("dev.waterui.stableProbe").expect("valid bundle identifier"),
+            "waterui-test".to_owned(),
+        )
+        .with_framework_manifest(Some(manifest)),
     ));
 
     let Err(FailToCreateProject::Framework(error)) = result else {

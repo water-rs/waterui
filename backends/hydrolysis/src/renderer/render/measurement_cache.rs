@@ -424,7 +424,7 @@ impl MeasurementCaches {
     ///
     /// A host can measure a sub-view earlier in the same flush — a button or
     /// menu's `measure_built` on its label, a lazy row's `patch_and_measure`
-    /// — filling node memos and `view_dimensions` before `flush_in_rect`
+    /// — filling node memos and `view_dimensions` before `place`
     /// lays it out. Inside the dependency pass those answers would come back
     /// from the cache without running the reads beneath them, so the pass's
     /// dependency sweep would prune subscriptions the cached layout still

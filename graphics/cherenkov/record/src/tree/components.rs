@@ -170,6 +170,7 @@ mod tests {
             Prop {
                 target: angle,
                 animation: Some(Curve::linear(Duration::from_secs(1)).into()),
+                start: None,
             },
         ));
     }
@@ -208,6 +209,7 @@ mod tests {
         let set = |target| Prop {
             target,
             animation: None,
+            start: None,
         };
         let base = Affine::translate((13., 17.));
         tree.apply(LayerOp::Transform(
@@ -215,6 +217,7 @@ mod tests {
             Prop {
                 target: base,
                 animation: None,
+                start: None,
             },
         ));
         tree.apply(LayerOp::Translation(root, set(Vec2::new(2., 3.))));
@@ -226,6 +229,7 @@ mod tests {
             Prop {
                 target: PI / 2.,
                 animation: None,
+                start: None,
             },
         ));
         let p = kurbo::Point::new(7., 9.);
@@ -241,6 +245,7 @@ mod tests {
             Prop {
                 target: Affine::IDENTITY,
                 animation: None,
+                start: None,
             },
         ));
         assert!(
@@ -255,6 +260,7 @@ mod tests {
         node.set_rotation(Prop {
             target: TAU,
             animation: Some(animation),
+            start: None,
         });
         let components = node.components.as_mut().unwrap();
         let now = Instant::now();
@@ -264,6 +270,7 @@ mod tests {
         node.set_rotation(Prop {
             target: -PI,
             animation: Some(animation),
+            start: None,
         });
         let track = node
             .components
@@ -278,6 +285,7 @@ mod tests {
         node.set_translation(Prop {
             target: Vec2::new(5., 7.),
             animation: None,
+            start: None,
         });
         assert!(node.components.as_ref().unwrap().rotation_track.is_some());
     }
@@ -291,6 +299,7 @@ mod tests {
             Prop {
                 target: Affine::scale(2.),
                 animation: None,
+                start: None,
             },
         ));
         assert!(tree.layer(LayerId::new(1)).components.is_none());

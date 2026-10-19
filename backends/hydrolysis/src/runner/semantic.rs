@@ -18,6 +18,7 @@ use crate::renderer::accessibility::{
     AccessibilityContentTypes, MergedAccessibilityUpdate, WINDOW_ID_STRIDE,
 };
 use crate::renderer::{MenuShortcutRegistry, SemanticCore, WindowId};
+use std::rc::Rc;
 #[cfg(target_arch = "wasm32")]
 use std::sync::Arc;
 
@@ -27,6 +28,7 @@ use std::sync::Arc;
 /// the phase timings, and the resulting accessibility tree update plus
 /// focused node when the `accessibility` feature is on.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct SemanticPumpResult {
     /// Whether the pump rebuilt the view tree.
     pub rebuilt: bool,
@@ -83,8 +85,14 @@ impl SemanticWindow {
             SessionTextEngine::from_collection(fonts, family_resolution),
         );
         core.set_window_id(window_id);
+        core.set_window_closable(window.closable);
+        // The semantic pump is driven explicitly by the harness — a request
+        // recorded on the frame signals is consumed by the next `pump` the
+        // test calls, so the host wake does nothing.
+        core.install_host_wake(Rc::new(|| {}));
         #[cfg(feature = "accessibility")]
         {
+            core.set_window_frame(kurbo_frame(window.frame.snapshot()));
             core.use_semantic_keyboard_activation();
             core.use_semantic_walk();
         }
@@ -244,6 +252,7 @@ impl SemanticRuntime {
             .get::<MenuShortcutRegistry>()
             .expect("install_headless_window_managers seeds MenuShortcutRegistry")
             .mint_window_id();
+        window.arm_close_requests(&env);
         Self {
             env,
             window: SemanticWindow::new(window, &fonts, window_id, family_resolution),
@@ -275,7 +284,7 @@ impl SemanticRuntime {
     /// Performs an accessibility action against the merged tree.
     ///
     /// Popup-window node ids are shifted into their own stride in the merged
-    /// update (see [`Self::take_merged_accessibility_tree_update`]), so a
+    /// update (see `Self::take_merged_accessibility_tree_update`), so a
     /// request whose target lands in a popup's range demuxes back to that
     /// window's core — the action targets (a menu item's activation, a picker
     /// row's selection) live there. Returns whether the action changed state,
@@ -336,6 +345,18 @@ impl SemanticRuntime {
                     && !popup.refresh_requested
                     && !popup.core.has_scheduled_semantic_work()
             })
+    }
+
+    /// Blocks until work parked outside the runtime — a timer, a fetch, a
+    /// decode on a worker thread — re-queues a task on this runtime's local
+    /// executor, returning whether one arrived within `timeout`.
+    ///
+    /// The event-driven wait for a host that is settled but still waiting on
+    /// such work: the next pump drains what arrived.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    pub fn wait_for_local_work(&self, timeout: core::time::Duration) -> bool {
+        self.local_executor.wait_queued(timeout)
     }
 
     /// Whether a state change has been requested but not yet emitted, so the
@@ -459,6 +480,7 @@ impl SemanticRuntime {
                 .get::<MenuShortcutRegistry>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id();
+            window.arm_close_requests(&self.env);
             self.popup_windows.push(SemanticWindow::new(
                 window,
                 &fonts,
@@ -491,6 +513,19 @@ impl SemanticRuntime {
             .accessibility_tree(self.popup_windows.iter_mut().map(|popup| &mut popup.core))
             .map(|merged| merged.tree_update)
     }
+}
+
+/// The window's declared logical frame in `SemanticCore`'s kurbo space — the
+/// one geometry fact the semantic walk keeps so emit paths can resolve
+/// viewport-dependent decisions a layout would have made.
+#[cfg(feature = "accessibility")]
+fn kurbo_frame(frame: waterui_core::layout::Rect) -> kurbo::Rect {
+    kurbo::Rect::new(
+        f64::from(frame.x()),
+        f64::from(frame.y()),
+        f64::from(frame.x() + frame.width()),
+        f64::from(frame.y() + frame.height()),
+    )
 }
 
 /// The window's origin as an environment value — the `input_env` the rendered
@@ -526,33 +561,40 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
         let changed = match event {
             InputEvent::CloseRequested => {
                 // The rendered runner's close gate (`handle_input_events`):
-                // a non-closable window ignores every close request.
+                // a non-closable window ignores every close request, and a
+                // closable one files it through the close-request machine —
+                // an `on_close_request` handler answers it on the local
+                // executor.
                 if window.window.closable {
-                    window
-                        .window
-                        .state
-                        .set(waterui::window::WindowState::Closed);
-                    should_close = true;
+                    window.window.request_close(env);
+                    should_close =
+                        window.window.state.snapshot() == waterui::window::WindowState::Closed;
                 }
                 true
             }
             InputEvent::Moved { x, y } => {
                 let frame = window.window.frame.snapshot();
-                window.window.frame.set(waterui_core::layout::Rect::new(
+                let frame = waterui_core::layout::Rect::new(
                     waterui_core::layout::Point::new(x, y),
                     *frame.size(),
-                ));
+                );
+                window.window.frame.set(frame);
+                #[cfg(feature = "accessibility")]
+                window.core.set_window_frame(kurbo_frame(frame));
                 false
             }
             InputEvent::Resize { width, height } => {
                 let frame = window.window.frame.snapshot();
-                window.window.frame.set(waterui_core::layout::Rect::new(
+                let frame = waterui_core::layout::Rect::new(
                     frame.origin(),
                     waterui_core::layout::Size::new(
                         crate::num_cast::u32_as_f32(width),
                         crate::num_cast::u32_as_f32(height),
                     ),
-                ));
+                );
+                window.window.frame.set(frame);
+                #[cfg(feature = "accessibility")]
+                window.core.set_window_frame(kurbo_frame(frame));
                 false
             }
             InputEvent::TextInput { text } => {
@@ -577,12 +619,7 @@ fn handle_semantic_input_events(window: &mut SemanticWindow, env: &Environment) 
                     false
                 } else {
                     let key_env = env.extending(semantic_window_origin(window));
-                    let press = KeyPress {
-                        key: logical_key,
-                        code: physical_code,
-                        modifiers: modifiers.into(),
-                        repeat,
-                    };
+                    let press = KeyPress::new(logical_key, physical_code, modifiers.into(), repeat);
                     let outcome = window
                         .core
                         .handle_key_press(&key, modifiers, &key_env, &press);
@@ -661,10 +698,11 @@ fn advance_semantic_window(window: &mut SemanticWindow, env: &Environment, now: 
         window.refresh_requested = true;
     }
     let _animations_active = window.core.advance_animations();
-    if window.core.take_patch_request() {
-        window.refresh_requested = true;
-    }
-    if window.core.take_rebuild_request() || window.core.take_next_frame_rebuild_request() {
+    window.core.drain_producer_wakes();
+    // Any mark — a reactive update, a structural patch, a rebuild-worthy
+    // change — lands on the root cell through the owner chain and arms the
+    // patch flag; structural marks persist until the emit clears them.
+    if window.core.take_patch_request() || window.core.has_structure_marks() {
         window.refresh_requested = true;
     }
 }
@@ -678,16 +716,15 @@ fn pump_semantic_window(window: &mut SemanticWindow, env: &Environment) -> bool 
     // `subscribe_window_declaration_signals` — the same shared
     // subscription the rendered `RuntimeWindow` installs — so a write while
     // the pump is parked arms `core`'s refresh flag and this pump re-emits.
-    // The guards never enter `signal_watches`: they drop with the window
-    // after `core` has released every frame-scoped subscription, so the
-    // teardown order the renderer releases watch guards in
-    // (water-rs/waterui#1213) is unchanged.
+    // The guards drop with the window after `core` has released every
+    // frame-scoped subscription, so the teardown order the renderer
+    // releases watch guards in (water-rs/waterui#1213) is unchanged.
     #[cfg(feature = "accessibility")]
     window
         .core
         .set_accessibility_root_label(window.window.title.snapshot().as_str());
 
-    if window.core.take_rebuild_request() {
+    if window.core.has_structure_marks() {
         window.refresh_requested = true;
     }
     let work_pending = window.refresh_requested
@@ -715,9 +752,8 @@ mod tests {
     //! accesskit tree with no GPU, no style, no layout and no encode, and
     //! accessibility actions drive widget state directly.
     //!
-    //! These cannot run until `waterui-testing` (a dev-dependency every test
-    //! target links) carries the `waterui#1125` driver side; the identical
-    //! flow is verified against the public API in an external scratch crate.
+    //! They run without `waterui-testing` — Hydrolysis's own tests stay on
+    //! its own API (water-rs/waterui#1673).
 
     use super::*;
     use accesskit::{Action, ActionRequest, Node as AccessibilityNode, NodeId, Role, TreeId};

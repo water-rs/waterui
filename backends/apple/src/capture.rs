@@ -1,0 +1,192 @@
+//! The offscreen subtree capture `preview` and `view_renderer` share when
+//! `gpu_surface` is off. On macOS a window that is created but never
+//! ordered in hosts the view, and `AppKit`'s `cacheDisplayInRect:`
+//! rasterizes the whole subtree into one premultiplied RGBA8 bitmap. On
+//! `UIKit` the view sits inside an offscreen `UIWindow` and its layer
+//! renders into the bitmap. `Metal` layer contents never reach that
+//! bitmap, so with `gpu_surface` the readback is `capture_image`'s
+//! `ViewCapture` instead.
+
+use waterui_core::view_renderer::RenderResult;
+
+/// Why the platform capture produced no bitmap.
+#[derive(Debug, thiserror::Error)]
+pub enum CaptureError {
+    /// `Core Graphics` refused the destination bitmap context.
+    #[error("could not create a {width}x{height} RGBA bitmap context")]
+    BitmapContext {
+        /// Bitmap width in pixels.
+        width: usize,
+        /// Bitmap height in pixels.
+        height: usize,
+    },
+    /// `AppKit` gave the view no bitmap to cache its display into.
+    #[cfg(target_os = "macos")]
+    #[error("the view provided no bitmap representation to cache its display into")]
+    NoBitmapRep,
+    /// The cached display bitmap could not be read as an image.
+    #[cfg(target_os = "macos")]
+    #[error("the cached display bitmap has no CGImage")]
+    NoImage,
+    /// A zero-sized view has no pixels — an error, not a 1x1 fallback.
+    #[error("the capture view is zero-sized ({width}x{height} pt)")]
+    ZeroSize {
+        /// The view's logical width.
+        width: f64,
+        /// The view's logical height.
+        height: f64,
+    },
+    /// No connected window scene can host the offscreen capture window.
+    #[cfg(all(target_os = "ios", feature = "view_renderer"))]
+    #[error("no UIWindowScene is connected to host the capture window")]
+    NoWindowScene,
+}
+
+/// The shared tail of every `AppKit` capture: `host` is already inside its
+/// never-ordered window and laid out under its proposal; `AppKit`'s
+/// `cacheDisplayInRect:` rasterizes the whole subtree into premultiplied
+/// RGBA8. This path exists only without `gpu_surface`: with it, `Metal`
+/// layer contents never reach the bitmap and `capture_image`'s
+/// `ViewCapture` is the readback.
+///
+/// # Errors
+///
+/// Returns [`CaptureError`] when `AppKit` cannot produce the bitmap.
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::future_not_send,
+    reason = "the capture runs on the main thread; the Retained AppKit objects it holds across the wait are not Send"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "`ceil` yields an integral value bounded by the view size, which fits usize/u32"
+)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the zero-size guard above keeps bounds and scale positive"
+)]
+#[expect(
+    clippy::unused_async,
+    reason = "the signature stays `async` so `async` callers need no feature gating"
+)]
+pub async fn capture_presented(
+    host: &cocoa_ui::PlatformView,
+) -> Result<RenderResult, CaptureError> {
+    // The dynamic-range tag rides an ancestor: `require_inherited` resolves
+    // it above the tagged view, and a never-ordered window has no screen
+    // for the untagged fallback to read. `Standard` is the honest answer —
+    // the capture has no display to be extended-range on.
+    let window = cocoa_ui::view::window(host).expect("capture host is inside a window");
+    let ancestor = window
+        .contentView()
+        .expect("capture window has a content view");
+    cocoa_ui::dynamic_range::apply_to_view(
+        cocoa_ui::dynamic_range::DynamicRange::Standard,
+        &ancestor,
+    );
+
+    let scale = cocoa_ui::view::backing_scale_factor(host);
+    cocoa_ui::view::prepare_for_capture(host);
+    cocoa_ui::bitmap::force_text_fields_display(host);
+
+    let bounds = cocoa_ui::view::bounds(host);
+    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+        return Err(CaptureError::ZeroSize {
+            width: bounds.size.width,
+            height: bounds.size.height,
+        });
+    }
+    let pixel_width = (bounds.size.width * scale).ceil() as usize;
+    let pixel_height = (bounds.size.height * scale).ceil() as usize;
+    let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
+    let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height).ok_or(
+        CaptureError::BitmapContext {
+            width: pixel_width,
+            height: pixel_height,
+        },
+    )?;
+    cocoa_ui::bitmap::scale_to_pixels(&context, scale);
+
+    let rep =
+        cocoa_ui::view::bitmap_rep_for_caching_display(host).ok_or(CaptureError::NoBitmapRep)?;
+    cocoa_ui::view::cache_display(host, &rep);
+    let image = rep.CGImage().ok_or(CaptureError::NoImage)?;
+    cocoa_ui::bitmap::draw_image(&context, &image, bounds);
+    Ok(RenderResult::new(
+        pixels,
+        pixel_width as u32,
+        pixel_height as u32,
+    ))
+}
+
+/// The `UIKit` tail of every capture: `host` is already inside its
+/// offscreen `UIWindow` and laid out under its proposal; its layer renders
+/// the whole subtree into premultiplied RGBA8 at the view's display scale.
+/// This path exists only without `gpu_surface`: with it, `Metal` layer
+/// contents never reach the bitmap and `capture_image`'s `ViewCapture` is
+/// the readback.
+///
+/// `renderInContext` replays the layer model through `Core Graphics`, not the
+/// `Core Animation` compositor, so backdrop filters are not evaluated: a
+/// `UIVisualEffectView` material draws its tint without blurring what lies
+/// behind it. No public capture primitive closes that without a window —
+/// `CARenderer` evaluates the filters but presents Catalyst's layer contents
+/// in the opposite vertical orientation to their geometry, and GPU surfaces
+/// are composited outside the layer tree — so this is a documented
+/// limitation of windowless capture (water-rs/waterui#2660).
+///
+/// # Errors
+///
+/// Returns [`CaptureError`] when the view is zero-sized or `Core Graphics`
+/// refuses the bitmap context.
+#[cfg(target_os = "ios")]
+#[expect(
+    clippy::future_not_send,
+    reason = "the capture runs on the main thread; the UIKit view it borrows is not Sync"
+)]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "`ceil` yields an integral value bounded by the view size, which fits usize/u32"
+)]
+#[expect(
+    clippy::cast_sign_loss,
+    reason = "the zero-size guard above keeps bounds and scale positive"
+)]
+#[expect(
+    clippy::unused_async,
+    reason = "the signature stays `async` so `async` callers need no platform gating"
+)]
+pub async fn capture_presented(
+    host: &cocoa_ui::PlatformView,
+) -> Result<RenderResult, CaptureError> {
+    let bounds = cocoa_ui::view::bounds(host);
+    if bounds.size.width <= 0.0 || bounds.size.height <= 0.0 {
+        return Err(CaptureError::ZeroSize {
+            width: bounds.size.width,
+            height: bounds.size.height,
+        });
+    }
+    let scale = cocoa_ui::view::backing_scale_factor(host);
+    let pixel_width = (bounds.size.width * scale).ceil() as usize;
+    let pixel_height = (bounds.size.height * scale).ceil() as usize;
+    let mut pixels = alloc::vec![0u8; pixel_width * pixel_height * 4];
+    let context = cocoa_ui::bitmap::bitmap_context(&mut pixels, pixel_width, pixel_height).ok_or(
+        CaptureError::BitmapContext {
+            width: pixel_width,
+            height: pixel_height,
+        },
+    )?;
+    cocoa_ui::bitmap::scale_to_pixels(&context, scale);
+    cocoa_ui::bitmap::begin_layer_flip(&context, bounds.size.height);
+    let layer = cocoa_ui::view::layer(host).expect("a UIKit view is always layer-backed");
+    cocoa_ui::bitmap::with_uikit_context(&context, || {
+        cocoa_ui::bitmap::render_layer(&layer, &context);
+    });
+    cocoa_ui::bitmap::end_layer_flip(&context);
+    drop(context);
+    Ok(RenderResult::new(
+        pixels,
+        pixel_width as u32,
+        pixel_height as u32,
+    ))
+}

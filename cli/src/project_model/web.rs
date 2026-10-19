@@ -17,6 +17,7 @@ use waterui_assets_planner::{BUNDLE_META_PREFIX, BundleMountMeta};
 
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::project_model::templates::embedded;
+use crate::toolchain::Host;
 
 /// The JavaScript package manager a project declares in
 /// `[web] package_manager`.
@@ -25,6 +26,7 @@ use crate::project_model::templates::embedded;
 /// a project that declares `pnpm` is never built with `bun`.
 #[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Debug, Default, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum PackageManager {
     /// Bun (`bun`).
     #[default]
@@ -49,18 +51,11 @@ impl PackageManager {
         }
     }
 
-    /// `<pm> run <script>` — every supported manager accepts this form.
-    #[must_use]
-    pub fn run(self, script: &str) -> Command {
-        let mut command = Command::new(self.binary());
-        command.arg("run").arg(script);
-        command
-    }
-
     /// `<pm> install` — installs the dependencies of the current directory.
+    /// Interactive: installers prompt on the terminal, so it inherits stdio.
     #[must_use]
-    pub fn install(self) -> Command {
-        let mut command = Command::new(self.binary());
+    pub fn install(self, host: &Host) -> Command {
+        let mut command = Command::from(host.interactive_command(self.binary()));
         command.arg("install");
         command
     }
@@ -69,10 +64,12 @@ impl PackageManager {
     ///
     /// `template`, when given, is forwarded to `create-vite` after a `--`
     /// separator (`--template <t>`), which every manager passes through and
-    /// which skips Vite's interactive framework picker.
+    /// which skips Vite's interactive framework picker. The command is
+    /// interactive either way — the picker reads the user's terminal when it
+    /// runs.
     #[must_use]
-    pub fn create_vite(self, dir: &str, template: Option<&str>) -> Command {
-        let mut command = Command::new(self.binary());
+    pub fn create_vite(self, host: &Host, dir: &str, template: Option<&str>) -> Command {
+        let mut command = Command::from(host.interactive_command(self.binary()));
         command.arg("create");
         match self {
             Self::Npm => command.arg("vite@latest"),
@@ -90,9 +87,9 @@ impl PackageManager {
         command
     }
 
-    /// Whether the manager's binary resolves on `PATH`.
-    pub async fn is_installed(self) -> bool {
-        crate::utils::which(self.binary()).await.is_ok()
+    /// Whether the manager's binary resolves on `host`'s `PATH`.
+    pub async fn is_installed(self, host: &Host) -> bool {
+        host.which(self.binary()).await.is_ok()
     }
 
     /// The official installation instruction, shown when the declared manager
@@ -115,6 +112,7 @@ impl PackageManager {
 /// The macro never reads this — only the CLI does. Absent section and absent
 /// key both mean [`PackageManager::Bun`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WebConfig {
     /// The package manager used for `run build`, `run dev`, `create vite`,
     /// and `install` in the frontend project.
@@ -170,6 +168,7 @@ pub fn decode_web_mount(symbols: &ArtifactSymbols) -> eyre::Result<Option<Bundle
 /// Panics when `meta` declares no `project` — callers only reach this for
 /// `include_web!` mounts.
 pub async fn build_frontend(
+    host: &Host,
     package_manager: PackageManager,
     meta: &BundleMountMeta,
 ) -> eyre::Result<()> {
@@ -178,16 +177,23 @@ pub async fn build_frontend(
         .as_ref()
         .expect("build_frontend is only called for mounts that declare a project");
     let pm = package_manager.binary();
-    let status = package_manager
-        .run("build")
-        .current_dir(root)
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::inherit())
-        .stderr(Stdio::inherit())
-        .status()
+    // Not interactive: a bundler never reads the terminal. Under `water
+    // mcp` this path runs on the JSON-RPC stream, so the output is captured
+    // — echoed to a real terminal when there is one — and reported on
+    // failure, never inherited.
+    let output = host
+        .clone()
+        .with_cwd(root)
+        .output(pm, ["run", "build"])
         .await?;
-    if !status.success() {
-        bail!("`{pm} run build` failed in {}: {status}", root.display());
+    if !output.status.success() {
+        bail!(
+            "`{pm} run build` failed in {}: {}{}{}",
+            root.display(),
+            output.status,
+            crate::utils::format_failure_stream("stderr", &output.stderr),
+            crate::utils::format_failure_stream("stdout", &output.stdout),
+        );
     }
     if !meta.path.is_dir() {
         bail!(
@@ -206,14 +212,16 @@ pub async fn build_frontend(
 ///
 /// Every launch channel reduces to this name: desktop spawns it directly,
 /// `simctl launch` forwards it as `SIMCTL_CHILD_WATERUI_DEV_URL`,
-/// `devicectl device process launch` carries it in the `-e` environment
-/// dictionary, and Android ships it as the `waterui.env.WATERUI_DEV_URL`
-/// intent extra that the generated `MainActivity` turns back into an
-/// environment variable before the runtime initializes.
+/// `devicectl device process launch` forwards it through the
+/// `DEVICECTL_CHILD_*` caller environment, and Android ships it inside
+/// the launch-environment handoff the generated `MainActivity` claims
+/// and turns back into an environment variable before the runtime
+/// initializes.
 pub const DEV_URL_ENV: &str = "WATERUI_DEV_URL";
 
 /// A target `water run` can hand a dev-server URL to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DevTarget {
     /// A desktop process the CLI spawns (macOS, GTK, Hydrolysis).
     Desktop,
@@ -229,8 +237,9 @@ pub enum DevTarget {
 /// this machine's loopback.
 ///
 /// `WATERUI_DEV_URL` travels in the launch environment on every target —
-/// `devicectl device process launch -e` carries it to a physical iOS device
-/// exactly as `SIMCTL_CHILD_*` carries it to a simulator.
+/// `DEVICECTL_CHILD_*` carries it to a physical iOS device through
+/// `devicectl device process launch` exactly as `SIMCTL_CHILD_*` carries
+/// it to a simulator.
 ///
 /// On a physical iOS device `localhost` is the phone itself, so the URL's
 /// loopback host is replaced with the Mac's LAN address — the address the
@@ -426,6 +435,7 @@ impl WebDevServer {
     /// Panics if the spawned child has no piped stdout — impossible, since
     /// the spawn configures it above.
     pub async fn spawn(
+        host: &Host,
         package_manager: PackageManager,
         root: &Path,
         script: &str,
@@ -437,7 +447,7 @@ impl WebDevServer {
         let pm = package_manager.binary();
         // `std::process::Command`, not `smol`'s: the child must lead its own
         // process group so the guard's drop can signal the whole tree.
-        let mut command = std::process::Command::new(pm);
+        let mut command = host.std_command(pm);
         command.arg("run").arg(script).current_dir(root);
         if expose_on_lan {
             // npm needs `--` to forward args to the script; bun, pnpm and
@@ -448,10 +458,7 @@ impl WebDevServer {
             }
             command.args(["--host", "0.0.0.0"]);
         }
-        command
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+        command.stdout(Stdio::piped()).stderr(Stdio::inherit());
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt as _;
@@ -663,6 +670,7 @@ fn echo_dev_server_line(line: &str) {
 
 /// Where the frontend of an initialized project comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WebSource {
     /// Scaffold a new Vite project into `web/`.
     New,
@@ -672,6 +680,7 @@ pub enum WebSource {
 
 /// What to do with a frontend found outside `web/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExistingFrontendMode {
     /// Copy it into `web/` (excluding `node_modules` and `.git`), then install.
     Copy,
@@ -681,6 +690,7 @@ pub enum ExistingFrontendMode {
 
 /// The answers `water init` needs, each supplied by a flag or a prompt.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct InitAnswers {
     /// `--web new|<path>`: the frontend source, if the flag settled it.
     pub web: Option<WebSource>,
@@ -691,9 +701,30 @@ pub struct InitAnswers {
     pub package_manager: Option<PackageManager>,
 }
 
+impl InitAnswers {
+    /// Answers choosing `web` as the frontend source, adopting an existing
+    /// frontend in `web_mode`, managed by `package_manager`.
+    #[must_use]
+    pub const fn new(
+        web: Option<WebSource>,
+        web_mode: Option<ExistingFrontendMode>,
+        package_manager: Option<PackageManager>,
+    ) -> Self {
+        Self {
+            web,
+            web_mode,
+            package_manager,
+        }
+    }
+}
+
 /// One step of `water init`. The command executes these in order; the plan is
 /// pure so the decision tree is testable without touching disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal performs each init action variant by variant"
+)]
 pub enum InitAction {
     /// Move the listed top-level entries into `web/`.
     MoveFrontendToWeb {
@@ -853,6 +884,7 @@ fn relative_path_arg(project_root: &Path, source: &Path) -> eyre::Result<String>
 /// Read from `web/package.json` dependencies — the dependencies the template
 /// ships are the one ground truth `create vite` gives us.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WebFramework {
     /// `vanilla`/`vanilla-ts`: no framework dependency.
     Vanilla,
@@ -897,6 +929,7 @@ impl WebFramework {
 /// What `web/package.json` says about a scaffolded frontend: the framework
 /// dependency and whether `typescript` is a devDependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WebFrontend {
     /// The framework the starter's dependencies declare.
     pub framework: WebFramework,
@@ -958,6 +991,7 @@ pub fn detect_web_frontend(package_json: &str) -> Option<WebFrontend> {
 
 /// What [`apply_brand_overlay`] did, and what it could not.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct WebOverlayReport {
     /// The detected frontend (`None` when `package.json` did not parse).
     pub frontend: Option<WebFrontend>,
@@ -1399,6 +1433,28 @@ mod tests {
     }
 
     #[test]
+    fn pm_run_build_does_not_inherit_stdio() {
+        // `water mcp` runs `build_frontend` on the JSON-RPC stream: the
+        // declared host's output policy is off, so a bundler's output is
+        // captured and reported on failure, never inherited onto the
+        // protocol stream.
+        let machine = crate::toolchain::testing::TestMachine::new();
+        machine.install("bun");
+        machine.respond("bun_run_build", "the bundler's complaint");
+        let host = machine.host([("WATERUI_FAKE_PM_EXIT", "1")]);
+        let meta = BundleMountMeta::new(
+            "web".to_string(),
+            machine.dir("app/dist"),
+            Some(machine.dir("app")),
+        );
+        let error = smol::block_on(build_frontend(&host, PackageManager::Bun, &meta)).unwrap_err();
+        assert!(
+            error.to_string().contains("the bundler's complaint"),
+            "captured bundler output should be reported: {error}"
+        );
+    }
+
+    #[test]
     fn command_arg_vectors() {
         let args = |command: &Command| -> Vec<String> {
             std::iter::once(command.get_program().to_string_lossy().into_owned())
@@ -1409,21 +1465,22 @@ mod tests {
                 )
                 .collect()
         };
+        let host =
+            crate::toolchain::testing::TestMachine::new().host(Vec::<(String, String)>::new());
         assert_eq!(
-            args(&PackageManager::Bun.run("build")),
-            ["bun", "run", "build"]
+            args(&PackageManager::Pnpm.install(&host)),
+            ["pnpm", "install"]
         );
-        assert_eq!(args(&PackageManager::Pnpm.install()), ["pnpm", "install"]);
         assert_eq!(
-            args(&PackageManager::Yarn.create_vite("web", None)),
+            args(&PackageManager::Yarn.create_vite(&host, "web", None)),
             ["yarn", "create", "vite", "web"]
         );
         assert_eq!(
-            args(&PackageManager::Bun.create_vite("web", Some("react-ts"))),
+            args(&PackageManager::Bun.create_vite(&host, "web", Some("react-ts"))),
             ["bun", "create", "vite", "web", "--template", "react-ts"]
         );
         assert_eq!(
-            args(&PackageManager::Npm.create_vite("web", Some("vanilla-ts"))),
+            args(&PackageManager::Npm.create_vite(&host, "web", Some("vanilla-ts"))),
             [
                 "npm",
                 "create",
@@ -1707,9 +1764,9 @@ mod tests {
     fn dev_server_tree_signals_the_grandchild_and_refuses_a_shared_group() {
         use std::os::unix::process::CommandExt as _;
 
-        let mut leader = std::process::Command::new("sh")
+        let mut leader = crate::toolchain::Host::current()
+            .std_command("sh")
             .args(["-c", "sleep 30 & wait"])
-            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .process_group(0)
@@ -1724,9 +1781,9 @@ mod tests {
             "SIGKILL to the group ends the leader: {status}"
         );
 
-        let mut shared = std::process::Command::new("sh")
+        let mut shared = crate::toolchain::Host::current()
+            .std_command("sh")
             .args(["-c", "exit 0"])
-            .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()

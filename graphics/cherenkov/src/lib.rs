@@ -15,13 +15,17 @@
 //! - [`Engine::render`] drains every surface's queued change set into one
 //!   commit per frame, samples the animations at the frame time and renders
 //!   on the render thread.
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 // The recording layer — and now the layer tree — is `cherenkov-record`;
 // these imports keep its modules at their old `crate::*` paths so engine
 // code is unchanged.
 use cherenkov_record::{animation, color, display_list, glyph, paint, record, shape, size, style};
 
-mod backdrop;
 mod backend;
 mod capability;
 mod config;
@@ -52,17 +56,14 @@ pub use crate::animation::{
     Animatable, Animation, AnimationTrack, Curve, Decay, Lanes, Spring, curve_value, decay_step,
     settled, spring_step,
 };
-pub use crate::backdrop::{
-    BackdropShaderSource, BackdropSpec, CaptureLevels, CaptureLevelsError, CaptureScale,
-    CaptureScaleError,
-};
+
 pub use crate::backend::{
     Backend, Display, Frame, FrameRedraw, Renderer, SurfaceFrame, SurfaceInfo, Visibility,
 };
 pub use crate::capability::{
     Backdrop, BackdropChain, BackdropRuns, BackdropShaders, DrainedProducer, Effects, Filters,
-    GpuContent, HdrOutput, Planes, Runs, ShaderPaint as ShaderPaintCapability, ShaderSource,
-    Uploads,
+    GpuContent, HdrOutput, HostedLayers, Planes, Runs, ShaderPaint as ShaderPaintCapability,
+    ShaderSource, Uploads,
 };
 pub use crate::color::{
     Color, ColorSpace, DisplayP3, DynColor, LinearDisplayP3, LinearSrgb, Rec2020, Srgb,
@@ -75,7 +76,7 @@ pub use crate::display_list::{
 };
 pub use crate::engine::Engine;
 pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
-pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
+pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError, SurfaceRejection};
 pub use crate::frame::{
     DEFAULT_REFRESH, FrameId, FrameStats, FrameTime, FrameTiming, Next, Offscreen, OffscreenFormat,
     PassTiming, Phases, Readback,
@@ -83,7 +84,7 @@ pub use crate::frame::{
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 pub use crate::image::{
     Astc4x4, Bc7, Etc2Rgba, Format, ImageColorSpace, ImageData, ImageFormat, ImageUpload, Rgba8,
-    Rgba16F,
+    Rgba16F, srgb_decode,
 };
 pub use crate::message::{FontData, InstallOp, ProducerId};
 pub use crate::paint::{
@@ -96,7 +97,8 @@ pub use crate::record::{
     Recorder, SampleFlag, StaticRecorder,
 };
 pub use crate::resource::{
-    BackdropGroup, BackdropShader, Filter, Font, FontSource, FrameSink, GpuProducer, Image, Shader,
+    BackdropGroup, BackdropShader, Filter, Font, FontSource, FrameSink, GpuProducer, Hosted, Image,
+    Shader,
 };
 pub use crate::shape::{
     ContinuousRect, EvenOdd, FillRule, PATH_TOLERANCE, PathRef, Semantic, Shape, ShapeData,
@@ -108,11 +110,13 @@ pub use crate::text::{TextLayout, draw_text};
 // The moved layer-tree types: re-exported at the root exactly like the
 // rest of `cherenkov-record`.
 pub use cherenkov_record::{
-    BackdropEffect, BackdropId, BackdropSample, BackdropSampling, BackdropShaderEffect,
-    BackdropShaderId, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install, Layer,
+    AnimationStart, BackdropEffect, BackdropId, BackdropOuter, BackdropOuterError, BackdropSample,
+    BackdropSampling, BackdropShaderEffect, BackdropShaderId, BackdropShaderSource, BackdropSpec,
+    BackdropUnion, BackdropUnionError, CaptureLevels, CaptureLevelsError, CaptureScale,
+    CaptureScaleError, ColorMatrix, ContentOp, GpuInstalls, ImageLimits, Install, Layer,
     LayerAnimations, LayerContent, LayerEdit, LayerId, LayerNode, LayerOwner, LevelRamp,
     LevelRampError, Projective, ProjectiveError, ProjectiveLayers, Prop, Queue, Realize,
-    Refraction, RefreshRange, ResourceId, Rim, Shared, SurfaceId, SurfaceTree, Target, Transaction,
-    snap_animating,
+    RecordingScale, RecordingScaleError, Refraction, RefreshRange, ResourceId, Rim, Shared,
+    SurfaceId, SurfaceTree, Target, Transaction, snap_animating,
 };
 pub use kurbo::Stroke;

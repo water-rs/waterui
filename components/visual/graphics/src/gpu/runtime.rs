@@ -27,6 +27,7 @@ use cherenkov_gpu::{
 
 /// Why a [`GpuRuntime`] could not be created.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum GpuRuntimeError {
     /// No adapter satisfied the request.
     #[error("no compatible GPU adapter: {0}")]
@@ -197,9 +198,9 @@ impl SharedGpuContext {
     /// [`GpuRuntimeError`] when no adapter or device is available.
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "wgpu's wasm32 request_adapter/request_device resolve through JS promises kept in an Rc<RefCell>, so this future is !Send there; it is Send on native targets"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     pub async fn new(generation: u64) -> Result<Self, GpuRuntimeError> {
@@ -427,9 +428,9 @@ impl GpuRuntime {
     /// requires of a shared device.
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "`wgpu::Instance::request_adapter` resolves through `navigator.gpu.requestAdapter()`, a JS promise the WebGPU backend keeps in an `Rc<RefCell<_>>`; the same future is `Send` on every other target"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     pub async fn new() -> Result<Self, GpuRuntimeError> {

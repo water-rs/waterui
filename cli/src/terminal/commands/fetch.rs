@@ -29,10 +29,22 @@ pub struct Args {
     backend: Option<TargetBackend>,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 /// Run the fetch command.
 pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     let project_path = crate::project_path::canonicalize(&args.path)?;
-    let project = Project::open(&project_path, ManagedBackends::NONE).await?;
+    let project = Project::open(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+        ManagedBackends::NONE,
+    )
+    .await?;
 
     let spinner = shell.spinner("Fetching fonts...");
     let outcomes = match args.backend {
@@ -104,16 +116,16 @@ mod tests {
             .args
     }
 
-    /// `--backend android` must reach the scoped scan: the fetch seeds the
+    /// `--backend hydrolysis` must reach the scoped scan: the fetch seeds the
     /// cache for one backend's builds instead of scaffolding every backend
     /// the host could manage — which is what made the unscoped fetch fail on
     /// hosts where another backend's crate graph does not resolve.
     #[test]
     fn backend_scope_parses_to_the_shared_target_enum() {
-        let args = fetch_args(&["--backend", "android"]);
+        let args = fetch_args(&["--backend", "hydrolysis"]);
         assert_eq!(
             args.backend.map(TargetBackend::lib_backend),
-            Some(waterui_cli::platform::TargetBackend::Android)
+            Some(waterui_cli::platform::TargetBackend::Hydrolysis)
         );
     }
 

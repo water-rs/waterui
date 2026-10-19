@@ -1,8 +1,6 @@
 #[cfg(feature = "accessibility")]
 use crate::renderer::AccessibilityActionTarget;
-use crate::renderer::{
-    HydroNativeView, HydroState, WidgetRenderContext, measure_view_intrinsic, transformed_rect,
-};
+use crate::renderer::{HydroNativeView, HydroState, WidgetRenderContext, measure_view_intrinsic};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
@@ -29,7 +27,7 @@ impl HydroNativeView for Native<ScrollView> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_view_intrinsic(view.as_inner().content(), state, env, theme)
     }
@@ -38,7 +36,7 @@ impl HydroNativeView for Native<ScrollView> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> waterui_core::layout::ViewDimensions {
         // A scroll fills the offered extent on bounded axes — answering the
@@ -129,16 +127,13 @@ pub fn register_scroll_accessibility_node(
 /// delta falls through to the next enclosing region.
 pub fn register_scroll_wheel_target(
     renderer: &mut crate::renderer::SemanticCore,
-    hit_transform: kurbo::Affine,
     viewport: kurbo::Rect,
     handle: &crate::scroll::ScrollHandle,
 ) {
     let target_handle = handle.clone();
-    renderer.register_scroll_target(
-        transformed_rect(hit_transform, viewport),
-        handle.clone(),
-        move |dx, dy, is_line_delta| target_handle.apply_scroll_delta(dx, dy, is_line_delta),
-    );
+    renderer.register_scroll_target(viewport, handle.clone(), move |dx, dy, is_line_delta| {
+        target_handle.apply_scroll_delta(dx, dy, is_line_delta)
+    });
 }
 
 /// Geometry of one scroll indicator along its track: where the thumb starts,
@@ -163,7 +158,9 @@ fn indicator_geometry(
     let min_thumb = track.min(12.0);
     let thumb_extent = (track * (viewport_extent / content_extent)).clamp(min_thumb, track);
     let travel = track - thumb_extent;
-    let progress = offset / max_offset;
+    // A touch gesture can hold the offset past an edge while it rubber-
+    // bands; the thumb stays pinned to the end of its track meanwhile.
+    let progress = (offset / max_offset).clamp(0.0, 1.0);
     Some(IndicatorGeometry {
         thumb_offset: travel * progress,
         thumb_extent,
@@ -253,20 +250,23 @@ pub fn draw_scroll_indicators(
         });
     }
 
-    let hit_transform = ctx.hit_transform;
     if vertical.is_some_and(|geometry| geometry.travel > 0.0) {
-        let gutter = transformed_rect(
-            hit_transform,
-            kurbo::Rect::new(
-                viewport.x1 - SCROLL_INDICATOR_GUTTER,
-                viewport.y0,
-                viewport.x1,
-                viewport.y1,
-            ),
+        let gutter = kurbo::Rect::new(
+            viewport.x1 - SCROLL_INDICATOR_GUTTER,
+            viewport.y0,
+            viewport.x1,
+            viewport.y1,
         );
+        // The drag's point lands in window space and the gutter is
+        // node-local: resolve the inverse through the region's live
+        // placement at invoke time — a transform that changed since this
+        // record (a parent scroll, a transition) would otherwise drag
+        // against stale geometry.
+        let placement = ctx.renderer_mut().current_placement();
         let handle = handle.clone();
         ctx.renderer_mut()
             .register_scrollbar_drag_target(gutter, move |renderer, point, _env| {
+                let point = placement.resolved_transform(true).inverse() * point;
                 let metrics = handle.metrics();
                 let Some(geometry) = indicator_geometry(
                     gutter.height(),
@@ -293,22 +293,25 @@ pub fn draw_scroll_indicators(
                     grab
                 });
                 let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_y;
-                handle.user_scroll_to(metrics.offset_x, target)
+                let changed = handle.user_scroll_to(metrics.offset_x, target);
+                if changed {
+                    renderer.mark_scroll_owner(&handle, crate::renderer::Dirty::LAYOUT);
+                }
+                changed
             });
     }
     if horizontal.is_some_and(|geometry| geometry.travel > 0.0) {
-        let gutter = transformed_rect(
-            hit_transform,
-            kurbo::Rect::new(
-                viewport.x0,
-                viewport.y1 - SCROLL_INDICATOR_GUTTER,
-                viewport.x1,
-                viewport.y1,
-            ),
+        let gutter = kurbo::Rect::new(
+            viewport.x0,
+            viewport.y1 - SCROLL_INDICATOR_GUTTER,
+            viewport.x1,
+            viewport.y1,
         );
+        let placement = ctx.renderer_mut().current_placement();
         let handle = handle.clone();
         ctx.renderer_mut()
             .register_scrollbar_drag_target(gutter, move |renderer, point, _env| {
+                let point = placement.resolved_transform(true).inverse() * point;
                 let metrics = handle.metrics();
                 let Some(geometry) = indicator_geometry(
                     gutter.width(),
@@ -335,7 +338,11 @@ pub fn draw_scroll_indicators(
                     grab
                 });
                 let target = ((pointer - grab) / geometry.travel).clamp(0.0, 1.0) * metrics.max_x;
-                handle.user_scroll_to(target, metrics.offset_y)
+                let changed = handle.user_scroll_to(target, metrics.offset_y);
+                if changed {
+                    renderer.mark_scroll_owner(&handle, crate::renderer::Dirty::LAYOUT);
+                }
+                changed
             });
     }
 }

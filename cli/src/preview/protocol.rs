@@ -1,43 +1,4 @@
-//! Preview command protocol types.
-//!
-//! This module defines the messages exchanged between:
-//! - CLI → Preview support app (render commands via TCP)
-//! - Preview support app → CLI (render results via TCP)
-
-/// Target platform for a native preview support app.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum PreviewPlatform {
-    /// Physical iOS device.
-    Ios,
-    /// iOS Simulator.
-    IosSimulator,
-    /// macOS.
-    Macos,
-    /// Android device or emulator.
-    Android,
-}
-
-impl std::str::FromStr for PreviewPlatform {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "ios" => Ok(Self::Ios),
-            "ios-simulator" | "iossimulator" => Ok(Self::IosSimulator),
-            "macos" => Ok(Self::Macos),
-            "android" => Ok(Self::Android),
-            _ => Err(format!("Unknown platform: {s}")),
-        }
-    }
-}
-
-pub use waterui_preview_protocol::{
-    DylibId, DylibSource, PREVIEW_PROTOCOL_COMMIT, PreviewError as AppError,
-    PreviewOutput as AppOutput, PreviewProtocolInfo, PreviewRequest as AppRequest,
-    PreviewResponse as AppResponse, PreviewRuntimePlatform, Size,
-};
-
-pub use waterui_preview_protocol::tcp::PreviewTcpConfig;
+//! Preview export symbol naming.
 
 /// Convert a function path to preview export symbol.
 ///

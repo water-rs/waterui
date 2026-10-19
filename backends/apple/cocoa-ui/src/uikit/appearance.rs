@@ -10,6 +10,7 @@ use std::fmt;
 use objc2::ClassType;
 use objc2_ui_kit::{
     UITraitCollection, UITraitEnvironment, UITraitUserInterfaceStyle, UIUserInterfaceStyle,
+    UIViewController,
 };
 
 use super::trait_change::{TraitChangeObservation, register_trait_change};
@@ -39,7 +40,7 @@ impl ViewController {
         handler: impl Fn(ColorScheme) + 'static,
     ) -> ColorSchemeObservation {
         ColorSchemeObservation {
-            observation: register_trait_change(
+            observation: register_trait_change::<UIViewController, _>(
                 self,
                 UITraitUserInterfaceStyle::class().as_ref(),
                 move |controller: &Self| handler(controller.color_scheme()),

@@ -346,6 +346,10 @@ const DEFAULT_SPRING_DURATION: Duration = Duration::from_millis(600);
 /// Convenience constructors (`linear`, `ease_in`, etc.) all map to `Bezier`.
 #[derive(Debug, Default, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each animation primitive natively, variant by variant; a new primitive must fail their build instead of falling into a wildcard arm"
+)]
 pub enum Animation {
     /// Default animation behavior (uses system defaults)
     #[default]

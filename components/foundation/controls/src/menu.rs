@@ -7,6 +7,7 @@ use alloc::{
     vec,
     vec::Vec,
 };
+use core::fmt;
 
 use nami::{
     Computed, Signal, SignalExt, SignalIdentity, impl_constant,
@@ -85,6 +86,10 @@ impl ShortcutModifiers {
 /// `Character` control character, names a key no press reports, so build
 /// keys through the `From`/`FromStr` conversions that refuse them.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each shortcut key form variant by variant; a new shortcut key form must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ShortcutKey {
     /// A key that produces one character. Letters match regardless of case;
     /// Shift is a separate modifier.
@@ -119,6 +124,67 @@ impl ShortcutKey {
             Self::Named(named) => Key::Named(*named),
         }
     }
+}
+
+/// The label a menu hint draws for a shortcut key: a letter in upper case,
+/// the space bar as `Space`, and a named key in the platform's own notation —
+/// the `⌦`/`↩`/`←` glyphs of Apple menus, the `Del`/`Enter`/`Left` text of
+/// Windows and Linux menus. A named key without a platform abbreviation
+/// shows its W3C name, which is already the label those menus print (`F5`,
+/// `Home`).
+impl fmt::Display for ShortcutKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Character(' ') => f.write_str("Space"),
+            Self::Character(character) => {
+                for upper in character.to_uppercase() {
+                    write!(f, "{upper}")?;
+                }
+                Ok(())
+            }
+            Self::Named(named) => match named_key_label(*named) {
+                Some(label) => f.write_str(label),
+                None => fmt::Display::fmt(named, f),
+            },
+        }
+    }
+}
+
+#[cfg(target_vendor = "apple")]
+const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Delete => "⌦",
+        NamedKey::Backspace => "⌫",
+        NamedKey::Enter => "↩",
+        NamedKey::Escape => "⎋",
+        NamedKey::Tab => "⇥",
+        NamedKey::ArrowUp => "↑",
+        NamedKey::ArrowDown => "↓",
+        NamedKey::ArrowLeft => "←",
+        NamedKey::ArrowRight => "→",
+        NamedKey::PageUp => "⇞",
+        NamedKey::PageDown => "⇟",
+        NamedKey::Home => "↖",
+        NamedKey::End => "↘",
+        NamedKey::Clear => "⌧",
+        _ => return None,
+    })
+}
+
+#[cfg(not(target_vendor = "apple"))]
+const fn named_key_label(key: NamedKey) -> Option<&'static str> {
+    Some(match key {
+        NamedKey::Delete => "Del",
+        NamedKey::Insert => "Ins",
+        NamedKey::Escape => "Esc",
+        NamedKey::PageUp => "PgUp",
+        NamedKey::PageDown => "PgDn",
+        NamedKey::ArrowUp => "Up",
+        NamedKey::ArrowDown => "Down",
+        NamedKey::ArrowLeft => "Left",
+        NamedKey::ArrowRight => "Right",
+        _ => return None,
+    })
 }
 
 /// Whether `key` can name a shortcut: `Unidentified` and `Dead` are reported
@@ -221,10 +287,12 @@ impl core::str::FromStr for ShortcutKey {
 /// A string that is neither a single character nor a W3C named key.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("`{0}` is neither a single character nor a W3C KeyboardEvent.key name")]
+#[non_exhaustive]
 pub struct InvalidShortcutKey(pub String);
 
 /// Keyboard shortcut metadata attached to a command.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Shortcut {
     /// The key the shortcut fires on.
     pub key: ShortcutKey,
@@ -236,9 +304,9 @@ impl Shortcut {
     /// Creates a shortcut on `key` — a `char` or a [`NamedKey`].
     ///
     /// A backend whose platform menu cannot arm `key` — as an `AppKit` key
-    /// equivalent, a `UIKit` key command, a muda accelerator or an Android
-    /// menu shortcut character — panics when it builds the menu item, so
-    /// choose a key the target platforms' menus support.
+    /// equivalent, a `UIKit` key command, a Win32 menu accelerator or an
+    /// Android menu shortcut character — panics when it builds the menu
+    /// item, so choose a key the target platforms' menus support.
     #[must_use]
     pub fn new(key: impl Into<ShortcutKey>) -> Self {
         Self {
@@ -273,6 +341,45 @@ impl Shortcut {
     pub const fn control(mut self) -> Self {
         self.modifiers = self.modifiers.inserting(ShortcutModifiers::CONTROL);
         self
+    }
+}
+
+/// The trailing hint a menu row draws for the shortcut — `⌃⌥⇧⌘` glyphs on
+/// Apple targets, `Ctrl+Alt+Shift+` text elsewhere, where the command
+/// modifier is control, the platform's menu accelerator. The key renders
+/// through [`ShortcutKey`]'s own `Display`, so a menu row and an
+/// application's own listing of its chords cannot disagree.
+impl fmt::Display for Shortcut {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let modifiers = self.modifiers;
+        #[cfg(target_vendor = "apple")]
+        {
+            if modifiers.control() {
+                f.write_str("⌃")?;
+            }
+            if modifiers.option() {
+                f.write_str("⌥")?;
+            }
+            if modifiers.shift() {
+                f.write_str("⇧")?;
+            }
+            if modifiers.command() {
+                f.write_str("⌘")?;
+            }
+        }
+        #[cfg(not(target_vendor = "apple"))]
+        {
+            if modifiers.control() || modifiers.command() {
+                f.write_str("Ctrl+")?;
+            }
+            if modifiers.option() {
+                f.write_str("Alt+")?;
+            }
+            if modifiers.shift() {
+                f.write_str("Shift+")?;
+            }
+        }
+        fmt::Display::fmt(&self.key, f)
     }
 }
 
@@ -336,6 +443,7 @@ impl View for Menu {
 /// A destructive command is drawn in the platform's destructive style: red
 /// text on iOS, macOS and Android, and the error colour in drawn menus.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum CommandRole {
     /// An ordinary command.
     #[default]
@@ -498,6 +606,7 @@ impl CommandBuilder {
 
 /// A single item inside menu content.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum MenuItem {
     /// A leaf command.
     Command(Command),
@@ -524,6 +633,45 @@ pub enum MenuItem {
     /// the macOS menu bar rejects ⌘Q, ⌘H and ⌥⌘H on ordinary commands, and
     /// a homemade Quit bypasses the termination hooks.
     Quit,
+    /// The application's own Close Window item.
+    ///
+    /// It renders once, with the platform's label ("Close"), and closes a
+    /// window through that window's ordinary close path — the same one its
+    /// title-bar close button takes — so the key window closes exactly as
+    /// that button would close it, and closing the last window still
+    /// follows the `LastWindowPolicy` passed to `App::on_last_window_closed`.
+    /// A window declared without a close button ignores it.
+    ///
+    /// Its accelerator is the platform's close chord — ⌘W on macOS, Ctrl+W
+    /// where the command modifier maps to control — unless the application
+    /// binds the chord itself, which it may: a tabbed app's ⌘W is Close
+    /// Tab. The chord is decided once for the whole application, from the
+    /// declared menu bar at any depth — ⌘W when no declared command binds
+    /// it, ⇧⌘W when one does and none binds ⇧⌘W, no chord at all when the
+    /// application binds both — and every Close Window item carries that
+    /// one decision: the menu bar, a window-mounted menu, a context menu
+    /// and a chord-table entry alike. On Windows the menu-bar row shows
+    /// Alt+F4, the system's own close chord, and the decided chord reaches
+    /// the focused window through the chord registry; Linux has no menu
+    /// bar, so there it works through the shortcut registry and the item
+    /// shows only in mounted and context menus.
+    ///
+    /// On Windows the menu bar is one menu every window shares, and its
+    /// Close row is the platform's own item, which cannot be disabled per
+    /// window: it stays enabled while a non-closable window is focused, and
+    /// choosing it there does nothing.
+    ///
+    /// Declaring it is how an application places Close Window. When no menu
+    /// in the menu bar declares it, the macOS menu bar carries it in the
+    /// standard Window menu; once one does, it appears only where it is
+    /// declared, never twice. It can also appear in menus the window mounts
+    /// and in context menus.
+    ///
+    /// Platforms whose windows the application cannot close — iOS, Android,
+    /// the web, and FFI hosts, whose windows the host owns — omit it from
+    /// every menu and arm no chord for it, so a portable menu may declare
+    /// it unconditionally.
+    CloseWindow,
 }
 
 impl_constant!(MenuItem);
@@ -536,7 +684,35 @@ impl MenuItem {
             Self::Divider => ResolvedMenuItem::Divider,
             Self::Menu(menu) => ResolvedMenuItem::Menu(menu.resolve(env)),
             Self::Quit => ResolvedMenuItem::Quit,
+            Self::CloseWindow => ResolvedMenuItem::CloseWindow,
         }
+    }
+
+    /// The command a declared [`MenuItem::CloseWindow`] stands for — how a
+    /// backend that draws it as an ordinary command row (a popup-menu row, a
+    /// chord in its shortcut table) builds that row: the platform's word for
+    /// closing a window, the `chord` [`CloseWindowChord`] resolves from the
+    /// environment — the application's one decision, ⌘W on macOS, Ctrl+W
+    /// where the backend maps the command modifier to control, ceded when
+    /// the application binds it — and `action`, which the backend supplies
+    /// because the backend owns window targeting — which window the request
+    /// reaches, and how it closes.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn close_window_command<Args>(
+        env: &Environment,
+        chord: Option<Shortcut>,
+        action: impl Handler<Args, ()> + 'static,
+    ) -> ResolvedCommand {
+        // "Close" is the item AppKit's File and Window menus, the Windows
+        // window menu and GTK/Qt desktops all carry for ⌘W / Ctrl+W.
+        let command = "Close".action(action);
+        let command = if let Some(chord) = chord {
+            command.shortcut(chord)
+        } else {
+            command
+        };
+        command.resolve(env)
     }
 }
 
@@ -940,6 +1116,10 @@ impl ResolvedNestedMenu {
 /// Raw menu item config resolved against the environment locale.
 #[doc(hidden)]
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each menu item variant by variant; a new menu item must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ResolvedMenuItem {
     /// A resolved leaf command.
     Command(ResolvedCommand),
@@ -949,6 +1129,130 @@ pub enum ResolvedMenuItem {
     Menu(ResolvedNestedMenu),
     /// The application's declared Quit item — see [`MenuItem::Quit`].
     Quit,
+    /// The application's declared Close Window item — see
+    /// [`MenuItem::CloseWindow`].
+    CloseWindow,
+}
+
+impl ResolvedMenuItem {
+    /// Whether `items` declare [`MenuItem::CloseWindow`] at any depth.
+    ///
+    /// A backend that supplies a standard Close Window item when the
+    /// application declares none asks this of the resolved menu bar, so the
+    /// item never appears twice.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn declares_close_window(items: &[Self]) -> bool {
+        items.iter().any(|item| match item {
+            Self::CloseWindow => true,
+            Self::Menu(menu) => Self::declares_close_window(&menu.items.snapshot()),
+            Self::Command(_) | Self::Divider | Self::Quit => false,
+        })
+    }
+
+    /// The chord a menu bar's Close Window item carries, decided once from
+    /// the commands `items` declare at any depth: the platform's close
+    /// chord — ⌘W, which backends map to Ctrl+W where the command modifier
+    /// is control — while no declared command binds it; ⇧⌘W when one does
+    /// and none binds ⇧⌘W (the tabbed-app convention: a browser's ⌘W is
+    /// Close Tab); and no chord at all when the application binds both, so
+    /// Close Window never shadows a command's own binding.
+    ///
+    /// The comparison is [`ResolvedCommand::assert_allowed_in_macos_menu_bar`]'s:
+    /// equal modifier sets, and the key matched case-insensitively.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn close_window_chord(items: &[Self]) -> Option<Shortcut> {
+        let close = Shortcut::new('w').command();
+        let shifted = Shortcut::new('w').command().shift();
+        if binds_chord(items, &close) {
+            (!binds_chord(items, &shifted)).then_some(shifted)
+        } else {
+            Some(close)
+        }
+    }
+}
+
+/// Whether a declared command in `items` — at any depth — binds `chord`,
+/// compared the way [`ResolvedCommand::assert_allowed_in_macos_menu_bar`]
+/// does: equal modifiers, key matched case-insensitively.
+fn binds_chord(items: &[ResolvedMenuItem], chord: &Shortcut) -> bool {
+    items.iter().any(|item| match item {
+        ResolvedMenuItem::Command(command) => command.shortcut.as_ref().is_some_and(|shortcut| {
+            chord.modifiers == shortcut.modifiers && shortcut.key.matches(&chord.key.to_key())
+        }),
+        ResolvedMenuItem::Menu(menu) => binds_chord(&menu.items.snapshot(), chord),
+        ResolvedMenuItem::Divider | ResolvedMenuItem::Quit | ResolvedMenuItem::CloseWindow => false,
+    })
+}
+
+/// The application's decided Close Window chord: one decision for the whole
+/// application, taken from its declared menu bar through
+/// [`ResolvedMenuItem::close_window_chord`], that every Close Window item
+/// carries wherever it renders — the menu bar, window-mounted menus,
+/// context menus and chord-table entries alike.
+///
+/// `App::into_parts` installs it into the application environment as a
+/// signal over the resolved menu bar, so a bar whose declared items change
+/// re-decides it.
+#[doc(hidden)]
+#[derive(Clone, Debug)]
+pub struct CloseWindowChord(Computed<Option<Shortcut>>);
+
+impl CloseWindowChord {
+    /// The decision over `menu_bar`, resolved under `env` — a signal, so a
+    /// menu bar whose items change re-decides the chord.
+    #[must_use]
+    pub fn new(menu_bar: &Computed<Vec<Menu>>, env: &Environment) -> Self {
+        Self(
+            resolve_menu_bar_items(menu_bar, env)
+                .map(|items| ResolvedMenuItem::close_window_chord(&items))
+                .computed(),
+        )
+    }
+
+    /// The chord this environment's application decided.
+    ///
+    /// # Panics
+    ///
+    /// When `env` carries no decision — every environment a runner hands
+    /// its menus comes from `App::into_parts`, which installs the decision;
+    /// a bare `Environment` must install it itself.
+    #[must_use]
+    pub fn of(env: &Environment) -> Option<Shortcut> {
+        env.get::<Self>()
+            .expect("the Close Window chord is installed by `App::into_parts`")
+            .0
+            .snapshot()
+    }
+}
+
+/// Where a menu bar's Close Window item lives: in the standard Window menu
+/// the platform or backend builds, or only where the application declared
+/// [`MenuItem::CloseWindow`] — never both, so it never appears twice.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CloseWindowPlacement {
+    /// No declared menu carries `MenuItem::CloseWindow`: the standard
+    /// Window menu carries Close, so the close chord works without the
+    /// application declaring anything.
+    WindowMenu,
+    /// A declared menu carries it, at whatever depth; the standard Window
+    /// menu does not repeat it.
+    Declared,
+}
+
+impl CloseWindowPlacement {
+    /// The placement the declared menu bar's resolved `items` call for.
+    #[must_use]
+    pub fn for_declared(items: &[ResolvedMenuItem]) -> Self {
+        if ResolvedMenuItem::declares_close_window(items) {
+            Self::Declared
+        } else {
+            Self::WindowMenu
+        }
+    }
 }
 
 impl_constant!(ResolvedMenuItem);
@@ -956,6 +1260,10 @@ impl_constant!(ResolvedMenuItem);
 /// Raw native popup menu config resolved against the environment locale.
 #[doc(hidden)]
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "backends destructure the whole resolved menu, so a new field must fail their build instead of being ignored"
+)]
 pub struct ResolvedMenu {
     /// The label view displayed on the menu button.
     pub label: AnyView,
@@ -1024,6 +1332,28 @@ mod tests {
     #[should_panic(expected = "`NamedKey::Tab`")]
     fn shortcut_key_refuses_a_control_character_naming_its_key() {
         let _ = ShortcutKey::from('\t');
+    }
+
+    /// `Display` is the platform's menu hint: `⇧⌘P` on Apple targets,
+    /// `Ctrl+Shift+P` where the command modifier is control.
+    #[test]
+    fn shortcut_displays_its_platform_hint() {
+        let shortcut = Shortcut::new('p').command().shift();
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(shortcut.to_string(), "⇧⌘P");
+        #[cfg(not(target_vendor = "apple"))]
+        assert_eq!(shortcut.to_string(), "Ctrl+Shift+P");
+    }
+
+    /// A named key draws the platform's own label — `⌦` on Apple targets,
+    /// `Del` elsewhere.
+    #[test]
+    fn shortcut_displays_named_key_labels() {
+        let shortcut = Shortcut::new(NamedKey::Delete).command();
+        #[cfg(target_vendor = "apple")]
+        assert_eq!(shortcut.to_string(), "⌘⌦");
+        #[cfg(not(target_vendor = "apple"))]
+        assert_eq!(shortcut.to_string(), "Ctrl+Del");
     }
 
     #[test]
@@ -1200,6 +1530,93 @@ mod tests {
             N,
             "one leaf change must evaluate each of the {N} children exactly once"
         );
+    }
+
+    /// The Close Window chord the declared `items` leave: ⌘W while nothing
+    /// binds it, ⇧⌘W once a declared command takes it, and no chord at all
+    /// when the application binds both — the deciding command counts at any
+    /// depth.
+    #[test]
+    fn close_window_chord_yields_to_a_declared_binding() {
+        crate::init_test_executor();
+        let env = Environment::default();
+        let command = |label, shortcut: Shortcut| -> MenuItem {
+            Command::builder(label)
+                .action(|| {})
+                .shortcut(shortcut)
+                .into()
+        };
+
+        assert_eq!(
+            ResolvedMenuItem::close_window_chord(&resolve_menu_items_now(
+                vec![MenuItem::CloseWindow],
+                &env
+            )),
+            Some(Shortcut::new('w').command()),
+            "⌘W is Close Window's while no command binds it"
+        );
+
+        let bound = resolve_menu_items_now(
+            vec![
+                Menu::new(
+                    "File",
+                    (command("Close Tab", Shortcut::new('w').command()),),
+                )
+                .into(),
+                MenuItem::CloseWindow,
+            ],
+            &env,
+        );
+        assert_eq!(
+            ResolvedMenuItem::close_window_chord(&bound),
+            Some(Shortcut::new('w').command().shift()),
+            "a declared ⌘W at any depth moves Close Window to ⇧⌘W"
+        );
+
+        let both = resolve_menu_items_now(
+            vec![
+                command("Close Tab", Shortcut::new('w').command()),
+                command("Close All Tabs", Shortcut::new('w').command().shift()),
+                MenuItem::CloseWindow,
+            ],
+            &env,
+        );
+        assert_eq!(
+            ResolvedMenuItem::close_window_chord(&both),
+            None,
+            "with both chords bound, Close Window carries none"
+        );
+    }
+
+    #[test]
+    fn close_window_resolves_and_is_found_at_any_depth() {
+        crate::init_test_executor();
+        let env = Environment::default();
+        let top_level = resolve_menu_items_now(vec![MenuItem::CloseWindow], &env);
+        assert!(matches!(top_level[..], [ResolvedMenuItem::CloseWindow]));
+        assert!(ResolvedMenuItem::declares_close_window(&top_level));
+
+        let nested = resolve_menu_items_now(
+            vec![
+                Menu::new("File", (button("Open").action(|| {}),)).into(),
+                Menu::new(
+                    "Window",
+                    (Menu::new("Arrange", vec![MenuItem::CloseWindow]),),
+                )
+                .into(),
+            ],
+            &env,
+        );
+        assert!(ResolvedMenuItem::declares_close_window(&nested));
+
+        let without = resolve_menu_items_now(
+            vec![
+                MenuItem::Quit,
+                Menu::new("File", (button("Open").action(|| {}),)).into(),
+            ],
+            &env,
+        );
+        assert!(!ResolvedMenuItem::declares_close_window(&without));
     }
 
     #[test]

@@ -588,9 +588,14 @@ fn initialize_gpu(state: &Rc<FilteredState>) {
     if !can_attach_now(&state.view) {
         return;
     }
-    // One explicit live context for everything below: on loss the whole
-    // initialization parks before attach or any native allocation, and the
-    // publication watch re-runs `initialize_gpu` on the rebuilt context.
+    attach(state);
+}
+
+/// The attach the `can_attach_now` gate defers: one explicit live context
+/// for everything below — on loss the whole initialization parks before
+/// attach or any native allocation, and the publication watch re-runs
+/// `initialize_gpu` on the rebuilt context.
+fn attach(state: &Rc<FilteredState>) {
     let context = state.runtime.context();
     if context.device_lost_reason().is_some() {
         park_for_publication(state, context.generation());
@@ -600,7 +605,7 @@ fn initialize_gpu(state: &Rc<FilteredState>) {
     // when the view is already attached — so nothing later allocates on a
     // stale device.
     ensure_filtered_generation(state, &context);
-    let (width, height) = pixel_size(&state.view, scale);
+    let (width, height) = pixel_size(&state.view, state.current_scale.get());
     attach_if_needed(state, &context, width, height);
     let _ = ensure_capture_texture(state, &context, width, height);
 }
@@ -1922,6 +1927,14 @@ impl CapturableSurface for FilteredCapturable {
         };
         request_ready_frame(&state, waker);
     }
+
+    /// `true` once the filter's first frame can never land — the settled
+    /// terminal failure the capture wait resolves on.
+    fn presentation_failed(&self) -> bool {
+        self.state
+            .upgrade()
+            .is_none_or(|state| state.park.is_failed())
+    }
 }
 
 /// Dropping clears the filter's registrations and shuts the capture and
@@ -2303,7 +2316,7 @@ pub mod native_test {
     use futures::channel::oneshot;
     use waterui_graphics::filtrate::{
         EffectContext, EffectInput, EffectOutput, EffectRedrawCallback, EffectRenderResult,
-        EffectSetupResult,
+        EffectSetupResult, RetainedMemory,
     };
 
     use objc2_metal::{
@@ -2458,6 +2471,12 @@ pub mod native_test {
         fn redraw_hint(&self) -> bool {
             false
         }
+
+        fn retained_memory(&self) -> RetainedMemory {
+            RetainedMemory::default()
+        }
+
+        fn trim(&mut self) {}
     }
 
     /// Holds a nested [`FillEffect`]'s setup until [`Self::release`].

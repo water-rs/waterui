@@ -55,6 +55,7 @@ use crate::EdgeInsets;
 use crate::callback::guarded;
 use crate::geometry::{IndexPath, Point};
 use crate::scroll_flight::{FlightPlan, ScrollFlight};
+use crate::uikit::keyboard::KeyboardTracking;
 
 /// Whether a header-footer view presents a section's header or footer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,6 +133,14 @@ pub trait TableSource: 'static {
         let _ = (table, from, to);
     }
 
+    /// Whether `index`'s row may become selected — `UIKit` consults it
+    /// through `tableView:willSelectRowAtIndexPath:` before pointer and
+    /// keyboard selection apply. The default allows every row.
+    fn should_select(&self, table: &TableView, index: IndexPath) -> bool {
+        let _ = (table, index);
+        true
+    }
+
     /// `index`'s row became selected by the user.
     fn did_select_row(&self, table: &TableView, index: IndexPath);
 
@@ -150,6 +159,11 @@ pub struct TableViewIvars {
     source: RefCell<Option<Rc<dyn TableSource>>>,
     /// The scroll animation state: at most one flight per surface.
     flight: Rc<ScrollFlight>,
+    /// The keyboard tracking (§7.1 scroll surfaces): the covered band's
+    /// depth becomes the bottom content inset in the surface's own layout
+    /// pass, read from the window's keyboard region; the focus observers
+    /// scroll a focused field clear of the keyboard region.
+    keyboard: Rc<KeyboardTracking>,
 }
 
 impl TableViewIvars {
@@ -159,6 +173,7 @@ impl TableViewIvars {
         Self {
             source: RefCell::new(None),
             flight: ScrollFlight::new(mtm),
+            keyboard: Rc::new(KeyboardTracking::new()),
         }
     }
 
@@ -421,6 +436,21 @@ define_class!(
             }
         }
 
+        #[unsafe(method_id(tableView:willSelectRowAtIndexPath:))]
+        fn will_select_row(
+            &self,
+            _table_view: &UITableView,
+            path: &NSIndexPath,
+        ) -> Option<Retained<NSIndexPath>> {
+            guarded("uikit::table::source.should_select", || {
+                let index = table_index(path);
+                self.ivars()
+                    .source()
+                    .is_some_and(|source| source.should_select(self, index))
+                    .then(|| index_path(index))
+            })
+        }
+
         #[unsafe(method(tableView:didSelectRowAtIndexPath:))]
         fn did_select_row(&self, _table_view: &UITableView, index_path: &NSIndexPath) {
             guarded("uikit::table::source.did_select_row", || {
@@ -450,12 +480,70 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
                 self.ivars().flight.land();
+                self.ivars().keyboard.clear();
+                if self.window().is_some() {
+                    self.ivars().keyboard.attach(self, self.mtm());
+                    // Re-entering a window whose keyboard moved while the
+                    // view was out of the tree — a popped page's surface —
+                    // recomputes the contribution on the next pass.
+                    self.mark_keyboard();
+                }
             });
         }
+
+        /// Keeps `UIKit`'s layout — cells and separators — then
+        /// recomputes the keyboard inset and the focused-field clearance
+        /// from the window's keyboard region (§7.1).
+        #[unsafe(method(layoutSubviews))]
+        fn layout_subviews_override(&self) {
+            guarded("TableView layoutSubviews", || {
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), layoutSubviews] };
+                self.ivars().keyboard.apply_layout(self);
+            });
+        }
+
+        /// Any frame change — a parent's layout pass translating or
+        /// resizing the surface — marks the surface for its own pass:
+        /// `UIKit` invalidates layout on a bounds change but not on a
+        /// bare translate, and the keyboard contribution reads the
+        /// window position, which a translate changes.
+        /// SAFETY: see the module safety note.
+        #[unsafe(method(setFrame:))]
+        fn set_frame_override(&self, frame: CGRect) {
+            guarded("TableView setFrame:", || {
+                let changed = self.frame() != frame;
+                // SAFETY: see the module safety note.
+                let _: () = unsafe { msg_send![super(self), setFrame: frame] };
+                if changed {
+                    self.setNeedsLayout();
+                }
+            });
+        }
+
+        /// The kit scroll-surface marker — only `ScrollView` and
+        /// `TableView` answer it, so a `UIScrollView` that is not one of
+        /// ours (`UITextView`) never counts as a scroll surface (§7.1).
+        /// SAFETY: see the module safety note.
+        #[unsafe(method(cocoaUiIsScrollSurface))]
+        fn is_scroll_surface_override(&self) -> bool {
+            true
+        }
+
     }
 );
 
 impl TableView {
+    /// The window's keyboard region marked this surface for a region
+    /// change — the next layout pass recomputes the keyboard
+    /// contribution, and the mark itself queues that pass. Called by
+    /// the region's whole-window walk and by `didMoveToWindow` on
+    /// re-entry.
+    pub(crate) fn mark_keyboard(&self) {
+        self.ivars().keyboard.mark();
+        self.setNeedsLayout();
+    }
+
     /// Creates a table styled `.insetGrouped` with fixed 16-point horizontal
     /// directional margins, `fromCellEdges` separator references, and the
     /// estimated heights a plain grouped row takes.
@@ -566,9 +654,17 @@ impl TableView {
         self.reloadData();
     }
 
-    /// Applies `deletes` and `inserts` as one animated batch — `.automatic`
-    /// when `animated`, `.none` otherwise.
-    pub fn apply_row_updates(&self, deletes: &[IndexPath], inserts: &[IndexPath], animated: bool) {
+    /// Applies `deletes`, `inserts` and `moves` as one animated batch —
+    /// `.automatic` when `animated`, `.none` otherwise. Batch-update
+    /// indexing: `deletes` and each move's source name rows before the
+    /// batch, `inserts` and each move's destination name rows after it.
+    pub fn apply_row_updates(
+        &self,
+        deletes: &[IndexPath],
+        inserts: &[IndexPath],
+        moves: &[(IndexPath, IndexPath)],
+        animated: bool,
+    ) {
         let animation = if animated {
             UITableViewRowAnimation::Automatic
         } else {
@@ -580,10 +676,17 @@ impl TableView {
         let insert_array = NSArray::from_retained_slice(
             &inserts.iter().map(|i| index_path(*i)).collect::<Vec<_>>(),
         );
+        let move_paths: Vec<_> = moves
+            .iter()
+            .map(|(from, to)| (index_path(*from), index_path(*to)))
+            .collect();
         let table = self.retain();
         let updates = RcBlock::new(move || {
             table.deleteRowsAtIndexPaths_withRowAnimation(&delete_array, animation);
             table.insertRowsAtIndexPaths_withRowAnimation(&insert_array, animation);
+            for (from, to) in &move_paths {
+                table.moveRowAtIndexPath_toIndexPath(from, to);
+            }
         });
         // `performBatchUpdates` invokes `updates` synchronously, so the
         // captured `NSArray`s stay alive for the whole batch.

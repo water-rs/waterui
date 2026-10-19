@@ -172,6 +172,7 @@ pub struct ColorSettings {
     selection_foreground: Option<Computed<WorkingColor>>,
     error: Option<Computed<WorkingColor>>,
     error_foreground: Option<Computed<WorkingColor>>,
+    scrim: Option<Computed<WorkingColor>>,
 }
 
 impl ColorSettings {
@@ -286,6 +287,13 @@ impl ColorSettings {
         self
     }
 
+    /// Sets the scrim color (the dimming backdrop behind a modal presentation).
+    #[must_use]
+    pub fn scrim(mut self, color: impl IntoSignal<WorkingColor>) -> Self {
+        self.scrim = Some(color.into_signal().computed());
+        self
+    }
+
     /// Installs the color settings into the environment.
     /// Only non-None fields are installed.
     fn install(self, env: &mut Environment) {
@@ -333,6 +341,9 @@ impl ColorSettings {
         }
         if let Some(signal) = self.error_foreground {
             install_color_signal::<color::ErrorForeground>(env, signal);
+        }
+        if let Some(signal) = self.scrim {
+            install_color_signal::<color::Scrim>(env, signal);
         }
     }
 }
@@ -565,6 +576,10 @@ pub mod color {
         ($name:ident, $doc:literal) => {
             #[doc = $doc]
             #[derive(Debug, Clone, Copy, Default)]
+            #[expect(
+                clippy::exhaustive_structs,
+                reason = "field-less theme color token, resolved by type and used by name"
+            )]
             pub struct $name;
 
             impl Resolvable for $name {
@@ -618,6 +633,10 @@ pub mod color {
         "Destructive / error emphasis: badges, destructive buttons, validation."
     );
     define_color_token!(ErrorForeground, "Foreground drawn on the error color.");
+    define_color_token!(
+        Scrim,
+        "Dimming backdrop a modal layer paints between the content and a presented dialog."
+    );
 }
 
 // ============================================================================
@@ -746,6 +765,7 @@ pub fn install_color_signal<T: 'static>(env: &mut Environment, signal: Computed<
         color::ErrorForeground,
         waterui_graphics::color::ErrorForegroundColor
     );
+    mirror_graphics_color!(color::Scrim, waterui_graphics::color::ScrimColor);
 }
 
 /// Returns an installed color signal for the requested slot when one exists.

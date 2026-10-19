@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "repro_app"
+name = "round4_dev_capture_auth"
 version = "0.1.0"
 dependencies = [
  "waterui",
@@ -12,5 +12,4 @@ dependencies = [
 [[package]]
 name = "waterui"
 version = "0.5.2"
-source = "git+https://github.com/water-rs/waterui?rev=a6318b38c54b31cbfbc518b75bd9de737e229ff6#a6318b38c54b31cbfbc518b75bd9de737e229ff6"
-
+source = "git+https://github.com/water-rs/waterui?rev=896613fec9202cc9e9fd7cc7dc4b06afa54cce50#896613fec9202cc9e9fd7cc7dc4b06afa54cce50"

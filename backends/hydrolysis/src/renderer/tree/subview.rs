@@ -5,7 +5,7 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::engine::WidgetTheme;
+use crate::theme::WidgetTheme;
 use std::rc::Rc;
 
 /// A [`SubView`] adapter that measures a child [`RenderNode`] **on demand** at
@@ -93,7 +93,7 @@ impl<'a> NodeSubView<'a> {
             try_resolve_node_text_leaf(node, env, state).map(|(input, max_lines)| {
                 ResolvedNodeTextMeasure {
                     input,
-                    service: std::sync::Arc::clone(&state.borrow().text),
+                    service: std::sync::Arc::clone(state.borrow_mut().measuring_text()),
                     max_lines,
                 }
             });

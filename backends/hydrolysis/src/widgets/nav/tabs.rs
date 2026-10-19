@@ -3,18 +3,18 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 #[cfg(feature = "accessibility")]
-use crate::renderer::{AccessibilityActionTarget, RenderContext};
+use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
     tabs_button_rect, tabs_content_proposal,
 };
+use crate::theme::TabItemLayout;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use nami::{Binding, Signal};
 use waterui::navigation::tab::{NativeTabStyle, TabIcon, TabsLayout};
-use waterui_backend_core::widget::TabItemLayout;
 use waterui_controls::label::LabelDisplayMode;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
@@ -101,6 +101,21 @@ impl TabsRenderState {
             .position(|tab| tab.tag == selected_id)
             .unwrap_or_else(|| panic!("hydrolysis Tabs selection is not present in tabs"))
     }
+
+    /// Consume every tab's label/icon/content layout-dirty marks: their
+    /// measured sizes feed the bar's, so an enclosing retained sub-view
+    /// must see them (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.tabs.iter_mut().fold(false, |dirty, tab| {
+            dirty
+                | tab.label.take_layout_dirty_if_built()
+                | tab
+                    .icon
+                    .as_mut()
+                    .is_some_and(RetainedSubview::take_layout_dirty_if_built)
+                | tab.content.take_layout_dirty_if_built()
+        })
+    }
 }
 
 impl HydroNativeView for Native<TabsLayout> {
@@ -108,7 +123,7 @@ impl HydroNativeView for Native<TabsLayout> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_tabs_layout(
             view.as_inner(),
@@ -123,7 +138,7 @@ impl HydroNativeView for Native<TabsLayout> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         ViewDimensions::new(measure_tabs_layout(
@@ -139,14 +154,13 @@ impl HydroNativeView for Native<TabsLayout> {
 /// Emits a tab list's accessibility tree from per-tab `(tag, interaction_key,
 /// default_label, is_selected)` tuples. Shared by the dispatch path and the
 /// retained `Widget`-node path (which extracts each default label from its
-/// tab's [`RetainedSubview`]). `ctx` carries the bar's bounds-space rect —
-/// the docked band [`WidgetRenderContext::chrome_splits`] carves out —
-/// beside the render context; the semantic walk has no bounds and passes
-/// `None`.
+/// tab's [`RetainedSubview`]). `bar_rect` carries the bar's bounds-space
+/// rect — the docked band [`WidgetRenderContext::chrome_splits`] carves out;
+/// the semantic walk has no bounds and passes `None`.
 #[cfg(feature = "accessibility")]
 pub fn tabs_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
-    ctx: Option<(RenderContext, kurbo::Rect)>,
+    bar_rect: Option<kurbo::Rect>,
     selection: &Binding<Id>,
     style: NativeTabStyle,
     labels: &[(Id, crate::renderer::InteractionKey, Option<String>, bool)],
@@ -187,14 +201,11 @@ pub fn tabs_accessibility(
             selection: selection.clone(),
             target: *tag,
         });
-        let tab_node_id = match ctx {
-            Some((ctx, bar_rect)) => renderer.register_accessibility_child_node_with_key(
+        let tab_node_id = match bar_rect {
+            Some(bar_rect) => renderer.register_accessibility_child_node_with_key(
                 key,
                 tab_node,
-                crate::renderer::transformed_rect(
-                    ctx.hit_transform,
-                    tabs_button_rect(bar_rect, labels.len(), index, style),
-                ),
+                tabs_button_rect(bar_rect, labels.len(), index, style),
                 env,
                 target,
             ),
@@ -206,14 +217,12 @@ pub fn tabs_accessibility(
             renderer.register_accessibility_focus_link(interaction_key, tab_node_id);
         }
     }
-    match ctx {
-        Some((ctx, bar_rect)) => {
-            let _ = renderer.register_accessibility_node(
-                tab_list,
-                crate::renderer::transformed_rect(ctx.hit_transform, bar_rect),
-                env,
-                None,
-            );
+    match bar_rect {
+        Some(bar_rect) => {
+            // The bounds-space band resolves through the current placement
+            // inside `register_accessibility_node`, the same anchor the
+            // `tabs_button_rect` locals above resolve through.
+            let _ = renderer.register_accessibility_node(tab_list, bar_rect, env, None);
         }
         None => {
             let _ = renderer.register_accessibility_node_semantic(tab_list, env, None);
@@ -232,7 +241,7 @@ pub fn measure_tabs_node(
     proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_env = tab_label_env(env);
     let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = state
@@ -342,10 +351,9 @@ pub fn render_tabs_node(
                     .collect();
                 (st.selection.clone(), labels)
             };
-            let render_ctx = ctx.render_context();
             tabs_accessibility(
                 ctx.renderer_mut(),
-                Some((render_ctx, bar.band)),
+                Some(bar.band),
                 &selection,
                 style,
                 &labels,
@@ -366,7 +374,7 @@ fn render_tabs_parts(
     env: &Environment,
     chrome: crate::renderer::ChromeGroup<1>,
     layout: TabItemLayout,
-    theme_metrics: waterui_backend_core::widget::TabsMetrics,
+    theme_metrics: crate::theme::TabsMetrics,
 ) {
     let (selection, style, tab_count) = {
         let st = state.borrow();
@@ -389,22 +397,35 @@ fn render_tabs_parts(
     let label_env = tab_label_env(env);
 
     // §7.1 "Chrome": the bar's surface extends through the regions of the
-    // edges it touches to the window edge. A leading-docked strip keeps
-    // only its top edge on its own frame — hydrolysis-m3 draws the
-    // sidebar's divider at the surface's *top* edge under `top_edge:
-    // false`, a boundary the strip touches, so extending the surface there
-    // would move the divider under the status band; no `top_edge` argument
-    // yields the vertical inner-edge rule a sidebar needs. Extending the
-    // strip's top edge and placing its divider is a `WidgetTheme` contract
-    // change tracked as a follow-up issue.
+    // edges it touches to the window edge — a leading-docked strip reaches
+    // the top, leading and bottom edges, a bottom bar the leading, bottom
+    // and trailing ones. The divider stays on the bar's inner edge — the
+    // top row of a bottom bar, the trailing column of a sidebar strip —
+    // spanning the surface's reach, so a strip's divider runs from the
+    // window's top edge to its bottom one.
     let bar_surface = match style {
-        NativeTabStyle::Sidebar => bar.surface_except(&[Edge::Top, Edge::Trailing]),
+        NativeTabStyle::Sidebar => bar.surface(Edge::Leading),
         NativeTabStyle::Automatic | NativeTabStyle::TabBar => bar.surface(Edge::Bottom),
     };
     {
         let theme = ctx.theme();
         ctx.draw_context(|draw| {
-            theme.draw_tabs_bar(&mut *draw, bar_surface, false);
+            theme.draw_tabs_bar(&mut *draw, bar_surface);
+            let divider = match style {
+                NativeTabStyle::Sidebar => kurbo::Rect::new(
+                    (bar_rect.x1 - 1.0).max(bar_rect.x0),
+                    bar_surface.y0,
+                    bar_rect.x1,
+                    bar_surface.y1,
+                ),
+                NativeTabStyle::Automatic | NativeTabStyle::TabBar => kurbo::Rect::new(
+                    bar_surface.x0,
+                    bar_rect.y0,
+                    bar_surface.x1,
+                    (bar_rect.y0 + 1.0).min(bar_rect.y1),
+                ),
+            };
+            theme.draw_tabs_bar_divider(&mut *draw, divider);
         });
     }
 
@@ -434,12 +455,12 @@ fn render_tabs_parts(
         let (icon_rect, label_rect) =
             tabs_item_content_rects(button_rect, icon_size, label_size, &theme_metrics, layout);
         {
-            let hit_bounds = crate::renderer::transformed_rect(ctx.hit_transform, button_rect);
+            let hit_transform = ctx.renderer_mut().current_hit_transform();
+            let hit_bounds = button_rect;
             let (interaction, press_slot, _) =
                 ctx.renderer_mut()
                     .bind_interaction_target(interaction_key, hit_bounds, env);
-            let interaction =
-                crate::renderer::local_interaction_state(interaction, ctx.hit_transform);
+            let interaction = crate::renderer::local_interaction_state(interaction, hit_transform);
             let is_selected = index == selected_index;
             // A horizontal item's indicator and state layer hug the icon+label
             // content grown by the button inset, not the whole button share;
@@ -515,34 +536,42 @@ fn render_tabs_parts(
             // A tab gets an equal share of the bar and no more. Without this a
             // long label drew straight over its neighbour and off the edge of
             // the bar, since the label lays out at its natural width.
-            ctx.with_clip_rect_scope(1.0, button_rect, |ctx| {
-                let render_ctx = ctx.render_context();
-                let mut st = state.borrow_mut();
-                // The icon draws whether or not the label has text to show.
-                if let (Some(icon), Some(icon_rect)) = (&mut st.tabs[index].icon, icon_rect) {
-                    let icon_area = bar.area_for(icon_rect);
-                    icon.flush_in_rect(
-                        ctx.renderer_mut(),
-                        render_ctx,
-                        env,
-                        ProposalSize::UNSPECIFIED,
-                        icon_rect,
-                        icon_area,
-                    );
-                }
-                if has_label {
-                    let label_area = bar.area_for(label_rect);
-                    st.tabs[index].label.flush_in_rect(
-                        ctx.renderer_mut(),
-                        render_ctx,
-                        &label_env,
-                        ProposalSize::UNSPECIFIED,
-                        label_rect,
-                        label_area,
-                    );
-                }
-                drop(st);
-            });
+            ctx.with_scope(
+                crate::renderer::mount::ScopeKey {
+                    role: "tab",
+                    item: index as u64,
+                },
+                1.0,
+                button_rect,
+                |ctx| {
+                    let render_ctx = ctx.render_context();
+                    let mut st = state.borrow_mut();
+                    // The icon draws whether or not the label has text to show.
+                    if let (Some(icon), Some(icon_rect)) = (&mut st.tabs[index].icon, icon_rect) {
+                        let icon_area = bar.area_for(icon_rect);
+                        icon.place(
+                            ctx.renderer_mut(),
+                            render_ctx,
+                            env,
+                            ProposalSize::UNSPECIFIED,
+                            icon_rect,
+                            icon_area,
+                        );
+                    }
+                    if has_label {
+                        let label_area = bar.area_for(label_rect);
+                        st.tabs[index].label.place(
+                            ctx.renderer_mut(),
+                            render_ctx,
+                            &label_env,
+                            ProposalSize::UNSPECIFIED,
+                            label_rect,
+                            label_area,
+                        );
+                    }
+                    drop(st);
+                },
+            );
             #[cfg(feature = "accessibility")]
             ctx.renderer_mut().pop_accessibility_suppression();
         }
@@ -555,7 +584,7 @@ fn render_tabs_parts(
         // boundaries on the edges the tab bar leaves reachable, with the
         // bar's edge docked on the band's inner edge.
         let content_area = chrome.content_area;
-        st.tabs[selected_index].content.flush_in_rect(
+        st.tabs[selected_index].content.place(
             ctx.renderer_mut(),
             render_ctx,
             env,
@@ -589,7 +618,7 @@ const fn tabs_dock_edge(style: NativeTabStyle) -> Edge {
 pub fn tabs_bar_item_extent(
     container_width: f64,
     style: NativeTabStyle,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> f64 {
     match style {
         NativeTabStyle::Sidebar => theme.tabs_metrics(TabItemLayout::Vertical).bar_height,
@@ -606,11 +635,11 @@ pub fn tabs_bar_item_extent(
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
 pub fn tabs_decide_layout(
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: NativeTabStyle,
     proposed_width: Option<f64>,
     item_sizes: &[(LayoutSize, Option<LayoutSize>)],
-) -> (TabItemLayout, waterui_backend_core::widget::TabsMetrics) {
+) -> (TabItemLayout, crate::theme::TabsMetrics) {
     let extent = match proposed_width {
         Some(width) => tabs_bar_item_extent(width, style, theme),
         None => {
@@ -641,7 +670,7 @@ pub fn tabs_decide_layout(
 pub fn tabs_item_natural_width(
     label_size: LayoutSize,
     icon_size: Option<LayoutSize>,
-    metrics: &waterui_backend_core::widget::TabsMetrics,
+    metrics: &crate::theme::TabsMetrics,
     layout: TabItemLayout,
 ) -> f64 {
     let content_width = match (layout, icon_size) {
@@ -663,7 +692,7 @@ fn tabs_item_content_rects(
     button_rect: kurbo::Rect,
     icon_size: Option<LayoutSize>,
     label_size: LayoutSize,
-    metrics: &waterui_backend_core::widget::TabsMetrics,
+    metrics: &crate::theme::TabsMetrics,
     layout: TabItemLayout,
 ) -> (Option<kurbo::Rect>, kurbo::Rect) {
     let Some(icon_size) = icon_size else {
@@ -730,7 +759,7 @@ fn tabs_item_content_rects(
 fn tabs_label_rect(
     button_rect: kurbo::Rect,
     label_size: waterui_core::layout::Size,
-    metrics: &waterui_backend_core::widget::TabsMetrics,
+    metrics: &crate::theme::TabsMetrics,
 ) -> kurbo::Rect {
     let max_width = metrics
         .button_horizontal_inset

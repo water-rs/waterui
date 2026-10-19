@@ -1,4 +1,3 @@
-use crate::animation::AnimationKey;
 use crate::platform::TextInputPurpose;
 use crate::renderer::{
     HydroNativeView, HydroState, HydrolysisRenderer, RetainedSubview, TailMark, TextInputModel,
@@ -8,12 +7,11 @@ use crate::renderer::{
     measure_text_field_size_with_label_size, transformed_rect,
 };
 use crate::text::{TextLayout as _, TextPosition};
+use crate::theme::ModalInteraction;
 use core::num::NonZeroUsize;
-use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
 use waterui::cursor::CursorStyle;
-use waterui_backend_core::widget::ModalInteraction;
 use waterui_controls::text_field::ResolvedTextFieldConfig;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native, Str};
@@ -51,6 +49,13 @@ impl TextFieldRenderState {
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the field's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
 /// The retained render state of a secure field: the cloneable [`SecureFieldConfig`]
@@ -82,6 +87,13 @@ impl SecureFieldRenderState {
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the field's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
 #[cfg(feature = "accessibility")]
@@ -105,7 +117,7 @@ impl HydroNativeView for Native<ResolvedTextFieldConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_text_field_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -114,7 +126,7 @@ impl HydroNativeView for Native<ResolvedTextFieldConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let text_field = view.as_inner();
@@ -130,7 +142,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_secure_field_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -139,7 +151,7 @@ impl HydroNativeView for Native<SecureFieldConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         let secure_field = view.as_inner();
@@ -189,6 +201,7 @@ pub fn render_text_field_parts(
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let owner = state;
     let theme = ctx.theme();
     let input_metrics = theme.input_field_metrics();
     ctx.renderer_mut()
@@ -240,7 +253,8 @@ pub fn render_text_field_parts(
             .to_string();
         let default_label =
             default_accessibility_label.or_else(|| (!prompt.is_empty()).then_some(prompt.clone()));
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let local = ctx.bounds;
+        let bounds = local;
         let mut node =
             AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
                 env,
@@ -292,11 +306,11 @@ pub fn render_text_field_parts(
         }
     }
     let field_rect = ctx.bounds;
-    let hit_transform = ctx.hit_transform;
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
     let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
     let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_control_interaction_target(
         interaction_key.clone(),
-        transformed_rect(hit_transform, field_rect),
+        field_rect,
         env,
         is_focused,
         disabled,
@@ -309,7 +323,6 @@ pub fn render_text_field_parts(
         });
     }
     let selection_slot = Rc::clone(&state.selection_slot);
-    let value_identity = value_binding.identity();
     let input_model = TextInputModel::TextField {
         value: value_binding.clone(),
         line_limit,
@@ -366,38 +379,35 @@ pub fn render_text_field_parts(
         0.0
     };
     let interaction_motion = theme.interaction_motion();
-    let label_progress = if let Some(identity) = value_identity {
-        ctx.renderer_mut().sample_widget_scalar_target(
-            AnimationKey::scalar_with_discriminator(identity, TEXT_FIELD_LABEL_ANIMATION_KEY),
-            label_target,
-            if label_target > 0.0 {
-                interaction_motion.focus_enter
-            } else {
-                interaction_motion.focus_exit
-            },
+    let label_progress = ctx.renderer_mut().sample_owned_scalar_target(
+        owner,
+        TEXT_FIELD_LABEL_ANIMATION_KEY,
+        label_target,
+        if label_target > 0.0 {
+            interaction_motion.focus_enter
+        } else {
+            interaction_motion.focus_exit
+        },
+    );
+    // The prompt-as-label reserves the same band a label view does, but its
+    // resting rect and laid-out box are still the prompt's own line box —
+    // the band's smaller height would drop the resting prompt below centre
+    // (#1705).
+    let prompt_label = prompt_as_label.then(|| {
+        let styled = StyledStr::plain(prompt.clone()).foreground(theme.input_placeholder_color());
+        let size = HydrolysisRenderer::measure_text_dimensions(
+            ctx.state_mut(),
+            styled.clone(),
+            HorizontalAlignment::Leading,
+            env,
+            None,
+            Some(1),
         )
-    } else {
-        label_target
-    };
-    // The prompt-as-label is sized the way a label view is: its own laid-out
-    // height floored at the theme's minimum label height. The minimum alone
-    // shrinks the Material line box and drops the resting prompt below
-    // centre (#1705).
-    let prompt_styled = prompt_as_label
-        .then(|| StyledStr::plain(prompt.clone()).foreground(theme.input_placeholder_color()));
-    let prompt_label_height = prompt_styled.as_ref().map_or(0.0, |styled| {
-        material_input_label_height(
-            HydrolysisRenderer::measure_text_dimensions(
-                ctx.state_mut(),
-                styled.clone(),
-                HorizontalAlignment::Leading,
-                env,
-                None,
-                Some(1),
-            )
-            .size,
-            input_metrics.label_height,
-        )
+        .size;
+        (styled, size)
+    });
+    let prompt_label_height = prompt_label.as_ref().map_or(0.0, |(_, size)| {
+        material_input_label_height(*size, input_metrics.label_height)
     });
     if label_height > 0.0 {
         flush_material_label(
@@ -407,9 +417,10 @@ pub fn render_text_field_parts(
             field_rect,
             input_metrics.horizontal_inset,
             label_height,
+            f64::from(label_size.height),
             label_progress,
         );
-    } else if let Some(prompt_styled) = prompt_styled {
+    } else if let Some((prompt_styled, prompt_size)) = prompt_label {
         flush_material_prompt_label(
             ctx,
             env,
@@ -417,6 +428,7 @@ pub fn render_text_field_parts(
             field_rect,
             input_metrics.horizontal_inset,
             prompt_label_height,
+            f64::from(prompt_size.height),
             label_progress,
         );
     }
@@ -498,15 +510,23 @@ pub fn render_text_field_parts(
         selection
     };
     if content_alpha > 0.0 {
-        ctx.with_clip_rect_scope(content_alpha, text_clip_bounds, |ctx| {
-            ctx.render_styled_text_limited(
-                display_styled,
-                HorizontalAlignment::Leading,
-                env,
-                text_bounds,
-                line_limit,
-            );
-        });
+        ctx.with_scope(
+            crate::renderer::mount::ScopeKey {
+                role: "text-clip",
+                item: 0,
+            },
+            content_alpha,
+            text_clip_bounds,
+            |ctx| {
+                ctx.render_styled_text_limited(
+                    display_styled,
+                    HorizontalAlignment::Leading,
+                    env,
+                    text_bounds,
+                    line_limit,
+                );
+            },
+        );
     }
     // While composing, the caret the platform cares about is the live
     // composition caret inside the marked text, mapped through the display
@@ -525,19 +545,17 @@ pub fn render_text_field_parts(
         ))
     };
     let cursor_area = material_input_cursor_rect(field_rect, text_bounds, cursor_geometry);
-    let hit_transform = ctx.hit_transform;
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
     if !disabled {
-        ctx.renderer_mut().register_cursor_target(
-            transformed_rect(hit_transform, field_rect),
-            CursorStyle::IBeam,
-        );
+        ctx.renderer_mut()
+            .register_cursor_target(field_rect, CursorStyle::IBeam);
     }
     tracing::trace!(
         target: "waterui::hydrolysis::hit_region",
         component = "text_field",
         layout_bounds = ?ctx.bounds,
-        field_bounds = ?transformed_rect(ctx.hit_transform, field_rect),
-        cursor_area = ?transformed_rect(ctx.hit_transform, cursor_area),
+        field_bounds = ?transformed_rect(hit_transform, field_rect),
+        cursor_area = ?transformed_rect(hit_transform, cursor_area),
         "register text field input region"
     );
     if !disabled {
@@ -547,10 +565,10 @@ pub fn render_text_field_parts(
                 modal: env
                     .get::<ModalInteraction>()
                     .is_some_and(ModalInteraction::is_active),
-                bounds: transformed_rect(hit_transform, field_rect),
-                cursor_area: transformed_rect(hit_transform, cursor_area),
-                text_bounds: transformed_rect(hit_transform, text_bounds),
-                text_clip_bounds: transformed_rect(hit_transform, text_clip_bounds),
+                bounds: field_rect,
+                cursor_area,
+                text_bounds,
+                text_clip_bounds,
                 content_alpha,
                 layout: committed_layout,
                 display_text: committed_with_preedit,
@@ -597,6 +615,7 @@ pub fn render_secure_field_parts(
     env: &Environment,
 ) {
     let interaction_key = crate::renderer::InteractionKey::for_rc(state, 0);
+    let owner = state;
     let theme = ctx.theme();
     let input_metrics = theme.input_field_metrics();
     let disabled = {
@@ -629,7 +648,8 @@ pub fn render_secure_field_parts(
             .expose()
             .chars()
             .count();
-        let bounds = transformed_rect(ctx.hit_transform, ctx.bounds);
+        let local = ctx.bounds;
+        let bounds = local;
         let mut node =
             AccessibilityNode::new(crate::renderer::SemanticCore::resolve_accessibility_role(
                 env,
@@ -667,11 +687,11 @@ pub fn render_secure_field_parts(
         }
     }
     let field_rect = ctx.bounds;
-    let hit_transform = ctx.hit_transform;
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
     let is_focused = ctx.renderer_mut().is_text_input_focused(&interaction_key);
     let (mut field_interaction, _, _) = ctx.renderer_mut().bind_focused_control_interaction_target(
         interaction_key.clone(),
-        transformed_rect(hit_transform, field_rect),
+        field_rect,
         env,
         is_focused,
         disabled,
@@ -684,7 +704,6 @@ pub fn render_secure_field_parts(
         });
     }
     let selection_slot = Rc::clone(&state.selection_slot);
-    let value_identity = value_binding.identity();
     let input_model = TextInputModel::SecureField {
         value: value_binding.clone(),
     };
@@ -711,19 +730,16 @@ pub fn render_secure_field_parts(
         0.0
     };
     let interaction_motion = theme.interaction_motion();
-    let label_progress = if let Some(identity) = value_identity {
-        ctx.renderer_mut().sample_widget_scalar_target(
-            AnimationKey::scalar_with_discriminator(identity, SECURE_FIELD_LABEL_ANIMATION_KEY),
-            label_target,
-            if label_target > 0.0 {
-                interaction_motion.focus_enter
-            } else {
-                interaction_motion.focus_exit
-            },
-        )
-    } else {
-        label_target
-    };
+    let label_progress = ctx.renderer_mut().sample_owned_scalar_target(
+        owner,
+        SECURE_FIELD_LABEL_ANIMATION_KEY,
+        label_target,
+        if label_target > 0.0 {
+            interaction_motion.focus_enter
+        } else {
+            interaction_motion.focus_exit
+        },
+    );
     if label_height > 0.0 {
         flush_material_label(
             ctx,
@@ -732,6 +748,7 @@ pub fn render_secure_field_parts(
             field_rect,
             input_metrics.horizontal_inset,
             label_height,
+            f64::from(label_size.height),
             label_progress,
         );
     }
@@ -784,31 +801,37 @@ pub fn render_secure_field_parts(
         selection
     };
     if content_alpha > 0.0 {
-        ctx.with_clip_rect_scope(content_alpha, text_clip_bounds, |ctx| {
-            ctx.render_styled_text_limited(
-                masked_display,
-                HorizontalAlignment::Leading,
-                env,
-                text_bounds,
-                Some(1),
-            );
-        });
+        ctx.with_scope(
+            crate::renderer::mount::ScopeKey {
+                role: "text-clip",
+                item: 0,
+            },
+            content_alpha,
+            text_clip_bounds,
+            |ctx| {
+                ctx.render_styled_text_limited(
+                    masked_display,
+                    HorizontalAlignment::Leading,
+                    env,
+                    text_bounds,
+                    Some(1),
+                );
+            },
+        );
     }
     let cursor_geometry = committed_layout.caret_rect(selection.focus);
     let cursor_area = material_input_cursor_rect(field_rect, text_bounds, cursor_geometry);
-    let hit_transform = ctx.hit_transform;
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
     if !disabled {
-        ctx.renderer_mut().register_cursor_target(
-            transformed_rect(hit_transform, field_rect),
-            CursorStyle::IBeam,
-        );
+        ctx.renderer_mut()
+            .register_cursor_target(field_rect, CursorStyle::IBeam);
     }
     tracing::trace!(
         target: "waterui::hydrolysis::hit_region",
         component = "secure_field",
         layout_bounds = ?ctx.bounds,
-        field_bounds = ?transformed_rect(ctx.hit_transform, field_rect),
-        cursor_area = ?transformed_rect(ctx.hit_transform, cursor_area),
+        field_bounds = ?transformed_rect(hit_transform, field_rect),
+        cursor_area = ?transformed_rect(hit_transform, cursor_area),
         "register secure field input region"
     );
     if !disabled {
@@ -818,10 +841,10 @@ pub fn render_secure_field_parts(
                 modal: env
                     .get::<ModalInteraction>()
                     .is_some_and(ModalInteraction::is_active),
-                bounds: transformed_rect(hit_transform, field_rect),
-                cursor_area: transformed_rect(hit_transform, cursor_area),
-                text_bounds: transformed_rect(hit_transform, text_bounds),
-                text_clip_bounds: transformed_rect(hit_transform, text_clip_bounds),
+                bounds: field_rect,
+                cursor_area,
+                text_bounds,
+                text_clip_bounds,
                 content_alpha,
                 layout: committed_layout.clone(),
                 display_text: masked.into(),
@@ -842,7 +865,7 @@ pub fn measure_text_field_node(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_size = render_state.label_view.measure_built(state, env, theme);
     ViewDimensions::new(measure_text_field_size_with_label_size(
@@ -863,7 +886,7 @@ pub fn measure_secure_field_node(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_size = render_state.label_view.measure_built(state, env, theme);
     ViewDimensions::new(measure_secure_field_size_with_label_size(
@@ -876,9 +899,15 @@ pub fn measure_secure_field_node(
     ))
 }
 
-fn material_input_label_height(label_size: LayoutSize, min_label_height: f64) -> f64 {
+/// The band a labeled field reserves for its floating label is exactly the
+/// theme's `label_height` — matching `measured_input_label_height` on the
+/// measure path so the dealt frame and the rendered geometry agree. The
+/// label's own measure only decides whether the band exists; it still sizes
+/// the resting rect and the laid-out label box the transform scales into
+/// the band (water-rs/waterui#2387).
+fn material_input_label_height(label_size: LayoutSize, label_height: f64) -> f64 {
     if label_size.width > 0.0 || label_size.height > 0.0 {
-        f64::from(label_size.height).max(min_label_height)
+        label_height
     } else {
         0.0
     }
@@ -916,6 +945,15 @@ fn material_input_resting_label_rect(
 /// (translate from resting to floating position + scale). The label is a retained
 /// node sub-view re-laid-out and re-flushed each frame, so reactive label content
 /// stays live without re-dispatch.
+///
+/// `label_height` is the reserved band (the theme's `label_height` exactly);
+/// `measured_label_height` is the label's own unscaled height — it centres the
+/// resting box and gives the label its natural layout box, which the transform
+/// scales down into the band.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "threads the full flush context; grouping into a struct would not improve clarity"
+)]
 fn flush_material_label(
     ctx: &mut WidgetRenderContext<'_>,
     env: &Environment,
@@ -923,16 +961,18 @@ fn flush_material_label(
     field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
+    measured_label_height: f64,
     progress: f32,
 ) {
     let progress = f64::from(progress.clamp(0.0, 1.0));
-    let resting = material_input_resting_label_rect(field_rect, horizontal_inset, label_height);
+    let resting =
+        material_input_resting_label_rect(field_rect, horizontal_inset, measured_label_height);
     let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
     let scale = (FLOATING_LABEL_SCALE - 1.0).mul_add(progress, 1.0);
     let x = (floating.x0 - resting.x0).mul_add(progress, resting.x0);
     let y = (floating.y0 - resting.y0).mul_add(progress, resting.y0);
     let width = floating.width() / scale;
-    let height = label_height / scale;
+    let height = measured_label_height;
     let transform = kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale);
     let child = ctx.child(transform, kurbo::Rect::new(0.0, 0.0, width, height));
     #[allow(clippy::cast_possible_truncation)]
@@ -943,13 +983,14 @@ fn flush_material_label(
         ctx.safe_area_for(transform.transform_rect_bbox(kurbo::Rect::new(0.0, 0.0, width, height)));
     ctx.renderer_mut()
         .with_suppressed_accessibility(|renderer| {
-            label_view.flush_in_ctx(
+            label_view.place_in_ctx(
                 renderer,
                 child,
                 env,
                 ProposalSize::UNSPECIFIED,
                 size,
                 label_area,
+                transform,
             );
         });
 }
@@ -965,7 +1006,13 @@ fn material_input_content_alpha(has_label: bool, progress: f32) -> f32 {
 /// Draws the prompt text under the Material floating-label transform —
 /// the resting spot centred in the container, floating to the top scaled
 /// down — used when the field has no label view so the prompt stands in as
-/// the label (#85).
+/// the label (#85). `label_height` is the reserved band while
+/// `measured_label_height` is the prompt's own line-box height — the same
+/// split [`flush_material_label`] makes between band and content.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "threads the full flush context; grouping into a struct would not improve clarity"
+)]
 fn flush_material_prompt_label(
     ctx: &mut WidgetRenderContext<'_>,
     env: &Environment,
@@ -973,10 +1020,12 @@ fn flush_material_prompt_label(
     field_rect: kurbo::Rect,
     horizontal_inset: f64,
     label_height: f64,
+    measured_label_height: f64,
     progress: f32,
 ) {
     let progress = f64::from(progress.clamp(0.0, 1.0));
-    let resting = material_input_resting_label_rect(field_rect, horizontal_inset, label_height);
+    let resting =
+        material_input_resting_label_rect(field_rect, horizontal_inset, measured_label_height);
     let floating = material_input_label_rect(field_rect, horizontal_inset, label_height);
     let scale = (FLOATING_LABEL_SCALE - 1.0).mul_add(progress, 1.0);
     let x = (floating.x0 - resting.x0).mul_add(progress, resting.x0);
@@ -984,10 +1033,10 @@ fn flush_material_prompt_label(
     let width = floating.width() / scale;
     let child = ctx.child(
         kurbo::Affine::translate((x, y)) * kurbo::Affine::scale(scale),
-        kurbo::Rect::new(0.0, 0.0, width, label_height / scale),
+        kurbo::Rect::new(0.0, 0.0, width, measured_label_height),
     );
     let renderer = ctx.renderer_mut();
-    let (state, scene) = renderer.state_and_scene_mut();
+    let (state, scene) = renderer.state_and_run_mut();
     HydrolysisRenderer::render_styled_text_limited(
         state,
         scene,

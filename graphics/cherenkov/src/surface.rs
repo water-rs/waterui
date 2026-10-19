@@ -18,7 +18,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
-use cherenkov_record::{ChangeSet, Layer, Queue, Shared, SurfaceId, Transaction};
+use cherenkov_record::{ChangeSet, Instant, Layer, Queue, Shared, SurfaceId, Transaction};
 
 use crate::WorkingColor;
 use crate::animation::Animation;
@@ -340,7 +340,7 @@ impl<B: Backend> Surface<B> {
     /// # Panics
     /// Panics if `body` panics; the transaction is then dropped unapplied.
     pub fn update(&self, body: impl FnOnce(&mut Transaction<'_, B>)) {
-        Shared::run_transaction(&self.shared, None, body);
+        Shared::run_transaction(&self.shared, None, None, body);
     }
 
     /// Like [`Surface::update`], filling `animation` for every animatable
@@ -353,7 +353,25 @@ impl<B: Backend> Surface<B> {
         animation: impl Into<Animation>,
         body: impl FnOnce(&mut Transaction<'_, B>),
     ) {
-        Shared::run_transaction(&self.shared, Some(animation.into()), body);
+        Shared::run_transaction(&self.shared, Some(animation.into()), None, body);
+    }
+
+    /// Like [`Surface::update_animated`], starting every track at `start`
+    /// on the host's clock instead of the first frame that samples it.
+    /// A retarget then continues from the previous track's value and
+    /// velocity evaluated at `start`, so the tracks the host issues agree
+    /// with [`AnimationTrack::sample`](crate::AnimationTrack::sample) at
+    /// every instant.
+    ///
+    /// # Panics
+    /// Panics if `body` panics.
+    pub fn update_animated_at(
+        &self,
+        animation: impl Into<Animation>,
+        start: Instant,
+        body: impl FnOnce(&mut Transaction<'_, B>),
+    ) {
+        Shared::run_transaction(&self.shared, Some(animation.into()), Some(start), body);
     }
 
     /// The pixels of the surface after the last
@@ -413,9 +431,11 @@ impl<B: Backend> Drop for Surface<B> {
 }
 
 impl<B: Backdrop> Surface<B> {
-    /// Allocates a group id and queues its registration with `op`.
+    /// Allocates a group id for `spec` and queues its registration
+    /// with `op`.
     fn new_backdrop_group(
         &self,
+        spec: crate::BackdropSpec,
         op: impl FnOnce(&mut B::Renderer, SurfaceId, crate::BackdropId)
         + crate::RenderTransfer
         + 'static,
@@ -426,7 +446,7 @@ impl<B: Backdrop> Surface<B> {
             op(r, surface, id);
         })));
         let tx = self.tx.clone();
-        crate::BackdropGroup::new(id, move || {
+        crate::BackdropGroup::new(id, spec, move || {
             let _ = tx.send(Message::Resource(Box::new(move |r| {
                 B::remove_backdrop_group(r, surface, id);
             })));
@@ -441,7 +461,7 @@ impl<B: Backdrop> Surface<B> {
         spec: impl Into<crate::BackdropSpec>,
     ) -> crate::BackdropGroup {
         let spec = spec.into();
-        self.new_backdrop_group(move |r, surface, id| {
+        self.new_backdrop_group(spec, move |r, surface, id| {
             B::add_backdrop_group(r, surface, id, spec);
         })
     }
@@ -462,7 +482,7 @@ impl<B: Backdrop> Surface<B> {
         B: BackdropRuns<K, F>,
     {
         let spec = spec.into();
-        self.new_backdrop_group(move |r, surface, id| {
+        self.new_backdrop_group(spec, move |r, surface, id| {
             B::add_filtered_backdrop_group(r, surface, id, filter, spec);
         })
     }

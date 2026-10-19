@@ -4,10 +4,10 @@
 //! the window, and those layers have to be placed the same way and only when
 //! the page itself is presented.
 //!
-//! Most assertions read the frame's `render_layers` before presentation,
-//! which is where a layer's window placement and its presence are decided;
-//! the last test drives the real install pass, where a page's layers are
-//! mounted on engine layers.
+//! Most assertions read the layer tree a frame commits through the test
+//! `MirrorTarget`, where a producer's window placement and its presence are
+//! decided; the last test drives the real engine frame, where a page's
+//! layers are mounted on engine layers.
 
 use core::cell::RefCell;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -31,7 +31,6 @@ use super::{MinimalTestTheme, pumped_test_environment, test_environment, test_re
 use crate::HeadlessRuntime;
 use crate::platform::WindowSafeArea;
 use crate::renderer::HydrolysisRenderer;
-use crate::renderer::RenderLayer;
 
 const WINDOW: Rect = Rect::new(0.0, 0.0, 390.0, 844.0);
 const TOP_INSET: f32 = 48.0;
@@ -87,37 +86,45 @@ fn render_frame(renderer: &mut HydrolysisRenderer, view: AnyView, env: &Environm
     renderer.begin_rebuild_frame();
     renderer.capture_window_tree(view, env, WINDOW, Affine::IDENTITY, Affine::IDENTITY);
     renderer.finish_rebuild_frame();
+    renderer.commit_mirror();
+}
+
+/// One presented GPU content layer: its window-space rect, the opacity it
+/// composites at, and how many of the layers above it clip.
+struct Presented {
+    rect: Rect,
+    alpha: f32,
+    clips: usize,
 }
 
 /// Every GPU content layer the frame presents.
-fn presented_gpu_layers(renderer: &HydrolysisRenderer) -> Vec<&crate::renderer::GpuContentLayer> {
-    renderer
-        .compositor
-        .render_layers
-        .iter()
-        .filter_map(|layer| match layer {
-            RenderLayer::GpuContent(layer) => Some(layer),
-            _ => None,
+fn presented_gpu_layers(renderer: &HydrolysisRenderer) -> Vec<Presented> {
+    let mirror = renderer.mirror();
+    mirror
+        .installs()
+        .into_iter()
+        .map(|(layer, (width, height))| {
+            let ancestry = mirror.ancestry(layer);
+            Presented {
+                rect: mirror.world(layer).transform_rect_bbox(Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(width),
+                    f64::from(height),
+                )),
+                alpha: ancestry.iter().map(|node| node.opacity).product(),
+                clips: ancestry.iter().filter(|node| node.clip.is_some()).count(),
+            }
         })
         .collect()
 }
 
 /// Every GPU content layer the frame presents, as its window-space rect.
 fn presented_gpu_rects(renderer: &HydrolysisRenderer) -> Vec<Rect> {
-    fn walk(layers: &[RenderLayer], out: &mut Vec<Rect>) {
-        for layer in layers {
-            match layer {
-                RenderLayer::GpuContent(layer) => {
-                    out.push(layer.transform.transform_rect_bbox(layer.bounds));
-                }
-                RenderLayer::Filtered(layer) => walk(&layer.children, out),
-                _ => {}
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(&renderer.compositor.render_layers, &mut out);
-    out
+    presented_gpu_layers(renderer)
+        .into_iter()
+        .map(|layer| layer.rect)
+        .collect()
 }
 
 fn single(rects: &[Rect]) -> Rect {
@@ -159,7 +166,8 @@ fn a_page_gpu_layer_follows_the_stack_placement() {
 #[test]
 fn a_clipped_stack_presents_its_page_gpu_layer() {
     let env = env_with_top_inset(TOP_INSET);
-    let unclipped = single(&presented_gpu_rects(&capture(root_stack(), &env)));
+    let unclipped_renderer = capture(root_stack(), &env);
+    let unclipped = single(&presented_gpu_rects(&unclipped_renderer));
     let renderer = capture(root_stack().clip(Rectangle), &env);
     let rect = single(&presented_gpu_rects(&renderer));
     assert!(
@@ -167,10 +175,9 @@ fn a_clipped_stack_presents_its_page_gpu_layer() {
         "the clipped stack's GPU layer should sit where the unclipped one does: \
          {rect:?} clipped, {unclipped:?} unclipped"
     );
-    let layers = presented_gpu_layers(&renderer);
     assert_eq!(
-        layers[0].active_layers.len(),
-        1,
+        presented_gpu_layers(&renderer)[0].clips,
+        presented_gpu_layers(&unclipped_renderer)[0].clips + 1,
         "the page's GPU layer should be shown under the stack's clip"
     );
 }
@@ -194,6 +201,54 @@ fn a_covered_page_presents_no_gpu_layer() {
         (rect.width() - f64::from(DETAIL_CONTENT.width)).abs() <= 0.5
             && (rect.height() - f64::from(DETAIL_CONTENT.height)).abs() <= 0.5,
         "the presented GPU layer should be the detail page's, got {rect:?}"
+    );
+}
+
+/// Decision 3 through the engine's own mount log: a page that stops being
+/// presented unmounts, so a covered page's GPU layer leaves the engine when a
+/// destination settles over it — and mounts again when the stack pops back.
+#[test]
+fn a_non_presented_page_unmounts_and_remounts_its_gpu_layers() {
+    let path = NavigationPath::<u8>::new();
+    let stack = NavigationStack::with_path(
+        path.clone(),
+        NavigationView::new("Root", vstack((gpu(ROOT_CONTENT),))),
+    )
+    .destination(|_| NavigationView::new("Detail", vstack((gpu(DETAIL_CONTENT),))))
+    .transition(navigation_transition::none());
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let installed = |renderer: &HydrolysisRenderer| -> Vec<(f64, f64)> {
+        renderer
+            .mirror()
+            .installs()
+            .iter()
+            .map(|(_, (w, h))| (f64::from(*w), f64::from(*h)))
+            .collect()
+    };
+    let px = |size: Size| -> (f64, f64) { (f64::from(size.width), f64::from(size.height)) };
+
+    render_frame(&mut renderer, AnyView::new(stack), &env);
+    assert_eq!(
+        installed(&renderer),
+        vec![px(ROOT_CONTENT)],
+        "the root page's GPU content mounts"
+    );
+
+    path.push(1);
+    render_frame(&mut renderer, AnyView::new(()), &env);
+    assert_eq!(
+        installed(&renderer),
+        vec![px(DETAIL_CONTENT)],
+        "the covered page unmounts: only the presented page's install remains"
+    );
+
+    path.pop();
+    render_frame(&mut renderer, AnyView::new(()), &env);
+    assert_eq!(
+        installed(&renderer),
+        vec![px(ROOT_CONTENT)],
+        "the page's layers mount again when it is presented again"
     );
 }
 
@@ -223,15 +278,15 @@ fn a_transitioning_page_gpu_layer_follows_the_transition() {
         1,
         "only the outgoing root is visible at the transition's first frame"
     );
-    let rect = first[0].transform.transform_rect_bbox(first[0].bounds);
+    let rect = first[0].rect;
     assert!(
         (rect.x0 - settled.x0).abs() <= 0.5 && (rect.y0 - settled.y0).abs() <= 0.5,
         "the root's GPU layer should start at its settled place {settled:?}, got {rect:?}"
     );
-    assert_eq!(
-        first[0].active_layers.len(),
-        1,
-        "the root's GPU layer should be shown under the transition scope"
+    assert!(
+        first[0].alpha > 0.0,
+        "the root's GPU layer should be shown under the transition scope, got alpha {}",
+        first[0].alpha
     );
 
     renderer.set_frame_instant(
@@ -246,13 +301,13 @@ fn a_transitioning_page_gpu_layer_follows_the_transition() {
         1,
         "early in the transition only the outgoing root is visible"
     );
-    let rect = moving[0].transform.transform_rect_bbox(moving[0].bounds);
+    let rect = moving[0].rect;
     assert!(
         rect.x0 < settled.x0 - 0.5 && (rect.y0 - settled.y0).abs() <= 0.5,
         "the root's GPU layer should slide toward the leading edge with its page: \
          settled at {settled:?}, at {rect:?} mid-transition"
     );
-    let alpha = moving[0].active_layers[0].alpha;
+    let alpha = moving[0].alpha;
     assert!(
         alpha > 0.0 && alpha < 1.0,
         "the root's GPU layer should fade with its page, got scope alpha {alpha}"

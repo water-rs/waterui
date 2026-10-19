@@ -1,8 +1,8 @@
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
-use crate::engine::WidgetTheme;
 use crate::text::TextLayout as _;
+use crate::theme::WidgetTheme;
 use crate::widgets::nav::tabs::{tabs_decide_layout, tabs_item_natural_width};
 use std::rc::Rc;
 use waterui::navigation::tab::TabIcon;
@@ -22,7 +22,7 @@ pub fn table_header_cell_rect(
     origin_y: f64,
     x_offset: f64,
     width: f64,
-    metrics: waterui_backend_core::widget::TableMetrics,
+    metrics: crate::theme::TableMetrics,
 ) -> kurbo::Rect {
     kurbo::Rect::new(
         origin_x + x_offset,
@@ -38,7 +38,7 @@ pub fn table_data_cell_rect(
     x_offset: f64,
     width: f64,
     row_index: usize,
-    metrics: waterui_backend_core::widget::TableMetrics,
+    metrics: crate::theme::TableMetrics,
 ) -> kurbo::Rect {
     let y0 = metrics.row_height.mul_add(
         crate::num_cast::usize_as_f64(row_index),
@@ -93,7 +93,7 @@ pub fn navigation_base_bar_height_for_display_mode(
 
 const fn navigation_base_bar_height_for_display_mode_metrics(
     display_mode: waterui::navigation::NavigationTitleDisplayMode,
-    metrics: waterui_backend_core::widget::NavigationMetrics,
+    metrics: crate::theme::NavigationMetrics,
 ) -> f64 {
     match display_mode {
         waterui::navigation::NavigationTitleDisplayMode::Automatic => metrics.automatic_bar_height,
@@ -525,7 +525,7 @@ impl HydrolysisRenderer {
         );
         scene.append(
             &fragment,
-            ctx.transform * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
+            ctx.local * kurbo::Affine::translate((ctx.bounds.x0, ctx.bounds.y0)),
         );
     }
 
@@ -541,7 +541,7 @@ impl HydrolysisRenderer {
         env: &Environment,
     ) {
         let input = resolve_text_layout_input(&styled, HorizontalAlignment::Leading, env);
-        let layout = state.text.shape(&input, None);
+        let layout = state.measuring_text().shape(&input, None);
         if layout.line_count() == 0 {
             return;
         }
@@ -558,13 +558,9 @@ impl HydrolysisRenderer {
         let fragment = state
             .text
             .record(&input, None, TailMark::Clip(1), &mut state.counters);
-        scene.append(&fragment, ctx.transform * kurbo::Affine::translate((x, y)));
+        scene.append(&fragment, ctx.local * kurbo::Affine::translate((x, y)));
     }
 
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
@@ -577,13 +573,9 @@ impl HydrolysisRenderer {
         max_width: Option<f32>,
     ) -> SessionTextLayout {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        state.text.shape(&input, max_width)
+        state.measuring_text().shape(&input, max_width)
     }
 
-    #[expect(
-        clippy::needless_pass_by_ref_mut,
-        reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
-    )]
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the parameter is a small Copy value taken by value for a uniform call-site signature"
@@ -597,8 +589,9 @@ impl HydrolysisRenderer {
         max_lines: Option<usize>,
     ) -> ViewDimensions {
         let input = resolve_text_layout_input(&styled, alignment, env);
-        let layout = state.text.shape_limited(&input, max_width, max_lines);
-        state.text.dimensions(&layout, max_lines)
+        let text = state.measuring_text();
+        let layout = text.shape_limited(&input, max_width, max_lines);
+        text.dimensions(&layout, max_lines)
     }
 
     pub(crate) fn measure_text_intrinsic_size(
@@ -625,6 +618,20 @@ impl HydrolysisRenderer {
             max_lines,
         )
         .size
+    }
+
+    /// The size of an editable field's content, at most `max_lines` lines.
+    /// Empty text still measures the one line a caret occupies, so a field
+    /// keeps its height as text is entered.
+    pub(crate) fn measure_editable_text_size(
+        state: &HydroState,
+        styled: &StyledStr,
+        env: &Environment,
+        max_lines: Option<usize>,
+    ) -> LayoutSize {
+        let input = resolve_text_layout_input(styled, HorizontalAlignment::Leading, env);
+        let layout = state.text.shape_editable(&input, None);
+        state.text.dimensions(&layout, max_lines).size
     }
 }
 
@@ -884,7 +891,7 @@ pub fn tabs_button_rect(
 
 pub fn navigation_back_button_rect(
     bounds: kurbo::Rect,
-    metrics: waterui_backend_core::widget::NavigationMetrics,
+    metrics: crate::theme::NavigationMetrics,
 ) -> kurbo::Rect {
     kurbo::Rect::new(
         bounds.x0 + metrics.back_button_leading_inset,
@@ -982,7 +989,7 @@ pub fn list_row_height_for_content(
     content_height: f64,
     insets: Option<&waterui_layout::padding::EdgeInsets>,
     min_height: Option<f32>,
-    metrics: waterui_backend_core::widget::ListMetrics,
+    metrics: crate::theme::ListMetrics,
 ) -> f64 {
     let vertical_insets = insets.map_or(metrics.vertical_inset * 2.0, |insets| {
         f64::from(insets.top() + insets.bottom())
@@ -999,8 +1006,7 @@ pub fn measure_progress_intrinsic(
 ) -> LayoutSize {
     match progress.style {
         ProgressStyle::Linear => {
-            let metrics = theme
-                .progress_metrics(waterui_backend_core::widget::ProgressIndicatorStyle::Linear);
+            let metrics = theme.progress_metrics(crate::theme::ProgressIndicatorStyle::Linear);
             let label_height = f64::from(
                 waterui_text::font::Font::default()
                     .resolve(env)
@@ -1024,8 +1030,7 @@ pub fn measure_progress_intrinsic(
             )
         }
         ProgressStyle::Circular => {
-            let metrics = theme
-                .progress_metrics(waterui_backend_core::widget::ProgressIndicatorStyle::Circular);
+            let metrics = theme.progress_metrics(crate::theme::ProgressIndicatorStyle::Circular);
             LayoutSize::new(
                 crate::num_cast::f64_as_f32(metrics.circular_diameter),
                 crate::num_cast::f64_as_f32(metrics.circular_diameter),
@@ -1067,10 +1072,11 @@ pub fn measure_text_field_intrinsic_with_label_size(
 }
 
 /// Measures a text field's size under a concrete proposal, from a precomputed
-/// label size. The field is a `Horizontal` leaf: a finite width proposal is
-/// answered with that width, a `0` probe with the content minimum (no ideal
-/// floor), and `None` with the intrinsic width — where the theme's
-/// `min_width` applies as the ideal. Height is always the intrinsic height.
+/// label size. The field is a `Horizontal` leaf: it answers the proposal
+/// width floored at the label's extent, so the reported width never depends
+/// on the field's text — text scrolls inside the dealt width. `None` answers
+/// the ideal, the theme's `min_width` floored at the label. Height is the
+/// intrinsic height, whose text line an empty field measures too.
 pub fn measure_text_field_size_with_label_size(
     text_field: &ResolvedTextFieldConfig,
     label_size: LayoutSize,
@@ -1086,14 +1092,9 @@ pub fn measure_text_field_size_with_label_size(
     let prompt_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
         state, prompt, env, line_limit,
     );
-    let value_size = HydrolysisRenderer::measure_text_intrinsic_size_with_line_limit(
-        state, value, env, line_limit,
-    );
+    let value_size = HydrolysisRenderer::measure_editable_text_size(state, &value, env, line_limit);
     let label_height = measured_input_label_height(label_size, metrics.label_height);
     let text_height = prompt_size.height.max(value_size.height);
-    let content_width = metrics
-        .horizontal_inset
-        .mul_add(2.0, f64::from(prompt_size.width.max(value_size.width)));
     let label_width = metrics
         .horizontal_inset
         .mul_add(2.0, f64::from(label_size.width));
@@ -1101,8 +1102,8 @@ pub fn measure_text_field_size_with_label_size(
     let field_height = measured_input_field_height(text_height, label_height, metrics);
     let width = input_field_width(
         proposal.width,
-        label_width.max(content_width.max(metrics.min_width)),
-        label_width.max(content_width),
+        label_width.max(metrics.min_width),
+        label_width,
     );
     LayoutSize::new(
         crate::num_cast::f64_as_f32(width),
@@ -1110,15 +1111,12 @@ pub fn measure_text_field_size_with_label_size(
     )
 }
 
-/// Resolves an input field's width from a proposal: a finite proposal is
-/// answered exactly, a `0` probe answers the content minimum, and `None` or
-/// an unbounded probe answers the ideal (theme `min_width` floor applied).
+/// Resolves an input field's width from a proposal: every `Some` proposal is
+/// answered floored at `minimum` — the `0` probe included — so an unbounded
+/// probe answers `INFINITY`; `None` answers the `ideal` (theme `min_width`
+/// floor applied). The field's text is not an input to the width.
 fn input_field_width(proposal: Option<f32>, ideal: f64, minimum: f64) -> f64 {
-    match proposal {
-        Some(0.0) => minimum,
-        Some(width) if width.is_finite() => f64::from(width.max(0.0)),
-        _ => ideal,
-    }
+    proposal.map_or(ideal, |width| f64::from(width).max(minimum))
 }
 
 pub fn measure_secure_field_intrinsic(
@@ -1154,8 +1152,8 @@ pub fn measure_secure_field_intrinsic_with_label_size(
 
 /// Measures a secure field's size under a concrete proposal, from a
 /// precomputed label size. Same `Horizontal`-leaf contract as the text field:
-/// a finite width proposal is answered exactly, `0` probes the content
-/// minimum, `None` the intrinsic width with the theme's `min_width` ideal.
+/// the width answers the proposal floored at the label's extent and never
+/// the masked text; `None` answers the theme's `min_width` ideal.
 pub fn measure_secure_field_size_with_label_size(
     secure_field: &SecureFieldConfig,
     label_size: LayoutSize,
@@ -1170,24 +1168,17 @@ pub fn measure_secure_field_size_with_label_size(
         .expose()
         .chars()
         .count();
-    let masked = if secure_len == 0 {
-        StyledStr::plain("")
-    } else {
-        StyledStr::plain("*".repeat(secure_len))
-    };
-    let value_size = HydrolysisRenderer::measure_text_intrinsic_size(state, masked, env);
+    let masked = StyledStr::plain("*".repeat(secure_len));
+    let value_size = HydrolysisRenderer::measure_editable_text_size(state, &masked, env, None);
     let label_height = measured_input_label_height(label_size, metrics.label_height);
-    let content_width = metrics
-        .horizontal_inset
-        .mul_add(2.0, f64::from(value_size.width));
     let label_width = metrics
         .horizontal_inset
         .mul_add(2.0, f64::from(label_size.width));
     let field_height = measured_input_field_height(value_size.height, label_height, metrics);
     let width = input_field_width(
         proposal.width,
-        label_width.max(content_width.max(metrics.min_width)),
-        label_width.max(content_width),
+        label_width.max(metrics.min_width),
+        label_width,
     );
     LayoutSize::new(
         crate::num_cast::f64_as_f32(width),
@@ -1195,9 +1186,13 @@ pub fn measure_secure_field_size_with_label_size(
     )
 }
 
-fn measured_input_label_height(label_size: LayoutSize, min_label_height: f64) -> f64 {
+/// The band a labeled field reserves for its floating label is exactly the
+/// theme's `label_height`: the label scales into the band when it floats, so
+/// the unscaled label measure only decides whether the band exists, never
+/// how tall it is (water-rs/waterui#2387).
+fn measured_input_label_height(label_size: LayoutSize, label_height: f64) -> f64 {
     if label_size.width > 0.0 || label_size.height > 0.0 {
-        f64::from(label_size.height).max(min_label_height)
+        label_height
     } else {
         0.0
     }
@@ -1206,7 +1201,7 @@ fn measured_input_label_height(label_size: LayoutSize, min_label_height: f64) ->
 fn measured_input_field_height(
     text_height: f32,
     label_height: f64,
-    metrics: waterui_backend_core::widget::InputFieldMetrics,
+    metrics: crate::theme::InputFieldMetrics,
 ) -> f64 {
     let text_height = f64::from(text_height);
     let measured_height = if label_height > 0.0 {
@@ -1583,8 +1578,19 @@ pub fn measure_picker_intrinsic_with_label_size(
 
 #[cfg(test)]
 mod tests {
-    use super::measured_input_field_height;
-    use waterui_backend_core::widget::InputFieldMetrics;
+    use super::{measure_view_dimensions, measured_input_field_height};
+    use crate::renderer::tests::{MinimalTestTheme, test_environment};
+    use crate::renderer::{HydroState, normalize_layout_view};
+    use crate::text::{FontFamilyResolution, SessionTextEngine};
+    use crate::theme::InputFieldMetrics;
+    use crate::theme::WidgetTheme;
+    use std::rc::Rc;
+    use waterui::theme::install_font_signal;
+    use waterui::{Binding, Computed};
+    use waterui_controls::text_field::field;
+    use waterui_core::{AnyView, Str};
+    use waterui_form::secure::{Secure, secure};
+    use waterui_text::font::{Body, FontWeight, ResolvedFont};
 
     #[test]
     fn labeled_input_field_height_reserves_space_for_tall_text() {
@@ -1592,6 +1598,39 @@ mod tests {
 
         approx::assert_relative_eq!(measured_input_field_height(22.0, 18.0, metrics), 56.0);
         approx::assert_relative_eq!(measured_input_field_height(34.0, 18.0, metrics), 68.0);
+    }
+
+    /// A labeled field reserves exactly the theme's `label_height` for its
+    /// floating label: the label's unscaled line must not grow the band
+    /// (water-rs/waterui#2387). A 16 pt band, two 8 pt insets and a 24 pt
+    /// body line compose 56 pt — the Material 3 filled field height — and
+    /// the secure field composes identically. The theme's `min_height`
+    /// stays below the composition so the assertion cannot be met by the
+    /// floor.
+    #[test]
+    fn labeled_fields_reserve_the_theme_label_height() {
+        let mut env = test_environment();
+        install_font_signal::<Body>(
+            &mut env,
+            Computed::constant(
+                ResolvedFont::new(16.0, FontWeight::Normal).with_typography_metrics(24.0, 0.0),
+            ),
+        );
+        let theme: Rc<dyn WidgetTheme> = Rc::new(
+            MinimalTestTheme::default()
+                .with_input_metrics(InputFieldMetrics::new(16.0, 280.0, 40.0, 16.0, 8.0)),
+        );
+        let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+
+        let value = Binding::container(Str::from("x"));
+        let view = normalize_layout_view(AnyView::new(field("Label", &value)), &env);
+        let size = measure_view_dimensions(&view, &mut state, &env, &theme).size;
+        approx::assert_relative_eq!(f64::from(size.height), 56.0);
+
+        let secret = Binding::container(Secure::new(String::from("x")));
+        let view = normalize_layout_view(AnyView::new(secure("Label", &secret)), &env);
+        let size = measure_view_dimensions(&view, &mut state, &env, &theme).size;
+        approx::assert_relative_eq!(f64::from(size.height), 56.0);
     }
 
     #[test]
@@ -1622,11 +1661,10 @@ mod background_tests {
         let env = test_environment();
         let mut state = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
         let mut scene = Recording::new();
-        let ctx = RenderContext::with_transforms(
-            kurbo::Rect::new(0.0, 0.0, width, 200.0),
-            kurbo::Affine::IDENTITY,
-            kurbo::Affine::IDENTITY,
-        );
+        let ctx = RenderContext {
+            local: kurbo::Affine::IDENTITY,
+            bounds: kurbo::Rect::new(0.0, 0.0, width, 200.0),
+        };
         HydrolysisRenderer::render_styled_text_limited(
             &mut state,
             &mut scene,

@@ -27,6 +27,11 @@
 //! pipelined frame rate. Where no timestamp source exists the field is
 //! `null` — it is never estimated. The Cherenkov GPU adapter instead collects
 //! timestamps from completed earlier submissions without draining each frame.
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 pub mod affinity;
 #[cfg(feature = "cherenkov")]
@@ -44,6 +49,8 @@ pub mod energy;
 #[cfg(feature = "cherenkov")]
 pub mod external_cost;
 pub mod gamut_sweep;
+pub mod gpu_clock;
+pub mod gpu_counters;
 pub mod memory;
 #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
 pub mod motion;
@@ -74,7 +81,7 @@ pub mod vello_cpu_ad;
 #[cfg(feature = "vello-hybrid")]
 pub mod vello_hybrid_ad;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cherenkov_oracle::F32Image;
 use cherenkov_scene::{Feature, Scene, SceneError};
@@ -176,6 +183,12 @@ pub struct Counters {
     /// run (`null` while no capture is allocated); `None` for other
     /// engines.
     pub memory_backdrop_capture_format: Option<&'static str>,
+    /// `Engine::memory()` filter-chain target bytes at the end of the run;
+    /// `None` for other engines.
+    pub memory_filter_target_bytes: Option<u64>,
+    /// `Engine::memory()` filter-chain uploaded image bytes at the end of
+    /// the run; `None` for other engines.
+    pub memory_filter_image_bytes: Option<u64>,
 }
 
 /// Device and thermal metadata captured at measure time.
@@ -248,26 +261,75 @@ impl GpuSample {
     }
 }
 
-/// One render-thread CPU phase of a submitted frame.
+/// One CPU phase of a submitted frame, as the adapter names it.
 #[derive(Clone, Debug, Serialize)]
 pub struct PhaseSample {
-    /// The phase's name (`"lower"`, `"encode"`, `"stamp"`, `"wait"`).
+    /// The phase's name: `"lower"`, `"encode"`, `"stamp"` and `"wait"` for
+    /// Cherenkov GPU; `"lower"`, `"glyph"` and `"shade"` for Cherenkov CPU.
     pub name: String,
-    /// Wall-clock seconds the render thread spent in it.
+    /// Wall-clock seconds the engine spent in it.
     pub seconds: f64,
 }
 
-/// Render-thread CPU seconds of each phase of one frame.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Phases {
-    /// CPU lowering of dirty surfaces.
-    pub lower: f64,
-    /// Command encoding and queue submission.
-    pub encode: f64,
-    /// Timestamp drain and resolve work.
-    pub stamp: f64,
-    /// The final blocking queue drain.
-    pub wait: f64,
+impl PhaseSample {
+    /// One sample per `(name, seconds)`, in the order given.
+    #[must_use]
+    pub fn list(phases: &[(&str, f64)]) -> Vec<Self> {
+        phases
+            .iter()
+            .map(|&(name, seconds)| Self {
+                name: name.to_owned(),
+                seconds,
+            })
+            .collect()
+    }
+}
+
+/// What one frame's composition kept on chip and what it materialized
+/// (issue #2547).
+///
+/// Summed over the frame's encoded surfaces, so the counters sit beside
+/// that frame's timing sample. Only an adapter whose planner decides
+/// on-chip composition reports it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Composition {
+    /// Tile epochs the frame encoded.
+    pub epochs: u32,
+    /// Canonical passes the frame's plan held.
+    pub passes: u32,
+    /// Logical images an epoch kept in an attachment slot.
+    pub on_chip_images: u32,
+    /// Logical bytes those images would have cost had they been
+    /// materialized.
+    pub on_chip_logical_bytes: u64,
+    /// Logical images written to device memory.
+    pub materialized_images: u32,
+    /// Logical bytes of the materialized images' regions.
+    pub materialized_logical_bytes: u64,
+    /// Per-reason counts of the materialized images, keyed by the
+    /// planner's stable reason names (`"neighborhood-read"`,
+    /// `"slot-limit"`, ...). Sorted, so the JSON is stable.
+    pub reasons: BTreeMap<&'static str, u32>,
+    /// Peak tile attachment bytes the frame reserved — storage it
+    /// expects tile memory, not device memory, to hold.
+    pub peak_reserved_bytes: u64,
+    /// What the device reports it actually committed for those
+    /// attachments. `None` where the platform has no such query
+    /// (Apple's memoryless textures), so the reserved figure is all
+    /// that is known.
+    pub peak_committed_bytes: Option<u64>,
+    /// Peak device-memory attachment bytes the composition plan governs.
+    pub peak_backed_bytes: u64,
+    /// Logical bytes written into intermediates.
+    pub logical_bytes_written: u64,
+    /// Logical bytes sampled from intermediates.
+    pub logical_bytes_read: u64,
+    /// Logical bytes copied between images (snapshots and captures).
+    pub logical_bytes_copied: u64,
+    /// Read-after-write boundaries the backend had to order.
+    pub barriers: u32,
+    /// Tile composition pipelines created on first use in this frame.
+    pub pipelines_created: u32,
 }
 
 /// The result of [`Engine::submit`].
@@ -279,9 +341,13 @@ pub struct Submit {
     /// GPU timings returned with this submission. Cherenkov adapters
     /// return their timings from [`Engine::finish_gpu`].
     pub gpu: Vec<GpuSample>,
-    /// Render-thread CPU timings for Cherenkov GPU; `None` when the adapter
-    /// does not expose phase timings.
-    pub phases: Option<Phases>,
+    /// The frame's CPU phases in render order; empty when the adapter does
+    /// not expose phase timings.
+    pub phases: Vec<PhaseSample>,
+    /// What this frame's composition kept on chip and why it materialized
+    /// the rest; `None` when the adapter reports no composition
+    /// attribution (#2547).
+    pub composition: Option<Composition>,
     /// Wall-clock seconds this call spent rasterizing before any readback
     /// began (queue drains and timestamp markers included), where the
     /// adapter separates the two stages; `None` otherwise.
@@ -412,6 +478,19 @@ pub trait Engine {
     fn finish_gpu(&mut self) -> Result<Vec<GpuSample>, BenchError> {
         Ok(Vec::new())
     }
+    /// Blocks until the GPU has finished every submission so far, so a
+    /// GPU-wide reading taken next covers whole frames
+    /// (`measure --gpu-counters`).
+    ///
+    /// # Errors
+    /// [`BenchError::Engine`] for an adapter that cannot wait on its GPU,
+    /// or a GPU failure while waiting.
+    fn wait_idle(&mut self) -> Result<(), BenchError> {
+        Err(BenchError::Engine(format!(
+            "{} cannot wait for its GPU to go idle",
+            self.info().name
+        )))
+    }
     /// Explicitly retires what the backend can release outside a frame
     /// (scratch targets, backdrops, caches) and returns once the
     /// retirement is processed. The report's post-retirement snapshot
@@ -463,7 +542,7 @@ pub fn engine_names() -> Vec<&'static str> {
 pub fn create_engine(name: &str) -> Result<Box<dyn Engine>, BenchError> {
     match name {
         #[cfg(feature = "vello-cpu")]
-        vello_cpu_ad::VelloCpu::NAME => Ok(Box::new(vello_cpu_ad::VelloCpu::new())),
+        vello_cpu_ad::VelloCpu::NAME => Ok(Box::new(vello_cpu_ad::VelloCpu::new()?)),
         #[cfg(feature = "vello-classic")]
         vello_classic_ad::VelloClassic::NAME => {
             vello_classic_ad::VelloClassic::new().map(|e| Box::new(e) as Box<dyn Engine>)

@@ -171,9 +171,20 @@ impl TestMachine {
     }
 
     /// Stage canned output for a fake-tool response key.
+    ///
+    /// The dispatchers emit a canned file's contents line-wise — `.sh`'s
+    /// `print_file` terminates an unterminated final line and `.cmd`'s
+    /// `type` cannot append a bare LF — so the newline normalization lives
+    /// here instead: a non-empty response is staged newline-terminated and
+    /// both dispatchers then emit identical bytes.
     pub fn respond(&self, key: &str, contents: &str) {
         let dir = self.responses();
         fs::create_dir_all(&dir).expect("create responses dir");
+        let contents = if contents.is_empty() || contents.ends_with('\n') {
+            contents.to_owned()
+        } else {
+            format!("{contents}\n")
+        };
         fs::write(dir.join(key), contents).expect("write canned response");
     }
 
@@ -197,9 +208,39 @@ impl TestMachine {
     }
 
     /// The declared host: `PATH` is only `bin/`, `cwd` is the scratch root,
-    /// and the environment is exactly `vars` plus `HOME`/`USERPROFILE` and
+    /// and the environment is exactly `vars` plus `HOME`/`USERPROFILE`, the
+    /// profile's `LOCALAPPDATA` a Windows session always carries, and
     /// `WATERUI_FAKE_RESPONSES`.
     pub fn host<K, V>(&self, vars: impl IntoIterator<Item = (K, V)>) -> Host
+    where
+        K: AsRef<std::ffi::OsStr>,
+        V: AsRef<std::ffi::OsStr>,
+    {
+        self.host_on_path([self.bin()], vars)
+    }
+
+    /// [`Self::host`] with the Rust toolchain that compiled this test binary
+    /// on `PATH` after the fake tools, for a check that drives a real `cargo`
+    /// (opening a project runs `cargo metadata`) while every other tool it
+    /// spawns stays fake. The toolchain's own `bin/` is named directly, not a
+    /// `rustup` proxy, so no `RUSTUP_HOME` leaks in from the real machine.
+    pub fn host_with_rust_toolchain<K, V>(&self, vars: impl IntoIterator<Item = (K, V)>) -> Host
+    where
+        K: AsRef<std::ffi::OsStr>,
+        V: AsRef<std::ffi::OsStr>,
+    {
+        let toolchain_bin = Path::new(env!("CARGO"))
+            .parent()
+            .expect("the cargo that built this test lives in a toolchain bin directory")
+            .to_path_buf();
+        self.host_on_path([self.bin(), toolchain_bin], vars)
+    }
+
+    fn host_on_path<K, V>(
+        &self,
+        path_dirs: impl IntoIterator<Item = PathBuf>,
+        vars: impl IntoIterator<Item = (K, V)>,
+    ) -> Host
     where
         K: AsRef<std::ffi::OsStr>,
         V: AsRef<std::ffi::OsStr>,
@@ -211,12 +252,16 @@ impl TestMachine {
             ),
             (OsString::from("HOME"), self.home().into_os_string()),
             (OsString::from("USERPROFILE"), self.home().into_os_string()),
+            (
+                OsString::from("LOCALAPPDATA"),
+                self.home().join("AppData").join("Local").into_os_string(),
+            ),
         ];
         declared.extend(
             vars.into_iter()
                 .map(|(k, v)| (k.as_ref().to_os_string(), v.as_ref().to_os_string())),
         );
-        Host::new([self.bin()], declared).with_cwd(self.root.path().to_path_buf())
+        Host::new(path_dirs, declared).with_cwd(self.root.path().to_path_buf())
     }
 
     fn script(path: PathBuf) -> PathBuf {
@@ -235,6 +280,20 @@ impl TestMachine {
         }
         path
     }
+}
+
+/// The real toolchain with the Water home redirected to `home`: a project
+/// test that needs real `cargo`/`rustc` runs on the declared host and writes
+/// nothing under `~/.water`.
+pub fn real_toolchain_host(home: impl AsRef<Path>) -> Host {
+    let real = Host::current();
+    let vars = real
+        .envs()
+        .filter(|(key, _)| !key.eq_ignore_ascii_case("PATH"))
+        .map(|(key, value)| (key.to_os_string(), value.to_os_string()));
+    Host::new(real.path_entries(), vars)
+        .with_home(home.as_ref())
+        .with_cwd(home.as_ref().to_path_buf())
 }
 
 /// The per-process copy of the dispatcher that fake tools link to.
@@ -260,7 +319,10 @@ fn dispatcher_source() -> PathBuf {
     let (_, path) = SOURCE.get_or_init(|| {
         let dir = tempfile::tempdir().expect("create fake-tool source dir");
         let canonical = dir.path().join("fake_tools.sh");
-        let status = std::process::Command::new("cp")
+        // A child `cp`, never an in-process copy: see above. The real
+        // machine runs it, since the scratch machine has no `cp`.
+        let status = Host::current()
+            .std_command("cp")
             .arg(FAKE_TOOL_SOURCE)
             .arg(&canonical)
             .status()

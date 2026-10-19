@@ -90,19 +90,64 @@ enum Commands {
     Completions(completions::Args),
 }
 
-fn main() -> Result<()> {
-    // A `RUSTC_WRAPPER` build-std invocation enters the process before any CLI
-    // parsing: Cargo calls this binary as `water <rustc> <args…>`.
-    if let Some(code) = waterui_cli::rustc_wrapper::wrapper_main() {
-        std::process::exit(code);
+impl Commands {
+    /// The project directory a command works on — the one whose managed
+    /// build cache the background sweep keeps — or `None` for a command
+    /// that opens no project.
+    fn project_dir(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Run(args) => Some(args.project_dir()),
+            Self::Bench(args) => Some(args.project_dir()),
+            Self::Build(args) => Some(args.project_dir()),
+            Self::Package(args) => Some(args.project_dir()),
+            Self::Clean(args) => Some(args.project_dir()),
+            Self::Fetch(args) => Some(args.project_dir()),
+            Self::Preview(args) => Some(args.project_dir()),
+            Self::Inspector(args) => Some(args.project_dir()),
+            Self::Mcp(args) => Some(args.project_dir()),
+            Self::Channel(args) => Some(args.project_dir()),
+            Self::Create(_)
+            | Self::Init(_)
+            | Self::Doctor(_)
+            | Self::Device(_)
+            | Self::Devices(_)
+            | Self::Gc(_)
+            | Self::Update(_)
+            | Self::Completions(_) => None,
+        }
     }
+}
 
+/// Sweep stale managed build caches in the background, keeping the cache of
+/// the project `command` works on. Only this binary requests the sweep: it
+/// re-launches the running executable, which is `water` only here.
+async fn request_build_cache_cleanup(command: &Commands) {
+    let Some(project_dir) = command.project_dir() else {
+        return;
+    };
+    // A path that does not resolve names no project, so no sweep starts;
+    // the command itself then fails with the canonicalization error.
+    let Ok(project_root) = smol::fs::canonicalize(project_dir).await else {
+        return;
+    };
+    if let Err(error) = waterui_cli::water_dir::spawn_build_cache_cleanup(
+        &waterui_cli::toolchain::Host::current(),
+        &project_root,
+    ) {
+        tracing::warn!(
+            project_root = %project_root.display(),
+            "Failed to start the build-cache cleanup: {error:#}"
+        );
+    }
+}
+
+fn main() -> Result<()> {
     color_eyre::config::HookBuilder::default()
         .display_location_section(false)
         .display_env_section(false)
         .install()?;
 
-    init_cli_tracing();
+    init_cli_tracing(&waterui_cli::toolchain::Host::current());
 
     let cli = Cli::parse();
 
@@ -121,7 +166,9 @@ fn main() -> Result<()> {
     .expect("failed to set Ctrl+C handler");
 
     smol::block_on(async move {
-        waterui_cli::water_dir::ensure_global_config().await?;
+        waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
+            .await?;
+        request_build_cache_cleanup(&cli.command).await;
 
         // The passive update check stays off the `build`/`run` hot path,
         // off machine-consumed output (`mcp`, `completions`), and never
@@ -192,7 +239,10 @@ fn main() -> Result<()> {
 
         if result.is_ok()
             && off_update_hot_path
-            && let Some(notice) = waterui_cli::self_update::passive_update_notice().await
+            && let Some(notice) = waterui_cli::self_update::passive_update_notice(
+                &waterui_cli::toolchain::Host::current(),
+            )
+            .await
         {
             crate::note!(shell, "{notice}");
         }
@@ -217,13 +267,15 @@ pub(crate) async fn until_interrupt<T>(
     }
 }
 
-fn init_cli_tracing() {
-    if std::env::var_os("RUST_LOG").is_none() {
+/// Install the stderr subscriber when `host` sets `RUST_LOG`, filtered by
+/// its directives.
+fn init_cli_tracing(host: &waterui_cli::toolchain::Host) {
+    let Some(directives) = host.env("RUST_LOG") else {
         return;
-    }
+    };
 
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(EnvFilter::builder().parse_lossy(directives.to_string_lossy()))
         .with_target(false)
         .with_writer(std::io::stderr)
         .try_init();

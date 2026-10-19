@@ -125,10 +125,11 @@ pub(super) async fn write_web_shell(project: &Project, site_root: &Path) -> eyre
         .filter(|ch| ch.is_alphanumeric())
         .collect::<String>();
     let ctx = TemplateContext::for_project_manifest(
+        project.host(),
         project.manifest(),
         project.crate_name().clone(),
         app_name,
-        &project.resolved_framework().await?,
+        project.resolved_framework().await?,
         project.local_sources(),
     );
     let launch = WebLaunch::resolve(project, wasm_bytes)?;
@@ -182,6 +183,7 @@ mod tests {
             embedded: false,
         });
         let ctx = TemplateContext::for_project_manifest(
+            &crate::toolchain::Host::current(),
             &manifest,
             CrateName::try_from("demo").unwrap(),
             "Demo",
@@ -207,7 +209,7 @@ mod tests {
         assert!(html.contains("src=\"data:image/png;base64,AAAA\""));
         assert!(html.contains("<title>Demo &#60;App&#62;</title>"), "{html}");
         assert!(html.contains("id=\"waterui-launch\""));
-        assert!(html.contains("<canvas id=\"waterui-canvas\">"));
+        assert!(html.contains("<div id=\"waterui-root\">"));
     }
 
     #[test]
@@ -220,6 +222,7 @@ mod tests {
             embedded: false,
         });
         let ctx = TemplateContext::for_project_manifest(
+            &crate::toolchain::Host::current(),
             &manifest,
             CrateName::try_from("demo").unwrap(),
             "Demo",

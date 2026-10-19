@@ -8,6 +8,7 @@ use accesskit::{
 };
 use hydrolysis::AccessibilityContentTypes;
 use waterui::component::text_field::ContentType;
+use waterui::component::toggle::ToggleStyle;
 
 use crate::selector::{ScopeRelation, Selector};
 
@@ -121,6 +122,26 @@ impl Role {
         Self(role)
     }
 
+    /// The role a toggle of `style` reports: [`Self::SWITCH`] for a switch,
+    /// [`Self::CHECKBOX`] for a checkbox.
+    ///
+    /// [`ToggleStyle::Automatic`] is the target's default style — a checkbox
+    /// on macOS, a switch elsewhere — so a query for a default-style toggle
+    /// that must hold on every host asks for
+    /// `Role::toggle(ToggleStyle::Automatic)`.
+    ///
+    /// # Panics
+    ///
+    /// When `style` is a variant this testing crate does not know.
+    #[must_use]
+    pub const fn toggle(style: ToggleStyle) -> Self {
+        match style.resolved() {
+            ToggleStyle::Switch => Self::SWITCH,
+            ToggleStyle::Checkbox => Self::CHECKBOX,
+            _ => panic!("waterui-testing has no role for this ToggleStyle"),
+        }
+    }
+
     /// The underlying AccessKit role.
     #[must_use]
     pub const fn as_accesskit(self) -> AccessibilityRole {
@@ -130,6 +151,10 @@ impl Role {
 
 /// Semantic checked state exposed by a checkable accessibility node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed tri-state (unchecked, checked, mixed) mirroring the accessibility checked state"
+)]
 pub enum CheckedState {
     /// The node is not checked.
     False,
@@ -247,6 +272,7 @@ pub struct NodeSnapshot {
     pub(crate) label: Option<String>,
     pub(crate) identifier: Option<String>,
     pub(crate) value: Option<String>,
+    pub(crate) placeholder: Option<String>,
     pub(crate) bounds: Option<NodeBounds>,
     pub(crate) enabled: bool,
     pub(crate) selected: bool,
@@ -290,6 +316,17 @@ impl NodeSnapshot {
     #[must_use]
     pub fn value(&self) -> Option<&str> {
         self.value.as_deref()
+    }
+
+    /// Returns the placeholder text the node publishes, if any.
+    ///
+    /// A `TextField` prompt reaches the tree as the node's placeholder — the
+    /// `aria-placeholder` semantic — so an empty field still announces what it
+    /// expects. It is separate from the value: the field's own text stays in
+    /// [`Self::value`].
+    #[must_use]
+    pub fn placeholder(&self) -> Option<&str> {
+        self.placeholder.as_deref()
     }
 
     /// Returns whether the node is enabled.
@@ -408,6 +445,7 @@ impl NodeSnapshot {
             label: node.label().map(ToOwned::to_owned),
             identifier: node.author_id().map(ToOwned::to_owned),
             value,
+            placeholder: node.placeholder().map(ToOwned::to_owned),
             bounds: node.bounds().map(accesskit_rect_to_node_bounds),
             enabled: !node.is_disabled(),
             selected: node.is_selected().unwrap_or(false),

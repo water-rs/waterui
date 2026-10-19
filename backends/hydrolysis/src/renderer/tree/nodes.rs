@@ -6,6 +6,7 @@ use super::layout::{SignatureHasher, hash_size};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use waterui_core::transition::TransitionSpec;
 use waterui_layout::safe_area::IgnoreSafeArea;
 
 /// A retained sub-view a native widget owns and re-renders every flush — the
@@ -25,12 +26,6 @@ pub struct RetainedSubview {
     /// The lifecycle state: the unbuilt source, or the built node with its
     /// layout bookkeeping.
     state: RetainedSubviewState,
-    /// This host's presentation instance: a subview is an additional placement
-    /// of its content's visual nodes (a preview, an accessory), so its mounts
-    /// key under its own `PresentationId` — never the content's ordinary one.
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) presentation: PresentationId,
 }
 
 /// The [`RetainedSubview`] lifecycle: the unbuilt source view, or the built
@@ -39,7 +34,7 @@ enum RetainedSubviewState {
     /// The source view, taken on first build (`AnyView` is move-only).
     Unbuilt { source: AnyView },
     /// The built sub-view: the node and the layout bookkeeping its flushes own.
-    Built(BuiltSubview),
+    Built(Box<BuiltSubview>),
 }
 
 /// Everything [`RetainedSubviewState::Built`] carries: the persistent node and
@@ -153,11 +148,29 @@ impl BuiltSubview {
 }
 
 impl RetainedSubview {
-    pub(crate) fn new(source: AnyView) -> Self {
+    pub(crate) const fn new(source: AnyView) -> Self {
         Self {
             state: RetainedSubviewState::Unbuilt { source },
-            presentation: PresentationId::next(),
         }
+    }
+
+    /// Parents the built node's cell under `owner`: the mark the subtree
+    /// raises reaches the owner's `below`, and the placement chain the
+    /// node resolves against reads the owner's. The cell is also listed
+    /// among `owner`'s subviews, so `retire_unplaced_subviews` at the end
+    /// of the owner's record retires the subtree the record left
+    /// unplaced. Called once, by `ensure_built`, with the cell reading at
+    /// build time — the widget's cell while a record/measuring reader is
+    /// installed, the window root otherwise.
+    pub(crate) fn attach(&self, owner: &Rc<NodeCell>) {
+        let RetainedSubviewState::Built(built) = &self.state else {
+            return;
+        };
+        built.node.core().cell.set_parent(owner);
+        owner
+            .subviews
+            .borrow_mut()
+            .push(Rc::downgrade(&built.node.core().cell));
     }
 
     /// Eagerly build the sub-view's node now (the caller has the renderer),
@@ -179,15 +192,24 @@ impl RetainedSubview {
         // Normalize as the container/collection build paths do, so a layout
         // view (stack/spacer/etc.) inside a label lowers to its native form.
         let view = normalize_layout_view(view, env);
-        self.state = RetainedSubviewState::Built(BuiltSubview {
-            node: RenderNode::build(view, env, renderer),
+        let node = RenderNode::build(view, env, renderer);
+        let layout_dependencies = Some(LayoutDependencies::new(Rc::downgrade(&node.core().cell)));
+        self.state = RetainedSubviewState::Built(Box::new(BuiltSubview {
+            node,
             laid_out: Size::zero(),
             laid_out_proposal: None,
             needs_layout: true,
             laid_out_area: None,
-            layout_dependencies: Some(LayoutDependencies::new(renderer.signals.clone())),
+            layout_dependencies,
             default_a11y_label,
-        });
+        }));
+        // The current reader — the record or layout pass this build runs
+        // inside — is the owning widget's cell; a build with no reader
+        // attaches to the window root.
+        let owner = renderer
+            .reader_cell()
+            .unwrap_or_else(|| Rc::clone(renderer.root_cell()));
+        self.attach(&owner);
     }
 
     /// The built sub-view, or a panic naming `method`: measure, layout, flush,
@@ -195,10 +217,7 @@ impl RetainedSubview {
     /// use fails at the call site instead of answering empty.
     fn expect_built(&self, method: &'static str) -> &BuiltSubview {
         let RetainedSubviewState::Built(built) = &self.state else {
-            panic!(
-                "RetainedSubview::{method} ran before the sub-view was built (presentation {:?})",
-                self.presentation
-            );
+            panic!("RetainedSubview::{method} ran before the sub-view was built");
         };
         built
     }
@@ -207,10 +226,7 @@ impl RetainedSubview {
     /// [`Self::expect_built`].
     fn expect_built_mut(&mut self, method: &'static str) -> &mut BuiltSubview {
         let RetainedSubviewState::Built(built) = &mut self.state else {
-            panic!(
-                "RetainedSubview::{method} ran before the sub-view was built (presentation {:?})",
-                self.presentation
-            );
+            panic!("RetainedSubview::{method} ran before the sub-view was built");
         };
         built
     }
@@ -239,8 +255,7 @@ impl RetainedSubview {
         matches!(self.state, RetainedSubviewState::Built(_))
     }
 
-    /// The built child node, for render-identity probes.
-    #[cfg(test)]
+    /// The built child node.
     pub(crate) const fn node(&self) -> Option<&RenderNode> {
         match &self.state {
             RetainedSubviewState::Built(built) => Some(&built.node),
@@ -274,7 +289,7 @@ impl RetainedSubview {
         &self,
         state: &mut HydroState,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> Size {
         self.expect_built("measure_built")
             .node
@@ -290,7 +305,7 @@ impl RetainedSubview {
         &self,
         state: &mut HydroState,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> Size {
         self.expect_built("measure_built_with_proposal")
@@ -352,7 +367,13 @@ impl RetainedSubview {
     #[cfg(feature = "accessibility")]
     pub(crate) fn emit_accessibility(&mut self, renderer: &mut SemanticCore, env: &Environment) {
         self.ensure_built(renderer, env);
-        let node = &mut self.expect_built_mut("emit_accessibility").node;
+        let built = self.expect_built_mut("emit_accessibility");
+        // The emit walk's placement: a sub-view the walk descends into is
+        // placed for the enclosing record — a semantic frame has no
+        // `link_placement` to stamp it, and the record's leave retires any
+        // subview it did not reach.
+        built.node.core().cell.mark_placed(renderer.record_seq());
+        let node = &mut built.node;
         let _ = Self::patch_built(node, renderer);
         node.emit_accessibility(renderer, env);
     }
@@ -402,6 +423,19 @@ impl RetainedSubview {
         dirty
     }
 
+    /// [`Self::take_layout_dirty`] on a sub-view that may not be built
+    /// yet: unbuilt has no marks — it lays out fresh at build, so `false`
+    /// is the honest answer. Widgets holding their parts as
+    /// `RetainedSubview`s (labels, badges, nav bars) consume their marks
+    /// this way through the leaf's `take_layout_dirty` arm
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty_if_built(&mut self) -> bool {
+        match &mut self.state {
+            RetainedSubviewState::Built(_) => self.take_layout_dirty(),
+            RetainedSubviewState::Unbuilt { .. } => false,
+        }
+    }
+
     /// Build (once), patch, lay out (when the rect size, the structure or the
     /// §7.1 context changed), and flush the sub-view at `rect` under `env`. A
     /// zero-area rect renders nothing, matching the dispatch path's empty-rect
@@ -413,7 +447,7 @@ impl RetainedSubview {
     /// carrying the bar's inner edge as the dock a nested bar on it lands
     /// on — for chrome content (`NavigationView`, `Tabs`), `None` for a
     /// scroll surface's context-free content.
-    pub(crate) fn flush_in_rect(
+    pub(crate) fn place(
         &mut self,
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -422,32 +456,100 @@ impl RetainedSubview {
         rect: kurbo::Rect,
         safe_area: Option<safe_area::SafeAreaLayout>,
     ) {
-        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        let Some((child_ctx, delta)) =
+            self.layout_in_rect(renderer, ctx, env, proposal, rect, safe_area)
+        else {
             return;
+        };
+        let built = self.expect_built_mut("place");
+        // A retained subtree re-records starting at its own root — a partial
+        // descent — so it first replays the enclosing `.material_group()`
+        // scopes from the node's ancestry (water-rs/waterui#2268). Record the
+        // sub-view's root as the owner of whatever its flush registers: a
+        // press the caller registered for the whole sub-view carries the same
+        // owner, and the ancestry check tells a gesture inside the sub-view
+        // from one attached to the root itself.
+        renderer.with_enclosing_material_group_scopes(built.node.core(), |renderer| {
+            if let Some(identity) = built.node.accessibility_identity() {
+                renderer.push_input_owner(&identity);
+                built.node.flush(renderer, child_ctx, env, delta);
+                renderer.pop_input_owner();
+            } else {
+                built.node.flush(renderer, child_ctx, env, delta);
+            }
+        });
+    }
+
+    /// [`place`](Self::place) for a subtree displayed outside
+    /// the walk recording it (context menus, anchored overlays): the
+    /// sub-view's registrations resolve in window space through the IDENTITY
+    /// window anchor, the same answer the deleted
+    /// `hit_transform = kurbo::Affine::IDENTITY` entry points gave.
+    pub(crate) fn place_detached(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        proposal: ProposalSize,
+        rect: kurbo::Rect,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+    ) {
+        let Some((child_ctx, delta)) =
+            self.layout_in_rect(renderer, ctx, env, proposal, rect, safe_area)
+        else {
+            return;
+        };
+        // The subtree detaches at the current registration frame: an open
+        // scope (the exiting overlay's inactive gate, a suppressed preview)
+        // stays in the chain and gates its entries; with none open the
+        // current placement is the presentation host's own.
+        let anchor = renderer.current_placement();
+        let index = anchor.take_item();
+        let built = self.expect_built_mut("place_detached");
+        // Same partial-descent replay as `place` — a detached subtree's
+        // enclosing `.material_group()` scopes come from its ancestry, not
+        // the stack (#2268).
+        renderer.with_enclosing_material_group_scopes(built.node.core(), |renderer| {
+            built
+                .node
+                .flush_anchored(renderer, child_ctx, env, Some(anchor), delta, index);
+        });
+    }
+
+    /// The shared head of [`place`](Self::place) and
+    /// [`place_detached`](Self::place_detached): build on
+    /// first use, apply pending patches, lay the sub-view out at `rect`'s
+    /// size when anything changed, and return the child context and the
+    /// delta that places it at `rect`. `None` for a zero-area rect, which
+    /// renders nothing (the dispatch path's empty-rect guard).
+    fn layout_in_rect(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+        proposal: ProposalSize,
+        rect: kurbo::Rect,
+        safe_area: Option<safe_area::SafeAreaLayout>,
+    ) -> Option<(RenderContext, kurbo::Affine)> {
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return None;
         }
         self.ensure_built(renderer, env);
-        let built = self.expect_built_mut("flush_in_rect");
+        let built = self.expect_built_mut("layout_in_rect");
         let structural = Self::patch_built(&mut built.node, renderer);
         built.node.prepare_for_measure(renderer);
-        #[allow(clippy::cast_possible_truncation)]
-        let size = Size::new(rect.width() as f32, rect.height() as f32);
+        let size = Size::new(
+            crate::num_cast::f64_as_f32(rect.width()),
+            crate::num_cast::f64_as_f32(rect.height()),
+        );
         built.needs_layout |= structural | built.node.take_layout_dirty();
         built.layout_if_needed(renderer, env, safe_area, proposal, size);
+        let delta = kurbo::Affine::translate((rect.x0, rect.y0));
         let child_ctx = ctx.child(
-            kurbo::Affine::translate((rect.x0, rect.y0)),
+            delta,
             kurbo::Rect::new(0.0, 0.0, rect.width(), rect.height()),
         );
-        // Record the sub-view's root as the owner of whatever its flush
-        // registers: a press the caller registered for the whole sub-view
-        // carries the same owner, and the ancestry check tells a gesture
-        // inside the sub-view from one attached to the root itself.
-        if let Some(identity) = built.node.accessibility_identity() {
-            renderer.push_input_owner(&identity);
-            built.node.flush(renderer, child_ctx, env);
-            renderer.pop_input_owner();
-        } else {
-            built.node.flush(renderer, child_ctx, env);
-        }
+        Some((child_ctx, delta))
     }
 
     /// The retained identity of the built sub-view's root node — the owner the
@@ -467,7 +569,11 @@ impl RetainedSubview {
     /// label's animated translate + scale). The caller composes the transform via
     /// [`RenderContext::child`] and passes the local layout `size` the node should
     /// lay out at; a zero-area size renders nothing.
-    pub(crate) fn flush_in_ctx(
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "threads the full flush context; grouping into a struct would not improve clarity"
+    )]
+    pub(crate) fn place_in_ctx(
         &mut self,
         renderer: &mut HydrolysisRenderer,
         ctx: RenderContext,
@@ -475,102 +581,69 @@ impl RetainedSubview {
         proposal: ProposalSize,
         size: Size,
         safe_area: Option<safe_area::SafeAreaLayout>,
+        placement_delta: kurbo::Affine,
     ) {
         if size.width <= 0.0 || size.height <= 0.0 {
             return;
         }
         self.ensure_built(renderer, env);
-        let built = self.expect_built_mut("flush_in_ctx");
+        let built = self.expect_built_mut("place_in_ctx");
         let structural = Self::patch_built(&mut built.node, renderer);
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
         built.layout_if_needed(renderer, env, safe_area, proposal, size);
-        if let Some(identity) = built.node.accessibility_identity() {
-            renderer.push_input_owner(&identity);
-            built.node.flush(renderer, ctx, env);
-            renderer.pop_input_owner();
-        } else {
-            built.node.flush(renderer, ctx, env);
-        }
+        renderer.with_enclosing_material_group_scopes(built.node.core(), |renderer| {
+            if let Some(identity) = built.node.accessibility_identity() {
+                renderer.push_input_owner(&identity);
+                built.node.flush(renderer, ctx, env, placement_delta);
+                renderer.pop_input_owner();
+            } else {
+                built.node.flush(renderer, ctx, env, placement_delta);
+            }
+        });
     }
 
-    /// Build (once), lay out at `placement.size`, and capture the sub-view's
-    /// flush as [`CapturedLayers`] in identity (local) coordinates, for a node
-    /// that must survive across flushes (a navigation-stack page). The capture
-    /// holds every layer the page presents, so it can be presented at the
-    /// stack's place and replayed by the navigation transition (cross-fade
-    /// `from`/`to`) without re-dispatch.
-    ///
-    /// Only the drawing is local. Hit targets and accessibility bounds the
-    /// flush registers are not replayed — they are live for this frame — so
-    /// they land in window hit-test space through `placement.hit_transform`,
-    /// the same space the captured layers are presented in.
-    pub(crate) fn render_built_scene(
+    /// Builds, lays out and records a navigation page into the open page
+    /// scope, anchored at the scope's placement.
+    pub(crate) fn record_built_page(
         &mut self,
         renderer: &mut HydrolysisRenderer,
         env: &Environment,
-        placement: CapturedScenePlacement,
+        size: Size,
         safe_area: Option<safe_area::SafeAreaLayout>,
-    ) -> NavigationCapturedScene {
-        let CapturedScenePlacement {
-            size,
-            hit_transform,
-        } = placement;
+    ) {
         self.ensure_built(renderer, env);
-        let built = self.expect_built_mut("render_built_scene");
+        let built = self.expect_built_mut("record_built_page");
         let structural = Self::patch_built(&mut built.node, renderer);
         built.node.prepare_for_measure(renderer);
         built.needs_layout |= structural | built.node.take_layout_dirty();
         let proposal = ProposalSize::new(Some(size.width), Some(size.height));
         built.layout_if_needed(renderer, env, safe_area, proposal, size);
-        let local_ctx = RenderContext::with_transforms(
-            kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
-            kurbo::Affine::IDENTITY,
-            hit_transform,
-        );
-        renderer.begin_navigation_scene_capture();
+        let anchor = renderer.current_placement();
+        let local_ctx = RenderContext {
+            local: renderer.program().origin(),
+            bounds: kurbo::Rect::new(0.0, 0.0, f64::from(size.width), f64::from(size.height)),
+        };
         renderer.push_lazy_viewport(LazyViewport {
             bounds: local_ctx.bounds,
-            transform: local_ctx.transform,
+            transform: anchor.resolved_transform(true),
         });
-        let layers = renderer.capture_layers(|renderer| built.node.flush(renderer, local_ctx, env));
-        renderer.pop_lazy_viewport("retained scene capture");
-        renderer.finish_navigation_scene_capture(layers)
+        let index = anchor.take_item();
+        // A page records outside the window walk — the partial descent
+        // replays the enclosing `.material_group()` scopes from the page
+        // root's ancestry so its members join the same scope (#2268).
+        renderer.with_enclosing_material_group_scopes(built.node.core(), |renderer| {
+            built.node.flush_anchored(
+                renderer,
+                local_ctx,
+                env,
+                Some(anchor),
+                kurbo::Affine::IDENTITY,
+                index,
+            );
+        });
+        renderer.pop_lazy_viewport("retained page record");
     }
-
-    /// Renders a retained navigation page that is not currently interactive.
-    /// This is used to prepare the immediately preceding page for an edge-swipe
-    /// pop without registering hidden hit-test or accessibility targets.
-    pub(crate) fn render_built_navigation_scene_inactive(
-        &mut self,
-        renderer: &mut HydrolysisRenderer,
-        env: &Environment,
-        placement: CapturedScenePlacement,
-        safe_area: Option<safe_area::SafeAreaLayout>,
-    ) -> NavigationCapturedScene {
-        let previous_hit_test_opacity = renderer.hit_test.hit_test_opacity;
-        renderer.hit_test.hit_test_opacity = 0.0;
-        #[cfg(feature = "accessibility")]
-        renderer.push_accessibility_suppression();
-        let scene = self.render_built_scene(renderer, env, placement, safe_area);
-        #[cfg(feature = "accessibility")]
-        renderer.pop_accessibility_suppression();
-        renderer.hit_test.hit_test_opacity = previous_hit_test_opacity;
-        scene
-    }
-}
-
-/// Where a scene captured by [`RetainedSubview::render_built_scene`] is
-/// presented: the size its content lays out at, and the transform from its
-/// local space into window hit-test space. The drawing is recorded local and
-/// placed by whoever replays it; the hit targets and accessibility bounds are
-/// registered live and so must already carry the placement.
-#[derive(Clone, Copy, Debug)]
-pub struct CapturedScenePlacement {
-    /// The size the captured content lays out at.
-    pub size: Size,
-    /// Local space to window hit-test space.
-    pub hit_transform: kurbo::Affine,
 }
 
 /// A cache of retained node sub-views for a *virtualized* collection (a lazy
@@ -631,10 +704,11 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
         self.entries.get(key)
     }
 
-    /// Iterate the retained sub-views (unordered; test callers sort).
-    #[cfg(test)]
-    pub(crate) fn values(&self) -> impl Iterator<Item = &RetainedSubview> {
-        self.entries.values()
+    /// Removes the retained sub-view of `key` from the cache, handing it to
+    /// the caller — a removed row's realization moving into its ghost.
+    pub(crate) fn take(&mut self, key: &K) -> Option<RetainedSubview> {
+        self.touched.remove(key);
+        self.entries.remove(key)
     }
 
     /// Drop the retained sub-views of exactly the keys in `ids`. The next
@@ -689,10 +763,10 @@ impl<K: Eq + core::hash::Hash + Clone> VisibleSubviewCache<K> {
 /// read env every frame), and the child node it recurses into.
 pub struct WrapperNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// The node's render identity; a `Material` wrapper keys its engine
-    /// mount by it, a `MaterialGroup` wrapper keys its backdrop-group
-    /// scope by it.
-    pub(crate) render_id: RenderId,
+    /// The node's own mount core: its cell keys the engine mounts a
+    /// `Material` wrapper (or any keyed effect) presents under, and a
+    /// `MaterialGroup` wrapper keys its backdrop-group scope by it.
+    pub(crate) core: NodeCore,
     pub(super) effect: WrapperEffect,
     pub(super) env: Environment,
     /// The per-edge release [`safe_area::SafeAreaLayout::release`] computed for an
@@ -744,8 +818,21 @@ pub trait WidgetBehavior {
         state: &mut HydroState,
         proposal: ProposalSize,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> ViewDimensions;
+
+    /// Consume the layout-dirty marks of the [`RetainedSubview`]s this
+    /// leaf owns — labels, bar parts, badge content — and report whether
+    /// any fired since their last consume. The sub-views' trees hang off
+    /// this leaf's measure, so their marks decide the leaf's measured
+    /// size: an enclosing `RetainedSubview` reads them through the
+    /// `Widget` arm of [`RenderNode::take_layout_dirty`], and each
+    /// consumed sub-view keeps the mark in its own `needs_layout` for
+    /// its next flush (water-rs/waterui#1957). `false` for leaves that
+    /// own no sub-views.
+    fn take_layout_dirty(&self) -> bool {
+        false
+    }
 
     /// Runs the leaf's layout-time prepare step: applying theme paint that
     /// could not be resolved at tree-build time (build contexts carry no
@@ -755,6 +842,13 @@ pub trait WidgetBehavior {
     /// theme — is in hand, before any node below it is measured. A semantic
     /// runtime never runs this pass, so no paint reaches it.
     fn prepare(&self, _renderer: &mut HydrolysisRenderer, _env: &Environment) {}
+
+    /// Claims the transition declared on the root of this leaf's page
+    /// content, for the navigation stack that owns the leaf as a page
+    /// (layout-spec.md §4.5). `None` for every leaf that is not a page.
+    fn claim_page_transition(&self) -> Option<waterui_core::transition::TransitionSpec> {
+        None
+    }
 
     /// Emits this leaf's accessibility node(s) for the semantic walk — the
     /// same tree `render` produces under a `RenderContext`, with no bounds and
@@ -770,9 +864,7 @@ pub trait WidgetBehavior {
 /// current bounds. No bake, no capture-once freeze.
 pub struct WidgetNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     /// The §7.1 context the widget was last laid out against — node-lifetime
     /// storage: a widget inside an unchanged retained sub-view is not
     /// re-laid out on steady frames, but its flush still reads the context
@@ -796,20 +888,18 @@ pub struct WidgetNode {
 /// grows the paint rect by exactly that, under unchanged transforms.
 pub struct FillNode {
     pub(super) child: RenderNode,
-    /// The fill's own render identity, surfaced through
-    /// [`RenderNode::render_id`]. The wrapped leaf's id is still collected
-    /// separately (`collect_render_ids` recurses past this node).
-    pub(crate) render_id: RenderId,
+    /// The fill's own mount core: cell, placement and subscriptions.
+    pub(crate) core: NodeCore,
     /// The paint extension [`safe_area::SafeAreaLayout::touched_edge_offsets`]
     /// computed for the wrapped frame — `None` until the first layout.
     pub(super) extension: Cell<Option<safe_area::EdgeOffsets>>,
 }
 
 impl FillNode {
-    pub(crate) fn new(child: RenderNode) -> Self {
+    pub(crate) const fn new(child: RenderNode, core: NodeCore) -> Self {
         Self {
             child,
-            render_id: RenderId::next(),
+            core,
             extension: Cell::new(None),
         }
     }
@@ -890,6 +980,15 @@ pub(super) enum WrapperEffect {
     /// for the post-flush `render_anchored_overlays` pass, which measures,
     /// places and draws the open overlay at window level above all content.
     AnchoredOverlay(AnchoredOverlayEffect),
+    /// `.dialog(...)`: reports the dialog's presentation to the window's
+    /// dialog stack each flush; the post-flush `render_dialogs` pass draws
+    /// the one on screen in the modal layer above all content — its scrim
+    /// plus the composed card.
+    Dialog(DialogEffect),
+    /// A `.transition(...)` declaration (layout-spec.md §4.5): paint- and
+    /// layout-transparent. The structural site that swaps the content claims
+    /// it from the built instance; one nobody owns fails when reached.
+    Transition(super::transition::TransitionDeclaration),
 }
 
 impl WrapperEffect {
@@ -907,6 +1006,7 @@ impl WrapperEffect {
                 | Self::DropDestination(_)
                 | Self::ContextMenu(_)
                 | Self::AnchoredOverlay(_)
+                | Self::Dialog(_)
                 | Self::LifeCycle(_)
         )
     }
@@ -916,8 +1016,13 @@ impl WrapperEffect {
 /// slot is `Rc`-shared because the post-flush render pass — not this node —
 /// measures and flushes it, and the node keeps it built across closes.
 pub struct AnchoredOverlayEffect {
-    /// The overlay content, lazily built on first open.
-    pub(crate) content: Rc<RefCell<Option<RetainedSubview>>>,
+    /// Builds a fresh view for each presentation: a presentation started
+    /// while an older exit is still animating gets its own instance.
+    pub(crate) builder: waterui_core::handler::AnyViewBuilder,
+    /// The overlay's presentations: the one presented now, built from
+    /// `builder` on each new presentation, and the dismissed ones still
+    /// leaving the screen.
+    pub(crate) presentations: Rc<RefCell<crate::renderer::AnchoredPresentations>>,
     /// The presentation binding: read every flush (subscribing the frame to
     /// it), written `false` by outside-interaction dismissal and by the
     /// anchor leaving the tree.
@@ -932,6 +1037,23 @@ pub struct AnchoredOverlayEffect {
     /// Identity shared with the registration, so the render pass can match an
     /// open overlay to the anchor that emitted it — and tell that an anchor
     /// that stopped registering left the tree.
+    pub(crate) marker: Rc<()>,
+}
+
+/// The node-owned state of a `.dialog(...)` wrapper. The content slot is
+/// `Rc`-shared because the post-flush render pass — not this node — measures
+/// and flushes the modal layer, and the node keeps it built across closes.
+pub struct DialogEffect {
+    /// The layer content — the dialog's scrim-plus-card modal layer.
+    pub(crate) content: Rc<RefCell<RetainedSubview>>,
+    /// The dialog being presented: its cancel path is what the modal
+    /// environment routes Escape and the Android system back to. Its
+    /// presentation binding is read every flush (subscribing the frame to
+    /// it) and written `false` by the dialog's own dismiss paths and by the
+    /// node leaving the tree.
+    pub(crate) dialog: waterui::dialog::Dialog,
+    /// The node's identity in the window's dialog stack — a node that stops
+    /// reporting left the tree.
     pub(crate) marker: Rc<()>,
 }
 
@@ -1002,9 +1124,7 @@ pub struct GestureObserverEffect {
 }
 
 pub struct ColorNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) color: Computed<waterui_graphics::draw::WorkingColor>,
 }
 
@@ -1018,9 +1138,7 @@ pub struct TextNode {
     /// leaves a stale answer behind.
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     pub(crate) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) content: Computed<StyledStr>,
     pub(crate) alignment: Computed<HorizontalAlignment>,
     /// Maximum laid-out lines, from `TextConfig::line_limit`.
@@ -1046,9 +1164,7 @@ pub struct ContainerNode {
     /// leaves a stale answer behind.
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     pub(crate) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) layout: Box<dyn Layout>,
     pub(crate) children: Vec<RenderNode>,
     #[cfg(feature = "accessibility")]
@@ -1077,33 +1193,25 @@ pub struct ContainerNode {
 /// layer around the child. Layout-transparent (the child measures/places as if
 /// the wrapper were absent), matching the SwiftUI/WaterUI transform model.
 pub struct OpacityNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) value: Opacity,
     pub(crate) child: RenderNode,
 }
 
 pub struct ScaleNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) value: Scale,
     pub(crate) child: RenderNode,
 }
 
 pub struct RotationNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) value: Rotation,
     pub(crate) child: RenderNode,
 }
 
 pub struct OffsetNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(crate) value: Offset,
     pub(crate) child: RenderNode,
 }
@@ -1118,9 +1226,7 @@ pub struct ScrollNode {
     /// leaves a stale answer behind.
     pub(crate) memo_slots: RefCell<NodeMeasureEntry>,
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(super) axis: ScrollAxis,
     pub(super) child: RenderNode,
     pub(super) controller: Option<ScrollController<Point>>,
@@ -1150,21 +1256,17 @@ pub struct ScrollNode {
     /// §7.1's scroll-surface bookkeeping: the extension and clearance
     /// bounds layout computed once (the handle is rebound exactly once per
     /// layout with them), plus the focused-field state the flush drives.
-    pub(super) surface: safe_area::ScrollSurfaceArea,
+    pub(super) surface: std::rc::Rc<safe_area::ScrollSurfaceArea>,
 }
 
 pub struct RetainNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(super) _retain: Retain,
     pub(super) child: RenderNode,
 }
 
 pub struct EnvNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub render_id: RenderId,
+    pub(crate) core: NodeCore,
     /// The scoped environment this subtree was built under, used to override the
     /// inherited environment at every measure/layout/flush.
     pub(super) env: Environment,
@@ -1173,9 +1275,7 @@ pub struct EnvNode {
 
 pub struct SceneViewNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     /// The owned scene content, re-drawn each flush (it reads its own reactive
     /// inputs in `build_scene`). `RefCell` because `build_scene` needs `&mut` but
     /// `flush` takes `&self`.
@@ -1186,10 +1286,41 @@ pub struct SceneViewNode {
     pub(super) invalidator: waterui_graphics::SceneInvalidator,
     /// The engine resource-table identity `content` last recorded against —
     /// `None` until its first mount, a `Weak` that expires with the pooled
-    /// engine's table. Shared into each frame's `SceneContentLayer` so every
-    /// mount sees the same recorded identity.
+    /// engine's table. Shared into the node's recorded run so every commit
+    /// sees the same recorded identity.
     pub(super) association:
         Rc<RefCell<Option<std::rc::Weak<crate::renderer::recording::SceneResources>>>>,
+    /// The `(proposal, answer)` this leaf last measured at — the mark
+    /// [`RenderNode::take_layout_dirty`] reads through
+    /// [`Self::size_drifted`]: a scene whose natural size changes after
+    /// mount (a reloaded image's viewBox) must not keep its first box
+    /// inside a retained sub-view (water-rs/waterui#1957).
+    pub(super) measured: Cell<Option<(ProposalSize, Size)>>,
+}
+
+impl SceneViewNode {
+    /// The leaf's natural-size answer under `proposal` — the
+    /// `measure_body` arm's own computation.
+    pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
+        let resolved = waterui_graphics::resolve_scene_proposal(
+            self.content.borrow().intrinsic_size(),
+            proposal,
+        );
+        ViewDimensions::new(Size::new(
+            resolved.width.unwrap_or(0.0),
+            resolved.height.unwrap_or(0.0),
+        ))
+    }
+
+    /// Whether a fresh probe at the last proposal answers a different
+    /// size than `measured` latched — the leaf's implicit layout mark:
+    /// there is no consumable flag; the next `measure` rewrites
+    /// `measured` and ends the drift report by itself.
+    pub(super) fn size_drifted(&self) -> bool {
+        self.measured
+            .get()
+            .is_some_and(|(proposal, size)| self.intrinsic_dimensions(proposal).size != size)
+    }
 }
 
 /// A `GpuContentView` leaf that OWNS its [`GpuContentRuntime`] — the node
@@ -1201,10 +1332,36 @@ pub struct SceneViewNode {
 /// desync.
 pub struct GpuContentNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(super) runtime: Rc<RefCell<crate::gpu_view::GpuContentRuntime>>,
+    /// The `(proposal, answer)` this leaf last measured at — the mark
+    /// [`RenderNode::take_layout_dirty`] reads through
+    /// [`Self::size_drifted`], as on [`SceneViewNode`]
+    /// (water-rs/waterui#1957).
+    pub(super) measured: Cell<Option<(ProposalSize, Size)>>,
+}
+
+impl GpuContentNode {
+    /// The leaf's natural-size answer under `proposal` — the
+    /// `measure_body` arm's own computation.
+    pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
+        let resolved = waterui_graphics::resolve_scene_proposal(
+            self.runtime.borrow().view.intrinsic_size(),
+            proposal,
+        );
+        ViewDimensions::new(Size::new(
+            resolved.width.unwrap_or(0.0),
+            resolved.height.unwrap_or(0.0),
+        ))
+    }
+
+    /// Whether a fresh probe at the last proposal answers a different
+    /// size than `measured` latched — the leaf's implicit layout mark.
+    pub(super) fn size_drifted(&self) -> bool {
+        self.measured
+            .get()
+            .is_some_and(|(proposal, size)| self.intrinsic_dimensions(proposal).size != size)
+    }
 }
 
 /// An `ExternalFrameView` leaf that OWNS its [`crate::gpu_view::ExternalFrameRuntime`]
@@ -1214,10 +1371,30 @@ pub struct GpuContentNode {
 /// the layer drains the receiver's mailbox and presents the newest frame.
 pub struct ExternalFrameNode {
     pub(super) accessibility_identity: Rc<()>,
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub(crate) render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(super) runtime: Rc<RefCell<crate::gpu_view::ExternalFrameRuntime>>,
+    /// The `(proposal, answer)` this leaf last measured at — the mark
+    /// [`RenderNode::take_layout_dirty`] reads through
+    /// [`Self::size_drifted`]: a stream that learns its size only after
+    /// decoding starts must not keep its first box inside a retained
+    /// sub-view (water-rs/waterui#1957).
+    pub(super) measured: Cell<Option<(ProposalSize, Size)>>,
+}
+
+impl ExternalFrameNode {
+    /// The source's measure under `proposal` — the `measure_body` arm's
+    /// own call, repeated to detect drift.
+    pub(super) fn intrinsic_dimensions(&self, proposal: ProposalSize) -> ViewDimensions {
+        self.runtime.borrow().view.measure(proposal)
+    }
+
+    /// Whether a fresh probe at the last proposal answers a different
+    /// size than `measured` latched — the leaf's implicit layout mark.
+    pub(super) fn size_drifted(&self) -> bool {
+        self.measured
+            .get()
+            .is_some_and(|(proposal, size)| self.intrinsic_dimensions(proposal).size != size)
+    }
 }
 
 /// A `FilteredView` wrapper that OWNS its [`FilteredRuntime`]
@@ -1228,18 +1405,14 @@ pub struct ExternalFrameNode {
 /// presents the child's layers inside a keyed filtered mount — the engine
 /// applies the filter across the whole group.
 pub struct FilteredNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub render_id: RenderId,
+    pub(crate) core: NodeCore,
     pub(super) runtime: Rc<RefCell<crate::renderer::effects::FilteredRuntime>>,
     pub(super) child: RenderNode,
     pub(super) env: Environment,
 }
 
 pub struct DynamicHostNode {
-    /// Consumed by the retained-update mount path in H3.
-    #[allow(dead_code)]
-    pub render_id: RenderId,
+    pub(crate) core: NodeCore,
     /// The §7.1 context the host was last laid out against — the flush's
     /// mid-pass layout for a child that applied its pending reuses it.
     pub(super) safe_area: Option<Box<safe_area::SafeAreaLayout>>,
@@ -1267,9 +1440,92 @@ pub struct DynamicHostNode {
     /// re-lays out its tree before its next flush — the caller-imposed rect a
     /// `RetainedSubview` flushes at never renegotiates itself.
     pub(super) layout_dirty: Cell<bool>,
+    /// The structural transitions of the content instances this host swaps
+    /// (layout-spec.md §4.5).
+    pub(super) transitions: DynamicTransitions,
+}
+
+/// A `Dynamic` host's transition state: which declaration applies to the
+/// current instance, its insertion clock, the frame its removal would paint
+/// at, and the ghosts of instances already swapped out.
+pub struct DynamicTransitions {
+    /// A `.transition(...)` declared over the conditional itself, adopted
+    /// when that declaration's node is built: it applies to every content
+    /// instance that declares none of its own.
+    declared: RefCell<Option<TransitionSpec>>,
+    /// The declaration the current content instance carries on its own root
+    /// chain, claimed when the instance is built.
+    claimed: RefCell<Option<TransitionSpec>>,
+    /// The current instance's insertion while it animates in.
+    insertion: RefCell<Option<super::transition::TransitionRun>>,
+    /// Removed instances still animating out, oldest first. The host owns
+    /// them as its own children whatever layout encloses it: a ghost takes
+    /// no part in layout and is out of semantics, accessibility, focus and
+    /// hit testing; it only paints, over the slot the live content sizes.
+    ghosts: RefCell<Vec<DynamicGhost>>,
+    /// The context the live instance was last flushed at — its frame in the
+    /// drawing space of the nearest enclosing layer, where its ghost paints
+    /// once it leaves.
+    last_context: Cell<RenderContext>,
+    /// Reduce Motion resolved once at build from the host environment.
+    reduce_motion: bool,
+    /// Logical-edge resolution for sampled transition properties.
+    direction: waterui_core::layout::LayoutDirection,
+}
+
+/// One removed content instance of a `Dynamic` host, painted until its own
+/// removal clock completes.
+pub struct DynamicGhost {
+    /// The outgoing instance, detached from semantics.
+    node: RenderNode,
+    /// Its removal clock and paint runtime.
+    removal: super::transition::TransitionRun,
+    /// The context the instance was last flushed at: its frame in the
+    /// drawing space of the host's nearest enclosing layer.
+    context: RenderContext,
+}
+
+impl DynamicTransitions {
+    pub(super) fn new(env: &Environment) -> Self {
+        Self {
+            declared: RefCell::new(None),
+            claimed: RefCell::new(None),
+            insertion: RefCell::new(None),
+            ghosts: RefCell::new(Vec::new()),
+            last_context: Cell::new(RenderContext {
+                local: kurbo::Affine::IDENTITY,
+                bounds: kurbo::Rect::ZERO,
+            }),
+            reduce_motion: env
+                .get::<waterui_core::transition::ReduceMotion>()
+                .is_some_and(|flag| flag.0),
+            direction: waterui_layout::layout_direction(env).snapshot(),
+        }
+    }
+
+    /// The declaration governing the current instance: its own, else the one
+    /// declared over the conditional.
+    fn effective(&self) -> Option<TransitionSpec> {
+        self.claimed
+            .borrow()
+            .clone()
+            .or_else(|| self.declared.borrow().clone())
+    }
 }
 
 impl DynamicHostNode {
+    /// Adopts a `.transition(...)` declared over this conditional.
+    pub(super) fn adopt(&self, spec: TransitionSpec) {
+        *self.transitions.declared.borrow_mut() = Some(spec);
+    }
+
+    /// Records the current instance's declaration, claimed from its built
+    /// root.
+    pub(super) fn claim_initial(&self) {
+        *self.transitions.claimed.borrow_mut() =
+            super::transition::claim_transition(&self.child.borrow());
+    }
+
     /// Take any content the `Dynamic` delivered since this node's last pass and
     /// rebuild the child with it — the fine-grained structural patch. Runs at
     /// this node's own entry into every pass whose leaf reads reach the frame
@@ -1284,17 +1540,65 @@ impl DynamicHostNode {
     /// laid out at the placement its already-measured stale child earned — and
     /// `flush`/`emit` apply the patch before anything is encoded. Returns
     /// whether the child changed.
+    ///
+    /// The swap is a structural transition event (§4.5): an outgoing instance
+    /// under a removal declaration leaves the semantic tree here and keeps
+    /// painting as a ghost in its frozen slot; an incoming instance under a
+    /// declaration starts its own insertion clock. Re-inserting during an
+    /// exit is always a new instance beside the old ghost.
     pub(super) fn apply_pending(&self, renderer: &mut SemanticCore) -> bool {
         let pending = self.pending.borrow_mut().take();
         match pending {
             Some(content) => {
                 let node_env = self.env.clone();
-                *self.child.borrow_mut() = RenderNode::build(content, &node_env, renderer);
+                let child = RenderNode::build(content, &node_env, renderer);
+                // The rebuilt child re-roots its marks under this host —
+                // without it the subtree is an orphan whose dirty bits can
+                // never reach the window root.
+                child.core().cell.set_parent(&self.core.cell);
+                let claimed = super::transition::claim_transition(&child);
+                let outgoing = core::mem::replace(&mut *self.child.borrow_mut(), child);
+                self.retire(outgoing, renderer.frame_instant);
+                let transitions = &self.transitions;
+                *transitions.claimed.borrow_mut() = claimed;
+                *transitions.insertion.borrow_mut() = transitions
+                    .effective()
+                    .filter(|_| !self.child.borrow().is_empty())
+                    .map(|spec| {
+                        super::transition::TransitionRun::insertion(
+                            &spec,
+                            transitions.reduce_motion,
+                            renderer.frame_instant,
+                        )
+                    });
                 renderer.state.counters.structural_patches += 1;
                 true
             }
             None => false,
         }
+    }
+
+    /// Detaches the outgoing instance: under a removal declaration it becomes
+    /// a ghost painting at the frame it was last flushed at; otherwise it
+    /// drops at once. Either way the slot is the live content's alone.
+    fn retire(&self, outgoing: RenderNode, now: Instant) {
+        let transitions = &self.transitions;
+        let Some(spec) = transitions.effective() else {
+            return;
+        };
+        if outgoing.is_empty() {
+            return;
+        }
+        transitions.ghosts.borrow_mut().push(DynamicGhost {
+            node: outgoing,
+            removal: super::transition::TransitionRun::removal(
+                &spec,
+                transitions.reduce_motion,
+                now,
+            ),
+            context: transitions.last_context.get(),
+        });
+        transitions.insertion.borrow_mut().take();
     }
 
     /// `apply_pending` for a pass reached after the frame's `patch` result was
@@ -1312,6 +1616,129 @@ impl DynamicHostNode {
         }
         applied
     }
+
+    /// Advances the insertion and every ghost on their own clocks: a settled
+    /// insertion paints untransformed, a finished ghost releases its slot.
+    /// While anything is in flight the host's layout is marked so frames keep
+    /// coming. Returns whether a ghost left (a structural change) or anything
+    /// is still animating — both need a fresh layout.
+    pub(super) fn advance_transitions(&self, renderer: &SemanticCore) -> bool {
+        let now = renderer.frame_instant;
+        let transitions = &self.transitions;
+        let mut animating = false;
+        {
+            let mut insertion = transitions.insertion.borrow_mut();
+            if let Some(running) = insertion.as_mut() {
+                if running.advance(now) {
+                    animating = true;
+                } else {
+                    *insertion = None;
+                }
+            }
+        }
+        let mut ghosts = transitions.ghosts.borrow_mut();
+        let before = ghosts.len();
+        ghosts.retain_mut(|ghost| ghost.removal.advance(now));
+        let dropped = ghosts.len() != before;
+        animating |= !ghosts.is_empty();
+        if animating {
+            renderer.context_mark_layout();
+        }
+        dropped || animating
+    }
+
+    /// Flushes the live instance, under its insertion transition while one
+    /// runs. This host's ghosts paint first, beneath it, each at the frame it
+    /// left at: they overlap the slot the live content alone sizes and take
+    /// no part in layout (layout-spec.md §4.5), so the enclosing layout sees
+    /// this host as its one child whatever that layout is.
+    pub(super) fn flush_content(
+        &self,
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        env: &Environment,
+    ) {
+        let child = self.child.borrow();
+        let (slot_ctx, delta) = super::transition::slot_context(ctx);
+        for ghost in self.transitions.ghosts.borrow().iter() {
+            self.flush_ghost(renderer, ctx, ghost);
+        }
+        if !child.is_empty() {
+            self.transitions.last_context.set(ctx);
+        }
+        {
+            let insertion = self.transitions.insertion.borrow();
+            if let Some(insertion) = insertion.as_ref() {
+                let paint = super::transition::TransitionPaint::sample(
+                    &insertion.state,
+                    slot_size(slot_ctx),
+                    self.transitions.direction,
+                    true,
+                    &insertion.runtime,
+                    &self.core.cell,
+                );
+                super::transition::flush_transitioned(
+                    renderer,
+                    slot_ctx,
+                    delta,
+                    &paint,
+                    |renderer, ctx| {
+                        child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+                    },
+                );
+            } else {
+                child.flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+            }
+        }
+    }
+
+    /// Paints `ghost` at the frame it left at. Both that frame and the host's
+    /// flush context `ctx` live in the drawing space of the host's nearest
+    /// enclosing layer, so the ghost stays where it was placed in that space
+    /// even when the host's own slot moves, and follows the layer's movement
+    /// (scrolling, ancestors). Paint only: no input, no accessibility.
+    fn flush_ghost(
+        &self,
+        renderer: &mut HydrolysisRenderer,
+        ctx: RenderContext,
+        ghost: &DynamicGhost,
+    ) {
+        // The left frame relative to the host's current placement.
+        let relative = ctx.local.inverse() * ghost.context.local;
+        let (slot_ctx, slot_delta) =
+            super::transition::slot_context(ctx.child(relative, ghost.context.bounds));
+        let delta = relative * slot_delta;
+        let paint = super::transition::TransitionPaint::sample(
+            &ghost.removal.state,
+            slot_size(slot_ctx),
+            self.transitions.direction,
+            false,
+            &ghost.removal.runtime,
+            &self.core.cell,
+        );
+        let env = &self.env;
+        renderer.with_suppressed_accessibility(|renderer| {
+            super::transition::flush_transitioned(
+                renderer,
+                slot_ctx,
+                delta,
+                &paint,
+                |renderer, ctx| {
+                    ghost
+                        .node
+                        .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+                },
+            );
+        });
+    }
+}
+
+/// The logical size of a slot context's bounds.
+const fn slot_size(ctx: RenderContext) -> Size {
+    Size::new(
+        crate::num_cast::f64_as_f32(ctx.bounds.width()),
+        crate::num_cast::f64_as_f32(ctx.bounds.height()),
+    )
 }
 
 impl TextNode {
