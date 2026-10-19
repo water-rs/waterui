@@ -2225,6 +2225,8 @@ pub enum PendingRaster {
     /// nothing is rasterized or stored in the atlas. The record joins
     /// the frame's compute input at apply time.
     GpuPath {
+        /// Geometry identity, including stroke tolerance.
+        content: u64,
         /// `FillRule` as the kernel's `rule` field (0 non-zero,
         /// 1 even-odd).
         rule: u32,
@@ -2235,10 +2237,8 @@ pub enum PendingRaster {
         /// The instance template `classify` copies per emitted span or
         /// cell — the same bytes `replay` would stamp.
         template: Box<crate::render::instance::Instance>,
-        /// Curve elements encoded for the compute input buffer.
-        elements: Vec<crate::render::path::GpuElement>,
-        /// Decision R2's bound over those elements.
-        bound: crate::render::path::GpuBound,
+        /// Encoded geometry and its storage bounds.
+        path: crate::render::path::GpuPath,
     },
 }
 

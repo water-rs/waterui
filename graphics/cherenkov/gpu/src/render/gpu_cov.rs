@@ -1,7 +1,7 @@
 //! The GPU coverage compute route of issue #2543, decision S2: one set
 //! of dispatches in the frame's own encoder, ahead of its raster
-//! passes, in the same submission — no readback, no fence, no
-//! cross-frame state.
+//! passes, in the same submission, without readback or a fence. Retained
+//! geometric coverage is replayed with the current frame's drawing state.
 //!
 //! The lowering leaves each routed path's curve elements, fill rule,
 //! transform and template instance in a [`PendingRaster::GpuPath`]
@@ -14,9 +14,12 @@
 
 use cherenkov::RenderError;
 use kurbo::Affine;
+use rustc_hash::FxHashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::sync::Arc;
 
 use crate::render::instance::Instance;
-use crate::render::path::{GpuBound, GpuElement};
+use crate::render::path::{GpuElement, GpuPath};
 
 /// u32 words of one `GpuPath` record on the device.
 const PATH_WORDS: usize = 108;
@@ -33,6 +36,7 @@ pub const ARGS_PARTIAL: u32 = 16;
 pub const ARGS_NORMAL: u32 = 36;
 /// The kernel workgroup size `coverage.wgsl` declares.
 const WORKGROUP: u32 = 64;
+const CLASSIFY_WIDTH: u32 = 128;
 /// Decision R2's hard per-frame cap on the coverage buffers' total
 /// size: a bound over it is an explicit `Unsupported`, never a retry.
 const GPU_COV_MAX_BYTES: u64 = 256 << 20;
@@ -48,8 +52,9 @@ pub struct GpuCoverage {
     paths: Vec<[u32; PATH_WORDS]>,
     /// Compute input elements, all paths concatenated.
     elements: Vec<GpuElement>,
-    /// Work list: `(path, row)` entries then `(path, strip)` entries —
-    /// `work_strip_off` words in.
+    element_sources: Vec<Arc<[GpuElement]>>,
+    element_total: u32,
+    /// `(path, strip)` items uploaded after atomic counters and row windings.
     work: Vec<[u32; 2]>,
     /// Per-path byte offset into `args`, apply order.
     args_bases: Vec<u32>,
@@ -63,7 +68,7 @@ pub struct GpuCoverage {
     fragment_total: u32,
     /// R8 texel words across all paths.
     texel_words: u32,
-    /// Work-list row entries (strips follow).
+    /// Row winding counters across all paths.
     row_total: u32,
     /// The R2 bound's accumulated byte size — the cap's denominator.
     bound_bytes: u64,
@@ -75,13 +80,39 @@ pub struct GpuCoverage {
     dispatched: bool,
     // Device objects, created on the first dispatch that needs them.
     layout: Option<wgpu::BindGroupLayout>,
+    args_layout: Option<wgpu::BindGroupLayout>,
     pipes: Option<Pipes>,
     buffers: Option<Buffers>,
+    identity: DefaultHasher,
+    cache: FxHashMap<u64, CachedCoverage>,
+    cache_bytes: u64,
+    cache_epoch: u64,
 }
+
+/// Only geometric output survives: drawing state is supplied again on replay.
+#[derive(Clone)]
+struct CachedCoverage {
+    geometry: wgpu::Buffer,
+    texels: wgpu::Buffer,
+    translations: Vec<[f32; 2]>,
+    last_used: u64,
+}
+
+impl CachedCoverage {
+    fn bytes(&self) -> u64 {
+        self.geometry.size() + self.texels.size()
+    }
+}
+
+const COVERAGE_CACHE_BYTES: u64 = 64 << 20;
 
 /// Pipelines for the sparse boundary coverage stages.
 struct Pipes {
-    initialize: wgpu::ComputePipeline,
+    prepare_dispatch: wgpu::ComputePipeline,
+    prepare_cells: wgpu::ComputePipeline,
+    store_cache: wgpu::ComputePipeline,
+    replay_cache: wgpu::ComputePipeline,
+    replay_texels: wgpu::ComputePipeline,
     radix_count: wgpu::ComputePipeline,
     radix_scan_blocks: wgpu::ComputePipeline,
     radix_prefix: wgpu::ComputePipeline,
@@ -90,6 +121,7 @@ struct Pipes {
     bin: wgpu::ComputePipeline,
     fragment_bins: wgpu::ComputePipeline,
     link_groups: wgpu::ComputePipeline,
+    prefix_tiles: wgpu::ComputePipeline,
     prefix: wgpu::ComputePipeline,
     integrate_edges: wgpu::ComputePipeline,
     integrate: wgpu::ComputePipeline,
@@ -110,10 +142,12 @@ struct Buffers {
 }
 
 impl GpuCoverage {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             paths: Vec::new(),
             elements: Vec::new(),
+            element_sources: Vec::new(),
+            element_total: 0,
             work: Vec::new(),
             args_bases: Vec::new(),
             inst_total: 0,
@@ -128,8 +162,13 @@ impl GpuCoverage {
             inst_origin: 0,
             dispatched: false,
             layout: None,
+            args_layout: None,
             pipes: None,
             buffers: None,
+            identity: DefaultHasher::new(),
+            cache: FxHashMap::default(),
+            cache_bytes: 0,
+            cache_epoch: 0,
         }
     }
 
@@ -137,8 +176,12 @@ impl GpuCoverage {
     /// frame are committed from scratch (`pending.clear()` precedes
     /// the lowers that produce them, `mod.rs` commit flow).
     pub fn begin_frame(&mut self) {
+        self.identity = DefaultHasher::new();
+        self.cache_epoch += 1;
         self.paths.clear();
         self.elements.clear();
+        self.element_sources.clear();
+        self.element_total = 0;
         self.work.clear();
         self.args_bases.clear();
         self.inst_total = 0;
@@ -171,11 +214,18 @@ impl GpuCoverage {
     }
 
     /// Retained host input/work-list allocation capacities.
-    pub const fn cpu_bytes(&self) -> u64 {
+    pub fn cpu_bytes(&self) -> u64 {
         (self.paths.capacity() * std::mem::size_of::<[u32; PATH_WORDS]>()
             + self.elements.capacity() * std::mem::size_of::<GpuElement>()
+            + self.element_sources.capacity() * std::mem::size_of::<Arc<[GpuElement]>>()
             + self.work.capacity() * std::mem::size_of::<[u32; 2]>()
-            + self.args_bases.capacity() * std::mem::size_of::<u32>()) as u64
+            + self.args_bases.capacity() * std::mem::size_of::<u32>()
+            + self.cache.capacity() * std::mem::size_of::<(u64, CachedCoverage)>()
+            + self
+                .cache
+                .values()
+                .map(|entry| entry.translations.capacity() * std::mem::size_of::<[f32; 2]>())
+                .sum::<usize>()) as u64
     }
 
     /// Instance slots the kernels may emit into the buffer tail.
@@ -217,38 +267,58 @@ impl GpuCoverage {
     )]
     pub fn push(
         &mut self,
+        content: u64,
         rule: u32,
         raster: Affine,
         surface: (u32, u32),
         template: &Instance,
-        elements: &[GpuElement],
-        bound: GpuBound,
+        prepared: &GpuPath,
     ) -> Result<u32, RenderError> {
+        let GpuPath {
+            elements, bound, ..
+        } = prepared;
         // Decision R2: the bound sizes everything, so over the cap is a
         // fail, not a resize.
         let rows = bound.grid_h;
         let strips = bound.grid_h.div_ceil(crate::render::path::STRIP_H);
         let to64 = |n: usize| u64::try_from(n).expect("bound fits u64");
+        let fragment_total =
+            self.fragment_total + u32::try_from(bound.fragments).expect("fragments");
+        let cov_total = self
+            .cov_total
+            .checked_add(
+                u32::try_from(bound.grid_w * strips)
+                    .map_err(|_| RenderError::Unsupported("GPU coverage key range exceeds u32"))?,
+            )
+            .ok_or(RenderError::Unsupported(
+                "GPU coverage key range exceeds u32",
+            ))?;
+        let previous_groups = group_words(self.fragment_total, self.cov_total);
+        let next_groups = group_words(fragment_total, cov_total);
         let path_bytes = to64(elements.len()) * (std::mem::size_of::<GpuElement>() as u64)
             + to64(bound.segments) * 16
             + to64(bound.bins) * 12
-            + to64(bound.fragments) * 136
+            + to64(bound.fragments) * 40
             + to64(bound.fragments.div_ceil(64)) * 64
             + to64(strips) * 12
             + to64(rows) * 4
             + to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
-            + to64(bound.span_cap + bound.cell_cap) * u64::from(INSTANCE_VEC4S) * 16
+            + to64(bound.instance_cap) * u64::from(INSTANCE_VEC4S) * 16
             + u64::from(ARGS_WORDS) * 4
             + (PATH_WORDS as u64) * 4
-            + to64(rows + strips) * 8;
-        self.bound_bytes += path_bytes;
-        if self.bound_bytes + 18 * 1024 > GPU_COV_MAX_BYTES {
+            + to64(strips) * (1 + to64(bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize))) * 8
+            + to64(strips * bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize)) * 16;
+        let previous_tokens = self.fragment_total.min(self.cov_total) * 6;
+        let next_tokens = fragment_total.min(cov_total) * 6;
+        self.bound_bytes += path_bytes
+            + u64::from(next_groups - previous_groups + next_tokens - previous_tokens) * 4;
+        if self.bound_bytes + 18 * 1024 + 128 + 48 > GPU_COV_MAX_BYTES {
             return Err(RenderError::Unsupported(
                 "GPU coverage bound exceeds the per-frame cap",
             ));
         }
         let path_i = u32::try_from(self.paths.len()).expect("path count fits u32");
-        let elem_base = u32::try_from(self.elements.len()).expect("elements fit u32");
+        let elem_base = self.element_total;
         let args_base =
             u32::try_from(self.args_bases.len()).expect("coverage capacity fits u32") * ARGS_WORDS;
         let inst_base = self.inst_total;
@@ -274,7 +344,7 @@ impl GpuCoverage {
         words[16] = rule;
         words[17] = u32::try_from(bound.grid_w).expect("grid fits u32");
         words[18] = u32::try_from(bound.grid_h).expect("grid fits u32");
-        words[19] = u32::try_from(bound.span_cap).expect("span cap fits u32");
+        words[19] = u32::try_from(bound.instance_cap).expect("instance cap fits u32");
         words[21] = self.row_total;
         words[20] = u32::try_from(bound.cell_cap).expect("cell cap fits u32");
         // affine = (a, c, b, d); translate = (e, f)
@@ -290,34 +360,42 @@ impl GpuCoverage {
         let template_words: &[u32] = bytemuck::cast_slice(std::slice::from_ref(template));
         words[40..40 + 68].copy_from_slice(&template_words[..68]);
 
+        self.hash_path(content, bound.clipped, &words);
         self.paths.push(words);
-        self.elements
-            .extend(elements.iter().copied().map(|mut element| {
-                element.head[2] = path_i;
-                element
-            }));
+        self.element_total += u32::try_from(elements.len()).expect("elements fit u32");
+        self.element_sources.push(Arc::clone(elements));
         self.args_bases.push(args_base);
-        self.inst_total += u32::try_from(bound.span_cap + bound.cell_cap).expect("instances");
+        self.inst_total += u32::try_from(bound.instance_cap).expect("instances");
         self.seg_total += u32::try_from(bound.segments).expect("segments");
         self.bin_total += u32::try_from(bound.bins).expect("bins");
-        self.fragment_total += u32::try_from(bound.fragments).expect("fragments");
-        self.cov_total = self
-            .cov_total
-            .checked_add(
-                u32::try_from(bound.grid_w * strips)
-                    .map_err(|_| RenderError::Unsupported("GPU coverage key range exceeds u32"))?,
-            )
-            .ok_or(RenderError::Unsupported(
-                "GPU coverage key range exceeds u32",
-            ))?;
+        self.fragment_total = fragment_total;
+        self.cov_total = cov_total;
         self.texel_words +=
             u32::try_from(bound.texels.div_ceil(4) + bound.cell_cap).expect("texel words");
-        for row in 0..rows {
-            self.work.push([path_i, u32::try_from(row).expect("row")]);
-        }
         self.row_total += u32::try_from(rows).expect("rows");
 
         Ok(path_i)
+    }
+
+    fn hash_path(&mut self, content: u64, clipped: bool, words: &[u32; PATH_WORDS]) {
+        content.hash(&mut self.identity);
+        clipped.hash(&mut self.identity);
+        let mut geometry = *words;
+        if !clipped {
+            for word in &mut geometry[28..30] {
+                let value = f32::from_bits(*word);
+                *word = (value - value.floor()).to_bits();
+            }
+        }
+        geometry[8..40].hash(&mut self.identity);
+    }
+
+    pub fn trim(&mut self) {
+        self.buffers = None;
+        self.bytes = 0;
+        self.cache.clear();
+        self.cache.shrink_to_fit();
+        self.cache_bytes = 0;
     }
 
     /// Apply final mask patches, paint offsets and painter depth after
@@ -391,27 +469,47 @@ impl GpuCoverage {
                 ]);
             }
         }
-        let strip_total =
-            u32::try_from(self.work.len()).expect("coverage capacity fits u32") - self.row_total;
-        let bin_base = 2 + self.row_total;
+        let strip_total = u32::try_from(self.work.len()).expect("coverage capacity fits u32");
+        for (index, path) in self.paths.iter_mut().enumerate() {
+            path[32] = u32::try_from(self.work.len()).expect("work count fits u32") - strip_total;
+            let tiles = path[17].div_ceil(CLASSIFY_WIDTH) * path[18].div_ceil(4);
+            for tile in 0..tiles {
+                self.work
+                    .push([u32::try_from(index).expect("path index fits u32"), tile]);
+            }
+        }
+        let tile_total = u32::try_from(self.work.len()).expect("work count fits u32") - strip_total;
+        let bin_base = 0;
         let fragment_base = bin_base + self.bin_total * 3;
-        let sort_a = fragment_base + self.fragment_total * 8;
-        let sort_b = sort_a + self.fragment_total * 2;
-        let histogram = sort_b + self.fragment_total * 2;
-        let groups = histogram + self.fragment_total.div_ceil(WORKGROUP).div_ceil(256) * 256 * 16;
-        let tokens = groups + self.fragment_total * 16;
-        let token_counter = tokens + (self.fragment_total * 2 + strip_total) * 3;
+        let sorted = fragment_base + self.fragment_total * 8;
+        let groups = sorted + self.fragment_total * 2;
+        let sort_scratch = groups + group_words(self.fragment_total, self.cov_total);
+        let radix_pass_count = radix_passes(self.cov_total);
+        // Start on the opposite side for odd pass counts so the result always
+        // precedes the group arena, leaving sort_scratch free for tokens.
+        let (sort_a, sort_b) = if radix_pass_count.is_multiple_of(2) {
+            (sorted, sort_scratch)
+        } else {
+            (sort_scratch, sorted)
+        };
+        let histogram = sort_scratch + self.fragment_total * 2;
+        let histogram_end =
+            histogram + self.fragment_total.div_ceil(WORKGROUP).div_ceil(256) * 256 * 16;
+        // Classification starts after radix sorting has released sort_scratch and
+        // its histogram. The sorted keys stay live through texel generation.
+        let tokens = sort_scratch;
+        let token_end = tokens + (self.fragment_total.min(self.cov_total) * 2 + strip_total) * 3;
         let params: [u32; PARAMS_WORDS] = [
-            u32::try_from(self.elements.len()).expect("coverage capacity fits u32"),
+            self.element_total,
             self.row_total,
             strip_total,
             u32::try_from(self.paths.len()).expect("coverage capacity fits u32"),
             self.inst_origin,
-            1,
-            self.row_total,
+            tile_total,
+            CLASSIFY_WIDTH,
             self.cov_total,
             bin_base,
-            self.bin_total,
+            sort_scratch,
             fragment_base,
             self.fragment_total,
             sort_a,
@@ -419,22 +517,29 @@ impl GpuCoverage {
             histogram,
             groups,
             tokens,
-            token_counter,
+            sorted,
             0,
-            0,
+            self.texel_words,
         ];
-        let scratch_bytes = u64::from(token_counter + 1) * 4;
+        let cov_words = u64::from(
+            token_end
+                .max(histogram_end)
+                .max(sort_scratch + tile_total * 4),
+        );
+        let scratch_bytes = cov_words * 4;
         let limits = device.limits();
         let limit = limits
             .max_storage_buffer_binding_size
             .min(limits.max_buffer_size);
+        let work_header_bytes = u64::from(4 + self.row_total) * 4;
+        let work_bytes = work_header_bytes + self.work.len() as u64 * 8;
         let sizes = [
             scratch_bytes,
-            self.elements.len() as u64 * 48,
+            u64::from(self.element_total) * 48,
             self.paths.len() as u64 * PATH_WORDS as u64 * 4,
             u64::from(self.seg_total) * 16,
-            u64::from(ARGS_WORDS) * 4 * self.paths.len() as u64,
-            self.work.len() as u64 * 8,
+            u64::from(ARGS_WORDS) * 4 * self.paths.len() as u64 + 48,
+            work_bytes,
         ];
         if sizes.into_iter().any(|size| size > limit) {
             return Err(RenderError::Unsupported(
@@ -442,38 +547,59 @@ impl GpuCoverage {
             ));
         }
 
-        // Buffer sizes from the R2 bound, created exactly per frame.
         let seg_words = u64::from(self.seg_total).max(1);
-        let cov_words = u64::from(token_counter + 1);
-        let work_words = u64::try_from(self.work.len()).expect("work").max(1);
+        let previous = self.buffers.as_ref();
+        let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let buffers = Buffers {
-            params: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("cov params"),
-                size: 8 * 256,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            elements: storage_buf(
+            params: sized_buffer(
                 device,
-                "cov elements",
-                (self.elements.len() as u64).max(1) * (std::mem::size_of::<GpuElement>() as u64),
-                false,
+                previous.map(|b| &b.params),
+                "cov params",
+                8 * 256,
+                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             ),
-            paths: storage_buf(
+            elements: sized_buffer(
                 device,
+                previous.map(|b| &b.elements),
+                "cov elements",
+                u64::from(self.element_total).max(1) * (std::mem::size_of::<GpuElement>() as u64),
+                storage,
+            ),
+            paths: sized_buffer(
+                device,
+                previous.map(|b| &b.paths),
                 "cov paths",
                 (self.paths.len() as u64) * (PATH_WORDS as u64) * 4,
-                false,
+                storage,
             ),
-            segments: storage_buf(device, "cov segments", seg_words * 16, false),
-            coverage: storage_buf(device, "cov scratch", cov_words * 4, false),
-            args: storage_buf(
+            segments: sized_buffer(
                 device,
-                "cov args",
-                u64::from(ARGS_WORDS) * 4 * (self.paths.len() as u64).max(1),
-                true,
+                previous.map(|b| &b.segments),
+                "cov segments",
+                seg_words * 16,
+                storage,
             ),
-            work: storage_buf(device, "cov work", work_words * 8, false),
+            coverage: sized_buffer(
+                device,
+                previous.map(|b| &b.coverage),
+                "cov scratch",
+                cov_words * 4,
+                storage,
+            ),
+            args: sized_buffer(
+                device,
+                previous.map(|b| &b.args),
+                "cov args",
+                u64::from(ARGS_WORDS) * 4 * (self.paths.len() as u64).max(1) + 48,
+                storage | wgpu::BufferUsages::INDIRECT,
+            ),
+            work: sized_buffer(
+                device,
+                previous.map(|b| &b.work),
+                "cov work",
+                work_bytes,
+                storage,
+            ),
         };
         self.bytes = buffers.params.size()
             + buffers.elements.size()
@@ -483,7 +609,51 @@ impl GpuCoverage {
             + buffers.args.size()
             + buffers.work.size();
 
-        let radix_pass_count = radix_passes(self.cov_total);
+        let key = self.identity.finish();
+        let cached = self.cache.get_mut(&key).map(|entry| {
+            entry.last_used = self.cache_epoch;
+            entry.clone()
+        });
+        if let Some(entry) = &cached {
+            for (path, old) in self.paths.iter_mut().zip(&entry.translations) {
+                path[22] = (f32::from_bits(path[28]) - old[0]).to_bits();
+                path[23] = (f32::from_bits(path[29]) - old[1]).to_bits();
+            }
+        }
+        let geometry_bytes = self.paths.len() as u64 * 16 + u64::from(self.inst_total) * 32;
+        let texel_bytes = u64::from(self.texel_words) * 4;
+        let candidate = if cached.is_none() && geometry_bytes + texel_bytes <= COVERAGE_CACHE_BYTES
+        {
+            while self.cache_bytes + geometry_bytes + texel_bytes > COVERAGE_CACHE_BYTES {
+                let oldest = *self
+                    .cache
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.last_used)
+                    .expect("cache is nonempty")
+                    .0;
+                self.cache_bytes -= self.cache.remove(&oldest).expect("oldest entry").bytes();
+            }
+            let entry = CachedCoverage {
+                geometry: sized_buffer(
+                    device,
+                    None,
+                    "cached coverage geometry",
+                    geometry_bytes,
+                    storage,
+                ),
+                texels: sized_buffer(device, None, "cached coverage texels", texel_bytes, storage),
+                translations: self
+                    .paths
+                    .iter()
+                    .map(|path| [f32::from_bits(path[28]), f32::from_bits(path[29])])
+                    .collect(),
+                last_used: self.cache_epoch,
+            };
+            encoder.clear_buffer(&entry.geometry, 0, Some(self.paths.len() as u64 * 16));
+            Some(entry)
+        } else {
+            None
+        };
         for radix_pass in 0..radix_pass_count {
             let mut block = params;
             block[18] = radix_pass;
@@ -493,60 +663,99 @@ impl GpuCoverage {
                 bytemuck::cast_slice(&block),
             );
         }
-        queue.write_buffer(&buffers.elements, 0, bytemuck::cast_slice(&self.elements));
-        let path_bytes: Vec<u32> = self.paths.iter().flatten().copied().collect();
-        queue.write_buffer(&buffers.paths, 0, bytemuck::cast_slice(&path_bytes));
-        queue.write_buffer(&buffers.work, 0, bytemuck::cast_slice(&self.work));
-
-        encoder.clear_buffer(&buffers.coverage, 0, None);
-        encoder.clear_buffer(&buffers.args, 0, None);
+        if cached.is_none() {
+            for (index, source) in self.element_sources.iter().enumerate() {
+                let path_i = u32::try_from(index).expect("path index");
+                self.elements
+                    .extend(source.iter().copied().map(|mut element| {
+                        element.head[2] = path_i;
+                        element
+                    }));
+            }
+            queue.write_buffer(&buffers.elements, 0, bytemuck::cast_slice(&self.elements));
+            queue.write_buffer(
+                &buffers.work,
+                work_header_bytes,
+                bytemuck::cast_slice(&self.work),
+            );
+        }
+        queue.write_buffer(
+            &buffers.paths,
+            0,
+            bytemuck::cast_slice(self.paths.as_flattened()),
+        );
+        encoder.clear_buffer(&buffers.work, 0, Some(work_header_bytes));
 
         let layout = self.layout.as_ref().expect("coverage layout");
+        let entries = [
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &buffers.params,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(PARAMS_WORDS as u64 * 4),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buffers.elements.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: buffers.paths.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: buffers.segments.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: buffers.coverage.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: cell_texels.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 6,
+                resource: instances.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: buffers.work.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 8,
+                resource: buffers.args.as_entire_binding(),
+            },
+        ];
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gpu coverage"),
             layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                        buffer: &buffers.params,
-                        offset: 0,
-                        size: wgpu::BufferSize::new(PARAMS_WORDS as u64 * 4),
-                    }),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: buffers.elements.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: buffers.paths.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: buffers.segments.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: buffers.coverage.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: cell_texels.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: instances.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: buffers.args.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 8,
-                    resource: buffers.work.as_entire_binding(),
-                },
-            ],
+            entries: &entries
+                .iter()
+                .filter(|entry| entry.binding != 8)
+                .cloned()
+                .collect::<Vec<_>>(),
+        });
+        let args_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gpu coverage argument writes"),
+            layout: self.args_layout.as_ref().expect("coverage argument layout"),
+            entries: &entries,
+        });
+        let cache_bind = cached.as_ref().or(candidate.as_ref()).map(|entry| {
+            let mut cached_entries = entries.clone();
+            cached_entries[3].resource = entry.geometry.as_entire_binding();
+            cached_entries[4].resource = entry.texels.as_entire_binding();
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("cached coverage"),
+                layout,
+                entries: &cached_entries
+                    .iter()
+                    .filter(|entry| entry.binding != 8)
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            })
         });
         let pipes = self.pipes.as_ref().expect("coverage pipelines");
         {
@@ -558,45 +767,76 @@ impl GpuCoverage {
                 let groups = n.div_ceil(WORKGROUP);
                 pass.dispatch_workgroups(groups.min(256), groups.div_ceil(256), 1);
             };
-            pass.set_bind_group(0, &bind, &[0]);
-            pass.set_pipeline(&pipes.initialize);
-            dispatch(&mut pass, self.fragment_total);
-            pass.set_pipeline(&pipes.flatten);
-            dispatch(&mut pass, params[0]);
-            pass.set_pipeline(&pipes.bin);
-            dispatch(&mut pass, params[0]);
-            pass.set_pipeline(&pipes.fragment_bins);
-            dispatch(&mut pass, self.bin_total);
-            for radix_pass in 0..radix_pass_count {
-                pass.set_bind_group(0, &bind, &[radix_pass * 256]);
-                pass.set_pipeline(&pipes.radix_count);
-                dispatch(&mut pass, self.fragment_total);
-                pass.set_pipeline(&pipes.radix_scan_blocks);
-                dispatch(&mut pass, self.fragment_total.div_ceil(16384) * 16);
-                pass.set_pipeline(&pipes.radix_prefix);
+            if cached.is_some() {
+                pass.set_bind_group(0, cache_bind.as_ref().expect("cache binding"), &[0]);
+                pass.set_pipeline(&pipes.replay_cache);
+                dispatch(&mut pass, self.inst_total);
+                pass.set_pipeline(&pipes.replay_texels);
+                dispatch(&mut pass, self.texel_words);
+            } else {
+                pass.set_bind_group(0, &bind, &[0]);
+                pass.set_pipeline(&pipes.flatten);
+                dispatch(&mut pass, params[0]);
+                pass.set_pipeline(&pipes.bin);
+                dispatch(&mut pass, params[0]);
+                let dispatch_base = self.paths.len() as u64 * u64::from(ARGS_WORDS) * 4;
+                pass.set_bind_group(0, &args_bind, &[0]);
+                pass.set_pipeline(&pipes.prepare_dispatch);
                 pass.dispatch_workgroups(1, 1, 1);
-                pass.set_pipeline(&pipes.radix_scatter);
-                dispatch(&mut pass, self.fragment_total);
+                pass.set_bind_group(0, &bind, &[0]);
+                pass.set_pipeline(&pipes.fragment_bins);
+                pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base);
+                pass.set_bind_group(0, &args_bind, &[0]);
+                pass.set_pipeline(&pipes.prepare_dispatch);
+                pass.dispatch_workgroups(1, 1, 1);
+                for radix_pass in 0..radix_pass_count {
+                    pass.set_bind_group(0, &bind, &[radix_pass * 256]);
+                    pass.set_pipeline(&pipes.radix_count);
+                    pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
+                    pass.set_pipeline(&pipes.radix_scan_blocks);
+                    pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 24);
+                    pass.set_pipeline(&pipes.radix_prefix);
+                    pass.dispatch_workgroups(1, 1, 1);
+                    pass.set_pipeline(&pipes.radix_scatter);
+                    pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
+                }
+                pass.set_bind_group(0, &bind, &[0]);
+                pass.set_pipeline(&pipes.link_groups);
+                pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
+                pass.set_pipeline(&pipes.prefix_tiles);
+                dispatch(&mut pass, tile_total);
+                pass.set_pipeline(&pipes.prefix);
+                dispatch(&mut pass, strip_total);
+                pass.set_pipeline(&pipes.integrate_edges);
+                pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
+                pass.set_pipeline(&pipes.integrate);
+                pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
+                pass.set_pipeline(&pipes.classify);
+                dispatch(&mut pass, tile_total);
+                pass.set_bind_group(0, &args_bind, &[0]);
+                pass.set_pipeline(&pipes.prepare_cells);
+                pass.dispatch_workgroups(1, 1, 1);
+                pass.set_bind_group(0, &bind, &[0]);
+                pass.set_pipeline(&pipes.fill_cells);
+                pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 36);
+                if candidate.is_some() {
+                    pass.set_bind_group(0, cache_bind.as_ref().expect("cache binding"), &[0]);
+                    pass.set_pipeline(&pipes.store_cache);
+                    pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 36);
+                }
             }
-            pass.set_bind_group(0, &bind, &[0]);
-            pass.set_pipeline(&pipes.link_groups);
-            dispatch(&mut pass, self.fragment_total);
-            pass.set_pipeline(&pipes.prefix);
-            dispatch(&mut pass, strip_total);
-            pass.set_pipeline(&pipes.integrate_edges);
-            dispatch(&mut pass, self.fragment_total);
-            pass.set_pipeline(&pipes.integrate);
-            dispatch(&mut pass, self.fragment_total);
-            pass.set_pipeline(&pipes.classify);
-            dispatch(&mut pass, strip_total);
-            pass.set_pipeline(&pipes.fill_cells);
-            dispatch(&mut pass, self.inst_total);
+            pass.set_bind_group(0, &args_bind, &[0]);
             pass.set_pipeline(&pipes.emit_args);
             dispatch(
                 &mut pass,
                 u32::try_from(self.paths.len()).expect("coverage capacity fits u32"),
             );
         }
+        if let Some(entry) = candidate {
+            self.cache_bytes += entry.bytes();
+            self.cache.insert(key, entry);
+        }
+        self.bytes += self.cache_bytes;
         self.buffers = Some(buffers);
         Ok(())
     }
@@ -611,9 +851,18 @@ impl GpuCoverage {
         if self.pipes.is_some() {
             return;
         }
+        let entries = super::layout_entries(crate::render::bindings::COVERAGE_GROUP0);
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("gpu coverage"),
-            entries: &super::layout_entries(crate::render::bindings::COVERAGE_GROUP0),
+            entries: &entries
+                .iter()
+                .filter(|entry| entry.binding != 8)
+                .copied()
+                .collect::<Vec<_>>(),
+        });
+        let args_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("gpu coverage argument writes"),
+            entries: &entries,
         });
         let module = delivery.coverage_module(device);
         let pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -621,10 +870,21 @@ impl GpuCoverage {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
+        let args_pipe_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("gpu coverage argument writes"),
+            bind_group_layouts: &[Some(&args_layout)],
+            immediate_size: 0,
+        });
         let make = |entry: &'static str| {
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(entry),
-                layout: Some(&pipe_layout),
+                layout: Some(
+                    if matches!(entry, "prepare_dispatch" | "prepare_cells" | "emit_args") {
+                        &args_pipe_layout
+                    } else {
+                        &pipe_layout
+                    },
+                ),
                 module: &module,
                 entry_point: Some(entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -632,7 +892,11 @@ impl GpuCoverage {
             })
         };
         self.pipes = Some(Pipes {
-            initialize: make("initialize"),
+            prepare_dispatch: make("prepare_dispatch"),
+            prepare_cells: make("prepare_cells"),
+            store_cache: make("store_cache"),
+            replay_cache: make("replay_cache"),
+            replay_texels: make("replay_texels"),
             radix_count: make("radix_count"),
             radix_scan_blocks: make("radix_scan_blocks"),
             radix_prefix: make("radix_prefix"),
@@ -641,6 +905,7 @@ impl GpuCoverage {
             bin: make("bin"),
             fragment_bins: make("fragment_bins"),
             link_groups: make("link_groups"),
+            prefix_tiles: make("prefix_tiles"),
             prefix: make("prefix"),
             integrate_edges: make("integrate_edges"),
             integrate: make("integrate"),
@@ -649,35 +914,49 @@ impl GpuCoverage {
             emit_args: make("emit_args"),
         });
         self.layout = Some(layout);
+        self.args_layout = Some(args_layout);
     }
+}
+
+/// Boundary records use the smaller of sorted-fragment indices and logical
+/// strip columns. Radix masks and prefixes borrow the same arena first.
+const fn group_words(fragments: u32, columns: u32) -> u32 {
+    if fragments == 0 {
+        return 0;
+    }
+    let records = if fragments < columns {
+        fragments
+    } else {
+        columns
+    };
+    let radix = fragments + 32 + fragments.div_ceil(16384) * 16 + 16;
+    let coverage = records * 16;
+    if coverage > radix { coverage } else { radix }
 }
 
 /// Four-bit radix passes that order every key below `key_end` and keep the
 /// all-ones empty-slot sentinel after them: the sentinel's low `4 * passes`
 /// bits are all ones, which exceeds every key once `key_end <= 2^(4 * passes)`.
-/// Passes ping-pong between the sort buffers and the sorted keys must end
-/// in `sort_a`, so the count is even.
+/// The initial buffer depends on parity so the sorted keys finish in the
+/// fixed output arena without an extra pass.
 const fn radix_passes(key_end: u32) -> u32 {
-    let digits = key_end.bit_width().div_ceil(4);
-    digits.div_ceil(2) * 2
+    key_end.bit_width().div_ceil(4)
 }
 
-fn storage_buf(
+fn sized_buffer(
     device: &wgpu::Device,
+    previous: Option<&wgpu::Buffer>,
     label: &'static str,
     size: u64,
-    indirect: bool,
+    usage: wgpu::BufferUsages,
 ) -> wgpu::Buffer {
+    if let Some(buffer) = previous.filter(|buffer| buffer.size() >= size) {
+        return buffer.clone();
+    }
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size,
-        usage: if indirect {
-            wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::INDIRECT
-        } else {
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
-        },
+        usage,
         mapped_at_creation: false,
     })
 }
@@ -690,17 +969,17 @@ mod tests {
     #[test]
     fn radix_passes_order_keys_below_the_sentinel() {
         assert_eq!(radix_passes(255), 2);
-        assert_eq!(radix_passes(256), 4);
-        assert_eq!(radix_passes(1 << 16), 6);
-        assert_eq!(radix_passes(1 << 24), 8);
+        assert_eq!(radix_passes(256), 3);
+        assert_eq!(radix_passes(1 << 16), 5);
+        assert_eq!(radix_passes(1 << 24), 7);
         assert_eq!(radix_passes(u32::MAX), 8);
     }
 
     #[test]
     fn sparse_capacity_tracks_perimeter_and_rejects_over_budget() {
-        fn rectangle(size: u32) -> (Vec<GpuElement>, GpuBound) {
+        fn rectangle(size: u32) -> crate::render::path::GpuPath {
             let edge = f64::from(size);
-            crate::render::path::gpu_bound(
+            crate::render::path::prepare_gpu(
                 &[
                     PathEl::MoveTo(Point::new(0.0, 0.0)),
                     PathEl::LineTo(Point::new(edge, 0.0)),
@@ -712,8 +991,9 @@ mod tests {
                 (edge, edge),
             )
         }
-        let (_, small) = rectangle(1024);
-        let (elements, large) = rectangle(4096);
+        let small = rectangle(1024).bound;
+        let large_path = rectangle(4096);
+        let large = large_path.bound;
         assert!(large.fragments <= 4 * small.fragments);
         assert!(large.texels <= 4 * small.texels);
         assert!(large.cell_cap <= 4 * small.cell_cap);
@@ -721,25 +1001,25 @@ mod tests {
         frame
             .push(
                 0,
+                0,
                 Affine::IDENTITY,
                 (4096, 4096),
                 &Instance::new(0),
-                &elements,
-                large,
+                &large_path,
             )
             .expect("sparse 4096-square capacity");
         assert!(frame.bound_bytes < GPU_COV_MAX_BYTES);
-        let (elements, huge) = rectangle(1_000_000);
+        let huge_path = rectangle(1_000_000);
         let before = frame.paths.len();
         assert!(
             frame
                 .push(
                     0,
+                    0,
                     Affine::IDENTITY,
                     (1_000_000, 1_000_000),
                     &Instance::new(0),
-                    &elements,
-                    huge
+                    &huge_path
                 )
                 .is_err()
         );

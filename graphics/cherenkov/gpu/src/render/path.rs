@@ -3,6 +3,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 use cherenkov::{FillRule, ShapeData};
 use kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape as _, Vec2};
@@ -91,26 +92,20 @@ pub fn flatten_segments(path: &BezPath, tolerance: f64) -> (Vec<(f32, f32, f32, 
     (segments, bbox)
 }
 
-/// Which route turns a path's flattened segments into coverage.
-///
-/// The CPU sweep is the only route today. water-rs/waterui#2536's GPU
-/// coverage route is added by water-rs/waterui#2543: it adds a variant
-/// here, grows [`route`] into the predicate of that specification's
-/// section 6 over the inputs `route` already takes, and the route
-/// differential (`route_diff.rs`) compares the two images under section
-/// 4.3 threshold 4.
+/// Coverage policy for a path's flattened segments.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoverageRoute {
-    /// The scanline sweep of this module: `O((n + k) log n)` in `n`
-    /// segments and `k` crossings.
+    /// Choose deterministically from content and device-space work estimates.
+    Automatic,
+    /// Force the CPU scanline sweep in route comparisons.
+    #[cfg(test)]
     Sweep,
-    /// The GPU compute route of water-rs/waterui#2543: curve elements go
-    /// to the frame's compute input buffer untouched by the CPU, and the
-    /// coverage and classification kernels emit the same spans and
-    /// partial cells. Route selection is water-rs/waterui#2545; in this
-    /// change the route is reachable only through the test hook.
+    /// Use GPU flattening, coverage and classification.
     Gpu,
 }
+
+/// Keep ordinary UI geometry out of the GPU preparation pass.
+pub const GPU_ROUTE_MIN_ELEMENTS: usize = 4096;
 
 /// A coverage grid over an integer device-space rect.
 pub struct Coverage {
@@ -413,6 +408,28 @@ pub struct GpuElement {
     pub hi: [f32; 4],
 }
 
+/// A compute path and the capacity bound derived from those same elements.
+#[derive(Clone)]
+pub struct GpuPath {
+    /// Local curve records consumed by the flatten kernel.
+    pub elements: Arc<[GpuElement]>,
+    hull: Rect,
+    /// Device-space capacity and work estimates for these records.
+    pub bound: GpuBound,
+}
+
+impl GpuPath {
+    /// Large, crossing-dense paths amortize compute dispatch and classification.
+    pub const fn prefers_gpu(&self) -> bool {
+        let bound = &self.bound;
+        let strips = bound.grid_h.div_ceil(STRIP_H);
+        !bound.empty
+            && bound.segments >= GPU_ROUTE_MIN_ELEMENTS
+            && bound.grid_w * bound.grid_h >= 4096
+            && bound.bins >= strips * 32
+    }
+}
+
 /// Decision R2's per-path buffer bound, computed in `O(n)` over the
 /// curve elements from their device-space bounding boxes.
 #[derive(Clone, Copy, Debug, Default)]
@@ -427,14 +444,16 @@ pub struct GpuBound {
     pub grid_w: usize,
     /// Bound raster grid rows.
     pub grid_h: usize,
-    /// Maximum span instances the path can emit.
-    pub span_cap: usize,
+    /// Maximum combined span and cell instances the path can emit.
+    pub instance_cap: usize,
     /// Maximum cell instances the path can emit.
     pub cell_cap: usize,
     /// Stored R8 bytes, excluding implicit full interiors.
     pub texels: usize,
     /// The bound grid is empty: the path cannot emit anything.
     pub empty: bool,
+    /// The surface clips the conservative geometry hull.
+    pub clipped: bool,
     /// Conservative device bounds, used by pass planning before compute.
     pub rect: [f32; 4],
 }
@@ -553,17 +572,7 @@ impl GpuEncode {
 /// the device transform `raster`, and computes the R2 bound over their
 /// device bounding boxes. Returns the element records (their `path` and
 /// `slot` fields zeroed — the caller stamps them) and the bound.
-#[expect(clippy::cast_possible_truncation, reason = "device coords are f32")]
-#[expect(
-    clippy::cast_sign_loss,
-    reason = "grid dimensions are clamped nonnegative"
-)]
-pub fn gpu_bound(
-    elements: &[PathEl],
-    raster: Affine,
-    surface: (f64, f64),
-) -> (Vec<GpuElement>, GpuBound) {
-    let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
+pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> GpuPath {
     let mut hull = Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN);
     let mut state = GpuEncode {
         out: Vec::new(),
@@ -601,40 +610,61 @@ pub fn gpu_bound(
         let (p0, s) = (state.last, state.start);
         state.push(&mut hull, 0, p0, p0, s);
     }
-    let (out, mut bound) = (state.out, state.bound);
-    // The bound raster grid: the hull inflated by a pixel and clipped to
-    // the surface, floored and ceiled like the sweep's rect.
-    let inflated = hull.inflate(1.0, 1.0);
-    let r = inflated.intersect(clip);
-    let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
-    let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
-    bound.rect = [
-        r.x0.floor() as f32,
-        r.y0.floor() as f32,
-        r.x1.ceil() as f32,
-        r.y1.ceil() as f32,
-    ];
-    bound.grid_w = w;
-    bound.grid_h = h;
-    // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
-    // need at most 16 columns per touched boundary column. Four rows
-    // per strip; the retained large full interval is implicit.
-    bound.texels = if w <= 32 && h <= 32 {
-        w * h
-    } else {
-        bound.fragments * 64
-    };
-    bound.empty = w == 0 || h == 0;
-    // Cells are column-disjoint inside their strip, so the strip count
-    // times the grid width is the grid-side cap; spans obey the same
-    // bound. The element bound may be tighter.
-    let strip_cap = h.div_ceil(STRIP_H) * w;
-    bound.cell_cap = bound
-        .fragments
-        .min(strip_cap)
-        .max(usize::from(w <= 32 && h <= 32));
-    bound.span_cap = bound.cell_cap + h.div_ceil(STRIP_H);
-    (out, bound)
+    let (out, bound) = (state.out, state.bound);
+    GpuPath {
+        elements: out.into(),
+        bound,
+        hull,
+    }
+    .translated(Vec2::ZERO, surface)
+}
+
+impl GpuPath {
+    /// Reposition encoded geometry without rebuilding its local curves.
+    #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    pub fn translated(&self, offset: Vec2, surface: (f64, f64)) -> Self {
+        let clip = Rect::new(0.0, 0.0, surface.0, surface.1);
+        let mut bound = self.bound;
+        // The bound raster grid: the hull inflated by a pixel and clipped to
+        // the surface, floored and ceiled like the sweep's rect.
+        let inflated = (self.hull + offset).inflate(1.0, 1.0);
+        let r = inflated.intersect(clip);
+        let w = (r.x1.ceil() - r.x0.floor()).max(0.0) as usize;
+        let h = (r.y1.ceil() - r.y0.floor()).max(0.0) as usize;
+        bound.rect = [
+            r.x0.floor() as f32,
+            r.y0.floor() as f32,
+            r.x1.ceil() as f32,
+            r.y1.ceil() as f32,
+        ];
+        bound.grid_w = w;
+        bound.grid_h = h;
+        // Partial columns, absorbed gaps (<=8) and demoted full runs (<8)
+        // need at most 16 columns per touched boundary column. Four rows
+        // per strip; the retained large full interval is implicit.
+        bound.texels = if w <= 32 && h <= 32 {
+            w * h
+        } else {
+            (bound.fragments * 64).min(w * h)
+        };
+        bound.empty = w == 0 || h == 0;
+        bound.clipped = r != inflated;
+        // Cells are column-disjoint inside their strip, so the strip count
+        // times the grid width is the grid-side cap; spans obey the same
+        // bound. The element bound may be tighter.
+        let strip_cap = h.div_ceil(STRIP_H) * w;
+        bound.cell_cap = bound
+            .fragments
+            .min(strip_cap)
+            .max(usize::from(w <= 32 && h <= 32));
+        // Spans and cells share the same output range and never overlap.
+        bound.instance_cap = (bound.cell_cap * 2 + h.div_ceil(STRIP_H)).min(strip_cap);
+        Self {
+            elements: Arc::clone(&self.elements),
+            bound,
+            hull: (self.hull + offset),
+        }
+    }
 }
 
 /// Emits `coverage` as spans and atlas cells: one cell when the grid is

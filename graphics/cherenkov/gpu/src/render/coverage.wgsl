@@ -34,7 +34,7 @@ struct Element {
 
 // One GPU-routed path's dispatch record. atom[0..3] is the device bbox
 // (seeded +/-inf by the uploader, reduced by `flatten`); atom[4..6]
-// counts emitted spans, cells and texel words; atom[7] is spare.
+// counts emitted instances and texel words; atom[7] is the packed work offset.
 // `rect_*` is written by `finish` from the reduced bbox — the bound
 // fields only size scratch.
 struct GpuPath {
@@ -50,14 +50,14 @@ struct GpuPath {
     rule: u32,
     grid_w: u32,
     grid_h: u32,
-    span_cap: u32,
+    instance_cap: u32,
     cell_cap: u32,
     row_base: u32,
     _pad: array<u32, 2>,
     affine: vec4<f32>,
     translate: vec2<f32>,
     surface: vec2<f32>,
-    bound_x: f32,
+    tile_base: u32,
     bound_y: f32,
     rect_x: f32,
     rect_y: f32,
@@ -73,11 +73,11 @@ struct Params {
     strip_total: u32,
     path_count: u32,
     inst_origin: u32,
-    work_row_off: u32,
-    work_strip_off: u32,
+    tile_total: u32,
+    classify_width: u32,
     grid_total: u32,
     bin_base: u32,
-    bin_cap: u32,
+    tile_prefix: u32,
     fragment_base: u32,
     fragment_cap: u32,
     sort_a: u32,
@@ -85,20 +85,27 @@ struct Params {
     histogram: u32,
     groups: u32,
     tokens: u32,
-    token_counter: u32,
+    sorted: u32,
     radix_pass: u32,
-    _pad: u32,
+    texel_words: u32,
 }
 
 @group(0) @binding(0) var<uniform> params: Params;
 @group(0) @binding(1) var<storage, read> elements: array<Element>;
 @group(0) @binding(2) var<storage, read_write> paths: array<GpuPath>;
 @group(0) @binding(3) var<storage, read_write> segments: array<vec4<f32>>;
-@group(0) @binding(4) var<storage, read_write> coverage: array<atomic<u32>>;
+@group(0) @binding(4) var<storage, read_write> coverage: array<u32>;
 @group(0) @binding(5) var<storage, read_write> texels: array<u32>;
 @group(0) @binding(6) var<storage, read_write> instances: array<vec4<u32>>;
-@group(0) @binding(7) var<storage, read_write> args: array<u32>;
-@group(0) @binding(8) var<storage, read> work: array<vec2<u32>>;
+@group(0) @binding(8) var<storage, read_write> args: array<u32>;
+struct Work {
+    bin_count: atomic<u32>,
+    fragment_count: atomic<u32>,
+    token_count: atomic<u32>,
+    fragments: u32,
+    words: array<atomic<u32>>,
+}
+@group(0) @binding(7) var<storage, read_write> work: Work;
 
 fn ordered(value: f32) -> u32 {
     let bits = bitcast<u32>(value);
@@ -191,11 +198,11 @@ fn bin(@builtin(global_invocation_id) gid: vec3<u32>) {
         let first = u32(floor(lo / 4.0));
         let last = min(u32(floor(hi / 4.0)), (u32(rect.w) - 1u) / 4u);
         for (var strip = first; strip <= last; strip += 1u) {
-            let slot = atomicAdd(&coverage[0u], 1u);
+            let slot = atomicAdd(&work.bin_count, 1u);
             let base = params.bin_base + slot * 3u;
-            atomicStore(&coverage[base], pi);
-            atomicStore(&coverage[base + 1u], si);
-            atomicStore(&coverage[base + 2u], strip);
+            coverage[base] = pi;
+            coverage[base + 1u] = si;
+            coverage[base + 2u] = strip;
         }
     }
 }
@@ -251,12 +258,12 @@ fn clip_forward(s: vec4<f32>, lo: vec2<f32>, hi: vec2<f32>) -> vec4<f32> {
 
 @compute @workgroup_size(64)
 fn fragment_bins(@builtin(global_invocation_id) gid: vec3<u32>) {
-    if invocation(gid) >= atomicLoad(&coverage[0u]) { return; }
+    if invocation(gid) >= atomicLoad(&work.bin_count) { return; }
     let base = params.bin_base + invocation(gid) * 3u;
-    let pi = atomicLoad(&coverage[base]);
-    let segment = atomicLoad(&coverage[base + 1u]);
+    let pi = coverage[base];
+    let segment = coverage[base + 1u];
     let s = segments[segment];
-    let strip = atomicLoad(&coverage[base + 2u]);
+    let strip = coverage[base + 2u];
     let rect = grid_rect(pi);
     let a = s.xy - rect.xy;
     let b = s.zw - rect.xy;
@@ -277,7 +284,7 @@ fn fragment_bins(@builtin(global_invocation_id) gid: vec3<u32>) {
             if x == floor(x) && d.x / d.y < 0.0 { crossing_column -= 1i; }
             crossing = bitcast<u32>(select(-1i, 1i, d.y > 0.0));
             if crossing_column < 0i {
-                atomicAdd(&coverage[2u + paths[pi].row_base + row], crossing);
+                atomicAdd(&work.words[paths[pi].row_base + row], crossing);
             }
         }
         if max(a.y, b.y) < y || min(a.y, b.y) >= y + 1.0 { continue; }
@@ -292,35 +299,35 @@ fn fragment_bins(@builtin(global_invocation_id) gid: vec3<u32>) {
             let clipped = clip_piece(piece, origin, origin + vec2<f32>(1.0));
             if clipped.x == -2.0 { continue; }
             let key = paths[pi].grid_base + strip * paths[pi].grid_w + col;
-            let node = atomicAdd(&coverage[params.work_row_off], 1u);
+            let node = atomicAdd(&work.fragment_count, 1u);
             let dst = params.fragment_base + node * 8u;
             let local = clipped - vec4<f32>(origin, origin);
-            atomicStore(&coverage[dst], bitcast<u32>(local.x));
-            atomicStore(&coverage[dst + 1u], bitcast<u32>(local.y));
-            atomicStore(&coverage[dst + 2u], bitcast<u32>(local.z));
-            atomicStore(&coverage[dst + 3u], bitcast<u32>(local.w));
-            atomicStore(&coverage[dst + 5u], segment);
-            atomicStore(&coverage[dst + 6u], row % 4u);
-            atomicStore(&coverage[dst + 7u], select(0u, crossing, crossing_column == i32(col)));
-            atomicStore(&coverage[params.sort_a + node * 2u], key);
-            atomicStore(&coverage[params.sort_a + node * 2u + 1u], node + 1u);
+            coverage[dst] = bitcast<u32>(local.x);
+            coverage[dst + 1u] = bitcast<u32>(local.y);
+            coverage[dst + 2u] = bitcast<u32>(local.z);
+            coverage[dst + 3u] = bitcast<u32>(local.w);
+            coverage[dst + 5u] = segment;
+            coverage[dst + 6u] = row % 4u;
+            coverage[dst + 7u] = select(0u, crossing, crossing_column == i32(col));
+            coverage[params.sort_a + node * 2u] = key;
+            coverage[params.sort_a + node * 2u + 1u] = node + 1u;
         }
     }
 }
 
 fn fragment(node: u32) -> vec4<f32> {
     let base = params.fragment_base + (node - 1u) * 8u;
-    return bitcast<vec4<f32>>(vec4<u32>(atomicLoad(&coverage[base]), atomicLoad(&coverage[base + 1u]), atomicLoad(&coverage[base + 2u]), atomicLoad(&coverage[base + 3u])));
+    return bitcast<vec4<f32>>(vec4<u32>(coverage[base], coverage[base + 1u], coverage[base + 2u], coverage[base + 3u]));
 }
 // Determine coincident lines from the original segments, before independent
 // cell clipping rounds their endpoints in different directions.
 fn same_line(left: u32, right: u32) -> bool {
-    let a = segments[atomicLoad(&coverage[params.fragment_base + (left - 1u) * 8u + 5u])];
-    let b = segments[atomicLoad(&coverage[params.fragment_base + (right - 1u) * 8u + 5u])];
+    let a = segments[coverage[params.fragment_base + (left - 1u) * 8u + 5u]];
+    let b = segments[coverage[params.fragment_base + (right - 1u) * 8u + 5u]];
     return collinear(a.zw - a.xy, b.zw - b.xy) && collinear(b.xy - a.xy, a.zw - a.xy);
 }
 fn next_fragment(node: u32) -> u32 {
-    return atomicLoad(&coverage[params.fragment_base + (node - 1u) * 8u + 4u]);
+    return coverage[params.fragment_base + (node - 1u) * 8u + 4u];
 }
 fn inside(winding: i32, rule: u32) -> f32 {
     if rule == 0u { return select(0.0, 1.0, winding != 0i); }
@@ -421,11 +428,11 @@ fn edge_area(node: u32, head: u32, seed: i32, rule: u32) -> f32 {
     return area;
 }
 
-fn sort_key(index: u32) -> u32 { return atomicLoad(&coverage[params.sort_a + index * 2u]); }
-fn sort_node(index: u32) -> u32 { return atomicLoad(&coverage[params.sort_a + index * 2u + 1u]); }
+fn sort_key(index: u32) -> u32 { return coverage[params.sorted + index * 2u]; }
+fn sort_node(index: u32) -> u32 { return coverage[params.sorted + index * 2u + 1u]; }
 fn lower_bound(key: u32) -> u32 {
     var lo = 0u;
-    var hi = params.fragment_cap;
+    var hi = fragment_count();
     while lo < hi {
         let mid = (lo + hi) / 2u;
         if sort_key(mid) < key { lo = mid + 1u; } else { hi = mid; }
@@ -434,69 +441,119 @@ fn lower_bound(key: u32) -> u32 {
 }
 fn invocation(gid: vec3<u32>) -> u32 { return gid.x + gid.y * 16384u; }
 
-@compute @workgroup_size(64)
-fn initialize(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = invocation(gid);
-    if i < params.fragment_cap {
-        atomicStore(&coverage[params.sort_a + i * 2u], 0xffffffffu);
-    }
+fn work_item(index: u32) -> vec2<u32> {
+    let base = params.row_total + index * 2u;
+    return vec2<u32>(atomicLoad(&work.words[base]), atomicLoad(&work.words[base + 1u]));
 }
 
-// Radix digits reuse the boundary-group arena before prefix initializes it.
-// Each invocation owns one word; each workgroup reads only its 64-word slice.
-// No extra allocation or native threadgroup-memory argument is required.
+fn fragment_count() -> u32 { return work.fragments; }
+
+// The counters bound execution; reserved capacities only determine storage.
+@compute @workgroup_size(64)
+fn prepare_dispatch(@builtin(local_invocation_index) lane: u32) {
+    if lane >= 3u { return; }
+    var count = atomicLoad(&work.bin_count);
+    let fragments = atomicLoad(&work.fragment_count);
+    if lane == 1u {
+        work.fragments = fragments;
+        count = fragments;
+    }
+    if lane == 2u { count = ((fragments + 16383u) / 16384u) * 16u * 64u; }
+    let groups = (count + 63u) / 64u;
+    let base = params.path_count * 13u + lane * 3u;
+    args[base] = min(groups, 256u);
+    args[base + 1u] = (groups + 255u) / 256u;
+    args[base + 2u] = 1u;
+}
+
+var<workgroup> radix_masks: array<atomic<u32>, 32>;
+
+// Each lane contributes one bit to its digit's mask. The masks are local
+// to a workgroup's range; completed masks become ordinary scatter input.
 @compute @workgroup_size(64)
 fn radix_count(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
     let i = invocation(gid);
-    let input = select(params.sort_a, params.sort_b, (params.radix_pass & 1u) != 0u);
-    var digit = 16u;
-    if i < params.fragment_cap { digit = (atomicLoad(&coverage[input + i * 2u]) >> (params.radix_pass * 4u)) & 15u; }
-    if i < params.fragment_cap {
-        atomicStore(&coverage[params.groups + i], digit);
+    let group = i / 64u;
+    if lane < 32u { atomicStore(&radix_masks[lane], 0u); }
+    workgroupBarrier();
+    if i < fragment_count() {
+        let input = select(params.sort_a, params.sort_b, (params.radix_pass & 1u) != 0u);
+        let digit = (coverage[input + i * 2u] >> (params.radix_pass * 4u)) & 15u;
+        atomicOr(&radix_masks[digit * 2u + lane / 32u], 1u << (lane % 32u));
     }
-    storageBarrier();
-    if lane < 16u {
-        var count = 0u;
-        let group_start = (i / 64u) * 64u;
-        for (var k = 0u; k < min(64u, params.fragment_cap - min(group_start, params.fragment_cap)); k += 1u) {
-            count += select(0u, 1u, atomicLoad(&coverage[params.groups + group_start + k]) == lane);
-        }
-        atomicStore(&coverage[params.histogram + (i / 64u) * 16u + lane], count);
+    workgroupBarrier();
+    if lane < 16u && group * 64u < fragment_count() {
+        let low = atomicLoad(&radix_masks[lane * 2u]);
+        let high = atomicLoad(&radix_masks[lane * 2u + 1u]);
+        coverage[params.histogram + group * 16u + lane] = countOneBits(low) + countOneBits(high);
+        let output = params.groups + group * 64u + lane * 2u;
+        coverage[output] = low;
+        coverage[output + 1u] = high;
     }
 }
+var<workgroup> radix_sums: array<u32, 64>;
+
 @compute @workgroup_size(64)
-fn radix_scan_blocks(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let groups = (params.fragment_cap + 63u) / 64u;
+fn radix_scan_blocks(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+    let groups = (fragment_count() + 63u) / 64u;
     let blocks = (groups + 255u) / 256u;
-    let i = invocation(gid);
-    if i >= blocks * 16u { return; }
+    let i = gid.x + gid.y * 256u;
     let digit = i % 16u;
     let block = i / 16u;
-    var sum = 0u;
-    for (var group = block * 256u; group < min((block + 1u) * 256u, groups); group += 1u) {
-        let index = params.histogram + group * 16u + digit;
-        let count = atomicLoad(&coverage[index]);
-        atomicStore(&coverage[index], sum);
-        sum += count;
+    var counts = vec4<u32>(0u);
+    for (var j = 0u; j < 4u; j += 1u) {
+        let group = block * 256u + lane * 4u + j;
+        if group < groups {
+            counts[j] = coverage[params.histogram + group * 16u + digit];
+        }
     }
-    atomicStore(&coverage[params.groups + params.fragment_cap + i], sum);
+    radix_sums[lane] = counts.x + counts.y + counts.z + counts.w;
+    workgroupBarrier();
+    for (var offset = 1u; offset < 64u; offset *= 2u) {
+        var previous = 0u;
+        if lane >= offset { previous = radix_sums[lane - offset]; }
+        workgroupBarrier();
+        radix_sums[lane] += previous;
+        workgroupBarrier();
+    }
+    var sum = 0u;
+    if lane > 0u { sum = radix_sums[lane - 1u]; }
+    for (var j = 0u; j < 4u; j += 1u) {
+        let group = block * 256u + lane * 4u + j;
+        if group < groups {
+            coverage[params.histogram + group * 16u + digit] = sum;
+        }
+        sum += counts[j];
+    }
+    if lane == 63u && block < blocks {
+        coverage[params.groups + params.fragment_cap + 32u + i] = sum;
+    }
 }
+var<workgroup> radix_totals: array<u32, 16>;
+
 @compute @workgroup_size(64)
-fn radix_prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let digit = invocation(gid);
-    if digit >= 16u { return; }
-    let blocks = (params.fragment_cap + 16383u) / 16384u;
-    let base = params.groups + params.fragment_cap;
-    var sum = 0u;
-    for (var block = 0u; block < blocks; block += 1u) {
-        let index = base + block * 16u + digit;
-        let count = atomicLoad(&coverage[index]);
-        atomicStore(&coverage[index], sum);
-        sum += count;
+fn radix_prefix(@builtin(local_invocation_index) digit: u32) {
+    let blocks = (fragment_count() + 16383u) / 16384u;
+    let base = params.groups + params.fragment_cap + 32u;
+    if digit < 16u {
+        var sum = 0u;
+        for (var block = 0u; block < blocks; block += 1u) {
+            let index = base + block * 16u + digit;
+            let count = coverage[index];
+            coverage[index] = sum;
+            sum += count;
+        }
+        radix_totals[digit] = sum;
     }
-    // Digits, block prefixes and bucket totals occupy disjoint ranges in
-    // the existing 16F-word group arena. F>=3 implies F+16*ceil(F/16384)+16<=16F.
-    atomicStore(&coverage[base + blocks * 16u + digit], sum);
+    workgroupBarrier();
+    if digit < 16u {
+        var start = 0u;
+        for (var previous = 0u; previous < digit; previous += 1u) {
+            start += radix_totals[previous];
+        }
+        // Bucket starts are shared by every fragment in the scatter.
+        coverage[base + blocks * 16u + digit] = start;
+    }
 }
 @compute @workgroup_size(64)
 fn radix_scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
@@ -505,31 +562,32 @@ fn radix_scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_i
     let output = select(params.sort_b, params.sort_a, (params.radix_pass & 1u) != 0u);
     var key = 0xffffffffu;
     var node = 0u;
-    if i < params.fragment_cap {
-        key = atomicLoad(&coverage[input + i * 2u]);
-        node = atomicLoad(&coverage[input + i * 2u + 1u]);
+    if i < fragment_count() {
+        key = coverage[input + i * 2u];
+        node = coverage[input + i * 2u + 1u];
     }
     let digit = (key >> (params.radix_pass * 4u)) & 15u;
-    if i < params.fragment_cap {
-        atomicStore(&coverage[params.groups + i], digit);
-    }
-    storageBarrier();
-    if i >= params.fragment_cap { return; }
-    var rank = 0u;
-    let group_start = (i / 64u) * 64u;
-    for (var k = 0u; k < lane; k += 1u) {
-        rank += select(0u, 1u, atomicLoad(&coverage[params.groups + group_start + k]) == digit);
-    }
-    let blocks = (params.fragment_cap + 16383u) / 16384u;
-    let base = params.groups + params.fragment_cap;
-    var bucket_start = 0u;
-    for (var previous = 0u; previous < digit; previous += 1u) {
-        bucket_start += atomicLoad(&coverage[base + blocks * 16u + previous]);
-    }
-    let block_start = atomicLoad(&coverage[base + (i / 16384u) * 16u + digit]);
-    let dst = bucket_start + block_start + atomicLoad(&coverage[params.histogram + (i / 64u) * 16u + digit]) + rank;
-    atomicStore(&coverage[output + dst * 2u], key);
-    atomicStore(&coverage[output + dst * 2u + 1u], node);
+    if i >= fragment_count() { return; }
+    let histogram = params.histogram + (i / 64u) * 16u;
+    let masks = params.groups + (i / 64u) * 64u + digit * 2u;
+    let low = coverage[masks];
+    let high = coverage[masks + 1u];
+    let preceding = (1u << (lane % 32u)) - 1u;
+    var rank = countOneBits(low & preceding);
+    if lane >= 32u { rank = countOneBits(low) + countOneBits(high & preceding); }
+    let blocks = (fragment_count() + 16383u) / 16384u;
+    let base = params.groups + params.fragment_cap + 32u;
+    let bucket_start = coverage[base + blocks * 16u + digit];
+    let block_start = coverage[base + (i / 16384u) * 16u + digit];
+    let dst = bucket_start + block_start + coverage[histogram + digit] + rank;
+    coverage[output + dst * 2u] = key;
+    coverage[output + dst * 2u + 1u] = node;
+}
+
+fn group_address(index: u32) -> u32 {
+    var slot = index;
+    if params.grid_total < params.fragment_cap { slot = sort_key(index); }
+    return params.groups + slot * 16u;
 }
 
 // One invocation per unique boundary group: link the group's fragments
@@ -539,63 +597,102 @@ fn radix_scatter(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_i
 @compute @workgroup_size(64)
 fn link_groups(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = invocation(gid);
-    if i >= params.fragment_cap { return; }
+    if i >= fragment_count() { return; }
     let key = sort_key(i);
     if key == 0xffffffffu { return; }
     if i > 0u && sort_key(i - 1u) == key { return; }
-    let group = params.groups + i * 16u;
+    let group = group_address(i);
     // Radix scratch occupied this arena in earlier dispatches.
     for (var r = 0u; r < 4u; r += 1u) {
-        atomicStore(&coverage[group + 4u + r], 0u);
+        coverage[group + 4u + r] = 0u;
     }
     var delta = vec4<u32>(0u);
     var end = i;
-    while end < params.fragment_cap && sort_key(end) == key {
+    while end < fragment_count() && sort_key(end) == key {
         let node = sort_node(end);
         let base = params.fragment_base + (node - 1u) * 8u;
-        let row = atomicLoad(&coverage[base + 6u]);
-        let previous = atomicLoad(&coverage[group + 4u + row]);
-        atomicStore(&coverage[group + 4u + row], node);
-        atomicStore(&coverage[base + 4u], previous);
-        delta[row] += atomicLoad(&coverage[base + 7u]);
+        let row = coverage[base + 6u];
+        // The frame memory bound leaves room for the two row bits.
+        // Retain the group address for integration instead of searching again.
+        coverage[base + 6u] = (group << 2u) | row;
+        let previous = coverage[group + 4u + row];
+        coverage[group + 4u + row] = node;
+        coverage[base + 4u] = previous;
+        delta[row] += coverage[base + 7u];
         end += 1u;
     }
     // Integration moves this link to the first consumed edge-head word.
-    atomicStore(&coverage[group], end);
+    coverage[group] = end;
     // `prefix` replaces the change with the outgoing winding.
     for (var r = 0u; r < 4u; r += 1u) {
-        atomicStore(&coverage[group + 12u + r], delta[r]);
+        coverage[group + 12u + r] = delta[r];
     }
 }
 
-// One invocation per four-row strip carries winding across the strip's
-// linked groups. Sorted boundary columns let winding skip arbitrarily wide
-// interiors without allocating or touching their pixels.
+// Local winding scans run in parallel across column tiles. Their four
+// totals occupy the radix workspace until integration consumes the carries.
+@compute @workgroup_size(64)
+fn prefix_tiles(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = invocation(gid);
+    if i >= params.tile_total { return; }
+    let w = work_item(params.strip_total + i);
+    let pi = w.x;
+    let tiles = (paths[pi].grid_w + params.classify_width - 1u) / params.classify_width;
+    let strip = w.y / tiles;
+    let x = (w.y % tiles) * params.classify_width;
+    let rect = grid_rect(pi);
+    var winding = vec4<u32>(0u);
+    if strip * 4u < u32(rect.w) && x < u32(rect.z) {
+        let key0 = paths[pi].grid_base + strip * paths[pi].grid_w;
+        let limit = lower_bound(key0 + min(x + params.classify_width, u32(rect.z)));
+        var current = lower_bound(key0 + x);
+        while current < limit {
+            let group = group_address(current);
+            for (var r = 0u; r < 4u; r += 1u) {
+                coverage[group + 8u + r] = winding[r];
+                winding[r] += coverage[group + 12u + r];
+                coverage[group + 12u + r] = winding[r];
+            }
+            current = coverage[group];
+        }
+    }
+    for (var r = 0u; r < 4u; r += 1u) {
+        coverage[params.tile_prefix + i * 4u + r] = winding[r];
+    }
+}
+
+// Only the short scan across tile totals remains serial per strip.
 @compute @workgroup_size(64)
 fn prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = invocation(gid);
     if i >= params.strip_total { return; }
-    let w = work[params.work_strip_off + i];
+    let w = work_item(i);
     let pi = w.x;
     let rect = grid_rect(pi);
     let sy = w.y * 4u;
     if sy >= u32(rect.w) { return; }
-    let key0 = paths[pi].grid_base + w.y * paths[pi].grid_w;
-    let limit = lower_bound(key0 + u32(rect.z));
-    var current = lower_bound(key0);
+    let tiles = (paths[pi].grid_w + params.classify_width - 1u) / params.classify_width;
+    let base = paths[pi].tile_base + w.y * tiles;
     var winding = vec4<u32>(0u);
     for (var r = 0u; r < min(4u, u32(rect.w) - sy); r += 1u) {
-        winding[r] = atomicLoad(&coverage[2u + paths[pi].row_base + sy + r]);
+        winding[r] = atomicLoad(&work.words[paths[pi].row_base + sy + r]);
     }
-    while current < limit {
-        let group = params.groups + current * 16u;
+    for (var tile = 0u; tile < tiles; tile += 1u) {
+        let offset = params.tile_prefix + (base + tile) * 4u;
         for (var r = 0u; r < 4u; r += 1u) {
-            atomicStore(&coverage[group + 8u + r], winding[r]);
-            winding[r] += atomicLoad(&coverage[group + 12u + r]);
-            atomicStore(&coverage[group + 12u + r], winding[r]);
+            let delta = coverage[offset + r];
+            coverage[offset + r] = winding[r];
+            winding[r] += delta;
         }
-        current = atomicLoad(&coverage[group]);
     }
+}
+
+fn tile_carry_base(pi: u32, key: u32) -> u32 {
+    let local = key - paths[pi].grid_base;
+    let tiles = (paths[pi].grid_w + params.classify_width - 1u) / params.classify_width;
+    let tile = paths[pi].tile_base + (local / paths[pi].grid_w) * tiles
+        + (local % paths[pi].grid_w) / params.classify_width;
+    return params.tile_prefix + tile * 4u;
 }
 
 fn path_for_key(key: u32) -> u32 {
@@ -613,52 +710,64 @@ fn path_for_key(key: u32) -> u32 {
 @compute @workgroup_size(64)
 fn integrate_edges(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = invocation(gid);
-    if i >= params.fragment_cap { return; }
+    if i >= fragment_count() { return; }
     let key = sort_key(i);
     if key == 0xffffffffu { return; }
     let node = sort_node(i);
     let base = params.fragment_base + (node - 1u) * 8u;
-    let row = atomicLoad(&coverage[base + 6u]);
-    let group = params.groups + lower_bound(key) * 16u;
-    let head = atomicLoad(&coverage[group + 4u + row]);
-    let seed = bitcast<i32>(atomicLoad(&coverage[group + 8u + row]));
-    let value = edge_area(node, head, seed, paths[path_for_key(key)].rule);
-    atomicStore(&coverage[base + 7u], bitcast<u32>(value));
+    let edge = fragment(node);
+    if edge.y == edge.w {
+        coverage[base + 7u] = 0u;
+        return;
+    }
+    let location = coverage[base + 6u];
+    let row = location & 3u;
+    let group = location >> 2u;
+    let head = coverage[group + 4u + row];
+    let pi = path_for_key(key);
+    let seed = bitcast<i32>(coverage[group + 8u + row] + coverage[tile_carry_base(pi, key) + row]);
+    let value = edge_area(node, head, seed, paths[pi].rule);
+    coverage[base + 7u] = bitcast<u32>(value);
 }
 
 @compute @workgroup_size(64)
 fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = invocation(gid);
-    if i >= params.fragment_cap { return; }
+    // Token storage aliases the completed radix workspace.
+    if i == 0u { atomicStore(&work.token_count, 0u); }
+    if i >= fragment_count() { return; }
     let key = sort_key(i);
     if key == 0xffffffffu { return; }
     if i > 0u && sort_key(i - 1u) == key { return; }
     let pi = path_for_key(key);
-    let group = params.groups + i * 16u;
-    let next = atomicLoad(&coverage[group]);
+    let group = group_address(i);
+    let next = coverage[group];
+    let carry_base = tile_carry_base(pi, key);
     for (var row = 0u; row < 4u; row += 1u) {
-        let head = atomicLoad(&coverage[group + 4u + row]);
-        let seed = bitcast<i32>(atomicLoad(&coverage[group + 8u + row]));
+        let head = coverage[group + 4u + row];
+        let carry = coverage[carry_base + row];
+        let seed = bitcast<i32>(coverage[group + 8u + row] + carry);
+        coverage[group + 12u + row] += carry;
         var value = inside(seed, paths[pi].rule);
         if head != 0u {
             value = left_area(head, seed, paths[pi].rule);
             var node = head;
             while node != 0u {
-                value += bitcast<f32>(atomicLoad(&coverage[params.fragment_base + (node - 1u) * 8u + 7u]));
+                value += bitcast<f32>(coverage[params.fragment_base + (node - 1u) * 8u + 7u]);
                 node = next_fragment(node);
             }
             value = clamp(value, 0.0, 1.0);
         }
-        atomicStore(&coverage[group + row], bitcast<u32>(value));
+        coverage[group + row] = bitcast<u32>(value);
     }
     // No later stage reads edge-list heads; retain the sparse traversal link.
-    atomicStore(&coverage[group + 4u], next);
+    coverage[group + 4u] = next;
 }
 
 fn group_words(index: u32, offset: u32) -> vec4<u32> {
-    let base = params.groups + index * 16u + offset;
-    return vec4<u32>(atomicLoad(&coverage[base]), atomicLoad(&coverage[base + 1u]),
-        atomicLoad(&coverage[base + 2u]), atomicLoad(&coverage[base + 3u]));
+    let base = group_address(index) + offset;
+    return vec4<u32>(coverage[base], coverage[base + 1u],
+        coverage[base + 2u], coverage[base + 3u]);
 }
 fn winding_values(winding: vec4<u32>, rule: u32) -> vec4<f32> {
     return vec4<f32>(inside(bitcast<i32>(winding.x), rule), inside(bitcast<i32>(winding.y), rule),
@@ -668,12 +777,12 @@ fn winding_values(winding: vec4<u32>, rule: u32) -> vec4<f32> {
 // Tokens describe maximal stretches with one column classification. A
 // long interior gap costs one token, never width*height scratch storage.
 fn token_word(base: u32, token: u32, field: u32) -> u32 { return params.tokens + (base + token) * 3u + field; }
-fn token_get(base: u32, token: u32, field: u32) -> u32 { return atomicLoad(&coverage[token_word(base, token, field)]); }
+fn token_get(base: u32, token: u32, field: u32) -> u32 { return coverage[token_word(base, token, field)]; }
 fn token_class(base: u32, token: u32) -> u32 { return token_get(base, token, 2u); }
 fn append_token(base: u32, count: u32, x0: u32, x1: u32, class_: u32) {
-    atomicStore(&coverage[token_word(base, count, 0u)], x0);
-    atomicStore(&coverage[token_word(base, count, 1u)], x1);
-    atomicStore(&coverage[token_word(base, count, 2u)], class_);
+    coverage[token_word(base, count, 0u)] = x0;
+    coverage[token_word(base, count, 1u)] = x1;
+    coverage[token_word(base, count, 2u)] = class_;
 }
 fn coverage_class(values: vec4<f32>, sh: u32) -> u32 {
     var empty = true;
@@ -688,31 +797,49 @@ fn coverage_class(values: vec4<f32>, sh: u32) -> u32 {
 @compute @workgroup_size(64)
 fn classify(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = invocation(gid);
-    if i >= params.strip_total { return; }
-    let w = work[params.work_strip_off + i];
+    if i >= params.tile_total { return; }
+    let w = work_item(params.strip_total + i);
     let pi = w.x;
-    let strip = w.y;
+    let tiles_per_strip = (paths[pi].grid_w + params.classify_width - 1u) / params.classify_width;
+    let strip = w.y / tiles_per_strip;
+    let tile = w.y % tiles_per_strip;
     let rect = grid_rect(pi);
-    let width = u32(rect.z);
+    var width = u32(rect.z);
     let height = u32(rect.w);
     let sy = strip * 4u;
-    if width == 0u || sy >= height { return; }
+    if width == 0u || sy >= height || tile * params.classify_width >= width { return; }
     if width <= 32u && height <= 32u {
         if strip == 0u { emit_cell(pi, pi, rect, 0u, width, 0u, height, 0u); }
         return;
     }
     let sh = min(4u, height - sy);
     let key0 = paths[pi].grid_base + strip * paths[pi].grid_w;
-    let start = lower_bound(key0);
-    let limit = lower_bound(key0 + width);
-    // Each fragment can contribute at most one boundary column and gap.
-    let base = atomicAdd(&coverage[params.token_counter], (limit - start) * 2u + 1u);
+    let strip_start = lower_bound(key0);
+    let strip_limit = lower_bound(key0 + width);
+    let start = lower_bound(key0 + tile * params.classify_width);
+    let limit = lower_bound(key0 + min((tile + 1u) * params.classify_width, width));
+    if start == limit && (strip_start != strip_limit || tile != 0u) { return; }
+    // A chunk owns its boundary columns and the following gap, so large
+    // full interiors stay single spans even when they cross many tiles.
+    if limit < strip_limit { width = sort_key(limit) - key0; }
+    var columns = 0u;
+    var cursor = start;
+    while cursor < limit {
+        columns += 1u;
+        cursor = coverage[group_address(cursor) + 4u];
+    }
+    let leading = u32(start == strip_start);
+    let base = atomicAdd(&work.token_count, columns * 2u + leading);
     var count = 0u;
     var x = 0u;
+    if start != strip_start { x = sort_key(start) - key0; }
     var index = start;
     var winding = vec4<u32>(0u);
     for (var r = 0u; r < sh; r += 1u) {
-        winding[r] = atomicLoad(&coverage[2u + paths[pi].row_base + sy + r]);
+        winding[r] = atomicLoad(&work.words[paths[pi].row_base + sy + r]);
+    }
+    if start > strip_start {
+        winding = group_words(lower_bound(sort_key(start - 1u)), 12u);
     }
     while index < limit {
         let col = sort_key(index) - key0;
@@ -724,7 +851,7 @@ fn classify(@builtin(global_invocation_id) gid: vec3<u32>) {
         count += 1u;
         x = col + 1u;
         winding = group_words(index, 12u);
-        index = atomicLoad(&coverage[params.groups + index * 16u + 4u]);
+        index = coverage[group_address(index) + 4u];
     }
     if x < width {
         append_token(base, count, x, width, coverage_class(winding_values(winding, paths[pi].rule), sh));
@@ -737,7 +864,7 @@ fn classify(@builtin(global_invocation_id) gid: vec3<u32>) {
         var end = token + 1u;
         while end < count && token_class(base, end) == 1u { end += 1u; }
         if token_get(base, end - 1u, 1u) - token_get(base, token, 0u) < 8u {
-            for (var j = token; j < end; j += 1u) { atomicStore(&coverage[token_word(base, j, 2u)], 2u); }
+            for (var j = token; j < end; j += 1u) { coverage[token_word(base, j, 2u)] = 2u; }
         }
         token = end;
     }
@@ -748,7 +875,7 @@ fn classify(@builtin(global_invocation_id) gid: vec3<u32>) {
         while end < count && token_class(base, end) == 0u { end += 1u; }
         if token > 0u && end < count && token_class(base, token - 1u) == 2u && token_class(base, end) == 2u
             && token_get(base, end - 1u, 1u) - token_get(base, token, 0u) <= 8u {
-            for (var j = token; j < end; j += 1u) { atomicStore(&coverage[token_word(base, j, 2u)], 2u); }
+            for (var j = token; j < end; j += 1u) { coverage[token_word(base, j, 2u)] = 2u; }
         }
         token = end;
     }
@@ -813,7 +940,7 @@ fn emit_span(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, sy: u32, s
 }
 
 // Classification only reserves a cell's instance slot and texel words;
-// `fill_cells` writes the texels with one invocation per cell, so a strip's
+// `fill_cells` writes the texels with one workgroup per cell, so a strip's
 // cells no longer serialize behind its owner invocation.
 fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y1: u32, interior: u32) {
     let slot = atomicAdd(&paths[path_i].atom[4], 1u);
@@ -825,21 +952,36 @@ fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y
     emit_instance(pi, slot, b, vec2<u32>(paths[pi].texel_base + tex_off, cw), KIND_GLYPH, interior);
 }
 
-// One invocation per reserved instance slot. A cell's geometry is read back
-// from its instance exactly as the raster decodes it, so the texels land
-// where the fetch reads them; spans and unused slots return at once.
+// Compact the per-path instance counts into a dispatch domain. Geometry
+// stays in each path's reserved range; only the workgroup indices are packed.
 @compute @workgroup_size(64)
-fn fill_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = invocation(gid);
+fn prepare_cells(@builtin(local_invocation_index) lane: u32) {
+    if lane != 0u { return; }
+    var total = 0u;
+    for (var pi = 0u; pi < params.path_count; pi += 1u) {
+        atomicStore(&paths[pi].atom[7], total);
+        total += atomicLoad(&paths[pi].atom[4]);
+    }
+    let base = params.path_count * 13u + 9u;
+    args[base] = min(total, 256u);
+    args[base + 1u] = (total + 255u) / 256u;
+    args[base + 2u] = 1u;
+}
+
+// One workgroup per emitted instance. Spans return without writing texels.
+@compute @workgroup_size(64)
+fn fill_cells(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_index) lane_index: u32) {
+    let i = gid.x + gid.y * 256u;
     var lo = 0u;
     var hi = params.path_count;
     while lo + 1u < hi {
         let mid = (lo + hi) / 2u;
-        if paths[mid].inst_base <= i { lo = mid; } else { hi = mid; }
+        if atomicLoad(&paths[mid].atom[7]) <= i { lo = mid; } else { hi = mid; }
     }
     let pi = lo;
-    if i - paths[pi].inst_base >= atomicLoad(&paths[pi].atom[4]) { return; }
-    let dst = (params.inst_origin + i) * 17u;
+    let local = i - atomicLoad(&paths[pi].atom[7]);
+    if local >= atomicLoad(&paths[pi].atom[4]) { return; }
+    let dst = (params.inst_origin + paths[pi].inst_base + local) * 17u;
     if instances[dst + 16u].x == KIND_SPAN { return; }
     let rect = grid_rect(pi);
     let bounds = bitcast<vec4<f32>>(instances[dst + 2u]);
@@ -853,13 +995,16 @@ fn fill_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
     let stored_width = u32(origin.y) - (interior_end - interior_start);
     let tex = u32(origin.x);
     let words = (stored_width * ch + 3u) / 4u;
-    // Each row walks sparse boundary groups once, including jumps over the
-    // implicit full interval. No global binary search is needed per texel.
+    // Each lane walks a contiguous range so adjacent writes reuse the sparse
+    // cursor without traversing columns assigned to other lanes.
     var previous_row = 0xffffffffu;
     var index = 0u;
     var winding = 0u;
     var key0 = 0u;
-    for (var word = 0u; word < words; word += 1u) {
+    let words_per_lane = (words + 63u) / 64u;
+    let first_word = lane_index * words_per_lane;
+    let last_word = min(first_word + words_per_lane, words);
+    for (var word = first_word; word < last_word; word += 1u) {
         var packed = 0u;
         for (var lane = 0u; lane < 4u; lane += 1u) {
             let pixel = word * 4u + lane;
@@ -872,22 +1017,22 @@ fn fill_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
                 if row != previous_row {
                     key0 = paths[pi].grid_base + strip * paths[pi].grid_w;
                     index = lower_bound(key0 + x0 + col);
-                    winding = atomicLoad(&coverage[2u + paths[pi].row_base + y0 + row]);
+                    winding = atomicLoad(&work.words[paths[pi].row_base + y0 + row]);
                     if index > 0u && sort_key(index - 1u) >= key0 {
                         let previous = lower_bound(sort_key(index - 1u));
-                        winding = atomicLoad(&coverage[params.groups + previous * 16u + 12u + strip_row]);
+                        winding = coverage[group_address(previous) + 12u + strip_row];
                     }
                     previous_row = row;
                 }
                 let key = key0 + x0 + col;
-                while index < params.fragment_cap && sort_key(index) < key {
-                    let group = params.groups + index * 16u;
-                    winding = atomicLoad(&coverage[group + 12u + strip_row]);
-                    index = atomicLoad(&coverage[group + 4u]);
+                while index < fragment_count() && sort_key(index) < key {
+                    let group = group_address(index);
+                    winding = coverage[group + 12u + strip_row];
+                    index = coverage[group + 4u];
                 }
                 var v = inside(bitcast<i32>(winding), paths[pi].rule);
-                if index < params.fragment_cap && sort_key(index) == key {
-                    v = bitcast<f32>(atomicLoad(&coverage[params.groups + index * 16u + strip_row]));
+                if index < fragment_count() && sort_key(index) == key {
+                    v = bitcast<f32>(coverage[group_address(index) + strip_row]);
                 }
                 let q = u32(clamp(v, 0.0, 1.0) * 255.0 + 0.5);
                 packed |= q << (lane * 8u);
@@ -928,4 +1073,64 @@ fn emit_args(@builtin(global_invocation_id) gid: vec3<u32>) {
     args[base + 10u] = n;
     args[base + 11u] = 0u;
     args[base + 12u] = si;
+}
+
+// Cached geometry uses two vec4s per reserved instance, after one count
+// header per path. Paint, clipping, depth and frame addresses stay current.
+@compute @workgroup_size(64)
+fn store_cache(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
+    let i = gid.x + gid.y * 256u;
+    var pi = 0u;
+    var hi = params.path_count;
+    while pi + 1u < hi {
+        let mid = (pi + hi) / 2u;
+        if atomicLoad(&paths[mid].atom[7]) <= i { pi = mid; } else { hi = mid; }
+    }
+    let local = i - atomicLoad(&paths[pi].atom[7]);
+    let count = atomicLoad(&paths[pi].atom[4]);
+    if local >= count { return; }
+    let slot = paths[pi].inst_base + local;
+    let src = (params.inst_origin + slot) * 17u;
+    let dst = params.path_count + slot * 2u;
+    let kind = instances[src + 16u].x;
+    let uv = bitcast<vec2<f32>>(instances[src + 14u].xy);
+    let interior = bitcast<vec2<f32>>(instances[src + 3u].xy);
+    let packed = u32(interior.x) | (u32(interior.y) << 16u);
+    if lane == 0u {
+        if local == 0u { segments[pi] = bitcast<vec4<f32>>(vec4<u32>(count, 0u, 0u, 0u)); }
+        segments[dst] = bitcast<vec4<f32>>(instances[src + 2u]);
+        segments[dst + 1u] = bitcast<vec4<f32>>(vec4<u32>(u32(uv.x), u32(uv.y), packed, kind));
+    }
+    if kind == KIND_SPAN { return; }
+    let bounds = bitcast<vec4<f32>>(instances[src + 2u]);
+    let words = ((u32(uv.y) - (u32(interior.y) - u32(interior.x))) * u32(bounds.w - bounds.y) + 3u) / 4u;
+    for (var word = lane; word < words; word += 64u) {
+        coverage[u32(uv.x) + word] = texels[u32(uv.x) + word];
+    }
+}
+
+@compute @workgroup_size(64)
+fn replay_cache(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = invocation(gid);
+    var pi = 0u;
+    var hi = params.path_count;
+    while pi + 1u < hi {
+        let mid = (pi + hi) / 2u;
+        if paths[mid].inst_base <= i { pi = mid; } else { hi = mid; }
+    }
+    let local = i - paths[pi].inst_base;
+    let count = bitcast<vec4<u32>>(segments[pi]).x;
+    if local == 0u { atomicStore(&paths[pi].atom[4], count); }
+    if local >= count { return; }
+    let src = params.path_count + i * 2u;
+    let shift = bitcast<vec2<f32>>(vec2<u32>(paths[pi]._pad[0], paths[pi]._pad[1]));
+    let bounds = segments[src] + shift.xyxy;
+    let data = bitcast<vec4<u32>>(segments[src + 1u]);
+    emit_instance(pi, local, bounds, data.xy, select(KIND_GLYPH, KIND_SPAN, data.w == KIND_SPAN), data.z);
+}
+
+@compute @workgroup_size(64)
+fn replay_texels(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = invocation(gid);
+    if i < params.texel_words { texels[i] = coverage[i]; }
 }

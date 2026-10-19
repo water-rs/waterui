@@ -212,6 +212,7 @@ fn standalone_modules_emit() {
     for (name, source) in [
         ("projective", format!("{SHARED}\n{BLEND}\n{PROJECTIVE}")),
         ("mip", MIP.to_owned()),
+        ("coverage", include_str!("../src/render/coverage.wgsl").to_owned()),
         ("resolve", RESOLVE.to_owned()),
     ] {
         let module = wgsl::parse_str(&source).unwrap_or_else(|e| panic!("{name}: {e}"));

@@ -7,7 +7,7 @@ use std::ops::Range;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::MAX_PASS_INSTANCES;
-use super::prepared::{ClipShape, Op, Outline, PaintData, ResolvedPaint, box_shape};
+use super::prepared::{ClipShape, Op, OutlineRef, PaintData, ResolvedPaint, box_shape};
 use cherenkov::kurbo::{self, Affine, BezPath, PathEl, Point, Rect, Vec2};
 use cherenkov::{FillRule, GlyphRun, ShapeData, WorkingColor};
 
@@ -634,6 +634,16 @@ impl ContentData {
         previous
     }
 
+    pub fn gpu_input_bytes(&self) -> u64 {
+        (self.storage.gpu_paths.capacity() * std::mem::size_of::<(usize, PreparedGpu)>()
+            + self
+                .storage
+                .gpu_paths
+                .values()
+                .map(|entry| entry.path.elements.len() * std::mem::size_of::<path::GpuElement>())
+                .sum::<usize>()) as u64
+    }
+
     pub fn into_picture(self) -> cherenkov::Picture {
         self.retained.into_picture()
     }
@@ -676,6 +686,7 @@ impl ContentData {
 /// A layer's device data. Leaf ranges remain independent for dirty updates.
 #[derive(Default)]
 pub struct EmissionStorage {
+    gpu_paths: FxHashMap<usize, PreparedGpu>,
     templates: Vec<InstanceTemplate>,
     covers: Vec<Cover>,
     pub(crate) instances: Vec<RetainedInstance>,
@@ -685,7 +696,26 @@ pub struct EmissionStorage {
     pub(crate) refs: Vec<(u32, u64)>,
 }
 
+struct PreparedGpu {
+    content: u64,
+    linear: [u64; 4],
+    local_bounds: Rect,
+    path: path::GpuPath,
+}
+
 impl EmissionStorage {
+    fn retain_gpu_paths(&mut self, ops: &[Op]) {
+        self.gpu_paths.retain(|index, _| {
+            matches!(
+                ops.get(*index),
+                Some(Op::Path {
+                    gpu_candidate: true,
+                    ..
+                })
+            )
+        });
+    }
+
     /// Reclaim obsolete ranges after patches without rebuilding valid leaves.
     fn compact(&mut self, emissions: &mut [Realization<Emission>]) {
         if self.templates.is_empty() {
@@ -712,6 +742,7 @@ impl EmissionStorage {
             return;
         }
         let mut storage = Self {
+            gpu_paths: std::mem::take(&mut self.gpu_paths),
             templates: Vec::with_capacity(templates),
             covers: Vec::with_capacity(covers),
             instances: Vec::with_capacity(instances),
@@ -1469,7 +1500,7 @@ impl<'a> Lowering<'a> {
             projective_draws: 0,
             surface: size,
             has_compute,
-            coverage_route: path::CoverageRoute::Sweep,
+            coverage_route: path::CoverageRoute::Automatic,
         }
     }
 
@@ -3841,6 +3872,7 @@ impl<'a> Lowering<'a> {
         }
         if let Some(content) = caches.get_mut(&id) {
             let (ops, emissions, source) = content.retained.prepared_source();
+            content.storage.retain_gpu_paths(ops);
             content.storage.compact(emissions);
             let changed = self.ops(
                 source,
@@ -3979,7 +4011,7 @@ impl<'a> Lowering<'a> {
                 Op::End => unreachable!("paired scopes consume their ends"),
                 op => {
                     changed |= self.leaf(
-                        op,
+                        (i, op),
                         ops.get(i + 1),
                         &mut emissions[i],
                         storage,
@@ -4005,13 +4037,14 @@ impl<'a> Lowering<'a> {
     /// clipped instances' shader variant.
     fn leaf(
         &mut self,
-        op: &Op,
+        indexed: (usize, &Op),
         next: Option<&Op>,
         cache: &mut Realization<Emission>,
         storage: &mut EmissionStorage,
         glyphs: &GlyphContext<'_>,
         source: &cherenkov::DisplayList,
     ) -> Result<bool, RenderError> {
+        let (index, op) = indexed;
         if self.has_compute
             && self.coverage_route == path::CoverageRoute::Gpu
             && matches!(op, Op::Path { .. })
@@ -4043,11 +4076,121 @@ impl<'a> Lowering<'a> {
             );
             return Ok(false);
         }
+        // A valid CPU realization memoizes the same content/placement decision.
+        // GPU emissions are frame-local and never enter this cache.
+        if self.has_compute
+            && self.coverage_route == path::CoverageRoute::Automatic
+            && matches!(
+                op,
+                Op::Path {
+                    gpu_candidate: true,
+                    ..
+                }
+            )
+            && self.automatic_gpu_leaf(op, source, &mut storage.gpu_paths, index)?
+        {
+            cache.valid = false;
+            return Ok(true);
+        }
         if self.clip.is_some() {
             self.realize_clipped_leaf(op, cover, cache, storage, glyphs, source)?;
         } else {
             self.realize_leaf(op, cover, cache, storage, glyphs, source)?;
         }
+        Ok(true)
+    }
+
+    /// Select and emit frame-local coverage before CPU realization retention.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "surface sizes fit u32"
+    )]
+    #[inline(never)]
+    fn automatic_gpu_leaf(
+        &mut self,
+        op: &Op,
+        source: &cherenkov::DisplayList,
+        cached: &mut FxHashMap<usize, PreparedGpu>,
+        index: usize,
+    ) -> Result<bool, RenderError> {
+        let Op::Path {
+            local,
+            rule,
+            outline,
+            paint,
+            ..
+        } = op
+        else {
+            return Ok(false);
+        };
+        let outline = outline.get(source);
+        let raster = self.transform * *local;
+        let tolerance = path::FLATTEN / path::sigma_max(raster).max(1e-12);
+        let content = outline.content(tolerance);
+        let coefficients = raster.as_coeffs();
+        let linear = [
+            coefficients[0],
+            coefficients[1],
+            coefficients[2],
+            coefficients[3],
+        ];
+        let linear_bits = linear.map(f64::to_bits);
+        if cached
+            .get(&index)
+            .is_none_or(|entry| entry.content != content || entry.linear != linear_bits)
+        {
+            let local_path = outline.build(tolerance);
+            cached.insert(
+                index,
+                PreparedGpu {
+                    content,
+                    linear: linear_bits,
+                    local_bounds: kurbo::Shape::bounding_box(&local_path),
+                    path: path::prepare_gpu(
+                        local_path.elements(),
+                        Affine::new([linear[0], linear[1], linear[2], linear[3], 0.0, 0.0]),
+                        (f64::from(self.width), f64::from(self.height)),
+                    ),
+                },
+            );
+        }
+        let prepared = cached
+            .get(&index)
+            .expect("prepared GPU geometry")
+            .path
+            .translated(
+                Vec2::new(coefficients[4], coefficients[5]),
+                (f64::from(self.width), f64::from(self.height)),
+            );
+        if !prepared.prefers_gpu() {
+            return Ok(false);
+        }
+        let shader_data = match paint {
+            ResolvedPaint::Shader(shader) => Some(
+                self.shader_paint(
+                    shader,
+                    cached
+                        .get(&index)
+                        .expect("prepared GPU geometry")
+                        .local_bounds,
+                    raster,
+                )?,
+            ),
+            _ => None,
+        };
+        self.set_image(None);
+        let transform = self.transform;
+        self.transform = raster;
+        self.emit_gpu_path(
+            content,
+            *rule,
+            prepared,
+            paint,
+            shader_data.as_ref(),
+            (self.width as u32, self.height as u32),
+        );
+        self.transform = transform;
         Ok(true)
     }
 
@@ -4353,10 +4496,6 @@ impl<'a> Lowering<'a> {
         reason = "preserve dev inlining of common leaf realization as capabilities grow"
     )]
     #[inline(always)]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "the existing realization match handles all retained operation variants"
-    )]
     fn realize(
         &mut self,
         op: &Op,
@@ -4421,35 +4560,27 @@ impl<'a> Lowering<'a> {
                 rule,
                 outline,
                 paint,
+                ..
             } => {
                 self.transform *= *local;
-                match outline {
-                    Outline::Fill { elements, content } => self.path(
-                        *content,
+                match outline.get(source) {
+                    OutlineRef::Fill { elements, content } => self.path(
+                        content,
                         *rule,
                         || BezPath::from_vec(elements.to_vec()),
                         paint,
                         glyphs,
                     )?,
-                    Outline::Stroke { shape, stroke } => {
-                        self.stroke_path(shape, stroke, *rule, paint, glyphs)?;
-                    }
-                    Outline::Source { command, content } => match &source.commands()[*command] {
-                        cherenkov::Command::Fill {
-                            shape: ShapeData::Path { elements, .. },
-                            ..
-                        } => self.path(
-                            content.expect("prepared fill has a hash"),
+                    outline @ OutlineRef::Stroke { .. } => {
+                        let tolerance = path::FLATTEN / path::sigma_max(self.transform).max(1e-12);
+                        self.path(
+                            outline.content(tolerance),
                             *rule,
-                            || BezPath::from_vec(elements.to_vec()),
+                            || outline.build(tolerance),
                             paint,
                             glyphs,
-                        )?,
-                        cherenkov::Command::Stroke { shape, stroke, .. } => {
-                            self.stroke_path(shape, stroke, *rule, paint, glyphs)?;
-                        }
-                        _ => unreachable!("prepared outline keeps its source kind"),
-                    },
+                        )?;
+                    }
                 }
             }
             Op::Glyphs { local, run, paint } => {
@@ -4466,27 +4597,6 @@ impl<'a> Lowering<'a> {
             _ => unreachable!("scope is composed, never realized as a leaf"),
         }
         Ok(())
-    }
-
-    fn stroke_path(
-        &mut self,
-        shape: &ShapeData,
-        stroke: &cherenkov::kurbo::Stroke,
-        rule: FillRule,
-        paint: &ResolvedPaint,
-        glyphs: &GlyphContext<'_>,
-    ) -> Result<(), RenderError> {
-        let tol = path::FLATTEN / path::sigma_max(self.transform).max(1e-12);
-        self.path(
-            path::hash_stroke(shape, stroke, tol),
-            rule,
-            || {
-                let path = path::shape_path(shape, tol);
-                kurbo::stroke(path, stroke, &kurbo::StrokeOpts::default(), tol)
-            },
-            paint,
-            glyphs,
-        )
     }
 
     #[cold]
@@ -4804,9 +4914,9 @@ impl<'a> Lowering<'a> {
         // from the CPU atlas, so it decides before the hit checks.
         if self.has_compute && self.coverage_route == path::CoverageRoute::Gpu {
             self.path_gpu(
+                content,
                 rule,
-                shader_path,
-                make.take(),
+                &shader_path.unwrap_or_else(|| make.take().expect("path factory")()),
                 paint,
                 shader_data.as_ref(),
                 surface,
@@ -4931,22 +5041,36 @@ impl<'a> Lowering<'a> {
     /// into the instance buffer's tail behind indirect arguments.
     fn path_gpu(
         &mut self,
+        content: u64,
         rule: FillRule,
-        shader_path: Option<BezPath>,
-        make: Option<impl FnOnce() -> BezPath>,
+        local: &BezPath,
         paint: &ResolvedPaint,
         shader_data: Option<&PaintData>,
         surface: (u32, u32),
     ) {
-        let local = shader_path.unwrap_or_else(|| make.expect("path factory")());
-        let (elements, bound) = path::gpu_bound(
+        let prepared = path::prepare_gpu(
             local.elements(),
             self.transform,
             (f64::from(surface.0), f64::from(surface.1)),
         );
+        self.emit_gpu_path(content, rule, prepared, paint, shader_data, surface);
+    }
+
+    /// Consume the same encoded path whose bounds the route selector inspected.
+    fn emit_gpu_path(
+        &mut self,
+        content: u64,
+        rule: FillRule,
+        prepared: path::GpuPath,
+        paint: &ResolvedPaint,
+        shader_data: Option<&PaintData>,
+        surface: (u32, u32),
+    ) {
+        let bound = prepared.bound;
         if bound.empty {
             return;
         }
+        self.paths += 1;
         let mut template = self.gpu_template(paint, shader_data);
         template.bounds = bound.rect;
         self.set_variant(&template);
@@ -4964,12 +5088,12 @@ impl<'a> Lowering<'a> {
         let template = Box::new(template);
         let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
         self.pending.push(PendingRaster::GpuPath {
+            content,
             rule: rule as u32,
             raster: self.transform,
             surface,
             template,
-            elements,
-            bound,
+            path: prepared,
         });
         self.push_gpu_range(pending);
     }
@@ -5862,6 +5986,104 @@ fn clip_region(clip: Option<DeviceClip>, width: u32, height: u32) -> [u32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_coverage_keeps_gpu_emissions_frame_local() {
+        use std::sync::Arc;
+
+        let (device, _queue) = device_and_queue().expect("coverage test device");
+        let atlas = Atlas::new(&device, u64::MAX);
+        let fonts = FxHashMap::default();
+        let images = FxHashMap::default();
+        let bitmaps = FxHashMap::default();
+        let content = FxHashMap::default();
+        let glyphs = GlyphContext {
+            atlas: &atlas,
+            live_stamp: atlas.live_stamp(),
+            fonts: &fonts,
+            images: &images,
+            bitmaps: &bitmaps,
+            content: &content,
+        };
+        for (has_compute, rectangles, gpu) in
+            [(true, 1, false), (true, 1024, true), (false, 1024, false)]
+        {
+            let mut geometry = BezPath::new();
+            for index in 0..rectangles {
+                let x = f64::from(index % 32) * 3.0;
+                let y = f64::from(index / 32) * 3.0;
+                geometry.move_to((x, y));
+                geometry.line_to((x + 2.0, y));
+                geometry.line_to((x + 2.0, y + 2.0));
+                geometry.line_to((x, y + 2.0));
+                geometry.close_path();
+            }
+            let elements = geometry.into_iter().collect::<Vec<_>>();
+            let op = Op::Path {
+                local: Affine::IDENTITY,
+                rule: FillRule::NonZero,
+                gpu_candidate: elements.len() >= path::GPU_ROUTE_MIN_ELEMENTS,
+                outline: super::super::prepared::Outline::Fill {
+                    content: path::hash_elements(&elements, FillRule::NonZero as u64),
+                    elements: elements.into(),
+                },
+                paint: ResolvedPaint::Solid([1.0; 4]),
+            };
+            let mut cache = Realization::default();
+            let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
+            let mut previous_geometry = None;
+            // CPU pending atlas patches are applied by the renderer before reuse.
+            // GPU paths have no retained realization and can be lowered anew.
+            for _ in 0..if gpu { 2 } else { 1 } {
+                retained.storage.retain_gpu_paths(std::slice::from_ref(&op));
+                let mut frame = Frame::default();
+                let mut anchors = AnchorScratch::default();
+                let mut raster = path::EmitScratch::new();
+                let mut lowering = Lowering::new(
+                    &mut frame,
+                    (128, 128),
+                    &mut anchors,
+                    &mut raster,
+                    has_compute,
+                );
+                lowering.begin_pass(Target::Part(0), None);
+                lowering
+                    .leaf(
+                        (0, &op),
+                        None,
+                        &mut cache,
+                        &mut retained.storage,
+                        &glyphs,
+                        &cherenkov::DisplayList::default(),
+                    )
+                    .expect("automatic coverage");
+                let tasks = lowering
+                    .pending
+                    .iter()
+                    .filter(|task| matches!(task, PendingRaster::GpuPath { .. }))
+                    .count();
+                assert_eq!(
+                    tasks,
+                    usize::from(gpu),
+                    "compute={has_compute}, rectangles={rectangles}"
+                );
+                assert_eq!(lowering.paths_rasterized(), 1);
+                assert_eq!(cache.valid, !gpu);
+                if gpu {
+                    assert!(cache.data.is_none(), "GPU emissions cannot be retained");
+                    if let Some(previous) = &previous_geometry {
+                        assert!(
+                            Arc::ptr_eq(previous, &retained.storage.gpu_paths[&0].path.elements),
+                            "re-recording unchanged content must reuse prepared geometry"
+                        );
+                    }
+                    previous_geometry =
+                        Some(Arc::clone(&retained.storage.gpu_paths[&0].path.elements));
+                    retained.replace(cherenkov::Picture::record(|_| {}));
+                }
+            }
+        }
+    }
 
     #[test]
     fn cached_margin_preserves_exact_transform_results() {

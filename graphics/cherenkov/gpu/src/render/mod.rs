@@ -19,6 +19,8 @@ mod instance;
 mod lower;
 mod paint;
 mod path;
+#[cfg(test)]
+pub use path::CoverageRoute;
 pub mod planes;
 mod prepared;
 pub mod present;
@@ -585,6 +587,16 @@ impl BackdropGroupState {
 }
 
 impl SurfaceState {
+    fn lowering_bytes(&self) -> u64 {
+        self.anchor_scratch.heap_bytes()
+            + self.raster_scratch.heap_bytes()
+            + self
+                .layers
+                .values()
+                .map(ContentData::gpu_input_bytes)
+                .sum::<u64>()
+    }
+
     /// Engine part `n`'s texture: `target` for part 0.
     fn part(&self, n: u32) -> (&wgpu::TextureView, &wgpu::Texture) {
         match n {
@@ -3966,6 +3978,7 @@ impl Renderer for GpuRenderer {
     fn trim(&mut self, pressure: Pressure) {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("trim");
+        self.gpu_cov.trim();
         if let Some(blur) = &mut self.shadow_blur {
             blur.trim();
         }
@@ -4224,9 +4237,7 @@ impl Renderer for GpuRenderer {
             + self
                 .surfaces
                 .values()
-                .map(|surface| {
-                    surface.anchor_scratch.heap_bytes() + surface.raster_scratch.heap_bytes()
-                })
+                .map(SurfaceState::lowering_bytes)
                 .sum::<u64>()
             + self
                 .surfaces
@@ -6369,14 +6380,14 @@ impl GpuRenderer {
                 .features()
                 .contains(wgpu::Features::INDIRECT_FIRST_INSTANCE);
         #[cfg(test)]
-        if self.config.force_gpu_coverage {
+        if let Some(route) = self.config.coverage_route {
             assert!(
-                has_compute,
+                route != path::CoverageRoute::Gpu || has_compute,
                 "forced GPU coverage requires compute and indirect first-instance support"
             );
-            return (has_compute, path::CoverageRoute::Gpu);
+            return (has_compute, route);
         }
-        (has_compute, path::CoverageRoute::Sweep)
+        (has_compute, path::CoverageRoute::Automatic)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -7535,16 +7546,16 @@ impl GpuRenderer {
                 Ok(PendingOrigin::None)
             }
             PendingRaster::GpuPath {
+                content,
                 rule,
                 raster,
                 surface,
                 template,
-                elements,
-                bound,
+                path,
             } => {
                 let index = self
                     .gpu_cov
-                    .push(rule, raster, surface, &template, &elements, bound)?;
+                    .push(content, rule, raster, surface, &template, &path)?;
                 Ok(PendingOrigin::Gpu(index))
             }
         }
