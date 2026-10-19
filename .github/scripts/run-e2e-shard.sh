@@ -323,15 +323,17 @@ capture_settled() {
              >/dev/null || compare_rc=$?
         # Only a comparison that ran to completion may steer the anchors:
         # exit 0 = frames agree within budget, exit 1 = a real over-budget
-        # diff restarts the window. Exit 2 (decode/write error), 124
-        # (deadline kill), or any other status is a command failure — no
-        # anchor update, no earlier-frame substitution.
+        # diff restarts the window; exit 3 = the chrome band flipped
+        # materialisation state between frames, which is still a screen
+        # change, so the window restarts the same way. Exit 2 (decode/write
+        # error), 124 (deadline kill), or any other status is a command
+        # failure — no anchor update, no earlier-frame substitution.
         if (( compare_rc == 0 )); then
           if (( SECONDS - window_start >= SETTLE_WINDOW_S )); then
             rm -f "${anchor}"
             return 0
           fi
-        elif (( compare_rc == 1 )); then
+        elif (( compare_rc == 1 || compare_rc == 3 )); then
           # The screen changed: the window restarts here.
           cp "${target}" "${anchor}"
           window_start=${SECONDS}
@@ -968,9 +970,18 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     report+=("| \`${example}\` | launched (no baseline yet) | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
   else
     diff_image="${shots_dir}/${platform}-${example}-diff.png"
-    if compare_out="$("${swift_tools_dir}/compare-screenshots" \
-        compare "${baseline}" "${shot}" "${diff_image}")"; then
+    compare_rc=0
+    compare_out="$("${swift_tools_dir}/compare-screenshots" \
+        compare "${baseline}" "${shot}" "${diff_image}")" || compare_rc=$?
+    if (( compare_rc == 0 )); then
       report+=("| \`${example}\` | baseline match | ${compare_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+    elif (( compare_rc == 3 )); then
+      # The capture landed in the other tab-bar materialisation state
+      # than the baseline — the platform's two-state chrome render, not
+      # a backend regression (#1478). The content region already compared
+      # within budget for the call to have been made.
+      echo "::warning::baseline chrome state-mismatch for ${example}: ${compare_out}"
+      report+=("| \`${example}\` | chrome state-mismatch (platform flake) | ${compare_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
     else
       echo "::error::Screenshot regression for ${example}: ${compare_out}"
       failures+=("${example}: regression")
@@ -1015,23 +1026,36 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
       # artifacts; a human reviews them — GPU-rendered output is never
       # pixel-compared.
       report+=("| \`${example}\` (parity) | VISUAL REVIEW REQUIRED | pair in e2e-shots artifacts | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-    elif parity_out="$(DIFF_BUDGET="${budget}" \
-        "${swift_tools_dir}/compare-screenshots" \
-        compare "${ref_shot}" "${shot}" "${parity_diff}" 2>&1)"; then
-      parity_fraction="${parity_out#compare: }"
-      parity_fraction="${parity_fraction%% *}"
-      if [[ "${record}" == "1" ]]; then
-        mkdir -p "${record_dir}/parity"
-        printf '%s\n' "${parity_fraction}" \
-          > "${record_dir}/parity/${platform}-${example}.txt"
-        report+=("| \`${example}\` (parity) | recorded ${parity_fraction} | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-      else
-        report+=("| \`${example}\` (parity) | within budget ${budget} | ${parity_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
-      fi
     else
-      echo "::error::SwiftUI parity regression for ${example}: ${parity_out} (budget ${budget})"
-      failures+=("${example}: parity regression")
-      report+=("| \`${example}\` (parity) | drift over budget ${budget} | ${parity_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      parity_rc=0
+      parity_out="$(DIFF_BUDGET="${budget}" \
+        "${swift_tools_dir}/compare-screenshots" \
+        compare "${ref_shot}" "${shot}" "${parity_diff}" 2>&1)" || parity_rc=$?
+      if (( parity_rc == 0 )); then
+        parity_fraction="${parity_out#compare: }"
+        parity_fraction="${parity_fraction%% *}"
+        if [[ "${record}" == "1" ]]; then
+          mkdir -p "${record_dir}/parity"
+          printf '%s\n' "${parity_fraction}" \
+            > "${record_dir}/parity/${platform}-${example}.txt"
+          report+=("| \`${example}\` (parity) | recorded ${parity_fraction} | — | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+        else
+          report+=("| \`${example}\` (parity) | within budget ${budget} | ${parity_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+        fi
+      elif (( parity_rc == 3 )); then
+        # The pair landed in different tab-bar materialisation states —
+        # the iOS 26 simulator's stable two-state chrome render (#1478).
+        # Both states are the platform's, seen on the reference host as
+        # well, so a cross-state pair reports the platform flake rather
+        # than a backend regression; the content region already compared
+        # within budget for the call to have been made.
+        echo "::warning::SwiftUI parity state-mismatch for ${example}: ${parity_out} (budget ${budget})"
+        report+=("| \`${example}\` (parity) | chrome state-mismatch (platform flake) | ${parity_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      else
+        echo "::error::SwiftUI parity regression for ${example}: ${parity_out} (budget ${budget})"
+        failures+=("${example}: parity regression")
+        report+=("| \`${example}\` (parity) | drift over budget ${budget} | ${parity_out#compare: } | ${fp_cell} | ${size_cell} | ${mem_cell} |")
+      fi
     fi
   fi
 
