@@ -2275,11 +2275,12 @@ impl HydrolysisRenderer {
         if let Some(target) = self.hit_test.active_pointer_target.take()
             && target.bounds.contains(point)
         {
-            let action_changed = (target.action.borrow_mut())(self, point, env);
-            if action_changed {
-                SemanticCore::mark_owner(&target.owner, Dirty::LAYOUT);
-            }
-            changed |= action_changed;
+            // The action's verdict is "the tap landed", not a layout
+            // input: whatever it writes marks its own readers through the
+            // signal guards, so an ordinary activation marks nothing and
+            // counts nothing toward this release's `changed`
+            // (water-rs/waterui#2941).
+            let _ = (target.action.borrow_mut())(self, point, env);
         }
         let drop_changed = self.finish_active_drag(point, env);
         changed |= drop_changed;

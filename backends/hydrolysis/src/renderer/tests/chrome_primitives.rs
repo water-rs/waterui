@@ -4,7 +4,7 @@
 //! operands — no chrome recording, no theme draw call.
 
 use core::time::Duration;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -184,4 +184,75 @@ fn interaction_cycle_records_chrome_once() {
     );
     assert_eq!(chrome.recordings(), 2, "press and release record no chrome");
     assert_eq!(draws.get(), 0, "the theme never draws the button's chrome");
+}
+
+/// water-rs/waterui#2941: a button tap's action reports only "the
+/// activation landed" — an ordinary action writes no signals, so the
+/// release frame raises no mark and does no tree work: no layout pass,
+/// no recorded contents, no semantic builds. Whatever the action does
+/// write marks its own readers, so a real change still relayouts.
+#[test]
+fn tap_release_needs_no_tree_pass() {
+    // A static tint, not a ripple: the press and release need no
+    // animation frames, so every mark this test may produce is the
+    // activation's — anything beyond the live operands is the bug.
+    let mut tap_chrome = chrome();
+    tap_chrome.press = PressFeedback::Tint;
+    let theme = MinimalTestTheme::default().with_button_chrome(tap_chrome);
+    let activations = Rc::new(Cell::new(0));
+    let tapped = Rc::clone(&activations);
+    let mut runtime = runtime_with(
+        button("Chrome").action(move || {
+            tapped.set(tapped.get() + 1);
+        }),
+        theme,
+    );
+    let mut frames = Frames {
+        start: Instant::now(),
+        next: 0,
+    };
+    let mut settled = frames.pump(&mut runtime).frame_work;
+    for _ in 0..3 {
+        settled = frames.pump(&mut runtime).frame_work;
+    }
+
+    runtime.push_input_event(InputEvent::PointerDown {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x: CENTER,
+        y: CENTER,
+        button: PointerButton::Primary,
+    });
+    // Settle the press: the focus move and the press visuals take their
+    // frames here so the release pump's delta measures the tap alone.
+    for _ in 0..6 {
+        settled = frames.pump(&mut runtime).frame_work;
+    }
+    assert!(
+        the_chrome(&runtime)
+            .state()
+            .contains(InteractionState::PRESSED),
+        "the press landed on the live chrome"
+    );
+
+    runtime.push_input_event(InputEvent::PointerUp {
+        id: POINTER,
+        kind: PointerKind::Mouse,
+        x: CENTER,
+        y: CENTER,
+        button: PointerButton::Primary,
+    });
+    let released = frames.pump(&mut runtime).frame_work;
+
+    assert_eq!(activations.get(), 1, "the release committed the tap");
+    assert_eq!(
+        tree_work(settled, released),
+        [0, 0, 0],
+        "an ordinary tap records nothing and lays nothing out"
+    );
+    assert_eq!(
+        released.semantic_builds - settled.semantic_builds,
+        0,
+        "an ordinary tap builds nothing"
+    );
 }
