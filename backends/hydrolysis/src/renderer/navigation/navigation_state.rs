@@ -104,6 +104,13 @@ impl StackPage {
             .record_built_page(renderer, env, size, safe_area);
     }
 
+    /// Consume the page content's layout-dirty marks for an enclosing
+    /// retained sub-view's layout decision — an unbuilt page has none
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty_if_built(&mut self) -> bool {
+        self.content.take_layout_dirty_if_built()
+    }
+
     #[cfg(feature = "accessibility")]
     pub(crate) fn emit_accessibility(&mut self, renderer: &mut SemanticCore, env: &Environment) {
         self.ensure_built(renderer, env);
