@@ -274,6 +274,5 @@ macro_rules! __export_preview {
 pub use pastey;
 
 // `configure_environment!` lives in `waterui-core` so generated backend crates
-// that do not depend on the facade (the ESP32 harness names `waterui-core`,
-// `waterui-dew` and `waterui-locale` only) can still install the app catalog.
+// that do not depend on the facade can still install the app catalog.
 pub use waterui_core::configure_environment;

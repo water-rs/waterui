@@ -34,6 +34,8 @@ waterui-locale = { workspace = true, features = ["number"] }
 executor-core.workspace = true
 futures.workspace = true
 tracing.workspace = true
+# `Link` opens its URL in the system handler.
+robius-open.workspace = true
 # Grapheme clusters for the avatar monogram: a name's first "letter" is a
 # cluster, not a `char`, wherever a combining mark or an emoji sequence is one.
 unicode-segmentation = "1.13"
@@ -63,11 +65,6 @@ pastey.workspace = true
 tree-sitter = { version = "0.27", optional = true }
 tree-sitter-md = { version = "0.5.3", optional = true }
 
-# Opening a URL in a system handler (robius-open) has no meaning on bare
-# embedded; espidf uses a no-op in component/link.rs.
-[target.'cfg(not(target_os = "espidf"))'.dependencies]
-robius-open.workspace = true
-
 # The self-drawn video realization. Selected by `video-gpu` rather than by
 # `video`, because whether it is the realization is a property of the platform's
 # own frameworks, not of the semantic component. The web plays video through
@@ -75,9 +72,9 @@ robius-open.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 waterui-video-gpu = { workspace = true, optional = true }
 
-# CPU-time profiling (cpu-time) needs CLOCK_*_CPUTIME_ID, absent in ESP-IDF
-# newlib; the runtime guard uses a zero-cost fallback there.
-[target.'cfg(all(any(unix, windows), not(target_os = "espidf")))'.dependencies]
+# CPU-time profiling (cpu-time) needs a per-thread CPU clock; the runtime guard
+# uses a zero-cost stand-in where there is none.
+[target.'cfg(any(unix, windows))'.dependencies]
 cpu-time.workspace = true
 
 [features]

@@ -378,7 +378,7 @@ pub(crate) async fn build_rust_lib_with_links(
     let font_declarations = crate::assets::scan_fonts(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
-        &[platform.font_platform()?],
+        &[platform.font_platform()],
     )
     .await?;
     let _resolved_fonts = crate::assets::resolve_fonts(project.host(), font_declarations).await?;
@@ -1073,7 +1073,7 @@ async fn copy_assets_and_fonts(
     let font_declarations = assets::scan_fonts(
         project,
         &project.apple_crate_path().join("Cargo.toml"),
-        &[platform.font_platform()?],
+        &[platform.font_platform()],
     )
     .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;

@@ -5,8 +5,7 @@ use std::str::FromStr;
 use crate::build::{BuildProfile, BuildProgress};
 use eyre::bail;
 use target_lexicon::{
-    Aarch64Architecture, Architecture, DefaultToHost, Environment, OperatingSystem,
-    Riscv32Architecture, Triple, Vendor,
+    Aarch64Architecture, Architecture, DefaultToHost, Environment, OperatingSystem, Triple, Vendor,
 };
 
 // ============================================================================
@@ -55,12 +54,6 @@ pub enum TargetPlatform {
     Windows,
     /// Web (WASM + WebGPU)
     Web,
-    /// ESP32-S3 (Xtensa, ESP-IDF firmware)
-    Esp32S3,
-    /// ESP32-C3 (RISC-V, ESP-IDF firmware)
-    Esp32C3,
-    /// ESP32-P4 (RISC-V with FPU, ESP-IDF firmware)
-    Esp32P4,
 }
 
 /// Backend types available for building.
@@ -274,12 +267,6 @@ impl TargetPlatform {
             Self::Linux | Self::Windows => Triple::host(),
             Self::Web => Triple::from_str("wasm32-unknown-unknown")
                 .expect("web target triple must remain valid"),
-            Self::Esp32S3 => Triple::from_str("xtensa-esp32s3-espidf")
-                .expect("esp32s3 target triple must remain valid"),
-            Self::Esp32C3 => Triple::from_str("riscv32imc-esp-espidf")
-                .expect("esp32c3 target triple must remain valid"),
-            Self::Esp32P4 => Triple::from_str("riscv32imafc-esp-espidf")
-                .expect("esp32p4 target triple must remain valid"),
         }
     }
 
@@ -300,16 +287,12 @@ impl TargetPlatform {
             Self::Android | Self::Web => &[TargetBackend::Hydrolysis],
             Self::Linux => &[TargetBackend::Gtk4, TargetBackend::Hydrolysis],
             Self::Windows => &[TargetBackend::Hydrolysis, TargetBackend::WinUi],
-            // No backend serves ESP32 targets yet: Dew is archived and
-            // Hydrolysis's embedded host lands with #1601.
-            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => &[],
         }
     }
 
-    /// Get the default backend for this platform — `None` for a platform no
-    /// backend serves yet (the ESP32 targets, until #1601).
+    /// Get the default backend for this platform.
     #[must_use]
-    pub const fn default_backend(&self) -> Option<TargetBackend> {
+    pub const fn default_backend(&self) -> TargetBackend {
         match self {
             Self::MacOS
             | Self::IOS
@@ -320,24 +303,19 @@ impl TargetPlatform {
             | Self::WatchOS
             | Self::WatchOSSimulator
             | Self::VisionOS
-            | Self::VisionOSSimulator => Some(TargetBackend::Apple),
-            Self::Android | Self::Windows | Self::Web => Some(TargetBackend::Hydrolysis),
-            Self::Linux => Some(TargetBackend::Gtk4),
-            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => None,
+            | Self::VisionOSSimulator => TargetBackend::Apple,
+            Self::Android | Self::Windows | Self::Web => TargetBackend::Hydrolysis,
+            Self::Linux => TargetBackend::Gtk4,
         }
     }
 
     /// The platform name a font declaration's `platforms` scope uses for
     /// this target: simulators share their device's name, and Mac Catalyst
     /// runs on macOS.
-    ///
-    /// # Errors
-    ///
-    /// The ESP32 firmware targets stage no declared fonts, so they have no
-    /// font platform.
-    pub fn font_platform(self) -> eyre::Result<waterui_assets_planner::FontPlatform> {
+    #[must_use]
+    pub const fn font_platform(self) -> waterui_assets_planner::FontPlatform {
         use waterui_assets_planner::FontPlatform;
-        Ok(match self {
+        match self {
             Self::MacOS | Self::MacCatalyst => FontPlatform::Macos,
             Self::IOS | Self::IOSSimulator => FontPlatform::Ios,
             Self::TvOS | Self::TvOSSimulator => FontPlatform::Tvos,
@@ -347,19 +325,16 @@ impl TargetPlatform {
             Self::Linux => FontPlatform::Linux,
             Self::Windows => FontPlatform::Windows,
             Self::Web => FontPlatform::Web,
-            Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => eyre::bail!(
-                "{self:?} firmware stages no declared fonts, so it has no font platform"
-            ),
-        })
+        }
     }
 
     /// Whether the host builds for this platform with its own toolchain —
     /// the platform is one of the host's defaults.
     ///
     /// A macOS host builds every Apple platform through its one Xcode
-    /// toolchain; a Linux or Windows host builds its own desktop. Android,
-    /// the web and the ESP32 firmware are cross-compiled targets a project
-    /// selects — the host never targets them on its own.
+    /// toolchain; a Linux or Windows host builds its own desktop. Android
+    /// and the web are cross-compiled targets a project selects — the host
+    /// never targets them on its own.
     #[must_use]
     pub const fn host_builds(&self) -> bool {
         match self {
@@ -375,7 +350,7 @@ impl TargetPlatform {
             | Self::VisionOSSimulator => cfg!(target_os = "macos"),
             Self::Linux => cfg!(target_os = "linux"),
             Self::Windows => cfg!(target_os = "windows"),
-            Self::Android | Self::Web | Self::Esp32S3 | Self::Esp32C3 | Self::Esp32P4 => false,
+            Self::Android | Self::Web => false,
         }
     }
 
@@ -406,13 +381,7 @@ impl TargetPlatform {
             Self::WatchOSSimulator => Some("watchsimulator"),
             Self::VisionOS => Some("xros"),
             Self::VisionOSSimulator => Some("xrsimulator"),
-            Self::Android
-            | Self::Linux
-            | Self::Windows
-            | Self::Web
-            | Self::Esp32S3
-            | Self::Esp32C3
-            | Self::Esp32P4 => None,
+            Self::Android | Self::Linux | Self::Windows | Self::Web => None,
         }
     }
 
@@ -427,14 +396,7 @@ impl TargetPlatform {
             Self::TvOS | Self::TvOSSimulator => Some("tvOS"),
             Self::WatchOS | Self::WatchOSSimulator => Some("watchOS"),
             Self::VisionOS | Self::VisionOSSimulator => Some("visionOS"),
-            Self::MacCatalyst
-            | Self::Android
-            | Self::Linux
-            | Self::Windows
-            | Self::Web
-            | Self::Esp32S3
-            | Self::Esp32C3
-            | Self::Esp32P4 => None,
+            Self::MacCatalyst | Self::Android | Self::Linux | Self::Windows | Self::Web => None,
         }
     }
 
@@ -453,10 +415,7 @@ impl TargetPlatform {
             | Self::Android
             | Self::Linux
             | Self::Windows
-            | Self::Web
-            | Self::Esp32S3
-            | Self::Esp32C3
-            | Self::Esp32P4 => None,
+            | Self::Web => None,
         }
     }
 
@@ -471,13 +430,7 @@ impl TargetPlatform {
             Self::TvOS | Self::TvOSSimulator => Some("TVOS_DEPLOYMENT_TARGET"),
             Self::WatchOS | Self::WatchOSSimulator => Some("WATCHOS_DEPLOYMENT_TARGET"),
             Self::VisionOS | Self::VisionOSSimulator => Some("XROS_DEPLOYMENT_TARGET"),
-            Self::Android
-            | Self::Linux
-            | Self::Windows
-            | Self::Web
-            | Self::Esp32S3
-            | Self::Esp32C3
-            | Self::Esp32P4 => None,
+            Self::Android | Self::Linux | Self::Windows | Self::Web => None,
         }
     }
 
@@ -498,9 +451,6 @@ impl TargetPlatform {
             | Self::Android => Architecture::Aarch64(Aarch64Architecture::Aarch64),
             Self::Linux | Self::Windows => DefaultToHost::default().0.architecture,
             Self::Web => Architecture::Wasm32,
-            Self::Esp32S3 => Architecture::XTensa,
-            Self::Esp32C3 => Architecture::Riscv32(Riscv32Architecture::Riscv32imc),
-            Self::Esp32P4 => Architecture::Riscv32(Riscv32Architecture::Riscv32imafc),
         }
     }
 }
