@@ -23,6 +23,19 @@ use libtest_mimic::{Arguments, Trial};
 
 mod migration;
 
+// On Mac Catalyst the binary is spawned without a bundle: its embedded
+// `Info.plist` declares `LSUIElement`, so the process arrives at the
+// `Prohibited` activation policy and `UIKit`'s Mac backgrounding
+// controller leaves the trials' scene-less windows alone — the same
+// contract `preview_info_plist!` gives the preview binary. The iOS
+// targets spawn with no `Info.plist` and keep it that way, so the
+// section is emitted on Catalyst only.
+#[cfg(catalyst)]
+#[used]
+#[unsafe(link_section = "__TEXT,__info_plist")]
+static NATIVE_SPAWN_INFO_PLIST: [u8; include_bytes!("native.plist").len()] =
+    *include_bytes!("native.plist");
+
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HostView, Label};
 #[cfg(target_os = "ios")]
@@ -52,6 +65,17 @@ fn main() {
         }));
         unreachable!("the native trial runner exits the process");
     }
+    // A Catalyst spawn has no `UIApplication`, no scene and no
+    // `NSApplication`. A scene-less `UIWindow`'s unassociated scene reads
+    // the `AppKit` delegate the moment the window is created, and its
+    // `UINSApplicationDelegate` raises when no `NSApplication` exists —
+    // so the process's `AppKit` side comes up at the `Prohibited` policy
+    // before any trial mounts a window, the same bring-up the preview
+    // entry performs. `--list` mounts nothing and skips it.
+    #[cfg(catalyst)]
+    let _background_application = (!args.list).then(|| {
+        cocoa_ui::uikit::catalyst::BackgroundApplication::bring_up(mtm())
+    });
     libtest_mimic::run(&args, trials()).exit();
 }
 
