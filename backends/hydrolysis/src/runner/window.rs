@@ -1463,7 +1463,7 @@ crate::engine::cfg_async_fn! {
                             applied_filter_effect_us,
                             rendered: false,
                             captured_snapshot: false,
-                            frame_work: runtime.renderer.frame_work_counters(),
+                            frame_work: runtime.renderer.take_frame_work_counters(),
                         },
                         ..FrameProfile::default()
                     },
@@ -1520,7 +1520,7 @@ crate::engine::cfg_async_fn! {
                 applied_filter_effect_us,
                 rendered: true,
                 captured_snapshot: capture_snapshot,
-                frame_work: runtime.renderer.frame_work_counters(),
+                frame_work: runtime.renderer.take_frame_work_counters(),
             },
             ..FrameProfile::default()
         };
