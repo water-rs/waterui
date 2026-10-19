@@ -313,10 +313,16 @@ fn install_headless_window_managers(
 /// Runs `app` once offscreen and returns — the headless one-shot `run` that
 /// exists only where no platform runner can claim the entry point.
 ///
+/// `app` is a factory, not a built value: the subscriber and executors are
+/// installed before it runs, so events the application emits while building
+/// its `App` reach the log (water-rs/waterui#2513).
+///
 /// # Panics
 /// Panics when the seeded environment lost its `MenuShortcutRegistry`.
-pub fn run(app: App, style: impl crate::Style) {
+pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
+    init_tracing();
     let inspector = init_main_thread_executors();
+    let app = app(env);
     let inspector_probe = inspector
         .as_ref()
         .map(waterui::inspector::InspectorRuntime::runtime_probe);
@@ -404,9 +410,13 @@ pub fn run(app: App, style: impl crate::Style) {
 #[cfg(all(target_arch = "wasm32", feature = "web"))]
 /// Runs `app` on the web runner for this wasm build.
 ///
+/// `app` is a factory, not a built value: the panic hook and executor are
+/// installed before it runs, matching every other `run` (see
+/// water-rs/waterui#2513).
+///
 /// # Panics
 /// Propagates panics from `web_runner::run`.
-pub fn run(app: App, style: impl crate::Style) {
+pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
     // The page has no stderr, so the default hook's report goes nowhere;
     // this one sends the message and location to `console.error`, and shows
     // it on the page: a panic traps the wasm instance, so the app is gone and
@@ -416,6 +426,7 @@ pub fn run(app: App, style: impl crate::Style) {
         crate::platform::report_fatal_error(&info.to_string());
     }));
     init_global_executor();
+    let app = app(env);
     web_runner::run(app, style);
 }
 
@@ -425,20 +436,36 @@ pub fn run(app: App, style: impl crate::Style) {
 // silently dispatch to a windowing model the host does not have.
 /// Runs `app` on the winit runner.
 ///
+/// `app` is a factory, not a built value: the tracing subscriber is
+/// installed before it runs, so events the application emits while building
+/// its `App` reach the log (water-rs/waterui#2513).
+///
 /// # Panics
 /// Propagates panics from `winit_runner::run` and tracing initialization.
 #[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
-pub fn run(app: App, style: impl crate::Style) {
-    initialize_tracing_from_env();
-    winit_runner::run(app, style, init_main_thread_executors());
+pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl crate::Style) {
+    init_tracing();
+    let executors = init_main_thread_executors();
+    let app = app(env);
+    winit_runner::run(app, style, executors);
 }
 
-#[cfg(all(not(target_arch = "wasm32"), hydrolysis_winit))]
-fn initialize_tracing_from_env() {
+/// Installs the process-wide tracing subscriber when `RUST_LOG` is set:
+/// its directives, to stderr.
+///
+/// Entry points that run application code outside [`run`] — preview,
+/// preview-test and MCP runtimes mount the app through `waterui-testing`
+/// hosts — call it before that code executes. Idempotent: the first install
+/// wins, so a caller that already set a subscriber (or a `run` that follows
+/// an earlier `init_tracing`) is not disturbed. Android installs its logcat
+/// writer at `nativeInit` instead, so this function does not exist there.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn init_tracing() {
     if std::env::var_os("RUST_LOG").is_none() {
         return;
     }
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_writer(std::io::stderr)
         .try_init();
 }
