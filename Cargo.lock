@@ -12324,6 +12324,7 @@ dependencies = [
 name = "waterkit-camera-filters-example"
 version = "0.1.0"
 dependencies = [
+ "executor-core",
  "futures",
  "shaderloom",
  "tracing",
@@ -13094,6 +13095,7 @@ dependencies = [
  "waterui-core",
  "waterui-testing",
  "wgpu 30.0.1",
+ "wgpu-external-frame 0.3.0",
 ]
 
 [[package]]
