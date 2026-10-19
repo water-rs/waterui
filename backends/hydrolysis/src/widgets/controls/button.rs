@@ -22,7 +22,6 @@ use waterui_controls::button::{ButtonConfig, ButtonStyle};
 use waterui_controls::label::{Label, LabelDisplayMode};
 use waterui_controls::menu::ResolvedMenu;
 use waterui_core::interaction::InteractionState;
-use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
@@ -423,12 +422,8 @@ pub fn menu_accessibility(
         // origin through `activate_popup_menu_nodes` — the items land in the
         // merged accessibility tree exactly as the rendered popup's do.
         let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
-            let bounds = ctx.bounds;
             (
-                LayoutPoint::new(
-                    crate::num_cast::f64_as_f32(bounds.x0),
-                    crate::num_cast::f64_as_f32(bounds.y1),
-                ),
+                crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds)),
                 theme.text_context_menu_metrics(),
                 theme.clone(),
             )
@@ -853,11 +848,7 @@ pub fn render_menu_parts(
     ctx.renderer_mut()
         .register_menu_shortcuts(Rc::downgrade(state), items.clone(), env.clone());
     // The popup anchors in window space at the trigger's bottom edge.
-    let hit_bounds = ctx.renderer_mut().resolve_window_rect(bounds);
-    let anchor = LayoutPoint::new(
-        crate::num_cast::f64_as_f32(hit_bounds.x0),
-        crate::num_cast::f64_as_f32(hit_bounds.y1),
-    );
+    let anchor = crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(bounds));
     let menu_metrics = theme.text_context_menu_metrics();
     let menu_theme = theme.clone();
     // The popup opens in the trigger node's environment layered over the
