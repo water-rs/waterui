@@ -57,6 +57,10 @@ pub fn trials() -> Vec<Trial> {
         ),
         case!("appkit::label", a_factory_label_survives_debug_ivar_checks),
         case!(
+            "appkit::label",
+            a_label_draws_its_text_at_the_top_of_an_oversized_frame
+        ),
+        case!(
             "appkit::window",
             a_window_starts_hidden_with_the_requested_style
         ),
@@ -320,6 +324,48 @@ fn a_factory_label_survives_debug_ivar_checks() {
     label.set_text("world");
     assert!(label.source_text().is_some());
     label.set_line_limit(1);
+}
+
+/// The `AppKit` anchor the `UIKit` label now matches — the parity check for
+/// water-rs/waterui#2718: inside a frame taller than the text, the ink a
+/// label draws anchors at the top of its bounds, never vertically
+/// centred. `cacheDisplay` is the view's offscreen raster, so the ink
+/// rows it leaves name where the text went.
+fn a_label_draws_its_text_at_the_top_of_an_oversized_frame() {
+    let mtm = marker();
+    let label = Label::label_with_string(mtm, "Hello 0");
+    label.setTextColor(Some(&cocoa_ui::objc2_app_kit::NSColor::blackColor()));
+    label.setFrame(cocoa_ui::objc2_foundation::NSRect::new(
+        cocoa_ui::objc2_foundation::NSPoint::new(0.0, 0.0),
+        cocoa_ui::objc2_foundation::NSSize::new(320.0, 240.0),
+    ));
+    let rep = label
+        .bitmapImageRepForCachingDisplayInRect(label.bounds())
+        .expect("a bitmap rep");
+    label.cacheDisplayInRect_toBitmapImageRep(label.bounds(), &rep);
+    // SAFETY: `bitmapData` answers `pixelsHigh * bytesPerRow` readable
+    // bytes, RGBA8 premultiplied.
+    let ink_rows = unsafe {
+        let bytes = rep.bitmapData().cast::<u8>();
+        let stride = usize::try_from(rep.bytesPerRow()).unwrap();
+        let wide = usize::try_from(rep.pixelsWide()).unwrap();
+        (0..usize::try_from(rep.pixelsHigh()).unwrap())
+            .filter(|row| {
+                (0..wide).any(|col| {
+                    let px = bytes.add(row * stride + col * 4);
+                    *px.add(3) > 100 && *px < 200 && *px.add(1) < 200 && *px.add(2) < 200
+                })
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(!ink_rows.is_empty(), "the label drew no ink");
+    let height = usize::try_from(rep.pixelsHigh()).unwrap();
+    // The rep's row 0 is the frame's top edge in screen order.
+    let last_ink_row = *ink_rows.last().unwrap();
+    assert!(
+        last_ink_row < height / 4,
+        "the text's last ink row must sit in the frame's top quarter, saw row {last_ink_row} of {height}"
+    );
 }
 
 /// The case the old harness excluded: `-[NSWindow initWithContentRect:]`
