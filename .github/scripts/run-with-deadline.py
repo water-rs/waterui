@@ -4,7 +4,8 @@
 usage:
     run-with-deadline.py deadline --seconds N
     run-with-deadline.py remaining --deadline-at T [--at-least S]
-    run-with-deadline.py run --deadline-at T --receipt PATH --label NAME -- argv...
+    run-with-deadline.py run --deadline-at T --receipt PATH --label NAME \
+        [--max-seconds S] -- argv...
 
 `deadline` prints an absolute deadline on the system-wide CLOCK_MONOTONIC
 clock — the one epoch every process on the host reads identically, so a
@@ -16,7 +17,12 @@ longer pay for instead of letting `run` kill it mid-command. `run` executes
 argv (no shell),
 waiting at most the remaining budget; on expiry it SIGTERMs, then SIGKILLs,
 only the child it spawned — never a process group, a simulator service, or
-anything else it does not own — and reaps it before returning.
+anything else it does not own — and reaps it before returning. `--max-seconds`
+bounds the command separately inside the shared deadline: the child is
+killed after S seconds even while budget remains — the receipt's `bound`
+field records whether the kill came from the shared `deadline` or the
+command's own `scoped` bound, so a hung command is distinguishable from
+ordinary budget exhaustion.
 
 The deadline rides clock_gettime(CLOCK_MONOTONIC), not time.monotonic():
 the Python documentation only guarantees monotonic() is "the same for all
@@ -84,6 +90,12 @@ class Receipt:
     returncode: int | None
     timed_out: bool
     child_stderr_file: str | None
+    # The scoped bound the invocation ran under, when one was set.
+    max_seconds: float | None
+    # Which bound fired on a timeout: "deadline" when the shared budget
+    # expired, "scoped" when the command's own --max-seconds did. None on
+    # any non-timeout outcome.
+    bound: str | None
 
 
 def _clock() -> float:
@@ -125,6 +137,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     started_at = _iso_now()
     started_mono = _clock()
     remaining = args.deadline_at - started_mono
+    bound_hit = None
 
     def finish(status, pid, returncode, timed_out):
         ended_mono = _clock()
@@ -143,12 +156,23 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 returncode=returncode,
                 timed_out=timed_out,
                 child_stderr_file=args.child_stderr_file,
+                max_seconds=args.max_seconds,
+                bound=bound_hit,
             ),
         )
 
     if remaining <= 0:
         finish("budget_exhausted", None, None, True)
         return TIMEOUT_EXIT
+    # The wait bound: the shared deadline alone unless a scoped bound was
+    # given — whichever is tighter. A timeout at the shared deadline is
+    # ordinary budget exhaustion; a timeout at the scoped bound is the
+    # command itself hanging, reported distinctly on the receipt.
+    wait_seconds = (
+        remaining
+        if args.max_seconds is None
+        else min(remaining, args.max_seconds)
+    )
     with contextlib.ExitStack() as stack:
         # An optional separate destination for the child's stderr: the
         # supervisor's own records keep going to the inherited stderr — never
@@ -183,9 +207,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         )
         timed_out = False
         try:
-            proc.wait(timeout=remaining)
+            proc.wait(timeout=wait_seconds)
         except subprocess.TimeoutExpired:
             timed_out = True
+            bound_hit = "deadline" if args.max_seconds is None or \
+                args.max_seconds >= remaining else "scoped"
             # Only the owned child is signalled — no process-group kill, so a
             # CoreSimulator service or any sibling the tool spawned is
             # untouched. Popen's signal/wait methods already absorb a child
@@ -247,6 +273,11 @@ def main() -> None:
     run.add_argument(
         "--label", required=True,
         help="receipt label identifying this command's role")
+    run.add_argument(
+        "--max-seconds", type=float, default=None, metavar="S",
+        help="bound this command inside the shared deadline: a child still "
+             "running after S seconds is killed as hung — reported "
+             "distinctly from shared-budget exhaustion on the receipt")
     run.add_argument(
         "--child-stderr-file", metavar="PATH", default=None,
         help="write the child's stderr to PATH instead of inheriting it; "
