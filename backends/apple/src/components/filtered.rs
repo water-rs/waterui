@@ -246,8 +246,10 @@ pub struct FilteredState {
     /// content, so a preparation for a collapsed view yields
     /// [`ExternalRender::Transparent`] instead of a content capture.
     collapsed: Cell<bool>,
-    /// Window observers — `occlusionObserver`/app-activation watchers.
-    observers: RefCell<Vec<cocoa_ui::notification::NotificationObserver>>,
+    /// The output's visibility observation: ancestor-chain wakes, the
+    /// enclosing scroll viewports and the owning window/scene lifecycle,
+    /// rebound together and fully detached on drop (#1545).
+    visibility_watch: RefCell<Option<cocoa_ui::visibility::VisibilityWatch>>,
     /// The context generation `device`/`capture_texture`/`imported_texture`
     /// were built under — all are recreated when the runtime publishes a
     /// new context. The presenter's device swaps onto the same event.
@@ -288,22 +290,17 @@ fn output_pixel_format() -> objc2_metal::MTLPixelFormat {
     cocoa_ui::metal::wgpu_to_metal_format(PRESENTATION_FORMAT)
 }
 
-/// `isPresentationOccluded`.
+/// `isPresentationOccluded`: no frame of the output could land on screen
+/// — the window cannot present, an ancestor hides it or zeroes its alpha,
+/// or an ancestor's clip (a scroll viewport) covers all of it (#1545).
 fn presentation_occluded(view: &PlatformView) -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        cocoa_ui::view::window(view).is_none_or(|window| !cocoa_ui::appkit::is_visible(&window))
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let _ = view;
-        !cocoa_ui::uikit::application_is_active()
-    }
+    !cocoa_ui::visibility::presentable(view)
 }
 
-/// `canAttachNow`.
+/// `canAttachNow`: the window-level half — a window that can present.
 fn can_attach_now(view: &PlatformView) -> bool {
-    cocoa_ui::view::window(view).is_some() && !presentation_occluded(view)
+    cocoa_ui::view::window(view)
+        .is_some_and(|window| cocoa_ui::visibility::window_presentable(&window))
 }
 
 /// `configureDynamicRange` — applies to the host view's layer tree, which
@@ -664,9 +661,7 @@ fn update_link_demand(state: &Rc<FilteredState>) {
         && !state.frame_presentation_in_flight.get()
         && state.capture_suppression.get() == 0
         && state.external_count.get() == 0
-        && ((cocoa_ui::view::has_visible_ancestry(&state.view)
-            && !presentation_occluded(&state.view))
-            || state.first_paint_owed.get());
+        && (!presentation_occluded(&state.view) || state.first_paint_owed.get());
     if let Some(presenter) = state.presenter.borrow().as_ref() {
         presenter.set_paused(!demand);
     }
@@ -1428,6 +1423,7 @@ fn handle_window_change(state: &Rc<FilteredState>) {
         state.needs_render.set(false);
         state.pending_dynamic_range.borrow_mut().take();
         complete_ready(state);
+        state.visibility_watch.borrow_mut().take();
         if state.render_in_flight.get() || state.frame_presentation_in_flight.get() {
             state.detach_after_capture.set(true);
         } else {
@@ -1437,53 +1433,33 @@ fn handle_window_change(state: &Rc<FilteredState>) {
         return;
     }
     state.detach_after_capture.set(false);
-    update_window_observers(state);
+    refresh_visibility_watch(state);
     initialize_gpu(state);
     request_render(state);
 }
 
-/// `WuiWindowOcclusionObserver` — occlusion/activation changes re-run
-/// attach+demand. On iOS the attach a launch-time `.inactive` state
-/// deferred is retaken from `didBecomeActive`; without these observers a
-/// filter mounted before activation presents nothing forever.
-fn update_window_observers(state: &Rc<FilteredState>) {
-    let mut observers = state.observers.borrow_mut();
-    observers.clear();
-    let Some(window) = cocoa_ui::view::window(&state.view) else {
+/// `WuiWindowOcclusionObserver` — every visibility edge (an ancestor's
+/// hidden/alpha/geometry, a scroll viewport, the window's occlusion or the
+/// scene's activation) re-runs attach+demand. On iOS the attach a
+/// launch-time inactive scene deferred is retaken from its activation;
+/// without the watch a filter mounted before activation presents nothing
+/// forever.
+fn refresh_visibility_watch(state: &Rc<FilteredState>) {
+    let mut slot = state.visibility_watch.borrow_mut();
+    if let Some(watch) = slot.as_ref() {
+        watch.refresh(&state.view);
         return;
-    };
-    #[cfg(target_os = "ios")]
-    let _ = &window;
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
-    let fire = {
-        let weak = Rc::downgrade(state);
-        move || {
+    }
+    let weak = Rc::downgrade(state);
+    *slot = Some(cocoa_ui::visibility::VisibilityWatch::new(
+        &state.view,
+        Rc::new(move || {
             if let Some(state) = weak.upgrade() {
                 initialize_gpu(&state);
                 update_link_demand(&state);
             }
-        }
-    };
-    #[cfg(target_os = "macos")]
-    observers.push(cocoa_ui::appkit::watch_occlusion(mtm, &window, move || {
-        fire();
-    }));
-    #[cfg(target_os = "ios")]
-    for notification in [
-        // SAFETY: the notification names are system constants.
-        unsafe { cocoa_ui::objc2_ui_kit::UIApplicationDidBecomeActiveNotification },
-        // SAFETY: the notification names are system constants.
-        unsafe { cocoa_ui::objc2_ui_kit::UIApplicationWillResignActiveNotification },
-    ] {
-        observers.push(cocoa_ui::notification::observe(
-            mtm,
-            &cocoa_ui::notification::NotificationName::framework(notification),
-            {
-                let fire = fire.clone();
-                move || fire()
-            },
-        ));
-    }
+        }),
+    ));
 }
 
 /// `layoutSubviews`/`layout`: frame the hidden content with the output,
@@ -1999,8 +1975,16 @@ fn fuse_enclosed_filters(
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<FilteredView>(|filtered, ctx| {
         let mtm = ctx.mtm();
-        let runtime = crate::gpu_runtime::runtime(ctx.env());
         let (content, chained) = fuse_enclosed_filters(filtered, ctx);
+        // `NativeFilteredView` on AppKit: a complete native `CIFilter`
+        // plan mounts the content visibly on `CALayer.filters` — no
+        // capture, no GPU setup (#1748). Any unmapped stage, GPU effect or
+        // output-size policy falls through to the capture path.
+        #[cfg(all(target_os = "macos", feature = "applied_filter"))]
+        if let Some(plan) = crate::components::native_filter::plan(&chained) {
+            return crate::components::native_filter::mount(mtm, ctx, content, chained, &plan);
+        }
+        let runtime = crate::gpu_runtime::runtime(ctx.env());
         let (sources, guard_list): (Vec<AnyEffect>, Vec<ParamGuards>) = chained.into_iter().unzip();
         // The chain presents outermost-last: effects render content-adjacent
         // first, so reverse the collection order.
@@ -2176,7 +2160,7 @@ fn build_filtered_parts(
             // Unframed: the output view has no area until
             // `update_output_frame` frames it from the host bounds.
             collapsed: Cell::new(true),
-            observers: RefCell::new(Vec::new()),
+            visibility_watch: RefCell::new(None),
             gpu_generation: Cell::new(Some(gpu_context.generation())),
             setup_task: RefCell::new(None),
         }
@@ -2219,6 +2203,17 @@ fn build_filtered_parts(
         let state = Rc::clone(&state);
         view.set_window_handler(move |_| {
             handle_window_change(&state);
+        });
+    }
+    {
+        // A reparent inside the window moves the ancestor chain the
+        // visibility watch subscribed to.
+        let state = Rc::clone(&state);
+        view.set_superview_handler(move |_| {
+            if cocoa_ui::view::window(&state.view).is_some() {
+                refresh_visibility_watch(&state);
+                update_link_demand(&state);
+            }
         });
     }
     #[cfg(target_os = "macos")]

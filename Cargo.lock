@@ -7515,6 +7515,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
 ]
 
 [[package]]
@@ -12324,9 +12325,9 @@ dependencies = [
 name = "waterkit-camera-filters-example"
 version = "0.1.0"
 dependencies = [
+ "executor-core",
  "futures",
  "shaderloom",
- "tracing",
  "waterkit-camera",
  "waterkit-permission",
  "waterui",
@@ -12673,6 +12674,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-core-foundation",
  "objc2-core-graphics",
+ "objc2-core-image 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
  "objc2-quartz-core 0.3.2",
@@ -13179,6 +13181,7 @@ dependencies = [
  "waterui-core",
  "waterui-testing",
  "wgpu 30.0.1",
+ "wgpu-external-frame 0.3.0",
 ]
 
 [[package]]
@@ -13301,6 +13304,7 @@ version = "0.5.1"
 dependencies = [
  "bincode 2.0.1",
  "bitflags 2.13.2",
+ "dirs 7.0.0",
  "futures-lite",
  "libc",
  "serde",

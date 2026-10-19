@@ -240,7 +240,6 @@ struct SimulatorExitContext {
 
 /// Bounds the remote `simctl terminate` and the local `SIGKILL` to the owned
 /// `simctl` child, together. Reaping it follows.
-#[cfg(unix)]
 const KILL_BOUND: Duration = Duration::from_secs(10);
 
 fn spawn_simulator_exit_monitor(
@@ -272,22 +271,26 @@ fn spawn_simulator_exit_monitor(
                 Either::Right((Err(_), _)) => control = None,
                 Either::Right((Ok(StopRequest::Terminate), _)) => {
                     stopped = true;
-                    crate::device::signal_child(
-                        &child,
-                        nix::sys::signal::Signal::SIGTERM,
-                        &sender,
-                        "simctl",
-                    );
-                    if let crate::device::TerminationOutcome::Exited(status) =
-                        crate::device::await_termination(
-                            &mut child,
-                            &mut control,
-                            crate::device::TERMINATION_GRACE_PERIOD,
-                            &sender,
-                        )
-                        .await
+                    // Windows has no termination signal: the stop kills once.
+                    #[cfg(unix)]
                     {
-                        break status;
+                        crate::device::signal_child(
+                            &child,
+                            nix::sys::signal::Signal::SIGTERM,
+                            &sender,
+                            "simctl",
+                        );
+                        if let crate::device::TerminationOutcome::Exited(status) =
+                            crate::device::await_termination(
+                                &mut child,
+                                &mut control,
+                                crate::device::TERMINATION_GRACE_PERIOD,
+                                &sender,
+                            )
+                            .await
+                        {
+                            break status;
+                        }
                     }
                     break kill_simulator_session(&mut child, &host, &context, &sender).await;
                 }
@@ -313,7 +316,6 @@ fn spawn_simulator_exit_monitor(
 /// Hard-stop the application: `simctl terminate` names it by bundle
 /// identifier on the device — never a pid the run merely looked up — and the
 /// owned `simctl` child is killed and reaped so the console session ends.
-#[cfg(unix)]
 async fn kill_simulator_session(
     child: &mut smol::process::Child,
     host: &Host,
@@ -352,7 +354,12 @@ async fn kill_simulator_session(
             format!("Killing the app on the simulator did not finish within {KILL_BOUND:?}"),
         );
     }
+    #[cfg(unix)]
     crate::device::signal_child(child, nix::sys::signal::Signal::SIGKILL, sender, "simctl");
+    #[cfg(not(unix))]
+    if let Err(error) = child.kill() {
+        report_monitor_error(sender, format!("Could not kill simctl: {error}"));
+    }
     child.status().await
 }
 
