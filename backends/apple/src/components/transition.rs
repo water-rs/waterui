@@ -20,7 +20,6 @@ use crate::dispatch::Dispatcher;
 /// by any view tree since `.transition(...)` lives on `View` itself, so no
 /// Cargo feature gates it.
 pub fn install(dispatcher: &mut Dispatcher) {
-    dispatcher.register_view::<Metadata<TransitionSpec>>(|metadata, ctx| {
-        ctx.render(metadata.content)
-    });
+    dispatcher
+        .register_view::<Metadata<TransitionSpec>>(|metadata, ctx| ctx.render(metadata.content));
 }
