@@ -944,6 +944,20 @@ fn load_staged_window_icon(
     }
 }
 
+/// Arms `WindowHandle::focus` on `window`: the request reaches winit's
+/// `focus_window` — `_NET_ACTIVE_WINDOW`, `SetForegroundWindow`, a Wayland
+/// activation-token request, as the handle's docs say. The hook holds the
+/// native window weakly, so a request filed through a handle that outlived
+/// the window's teardown is a no-op.
+fn arm_window_focus_requests(window: &Window, native_window: &Arc<NativeWindow>) {
+    let native = Arc::downgrade(native_window);
+    window.arm_focus_requests(move || {
+        if let Some(native) = native.upgrade() {
+            native.focus_window();
+        }
+    });
+}
+
 fn native_window_attributes(
     window: &Window,
     env: &Environment,
@@ -1155,6 +1169,7 @@ impl WinitRunner {
                 .create_window(attributes)
                 .expect("hydrolysis runner: failed to create winit window"),
         );
+        arm_window_focus_requests(&window, &native_window);
         #[cfg(hydrolysis_wayland_platform)]
         if let Some(xid) = x11_state_watch::x11_window_id(&native_window) {
             // The window is on X11, so the app's own server connection is
