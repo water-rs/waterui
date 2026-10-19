@@ -813,7 +813,7 @@ fn emit_span(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, sy: u32, s
 }
 
 // Classification only reserves a cell's instance slot and texel words;
-// `fill_cells` writes the texels with one invocation per cell, so a strip's
+// `fill_cells` writes the texels with one workgroup per cell, so a strip's
 // cells no longer serialize behind its owner invocation.
 fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y1: u32, interior: u32) {
     let slot = atomicAdd(&paths[path_i].atom[4], 1u);
@@ -825,12 +825,12 @@ fn emit_cell(pi: u32, path_i: u32, rect: vec4<f32>, x0: u32, x1: u32, y0: u32, y
     emit_instance(pi, slot, b, vec2<u32>(paths[pi].texel_base + tex_off, cw), KIND_GLYPH, interior);
 }
 
-// One invocation per reserved instance slot. A cell's geometry is read back
+// One workgroup per reserved instance slot. A cell's geometry is read back
 // from its instance exactly as the raster decodes it, so the texels land
 // where the fetch reads them; spans and unused slots return at once.
 @compute @workgroup_size(64)
-fn fill_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let i = invocation(gid);
+fn fill_cells(@builtin(workgroup_id) gid: vec3<u32>, @builtin(local_invocation_index) lane_index: u32) {
+    let i = gid.x + gid.y * 256u;
     var lo = 0u;
     var hi = params.path_count;
     while lo + 1u < hi {
@@ -859,7 +859,7 @@ fn fill_cells(@builtin(global_invocation_id) gid: vec3<u32>) {
     var index = 0u;
     var winding = 0u;
     var key0 = 0u;
-    for (var word = 0u; word < words; word += 1u) {
+    for (var word = lane_index; word < words; word += 64u) {
         var packed = 0u;
         for (var lane = 0u; lane < 4u; lane += 1u) {
             let pixel = word * 4u + lane;

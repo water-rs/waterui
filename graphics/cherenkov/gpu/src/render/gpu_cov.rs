@@ -442,38 +442,61 @@ impl GpuCoverage {
             ));
         }
 
-        // Buffer sizes from the R2 bound, created exactly per frame.
         let seg_words = u64::from(self.seg_total).max(1);
         let cov_words = u64::from(token_counter + 1);
         let work_words = u64::try_from(self.work.len()).expect("work").max(1);
+        let previous = self.buffers.as_ref();
+        let storage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         let buffers = Buffers {
-            params: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("cov params"),
-                size: 8 * 256,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            }),
-            elements: storage_buf(
+            params: sized_buffer(
                 device,
+                previous.map(|b| &b.params),
+                "cov params",
+                8 * 256,
+                wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            ),
+            elements: sized_buffer(
+                device,
+                previous.map(|b| &b.elements),
                 "cov elements",
                 (self.elements.len() as u64).max(1) * (std::mem::size_of::<GpuElement>() as u64),
-                false,
+                storage,
             ),
-            paths: storage_buf(
+            paths: sized_buffer(
                 device,
+                previous.map(|b| &b.paths),
                 "cov paths",
                 (self.paths.len() as u64) * (PATH_WORDS as u64) * 4,
-                false,
+                storage,
             ),
-            segments: storage_buf(device, "cov segments", seg_words * 16, false),
-            coverage: storage_buf(device, "cov scratch", cov_words * 4, false),
-            args: storage_buf(
+            segments: sized_buffer(
                 device,
+                previous.map(|b| &b.segments),
+                "cov segments",
+                seg_words * 16,
+                storage,
+            ),
+            coverage: sized_buffer(
+                device,
+                previous.map(|b| &b.coverage),
+                "cov scratch",
+                cov_words * 4,
+                storage,
+            ),
+            args: sized_buffer(
+                device,
+                previous.map(|b| &b.args),
                 "cov args",
                 u64::from(ARGS_WORDS) * 4 * (self.paths.len() as u64).max(1),
-                true,
+                storage | wgpu::BufferUsages::INDIRECT,
             ),
-            work: storage_buf(device, "cov work", work_words * 8, false),
+            work: sized_buffer(
+                device,
+                previous.map(|b| &b.work),
+                "cov work",
+                work_words * 8,
+                storage,
+            ),
         };
         self.bytes = buffers.params.size()
             + buffers.elements.size()
@@ -590,7 +613,7 @@ impl GpuCoverage {
             pass.set_pipeline(&pipes.classify);
             dispatch(&mut pass, strip_total);
             pass.set_pipeline(&pipes.fill_cells);
-            dispatch(&mut pass, self.inst_total);
+            pass.dispatch_workgroups(self.inst_total.min(256), self.inst_total.div_ceil(256), 1);
             pass.set_pipeline(&pipes.emit_args);
             dispatch(
                 &mut pass,
@@ -662,22 +685,20 @@ const fn radix_passes(key_end: u32) -> u32 {
     digits.div_ceil(2) * 2
 }
 
-fn storage_buf(
+fn sized_buffer(
     device: &wgpu::Device,
+    previous: Option<&wgpu::Buffer>,
     label: &'static str,
     size: u64,
-    indirect: bool,
+    usage: wgpu::BufferUsages,
 ) -> wgpu::Buffer {
+    if let Some(buffer) = previous.filter(|buffer| buffer.size() == size) {
+        return buffer.clone();
+    }
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some(label),
         size,
-        usage: if indirect {
-            wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST
-                | wgpu::BufferUsages::INDIRECT
-        } else {
-            wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST
-        },
+        usage,
         mapped_at_creation: false,
     })
 }
