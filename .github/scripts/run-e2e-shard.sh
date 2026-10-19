@@ -423,9 +423,10 @@ simctl_cleanup() {
 # screenshot, terminate and uninstall all timing out: the evidence needed is
 # the app's own stack, the host simulator services' state, and the device's
 # recent log, collected while the wedge still stands rather than after a
-# clean retry. Every diagnostic command is itself bounded — a wedged device
-# must not stall the collection — and the output lands in logs_dir, which
-# the e2e-logs artifact bundle already ships.
+# clean retry. The samples self-limit at 3 s and both `log show` reads run
+# under DIAG_DEADLINE_S — a wedged channel must not stall the collection —
+# and the output lands in logs_dir, which the e2e-logs artifact bundle
+# already ships.
 DIAG_DEADLINE_S=30
 collect_simulator_stall_diagnostics() {
   local reason="$1"
@@ -450,7 +451,11 @@ collect_simulator_stall_diagnostics() {
       sample "${svc}" 3 1 2>&1 | sed -n '1,40p'
     done
     echo "--- host log, simulator domain, last 5m ---"
-    log show --last 5m --style compact \
+    # `log show` can take tens of seconds on a loaded host — supervised so
+    # the collection keeps its own bound even when the log is slow.
+    "${command_deadline}" run --label "diag:host-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- log show --last 5m --style compact \
       --predicate 'process CONTAINS[c] "simulator" OR subsystem CONTAINS[c] "CoreSimulator"' \
       2>/dev/null | tail -80 || true
     echo "--- device log, last 3m ---"
