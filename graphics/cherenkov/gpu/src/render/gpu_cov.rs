@@ -36,6 +36,7 @@ pub const ARGS_PARTIAL: u32 = 16;
 pub const ARGS_NORMAL: u32 = 36;
 /// The kernel workgroup size `coverage.wgsl` declares.
 const WORKGROUP: u32 = 64;
+const CLASSIFY_WIDTH: u32 = 128;
 /// Decision R2's hard per-frame cap on the coverage buffers' total
 /// size: a bound over it is an explicit `Unsupported`, never a retry.
 const GPU_COV_MAX_BYTES: u64 = 256 << 20;
@@ -297,14 +298,14 @@ impl GpuCoverage {
             + to64(bound.segments) * 16
             + to64(bound.bins) * 12
             + to64(bound.fragments) * 40
-            + to64(bound.fragments.div_ceil(64)) * 64
+            + to64(bound.fragments.div_ceil(64)) * 192
             + to64(strips) * 12
             + to64(rows) * 4
             + to64(bound.texels.div_ceil(4) + bound.cell_cap) * 4
             + to64(bound.instance_cap) * u64::from(INSTANCE_VEC4S) * 16
             + u64::from(ARGS_WORDS) * 4
             + (PATH_WORDS as u64) * 4
-            + to64(strips) * 8;
+            + to64(strips) * (1 + to64(bound.grid_w.div_ceil(CLASSIFY_WIDTH as usize))) * 8;
         let previous_tokens = self.fragment_total.min(self.cov_total) * 6;
         let next_tokens = fragment_total.min(cov_total) * 6;
         self.bound_bytes += path_bytes
@@ -467,6 +468,16 @@ impl GpuCoverage {
             }
         }
         let strip_total = u32::try_from(self.work.len()).expect("coverage capacity fits u32");
+        for (index, path) in self.paths.iter().enumerate() {
+            let tiles = path[17].div_ceil(CLASSIFY_WIDTH) * path[18].div_ceil(4);
+            for tile in 0..tiles {
+                self.work
+                    .push([u32::try_from(index).expect("path index fits u32"), tile]);
+            }
+        }
+        let tile_total = u32::try_from(self.work.len()).expect("work count fits u32") - strip_total;
+        let radix_masks =
+            self.row_total + u32::try_from(self.work.len()).expect("work count fits u32") * 2;
         let bin_base = 0;
         let fragment_base = bin_base + self.bin_total * 3;
         let sort_a = fragment_base + self.fragment_total * 8;
@@ -485,8 +496,8 @@ impl GpuCoverage {
             strip_total,
             u32::try_from(self.paths.len()).expect("coverage capacity fits u32"),
             self.inst_origin,
-            0,
-            0,
+            tile_total,
+            CLASSIFY_WIDTH,
             self.cov_total,
             bin_base,
             self.bin_total,
@@ -497,7 +508,7 @@ impl GpuCoverage {
             histogram,
             groups,
             tokens,
-            0,
+            radix_masks,
             0,
             self.texel_words,
         ];
@@ -508,7 +519,9 @@ impl GpuCoverage {
             .max_storage_buffer_binding_size
             .min(limits.max_buffer_size);
         let work_header_bytes = u64::from(4 + self.row_total) * 4;
-        let work_bytes = work_header_bytes + self.work.len() as u64 * 8;
+        let work_bytes = work_header_bytes
+            + self.work.len() as u64 * 8
+            + u64::from(self.fragment_total.div_ceil(WORKGROUP)) * 32 * 4;
         let sizes = [
             scratch_bytes,
             u64::from(self.element_total) * 48,
@@ -787,7 +800,7 @@ impl GpuCoverage {
                 pass.set_pipeline(&pipes.integrate);
                 pass.dispatch_workgroups_indirect(&buffers.args, dispatch_base + 12);
                 pass.set_pipeline(&pipes.classify);
-                dispatch(&mut pass, strip_total);
+                dispatch(&mut pass, tile_total);
                 pass.set_bind_group(0, &args_bind, &[0]);
                 pass.set_pipeline(&pipes.prepare_cells);
                 pass.dispatch_workgroups(1, 1, 1);

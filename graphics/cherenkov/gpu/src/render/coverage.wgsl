@@ -73,8 +73,8 @@ struct Params {
     strip_total: u32,
     path_count: u32,
     inst_origin: u32,
-    _pad0: u32,
-    _pad2: u32,
+    tile_total: u32,
+    classify_width: u32,
     grid_total: u32,
     bin_base: u32,
     bin_cap: u32,
@@ -85,7 +85,7 @@ struct Params {
     histogram: u32,
     groups: u32,
     tokens: u32,
-    _pad1: u32,
+    radix_masks: u32,
     radix_pass: u32,
     texel_words: u32,
 }
@@ -466,35 +466,28 @@ fn prepare_dispatch(@builtin(local_invocation_index) lane: u32) {
     args[base + 2u] = 1u;
 }
 
-// Radix digits reuse the boundary-group arena before prefix initializes it.
-// Each invocation owns one word; each workgroup reads only its 64-word slice.
-// No extra allocation or native threadgroup-memory argument is required.
+// Each lane contributes one bit to its digit's mask. The masks are local
+// to a workgroup's range; completed masks become ordinary scatter input.
 @compute @workgroup_size(64)
 fn radix_count(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invocation_index) lane: u32) {
     let i = invocation(gid);
-    let input = select(params.sort_a, params.sort_b, (params.radix_pass & 1u) != 0u);
-    var digit = 16u;
-    if i < fragment_count() { digit = (coverage[input + i * 2u] >> (params.radix_pass * 4u)) & 15u; }
+    let group = i / 64u;
+    let masks = params.radix_masks + group * 32u;
+    if lane < 32u && group * 64u < fragment_count() { atomicStore(&work.words[masks + lane], 0u); }
+    storageBarrier();
     if i < fragment_count() {
-        coverage[params.groups + i] = digit;
+        let input = select(params.sort_a, params.sort_b, (params.radix_pass & 1u) != 0u);
+        let digit = (coverage[input + i * 2u] >> (params.radix_pass * 4u)) & 15u;
+        atomicOr(&work.words[masks + digit * 2u + lane / 32u], 1u << (lane % 32u));
     }
     storageBarrier();
-    var low = 0u;
-    var high = 0u;
-    if lane < 16u {
-        let group_start = (i / 64u) * 64u;
-        for (var k = 0u; k < min(64u, fragment_count() - min(group_start, fragment_count())); k += 1u) {
-            if coverage[params.groups + group_start + k] == lane {
-                if k < 32u { low |= 1u << k; } else { high |= 1u << (k - 32u); }
-            }
-        }
-    }
-    storageBarrier();
-    if lane < 16u && (i / 64u) * 64u < fragment_count() {
-        coverage[params.histogram + (i / 64u) * 16u + lane] = countOneBits(low) + countOneBits(high);
-        let masks = params.groups + (i / 64u) * 64u + lane * 2u;
-        coverage[masks] = low;
-        coverage[masks + 1u] = high;
+    if lane < 16u && group * 64u < fragment_count() {
+        let low = atomicLoad(&work.words[masks + lane * 2u]);
+        let high = atomicLoad(&work.words[masks + lane * 2u + 1u]);
+        coverage[params.histogram + group * 16u + lane] = countOneBits(low) + countOneBits(high);
+        let output = params.groups + group * 64u + lane * 2u;
+        coverage[output] = low;
+        coverage[output + 1u] = high;
     }
 }
 @compute @workgroup_size(64)
@@ -728,36 +721,49 @@ fn coverage_class(values: vec4<f32>, sh: u32) -> u32 {
 @compute @workgroup_size(64)
 fn classify(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = invocation(gid);
-    if i >= params.strip_total { return; }
-    let w = work_item(i);
+    if i >= params.tile_total { return; }
+    let w = work_item(params.strip_total + i);
     let pi = w.x;
-    let strip = w.y;
+    let tiles_per_strip = (paths[pi].grid_w + params.classify_width - 1u) / params.classify_width;
+    let strip = w.y / tiles_per_strip;
+    let tile = w.y % tiles_per_strip;
     let rect = grid_rect(pi);
-    let width = u32(rect.z);
+    var width = u32(rect.z);
     let height = u32(rect.w);
     let sy = strip * 4u;
-    if width == 0u || sy >= height { return; }
+    if width == 0u || sy >= height || tile * params.classify_width >= width { return; }
     if width <= 32u && height <= 32u {
         if strip == 0u { emit_cell(pi, pi, rect, 0u, width, 0u, height, 0u); }
         return;
     }
     let sh = min(4u, height - sy);
     let key0 = paths[pi].grid_base + strip * paths[pi].grid_w;
-    let start = lower_bound(key0);
-    let limit = lower_bound(key0 + width);
+    let strip_start = lower_bound(key0);
+    let strip_limit = lower_bound(key0 + width);
+    let start = lower_bound(key0 + tile * params.classify_width);
+    let limit = lower_bound(key0 + min((tile + 1u) * params.classify_width, width));
+    if start == limit && (strip_start != strip_limit || tile != 0u) { return; }
+    // A chunk owns its boundary columns and the following gap, so large
+    // full interiors stay single spans even when they cross many tiles.
+    if limit < strip_limit { width = sort_key(limit) - key0; }
     var columns = 0u;
     var cursor = start;
     while cursor < limit {
         columns += 1u;
         cursor = coverage[group_address(cursor) + 4u];
     }
-    let base = atomicAdd(&work.token_count, columns * 2u + 1u);
+    let leading = u32(start == strip_start);
+    let base = atomicAdd(&work.token_count, columns * 2u + leading);
     var count = 0u;
     var x = 0u;
+    if start != strip_start { x = sort_key(start) - key0; }
     var index = start;
     var winding = vec4<u32>(0u);
     for (var r = 0u; r < sh; r += 1u) {
         winding[r] = atomicLoad(&work.words[paths[pi].row_base + sy + r]);
+    }
+    if start > strip_start {
+        winding = group_words(lower_bound(sort_key(start - 1u)), 12u);
     }
     while index < limit {
         let col = sort_key(index) - key0;
