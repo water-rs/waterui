@@ -203,12 +203,10 @@ fn press_focus_move_needs_no_tree_pass() {
         next: 0,
     };
     // Mount plus a few steady frames settle the scene before input lands;
-    // the last pump's counters are the baseline the press pump's delta is
-    // measured against (the renderer resets them only on a scene build, so
-    // a rebuild inside the press pump reads as a reset — itself a failure).
-    let mut settled = frames.pump(&mut runtime).frame_work;
-    for _ in 0..3 {
-        settled = frames.pump(&mut runtime).frame_work;
+    // the counters roll at every presented frame's boundary, so the press
+    // pump's counts are its own — no baseline to subtract.
+    for _ in 0..4 {
+        frames.pump(&mut runtime);
     }
     let button_node = runtime
         .accessibility_tree()
@@ -238,15 +236,11 @@ fn press_focus_move_needs_no_tree_pass() {
         "the press landed on the live chrome"
     );
     assert_eq!(
-        tree_work(settled, work),
+        tree_work(work),
         [0, 0, 0],
         "a focus move records nothing and lays nothing out"
     );
-    assert_eq!(
-        work.semantic_builds - settled.semantic_builds,
-        0,
-        "a focus move builds nothing"
-    );
+    assert_eq!(work.semantic_builds, 0, "a focus move builds nothing");
     let update = result
         .tree_update
         .expect("the focus move publishes an accessibility update");
