@@ -93,9 +93,13 @@ jobs:
       # the preview system can share one copy of the framework across
       # dynamically loaded preview libraries. On Windows it is the top image
       # of the layered dylib chain (#1615) — the dedicated export-budget step
-      # in the `all-features` job links it in both feature shapes. It carries
-      # no test target, so the workspace passes still exclude it. The preview
-      # system targets macOS, the iOS Simulator and Android, not Windows.
+      # in the `all-features` job links it and its layer images in both feature
+      # shapes, with `-Cprefer-dynamic` so each layer resolves the ones below
+      # it through their DLLs. Built here without that flag, a layer embeds the
+      # whole chain beneath it and overruns the PE export table, and none of
+      # them carries a test target, so the workspace passes exclude every
+      # `waterui-dylib*` crate. The preview system targets macOS, the iOS
+      # Simulator and Android, not Windows.
       #
       # waterui-browser-cef links cef_sandbox from a CEF binary distribution the
       # runner does not stage. It is still compiled in the lint job below,
@@ -118,12 +122,12 @@ jobs:
       # `graphics/cherenkov`, so the leg is expected to run green.
       #
       # One full-workspace pass under default features.
-      - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci
+      - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude 'waterui-dylib*' --exclude waterui-browser-cef --exclude '*-example' --profile ci
       - name: Test (examples that carry tests)
         run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
       # nextest cannot run doctests, and this workspace has plenty of them.
       # No example carries a doc comment, so the glob loses no doctest.
-      - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example'
+      - run: cargo test --locked --doc --workspace --exclude waterui-apple --exclude cocoa-ui --exclude 'waterui-dylib*' --exclude waterui-browser-cef --exclude '*-example'
       - name: Upload Test Snapshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -217,7 +221,7 @@ jobs:
             --exclude waterui `
             --exclude waterui-apple `
             --exclude cocoa-ui `
-            --exclude waterui-dylib `
+            --exclude 'waterui-dylib*' `
             --exclude '*-example' `
             --exclude waterui-core `
             --exclude waterui-browser-cef `
