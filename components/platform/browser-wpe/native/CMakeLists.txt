@@ -8,6 +8,8 @@ pkg_check_modules(WPE REQUIRED IMPORTED_TARGET
     libsoup-3.0
     json-glib-1.0
     libdrm)
+pkg_check_modules(WPE_EXTENSION REQUIRED IMPORTED_TARGET
+    wpe-web-process-extension-2.0)
 
 add_library(waterui_wpe SHARED waterui_wpe.c)
 target_compile_features(waterui_wpe PRIVATE c_std_11)
@@ -24,3 +26,19 @@ set_target_properties(waterui_wpe PROPERTIES
     INSTALL_RPATH "$ORIGIN")
 install(TARGETS waterui_wpe LIBRARY DESTINATION lib)
 install(FILES waterui_wpe.h DESTINATION include)
+
+add_library(waterui_wpe_extension MODULE waterui_wpe_extension.c)
+target_compile_features(waterui_wpe_extension PRIVATE c_std_11)
+target_compile_options(waterui_wpe_extension PRIVATE
+    -Wall
+    -Wextra
+    -Werror
+    -Wpedantic)
+target_link_libraries(waterui_wpe_extension PRIVATE
+    PkgConfig::WPE_EXTENSION)
+set_target_properties(waterui_wpe_extension PROPERTIES
+    PREFIX ""
+    BUILD_RPATH "$ORIGIN/../.."
+    INSTALL_RPATH "$ORIGIN/../..")
+install(TARGETS waterui_wpe_extension
+    LIBRARY DESTINATION lib/waterui-wpe/extensions)

@@ -29,7 +29,7 @@ fn shader_paint_transform_changes_sampling_without_moving_geometry()
     use cherenkov_gpu::{Gpu, GpuConfig};
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.shader(ShaderSource::wgsl(include_str!("shaders/paint.wgsl")))?;
-    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -84,10 +84,10 @@ fn image_paint_transform_composes_before_pattern_transform() {
         )
         .expect("image");
     let wrapped = wait!(engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let combined = wait!(engine
-        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let pattern = Affine::translate((2.0, 3.0)) * Affine::scale_non_uniform(5.0, 7.0);
     let paint_map = Affine::new([-1.0, 0.25, 0.5, 1.0, 28.0, -3.0]);

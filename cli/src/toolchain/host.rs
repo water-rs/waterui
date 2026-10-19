@@ -15,25 +15,48 @@ use std::{
     process::{Output, Stdio},
 };
 
+use cargo_metadata::{Metadata, MetadataCommand};
 use smol::{io::AsyncReadExt as _, process::Command, unblock};
 
-use crate::utils::{CommandError, format_failure_stream, std_output_enabled};
+use crate::utils::{CommandError, format_failure_stream};
 
 mod detached;
 
 /// The machine a toolchain check probes.
 ///
 /// A `Host` carries its own environment map (including `PATH`), a working
-/// directory for spawned processes and relative-path lookups, a home
-/// directory, and the roots that hold installed platform applications
-/// (macOS `/Applications`). Detection code must read all of those through
-/// this value so a declared host cannot leak real-machine state into a check.
-#[derive(Debug, Clone)]
+/// directory for spawned processes and relative-path lookups, and the
+/// roots that hold installed platform applications (macOS
+/// `/Applications`). The home directory is resolved from that
+/// environment — `HOME`/`USERPROFILE` — so it can never disagree with
+/// what a spawned child sees. Detection code must read all of those
+/// through this value so a declared host cannot leak real-machine state
+/// into a check.
+#[derive(Clone)]
 pub struct Host {
     env: BTreeMap<OsString, OsString>,
     cwd: PathBuf,
-    home: Option<PathBuf>,
     app_dirs: Vec<PathBuf>,
+    /// Whether spawned tools' captured output is also echoed to the
+    /// terminal — the policy `crate::utils::command` and [`Host::output`]
+    /// apply per invocation.
+    std_output: bool,
+    #[cfg(test)]
+    http_responses: Option<std::sync::Arc<std::sync::Mutex<BTreeMap<String, zenwave::Response>>>>,
+}
+
+// `env` holds credentials handed to tools (`WATERUI_INSPECTOR_TOKEN` and
+// the like): `Debug` names environment keys, never their values, and skips
+// the canned-response table entirely.
+impl std::fmt::Debug for Host {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Host")
+            .field("env_keys", &self.env.keys().collect::<Vec<_>>())
+            .field("cwd", &self.cwd)
+            .field("app_dirs", &self.app_dirs)
+            .field("std_output", &self.std_output)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Host {
@@ -47,8 +70,10 @@ impl Host {
         Self {
             env,
             cwd: env::current_dir().expect("process must have a working directory"),
-            home: dirs::home_dir(),
             app_dirs: default_app_dirs(),
+            std_output: false,
+            #[cfg(test)]
+            http_responses: None,
         }
     }
 
@@ -56,7 +81,7 @@ impl Host {
     ///
     /// `PATH` is exactly `path_dirs`; the environment contains exactly `vars`
     /// plus that `PATH` entry. The working directory defaults to the process
-    /// cwd — override it with [`Host::with_cwd`]. The home directory is taken
+    /// cwd — override it with [`Host::with_cwd`]. The home directory resolves
     /// from the declared `HOME`/`USERPROFILE`; a host that declares neither
     /// has none. Declared hosts have no [`Host::app_dirs`], so application-
     /// bundle fallbacks (e.g. Android Studio's bundled JBR) cannot fire.
@@ -90,13 +115,49 @@ impl Host {
         for (key, value) in vars {
             env.insert(key.as_ref().to_os_string(), value.as_ref().to_os_string());
         }
-        let home = home_dir_from_env(&env);
         Self {
             env,
             cwd: env::current_dir().expect("process must have a working directory"),
-            home,
             app_dirs: Vec::new(),
+            std_output: false,
+            #[cfg(test)]
+            http_responses: Some(std::sync::Arc::default()),
         }
+    }
+
+    /// Fetch a URL using this host's explicitly supplied request headers.
+    pub(crate) async fn http_get(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+    ) -> Result<zenwave::Response, zenwave::Error> {
+        use zenwave::Client as _;
+
+        #[cfg(test)]
+        if let Some(responses) = &self.http_responses {
+            return Ok(responses
+                .lock()
+                .expect("HTTP fixture lock")
+                .remove(url)
+                .unwrap_or_else(|| panic!("unexpected HTTP request: {url}")));
+        }
+        let mut client = zenwave::client();
+        let mut request = client.method(zenwave::Method::GET, url)?;
+        for (name, value) in headers {
+            request = request.header(*name, *value)?;
+        }
+        request.await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_http_response(self, url: &str, response: zenwave::Response) -> Self {
+        self.http_responses
+            .as_ref()
+            .expect("HTTP fixtures require a declared host")
+            .lock()
+            .expect("HTTP fixture lock")
+            .insert(url.to_owned(), response);
+        self
     }
 
     /// Override the working directory (builder-style).
@@ -111,6 +172,54 @@ impl Host {
     pub fn with_app_dirs(mut self, app_dirs: impl IntoIterator<Item = PathBuf>) -> Self {
         self.app_dirs = app_dirs.into_iter().collect();
         self
+    }
+
+    /// A host whose spawned tools echo their captured output to the
+    /// terminal — or stay silently captured when `enabled` is false.
+    ///
+    /// The policy is off by default so tool probes never print; a command
+    /// the user is watching turns it on for the hosts that build and run
+    /// its artifacts. `water mcp` keeps it off: its stdout is the JSON-RPC
+    /// stream.
+    #[must_use]
+    pub fn with_std_output(&self, enabled: bool) -> Self {
+        let mut host = self.clone();
+        host.std_output = enabled;
+        host
+    }
+
+    /// Whether tools spawned on this host echo their captured output to
+    /// the terminal.
+    #[must_use]
+    pub const fn std_output(&self) -> bool {
+        self.std_output
+    }
+
+    /// A host whose builds stay off the network.
+    ///
+    /// `offline` binds `CARGO_NET_OFFLINE` — the switch Cargo reads for its
+    /// own `--offline` — so the policy reaches the CLI's own downloads and
+    /// every Cargo invocation the host spawns alike.
+    #[must_use]
+    pub fn with_offline(&self, offline: bool) -> Self {
+        if offline {
+            self.with_env("CARGO_NET_OFFLINE", "true")
+        } else {
+            self.clone()
+        }
+    }
+
+    /// Whether this host is asked to keep builds off the network.
+    ///
+    /// `CARGO_NET_OFFLINE` carries it — set in the environment or bound by a
+    /// command's `--offline` flag through [`Host::with_offline`] — spelled
+    /// the way the environment spells booleans (`1`, `true`, `yes`, `on`).
+    #[must_use]
+    pub fn offline(&self) -> bool {
+        self.env("CARGO_NET_OFFLINE").is_some_and(|value| {
+            let value = value.to_string_lossy().trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
     }
 
     /// An environment variable on this host.
@@ -151,10 +260,99 @@ impl Host {
         &self.cwd
     }
 
-    /// This host's home directory, when it declares one.
+    /// This host's home directory, resolved from its own environment:
+    /// `HOME` on Unix, `USERPROFILE` on Windows, each falling back to the
+    /// other so a host declared with either variable answers on both
+    /// platforms.
+    ///
+    /// Reading through the environment keeps this in agreement with what a
+    /// spawned child sees: a home bound with [`Host::with_env`] or
+    /// [`Host::with_home`] is honoured, and a host that declares neither
+    /// variable reports `None` — never the real process's home.
     #[must_use]
     pub fn home_dir(&self) -> Option<&Path> {
-        self.home.as_deref()
+        let keys = if cfg!(target_os = "windows") {
+            ["USERPROFILE", "HOME"]
+        } else {
+            ["HOME", "USERPROFILE"]
+        };
+        keys.into_iter()
+            .find_map(|key| self.env(key).filter(|value| !value.is_empty()))
+            .map(Path::new)
+    }
+
+    /// Per-user cache directory for this host.
+    ///
+    /// `dirs::cache_dir` semantics read through the host's environment, so
+    /// the CLI and a build script that asks `dirs` agree on the path:
+    /// `~/Library/Caches` on macOS; on other Unix systems `XDG_CACHE_HOME`
+    /// when it is an absolute path, else `$HOME/.cache`; on Windows the
+    /// local application-data folder, which this host reads from its
+    /// `LOCALAPPDATA` (`dirs` asks the known-folder API, which reports the
+    /// same folder). `None` when the host declares no usable value.
+    #[must_use]
+    pub fn cache_dir(&self) -> Option<PathBuf> {
+        #[cfg(target_os = "windows")]
+        {
+            self.absolute_env_path("LOCALAPPDATA")
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.home_dir().map(|home| home.join("Library/Caches"))
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            // `dirs` ignores an empty or relative `XDG_CACHE_HOME`, as the
+            // XDG base-directory specification requires.
+            self.absolute_env_path("XDG_CACHE_HOME")
+                .or_else(|| self.home_dir().map(|home| home.join(".cache")))
+        }
+    }
+
+    /// Temporary directory for this host.
+    ///
+    /// `std::env::temp_dir` rules, with every variable read from this host's
+    /// environment and never the process's:
+    /// - Unix: `TMPDIR` when set; otherwise the per-user directory
+    ///   `confstr(_CS_DARWIN_USER_TEMP_DIR)` reports on macOS (`/tmp` if it
+    ///   reports none), `/data/local/tmp` on Android, and `/tmp` elsewhere.
+    /// - Windows (`GetTempPath2W`): the first of `TMP`, `TEMP` and
+    ///   `USERPROFILE` that is set and non-empty, else the Windows directory
+    ///   (`SystemRoot`, which every host carries as spawn plumbing).
+    ///
+    /// # Panics
+    /// On Windows, panics when the host declares none of those variables and
+    /// no `SystemRoot` either — a host no child process could start on.
+    #[must_use]
+    pub fn temp_dir(&self) -> PathBuf {
+        #[cfg(target_os = "windows")]
+        {
+            ["TMP", "TEMP", "USERPROFILE", "SystemRoot"]
+                .into_iter()
+                .find_map(|key| self.env(key).filter(|value| !value.is_empty()))
+                .map(PathBuf::from)
+                .expect("a Windows host carries SystemRoot, the temp directory of last resort")
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.env("TMPDIR").map_or_else(
+                || darwin_user_temp_dir().unwrap_or_else(|| PathBuf::from("/tmp")),
+                PathBuf::from,
+            )
+        }
+        #[cfg(all(unix, not(target_os = "macos")))]
+        {
+            self.env("TMPDIR")
+                .map_or_else(unix_default_temp_dir, PathBuf::from)
+        }
+    }
+
+    /// `key` as a path, when this host sets it to an absolute one.
+    #[cfg(not(target_os = "macos"))]
+    fn absolute_env_path(&self, key: &str) -> Option<PathBuf> {
+        self.env(key)
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute())
     }
 
     /// Path of the running `water` executable.
@@ -194,6 +392,17 @@ impl Host {
         unblock(move || which::which_in(name, paths, cwd)).await
     }
 
+    /// [`Host::which`] on the calling thread, for code that is synchronous
+    /// end to end (such as classifying the running executable's install).
+    /// Async code calls [`Host::which`], which moves the filesystem probes
+    /// off the executor.
+    ///
+    /// # Errors
+    /// - [`which::Error`] when no executable named `name` exists on this host.
+    pub fn which_blocking(&self, name: impl AsRef<OsStr>) -> Result<PathBuf, which::Error> {
+        which::which_in(name, self.joined_path(), &self.cwd)
+    }
+
     /// A host whose environment additionally binds `key` to `value`.
     ///
     /// Use for variables that must reach a single child tree (for example
@@ -205,6 +414,16 @@ impl Host {
         host.env
             .insert(key.as_ref().to_os_string(), value.as_ref().to_os_string());
         host
+    }
+
+    /// A host whose home directory is `home`: `HOME` and `USERPROFILE`
+    /// name it in the environment its children inherit, and
+    /// [`Host::home_dir`] answers it — the Water home and every other
+    /// per-user path follow.
+    #[must_use]
+    pub fn with_home(&self, home: impl Into<PathBuf>) -> Self {
+        let home = home.into();
+        self.with_env("HOME", &home).with_env("USERPROFILE", &home)
     }
 
     /// Every environment variable on this host, in map order.
@@ -220,35 +439,102 @@ impl Host {
     ///
     /// The child sees exactly this host's variables and starts in
     /// [`Host::cwd`]; `program` is resolved against this host's `PATH`.
-    /// stdio configuration is left to the caller — see [`crate::utils::command`]
-    /// for the CLI's capture/inherit policy.
+    /// stdin is `null`: a child never holds this process's own stdin, which
+    /// under `water mcp` is the agent host's JSON-RPC pipe — a caller that
+    /// feeds or forwards input sets `.stdin(...)` on the returned command
+    /// explicitly. Other stdio is left to the caller — see
+    /// `crate::utils::command` for the CLI's capture/inherit policy.
     #[must_use]
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
         withhold_std_handles_from_children();
         let mut command = Command::new(self.resolve_program(program.as_ref()));
-        command.env_clear().envs(&self.env).current_dir(&self.cwd);
+        command
+            .env_clear()
+            .envs(&self.env)
+            .current_dir(&self.cwd)
+            .stdin(Stdio::null());
         command
     }
 
     /// A [`std::process::Command`] that runs `program` under this host.
     ///
-    /// Same environment and working directory as [`Host::command`], for the
-    /// places that need synchronous or `std`-only command features (process
-    /// groups, spawning from a non-async thread).
+    /// Same environment, working directory and null-stdin default as
+    /// [`Host::command`], for the places that need synchronous or `std`-only
+    /// command features (process groups, spawning from a non-async thread).
     #[must_use]
     pub fn std_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
         withhold_std_handles_from_children();
         let mut command = std::process::Command::new(self.resolve_program(program.as_ref()));
-        command.env_clear().envs(&self.env).current_dir(&self.cwd);
         command
+            .env_clear()
+            .envs(&self.env)
+            .current_dir(&self.cwd)
+            .stdin(Stdio::null());
+        command
+    }
+
+    /// A [`std::process::Command`] that runs `program` under this host with
+    /// the invoking terminal attached: stdin, stdout and stderr all
+    /// inherited.
+    ///
+    /// This is the deliberate exception to the null-stdin default of
+    /// [`Host::command`] — for the tools that interact with the user's
+    /// terminal: the `create vite` framework picker, `<pm> install`, and
+    /// launchers that take the TTY over entirely. The
+    /// `std` type is returned so callers that `exec` or group the child can;
+    /// async callers wrap it with `smol::process::Command::from`.
+    #[must_use]
+    pub fn interactive_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
+        let mut command = self.std_command(program);
+        command
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit());
+        command
+    }
+
+    /// A [`std::process::Command`] that inherits the terminal for output but
+    /// reads nothing: stdin keeps the null default of
+    /// [`Host::std_command`].
+    ///
+    /// For a tool whose progress and errors the user watches live but that
+    /// never reads stdin — `water bench` running `cargo nextest` — in
+    /// contrast to [`Host::interactive_command`], which owns the whole
+    /// terminal.
+    #[must_use]
+    pub fn monitored_command(&self, program: impl AsRef<OsStr>) -> std::process::Command {
+        let mut command = self.std_command(program);
+        command.stdout(Stdio::inherit()).stderr(Stdio::inherit());
+        command
+    }
+
+    /// A [`Command`] that spawns `program` as the leader of a new process
+    /// group.
+    ///
+    /// Same environment and working directory as [`Host::command`]. A child
+    /// in its own process group cannot receive the `SIGINT` a terminal sends
+    /// its foreground group: `Ctrl-C` reaches this process alone, and the
+    /// parent forwards one termination signal itself. Sharing a group would
+    /// let the terminal signal the child directly — a second, unsupervised
+    /// termination path the supervisor cannot order or count. The group
+    /// boundary exists only on Unix, where `std` lowers `process_group(0)`
+    /// to `setpgid` in the child before `exec`.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn command_in_own_process_group(&self, program: impl AsRef<OsStr>) -> Command {
+        use std::os::unix::process::CommandExt as _;
+
+        let mut command = self.std_command(program);
+        command.process_group(0);
+        Command::from(command)
     }
 
     /// Spawn `program` with `args` under this host, capturing output.
     ///
-    /// stdout and stderr are piped and always collected for the returned
-    /// [`Output`]; when the CLI's `--logs` passthrough is active each chunk is
-    /// additionally mirrored to the terminal as it arrives, matching the
-    /// historical `run_command_output_os` behavior.
+    /// stdin is null (see [`Host::command`]); stdout and stderr are piped and
+    /// always collected for the returned [`Output`]; when this host's
+    /// [`Host::std_output`] policy echoes, each chunk is additionally mirrored
+    /// to the terminal as it arrives.
     ///
     /// # Errors
     /// - [`CommandError::Spawn`] when the program cannot be spawned or awaited.
@@ -262,7 +548,47 @@ impl Host {
         program: impl AsRef<OsStr>,
         args: impl IntoIterator<Item = impl AsRef<OsStr>>,
     ) -> Result<Output, CommandError> {
-        let program = program.as_ref();
+        self.collect_output(program.as_ref(), args, None::<smol::io::Empty>)
+            .await
+    }
+
+    /// [`Host::output`] with `input` streamed into the child's stdin, which
+    /// is closed once `input` reaches its end so the child sees end-of-file.
+    ///
+    /// The feed runs alongside the stdout/stderr drains, so a child that
+    /// writes while it reads cannot deadlock against a full pipe. A child
+    /// that exits without reading all of `input` closes its end of the pipe;
+    /// the feed then stops, and the exit status in the returned [`Output`]
+    /// is the verdict on the run.
+    ///
+    /// # Errors
+    /// - [`CommandError::Spawn`] when the program cannot be spawned or awaited.
+    /// - [`CommandError::Input`] when reading `input` or writing it to the
+    ///   child fails for any reason other than the child having closed stdin.
+    pub async fn output_with_input(
+        &self,
+        program: impl AsRef<OsStr>,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        input: impl smol::io::AsyncRead,
+    ) -> Result<Output, CommandError> {
+        self.collect_output(program.as_ref(), args, Some(input))
+            .await
+    }
+
+    /// The spawn-feed-drain behind [`Host::output`] and
+    /// [`Host::output_with_input`]: stdin is piped only when there is
+    /// `input` to feed, and null otherwise (see [`Host::command`]).
+    ///
+    /// # Panics
+    /// Panics if the piped-stdio invariant is violated — the streams are
+    /// configured `piped` immediately before spawn, so `take()` always sees
+    /// `Some`.
+    async fn collect_output(
+        &self,
+        program: &OsStr,
+        args: impl IntoIterator<Item = impl AsRef<OsStr>>,
+        input: Option<impl smol::io::AsyncRead>,
+    ) -> Result<Output, CommandError> {
         let program_name = program.to_string_lossy().into_owned();
         let args = args
             .into_iter()
@@ -276,12 +602,16 @@ impl Host {
             .kill_on_drop(true)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if input.is_some() {
+            command.stdin(Stdio::piped());
+        }
         let mut child = command.spawn().map_err(|source| CommandError::Spawn {
             program: program_name.clone(),
             source,
         })?;
+        let feed = feed_child_stdin(input.zip(child.stdin.take()));
 
-        let echo = std_output_enabled();
+        let echo = self.std_output;
         let stdout_task = smol::spawn(drain_child_pipe(
             child.stdout.take().expect("stdout is piped"),
             io::stdout(),
@@ -293,7 +623,12 @@ impl Host {
             echo,
         ));
 
-        let status = child.status().await.map_err(|source| CommandError::Spawn {
+        let (input_fed, status) = futures_util::future::join(feed, child.status()).await;
+        let status = status.map_err(|source| CommandError::Spawn {
+            program: program_name.clone(),
+            source,
+        })?;
+        input_fed.map_err(|source| CommandError::Input {
             program: program_name.clone(),
             source,
         })?;
@@ -344,6 +679,62 @@ impl Host {
                 ),
             })
         }
+    }
+
+    /// `cargo metadata` as `command` configures it, run on this host.
+    ///
+    /// [`MetadataCommand::exec`] spawns cargo with the process's own
+    /// environment. This takes the invocation `command` describes — its
+    /// arguments, working directory and environment overrides — and runs it
+    /// through [`Host::command`] instead, so cargo is found on this host's
+    /// `PATH` and sees this host's environment. The output contract is
+    /// `exec`'s: a failed run is [`cargo_metadata::Error::CargoMetadata`]
+    /// carrying cargo's stderr, and the metadata is the first stdout line
+    /// that opens a JSON object, parsed on the blocking pool.
+    ///
+    /// # Errors
+    /// Every error [`MetadataCommand::exec`] reports.
+    pub async fn cargo_metadata(
+        &self,
+        command: &MetadataCommand,
+    ) -> Result<Metadata, cargo_metadata::Error> {
+        let json = self.cargo_metadata_json(command).await?;
+        unblock(move || MetadataCommand::parse(json)).await
+    }
+
+    /// The JSON document [`Host::cargo_metadata`] parses — the first stdout
+    /// line of the run that opens a JSON object.
+    ///
+    /// # Errors
+    /// Every error [`MetadataCommand::exec`] reports before parsing.
+    pub async fn cargo_metadata_json(
+        &self,
+        command: &MetadataCommand,
+    ) -> Result<String, cargo_metadata::Error> {
+        let invocation = command.cargo_command();
+        let mut cargo = self.command("cargo");
+        cargo.args(invocation.get_args()).kill_on_drop(true);
+        if let Some(dir) = invocation.get_current_dir() {
+            cargo.current_dir(dir);
+        }
+        for (key, value) in invocation.get_envs() {
+            match value {
+                Some(value) => cargo.env(key, value),
+                None => cargo.env_remove(key),
+            };
+        }
+        tracing::debug!(args = ?invocation.get_args().collect::<Vec<_>>(), "spawning cargo metadata");
+        let output = cargo.output().await?;
+        if !output.status.success() {
+            return Err(cargo_metadata::Error::CargoMetadata {
+                stderr: String::from_utf8(output.stderr)?,
+            });
+        }
+        let json = std::str::from_utf8(&output.stdout)?
+            .lines()
+            .find(|line| line.starts_with('{'))
+            .ok_or(cargo_metadata::Error::NoJson)?;
+        Ok(json.to_owned())
     }
 
     /// Run `program` to completion with nothing of this process in its hands:
@@ -469,6 +860,43 @@ const fn withhold_std_handles_from_children() {
     // fork rather than handle inheritance.
 }
 
+/// Copy `input` into a child's piped stdin, then close it so the child sees
+/// end-of-file. `None` — no input, or stdin was not piped — feeds nothing.
+///
+/// A `BrokenPipe` on the write side means the child closed its stdin, so
+/// the feed stops there and leaves the verdict to the child's exit status;
+/// any other read or write failure is the feed's own error.
+async fn feed_child_stdin(
+    feed: Option<(impl smol::io::AsyncRead, smol::process::ChildStdin)>,
+) -> io::Result<()> {
+    use smol::io::AsyncWriteExt as _;
+
+    /// A write failure, unless it is the child having closed its stdin.
+    fn unless_closed(result: io::Result<()>) -> io::Result<()> {
+        match result {
+            Err(error) if error.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+            result => result,
+        }
+    }
+
+    let Some((input, mut stdin)) = feed else {
+        return Ok(());
+    };
+    let mut input = std::pin::pin!(input);
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let read = input.read(&mut chunk).await?;
+        if read == 0 {
+            break;
+        }
+        let written = stdin.write_all(&chunk[..read]).await;
+        if written.is_err() {
+            return unless_closed(written);
+        }
+    }
+    unless_closed(stdin.close().await)
+}
+
 /// Drain a piped child stream to EOF.
 ///
 /// Every chunk is appended to the returned buffer; when `echo` is set it is
@@ -508,16 +936,45 @@ fn env_get<'a>(env: &'a BTreeMap<OsString, OsString>, key: &OsStr) -> Option<&'a
     }
 }
 
-/// Home directory derived purely from a declared environment map.
-fn home_dir_from_env(env: &BTreeMap<OsString, OsString>) -> Option<PathBuf> {
-    if cfg!(target_os = "windows") {
-        env_get(env, "USERPROFILE".as_ref())
-            .or_else(|| env_get(env, "HOME".as_ref()))
-            .map(PathBuf::from)
-    } else {
-        env_get(env, "HOME".as_ref())
-            .or_else(|| env_get(env, "USERPROFILE".as_ref()))
-            .map(PathBuf::from)
+/// The temp directory `std` uses on Unix when `TMPDIR` is unset.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn unix_default_temp_dir() -> PathBuf {
+    #[cfg(target_os = "android")]
+    {
+        PathBuf::from("/data/local/tmp")
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        PathBuf::from("/tmp")
+    }
+}
+
+/// The per-user temp directory Darwin reports through
+/// `confstr(_CS_DARWIN_USER_TEMP_DIR)`, or `None` when it reports none.
+#[cfg(target_os = "macos")]
+fn darwin_user_temp_dir() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let mut buffer = vec![0_u8; 64];
+    loop {
+        // SAFETY: `buffer` is valid for writes of `buffer.len()` bytes, the
+        // length `confstr` is told it may fill.
+        let needed = unsafe {
+            libc::confstr(
+                libc::_CS_DARWIN_USER_TEMP_DIR,
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+            )
+        };
+        if needed == 0 {
+            return None;
+        }
+        if needed <= buffer.len() {
+            // `needed` counts the terminating NUL.
+            buffer.truncate(needed - 1);
+            return Some(PathBuf::from(OsString::from_vec(buffer)));
+        }
+        buffer.resize(needed, 0);
     }
 }
 
@@ -552,6 +1009,32 @@ mod tests {
     /// ambient process environment.
     const UNDECLARED: &str = "WATERUI_TEST_NEVER_DECLARED";
 
+    /// `Host::Debug` is a diagnostic surface — environment values are
+    /// credentials (`WATERUI_INSPECTOR_TOKEN` carries one to `adb`), so the
+    /// rendering names keys only.
+    #[test]
+    fn the_debug_form_names_keys_never_values() {
+        let host = Host::new(
+            Vec::<std::path::PathBuf>::new(),
+            [
+                (
+                    String::from("WATERUI_INSPECTOR_TOKEN"),
+                    String::from("s3cret-inspector-token"),
+                ),
+                (
+                    String::from("WATERUI_TEST_OTHER_SECRET"),
+                    String::from("s3cret-other-value"),
+                ),
+            ],
+        );
+        let rendered = format!("{host:?}");
+        assert!(!rendered.contains("s3cret-inspector-token"), "{rendered}");
+        assert!(!rendered.contains("s3cret-other-value"), "{rendered}");
+        assert!(rendered.contains("WATERUI_INSPECTOR_TOKEN"), "{rendered}");
+        assert!(rendered.contains("WATERUI_TEST_OTHER_SECRET"), "{rendered}");
+        assert!(rendered.contains("cwd"), "{rendered}");
+    }
+
     #[test]
     fn declared_host_env_contains_only_what_was_declared() {
         let host = Host::new(
@@ -579,6 +1062,25 @@ mod tests {
         assert!(
             host.app_dirs().is_empty(),
             "declared hosts never see installed application bundles"
+        );
+    }
+
+    /// `home_dir` answers through the host's own environment map, so a
+    /// home rebound with `with_env` is the one a spawned child sees, and
+    /// a host that declares neither variable reports none — never the
+    /// test process's real home.
+    #[test]
+    fn home_dir_reads_the_host_environment() {
+        let key = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+        let host = Host::current().with_env(key, "/declared/home");
+        assert_eq!(
+            host.home_dir(),
+            Some(std::path::Path::new("/declared/home"))
+        );
+        assert_eq!(
+            declared(&[]).home_dir(),
+            None,
+            "a host declaring no home variable must not see the real one"
         );
     }
 
@@ -614,6 +1116,36 @@ mod tests {
         assert!(output.contains("9.9.9-waterui-test"));
     }
 
+    /// A child spawned through [`Host::command_in_own_process_group`] leads
+    /// its own process group — `getpgid` answers the child's pid — so a
+    /// terminal `SIGINT` addressed to this process's group cannot reach it.
+    #[cfg(unix)]
+    #[test]
+    fn spawned_child_leads_its_own_process_group() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        smol::block_on(async {
+            let mut child = host
+                .command_in_own_process_group("/bin/sleep")
+                .arg("60")
+                .kill_on_drop(true)
+                .spawn()
+                .expect("spawn a child through the process-group seam");
+            let pid = nix::unistd::Pid::from_raw(
+                i32::try_from(child.id()).expect("a child's pid fits in i32"),
+            );
+            let group = nix::unistd::getpgid(Some(pid)).expect("read the child's group");
+            assert_eq!(group, pid, "the child must lead its own process group");
+            assert_ne!(
+                group,
+                nix::unistd::getpgrp(),
+                "the child's group must differ from the supervisor's"
+            );
+            let _ = child.kill();
+            let _ = child.status().await;
+        });
+    }
+
     #[test]
     fn run_reports_nonzero_exit_with_output() {
         let machine = TestMachine::new();
@@ -623,5 +1155,68 @@ mod tests {
         let error = smol::block_on(host.run("rustup", ["frobnicate"]))
             .expect_err("a failing tool must surface as an error");
         assert!(error.to_string().contains("rustup"));
+    }
+
+    fn declared(vars: &[(&str, &str)]) -> Host {
+        Host::new(Vec::<std::path::PathBuf>::new(), vars.iter().copied())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn temp_dir_is_the_declared_tmpdir() {
+        assert_eq!(
+            declared(&[("TMPDIR", "/declared/tmp")]).temp_dir(),
+            std::path::Path::new("/declared/tmp")
+        );
+    }
+
+    #[cfg(all(unix, not(target_vendor = "apple"), not(target_os = "android")))]
+    #[test]
+    fn temp_dir_without_tmpdir_is_slash_tmp() {
+        assert_eq!(declared(&[]).temp_dir(), std::path::Path::new("/tmp"));
+    }
+
+    #[cfg(target_vendor = "apple")]
+    #[test]
+    fn temp_dir_without_tmpdir_is_the_darwin_user_temp_dir() {
+        let temp = declared(&[]).temp_dir();
+        assert!(temp.is_absolute(), "{}", temp.display());
+        assert!(temp.is_dir(), "{} must exist", temp.display());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn temp_dir_follows_get_temp_path_order() {
+        let all = [
+            ("TMP", r"C:\tmp-var"),
+            ("TEMP", r"C:\temp-var"),
+            ("USERPROFILE", r"C:\Users\declared"),
+            ("SystemRoot", r"C:\Windows-declared"),
+        ];
+        for skipped in 0..all.len() {
+            let host = declared(&all[skipped..]);
+            assert_eq!(host.temp_dir(), std::path::Path::new(all[skipped].1));
+        }
+        assert_eq!(
+            declared(&[("TMP", ""), ("TEMP", r"C:\temp-var")]).temp_dir(),
+            std::path::Path::new(r"C:\temp-var"),
+            "an empty variable is skipped"
+        );
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn cache_dir_ignores_a_relative_or_empty_xdg_cache_home() {
+        for value in ["", "relative/cache"] {
+            assert_eq!(
+                declared(&[("HOME", "/home/declared"), ("XDG_CACHE_HOME", value)]).cache_dir(),
+                Some(std::path::PathBuf::from("/home/declared/.cache")),
+                "XDG_CACHE_HOME={value:?}"
+            );
+        }
+        assert_eq!(
+            declared(&[("HOME", "/home/declared"), ("XDG_CACHE_HOME", "/xdg/cache")]).cache_dir(),
+            Some(std::path::PathBuf::from("/xdg/cache"))
+        );
     }
 }

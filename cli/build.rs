@@ -55,6 +55,10 @@ fn main() {
         "cargo:rustc-env=WATERUI_FRAMEWORK_REPOSITORY={}",
         framework_repository(&manifest)
     );
+    println!(
+        "cargo:rustc-env=WATERUI_CLI_DIST_TARGETS={}",
+        dist_targets(&manifest).join(" ")
+    );
 
     let cli_commit =
         git(&cli_manifest_dir, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
@@ -78,23 +82,29 @@ fn git(repo_root: &Path, args: &[&str]) -> Option<String> {
 
 fn register_git_head_rerun(repo_root: &Path) {
     // A packaged build has no `.git` to watch.
-    let Some(git_dir) = git(repo_root, &["rev-parse", "--git-dir"]) else {
+    let Some(paths) = git(
+        repo_root,
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-path",
+            "HEAD",
+            "--git-common-dir",
+        ],
+    ) else {
         return;
     };
-    let git_dir_path = PathBuf::from(git_dir);
-    let git_dir_path = if git_dir_path.is_absolute() {
-        git_dir_path
-    } else {
-        repo_root.join(git_dir_path)
-    };
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir_path.join("HEAD").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        git_dir_path.join("refs").display()
-    );
+    let mut paths = paths.lines();
+    let head = paths.next().expect("Git must report its HEAD path");
+    let common = Path::new(paths.next().expect("Git must report its common directory"));
+    println!("cargo:rerun-if-changed={head}");
+    println!("cargo:rerun-if-changed={}", common.join("refs").display());
+    for storage in ["packed-refs", "reftable"] {
+        let path = common.join(storage);
+        if path.exists() {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
 }
 
 /// The repository this crate lives in — where certified manifests, releases,
@@ -123,6 +133,26 @@ fn framework_repository(manifest: &Value) -> String {
     }
     assert!(seen, "Cargo.toml declares no waterui-* dependency");
     "https://github.com/water-rs/waterui".to_string()
+}
+
+/// The host triples `dist` ships the CLI for — `[package.metadata.dist]
+/// targets`, the list `dist` itself builds from.
+fn dist_targets(manifest: &Value) -> Vec<&str> {
+    let targets = manifest["package"]["metadata"]["dist"]["targets"]
+        .as_array()
+        .expect("Cargo.toml [package.metadata.dist] must declare `targets`");
+    assert!(
+        !targets.is_empty(),
+        "Cargo.toml [package.metadata.dist] targets must not be empty"
+    );
+    targets
+        .iter()
+        .map(|target| {
+            target.as_str().unwrap_or_else(|| {
+                panic!("Cargo.toml [package.metadata.dist] target {target} is not a string")
+            })
+        })
+        .collect()
 }
 
 fn manifest_scaffold_string(scaffold_metadata: &Value, key: &str) -> String {

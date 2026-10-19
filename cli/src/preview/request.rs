@@ -6,18 +6,19 @@
 //! overrides — and resolve them through the functions here, so the two can
 //! never drift apart.
 
+use std::time::Duration;
+
 use clap::ValueEnum;
 use eyre::{Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::apple::toolchain::AppleSdk;
-use crate::platform::TargetPlatform;
-use crate::preview::protocol::{AppError, DylibId, function_path_to_symbol};
-use crate::preview::{
-    HydrolysisPreviewSource, HydrolysisPreviewTheme, PreviewPlatform, PreviewSession,
-};
+use crate::platform::{TargetBackend, TargetPlatform};
+use crate::preview::protocol::function_path_to_symbol;
+use crate::preview::{HydrolysisPreviewTheme, PreviewSource};
+use crate::project::{Manifest, resolve_backend};
 use crate::toolchain_checks;
+pub use waterui_preview_protocol::run::DEFAULT_CONTENT_DEADLINE;
 
 /// Default frame size shared by `water preview --frame` and the MCP `preview`
 /// tool's `frame` argument.
@@ -26,12 +27,14 @@ pub const DEFAULT_FRAME: &str = "375x667";
 /// Target platform for preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum CliPreviewPlatform {
-    /// iOS Simulator.
+    /// iOS — with the Apple backend, the `UIKit` realization rendered on
+    /// this Mac through Mac Catalyst.
     Ios,
     /// macOS.
     Macos,
-    /// Android Emulator.
+    /// Android device — Hydrolysis inside the preview host instrumentation.
     Android,
     /// Linux (Hydrolysis).
     Linux,
@@ -41,7 +44,7 @@ pub enum CliPreviewPlatform {
 
 impl CliPreviewPlatform {
     /// The desktop OS this platform renders on, if it is one. iOS and
-    /// Android previews are device targets and return `None`.
+    /// Android previews carry their own triples and return `None`.
     const fn desktop_os(self) -> Option<&'static str> {
         match self {
             Self::Macos => Some("macos"),
@@ -55,33 +58,43 @@ impl CliPreviewPlatform {
 /// Rendering backend for preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum CliPreviewBackend {
-    /// Apple preview support app.
+    /// Apple native backend — `AppKit` on macOS, `UIKit` through Mac
+    /// Catalyst on iOS.
     Apple,
-    /// Android preview support app.
-    Android,
-    /// Hydrolysis direct renderer.
+    /// Hydrolysis direct renderer — the desktop binary for desktop
+    /// platforms, the preview host instrumentation for Android.
     Hydrolysis,
 }
 
 /// The preview execution path `resolve_preview_backend` resolved, carrying
-/// the target each path builds for or serves.
+/// the target each path builds for.
 ///
-/// A Hydrolysis render compiles a managed backend binary for a desktop
-/// [`TargetPlatform`]; a support-app render talks the preview protocol to a
-/// [`PreviewPlatform`]. Carrying the target on the variant keeps call sites
-/// from re-deriving it from the CLI platform label.
+/// A Hydrolysis render compiles a managed backend for a desktop
+/// [`TargetPlatform`] — or for `TargetPlatform::Android`, where the launcher
+/// cdylib registers `preview_runtime::run` on `JNI_OnLoad` inside the
+/// preview host's instrumentation; an Apple render builds the in-process
+/// preview binary for the [`TargetPlatform`] it carries. Carrying the
+/// target on the variant keeps call sites from re-deriving it from the CLI
+/// platform label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ResolvedPreviewBackend {
-    /// Hydrolysis render for the given desktop target.
+    /// Hydrolysis render for the given target — a desktop binary, or the
+    /// Android preview host's instrumentation for `TargetPlatform::Android`.
     Hydrolysis(TargetPlatform),
-    /// Preview support-app render for the given protocol platform.
-    SupportApp(PreviewPlatform),
+    /// The in-process Apple preview binary, built for the given target and
+    /// exec'd on this Mac: `TargetPlatform::MacOS` renders the `AppKit`
+    /// realization, `TargetPlatform::MacCatalyst` the `UIKit` one under the
+    /// iPad idiom — `water preview --platform ios`, with no simulator.
+    Apple(TargetPlatform),
 }
 
 /// Theme package for Hydrolysis preview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum CliHydrolysisPreviewTheme {
     /// Material Design 3 theme package.
     Material3,
@@ -98,6 +111,7 @@ impl From<CliHydrolysisPreviewTheme> for HydrolysisPreviewTheme {
 /// What a preview render draws: a `#[preview]` function exported from the
 /// project crate, or an inline `WaterUI` expression.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PreviewTarget {
     /// A `#[preview]` function: its crate-relative path and export symbol.
     Function {
@@ -123,19 +137,20 @@ impl PreviewTarget {
         }
     }
 
-    /// The [`HydrolysisPreviewSource`] for this target.
+    /// The [`PreviewSource`] for this target.
     #[must_use]
-    pub fn hydrolysis_source(&self) -> HydrolysisPreviewSource<'_> {
+    pub fn source(&self) -> PreviewSource<'_> {
         match self {
-            Self::Function { symbol, .. } => HydrolysisPreviewSource::Symbol(symbol),
-            Self::Expression { expression } => HydrolysisPreviewSource::Expression(expression),
+            Self::Function { symbol, .. } => PreviewSource::Symbol(symbol),
+            Self::Expression { expression } => PreviewSource::Expression(expression),
         }
     }
 }
 
 /// A fully resolved preview render, ready to hand to the Hydrolysis or
-/// support-app execution path.
+/// Apple execution path.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct PreviewRequest {
     /// Resolved target platform.
     pub platform: CliPreviewPlatform,
@@ -150,6 +165,27 @@ pub struct PreviewRequest {
     pub width: f32,
     /// Frame height in logical units.
     pub height: f32,
+    /// How long a capture waits for the content its views owe — a decoding
+    /// image, a `Suspense` future — before the preview fails naming them.
+    pub content_deadline: Duration,
+}
+
+/// Parse a content timeout given in seconds — how long a capture waits for
+/// the content its views owe before the preview fails naming them. `None`
+/// takes the protocol's default.
+///
+/// # Errors
+/// Returns an error if the timeout is not a positive finite number of
+/// seconds.
+pub fn parse_content_timeout(seconds: Option<f64>) -> Result<Duration> {
+    let Some(seconds) = seconds else {
+        return Ok(DEFAULT_CONTENT_DEADLINE);
+    };
+    if !seconds.is_finite() || seconds <= 0.0 {
+        bail!("Invalid content timeout: must be a positive finite number of seconds");
+    }
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|error| eyre::eyre!("Invalid content timeout of {seconds}s: {error}"))
 }
 
 /// Parse frame size from a `WIDTHxHEIGHT` string.
@@ -222,48 +258,58 @@ fn is_rust_ident(segment: &str) -> bool {
 /// given.
 ///
 /// The result carries the target the resolved path needs: the desktop
-/// [`TargetPlatform`] Hydrolysis builds for, or the [`PreviewPlatform`] a
-/// support app serves.
+/// [`TargetPlatform`] Hydrolysis builds for, or the Apple target the
+/// in-process Apple preview binary builds for.
 ///
 /// # Errors
-/// Returns an error if the backend does not support the platform.
+/// Returns an error for a conflicting project declaration or a backend
+/// without preview support on this platform.
 pub fn resolve_preview_backend(
+    project: &Manifest,
     platform: CliPreviewPlatform,
     backend_override: Option<CliPreviewBackend>,
 ) -> Result<ResolvedPreviewBackend> {
-    let default_backend = match platform {
-        CliPreviewPlatform::Ios | CliPreviewPlatform::Macos => CliPreviewBackend::Apple,
-        CliPreviewPlatform::Android => CliPreviewBackend::Android,
-        CliPreviewPlatform::Linux | CliPreviewPlatform::Windows => CliPreviewBackend::Hydrolysis,
+    let target = match platform {
+        CliPreviewPlatform::Ios => TargetPlatform::IOS,
+        CliPreviewPlatform::Macos => TargetPlatform::MacOS,
+        CliPreviewPlatform::Android => TargetPlatform::Android,
+        CliPreviewPlatform::Linux => TargetPlatform::Linux,
+        CliPreviewPlatform::Windows => TargetPlatform::Windows,
     };
+    let backend = resolve_backend(
+        project,
+        target,
+        backend_override.map(|backend| match backend {
+            CliPreviewBackend::Apple => TargetBackend::Apple,
+            CliPreviewBackend::Hydrolysis => TargetBackend::Hydrolysis,
+        }),
+    )?;
 
-    Ok(
-        match (platform, backend_override.unwrap_or(default_backend)) {
-            (CliPreviewPlatform::Ios, CliPreviewBackend::Apple) => {
-                ResolvedPreviewBackend::SupportApp(PreviewPlatform::IosSimulator)
-            }
-            (CliPreviewPlatform::Macos, CliPreviewBackend::Apple) => {
-                ResolvedPreviewBackend::SupportApp(PreviewPlatform::Macos)
-            }
-            (CliPreviewPlatform::Macos, CliPreviewBackend::Hydrolysis) => {
-                ResolvedPreviewBackend::Hydrolysis(TargetPlatform::MacOS)
-            }
-            (CliPreviewPlatform::Linux, CliPreviewBackend::Hydrolysis) => {
-                ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Linux)
-            }
-            (CliPreviewPlatform::Windows, CliPreviewBackend::Hydrolysis) => {
-                ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Windows)
-            }
-            (CliPreviewPlatform::Android, CliPreviewBackend::Android) => {
-                ResolvedPreviewBackend::SupportApp(PreviewPlatform::Android)
-            }
-            (platform, backend) => {
-                bail!(
-                    "Preview backend {backend:?} does not support platform {platform:?}. Valid combinations: ios/apple, macos/apple, macos/hydrolysis, linux/hydrolysis, windows/hydrolysis, android/android"
-                );
-            }
-        },
-    )
+    Ok(match (platform, backend) {
+        (CliPreviewPlatform::Ios, TargetBackend::Apple) => {
+            ResolvedPreviewBackend::Apple(TargetPlatform::MacCatalyst)
+        }
+        (CliPreviewPlatform::Macos, TargetBackend::Apple) => {
+            ResolvedPreviewBackend::Apple(TargetPlatform::MacOS)
+        }
+        (CliPreviewPlatform::Macos, TargetBackend::Hydrolysis) => {
+            ResolvedPreviewBackend::Hydrolysis(TargetPlatform::MacOS)
+        }
+        (CliPreviewPlatform::Linux, TargetBackend::Hydrolysis) => {
+            ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Linux)
+        }
+        (CliPreviewPlatform::Windows, TargetBackend::Hydrolysis) => {
+            ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Windows)
+        }
+        (CliPreviewPlatform::Android, TargetBackend::Hydrolysis) => {
+            ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android)
+        }
+        (platform, backend) => {
+            bail!(
+                "Preview backend {backend:?} does not support platform {platform:?}. Valid combinations: ios/apple, macos/apple, macos/hydrolysis, linux/hydrolysis, windows/hydrolysis, android/hydrolysis"
+            );
+        }
+    })
 }
 
 /// Resolve the preview platform, defaulting to this host's native preview
@@ -288,9 +334,7 @@ fn native_preview_platform() -> Result<CliPreviewPlatform> {
     })
 }
 
-/// The preview platform a host OS renders natively: `macos` through the Apple
-/// support app, `linux` and `windows` through the Hydrolysis backend — the
-/// same renderer `water run` uses on those hosts.
+/// The preview platform for each supported desktop host OS.
 fn native_preview_platform_for_os(os: &str) -> Option<CliPreviewPlatform> {
     match os {
         "macos" => Some(CliPreviewPlatform::Macos),
@@ -305,10 +349,17 @@ fn native_preview_platform_for_os(os: &str) -> Option<CliPreviewPlatform> {
 ///
 /// # Errors
 /// Returns an error when `platform` does not support the Hydrolysis backend.
-pub fn resolve_hydrolysis_test_platform(platform: CliPreviewPlatform) -> Result<TargetPlatform> {
-    match resolve_preview_backend(platform, Some(CliPreviewBackend::Hydrolysis))? {
+pub fn resolve_hydrolysis_test_platform(
+    project: &Manifest,
+    platform: CliPreviewPlatform,
+) -> Result<TargetPlatform> {
+    match resolve_preview_backend(project, platform, Some(CliPreviewBackend::Hydrolysis))? {
+        ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android) => Err(eyre::eyre!(
+            "`water preview test` runs on desktop Hydrolysis only; \
+             --platform android renders through the preview host instrumentation"
+        )),
         ResolvedPreviewBackend::Hydrolysis(target) => Ok(target),
-        ResolvedPreviewBackend::SupportApp(_) => {
+        ResolvedPreviewBackend::Apple(_) => {
             unreachable!("a forced Hydrolysis backend resolves to Hydrolysis")
         }
     }
@@ -340,81 +391,71 @@ pub fn resolve_hydrolysis_preview_theme(
 
 /// Check the host toolchain required by the resolved backend.
 ///
-/// # Errors
-/// Returns an error if a required toolchain component is missing.
-pub async fn check_toolchain_for_backend(backend: ResolvedPreviewBackend) -> Result<()> {
-    let host = crate::toolchain::Host::current();
-    match backend {
-        ResolvedPreviewBackend::SupportApp(platform) => match platform {
-            PreviewPlatform::Ios => {
-                toolchain_checks::check_apple(&host, AppleSdk::Ios).await?;
-            }
-            PreviewPlatform::IosSimulator => {
-                toolchain_checks::check_apple(&host, AppleSdk::IosSimulator).await?;
-            }
-            PreviewPlatform::Macos => {
-                toolchain_checks::check_apple(&host, AppleSdk::Macos).await?;
-            }
-            PreviewPlatform::Android => {
-                toolchain_checks::check_android_run(&host).await?;
-            }
-        },
-        ResolvedPreviewBackend::Hydrolysis(_) => {
-            toolchain_checks::check_hydrolysis(&host).await?;
-        }
-    }
-    Ok(())
-}
-
-/// Render `symbol` through the support-app session, translating a missing
-/// export into an actionable `#[preview]` hint.
+/// Returns the Kotlin toolchain an Android check resolved — the preview
+/// build hands it to every consumer rather than probing `kotlinc` again for
+/// the same invocation. `None` on every non-Android backend.
 ///
 /// # Errors
-/// Returns an error if the preview app rejects the render or the transport
-/// fails.
-pub async fn render_with_symbol(
-    session: &mut PreviewSession,
-    function_path: &str,
-    symbol: &str,
-    dylib_id: DylibId,
-    dylib_path: &std::path::Path,
-    width: f32,
-    height: f32,
-) -> Result<Vec<u8>> {
-    let prefer_local_path = session.platform == PreviewPlatform::Macos;
-    match session
-        .client
-        .render_with_dylib_file(
-            dylib_id,
-            dylib_path,
-            symbol,
-            width,
-            height,
-            prefer_local_path,
-        )
-        .await
-    {
-        Ok(data) => Ok(data),
-        Err(AppError::SymbolNotFound(_)) => {
-            bail!("{}", missing_preview_symbol_message(function_path, symbol));
+/// Returns an error if a required toolchain component is missing.
+pub async fn check_toolchain_for_backend(
+    host: &crate::toolchain::Host,
+    backend: ResolvedPreviewBackend,
+) -> Result<Option<crate::android::KotlinToolchain>> {
+    match backend {
+        ResolvedPreviewBackend::Apple(platform) => {
+            toolchain_checks::check_apple_preview(host, platform).await?;
         }
-        Err(err) => {
-            bail!("Preview app error: {err}");
+        ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android) => {
+            return toolchain_checks::check_android_run(host).await.map(Some);
+        }
+        ResolvedPreviewBackend::Hydrolysis(_) => {
+            toolchain_checks::check_hydrolysis(host).await?;
         }
     }
-}
-
-fn missing_preview_symbol_message(function_path: &str, symbol: &str) -> String {
-    format!(
-        "Preview component not found: `{function_path}`\nExpected export symbol: `{symbol}`\n\
-The preview function is likely missing `#[preview]` (or the name is wrong).\n\
-Example:\n  #[preview]\n  fn {}() -> impl View {{ ... }}",
-        function_path.rsplit("::").next().unwrap_or(function_path)
-    )
+    Ok(None)
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn preview_declarations_conflicts_and_unsupported_defaults() {
+        let mut project = project_manifest();
+        project.platforms.clear();
+        assert!(resolve_preview_backend(&project, CliPreviewPlatform::Linux, None).is_err());
+        project.platforms.insert(
+            crate::project::PlatformName::Macos,
+            crate::project::PlatformConfig {
+                backend: TargetBackend::Hydrolysis,
+            },
+        );
+        assert_eq!(
+            resolve_preview_backend(&project, CliPreviewPlatform::Macos, None).unwrap(),
+            ResolvedPreviewBackend::Hydrolysis(TargetPlatform::MacOS)
+        );
+        let error = resolve_preview_backend(
+            &project,
+            CliPreviewPlatform::Macos,
+            Some(CliPreviewBackend::Apple),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("conflicts"));
+        assert!(
+            resolve_hydrolysis_test_platform(
+                &project_manifest_with_apple(),
+                CliPreviewPlatform::Macos
+            )
+            .is_err()
+        );
+    }
+
+    fn project_manifest_with_apple() -> Manifest {
+        Manifest::parse("[package]\nname = 'Demo'\nbundle_identifier = 'dev.example.demo'\n[platforms.macos]\nbackend = 'apple'").unwrap()
+    }
+
+    fn project_manifest() -> Manifest {
+        Manifest::parse("[package]\nname = 'Demo'\nbundle_identifier = 'dev.example.demo'\n[platforms.linux]\nbackend = 'hydrolysis'").unwrap()
+    }
+
     use super::*;
 
     #[test]
@@ -451,30 +492,75 @@ mod tests {
     }
 
     #[test]
-    fn linux_and_windows_default_to_the_hydrolysis_backend() {
+    fn linux_declaration_and_windows_default_use_hydrolysis() {
         for (platform, target) in [
             (CliPreviewPlatform::Linux, TargetPlatform::Linux),
             (CliPreviewPlatform::Windows, TargetPlatform::Windows),
         ] {
             assert_eq!(
-                resolve_preview_backend(platform, None).unwrap(),
+                resolve_preview_backend(&project_manifest(), platform, None).unwrap(),
                 ResolvedPreviewBackend::Hydrolysis(target)
             );
         }
     }
 
     #[test]
-    fn support_app_platforms_resolve_to_their_protocol_platform() {
-        for (platform, preview_platform) in [
-            (CliPreviewPlatform::Ios, PreviewPlatform::IosSimulator),
-            (CliPreviewPlatform::Macos, PreviewPlatform::Macos),
-            (CliPreviewPlatform::Android, PreviewPlatform::Android),
-        ] {
-            assert_eq!(
-                resolve_preview_backend(platform, None).unwrap(),
-                ResolvedPreviewBackend::SupportApp(preview_platform)
-            );
-        }
+    fn apple_platforms_resolve_to_the_in_process_preview_binary() {
+        assert_eq!(
+            resolve_preview_backend(&project_manifest(), CliPreviewPlatform::Macos, None).unwrap(),
+            ResolvedPreviewBackend::Apple(TargetPlatform::MacOS)
+        );
+        // `--platform ios` renders the UIKit realization on this Mac through
+        // Mac Catalyst — the default backend, an explicit `apple`, and an
+        // `[platforms.ios]` declaration all resolve there.
+        let catalyst = ResolvedPreviewBackend::Apple(TargetPlatform::MacCatalyst);
+        assert_eq!(
+            resolve_preview_backend(&project_manifest(), CliPreviewPlatform::Ios, None).unwrap(),
+            catalyst
+        );
+        assert_eq!(
+            resolve_preview_backend(
+                &project_manifest(),
+                CliPreviewPlatform::Ios,
+                Some(CliPreviewBackend::Apple)
+            )
+            .unwrap(),
+            catalyst
+        );
+        let declared = Manifest::parse(
+            "[package]\nname = 'Demo'\nbundle_identifier = 'dev.example.demo'\n[platforms.ios]\nbackend = 'apple'",
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_preview_backend(&declared, CliPreviewPlatform::Ios, None).unwrap(),
+            catalyst
+        );
+        assert!(
+            resolve_preview_backend(
+                &project_manifest(),
+                CliPreviewPlatform::Ios,
+                Some(CliPreviewBackend::Hydrolysis)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn android_resolves_to_the_hydrolysis_preview_host() {
+        assert_eq!(
+            resolve_preview_backend(&project_manifest(), CliPreviewPlatform::Android, None)
+                .unwrap(),
+            ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android)
+        );
+        assert_eq!(
+            resolve_preview_backend(
+                &project_manifest(),
+                CliPreviewPlatform::Android,
+                Some(CliPreviewBackend::Hydrolysis)
+            )
+            .unwrap(),
+            ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android)
+        );
     }
 
     #[test]
@@ -510,10 +596,111 @@ mod tests {
     #[test]
     fn hydrolysis_test_platform_rejects_device_platforms() {
         assert_eq!(
-            resolve_hydrolysis_test_platform(CliPreviewPlatform::Windows).unwrap(),
+            resolve_hydrolysis_test_platform(&project_manifest(), CliPreviewPlatform::Windows)
+                .unwrap(),
             TargetPlatform::Windows
         );
-        assert!(resolve_hydrolysis_test_platform(CliPreviewPlatform::Ios).is_err());
+        assert!(
+            resolve_hydrolysis_test_platform(&project_manifest(), CliPreviewPlatform::Ios).is_err()
+        );
+        assert!(
+            resolve_hydrolysis_test_platform(&project_manifest(), CliPreviewPlatform::Android)
+                .is_err()
+        );
+    }
+
+    /// `water preview --platform android` probes `kotlinc -version` once: the
+    /// launcher build's Android build context consumes the toolchain the
+    /// preview's toolchain check resolved instead of probing again (every
+    /// probe launches a JVM). The fake tools log each invocation to
+    /// `WATERUI_FAKE_LOG`.
+    #[test]
+    #[cfg(unix)]
+    fn android_preview_probes_kotlinc_once() {
+        use crate::android::ndk_version::ANDROID_NDK_VERSION;
+        use crate::android::platform::{AndroidAbi, resolve_android_build_context};
+        use crate::toolchain::testing::TestMachine;
+        use std::ffi::OsString;
+        use std::path::Path;
+
+        // The NDK host tag the build context resolves on the unix hosts the
+        // CLI supports (Apple support is ARM64-only).
+        const NDK_HOST_TAG: &str = if cfg!(target_os = "macos") {
+            "darwin-arm64"
+        } else {
+            "linux-x86_64"
+        };
+        const API_LEVEL: u32 = 35;
+
+        let machine = TestMachine::new();
+        let sdk = machine.install_android_sdk();
+        machine.install_adb();
+        machine.install_android_platform("android-36");
+        machine.install_android_build_tools("36.0.0");
+        machine.install_android_ndk(ANDROID_NDK_VERSION);
+        // The build context requires the API-level compiler wrappers under
+        // the host tag's `prebuilt/<tag>/bin`.
+        for tool in ["clang", "clang++"] {
+            machine.executable(
+                Path::new("sdk/ndk")
+                    .join(ANDROID_NDK_VERSION)
+                    .join("toolchains/llvm/prebuilt")
+                    .join(NDK_HOST_TAG)
+                    .join("bin")
+                    .join(format!("aarch64-linux-android{API_LEVEL}-{tool}")),
+            );
+        }
+        machine.install("java");
+        machine.install("kotlinc");
+        machine.install("cmake");
+        machine.install("rustup");
+        machine.respond(
+            "RUSTUP_ACTIVE_TOOLCHAIN",
+            "stable-aarch64-unknown-fake (default)",
+        );
+        machine.respond(
+            "RUSTUP_INSTALLED_TARGETS",
+            "aarch64-linux-android\narmv7-linux-androideabi\ni686-linux-android\nx86_64-linux-android",
+        );
+
+        let fake_log = machine.root().join("tools.log");
+        let host = machine.host([
+            (OsString::from("ANDROID_SDK_ROOT"), sdk.into_os_string()),
+            (
+                OsString::from("WATERUI_FAKE_KOTLINC_VERSION"),
+                OsString::from(crate::build_info::ANDROID_KOTLIN_VERSION),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_LOG"),
+                fake_log.clone().into_os_string(),
+            ),
+        ]);
+
+        smol::block_on(async {
+            // The gate `water preview` runs, then the build-context
+            // resolution the launcher's cargo build performs.
+            let kotlin = check_toolchain_for_backend(
+                &host,
+                ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android),
+            )
+            .await
+            .expect("the fake host satisfies the Android preview toolchain")
+            .expect("the Android preview check resolves a Kotlin toolchain");
+            let abi = AndroidAbi::Arm64V8a;
+            resolve_android_build_context(&host, abi, &abi.triple(), API_LEVEL, &kotlin)
+                .await
+                .expect("the fake host satisfies the Android build context");
+        });
+
+        let log = std::fs::read_to_string(&fake_log).expect("read the fake tool log");
+        let kotlinc_runs = log
+            .lines()
+            .filter(|line| line.split_whitespace().next() == Some("kotlinc"))
+            .count();
+        assert_eq!(
+            kotlinc_runs, 1,
+            "the Android preview's toolchain resolution must probe kotlinc exactly once:\n{log}"
+        );
     }
 
     #[test]
@@ -526,22 +713,20 @@ mod tests {
             .unwrap(),
             Some(HydrolysisPreviewTheme::Material3)
         );
+        assert_eq!(
+            resolve_hydrolysis_preview_theme(
+                ResolvedPreviewBackend::Hydrolysis(TargetPlatform::Android),
+                None
+            )
+            .unwrap(),
+            Some(HydrolysisPreviewTheme::Material3)
+        );
         assert!(
             resolve_hydrolysis_preview_theme(
-                ResolvedPreviewBackend::SupportApp(PreviewPlatform::Macos),
+                ResolvedPreviewBackend::Apple(TargetPlatform::MacCatalyst),
                 Some(CliHydrolysisPreviewTheme::Material3)
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn formats_missing_preview_symbol_message() {
-        let symbol = "waterui_preview_app_card_preview";
-        let message = missing_preview_symbol_message("dashboard::admin::card_preview", symbol);
-        assert!(message.contains("dashboard::admin::card_preview"));
-        assert!(message.contains("waterui_preview_app_card_preview"));
-        assert!(message.contains("#[preview]"));
-        assert!(message.contains("fn card_preview()"));
     }
 }

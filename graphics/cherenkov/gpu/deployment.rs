@@ -1,5 +1,8 @@
 //! Apple deployment validation shared by the build script and its tests.
 
+/// Checked against the framework metadata by the deployment integration test.
+pub const APPLE_DEPLOYMENT_FLOOR: u32 = 26;
+
 /// Require the native API floor for downstream builds as well as this workspace.
 ///
 /// # Panics
@@ -13,8 +16,8 @@ pub fn require_floor(version: &str) {
         .expect("rustc reports a numeric deployment version");
     // Present in every profile, including release.
     assert!(
-        major >= 26,
-        "cherenkov-gpu requires macOS/iOS 26 or newer; resolved deployment target is {version}. Set MACOSX_DEPLOYMENT_TARGET or IPHONEOS_DEPLOYMENT_TARGET to 26.0 or newer."
+        major >= APPLE_DEPLOYMENT_FLOOR,
+        "cherenkov-gpu requires macOS/iOS {APPLE_DEPLOYMENT_FLOOR} or newer; resolved deployment target is {version}. Set MACOSX_DEPLOYMENT_TARGET or IPHONEOS_DEPLOYMENT_TARGET to {APPLE_DEPLOYMENT_FLOOR}.0 or newer."
     );
 }
 

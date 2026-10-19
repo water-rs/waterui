@@ -9,14 +9,22 @@ web/pkg
 *.log
 /.cargo/*
 !/.cargo/config.toml
+!/.cargo/audit.toml
 *.rlib
 
 # Personal/temporary files
 *.skill
 bugreport*.zip
+.vscode/
 .worktrees/
 .wrangler/
 node_modules/
+
+# The generated preview-host and embedded-library composites the
+# `hydrolysis-android-host` CI job renders through the CLI (artifacts, not
+# source).
+backends/hydrolysis/android-preview-host/
+backends/hydrolysis/android-embedded-library/
 
 # Apple e2e / release-metrics scratch directories CI produces at the
 # workspace root (artifacts, not source).

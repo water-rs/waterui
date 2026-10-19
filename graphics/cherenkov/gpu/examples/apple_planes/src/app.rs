@@ -393,8 +393,6 @@ impl Run {
             ..GpuConfig::default()
         })
         .expect("engine");
-        #[cfg(target_os = "ios")]
-        engine.set_waker(|| unsafe { cherenkov_planes_wake() });
         log::line("engine up");
         let mut target = WindowTarget::new(
             View {
@@ -403,7 +401,13 @@ impl Run {
             size,
         );
         let probe = target.output_probe();
-        let surface = engine.surface(target).expect("window surface");
+        // The iOS host's display link pauses while idle and is woken
+        // through the host; the macOS host drives frames on its own.
+        #[cfg(target_os = "ios")]
+        let wake = || unsafe { cherenkov_planes_wake() };
+        #[cfg(not(target_os = "ios"))]
+        let wake = || {};
+        let surface = engine.surface(target, wake).expect("window surface");
         log::line(&format!("surface target {}x{} created", size.0, size.1));
         surface
             .display(Display {

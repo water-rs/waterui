@@ -21,6 +21,10 @@ const EXIT_SUCCESS_REBOOT_REQUIRED: i32 = 0xBC2;
 
 /// MSVC C++ build tools on a Windows host.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct MsvcBuildTools;
 
 impl MsvcBuildTools {
@@ -85,10 +89,15 @@ impl Toolchain for MsvcBuildTools {
 /// A system-wide install outside `~/.water`, so the doctor fix loop confirms
 /// it with the user first (or proceeds on `--yes`).
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct MsvcBuildToolsInstallation;
 
 /// Errors that can occur while installing the MSVC build tools.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallMsvcBuildTools {
     /// The bootstrapper could not be downloaded or written.
     #[error(transparent)]
@@ -123,7 +132,8 @@ impl Installation for MsvcBuildToolsInstallation {
             return Err(FailToInstallMsvcBuildTools::UnsupportedPlatform);
         }
         let bytes = download_remote_bytes(VS_BUILD_TOOLS_URL).await?;
-        let staging = smol::unblock(tempfile::tempdir).await?;
+        let temp_root = host.temp_dir();
+        let staging = smol::unblock(move || tempfile::tempdir_in(temp_root)).await?;
         let bootstrapper = staging.path().join("vs_BuildTools.exe");
         write_bytes_atomically(&bootstrapper, &bytes).await?;
         let output = host

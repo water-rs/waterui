@@ -53,6 +53,9 @@ env:
   RUSTC_WRAPPER: ""
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  # e2e lanes build fully cold: some of what they measure is cold compile
+  # time, so no job here restores or saves any Actions cache and none runs
+  # a compile wrapper (sccache, stow). Caching is for the everyday gates.
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_TEST_DEBUG: "0"
   # `cargo install --path` otherwise builds in a tempdir; framework builds
@@ -76,6 +79,10 @@ jobs:
       - name: Prepare the e2e workspace
         id: setup
         run: ./.github/scripts/setup-e2e.sh
+
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
 
       # A name discovery does not know is a typo; fail the run here, once,
       # instead of one matrix job per platform.
@@ -103,13 +110,6 @@ jobs:
         with:
           toolchain: stable
           cache: "false"
-
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes (source packages are toolchain-independent). No save and no
-      # `target` cache in this lane.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
 
       - name: Build the water CLI
         env:
@@ -164,13 +164,6 @@ jobs:
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
 
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache (the old per-leg `target`
-      # writer is gone).
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
@@ -207,6 +200,10 @@ jobs:
             --cellularMode active \
             --cellularBars 4 \
             --wifiBars 3
+
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
 
       - name: Run iOS e2e examples
         env:
@@ -289,12 +286,6 @@ jobs:
       - name: Install the Metal toolchain
         uses: ./.github/actions/metal-toolchain
 
-      # Sources-only restore — identical paths/key/restore-prefix to the
-      # `cargo-sources` archive written by apple.yml's rust job on `dev`/`main`
-      # and `main` pushes. No save and no `target` cache.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-
       - name: Install the water CLI
         uses: actions/download-artifact@v4
         with:
@@ -303,6 +294,10 @@ jobs:
       - run: |
           chmod +x cli-bin/bin/water
           echo "${{ github.workspace }}/cli-bin/bin" >> "$GITHUB_PATH"
+
+      # The .github/scripts e2e scripts require bash >= 4.2 (#2683).
+      - name: Set up modern bash
+        uses: ./.github/actions/setup-bash
 
       - name: Run macOS e2e examples
         env:

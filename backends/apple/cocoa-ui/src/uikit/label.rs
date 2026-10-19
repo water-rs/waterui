@@ -10,6 +10,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::fmt;
+use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -19,6 +20,9 @@ use objc2_ui_kit::{NSLineBreakMode, NSTextAlignment, UILabel, UITraitEnvironment
 
 use crate::callback::guarded;
 use crate::text::{TextMetrics, WrapWidth};
+
+/// Runs after each text replacement, with the new plain string.
+type TextHandler = Rc<dyn Fn(&str)>;
 
 /// The text and line limit a [`Label`] measures with.
 ///
@@ -32,6 +36,8 @@ pub struct LabelIvars {
     text_alignment: Cell<NSTextAlignment>,
     /// `bounds.width` as of the last `layoutSubviews` propagation.
     reported_width: Cell<f64>,
+    /// Called with the new string after each replacement.
+    text_handler: RefCell<Option<TextHandler>>,
 }
 
 impl fmt::Debug for LabelIvars {
@@ -41,6 +47,7 @@ impl fmt::Debug for LabelIvars {
             .field("line_limit", &self.line_limit.get())
             .field("text_alignment", &self.text_alignment.get())
             .field("reported_width", &self.reported_width.get())
+            .field("text_handler", &self.text_handler.borrow().is_some())
             .finish()
     }
 }
@@ -105,6 +112,7 @@ impl Label {
             line_limit: Cell::new(0),
             text_alignment: Cell::new(NSTextAlignment::Natural),
             reported_width: Cell::new(0.0),
+            text_handler: RefCell::new(None),
         });
         // SAFETY: `initWithFrame:` is `UILabel`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), initWithFrame: CGRect::ZERO] };
@@ -125,6 +133,16 @@ impl Label {
         self.apply_line_limit();
         self.setTextAlignment(self.ivars().text_alignment.get());
         self.invalidate_layout();
+        let handler = self.ivars().text_handler.borrow().clone();
+        if let Some(handler) = handler {
+            let plain = text.string().to_string();
+            handler(&plain);
+        }
+    }
+
+    /// Runs `handler` with the new string after each [`Self::set_attributed_text`].
+    pub fn set_text_handler(&self, handler: impl Fn(&str) + 'static) {
+        self.ivars().text_handler.replace(Some(Rc::new(handler)));
     }
 
     /// The attributed string measurement runs against: the caller's own

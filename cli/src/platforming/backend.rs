@@ -5,7 +5,6 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    android::backend::AndroidBackend,
     apple::backend::AppleBackend,
     build::{BuildOptions, BuiltTarget},
     device::Artifact,
@@ -18,16 +17,16 @@ use crate::{
 /// Project-owned state filled when [`Project::open`] generates the selected
 /// backends in the managed build cache — never persisted in `Water.toml`.
 /// Persisted backend-facing configuration lives in the manifest's typed
-/// tables (`[esp32]` device configuration, `[hydrolysis]` painter).
+/// tables (the `[hydrolysis]` painter selection).
 #[derive(Debug, Clone, Default)]
 pub struct Backends {
-    android: Option<AndroidBackend>,
     apple: Option<AppleBackend>,
 }
 
 /// The `[hydrolysis]` table: selections the project author declares for
 /// the Hydrolysis backend.
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
+#[non_exhaustive]
 pub struct HydrolysisConfig {
     /// The Android painter the generated app mounts on the shared Hydrolysis
     /// host. Absent means the GPU painter; an explicit painter the pinned
@@ -39,13 +38,7 @@ impl Backends {
     /// Check if no backends are configured.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
-        self.android.is_none() && self.apple.is_none()
-    }
-
-    /// Get the Android backend configuration, if any.
-    #[must_use]
-    pub const fn android(&self) -> Option<&AndroidBackend> {
-        self.android.as_ref()
+        self.apple.is_none()
     }
 
     /// Get the Apple backend configuration, if any.
@@ -63,28 +56,19 @@ impl Backends {
     pub fn clear_apple(&mut self) {
         self.apple = None;
     }
-
-    /// Set the Android backend configuration.
-    pub fn set_android(&mut self, backend: AndroidBackend) {
-        self.android = Some(backend);
-    }
-
-    /// Remove Android backend configuration.
-    pub fn clear_android(&mut self) {
-        self.android = None;
-    }
 }
 
 /// Error type for failing to initialize a backend.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInitBackend {
     /// I/O error while scaffolding templates.
     #[error("Failed to write template files: {0}")]
     Io(#[from] std::io::Error),
     /// Invalid backend configuration prevented scaffolding (e.g. an
-    /// unsupported chip in `[esp32]`).
-    #[error("Invalid backend configuration: {0}")]
-    Config(#[source] eyre::Error),
+    /// unsupported painter in `[hydrolysis]`).
+    #[error("Invalid backend configuration: {0:#}")]
+    Config(eyre::Error),
 }
 
 /// Trait for backends in a `WaterUI` project.

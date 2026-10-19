@@ -120,7 +120,8 @@ fn projected(i: u32, pixel: vec2<f32>) -> vec4<f32> {
 }
 
 @fragment
-fn fs_projective(in: VsOut) -> @location(0) vec4<f32> {
+fn fs_projective(fragment: VsOut) -> @location(0) vec4<f32> {
+    let in = device_quad_pixel(fragment);
     let i = in.instance;
     let sample = projected(i, in.device);
     let inside = clamp(clip_mask_coverage(in), 0.0, 1.0);

@@ -5,8 +5,8 @@ use accesskit::{
     ActionRequest as AccessibilityActionRequest, TreeUpdate as AccessibilityTreeUpdate,
 };
 use hydrolysis::{
-    FrameProfile, HeadlessRuntime, InputEvent, KeyCode, KeyState, Modifiers, PointerButton,
-    PointerKind, SemanticRuntime, TouchPhase,
+    AccessibilityContentTypes, FrameProfile, HeadlessRuntime, InputEvent, KeyCode, KeyState,
+    Modifiers, PointerButton, PointerKind, SemanticRuntime, TouchPhase,
 };
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, get_current_pid};
 
@@ -59,27 +59,38 @@ pub trait RuntimeDriver {
     fn request_redraw(&mut self);
     /// Returns whether anything held UI focus to clear.
     fn clear_ui_focus(&mut self) -> bool;
+    /// Blocks until a task parked on an external wake — a timer, a fetch, a
+    /// decode on a worker thread — re-queues on the runtime's local executor,
+    /// returning whether one arrived within `timeout`.
+    fn wait_for_local_work(&self, timeout: Duration) -> bool;
 }
 
 /// What one pump produced: whether it rebuilt, the phase timings, the
-/// accessibility tree update, the captured snapshot when one was requested,
-/// and the UI focus target when the runtime tracks one.
+/// accessibility tree update plus the content types its nodes declared, the
+/// captured snapshot when one was requested, and the UI focus target when
+/// the runtime tracks one.
 #[derive(Debug)]
 pub struct DriverPumpResult {
     pub(crate) rebuilt: bool,
     pub(crate) profile: FrameProfile,
     pub(crate) tree_update: Option<AccessibilityTreeUpdate>,
+    pub(crate) content_types: AccessibilityContentTypes,
     pub(crate) snapshot: Option<Snapshot>,
     pub(crate) ui_focus: Option<NodeId>,
 }
 
 impl RuntimeDriver for SemanticRuntime {
+    fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        Self::wait_for_local_work(self, timeout)
+    }
+
     fn pump_at(&mut self, at: Instant, _capture_snapshot: bool) -> DriverPumpResult {
         let result = Self::pump_at(self, at);
         DriverPumpResult {
             rebuilt: result.rebuilt,
             profile: result.profile,
             tree_update: result.tree_update,
+            content_types: result.content_types,
             snapshot: None,
             ui_focus: result.ui_focus.map(NodeId::from),
         }
@@ -111,12 +122,17 @@ impl RuntimeDriver for SemanticRuntime {
 }
 
 impl RuntimeDriver for HeadlessRuntime {
+    fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        Self::wait_for_local_work(self, timeout)
+    }
+
     fn pump_at(&mut self, at: Instant, capture_snapshot: bool) -> DriverPumpResult {
         let result = Self::pump_at(self, capture_snapshot, at);
         DriverPumpResult {
             rebuilt: result.rebuilt,
             profile: result.profile,
             tree_update: result.tree_update,
+            content_types: result.content_types,
             snapshot: result.snapshot.map(|snapshot| Snapshot {
                 width: snapshot.width,
                 height: snapshot.height,
@@ -153,6 +169,7 @@ impl RuntimeDriver for HeadlessRuntime {
 
 /// Timing collected for one complete offscreen Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
 pub struct FrameTiming {
     /// Wall-clock duration spent advancing one offscreen Hydrolysis frame.
     pub total: std::time::Duration,
@@ -215,29 +232,33 @@ impl ResourceSampler {
     }
 }
 
-pub const fn pointer_move_event(x: f32, y: f32) -> InputEvent {
+/// A primary contact's down/move/up under `kind`. Touch drags are what a
+/// real device's finger produces: the scroll claim (`arm_touch_scroll`),
+/// the touch slop and the fling all key on the pointer kind, which
+/// `PointerKind::Mouse` never reaches.
+pub const fn pointer_move_event(kind: PointerKind, x: f32, y: f32) -> InputEvent {
     InputEvent::PointerMove {
         id: TEST_POINTER_ID,
-        kind: PointerKind::Mouse,
+        kind,
         x,
         y,
     }
 }
 
-pub const fn pointer_down_event(x: f32, y: f32) -> InputEvent {
+pub const fn pointer_down_event(kind: PointerKind, x: f32, y: f32) -> InputEvent {
     InputEvent::PointerDown {
         id: TEST_POINTER_ID,
-        kind: PointerKind::Mouse,
+        kind,
         x,
         y,
         button: PointerButton::Primary,
     }
 }
 
-pub const fn pointer_up_event(x: f32, y: f32) -> InputEvent {
+pub const fn pointer_up_event(kind: PointerKind, x: f32, y: f32) -> InputEvent {
     InputEvent::PointerUp {
         id: TEST_POINTER_ID,
-        kind: PointerKind::Mouse,
+        kind,
         x,
         y,
         button: PointerButton::Primary,

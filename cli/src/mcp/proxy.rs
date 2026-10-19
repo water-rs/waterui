@@ -34,15 +34,14 @@ use waterui_mcp_protocol::{
 };
 use waterui_preview_protocol::hydrolysis::{MCP_RUN_CONFIG_ENV, McpRunConfig};
 
-use crate::build::{BuildOptions, BuildProfile};
-use crate::hydrolysis::backend::HydrolysisBackend;
+use crate::build::BuildOptions;
+use crate::hydrolysis::backend::{self, HydrolysisBackend};
 use crate::hydrolysis::platform::{
     build_hydrolysis_with_envs_and_features, stage_hydrolysis_shared_runtime,
 };
 use crate::mcp::{host_platform, write_run_config};
-use crate::preview::hydrolysis::{
-    HydrolysisPreviewTheme, ensure_hydrolysis_backend_ready, stage_hydrolysis_resources,
-};
+use crate::platform::TargetBackend;
+use crate::preview::hydrolysis::{HydrolysisPreviewTheme, stage_hydrolysis_resources};
 
 /// The Cargo feature that builds the generated backend as an MCP child.
 const HYDROLYSIS_MCP_FEATURE: &str = "waterui-mcp-mode";
@@ -50,6 +49,7 @@ const HYDROLYSIS_MCP_FEATURE: &str = "waterui-mcp-mode";
 /// Everything one build of the child needs, cloned into the build task.
 #[derive(Debug, Clone)]
 struct ChildConfig {
+    host: crate::toolchain::Host,
     /// `WaterUI` project directory.
     project_path: PathBuf,
     /// Viewport width in logical pixels.
@@ -102,6 +102,7 @@ impl ChildProxy {
     /// [`Self::rebuild`] runs.
     #[must_use]
     pub fn new(
+        host: crate::toolchain::Host,
         project_path: PathBuf,
         width: u32,
         height: u32,
@@ -110,6 +111,7 @@ impl ChildProxy {
     ) -> Self {
         Self {
             config: ChildConfig {
+                host,
                 project_path,
                 width,
                 height,
@@ -297,9 +299,9 @@ async fn build_and_drive(
 /// config, and performs the MCP handshake.
 async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)> {
     let platform = host_platform();
-    let project = ensure_hydrolysis_backend_ready(&config.project_path).await?;
+    let project = backend::open_ready(&config.host, &config.project_path).await?;
 
-    let mut build_options = BuildOptions::development(BuildProfile::Debug);
+    let mut build_options = BuildOptions::default_development(TargetBackend::Hydrolysis);
     if let Some(sccache_path) = &config.sccache_path {
         build_options = build_options.with_sccache(sccache_path.clone());
     }
@@ -311,30 +313,33 @@ async fn build_and_spawn(config: &ChildConfig) -> Result<(ChildTransport, Child)
         &[HYDROLYSIS_MCP_FEATURE],
     )
     .await?;
-    stage_hydrolysis_resources(
+    let assets_root = stage_hydrolysis_resources(
         &project,
+        platform,
         HydrolysisPreviewTheme::Material3,
-        &built.app_symbols()?,
+        &built.app_symbols().await?,
     )
     .await?;
     stage_hydrolysis_shared_runtime(&project, &built, platform).await?;
-    let binary_path = &built.artifact;
+    let binary_path = built.executable()?;
 
-    let run_config = McpRunConfig {
-        width: config.width,
-        height: config.height,
-        scale_factor: config.scale_factor,
-    };
+    let run_config = McpRunConfig::new(config.width, config.height, config.scale_factor);
     let config_path = write_run_config(&project, &run_config).await?;
     let backend_path = project.backend_path::<HydrolysisBackend>();
 
     // stdout is the MCP link — never inherit it; stderr flows straight to the
     // parent's stderr so app logs and build diagnostics stay visible.
-    let mut command = smol::process::Command::new(binary_path);
+    //
+    // `WATERUI_ASSETS_ROOT` points the child's `ResourceContext` at the staged
+    // assets: the binary runs out of the shared Cargo profile directory, so
+    // the exe-relative `resources/waterui_assets` probe cannot find the tree
+    // staging wrote under the managed backend (water-rs/waterui#1884).
+    let mut command = project.host().command(binary_path);
     command
         .kill_on_drop(true)
         .current_dir(&backend_path)
         .env(MCP_RUN_CONFIG_ENV, &config_path)
+        .env("WATERUI_ASSETS_ROOT", &assets_root)
         .env("WATERUI_PROJECT_DIR", project.root())
         .env("WATERUI_APP_NAME", &project.manifest().package.name)
         .stdin(Stdio::piped())
@@ -558,6 +563,7 @@ mod tests {
     fn rebuild_resolves_waiters_on_the_previous_readiness_cell() {
         smol::block_on(async {
             let proxy = ChildProxy::new(
+                crate::toolchain::Host::current(),
                 PathBuf::from("/definitely/not/a/project"),
                 390,
                 844,

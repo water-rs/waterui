@@ -75,6 +75,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let mtm = ctx.mtm();
         let host = HostView::new(mtm, Rect::ZERO);
         let mounted = ctx.render(metadata.content).mount(&host);
+        // §7.1: the fill answer resolves through the `cocoaUiPrimaryContent`
+        // chain — `Color.opacity(..)` in a background slot stays a fill.
         crate::primary_content::forward(&host, mounted.view());
         view::set_translates_autoresizing(mounted.view(), true);
 
@@ -87,18 +89,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // Each press carries the `KeyPress` in an extended environment;
         // `Handled` consumes it so it never reaches `super`.
         host.set_key_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_, event: &KeyEvent| {
-                let Some(state) = state.upgrade() else {
-                    return false;
-                };
                 let state = state.borrow();
-                let env = state.env.extending(KeyPress {
-                    key: event.key.clone(),
-                    code: event.code,
-                    modifiers: event.modifiers,
-                    repeat: event.repeat,
-                });
+                let env = state.env.extending(KeyPress::new(
+                    event.key.clone(),
+                    event.code,
+                    event.modifiers,
+                    event.repeat,
+                ));
                 matches!(
                     state.handler.borrow_mut().handle(&env),
                     KeyHandling::Handled
@@ -108,11 +107,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content always fills the wrapper.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let state = state.borrow();
                 view::set_frame(state.child.view(), view::bounds(host));
             }

@@ -61,6 +61,9 @@ cherenkov = { workspace = true, optional = true }
 cherenkov-gpu = { workspace = true, optional = true }
 cherenkov-cpu = { workspace = true, optional = true }
 color.workspace = true
+# The working-space ↔ sRGB matrices and transfer, the engine's one
+# definition (`filtrate_core::space`).
+filtrate-core.workspace = true
 filtrate = { workspace = true, optional = true }
 pastey.workspace = true
 wgpu = { workspace = true, optional = true }
@@ -81,6 +84,14 @@ event-listener = { version = "5", optional = true }
 # needs — the shared device asks shaderloom which features its native shader
 # artifacts require (`shaderloom::required_features`).
 shaderloom = { workspace = true, optional = true, features = ["runtime"] }
+
+# `GpuContent` is `Send` because natively a frame's content renders on the
+# render thread. wasm32 without atomics has one thread, and there wgpu marks
+# its WebGPU handles `!Send` unless this feature is on; it has no effect on a
+# target with atomics. With it, content that keeps its device resources, as
+# every pipeline-owning `GpuContent` does, builds for the web.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["fragile-send-sync-non-atomic-wasm"] }
 
 [dev-dependencies]
 # Tests record against `cherenkov::testing::Null` engines.

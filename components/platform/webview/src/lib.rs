@@ -9,6 +9,16 @@
 //! - [`WebViewController`] - Factory injected into Environment by native backends
 //! - [`WebView`] - Reactive wrapper with `Binding<T>` state
 //!
+//! # Platform behaviour
+//!
+//! On macOS, a web view consumes every scroll-wheel event over its uncovered
+//! area, including when the page cannot scroll in that direction: `WKWebView`
+//! never forwards an unhandled wheel event and exposes no public way to learn
+//! it went unused. A web view whose page does not scroll therefore does not
+//! chain the wheel to an enclosing scroll view while the pointer is over it,
+//! as with `WKWebView` inside an `NSScrollView` in an `AppKit` app. Touch
+//! scrolling and other platforms are not affected.
+//!
 //! # Example
 //!
 //! ```ignore
@@ -23,22 +33,33 @@
 //! ```
 
 pub mod assets;
+#[cfg(not(target_arch = "wasm32"))]
 mod bundled;
+mod config;
 mod controller;
+#[cfg(not(target_arch = "wasm32"))]
+mod cookies;
 
 pub use assets::{
     ASSET_HOST, ASSET_HTTPS_HOST, ASSET_HTTPS_ORIGIN, ASSET_ORIGIN, ASSET_SCHEME, AssetMethod,
-    AssetRequest, AssetResponse, AssetServer, WebViewConfig,
+    AssetRequest, AssetResponse, AssetServer,
 };
+#[cfg(not(target_arch = "wasm32"))]
 pub use bundled::{DEFAULT_CSP, DirectoryServer, dev_url};
+pub use config::WebViewConfig;
+#[cfg(not(target_arch = "wasm32"))]
+pub use config::{DocumentScripts, UserScript};
 pub use controller::*;
+#[cfg(not(target_arch = "wasm32"))]
 pub use cookie::Cookie;
+#[cfg(not(target_arch = "wasm32"))]
+pub use cookies::cookie_expiry;
 use std::{cell::Cell, fmt, rc::Rc};
 #[macro_use]
 mod handle_layers;
 mod handler;
 pub use handler::*;
-#[cfg(feature = "conformance")]
+#[cfg(all(feature = "conformance", not(target_arch = "wasm32")))]
 pub mod conformance;
 mod proxy;
 pub use proxy::WebViewProxy;
@@ -48,12 +69,21 @@ pub use waterui_url::{IntoUrl, Url};
 mod url_signal;
 pub use url_signal::IntoUrlSignal;
 pub use waterui_watcher_set::{WatcherGuard, WatcherSet};
+#[cfg(not(target_arch = "wasm32"))]
 pub mod bridge;
+#[cfg(not(target_arch = "wasm32"))]
 mod script;
-pub use script::{DOCUMENT_START_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram};
+#[cfg(not(target_arch = "wasm32"))]
+pub use script::{
+    BRIDGE_SCRIPT, DOCUMENT_START_SCRIPT, EVAL_SCRIPT, JsError, JsExpr, JsOutcome, JsProgram,
+    raw_evaluation,
+};
+#[cfg(not(target_arch = "wasm32"))]
 mod origins;
+#[cfg(not(target_arch = "wasm32"))]
 pub use origins::{BridgeOrigins, IntoBridgeOrigins, OriginPolicy, OriginRule};
 
+#[cfg(not(target_arch = "wasm32"))]
 /// An object whose methods and state are exposed to the page.
 ///
 /// Implemented by `#[js_api]`; there is no reason to write one by hand, and
@@ -124,6 +154,7 @@ pub trait JsApi: Sized + 'static {
     fn typescript() -> &'static str;
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// A `.d.ts` describing what `A` exposes, for a page's TypeScript to consume.
 ///
 /// Write it next to the page's sources from a test, the way `ts-rs` does, so a
@@ -155,6 +186,7 @@ pub fn typescript_declarations<A: JsApi>() -> String {
          \n\
          interface WaterUiApi {{\n\
          {}\n\
+         \x20 readonly ready: Promise<void>;\n\
          \x20 watch(key: string, callback: (value: unknown) => void): () => void;\n\
          }}\n\
          \n\
@@ -163,26 +195,34 @@ pub fn typescript_declarations<A: JsApi>() -> String {
     )
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Re-exported so `#[js_api]` can derive `Deserialize` for its argument structs
 /// without the calling crate having to depend on `serde` itself.
 #[doc(hidden)]
 pub use serde;
+#[cfg(not(target_arch = "wasm32"))]
 /// Re-exported for the same reason as [`serde`]: `exec!` and `eval!` serialize
 /// each `@{...}` hole, and the calling crate must not have to depend on
 /// `serde_json` just to write a JavaScript literal.
 #[doc(hidden)]
 pub use serde_json;
+#[cfg(not(target_arch = "wasm32"))]
 mod big_integers;
+#[cfg(not(target_arch = "wasm32"))]
 mod message;
+#[cfg(not(target_arch = "wasm32"))]
 pub use message::{Bytes, HandlerName, IntoJsReply, JsReply, Json};
+#[cfg(not(target_arch = "wasm32"))]
 mod state;
-pub use state::{FieldEntry, JsField, StateWriteError};
+#[cfg(not(target_arch = "wasm32"))]
+pub use state::{FieldEntry, JsField, StateDeclarations, StateWriteError};
 
 use suiteki::Str;
+#[cfg(not(target_arch = "wasm32"))]
+use waterui_core::reactive::signal::IntoComputed;
 use waterui_core::{
     AnyView, Binding, Computed, Environment, Native, Signal, View, binding,
     layout::StretchAxis,
-    reactive::signal::IntoComputed,
     view::{Hook, ViewConfiguration},
 };
 use waterui_layout::spacer;
@@ -197,6 +237,7 @@ use waterui_layout::stack::vstack;
 /// [`WebView::can_go_forward`], and it used to appear here as a `#[doc(hidden)]`
 /// variant every `match` still had to spell out.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum WebViewEvent {
     /// The web view is about to navigate to a new URL.
     WillNavigate {
@@ -233,9 +274,11 @@ impl From<WebViewEvent> for BackendEvent {
 /// [`WebView::can_go_back`] and [`WebView::can_go_forward`] read — so it travels
 /// here rather than in [`WebViewEvent`].
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum BackendEvent {
     /// Something worth telling the application about.
     Event(WebViewEvent),
+    #[cfg(not(target_arch = "wasm32"))]
     /// The history changed.
     NavigationState {
         /// Whether the web view can navigate back.
@@ -247,6 +290,7 @@ pub enum BackendEvent {
 
 /// Errors that can occur in the `WebView` component.
 #[derive(Debug, thiserror::Error, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WebViewError {
     /// A network error occurred.
     #[error("Network error: {0}")]
@@ -274,7 +318,9 @@ pub enum WebViewError {
 pub struct WebView {
     event: Binding<Option<WebViewEvent>>,
     handle: AnyWebViewHandle,
+    #[cfg(not(target_arch = "wasm32"))]
     can_go_back: Binding<bool>,
+    #[cfg(not(target_arch = "wasm32"))]
     can_go_forward: Binding<bool>,
     /// Signal subscriptions that must outlive this view: the URL and user-agent
     /// bindings. Erased because their value types differ; only their lifetime
@@ -290,7 +336,9 @@ impl Clone for WebView {
         Self {
             event: self.event.clone(),
             handle: self.handle.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
             can_go_back: self.can_go_back.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
             can_go_forward: self.can_go_forward.clone(),
             retained: self.retained.clone(),
             state_watcher: Rc::clone(&self.state_watcher),
@@ -300,11 +348,15 @@ impl Clone for WebView {
 
 impl fmt::Debug for WebView {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WebView")
+        let mut debug = f.debug_struct("WebView");
+        debug
             .field("event", &self.event)
-            .field("handle", &self.handle)
+            .field("handle", &self.handle);
+        #[cfg(not(target_arch = "wasm32"))]
+        debug
             .field("can_go_back", &self.can_go_back)
-            .field("can_go_forward", &self.can_go_forward)
+            .field("can_go_forward", &self.can_go_forward);
+        debug
             .field("retained_subscriptions", &self.retained.len())
             .finish_non_exhaustive()
     }
@@ -315,15 +367,20 @@ impl WebView {
     #[must_use]
     pub(crate) fn from_handle(handle: AnyWebViewHandle) -> Self {
         let event: Binding<Option<WebViewEvent>> = binding(None);
+        #[cfg(not(target_arch = "wasm32"))]
         let can_go_back = binding(handle.can_go_back());
+        #[cfg(not(target_arch = "wasm32"))]
         let can_go_forward = binding(handle.can_go_forward());
 
         // Set up event handler to update reactive state
         let state_watcher = handle.watch({
             let event = event.clone();
+            #[cfg(not(target_arch = "wasm32"))]
             let can_go_back = can_go_back.clone();
+            #[cfg(not(target_arch = "wasm32"))]
             let can_go_forward = can_go_forward.clone();
             move |backend_event| match backend_event {
+                #[cfg(not(target_arch = "wasm32"))]
                 BackendEvent::NavigationState {
                     can_go_back: back,
                     can_go_forward: forward,
@@ -338,13 +395,16 @@ impl WebView {
         Self {
             handle,
             event,
+            #[cfg(not(target_arch = "wasm32"))]
             can_go_back,
+            #[cfg(not(target_arch = "wasm32"))]
             can_go_forward,
             retained: Vec::new(),
             state_watcher: Rc::new(state_watcher),
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Sets whether redirects are allowed, using a reactive signal.
     ///
     /// The native backend will automatically sync with the signal's value.
@@ -382,16 +442,23 @@ impl WebView {
     pub fn open(url: impl IntoUrlSignal) -> WebViewOpen {
         WebViewOpen {
             target: WebViewTarget::Url(url.into_url_signal()),
+            #[cfg(not(target_arch = "wasm32"))]
             redirects_enabled: None,
+            #[cfg(not(target_arch = "wasm32"))]
             user_agent: None,
+            #[cfg(not(target_arch = "wasm32"))]
             scripts: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             handlers: Vec::new(),
             event_watchers: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             state: Vec::new(),
+            #[cfg(not(target_arch = "wasm32"))]
             bridge_origins: BridgeOrigins::default(),
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Opens a new `WebView` serving `server` under the engine's local asset
     /// origin, and navigates it to `entry`.
     ///
@@ -404,7 +471,7 @@ impl WebView {
     ///
     /// `server` is [`AssetServer`]: GET and HEAD only, paths handed over still
     /// percent-encoded, traversal refused before the server is consulted. See
-    /// [`assets`](crate::assets) for the contract every engine routes through.
+    /// [`assets`] for the contract every engine routes through.
     ///
     /// # Panics
     ///
@@ -488,6 +555,7 @@ impl WebView {
         self.handle.go_to(&url.into_url());
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Applies `user_agent` now and on every later change.
     fn bind_user_agent(mut self, user_agent: Computed<Str>) -> Self {
         let handle = self.handle.clone();
@@ -506,43 +574,56 @@ impl WebView {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Refreshes the current page.
     pub fn refresh(&self) {
         self.handle.refresh();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Stops the current loading operation.
     pub fn stop(&self) {
         self.handle.stop();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Navigates back in the web view's history.
     pub fn go_back(&self) {
         self.handle.go_back();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Navigates forward in the web view's history.
     pub fn go_forward(&self) {
         self.handle.go_forward();
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Returns a reactive signal for whether the web view can navigate back.
     #[must_use]
     pub fn can_go_back(&self) -> Computed<bool> {
         Computed::from(self.can_go_back.clone())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Returns a reactive signal for whether the web view can navigate forward.
     #[must_use]
     pub fn can_go_forward(&self) -> Computed<bool> {
         Computed::from(self.can_go_forward.clone())
     }
 
-    /// Runs the given JavaScript code in the web view and returns the result.
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Evaluates the JavaScript expression `script` in the web view and answers
+    /// the JSON encoding of its value.
+    ///
+    /// See [`WebViewHandle::run_javascript`] for the contract every engine
+    /// meets. [`eval`](Self::eval) is the typed form, and the one that awaits a
+    /// promise.
     ///
     /// # Errors
     ///
-    /// Returns an error string from the native backend when script execution fails.
+    /// Returns the engine's message when the expression throws, does not parse,
+    /// or has a value `JSON.stringify` rejects.
     ///
     /// The returned future is intentionally thread-local because `WebView` state is
     /// bound to the native UI thread.
@@ -557,6 +638,7 @@ impl WebView {
         self.handle.run_javascript(script)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Evaluates a JavaScript expression and decodes its result as `T`.
     ///
     /// Prefer the `eval!` macro, which checks the source
@@ -580,6 +662,7 @@ impl WebView {
         async move { self.run_wrapped(&call).await?.decode() }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Runs a JavaScript program for its effects.
     ///
     /// Prefer the `exec!` macro.
@@ -599,6 +682,7 @@ impl WebView {
         async move { self.run_wrapped(&call).await?.decode() }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Runs a wrapped call and parses the envelope it returns.
     #[expect(
         clippy::future_not_send,
@@ -608,34 +692,54 @@ impl WebView {
         run_wrapped_on(&self.handle, call).await
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Sets a cookie in this web view's native cookie store.
     pub fn set_cookie(&self, cookie: Cookie<'static>) {
         self.handle.set_cookie(cookie);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Retrieves the current cookies without blocking the UI thread.
+    ///
+    /// # Errors
+    ///
+    /// As documented on [`WebViewHandle::get_cookies`]: a store that cannot be
+    /// read, or a cookie it returns that cannot be represented, fails rather
+    /// than reporting an empty list.
     #[expect(
         clippy::future_not_send,
         reason = "native web views and cookie stores are main-thread-affine"
     )]
-    pub fn get_cookies(&self) -> impl core::future::Future<Output = Vec<Cookie<'static>>> + '_ {
+    pub fn get_cookies(
+        &self,
+    ) -> impl core::future::Future<Output = Result<Vec<Cookie<'static>>, waterui_core::Error>> + '_
+    {
         self.handle.get_cookies()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Sets the user agent string for the web view.
     pub fn set_user_agent(&self, user_agent: &str) {
         self.handle.set_user_agent(user_agent);
     }
 
-    /// Injects a script that will run on every page load.
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Injects a script that will run on every later page load.
     ///
     /// `key` names the script. Injecting again under the same key replaces it,
     /// so a script whose content depends on current state can be kept current
     /// without stacking a new copy on every update.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `key` names a script the view was opened with
+    /// ([`WebViewOpen::inject`]): those are fixed for its life, on every
+    /// backend alike.
     pub fn inject_script(&self, key: &str, script: &str, time: ScriptInjectionTime) {
         self.handle.inject_script(key, script, time);
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Enables or disables following redirects.
     ///
     pub fn set_redirects_enabled(&self, enabled: impl IntoComputed<bool>) {
@@ -651,12 +755,11 @@ impl WebView {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Runs a wrapped call on `handle` and parses the envelope it resolves with.
 ///
-/// Free rather than a method because the mirrored-state bridge holds only a
-/// [`WeakWebViewHandle`] — it lives inside a handler the backend owns, so
-/// keeping a whole [`WebView`] there is what stopped the native web view from
-/// ever being destroyed.
+/// Free rather than a method on [`WebView`] because the conformance checks
+/// drive a bare [`AnyWebViewHandle`] that no [`WebView`] owns.
 #[expect(
     clippy::future_not_send,
     reason = "native web views and JavaScript execution are main-thread-affine"
@@ -698,6 +801,7 @@ where
     guard
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// A handler the page can call, boxed for storage before the web view exists.
 /// A handler recorded before the web view exists. Built once the rendering
 /// environment is known, so its extractors resolve against the right scope.
@@ -707,6 +811,7 @@ type BoxedMessageHandler = Box<dyn FnOnce(Environment) -> Box<ScriptMessageHandl
 enum WebViewTarget {
     /// A reactive URL — writing a new one navigates the live view.
     Url(Computed<Url>),
+    #[cfg(not(target_arch = "wasm32"))]
     /// A bundled asset set served through the engine's local asset origin.
     Assets {
         /// The serving function behind the origin.
@@ -720,6 +825,7 @@ impl fmt::Debug for WebViewTarget {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Url(url) => f.debug_tuple("Url").field(url).finish(),
+            #[cfg(not(target_arch = "wasm32"))]
             Self::Assets { entry, .. } => f
                 .debug_struct("Assets")
                 .field("entry", entry)
@@ -737,56 +843,80 @@ impl fmt::Debug for WebViewTarget {
 #[must_use = "a WebViewOpen must be rendered to create its native web view"]
 pub struct WebViewOpen {
     target: WebViewTarget,
+    #[cfg(not(target_arch = "wasm32"))]
     redirects_enabled: Option<Computed<bool>>,
+    #[cfg(not(target_arch = "wasm32"))]
     user_agent: Option<Computed<Str>>,
-    scripts: Vec<(Str, Str, ScriptInjectionTime)>,
+    #[cfg(not(target_arch = "wasm32"))]
+    scripts: Vec<UserScript>,
+    #[cfg(not(target_arch = "wasm32"))]
     handlers: Vec<(Str, BoxedMessageHandler)>,
     event_watchers: Vec<Box<dyn Fn(WebViewEvent)>>,
+    #[cfg(not(target_arch = "wasm32"))]
     state: Vec<state::PendingField>,
+    #[cfg(not(target_arch = "wasm32"))]
     bridge_origins: BridgeOrigins,
 }
 
 impl fmt::Debug for WebViewOpen {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("WebViewOpen")
-            .field("target", &self.target)
+        let mut debug = f.debug_struct("WebViewOpen");
+        debug.field("target", &self.target);
+        #[cfg(not(target_arch = "wasm32"))]
+        debug
             .field("redirects_enabled", &self.redirects_enabled)
             .field("user_agent", &self.user_agent)
             .field("scripts", &self.scripts.len())
-            .field("handlers", &self.handlers.len())
-            .field("event_watchers", &self.event_watchers.len())
+            .field("handlers", &self.handlers.len());
+        debug.field("event_watchers", &self.event_watchers.len());
+        #[cfg(not(target_arch = "wasm32"))]
+        debug
             .field("state_fields", &self.state.len())
-            .field("bridge_origins", &self.bridge_origins)
-            .finish()
+            .field("bridge_origins", &self.bridge_origins);
+        debug.finish()
     }
 }
 
 impl WebViewOpen {
+    #[cfg(not(target_arch = "wasm32"))]
     /// Sets the reactive redirect policy applied when the web view is created.
     pub fn redirects_enabled(mut self, enabled: impl IntoComputed<bool>) -> Self {
         self.redirects_enabled = Some(enabled.into_computed());
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Sets the user agent, reactively.
     pub fn user_agent(mut self, user_agent: impl IntoComputed<Str>) -> Self {
         self.user_agent = Some(user_agent.into_computed());
         self
     }
 
-    /// Injects a script that runs on every page load.
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Injects a script that runs on every page load the bridge policy admits.
     ///
     /// `key` names the script; injecting again under the same key replaces it.
+    /// The scripts reach the engine with the view's creation-time
+    /// configuration, so the first document already runs them.
     pub fn inject(
         mut self,
         key: impl Into<Str>,
         script: impl Into<Str>,
         time: ScriptInjectionTime,
     ) -> Self {
-        self.scripts.push((key.into(), script.into(), time));
+        let script = UserScript::new(key, script, time);
+        match self
+            .scripts
+            .iter_mut()
+            .find(|existing| existing.key == script.key)
+        {
+            Some(existing) => *existing = script,
+            None => self.scripts.push(script),
+        }
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Registers a handler the page can call as `waterui.invoke(name, payload)`.
     ///
     /// # Panics
@@ -823,12 +953,20 @@ impl WebViewOpen {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Mirrors a reactive value into the page.
     ///
     /// The page reads it as `waterui.state.<name>` — a local property, so reading
     /// never crosses the boundary — and subscribes with `waterui.watch(name, cb)`.
     /// A [`Binding`] is writable from JavaScript and the write flows back into it;
     /// anything else is read-only, and assigning to it throws.
+    ///
+    /// No value is part of what the engine injects: a document asks for the
+    /// values once it starts, and `waterui.ready` resolves when they arrive.
+    /// Reading or assigning a key before then throws rather than producing a
+    /// made-up value, so a page reads state after `await waterui.ready`;
+    /// `waterui.watch` may be called earlier, and its callback hears the first
+    /// values.
     ///
     /// Granularity follows the signal: exposing a `Binding<BigStruct>` and
     /// changing one field re-sends the whole struct. Expose finer bindings when
@@ -838,6 +976,7 @@ impl WebViewOpen {
         self
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Exposes an object's methods and state to the page in one step.
     ///
     /// Written by hand this is a `.handler(...)` per method and an `.expose(...)`
@@ -847,6 +986,7 @@ impl WebViewOpen {
         A::register(std::rc::Rc::new(api), self)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     /// Chooses which documents may reach the bridge.
     ///
     /// Defaults to [`BridgeOrigins::Initial`] — the origin the view is opened at,
@@ -898,32 +1038,48 @@ impl WebViewOpen {
         })
     }
 
-    fn create(self, controller: &WebViewController, environment: &Environment) -> WebView {
+    fn create(
+        self,
+        controller: &WebViewController,
+        #[cfg_attr(
+            target_arch = "wasm32",
+            expect(
+                unused_variables,
+                reason = "the environment reaches only the page's handlers, which the web has none of"
+            )
+        )]
+        environment: &Environment,
+    ) -> WebView {
         let Self {
             target,
+            #[cfg(not(target_arch = "wasm32"))]
             redirects_enabled,
+            #[cfg(not(target_arch = "wasm32"))]
             user_agent,
+            #[cfg(not(target_arch = "wasm32"))]
             scripts,
+            #[cfg(not(target_arch = "wasm32"))]
             handlers,
             event_watchers,
+            #[cfg(not(target_arch = "wasm32"))]
             state,
+            #[cfg(not(target_arch = "wasm32"))]
             bridge_origins,
         } = self;
-        let (webview, initial, url) = match target {
-            WebViewTarget::Url(url) => {
-                let webview = controller.open();
-                (webview, url.snapshot(), Some(url))
-            }
+        // Everything a document may receive before its first line of script
+        // is resolved here, before the engine creates anything: the URL the
+        // view opens at, the admission rules resolved against it, the
+        // application's scripts and the state declarations.
+        #[cfg(not(target_arch = "wasm32"))]
+        let (initial, url, asset_server) = match target {
+            WebViewTarget::Url(url) => (url.snapshot(), Some(url), None),
             WebViewTarget::Assets { server, entry } => {
-                let webview = controller.open_with(WebViewConfig {
-                    asset_server: Some(server),
-                });
                 // The origin is the engine's answer, not a constant the shared
                 // layer guesses: it differs across engines by design.
-                let origin = webview.handle().asset_origin().expect(
+                let origin = controller.asset_origin().expect(
                     "WebView::open_assets requires an engine that exposes an \
                      interceptable local asset origin; this WebViewController \
-                     produced none",
+                     has none",
                 );
                 let entry: Url = format!(
                     "{}/{}",
@@ -934,24 +1090,35 @@ impl WebViewOpen {
                 .unwrap_or_else(|_| {
                     panic!("the asset entry `{entry}` did not form a URL under {origin}")
                 });
-                (webview, entry, None)
+                (entry, None, Some(server))
             }
         };
-        // The policy is resolved against the URL the view opens at, and it goes
-        // in before the first handler exists, so no handler is ever reachable
-        // unguarded. It used to be installed last, after every handler was
-        // already registered; nothing had navigated yet, so it was only ever
-        // safe by accident. For an asset-origin view `initial` is the resolved
-        // entry URL, so `BridgeOrigins::Initial` narrows to the asset origin.
-        webview
-            .handle()
-            .set_bridge_origins(OriginPolicy::new(bridge_origins, &initial));
+        #[cfg(target_arch = "wasm32")]
+        let (initial, url) = match target {
+            WebViewTarget::Url(url) => (url.snapshot(), Some(url)),
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        let mirror = (!state.is_empty()).then(|| state::prepare(state));
+        #[cfg(not(target_arch = "wasm32"))]
+        let config = WebViewConfig {
+            asset_server,
+            // For an asset-origin view `initial` is the resolved entry URL, so
+            // `BridgeOrigins::Initial` narrows to the asset origin.
+            bridge_origins: OriginPolicy::new(bridge_origins, &initial),
+            scripts,
+            state: mirror
+                .as_ref()
+                .map(state::Mirror::declarations)
+                .unwrap_or_default(),
+        };
+        #[cfg(target_arch = "wasm32")]
+        let config = WebViewConfig::default();
+        let webview = controller.open_with(config);
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(enabled) = redirects_enabled {
             webview.set_redirects_enabled(enabled);
         }
-        for (key, script, time) in scripts {
-            webview.inject_script(key.as_str(), script.as_str(), time);
-        }
+        #[cfg(not(target_arch = "wasm32"))]
         for (name, build) in handlers {
             webview
                 .handle()
@@ -964,15 +1131,16 @@ impl WebViewOpen {
             // case `WatcherGuard::forget` documents.
             webview
                 .handle()
-                .watch(move |backend_event| {
-                    if let BackendEvent::Event(event) = backend_event {
-                        watcher(event);
-                    }
+                .watch(move |backend_event| match backend_event {
+                    BackendEvent::Event(event) => watcher(event),
+                    #[cfg(not(target_arch = "wasm32"))]
+                    BackendEvent::NavigationState { .. } => {}
                 })
                 .forget();
         }
-        if !state.is_empty() {
-            state::install(&webview, state);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(mirror) = mirror {
+            state::attach(&webview, mirror);
         }
         let webview = if let Some(url) = url {
             webview.bind_navigation(url)
@@ -983,11 +1151,13 @@ impl WebViewOpen {
             webview.handle().go_to(&initial);
             webview
         };
-        if let Some(user_agent) = user_agent {
+        #[cfg(not(target_arch = "wasm32"))]
+        let webview = if let Some(user_agent) = user_agent {
             webview.bind_user_agent(user_agent)
         } else {
             webview
-        }
+        };
+        webview
     }
 }
 

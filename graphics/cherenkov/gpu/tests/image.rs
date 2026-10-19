@@ -110,7 +110,7 @@ fn an_image_draws_nearest() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let image = two_by_two(&engine);
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.image(image.id(), Rect::new(0., 0., 64., 64.), Sampling::Nearest);
@@ -133,7 +133,7 @@ fn an_image_interpolates_bilinear() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let image = two_by_two(&engine);
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.image(image.id(), Rect::new(0., 0., 64., 64.), Sampling::Linear);
@@ -168,7 +168,7 @@ fn an_image_pattern_repeats() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     };
     let image = two_by_two(&engine);
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -200,7 +200,7 @@ fn an_image_pattern_with_extend_none_is_transparent() -> Result<(), Box<dyn std:
         return Ok(());
     };
     let image = two_by_two(&engine);
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.fill(
@@ -219,7 +219,11 @@ fn an_image_pattern_with_extend_none_is_transparent() -> Result<(), Box<dyn std:
     let rb = wait!(surface.readback())?;
     let px = |x: u32, y: u32| rb.pixels[(y * rb.width + x) as usize];
     close_px(px(0, 0), premul_p3([255, 0, 0, 255]));
-    assert_eq!(px(8, 8), [0.0; 4], "outside the image must be clear");
+    assert_eq!(
+        px(8, 8).map(f32::to_bits),
+        [0.0_f32; 4].map(f32::to_bits),
+        "outside the image must be clear"
+    );
     Ok(())
 }
 }
@@ -269,7 +273,7 @@ fn an_f16_image_keeps_hdr_and_wide_gamut() -> Result<(), Box<dyn std::error::Err
             .color_space(ImageColorSpace::LinearSrgb)
             .premultiplied(),
     )?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 2), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 2), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
             c.image(hdr.id(), Rect::new(0., 0., 4., 2.), Sampling::Nearest);
@@ -289,10 +293,50 @@ fn an_f16_image_keeps_hdr_and_wide_gamut() -> Result<(), Box<dyn std::error::Err
 }
 
 split_test! {
-/// An image larger than the device's texture limit is a rejection only the
-/// backend can detect: registration returns the handle, and the render
-/// that draws the image fails naming it and the backend's reason.
-fn an_image_beyond_the_texture_limit_fails_the_render_that_draws_it()
+/// An sRGB-encoded `Rgba16F` upload decodes a negative component odd
+/// through zero (#2843): premultiplied [-0.125, 0.25, 0, 0.25]
+/// un-premultiplies to a -0.5 red — below the encoded knee — and the
+/// working texel is the oracle's, not the linear-segment decode.
+fn an_f16_srgb_image_decodes_negative_components_odd()
+-> Result<(), Box<dyn std::error::Error>> {
+    let Some(engine) = wait!(engine()) else {
+        return Ok(());
+    };
+    let image = engine.image(
+        ImageData::<cherenkov::Rgba16F>::new(1, 1, f16_px([-0.125, 0.25, 0.0, 0.25]))
+            .unwrap()
+            .color_space(ImageColorSpace::Srgb)
+            .premultiplied(),
+    )?;
+    let surface = wait!(engine.surface(Offscreen::new((4, 4), OffscreenFormat::LinearF16), || {}))?;
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.image(image.id(), Rect::new(0., 0., 4., 4.), Sampling::Nearest);
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    let rb = wait!(surface.readback())?;
+    // Straight [-0.5, 1, 0] at alpha 0.25 through the oracle's decode.
+    // The dyadic texel is exact in f16, so the f64 oracle differs from
+    // the uploaded f16 texel only by rounding — close_px's 2e-2.
+    let want = cherenkov_oracle::color::to_working(&cherenkov_scene::Color::new(
+        cherenkov_scene::ColorSpace::Srgb,
+        [-0.5, 1.0, 0.0, 0.25],
+    ));
+    let px = rb.pixels[0];
+    for (g, w) in px.iter().zip(want) {
+        assert!((f64::from(*g) - w).abs() < 2e-2, "{px:?} vs {want:?}");
+    }
+    Ok(())
+}
+}
+
+split_test! {
+/// An image larger than the device's texture limit is rejected where it
+/// is registered: `Engine::image` returns `TooLarge` naming the limits
+/// the engine read off the device and budget, nothing is queued, and the
+/// app goes on rendering.
+fn an_image_beyond_the_texture_limit_fails_registration()
 -> Result<(), Box<dyn std::error::Error>> {
     let shared = match wait!(cherenkov_gpu::interop::SharedDevice::create(&GpuConfig::default())) {
         Ok(shared) => shared,
@@ -304,27 +348,138 @@ fn an_image_beyond_the_texture_limit_fails_the_render_that_draws_it()
         device: Some(shared),
         ..GpuConfig::default()
     }))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
-    let image = engine.image(ImageData::<Rgba8>::new(
+    let limits = engine.image_limits();
+    assert_eq!(
+        limits.max_dimension,
+        width - 1,
+        "the limit is the device's max_texture_dimension_2d"
+    );
+    match engine.image(ImageData::<Rgba8>::new(
         width,
         1,
         vec![255; width as usize * 4],
-    )?)?;
+    )?) {
+        Err(cherenkov::ResourceError::TooLarge {
+            width: rejected_width,
+            height,
+            limits: rejected_limits,
+        }) => {
+            assert_eq!((rejected_width, height), (width, 1));
+            assert_eq!(rejected_limits, limits);
+        }
+        other => panic!("an oversized image registered: {other:?}"),
+    }
+
+    // The rejection never reached the backend: the engine still renders.
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].record(|c| {
-            c.image(image.id(), Rect::new(0.0, 0.0, 8.0, 8.0), Sampling::Nearest);
+            c.fill(
+                Rect::new(0.0, 0.0, 8.0, 8.0),
+                cherenkov::WorkingColor::WHITE,
+            );
         });
     });
-    match wait!(engine.render(cherenkov::FrameTime::now())) {
-        Err(cherenkov::RenderError::Rejected { resource, reason }) => {
-            assert_eq!(resource, cherenkov::ResourceId::Image(image.id()));
-            assert!(
-                matches!(*reason, cherenkov::ResourceError::Image(_)),
-                "{reason}"
-            );
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    Ok(())
+}
+}
+
+split_test! {
+/// An image inside the dimension limit but over the whole image budget —
+/// the GPU budget at eight bytes a texel — is rejected at registration
+/// too.
+fn an_image_beyond_the_per_image_budget_fails_registration()
+-> Result<(), Box<dyn std::error::Error>> {
+    let budget = cherenkov::Bytes::mib(1);
+    let engine = match wait!(Engine::<Gpu>::new(GpuConfig {
+        budget: cherenkov::Budget {
+            gpu: budget,
+            cpu: budget,
+        },
+        ..GpuConfig::default()
+    })) {
+        Ok(engine) => engine,
+        Err(EngineError::Backend(_)) => return Ok(()),
+        Err(e) => panic!("engine init failed: {e}"),
+    };
+    let limits = engine.image_limits();
+    assert_eq!(limits.max_texels, budget.0 / 8);
+    // 512×512 = 262144 texels > 131072, each side well under the
+    // dimension limit: only the texel budget binds.
+    assert!(limits.max_dimension >= 512);
+    match engine.image(ImageData::<Rgba8>::new(512, 512, vec![255; 512 * 512 * 4])?) {
+        Err(cherenkov::ResourceError::TooLarge { limits: rejected, .. }) => {
+            assert_eq!(rejected, limits);
         }
-        other => panic!("an oversized image was drawn: {other:?}"),
+        other => panic!("an over-budget image registered: {other:?}"),
     }
+    // An admitted image of the same format registers.
+    engine.image(ImageData::<Rgba8>::new(256, 256, vec![255; 256 * 256 * 4])?)?;
+    Ok(())
+}
+}
+
+split_test! {
+/// Registered images share the GPU budget, decided at registration: an
+/// image the budget admits alone but not beside the images already
+/// registered fails `Engine::image` with `OverBudget` and queues nothing,
+/// so no render fails over it. Once another image's last handle drops,
+/// the same registration succeeds and draws.
+fn registered_images_count_against_the_gpu_budget() -> Result<(), Box<dyn std::error::Error>> {
+    let budget = cherenkov::Bytes::mib(16);
+    let engine = match wait!(Engine::<Gpu>::new(GpuConfig {
+        budget: cherenkov::Budget {
+            gpu: budget,
+            cpu: budget,
+        },
+        ..GpuConfig::default()
+    })) {
+        Ok(engine) => engine,
+        Err(EngineError::Backend(_)) => return Ok(()),
+        Err(e) => panic!("engine init failed: {e}"),
+    };
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    // Two images that each take three quarters of the image budget:
+    // either fits alone, both together do not.
+    let limits = engine.image_limits();
+    let side = u32::try_from((limits.max_texels * 3 / 4).isqrt())?;
+    let pixels = || {
+        ImageData::<Rgba8>::new(side, side, vec![255; side as usize * side as usize * 4])
+    };
+    let draw = |image: &Image<Rgba8>| {
+        let id = image.id();
+        surface.update(|tx| {
+            tx[surface.root()].record(|c| {
+                c.image(id, Rect::new(0., 0., 8., 8.), Sampling::Nearest);
+            });
+        });
+    };
+
+    let first = engine.image(pixels()?)?;
+    draw(&first);
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+    match engine.image(pixels()?) {
+        Err(cherenkov::ResourceError::OverBudget {
+            width,
+            height,
+            available,
+            limits: rejected,
+        }) => {
+            assert_eq!((width, height, rejected), (side, side, limits));
+            assert_eq!(available, limits.max_texels - u64::from(side) * u64::from(side));
+        }
+        other => panic!("an image past the GPU budget registered: {other:?}"),
+    }
+    // The rejection queued nothing: the frame renders.
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
+
+    // The first image's last handle returns its texels; the content that
+    // replaces it draws the second image.
+    drop(first);
+    let second = engine.image(pixels()?)?;
+    draw(&second);
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
     Ok(())
 }
 }
@@ -340,7 +495,7 @@ fn an_image_released_before_its_replacement_is_installed_still_draws()
         return Ok(());
     };
     let image = two_by_two(&engine);
-    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
     let pictured = surface.layer();
     let marker = surface.layer();
     surface.update(|tx| {
@@ -383,4 +538,238 @@ fn an_image_released_before_its_replacement_is_installed_still_draws()
     );
     Ok(())
 }
+}
+
+/// Independent f64 oracle conversion, before any interpolation.
+fn source_pixel(
+    pixel: [f64; 4],
+    space: ImageColorSpace,
+    premultiplied: bool,
+    maximum: f64,
+) -> [f64; 4] {
+    let alpha = pixel[3];
+    let mut rgb = [pixel[0], pixel[1], pixel[2]];
+    if premultiplied && alpha > 0.0 {
+        rgb = rgb.map(|v| (v / alpha).min(maximum));
+    }
+    if matches!(space, ImageColorSpace::Srgb | ImageColorSpace::DisplayP3) {
+        rgb = rgb.map(cherenkov_oracle::color::srgb_decode);
+    }
+    if matches!(space, ImageColorSpace::Srgb | ImageColorSpace::LinearSrgb) {
+        rgb = cherenkov_oracle::color::linear_srgb_to_linear_p3(rgb);
+    }
+    [rgb[0] * alpha, rgb[1] * alpha, rgb[2] * alpha, alpha]
+}
+
+split_fn! {
+fn check_interpolated_source(surface: &cherenkov::Surface<Gpu>, size: (u32, u32), tolerance: f64, pixels: Vec<[f64; 4]>)
+    -> Result<(), Box<dyn std::error::Error>> {
+    let oracle = cherenkov_oracle::image::Image { width: size.0 as usize, height: size.1 as usize, pixels };
+    let result = wait!(surface.readback())?;
+    for y in 0..result.height {
+        for x in 0..result.width {
+            let expected = cherenkov_oracle::paint::sample_image(&oracle,
+                (f64::from(x) + 0.5) * f64::from(size.0) / f64::from(result.width),
+                (f64::from(y) + 0.5) * f64::from(size.1) / f64::from(result.height),
+                cherenkov_scene::Sampling::Bilinear);
+            let actual = result.pixels[(y * result.width + x) as usize];
+            // Existing image checks allow 2e-2. A tighter bound catches
+            // filtering before alpha/transfer conversion even at low alpha.
+            for (got, want) in actual.into_iter().zip(expected) {
+                assert!((f64::from(got) - want).abs() < tolerance,
+                    "({x}, {y}): {actual:?} != {expected:?}");
+            }
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+fn native_rgba8_filters_in_premultiplied_linear_space_and_replaces_metadata()
+    -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((33, 33), OffscreenFormat::LinearF16), || {}))?;
+    let pixels: Vec<_> = (0_u8..=255).map(|v| [v, 255 - v, v ^ 0x55, v.wrapping_mul(73)]).collect();
+    let bytes: Vec<u8> = pixels.iter().flatten().copied().collect();
+    let image = engine.image(ImageData::<Rgba8>::new(16, 16, bytes.clone())?)?;
+    surface.update(|tx| {
+        tx[surface.root()].record(|c| { c.image(image.id(), Rect::new(0., 0., 33., 33.), Sampling::Linear); });
+    });
+    for space in [ImageColorSpace::Srgb, ImageColorSpace::DisplayP3, ImageColorSpace::LinearSrgb, ImageColorSpace::LinearP3] {
+        for premultiplied in [false, true] {
+            let mut source = ImageData::<Rgba8>::new(16, 16, bytes.clone())?.color_space(space);
+            source.premultiplied = premultiplied;
+            image.replace(source)?;
+            wait!(engine.render(cherenkov::FrameTime::now()))?;
+            let expected = pixels.iter().map(|p| source_pixel(p.map(|v| f64::from(v) / 255.0), space, premultiplied, 1.0)).collect();
+            wait!(check_interpolated_source(&surface, (16, 16), 0.002, expected))?;
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+fn native_f16_filters_hdr_without_clamping()
+    -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((33, 33), OffscreenFormat::LinearF16), || {}))?;
+    let pixels = [[4.0, 0.5, 2.0, 0.0], [2.0, 0.5, 1.0, 0.5], [-0.125, 0.25, 0.0, 0.25], [0.5, 1.0, 2.0, 1.0]];
+    let bytes: Vec<u8> = pixels.into_iter().flat_map(f16_px).collect();
+    let image = engine.image(ImageData::<cherenkov::Rgba16F>::new(2, 2, bytes.clone())?)?;
+    surface.update(|tx| {
+        tx[surface.root()].record(|c| { c.image(image.id(), Rect::new(0., 0., 33., 33.), Sampling::Linear); });
+    });
+    for space in [ImageColorSpace::Srgb, ImageColorSpace::DisplayP3, ImageColorSpace::LinearSrgb, ImageColorSpace::LinearP3] {
+        for premultiplied in [false, true] {
+            let mut source = ImageData::<cherenkov::Rgba16F>::new(2, 2, bytes.clone())?.color_space(space);
+            source.premultiplied = premultiplied;
+            image.replace(source)?;
+            wait!(engine.render(cherenkov::FrameTime::now()))?;
+            let expected = pixels.into_iter().map(|p| source_pixel(p.map(f64::from), space, premultiplied, f64::INFINITY)).collect();
+            wait!(check_interpolated_source(&surface, (2, 2), 0.02, expected))?;
+        }
+    }
+    Ok(())
+}
+}
+
+split_test! {
+fn native_image_memory_tracks_the_storage_format()
+    -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let baseline = engine.memory().gpu.0;
+    let rgba8 = engine.image(ImageData::<Rgba8>::new(256, 256, vec![128; 256 * 256 * 4])?)?;
+    assert_eq!(engine.memory().gpu.0 - baseline, 256 * 256 * 4);
+    let hdr = engine.image(ImageData::<cherenkov::Rgba16F>::new(256, 256, vec![0; 256 * 256 * 8])?)?;
+    assert_eq!(engine.memory().gpu.0 - baseline, 256 * 256 * 12);
+    drop((rgba8, hdr));
+    Ok(())
+}
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn check_compressed<F: cherenkov::Format>(
+    block: &[u8],
+    color: [u8; 4],
+    feature: wgpu::Features,
+) -> Result<(), Box<dyn std::error::Error>>
+where
+    Gpu: cherenkov::Uploads<F>,
+{
+    use cherenkov_gpu::interop::SharedDevice;
+    for compressed in [true, false] {
+        let mut shared = SharedDevice::create(&GpuConfig::default())?;
+        if !compressed {
+            let descriptor = wgpu::DeviceDescriptor {
+                required_features: shared.device.features()
+                    - (wgpu::Features::TEXTURE_COMPRESSION_ASTC
+                        | wgpu::Features::TEXTURE_COMPRESSION_BC
+                        | wgpu::Features::TEXTURE_COMPRESSION_ETC2),
+                required_limits: shared.device.limits(),
+                ..Default::default()
+            };
+            #[cfg(all(unix, not(target_vendor = "apple")))]
+            let (device, queue) =
+                cherenkov_gpu::interop::open_vulkan_device(&shared.adapter, &descriptor)?;
+            #[cfg(not(all(unix, not(target_vendor = "apple"))))]
+            let (device, queue) = pollster::block_on(shared.adapter.request_device(&descriptor))?;
+            shared.device = device;
+            shared.queue = queue;
+        }
+        let native = shared.device.features().contains(feature);
+        #[cfg(any(target_vendor = "apple", target_os = "android"))]
+        if feature == wgpu::Features::TEXTURE_COMPRESSION_ASTC {
+            assert_eq!(
+                native, compressed,
+                "Apple and Android devices must exercise native ASTC and decode"
+            );
+        }
+        let engine = Engine::<Gpu>::new(GpuConfig {
+            device: Some(shared),
+            ..GpuConfig::default()
+        })?;
+        let surface =
+            engine.surface(Offscreen::new((33, 33), OffscreenFormat::LinearF16), || {})?;
+        let baseline = engine.memory().gpu.0;
+        let image = engine.image(ImageData::<F>::new(3, 2, block)?)?;
+        assert_eq!(
+            engine.memory().gpu.0 - baseline,
+            if native { 16 } else { 24 }
+        );
+        surface.update(|tx| {
+            tx[surface.root()].record(|c| {
+                c.image(image.id(), Rect::new(0., 0., 33., 33.), Sampling::Linear);
+            });
+        });
+        for space in [
+            ImageColorSpace::Srgb,
+            ImageColorSpace::DisplayP3,
+            ImageColorSpace::LinearSrgb,
+            ImageColorSpace::LinearP3,
+        ] {
+            for premultiplied in [false, true] {
+                let mut source = ImageData::<F>::new(3, 2, block)?.color_space(space);
+                source.premultiplied = premultiplied;
+                image.replace(source)?;
+                engine.render(cherenkov::FrameTime::now())?;
+                let expected = source_pixel(
+                    color.map(|v| f64::from(v) / 255.0),
+                    space,
+                    premultiplied,
+                    1.0,
+                );
+                for pixel in surface.readback()?.pixels {
+                    for (got, want) in pixel.into_iter().zip(expected) {
+                        assert!(
+                            (f64::from(got) - want).abs() < 0.002,
+                            "native={native} {space:?} premultiplied={premultiplied}: {pixel:?} != {expected:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn compressed_native_and_capability_decode_preserve_partial_blocks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut astc = vec![0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff];
+    for c in [201_u16, 81, 21, 129] {
+        astc.extend_from_slice(&(c * 257).to_le_bytes());
+    }
+    check_compressed::<cherenkov::Astc4x4>(
+        &astc,
+        [201, 81, 21, 129],
+        wgpu::Features::TEXTURE_COMPRESSION_ASTC,
+    )?;
+    // Mode 6, identical even endpoints, zero P bits and indices.
+    let mut bc7 = vec![0_u8; 16];
+    let mut cursor = 0;
+    let mut put = |value: u8, bits: usize| {
+        for bit in 0..bits {
+            bc7[cursor / 8] |= u8::from(value & (1 << bit) != 0) << (cursor % 8);
+            cursor += 1;
+        }
+    };
+    put(0x40, 7);
+    for channel in [100, 40, 10, 64] {
+        put(channel, 7);
+        put(channel, 7);
+    }
+    check_compressed::<cherenkov::Bc7>(
+        &bc7,
+        [200, 80, 20, 128],
+        wgpu::Features::TEXTURE_COMPRESSION_BC,
+    )?;
+    check_compressed::<cherenkov::Etc2Rgba>(
+        &[129, 0, 0, 0, 0, 0, 0, 0, 0xff, 0, 0, 0, 0, 0, 0, 0],
+        [255, 2, 2, 129],
+        wgpu::Features::TEXTURE_COMPRESSION_ETC2,
+    )?;
+    Ok(())
 }

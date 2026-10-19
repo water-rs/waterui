@@ -1,6 +1,6 @@
 //! Exact structural keys: changing paint values never repeats lifetime analysis.
 
-use super::plan::{ExecutionPlan, ReadKind};
+use super::plan::{ExecutionPlan, Formats, Limits, ReadKind};
 use crate::render::lower::{Frame, ImageSource, Pass, PipelineKind, Source, Target};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -34,7 +34,7 @@ pub struct Cache {
     draws: Vec<Draw>,
     placements: Vec<Placement>,
     samples: Vec<[u32; 6]>,
-    settings: Option<(wgpu::TextureFormat, u8)>,
+    settings: Option<(Formats, Limits)>,
 }
 
 impl Cache {
@@ -51,8 +51,8 @@ impl Cache {
         &mut self,
         plan: &mut ExecutionPlan,
         frame: &Frame,
-        format: wgpu::TextureFormat,
-        slots: u8,
+        formats: Formats,
+        limits: Limits,
     ) -> bool {
         let pass_shapes = || {
             frame
@@ -86,7 +86,7 @@ impl Cache {
                     count: range.instances.len(),
                 })
         };
-        let changed = self.settings != Some((format, slots))
+        let changed = self.settings != Some((formats, limits))
             || !self.passes.iter().copied().eq(pass_shapes())
             || !self.draws.iter().copied().eq(draws());
         if changed {
@@ -94,8 +94,8 @@ impl Cache {
             self.passes.extend(pass_shapes());
             self.draws.clear();
             self.draws.extend(draws());
-            self.settings = Some((format, slots));
-            *plan = ExecutionPlan::build(frame, format, slots);
+            self.settings = Some((formats, limits));
+            *plan = ExecutionPlan::build(frame, formats, limits);
         }
         let placements = || frame.passes.iter().map(placement);
         let samples = || {
@@ -127,7 +127,7 @@ impl Cache {
             self.samples.clear();
             self.samples.extend(samples());
             if !changed {
-                plan.update_placement(frame, slots);
+                plan.update_placement(frame, limits);
             }
         }
         changed

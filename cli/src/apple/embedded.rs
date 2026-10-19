@@ -25,6 +25,7 @@ use crate::{
 
 /// Stable local Swift package location consumed by a native host.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct EmbeddedArtifact {
     /// Add this directory as a local package dependency in the native host.
     pub package_path: PathBuf,
@@ -117,9 +118,12 @@ pub async fn build_xcframework(
     options: &BuildOptions,
     architecture: Option<Architecture>,
 ) -> Result<EmbeddedArtifact> {
+    // The package's dependency table is read from the generated Apple
+    // manifest below — it must render before anything resolves it.
+    project.scaffold_apple_companion().await?;
     let selected = slices(architecture)?;
-    let host = Host::current();
-    check_toolchain(&host, &selected).await?;
+    let host = project.host();
+    check_toolchain(host, &selected).await?;
     let package_parent = project.root().join("target/package");
     fs::create_dir_all(&package_parent).await?;
     let temporary_parent = package_parent.clone();
@@ -138,8 +142,7 @@ pub async fn build_xcframework(
         source.join("Embedding.swift"),
     )
     .await?;
-    let (links, manifests) =
-        assemble_slices(project, options, &host, &selected, temporary.path()).await?;
+    let (links, manifests) = assemble_slices(project, options, &selected, temporary.path()).await?;
     stage_resources(project, &source.join("Resources"), manifests).await?;
     write_package(project, &package, &links).await?;
     let destination = package_parent.join(format!("{}-apple", project.crate_name()));
@@ -168,13 +171,13 @@ async fn check_toolchain(host: &Host, selected: &[Slice]) -> Result<()> {
 async fn assemble_slices(
     project: &Project,
     options: &BuildOptions,
-    host: &Host,
     selected: &[Slice],
     staging: &Path,
 ) -> Result<(
     Vec<PlatformLinks>,
     Vec<waterui_assets_planner::BundleManifest>,
 )> {
+    let host = project.host();
     let mut arguments = vec![OsString::from("-create-xcframework")];
     let mut links: Vec<PlatformLinks> = Vec::new();
     let mut manifests = Vec::new();
@@ -198,11 +201,8 @@ async fn assemble_slices(
         .await?;
         // Stage each target's actual symbol set: platform-gated asset
         // declarations must not disappear when a later slice is built.
-        let (archive, symbols) = smol::unblock(move || {
-            let symbols = built.app_symbols()?;
-            Ok::<_, eyre::Report>((built.artifact, symbols))
-        })
-        .await?;
+        let symbols = built.app_symbols().await?;
+        let archive = built.artifact;
         manifests.push(assets::plan_library_resources(project, &symbols, false).await?);
         let swift_platform = if slice.platform == TargetPlatform::MacOS {
             "macOS"
@@ -215,7 +215,6 @@ async fn assemble_slices(
             .await?;
         let archive = closure
             .compose(
-                host,
                 slice.platform,
                 project,
                 &archive,
@@ -264,9 +263,16 @@ async fn stage_resources(
 ) -> Result<()> {
     let manifest = merge_manifests(manifests)?;
     assets::write_library_resources(&manifest, destination).await?;
-    let declarations =
-        assets::scan_fonts(project, &project.ffi_crate_path().join("Cargo.toml")).await?;
-    let mut fonts = assets::resolve_fonts(declarations).await?;
+    let declarations = assets::scan_fonts(
+        project,
+        &project.apple_crate_path().join("Cargo.toml"),
+        &[
+            waterui_assets_planner::FontPlatform::Ios,
+            waterui_assets_planner::FontPlatform::Macos,
+        ],
+    )
+    .await?;
+    let mut fonts = assets::resolve_fonts(project.host(), declarations).await?;
     fonts.extend(assets::scan_project_font_assets(&manifest)?);
     let font_dir = destination.join("fonts");
     fs::create_dir_all(&font_dir).await?;
@@ -458,19 +464,19 @@ mod tests {
     }
 
     fn resource_manifest(name: &str) -> waterui_assets_planner::BundleManifest {
-        waterui_assets_planner::BundleManifest {
-            crate_root: PathBuf::from("/fixture"),
-            assets_root: PathBuf::from("/fixture/assets"),
-            mounts: Vec::new(),
-            assets: vec![waterui_assets_planner::PlannedAsset {
-                mount: String::new(),
-                source_path: PathBuf::from("/fixture/assets").join(name),
-                relative_path: PathBuf::from(name),
-                logical_path: PathBuf::from(name),
-                kind: waterui_assets_core::AssetKind::Data,
-                role: waterui_assets_planner::AssetRole::Regular,
-            }],
-        }
+        waterui_assets_planner::BundleManifest::new(
+            PathBuf::from("/fixture"),
+            PathBuf::from("/fixture/assets"),
+            Vec::new(),
+            vec![waterui_assets_planner::PlannedAsset::new(
+                String::new(),
+                PathBuf::from("/fixture/assets").join(name),
+                PathBuf::from(name),
+                PathBuf::from(name),
+                waterui_assets_core::AssetKind::Data,
+                waterui_assets_planner::AssetRole::Regular,
+            )],
+        )
     }
 
     #[test]

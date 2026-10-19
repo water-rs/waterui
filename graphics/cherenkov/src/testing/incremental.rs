@@ -6,25 +6,29 @@ use std::hash::{Hash, Hasher};
 use std::time::Duration;
 
 use crate::kurbo::{Affine, BezPath, Circle, Rect, Stroke, Vec2};
-use crate::message::LayerOp;
 use crate::{
     Animation, Command, ContentOp, Curve, Display, Draw, FontData, FontId, Frame, FrameId,
     FrameStats, FrameTime, Glyph, GlyphRun, GlyphStyle, Group, LayerId, LinearGradient, Offscreen,
     OffscreenFormat, Operand, Paint, Picture, Pressure, Prop, Renderer, Shadow, ShapeData,
     SlotUpdate, SurfaceFrame, SurfaceId, SurfaceTree, WorkingColor,
 };
+use cherenkov_record::LayerOp;
 
 /// Runs deterministic randomized slot changes against fresh full lowering.
 /// Backend initialization must succeed: a missing GPU must fail this test.
 ///
+/// `font` is the outline face the fixture's glyph runs draw (glyph ids 36
+/// to 43). The caller loads it, so the harness reads no file and runs the
+/// same wherever the caller can obtain the bytes.
+///
 /// # Panics
 /// If a backend fails, output differs, or unrelated commands are re-lowered.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn equivalence<R: Renderer>(renderer: &mut R)
+pub fn equivalence<R: Renderer>(renderer: &mut R, font: FontData)
 where
     R::Target: From<Offscreen>,
 {
-    let font = register_font(renderer);
+    let font = register_font(renderer, font);
     let mut list = fixture(font).display_list().clone();
     let stable = Picture::record(|c| c.fill(Rect::new(1., 1., 4., 4.), WorkingColor::WHITE));
     let mut tree = SurfaceTree::new();
@@ -47,7 +51,7 @@ where
             .create_surface(
                 id,
                 Offscreen::new(size, OffscreenFormat::LinearF16).into(),
-                unhosted_waker(),
+                super::unhosted_waker(),
             )
             .expect("surface");
         let _ = renderer.set_content(
@@ -81,7 +85,7 @@ where
             renderer.trim(Pressure::Critical);
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
-        let _ = tree.sample(time, Display::default());
+        let _ = tree.sample(time, 1.0);
         let _ = renderer.set_content(
             ids[1],
             layer,
@@ -130,17 +134,20 @@ where
 #[cfg(target_arch = "wasm32")]
 /// Browser version of the same deterministic incremental/full comparison.
 ///
+/// `font` is the outline face the fixture's glyph runs draw (glyph ids 36
+/// to 43); a page has no filesystem, so the caller embeds it.
+///
 /// # Panics
 /// If rendering fails, pixels differ, or unchanged commands are rebuilt.
 #[expect(
     clippy::too_many_lines,
     reason = "the browser twin of the native equivalence routine above; keeping them line-parallel outweighs the limit"
 )]
-pub async fn equivalence<R: Renderer>(renderer: &mut R)
+pub async fn equivalence<R: Renderer>(renderer: &mut R, font: FontData)
 where
     R::Target: From<Offscreen>,
 {
-    let font = register_font(renderer);
+    let font = register_font(renderer, font);
     let mut list = fixture(font).display_list().clone();
     let stable = Picture::record(|c| c.fill(Rect::new(1., 1., 4., 4.), WorkingColor::WHITE));
     let mut tree = SurfaceTree::new();
@@ -163,7 +170,7 @@ where
             .create_surface(
                 id,
                 Offscreen::new(size, OffscreenFormat::LinearF16).into(),
-                unhosted_waker(),
+                super::unhosted_waker(),
             )
             .expect("surface");
         let _ = renderer.set_content(
@@ -197,7 +204,7 @@ where
             renderer.trim(Pressure::Critical);
         }
         let time = start + Duration::from_millis(u64::from(step) * 16);
-        let _ = tree.sample(time, Display::default());
+        let _ = tree.sample(time, 1.0);
         let _ = renderer.set_content(
             ids[1],
             layer,
@@ -247,23 +254,9 @@ where
     renderer.remove_font(font);
 }
 
-fn register_font<R: Renderer>(renderer: &mut R) -> FontId {
+fn register_font<R: Renderer>(renderer: &mut R, data: FontData) -> FontId {
     let font = FontId::new(1);
-    // The scene tree is generated, not committed: read it at call time so
-    // the `testing` feature compiles for consumers pinned by git, and only
-    // `equivalence` needs the generated fonts.
-    let data = std::fs::read(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scenes/fonts/NotoSans.ttf"),
-    )
-    .expect("scenes/fonts/NotoSans.ttf is generated; run `python3 scenes/tools/generate.py` first");
-    renderer.add_font(
-        font,
-        R::prepare_font(FontData {
-            data: data.into(),
-            index: 0,
-        })
-        .expect("prepare font"),
-    );
+    renderer.add_font(font, R::prepare_font(data).expect("prepare font"));
     font
 }
 
@@ -476,7 +469,7 @@ fn updates(list: &crate::DisplayList, frame: u32) -> Vec<SlotUpdate> {
                     value.mul_add(3., 1.),
                     WorkingColor::new([0.1, 0.2, 0.3, 0.5]),
                 )),
-                Command::Picture { .. } | Command::BeginTransform { .. } => {
+                Command::Picture { .. } | Command::Text { .. } | Command::BeginTransform { .. } => {
                     Operand::Transform(Affine::translate((value * 5., value * 3.)))
                 }
                 Command::BeginGroup { .. } => {
@@ -503,6 +496,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
                         random(step, 12).mul_add(0.4, 0.8),
                     ),
                 animation: Some(Animation::Curve(Curve::linear(Duration::from_millis(40)))),
+                start: None,
             },
         ));
     }
@@ -512,6 +506,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
             Prop {
                 target: if step % 16 == 6 { 0.6 } else { 1. },
                 animation: Some(Animation::Curve(Curve::linear(Duration::from_millis(40)))),
+                start: None,
             },
         ));
     }
@@ -525,6 +520,7 @@ fn update_properties(tree: &mut SurfaceTree, layer: LayerId, step: u32) {
             Prop {
                 target: Vec2::new(1., 2.),
                 animation: None,
+                start: None,
             },
         ));
     }
@@ -676,13 +672,4 @@ async fn assert_patch_counts<R: Renderer>(
         u32::try_from(list.len()).unwrap(),
         "a glyph-count change must rebuild only its layer"
     );
-}
-
-/// A surface wake-up with no host behind it: the harness drives the
-/// renderer directly and renders on its own schedule.
-fn unhosted_waker() -> crate::CompletionWaker {
-    let engine = crate::engine::SharedWaker::new(crate::engine::Waker::new());
-    crate::CompletionWaker::new(&crate::engine::SharedWaker::new(
-        crate::engine::SurfaceWaker::new(engine),
-    ))
 }

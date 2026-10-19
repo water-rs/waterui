@@ -29,12 +29,12 @@ use mdi::tune;
 use waterui::Color;
 use waterui::Handler;
 use waterui::Identifiable;
+use waterui::PropertyTransition;
 use waterui::Signal;
 use waterui::accessibility::{AccessibilityRole, AccessibilityState};
 use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::form::picker::{PickerStyle, picker};
-use waterui::layout::collection_transition;
 use waterui::layout::stack::VStack;
 use waterui::navigation::{NavigationSplitView, NavigationView};
 use waterui::prelude::slider::slider;
@@ -137,7 +137,7 @@ fn expanded_rows() -> Vec<Row> {
 /// Expands or collapses a group by reconciling the reactive row collection:
 /// inserting the group's item rows right after its header, or removing them.
 /// The collection engine diffs by id, so only the toggled group's rows change.
-fn set_group_expanded(rows: &ReactiveList<Row>, group: usize, expanded: bool) {
+fn set_group_expanded(rows: &mut ReactiveList<Row>, group: usize, expanded: bool) {
     let items = group_item_indices(group);
     if expanded {
         let snapshot = rows.snapshot();
@@ -383,26 +383,33 @@ fn sidebar(
     groups_open: Vec<Binding<bool>>,
     rows: ReactiveList<Row>,
 ) -> impl View {
-    let drawer = VStack::for_each(rows.clone(), move |row| match row {
-        Row::Header(group) => AnyView::new(group_header(
-            group,
-            groups_open[group].clone(),
-            rows.clone(),
-        )),
-        Row::Item(index) => AnyView::new(item_row(index, selected.clone())),
+    // Animate group expand/collapse with Material 3 emphasized easing: each row
+    // declares its own transition, so a row fades in on insert and its ghost
+    // fades out on remove while holding its slot until the clock completes.
+    // The declared spec also routes the drawer to the retained collection
+    // path, where the active-indicator pill tracks selection through the
+    // items' fine-grained reactive backgrounds.
+    let drawer = VStack::for_each(rows.clone(), move |row| {
+        let row_view = match row {
+            Row::Header(group) => AnyView::new(group_header(
+                group,
+                groups_open[group].clone(),
+                rows.clone(),
+            )),
+            Row::Item(index) => AnyView::new(item_row(index, selected.clone())),
+        };
+        row_view
+            .transition(PropertyTransition::opacity())
+            .animation(Animation::bezier(
+                Duration::from_millis(250),
+                0.2,
+                0.0,
+                0.0,
+                1.0,
+            ))
     })
     .spacing(2.0)
     .leading();
-
-    // Animate group expand/collapse with Material 3 emphasized easing: items fade
-    // and collapse along the stack axis as a group opens or closes, while still
-    // releasing their layout space (no reserved gap). This routes the drawer to the
-    // retained collection path, where the active-indicator pill tracks selection
-    // through the items' fine-grained reactive backgrounds.
-    let drawer = collection_transition(
-        drawer,
-        Animation::bezier(Duration::from_millis(250), 0.2, 0.0, 0.0, 1.0),
-    );
 
     scroll(
         vstack((
@@ -428,10 +435,10 @@ fn group_header(group: usize, open: Binding<bool>, rows: ReactiveList<Row>) -> i
     drawer_headline(
         section.title(),
         open.clone(),
-        move |State(open): State<Binding<bool>>, State(rows): State<ReactiveList<Row>>| {
+        move |State(open): State<Binding<bool>>, State(mut rows): State<ReactiveList<Row>>| {
             open.toggle();
             let expanded = open.snapshot();
-            set_group_expanded(&rows, group, expanded);
+            set_group_expanded(&mut rows, group, expanded);
         },
     )
     .state(&open)

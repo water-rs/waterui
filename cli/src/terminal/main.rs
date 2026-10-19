@@ -10,11 +10,6 @@ mod pinned_framework;
 mod project_path;
 mod shell;
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-
 use clap::{Parser, Subcommand};
 use eyre::Result;
 use futures_util::future::{self, Either};
@@ -95,130 +90,192 @@ enum Commands {
     Completions(completions::Args),
 }
 
-fn main() -> Result<()> {
-    // A `RUSTC_WRAPPER` build-std invocation enters the process before any CLI
-    // parsing: Cargo calls this binary as `water <rustc> <args…>`.
-    if let Some(code) = waterui_cli::rustc_wrapper::wrapper_main() {
-        std::process::exit(code);
+impl Commands {
+    /// The project directory a command works on — the one whose managed
+    /// build cache the background sweep keeps — or `None` for a command
+    /// that opens no project.
+    fn project_dir(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Run(args) => Some(args.project_dir()),
+            Self::Bench(args) => Some(args.project_dir()),
+            Self::Build(args) => Some(args.project_dir()),
+            Self::Package(args) => Some(args.project_dir()),
+            Self::Clean(args) => Some(args.project_dir()),
+            Self::Fetch(args) => Some(args.project_dir()),
+            Self::Preview(args) => Some(args.project_dir()),
+            Self::Inspector(args) => Some(args.project_dir()),
+            Self::Mcp(args) => Some(args.project_dir()),
+            Self::Channel(args) => Some(args.project_dir()),
+            Self::Create(_)
+            | Self::Init(_)
+            | Self::Doctor(_)
+            | Self::Device(_)
+            | Self::Devices(_)
+            | Self::Gc(_)
+            | Self::Update(_)
+            | Self::Completions(_) => None,
+        }
     }
+}
 
+/// Sweep stale managed build caches in the background, keeping the cache of
+/// the project `command` works on. Only this binary requests the sweep: it
+/// re-launches the running executable, which is `water` only here.
+async fn request_build_cache_cleanup(command: &Commands) {
+    let Some(project_dir) = command.project_dir() else {
+        return;
+    };
+    // A path that does not resolve names no project, so no sweep starts;
+    // the command itself then fails with the canonicalization error.
+    let Ok(project_root) = smol::fs::canonicalize(project_dir).await else {
+        return;
+    };
+    if let Err(error) = waterui_cli::water_dir::spawn_build_cache_cleanup(
+        &waterui_cli::toolchain::Host::current(),
+        &project_root,
+    ) {
+        tracing::warn!(
+            project_root = %project_root.display(),
+            "Failed to start the build-cache cleanup: {error:#}"
+        );
+    }
+}
+
+fn main() -> Result<()> {
     color_eyre::config::HookBuilder::default()
         .display_location_section(false)
         .display_env_section(false)
         .install()?;
 
-    init_cli_tracing();
+    init_cli_tracing(&waterui_cli::toolchain::Host::current());
 
     let cli = Cli::parse();
 
     let shell = shell::Shell::new(cli.json);
 
-    // Cancel on Ctrl+C, and on SIGTERM/SIGHUP through the same path (the
-    // `termination` feature of `ctrlc`): a plain `kill` then still drops the
-    // running command, which is what stops the app and its log stream.
-    let cancelled = Arc::new(AtomicBool::new(false));
-    {
-        let cancelled = Arc::clone(&cancelled);
-        ctrlc::set_handler(move || {
-            cancelled.store(true, Ordering::SeqCst);
-        })
-        .expect("failed to set Ctrl+C handler");
-    }
+    // Interrupts travel a channel, not a flag: the `ctrlc` handler fires on
+    // Ctrl+C, and on SIGTERM/SIGHUP through the same path (the `termination`
+    // feature of `ctrlc`). `run` receives the channel and owns its own
+    // shutdown — it must keep running after the first interrupt so its stop
+    // sequence and the app's shutdown output can complete — while every
+    // other command is raced against it and dropped.
+    let (interrupt_tx, interrupt_rx) = async_channel::unbounded();
+    ctrlc::set_handler(move || {
+        let _ = interrupt_tx.try_send(());
+    })
+    .expect("failed to set Ctrl+C handler");
 
-    smol::block_on({
-        let cancelled = Arc::clone(&cancelled);
-        async move {
-            waterui_cli::water_dir::ensure_global_config().await?;
+    smol::block_on(async move {
+        waterui_cli::water_dir::ensure_global_config(&waterui_cli::toolchain::Host::current())
+            .await?;
+        request_build_cache_cleanup(&cli.command).await;
 
-            let ctrl_c_future = async {
-                // Poll until cancelled
-                loop {
-                    if cancelled.load(Ordering::SeqCst) {
-                        return;
-                    }
-                    smol::Timer::after(std::time::Duration::from_millis(50)).await;
-                }
-            };
+        // The passive update check stays off the `build`/`run` hot path,
+        // off machine-consumed output (`mcp`, `completions`), and never
+        // runs inside `update` itself, which checks explicitly.
+        let off_update_hot_path = !matches!(
+            cli.command,
+            Commands::Build(_)
+                | Commands::Run(_)
+                | Commands::Update(_)
+                | Commands::Mcp(_)
+                | Commands::Completions(_)
+        );
 
-            // The passive update check stays off the `build`/`run` hot path,
-            // off machine-consumed output (`mcp`, `completions`), and never
-            // runs inside `update` itself, which checks explicitly.
-            let off_update_hot_path = !matches!(
-                cli.command,
-                Commands::Build(_)
-                    | Commands::Run(_)
-                    | Commands::Update(_)
-                    | Commands::Mcp(_)
-                    | Commands::Completions(_)
-            );
-
-            let command = async {
-                match cli.command {
-                    Commands::Create(args) => create::run(&shell, args).await,
-                    Commands::Init(args) => init::run(&shell, args).await,
-                    Commands::Channel(args) => channel::run(&shell, args).await,
-                    Commands::Run(args) => Box::pin(run::run(&shell, args)).await,
-                    Commands::Bench(args) => bench::run(&shell, args).await,
-                    Commands::Build(args) => Box::pin(build::run(&shell, args)).await,
-
-                    Commands::Package(args) => Box::pin(package::run(&shell, args)).await,
-                    Commands::Clean(args) => clean::run(&shell, args).await,
-                    Commands::Doctor(args) => doctor::run(&shell, args).await,
-                    Commands::Device(args) => device::run(&shell, args).await,
-                    Commands::Devices(args) => devices::run(&shell, args).await,
-                    Commands::Gc(args) => gc::run(&shell, args).await,
-                    Commands::Fetch(args) => fetch::run(&shell, args).await,
-                    Commands::Preview(args) => Box::pin(preview::run(&shell, args)).await,
-                    Commands::Inspector(args) => inspector::run(&shell, args).await,
-                    Commands::Mcp(args) => mcp::run(&shell, args).await,
-                    Commands::Update(args) => update::run(&shell, args).await,
-                    Commands::Completions(args) => completions::run(&args),
-                }
-            };
-
-            // Race between command execution and Ctrl+C
-            let command = std::pin::pin!(command);
-            let cancel = std::pin::pin!(ctrl_c_future);
-
-            let result = match future::select(command, cancel).await {
-                Either::Left((result, _)) => {
-                    // Command completed - check if it failed due to cancellation
-                    if cancelled.load(Ordering::SeqCst) {
-                        // Suppress errors caused by Ctrl+C interruption
-                        Ok(())
-                    } else {
-                        result
-                    }
-                }
-                Either::Right(((), _)) => {
-                    // Ctrl+C pressed - exit gracefully
-                    // The command future is dropped here, triggering cleanup
-                    Ok(())
-                }
-            };
-
-            // Clear progress bars to ensure clean exit
-            shell.clear();
-
-            if result.is_ok()
-                && off_update_hot_path
-                && let Some(notice) = waterui_cli::self_update::passive_update_notice().await
-            {
-                crate::note!(shell, "{notice}");
+        let result = match cli.command {
+            Commands::Run(args) => Box::pin(run::run(&shell, args, interrupt_rx))
+                .await
+                .map(Some),
+            Commands::Create(args) => {
+                Box::pin(until_interrupt(create::run(&shell, args), &interrupt_rx)).await
             }
-
-            result
+            Commands::Init(args) => {
+                Box::pin(until_interrupt(init::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Channel(args) => {
+                Box::pin(until_interrupt(channel::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Bench(args) => until_interrupt(bench::run(&shell, args), &interrupt_rx).await,
+            Commands::Build(args) => {
+                until_interrupt(Box::pin(build::run(&shell, args)), &interrupt_rx).await
+            }
+            Commands::Package(args) => {
+                until_interrupt(Box::pin(package::run(&shell, args)), &interrupt_rx).await
+            }
+            Commands::Clean(args) => {
+                Box::pin(until_interrupt(clean::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Doctor(args) => {
+                until_interrupt(doctor::run(&shell, args), &interrupt_rx).await
+            }
+            Commands::Device(args) => {
+                until_interrupt(device::run(&shell, args), &interrupt_rx).await
+            }
+            Commands::Devices(args) => {
+                until_interrupt(devices::run(&shell, args), &interrupt_rx).await
+            }
+            Commands::Gc(args) => until_interrupt(gc::run(&shell, args), &interrupt_rx).await,
+            Commands::Fetch(args) => {
+                Box::pin(until_interrupt(fetch::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Preview(args) => {
+                until_interrupt(Box::pin(preview::run(&shell, args)), &interrupt_rx).await
+            }
+            Commands::Inspector(args) => {
+                Box::pin(until_interrupt(inspector::run(&shell, args), &interrupt_rx)).await
+            }
+            Commands::Mcp(args) => until_interrupt(mcp::run(&shell, args), &interrupt_rx).await,
+            Commands::Update(args) => {
+                until_interrupt(update::run(&shell, args), &interrupt_rx).await
+            }
+            Commands::Completions(args) => {
+                until_interrupt(async { completions::run(&args) }, &interrupt_rx).await
+            }
         }
+        .map(|_: Option<()>| ());
+
+        // Clear progress bars to ensure clean exit
+        shell.clear();
+
+        if result.is_ok()
+            && off_update_hot_path
+            && let Some(notice) = waterui_cli::self_update::passive_update_notice(
+                &waterui_cli::toolchain::Host::current(),
+            )
+            .await
+        {
+            crate::note!(shell, "{notice}");
+        }
+
+        result
     })
 }
 
-fn init_cli_tracing() {
-    if std::env::var_os("RUST_LOG").is_none() {
-        return;
+/// Race `command` against the interrupt channel; an interrupt ends it with
+/// `None`. An error the command returns while another interrupt is already
+/// queued is the interrupt's consequence, so it ends with `None` as well.
+pub(crate) async fn until_interrupt<T>(
+    command: impl std::future::Future<Output = Result<T>>,
+    interrupts: &smol::channel::Receiver<()>,
+) -> Result<Option<T>> {
+    let command = std::pin::pin!(command);
+    let interrupt = std::pin::pin!(interrupts.recv());
+    match future::select(command, interrupt).await {
+        Either::Left((Err(_), _)) if interrupts.try_recv().is_ok() => Ok(None),
+        Either::Left((result, _)) => result.map(Some),
+        Either::Right(_) => Ok(None),
     }
+}
+
+/// Install the stderr subscriber when `host` sets `RUST_LOG`, filtered by
+/// its directives.
+fn init_cli_tracing(host: &waterui_cli::toolchain::Host) {
+    let Some(directives) = host.env("RUST_LOG") else {
+        return;
+    };
 
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(EnvFilter::builder().parse_lossy(directives.to_string_lossy()))
         .with_target(false)
         .with_writer(std::io::stderr)
         .try_init();

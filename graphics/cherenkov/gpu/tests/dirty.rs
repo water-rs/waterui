@@ -7,7 +7,13 @@ split_test! {
 fn randomized_incremental_matches_full_lowering() {
     let (mut renderer, _) = wait!(cherenkov_gpu::Gpu::init(cherenkov_gpu::GpuConfig::default()))
         .expect("GPU adapter required");
-    wait!(cherenkov::testing::incremental::equivalence(&mut renderer));
+    let font = cherenkov::FontData {
+        data: std::fs::read("../scenes/fonts/NotoSans.ttf")
+            .expect("scenes/fonts/NotoSans.ttf")
+            .into(),
+        index: 0,
+    };
+    wait!(cherenkov::testing::incremental::equivalence(&mut renderer, font));
 }
 }
 
@@ -40,7 +46,7 @@ fn a_glyph_keeps_its_path_clip_mask_when_composed() {
         style: GlyphStyle::Fill,
     };
     let surface = wait!(engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16)))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))
         .expect("surface");
     let clip = Rect::new(14., 0., 24., 64.);
     surface.update(|tx| {

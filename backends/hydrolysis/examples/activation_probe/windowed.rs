@@ -130,8 +130,10 @@ pub fn main() {
     })
     .activation(Activation::Never);
     run(
-        App::new_with_windows([host], Environment::new())
-            .on_last_window_closed(LastWindowPolicy::StayResident),
-        hydrolysis_m3::Material3::defaults(),
+        |env| {
+            App::new_with_windows([host], env).on_last_window_closed(LastWindowPolicy::StayResident)
+        },
+        Environment::new(),
+        hydrolysis::testing::TestStyle::new(),
     );
 }

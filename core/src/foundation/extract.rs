@@ -49,6 +49,10 @@ pub trait Extractor: 'static + Sized {
 ///
 /// This wrapper enables extracting values by type from an Environment.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "extractor newtype destructured in handler parameters (`Use(value): Use<T>`)"
+)]
 pub struct Use<T: 'static>(pub T);
 
 /// Wrapper for cloneable state values injected into the environment.
@@ -58,6 +62,10 @@ pub struct Use<T: 'static>(pub T);
 /// itself and the wrapper disappears from handler signatures; `State<T>`
 /// remains the extractor for values of foreign types such as `Binding<T>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "extractor newtype destructured in handler parameters (`State(value): State<T>`)"
+)]
 pub struct State<T: 'static>(pub T);
 
 /// Per-action extraction state used to disambiguate repeated extractor types.
@@ -157,7 +165,8 @@ impl<T: 'static + Clone> Extractor for State<T> {
             || {
                 Err(Error::msg(format!(
                     "Environment state `{}` not found; install the value with \
-                     `.state(&value)` in the handler's modifier chain or on an ancestor",
+                     `.state(&value)` in the handler's modifier chain, on an ancestor, \
+                     or with `App::state` for an application-scoped handler",
                     type_name::<T>()
                 )))
             },
@@ -172,7 +181,8 @@ impl<T: 'static + Clone> Extractor for State<T> {
                 Err(Error::msg(format!(
                     "Environment state `{}` not found at position {}; install \
                      the value with `.state(&value)` in the handler's modifier \
-                     chain or on an ancestor",
+                     chain, on an ancestor, or with `App::state` for an \
+                     application-scoped handler",
                     type_name::<T>(),
                     position
                 )))

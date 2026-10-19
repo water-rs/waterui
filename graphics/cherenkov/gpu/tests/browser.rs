@@ -4,7 +4,7 @@
 use cherenkov::kurbo::Rect;
 use cherenkov::{
     Draw, Engine, FontSource, FrameTime, Glyph, GlyphRun, GlyphStyle, ImageData, Next, Offscreen,
-    OffscreenFormat, Rgba8, Sampling, ShaderPaint, ShaderSource, WorkingColor,
+    OffscreenFormat, Rgba8, Rgba16F, Sampling, ShaderPaint, ShaderSource, WorkingColor,
 };
 use cherenkov_gpu::{
     Gpu, GpuConfig,
@@ -17,6 +17,8 @@ use cherenkov_gpu::{
 };
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
 
@@ -95,8 +97,15 @@ async fn local_producers_share_device_and_preserve_wakes_during_await() {
     })
     .await
     .expect("engine");
+    let wakes = Arc::new(AtomicU32::new(0));
+    let counter = wakes.clone();
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(
+            Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+            move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            },
+        )
         .await
         .expect("surface");
     let color = nami::binding(WorkingColor::WHITE);
@@ -105,24 +114,21 @@ async fn local_producers_share_device_and_preserve_wakes_during_await() {
             .content(surface.record(|r| r.fill(Rect::new(0., 0., 8., 16.), color.clone())));
     });
     engine.render(FrameTime::now()).await.expect("first frame");
-    let wakes = Rc::new(Cell::new(0));
-    let counter = wakes.clone();
-    engine.set_waker(move || counter.set(counter.get() + 1));
+    // Count only the wakes from here on: the first frame's content woke
+    // the host.
+    wakes.store(0, Ordering::Relaxed);
     let setups = Rc::new(Cell::new(0));
     let frames = Rc::new(Cell::new(0));
     let drops = Rc::new(Cell::new(0));
-    let producer = GpuContentBox::new(
-        LocalProducer {
-            setups: setups.clone(),
-            frames: frames.clone(),
-            drops: drops.clone(),
-            device,
-            during_setup: Some(Box::new(move || {
-                color.set(WorkingColor::new([0., 1., 0., 1.]));
-            })),
-        },
-        || {},
-    );
+    let producer = GpuContentBox::new(LocalProducer {
+        setups: setups.clone(),
+        frames: frames.clone(),
+        drops: drops.clone(),
+        device,
+        during_setup: Some(Box::new(move || {
+            color.set(WorkingColor::new([0., 1., 0., 1.]));
+        })),
+    });
     let layer = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].push(&layer);
@@ -130,13 +136,13 @@ async fn local_producers_share_device_and_preserve_wakes_during_await() {
             .transform(cherenkov::kurbo::Affine::translate((8., 0.)))
             .content(engine.gpu_producer(producer).at((8, 16)));
     });
-    let before = wakes.get();
+    let before = wakes.load(Ordering::Relaxed);
     engine
         .render(FrameTime::now())
         .await
         .expect("producer setup");
     assert_eq!(
-        wakes.get(),
+        wakes.load(Ordering::Relaxed),
         before + 1,
         "signal during setup requests next frame"
     );
@@ -176,7 +182,7 @@ async fn shader_validation_returns_errors_before_queueing() {
     ));
     let shader = engine.shader(ShaderSource::wgsl(BLUE)).expect("shader");
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     surface.update(|tx| {
@@ -218,7 +224,7 @@ async fn resources_registered_while_recording_draw_in_the_same_frame() {
         .await
         .expect("engine");
     let surface = engine
-        .surface(Offscreen::new((48, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((48, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let font = engine
@@ -283,6 +289,78 @@ async fn resources_registered_while_recording_draw_in_the_same_frame() {
     );
 }
 
+/// An image whose f16 texels exceed the device's `max_buffer_size`
+/// (256 MiB at the default limits) uploads in row bands (#2793): the
+/// last band carries the image's final row, whose colour must reach
+/// the texture.
+#[wasm_bindgen_test(async)]
+#[expect(
+    clippy::future_not_send,
+    reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+)]
+async fn image_larger_than_max_buffer_size_uploads_in_bands() {
+    let engine = Engine::<Gpu>::new(GpuConfig::default())
+        .await
+        .expect("engine");
+    // 8192×4097 f16 texels is 256 MiB plus one row — inside
+    // `ImageLimits` (8192 max dimension, a 512 MiB texel budget), so
+    // the registration is admitted and must upload. The marker colour
+    // sits in the last row: the second band's only row.
+    let (width, height) = (8192_u32, 4097_u32);
+    let mut data = vec![0_u8; width as usize * height as usize * 8];
+    let texel = |channels: [f32; 4]| -> Vec<u8> {
+        channels
+            .into_iter()
+            .flat_map(|v| half::f16::from_f32(v).to_le_bytes())
+            .collect()
+    };
+    // The first row is red and the last green, so a row mix-up fails
+    // instead of passing on the wrong row's colour.
+    let first_row = texel([1.0, 0.0, 0.0, 1.0]);
+    let last_row = texel([0.0, 1.0, 0.0, 1.0]);
+    for (row, colour) in [(0_usize, &first_row), (height as usize - 1, &last_row)] {
+        let start = row * width as usize * 8;
+        for px in data[start..start + width as usize * 8]
+            .as_chunks_mut::<8>()
+            .0
+        {
+            px.copy_from_slice(colour);
+        }
+    }
+    let image = engine
+        .image(
+            ImageData::<Rgba16F>::new(width, height, data)
+                .expect("image data")
+                .color_space(cherenkov::ImageColorSpace::LinearP3)
+                .premultiplied(),
+        )
+        .expect("image within ImageLimits");
+    let surface = engine
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
+        .await
+        .expect("surface");
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            // The rect's bottom row lands on the surface's first pixel
+            // row, so only the image's last row is drawn.
+            r.image(
+                image.id(),
+                Rect::new(0., -f64::from(height - 1), f64::from(width), 1.),
+                Sampling::Nearest,
+            );
+        }));
+    });
+    assert_eq!(
+        engine.render(FrameTime::now()).await.expect("render"),
+        Next::Idle
+    );
+    let px = pixels(&surface).await[0];
+    assert!(
+        px[0].abs() < 0.02 && (px[1] - 1.).abs() < 0.02 && px[2].abs() < 0.02 && px[3] > 0.99,
+        "the image's last row arrived: {px:?}"
+    );
+}
+
 struct YieldingEffect {
     callback: Option<filtrate::EffectRedrawCallback>,
     frames: Rc<Cell<u32>>,
@@ -319,6 +397,12 @@ impl filtrate::Effect for YieldingEffect {
         );
         Ok(false)
     }
+
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
+    }
+
+    fn trim(&mut self) {}
 }
 
 #[wasm_bindgen_test(async)]
@@ -336,12 +420,12 @@ async fn filters_keep_redraw_requests_made_during_async_setup() {
         frames: frames.clone(),
     }));
     let surface = engine
-        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()]
-            .filter(&filter)
+            .filter(filter.id())
             .content(surface.record(|r| r.fill(Rect::new(0., 0., 8., 8.), WorkingColor::WHITE)));
     });
     assert!(matches!(
@@ -372,7 +456,13 @@ async fn browser_incremental_matches_full_lowering() {
     let (mut renderer, _) = Gpu::init(GpuConfig::default())
         .await
         .expect("WebGPU adapter required");
-    cherenkov::testing::incremental::equivalence(&mut renderer).await;
+    let font = cherenkov::FontData {
+        data: include_bytes!("../../scenes/fonts/NotoSans.ttf")
+            .as_slice()
+            .into(),
+        index: 0,
+    };
+    cherenkov::testing::incremental::equivalence(&mut renderer, font).await;
 }
 
 // ---- Foreign GPUTexture external frames (#167) --------------------------
@@ -550,7 +640,7 @@ async fn web_rgb_formats_sample_in_place() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
 
@@ -629,7 +719,7 @@ async fn web_rgb_alpha_modes() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let plane = foreign_plane(
@@ -695,7 +785,7 @@ async fn web_rgb_colour_metadata() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let layer = surface.layer();
@@ -768,7 +858,7 @@ async fn web_rgb_primaries_convert_to_working_space() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let layer = surface.layer();
@@ -845,7 +935,7 @@ async fn web_frame_shared_across_layers_and_retires_once() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let plane = foreign_plane(
@@ -906,7 +996,7 @@ async fn web_frame_replacement_mid_flight_and_teardown() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let plane = |texel: [u8; 4]| {
@@ -980,7 +1070,7 @@ async fn web_frame_replacement_mid_flight_and_teardown() {
 
     // Engine teardown does the same for a surviving surface.
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     let imported_red = cherenkov_gpu::interop::web::import_texture(
@@ -1194,7 +1284,7 @@ async fn web_import_copies_no_pixels() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})
         .await
         .expect("surface");
     // A quarter-megabyte plane: any import-side copy or conversion target
@@ -1244,8 +1334,15 @@ async fn web_import_copies_no_pixels() {
 async fn web_frame_idle_and_coalesced_wake() {
     let (device, queue, engine) = shared_engine().await;
     let releases = Rc::new(Cell::new(0));
+    let wakes = Arc::new(AtomicU32::new(0));
+    let counter = wakes.clone();
     let surface = engine
-        .surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))
+        .surface(
+            Offscreen::new((16, 16), OffscreenFormat::LinearF16),
+            move || {
+                counter.fetch_add(1, Ordering::Relaxed);
+            },
+        )
         .await
         .expect("surface");
     let plane = foreign_plane(
@@ -1267,9 +1364,6 @@ async fn web_frame_idle_and_coalesced_wake() {
     )
     .await
     .expect("import");
-    let wakes = Rc::new(Cell::new(0));
-    let counter = wakes.clone();
-    engine.set_waker(move || counter.set(counter.get() + 1));
     let layer = show_frame(
         &surface,
         &engine,
@@ -1288,7 +1382,11 @@ async fn web_frame_idle_and_coalesced_wake() {
         RgbAlpha::Opaque,
         FrameColor::SRGB,
     );
-    assert_eq!(wakes.get(), 1, "queued installs coalesce to one wake");
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        1,
+        "queued installs coalesce to one wake"
+    );
     assert_eq!(
         engine.render(FrameTime::now()).await.expect("render"),
         Next::Idle
@@ -1298,7 +1396,11 @@ async fn web_frame_idle_and_coalesced_wake() {
         engine.render(FrameTime::now()).await.expect("steady"),
         Next::Idle
     );
-    assert_eq!(wakes.get(), 1, "no wake without a new frame");
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        1,
+        "no wake without a new frame"
+    );
     assert_eq!(engine.stats().commands_lowered, 0, "nothing re-lowered");
     replace_frame(
         &surface,
@@ -1308,9 +1410,198 @@ async fn web_frame_idle_and_coalesced_wake() {
         RgbAlpha::Opaque,
         FrameColor::SRGB,
     );
-    assert_eq!(wakes.get(), 2, "a new frame wakes once more");
+    assert_eq!(
+        wakes.load(Ordering::Relaxed),
+        2,
+        "a new frame wakes once more"
+    );
     assert_eq!(
         engine.render(FrameTime::now()).await.expect("render"),
         Next::Idle
     );
+}
+
+/// A hosted element sits between the engine part below it and the part
+/// above it (#2334): each part is a canvas, the element stacks between them,
+/// and the path's transforms and clips reach its style.
+#[wasm_bindgen_test(async)]
+#[expect(
+    clippy::future_not_send,
+    reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+)]
+async fn dom_planes_stack_a_hosted_element_between_parts() {
+    use cherenkov::Hosted;
+    use cherenkov::kurbo::{Affine, RoundedRect, Size};
+    use cherenkov_gpu::interop::web::{DomTarget, HostedElement};
+
+    let window = web_sys::window().expect("a browser window");
+    let document = window.document().expect("a document");
+    let scale = window.device_pixel_ratio();
+    let host = dom_host(&document);
+    let frame = hosted_frame(&document);
+
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the host box times the device pixel ratio is a small pixel count"
+    )]
+    let size = ((480.0 * scale) as u32, (320.0 * scale) as u32);
+    let engine = Engine::<Gpu>::new(GpuConfig::default())
+        .await
+        .expect("engine");
+    let surface = engine
+        .surface(DomTarget::new(host.clone(), size), || {})
+        .await
+        .expect("DOM surface");
+    let card = surface.layer();
+    let web = surface.layer();
+    let menu = surface.layer();
+    let points = Affine::scale(scale);
+    surface.update(|tx| {
+        tx[surface.root()]
+            .push(&card)
+            .push(&menu)
+            .content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0., 0., f64::from(size.0), f64::from(size.1)),
+                    WorkingColor::new([0.05, 0.08, 0.3, 1.]),
+                );
+            }));
+        tx[&card]
+            .transform(points * Affine::translate((40., 40.)))
+            .clip(RoundedRect::new(0., 0., 300., 200., 32.))
+            .scroll_offset(cherenkov::kurbo::Vec2::new(0., 10.))
+            .push(&web);
+        tx[&web]
+            .transform(Affine::translate((20., 30.)) * Affine::rotate(0.08))
+            .content(
+                Hosted::<Gpu>::new(HostedElement::new(frame.clone().into()))
+                    .at(Size::new(320., 220.)),
+            );
+        tx[&menu]
+            .transform(points * Affine::translate((250., 150.)))
+            .content(surface.record(|r| {
+                r.fill(
+                    RoundedRect::new(0., 0., 190., 130., 16.),
+                    WorkingColor::new([0.8, 0.1, 0.1, 1.]),
+                );
+            }));
+    });
+    engine.render(FrameTime::now()).await.expect("render");
+
+    let root = host.first_element_child().expect("the stacking root");
+    assert_eq!(
+        stacked(&root, "canvas"),
+        ["0", "2"],
+        "a part below and one above"
+    );
+    assert_eq!(
+        stacked(&root, "iframe"),
+        ["1"],
+        "the element between the parts"
+    );
+    let style = frame.style();
+    let property = |name: &str| style.get_property_value(name).expect(name);
+    assert!(property("transform").starts_with("matrix("));
+    // CSSOM serializes the reference quoted: `url("#…")`.
+    assert!(property("clip-path").contains("#cherenkov-clip-"));
+    assert_eq!(property("width"), "320px");
+    wasm_bindgen_test::console_log!("DOM_PLANES_READY");
+
+    // Moving the element rewrites its style in place: it is never
+    // reinserted, which would reload its document.
+    let before = property("transform");
+    surface.update(|tx| {
+        tx[&web].transform(Affine::translate((24., 30.)) * Affine::rotate(0.08));
+    });
+    engine.render(FrameTime::now()).await.expect("render");
+    assert_ne!(property("transform"), before);
+    assert!(frame.parent_element().is_some_and(|parent| parent == root));
+
+    // A surface that outlives the DOM one keeps the engine rendering, so
+    // the frame after the drop releases it.
+    let _visible = engine
+        .surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {})
+        .await
+        .expect("offscreen surface");
+    let parts = root.query_selector_all("canvas").expect("a selector");
+    drop(surface);
+    engine.render(FrameTime::now()).await.expect("render");
+    assert!(
+        host.first_element_child().is_none(),
+        "the surface's stacking root leaves with it"
+    );
+    assert_unconfigured(&parts);
+    host.remove();
+}
+
+/// Each of a dropped surface's part canvases has an unconfigured context,
+/// not one left holding its device and swapchain texture for the garbage
+/// collector (#2776): an unconfigured context has no current texture.
+fn assert_unconfigured(parts: &web_sys::NodeList) {
+    for i in 0..parts.length() {
+        let context = parts
+            .item(i)
+            .expect("listed")
+            .unchecked_into::<web_sys::HtmlCanvasElement>()
+            .get_context("webgpu")
+            .expect("a WebGPU context")
+            .expect("the part's context");
+        let current = js_sys::Reflect::get(&context, &"getCurrentTexture".into())
+            .expect("GPUCanvasContext.getCurrentTexture")
+            .unchecked_into::<js_sys::Function>();
+        assert!(
+            current.call0(&context).is_err(),
+            "part {i}'s context is still configured after its surface dropped"
+        );
+    }
+}
+
+/// The host's element a DOM surface presents in: 480 by 320 CSS pixels at
+/// the page's origin.
+fn dom_host(document: &web_sys::Document) -> web_sys::HtmlElement {
+    let host: web_sys::HtmlElement = document
+        .create_element("div")
+        .expect("div")
+        .unchecked_into();
+    host.style()
+        .set_css_text("position:fixed;left:0;top:0;width:480px;height:320px");
+    document
+        .body()
+        .expect("a body")
+        .append_child(&host)
+        .expect("host appended");
+    host
+}
+
+/// The `<iframe>` a web view would host: a same-document page, so the test
+/// needs no network.
+fn hosted_frame(document: &web_sys::Document) -> web_sys::HtmlIFrameElement {
+    let frame: web_sys::HtmlIFrameElement = document
+        .create_element("iframe")
+        .expect("iframe")
+        .unchecked_into();
+    frame.set_srcdoc(
+        "<body style='margin:0;background:#2e7d32;color:#fff;font:600 28px system-ui'>\
+         <p style='margin:24px'>hosted iframe</p></body>",
+    );
+    frame.style().set_css_text("border:0");
+    frame
+}
+
+/// The `z-index` of each of `root`'s children matching `selector`, in
+/// document order.
+fn stacked(root: &web_sys::Element, selector: &str) -> Vec<String> {
+    let found = root.query_selector_all(selector).expect("a selector");
+    (0..found.length())
+        .map(|i| {
+            found
+                .item(i)
+                .expect("listed")
+                .unchecked_into::<web_sys::HtmlElement>()
+                .style()
+                .get_property_value("z-index")
+                .expect("z-index")
+        })
+        .collect()
 }

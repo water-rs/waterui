@@ -1,6 +1,6 @@
 //! Build-time metadata embedded into the `water` CLI binary.
 
-/// Exact Android Kotlin compiler version required by the embedded Android backend/runtime.
+/// Exact Kotlin compiler version the Android Gradle builds require.
 pub const ANDROID_KOTLIN_VERSION: &str = env!("WATERUI_CLI_ANDROID_KOTLIN_VERSION");
 
 /// JDK major version the Android scaffold's `compileOptions` pins
@@ -10,6 +10,7 @@ pub const ANDROID_JDK_VERSION: &str = env!("WATERUI_CLI_ANDROID_JDK_VERSION");
 
 /// Git repository reference embedded into the CLI binary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct BackendReference {
     /// Git remote URL for the backend repository.
     pub repository_url: &'static str,

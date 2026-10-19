@@ -60,6 +60,7 @@ impl OffscreenSize {
 
 /// Why an offscreen render did not produce pixels.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum OffscreenError {
     /// No GPU engine could be created.
     #[error(transparent)]
@@ -74,6 +75,7 @@ pub enum OffscreenError {
 
 /// The pixels of an offscreen render: straight-alpha sRGB8, row-major.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct OffscreenImage {
     /// Width in pixels.
     pub width: u32,
@@ -84,6 +86,17 @@ pub struct OffscreenImage {
 }
 
 impl OffscreenImage {
+    /// A `width` by `height` image over `rgba8`, which holds
+    /// `width * height * 4` bytes of straight-alpha sRGB8 in row-major order.
+    #[must_use]
+    pub const fn new(width: u32, height: u32, rgba8: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            rgba8,
+        }
+    }
+
     /// Encodes the readback's premultiplied linear P3 as straight sRGB8,
     /// mapping P3 primaries to sRGB through XYZ and clipping what falls
     /// outside the sRGB gamut.
@@ -102,11 +115,7 @@ impl OffscreenImage {
                 [encode(r), encode(g), encode(b), encode_alpha(a)]
             })
             .collect();
-        Self {
-            width: readback.width,
-            height: readback.height,
-            rgba8,
-        }
+        Self::new(readback.width, readback.height, rgba8)
     }
 
     /// The image as premultiplied sRGB8: each channel is its straight value
@@ -154,13 +163,7 @@ impl OffscreenImage {
 }
 
 fn encode(linear: f32) -> u8 {
-    let clipped = linear.clamp(0.0, 1.0);
-    let encoded = if clipped <= 0.003_130_8 {
-        clipped * 12.92
-    } else {
-        1.055_f32.mul_add(clipped.powf(1.0 / 2.4), -0.055)
-    };
-    encode_alpha(encoded)
+    encode_alpha(filtrate_core::space::srgb_encode(linear.clamp(0.0, 1.0)))
 }
 
 #[expect(
@@ -172,15 +175,9 @@ fn encode_alpha(unit: f32) -> u8 {
     (unit.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
-/// Linear Display P3 to linear sRGB, via XYZ D65.
-fn p3_to_srgb([r, g, b]: [f32; 3]) -> [f32; 3] {
-    const P3_TO_SRGB: [[f32; 3]; 3] = [
-        [1.224_940_2, -0.224_940_2, 0.0],
-        [-0.042_056_96, 1.042_056_9, 0.0],
-        [-0.019_637_55, -0.078_636_05, 1.098_273_6],
-    ];
-    let row = |m: [f32; 3]| m[2].mul_add(b, m[0].mul_add(r, m[1] * g));
-    [row(P3_TO_SRGB[0]), row(P3_TO_SRGB[1]), row(P3_TO_SRGB[2])]
+/// Linear Display P3 to linear sRGB, with the engine's matrix.
+fn p3_to_srgb(p3: [f32; 3]) -> [f32; 3] {
+    filtrate_core::space::transform(&filtrate_core::space::P3_TO_SRGB, p3)
 }
 
 #[expect(
@@ -222,9 +219,9 @@ impl OffscreenRenderer<Gpu> {
     /// [`EngineError`] when no adapter is available.
     #[cfg_attr(
         target_arch = "wasm32",
-        expect(
+        allow(
             clippy::future_not_send,
-            reason = "holds the engine's Rc-based wasm32 backend handles across an await, so the future is !Send; every future on wasm32 runs on the browser's single-threaded executor"
+            reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
         )
     )]
     pub async fn new() -> Result<Self, OffscreenError> {
@@ -309,10 +306,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ) -> Result<OffscreenImage, OffscreenError> {
         let width = pixels_to_points(size.width(), scale);
         let height = pixels_to_points(size.height(), scale);
-        let surface = self.engine.surface(Offscreen::new(
-            (size.width(), size.height()),
-            OffscreenFormat::LinearF16,
-        ))?;
+        let surface = self.engine.surface(
+            Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+            || {},
+        )?;
         let mut resources = self.resources.recording();
         let recorded = surface.record(|recorder: &mut Recorder| {
             recorder.transform(Affine::scale(f64::from(scale)), |recorder| {
@@ -352,10 +349,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
         let height = pixels_to_points(size.height(), scale);
         let surface = self
             .engine
-            .surface(Offscreen::new(
-                (size.width(), size.height()),
-                OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+                || {},
+            )
             .await?;
         let mut resources = self.resources.recording();
         let recorded = surface.record(|recorder: &mut Recorder| {
@@ -390,10 +387,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
         size: OffscreenSize,
         transform: Affine,
     ) -> Result<OffscreenImage, OffscreenError> {
-        let surface = self.engine.surface(Offscreen::new(
-            (size.width(), size.height()),
-            OffscreenFormat::LinearF16,
-        ))?;
+        let surface = self.engine.surface(
+            Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+            || {},
+        )?;
         let picture = picture.rebuild_for_engine(&self.resources);
         let mut resources = self.resources.recording();
         resources.hold(picture.held());
@@ -436,10 +433,10 @@ impl<B: SceneCaps + Uploads<Rgba8> + Uploads<Rgba16F>> OffscreenRenderer<B> {
     ) -> Result<OffscreenImage, OffscreenError> {
         let surface = self
             .engine
-            .surface(Offscreen::new(
-                (size.width(), size.height()),
-                OffscreenFormat::LinearF16,
-            ))
+            .surface(
+                Offscreen::new((size.width(), size.height()), OffscreenFormat::LinearF16),
+                || {},
+            )
             .await?;
         let picture = picture.rebuild_for_engine(&self.resources);
         let mut resources = self.resources.recording();

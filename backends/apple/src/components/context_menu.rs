@@ -69,6 +69,10 @@ struct ContextMenuState {
     /// menus only.
     #[cfg(target_os = "ios")]
     interaction: RefCell<Option<uikit::ContextMenu>>,
+    /// The scope the presented menu's key commands are armed in, replaced
+    /// by the next presentation's.
+    #[cfg(target_os = "ios")]
+    key_commands: RefCell<Option<uikit::KeyCommands>>,
     /// The recognizers that open the panel — accessory menus only.
     #[cfg(target_os = "ios")]
     triggers: RefCell<Vec<uikit::gesture::GestureAttachment>>,
@@ -426,17 +430,16 @@ pub fn install(dispatcher: &mut Dispatcher) {
             #[cfg(target_os = "ios")]
             interaction: RefCell::new(None),
             #[cfg(target_os = "ios")]
+            key_commands: RefCell::new(None),
+            #[cfg(target_os = "ios")]
             triggers: RefCell::new(Vec::new()),
             mtm,
         }));
 
         // The content always fills the wrapper.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let state = state.borrow();
                 view::set_frame(state.child.view(), view::bounds(host));
             }
@@ -509,11 +512,17 @@ pub fn install(dispatcher: &mut Dispatcher) {
                                 if nodes.is_empty() {
                                     return None;
                                 }
+                                let key_commands = uikit::KeyCommands::new(state.mtm);
                                 let menu = uikit::menu(
                                     state.mtm,
+                                    &key_commands,
                                     &cocoa_ui::menu::Command::default(),
                                     &nodes,
                                 );
+                                // `UIKit` asks for a configuration per
+                                // presentation: the previous menu is gone,
+                                // and its commands retire with its scope.
+                                state.key_commands.replace(Some(key_commands));
                                 let preview = state.preview.as_ref().and_then(|preview| {
                                     preview.controller.as_ref().map(|controller| {
                                         controller.setPreferredContentSize(
@@ -543,11 +552,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         #[cfg(target_os = "macos")]
         host.set_right_mouse_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host_view, event| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let menu = {
                     let mtm = state.borrow().mtm;
                     let nodes = {

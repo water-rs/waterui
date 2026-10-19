@@ -83,6 +83,13 @@ pub struct Args {
     max_clip_layers: Option<u64>,
 }
 
+impl Args {
+    /// The project directory this command works on.
+    pub(crate) fn project_dir(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum BenchOutputFormat {
     /// Human-friendly terminal summary.
@@ -115,24 +122,22 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
         args.repetitions
     );
 
-    let suite = run_bench_suite(BenchRunOptions {
-        path,
-        filter: args.filter,
-        config: BenchRunConfig {
-            warmups: args.warmups,
-            samples: args.samples,
-            repetitions: args.repetitions,
-        },
-        report_dir: args.report_dir,
-        budget_caps: BenchBudgets {
-            max_p95_us: args.max_p95_us,
-            max_mean_us: args.max_mean_us,
-            max_rebuild_ratio: args.max_rebuild_ratio,
-            max_scene_layers: args.max_scene_layers,
-            max_gpu_surface_layers: args.max_gpu_surface_layers,
-            max_clip_layers: args.max_clip_layers,
-        },
-    })
+    let suite = run_bench_suite(
+        &waterui_cli::toolchain::Host::current(),
+        BenchRunOptions::new(
+            path,
+            args.filter,
+            BenchRunConfig::new(args.warmups, args.samples, args.repetitions),
+            args.report_dir,
+            BenchBudgets::default()
+                .with_max_p95_us(args.max_p95_us)
+                .with_max_mean_us(args.max_mean_us)
+                .with_max_rebuild_ratio(args.max_rebuild_ratio)
+                .with_max_scene_layers(args.max_scene_layers)
+                .with_max_gpu_surface_layers(args.max_gpu_surface_layers)
+                .with_max_clip_layers(args.max_clip_layers),
+        ),
+    )
     .await?;
 
     render_reports(shell, &suite, args.format, args.output.as_deref()).await?;

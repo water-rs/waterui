@@ -48,6 +48,14 @@ internal class HydrolysisInputConnection(
     /** True while [applyNativeState] replays the session's state onto the mirror. */
     private var adopting = false
 
+    /**
+     * Whether the IMM's calls may reach the session. The IMM keeps a
+     * connection until it closes it from its own queue — after a destroyed
+     * session's teardown has run — and the view may have created several
+     * by then, so every connection of a view that left its window refuses.
+     */
+    private fun forwards(): Boolean = target.isAttachedToWindow
+
     /** One `nativeEditOp` dispatch; `false` on a dead session or stale id. */
     private fun op(code: Int, arg1: Int = 0, arg2: Int = 0, text: String = ""): Boolean {
         // Adopting replays the session's own edits back onto the mirror —
@@ -55,9 +63,11 @@ internal class HydrolysisInputConnection(
         // re-enters this very method: an infinite Kotlin->native->Kotlin
         // cycle. The op is accepted so the super.* mirror update still runs.
         if (adopting) return true
-        if (!live) return false
-        val ptr = session?.nativePtr ?: return false
-        return NativeBridge.nativeEditOp(ptr, editorId, code, arg1, arg2, text)
+        if (!live || !forwards()) return false
+        val session = session ?: return false
+        return session.withNativePtr(NativeBridge::nativeEditOp.name) { ptr ->
+            NativeBridge.nativeEditOp(ptr, editorId, code, arg1, arg2, text)
+        }
     }
 
     // ------------------------------------------------------------------
@@ -141,38 +151,39 @@ internal class HydrolysisInputConnection(
      * `nativeKeyEvent` path the view's own key dispatch uses.
      */
     override fun sendKeyEvent(event: KeyEvent): Boolean {
+        if (!forwards()) return false
         val session = session ?: return false
-        val key =
-            when {
-                event.unicodeChar != 0 -> event.unicodeChar.toChar().toString()
-                event.keyCode == KeyEvent.KEYCODE_DEL -> "Backspace"
-                event.keyCode == KeyEvent.KEYCODE_ENTER -> "Enter"
-                event.keyCode == KeyEvent.KEYCODE_DPAD_LEFT -> "ArrowLeft"
-                event.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT -> "ArrowRight"
-                event.keyCode == KeyEvent.KEYCODE_DPAD_UP -> "ArrowUp"
-                event.keyCode == KeyEvent.KEYCODE_DPAD_DOWN -> "ArrowDown"
-                else -> return false
+        // The view's own decoder: the same W3C vocabulary, modifier
+        // stripping and dead-key composition the direct dispatch applies —
+        // a hardware key the IME forwards must compose exactly as one the
+        // view saw itself.
+        val keys = target.w3cKeys(event)
+        if (keys.isEmpty()) return false
+        // One scope for the pair: the up reaches the session the down did.
+        session.withNativePtr(NativeBridge::nativeKeyEvent.name) { ptr ->
+            for (key in keys) {
+                NativeBridge.nativeKeyEvent(
+                    ptr,
+                    key,
+                    event.action == KeyEvent.ACTION_DOWN,
+                    event.isShiftPressed,
+                    event.isCtrlPressed,
+                    event.isAltPressed,
+                    event.isMetaPressed,
+                )
+                // IMEs pair down/up; a lone down without the up leaves stuck presses.
+                if (event.action == KeyEvent.ACTION_DOWN) {
+                    NativeBridge.nativeKeyEvent(
+                        ptr,
+                        key,
+                        false,
+                        event.isShiftPressed,
+                        event.isCtrlPressed,
+                        event.isAltPressed,
+                        event.isMetaPressed,
+                    )
+                }
             }
-        NativeBridge.nativeKeyEvent(
-            session.nativePtr,
-            key,
-            event.action == KeyEvent.ACTION_DOWN,
-            event.isShiftPressed,
-            event.isCtrlPressed,
-            event.isAltPressed,
-            event.isMetaPressed,
-        )
-        // IMEs pair down/up; a lone down without the up leaves stuck presses.
-        if (event.action == KeyEvent.ACTION_DOWN) {
-            NativeBridge.nativeKeyEvent(
-                session.nativePtr,
-                key,
-                false,
-                event.isShiftPressed,
-                event.isCtrlPressed,
-                event.isAltPressed,
-                event.isMetaPressed,
-            )
         }
         return true
     }

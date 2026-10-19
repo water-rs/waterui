@@ -7,9 +7,11 @@ use std::sync::{
 
 use rustc_hash::FxHashMap;
 
-use cherenkov::{RenderError, SurfaceVisibility, WakeGate};
+use cherenkov::{CompletionWaker, RenderError, SurfaceWakes};
+
 use filtrate::{
-    Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput, ShapeTextures,
+    Effect, EffectContext, EffectFrameTiming, EffectInput, EffectOutput, RetainedMemory,
+    ShapeTextures,
 };
 
 /// An effect moved to the render thread before its device resources exist.
@@ -105,6 +107,14 @@ where
             &self.0.param_bounds(),
         ))
     }
+
+    fn retained_memory(&self) -> RetainedMemory {
+        Effect::retained_memory(&self.0)
+    }
+
+    fn trim(&mut self) {
+        Effect::trim(&mut self.0);
+    }
 }
 
 /// A registered filter's identity: a layer filter or a backdrop group's
@@ -145,6 +155,16 @@ pub trait Runnable {
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<bool, filtrate::EffectRenderError>;
     fn set_redraw(&mut self, callback: filtrate::EffectRedrawCallback);
+    /// Device-resident bytes the effect itself retains — a chain's
+    /// intermediates and the auxiliary images it uploaded. The
+    /// registry's per-size input/output targets are the registry's, not
+    /// the effect's, and count elsewhere.
+    fn retained_memory(&self) -> RetainedMemory;
+    /// Drops the retained targets the effect's next encode recreates —
+    /// a chain's intermediates. Auxiliary images stay: the effect cannot
+    /// recreate them without its inputs. Called under memory pressure
+    /// with the registry's own target drop.
+    fn trim(&mut self);
 }
 
 impl<E: Effect> Runnable for E {
@@ -173,13 +193,19 @@ impl<E: Effect> Runnable for E {
     fn set_redraw(&mut self, callback: filtrate::EffectRedrawCallback) {
         self.set_redraw_callback(callback);
     }
+    fn retained_memory(&self) -> RetainedMemory {
+        Effect::retained_memory(self)
+    }
+    fn trim(&mut self) {
+        Effect::trim(self);
+    }
 }
 
 struct Entry {
     effect: Box<dyn Runnable>,
     dirty: Arc<AtomicBool>,
-    /// Open while a visible surface's frame runs the filter.
-    gate: Arc<WakeGate>,
+    /// The wakes of the surfaces whose frames run the filter.
+    wakes: Arc<SurfaceWakes>,
     again: bool,
     sequence: Option<u64>,
     setup: Option<Result<(), String>>,
@@ -194,12 +220,130 @@ struct Entry {
 struct FilterTargets {
     input: (wgpu::Texture, wgpu::TextureView),
     output: (wgpu::Texture, wgpu::TextureView),
+    /// The space conversion's bind groups when these targets last served
+    /// an sRGB-encoded scope.
+    convert: Option<ConvertBinds>,
     /// The frame sequence that last applied through these targets; a size
     /// unused for a whole frame is dropped rather than retained.
     last_used: u64,
 }
 
+/// Device bytes of one single-level filter target.
+fn texture_bytes(texture: &wgpu::Texture) -> u64 {
+    u64::from(texture.width()) * u64::from(texture.height()) * super::texel_bytes(texture.format())
+}
+
+impl FilterTargets {
+    /// Device bytes of the input/output pair.
+    fn bytes(&self) -> u64 {
+        texture_bytes(&self.input.0) + texture_bytes(&self.output.0)
+    }
+
+    /// Fills the input with the scope's texels: a copy, or a decode out of
+    /// an sRGB-encoded scope.
+    fn load(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        scope: &mut Scope<'_>,
+        format: wgpu::TextureFormat,
+    ) {
+        let scratch = scope.target;
+        let Some(convert) = scope.encoded.as_deref_mut() else {
+            encoder.copy_texture_to_texture(
+                scratch.texture.as_image_copy(),
+                self.input.0.as_image_copy(),
+                extent(scope.size),
+            );
+            return;
+        };
+        if self
+            .convert
+            .as_ref()
+            .is_none_or(|binds| binds.scope != scratch.view)
+        {
+            self.convert = Some(ConvertBinds {
+                scope: scratch.view.clone(),
+                decode: convert.bind(device, &scratch.view),
+                encode: convert.bind(device, &self.output.1),
+            });
+        }
+        let binds = self.convert.as_ref().expect("filled above");
+        convert.decode(
+            device,
+            encoder,
+            &binds.decode,
+            (&self.input.1, format),
+            scope.size,
+        );
+    }
+
+    /// Writes the output back over the scope's texels: a copy, or an
+    /// encode into an sRGB-encoded scope.
+    fn store(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        scope: Scope<'_>,
+        format: wgpu::TextureFormat,
+    ) {
+        let scratch = scope.target;
+        if let Some(convert) = scope.encoded {
+            let binds = self
+                .convert
+                .as_ref()
+                .expect("bound when the input was loaded");
+            convert.encode(
+                device,
+                encoder,
+                &binds.encode,
+                (&scratch.view, format),
+                scope.size,
+            );
+        } else {
+            encoder.copy_texture_to_texture(
+                self.output.0.as_image_copy(),
+                scratch.texture.as_image_copy(),
+                extent(scope.size),
+            );
+        }
+    }
+}
+
+/// The copy extent of a `size` region.
+const fn extent((width, height): (u32, u32)) -> wgpu::Extent3d {
+    wgpu::Extent3d {
+        width,
+        height,
+        depth_or_array_layers: 1,
+    }
+}
+
+/// The bind groups converting an sRGB-encoded scope's texels into a
+/// filter's input and its output back, valid while the scope's view is
+/// the one they bind.
+struct ConvertBinds {
+    scope: wgpu::TextureView,
+    decode: wgpu::BindGroup,
+    encode: wgpu::BindGroup,
+}
+
+/// The scope a filter runs over: its target, the region at the target's
+/// origin the filter covers, and — when the scope stores sRGB-encoded
+/// pixels — the conversion that moves them into the working space every
+/// filter works in and back.
+pub(super) struct Scope<'a> {
+    pub target: &'a super::ScratchTarget,
+    pub size: (u32, u32),
+    pub encoded: Option<&'a mut super::space_convert::Pipelines>,
+}
+
 impl Entry {
+    /// Device bytes of the registry's per-size input/output pairs.
+    fn io_bytes(&self) -> u64 {
+        self.io.iter().map(|(_, targets)| targets.bytes()).sum()
+    }
+
     #[cfg_attr(
         target_arch = "wasm32",
         expect(
@@ -272,9 +416,7 @@ impl Entry {
                             crate::diag::RetireArgs {
                                 label,
                                 class: crate::diag::Class::Target,
-                                bytes: u64::from(texture.width())
-                                    * u64::from(texture.height())
-                                    * super::texel_bytes(texture.format()),
+                                bytes: texture_bytes(&texture),
                                 used_in_latest_submit: true,
                                 reason: "filter size eviction",
                             },
@@ -298,6 +440,7 @@ impl Entry {
                             super::TARGET_USAGES,
                             format,
                         ),
+                        convert: None,
                         last_used: sequence,
                     },
                 ));
@@ -318,30 +461,23 @@ impl Entry {
     }
 }
 
+#[derive(Default)]
 pub struct Registry {
     entries: FxHashMap<FilterKey, Entry>,
-    host: Option<crate::interop::RedrawCallback>,
 }
 
 impl Registry {
-    pub fn new(host: Option<crate::interop::RedrawCallback>) -> Self {
-        Self {
-            entries: FxHashMap::default(),
-            host,
-        }
-    }
-
+    /// Registers a filter. Its redraw request — a parameter change on any
+    /// thread — marks it stale and, once per request until a frame runs
+    /// it, wakes the host of each surface whose frame runs it.
     pub fn add(&mut self, id: FilterKey, source: Box<dyn Source>) {
         let mut effect = source.build();
         let dirty = Arc::new(AtomicBool::new(false));
-        let gate = Arc::new(WakeGate::default());
-        let (request, open, host) = (Arc::clone(&dirty), Arc::clone(&gate), self.host.clone());
+        let wakes = Arc::new(SurfaceWakes::default());
+        let (request, surfaces) = (Arc::clone(&dirty), Arc::clone(&wakes));
         effect.set_redraw(Arc::new(move || {
-            if !request.swap(true, Ordering::AcqRel)
-                && open.is_open()
-                && let Some(host) = &host
-            {
-                host.wake();
+            if !request.swap(true, Ordering::AcqRel) {
+                surfaces.wake();
             }
         }));
         self.entries.insert(
@@ -349,7 +485,7 @@ impl Registry {
             Entry {
                 effect,
                 dirty,
-                gate,
+                wakes,
                 again: false,
                 sequence: None,
                 setup: None,
@@ -361,31 +497,25 @@ impl Registry {
     }
 
     /// Removes an entry; returns the GPU bytes its retired
-    /// input/output targets held (for the allocation diagnostic).
+    /// input/output targets held (for the allocation diagnostic). The
+    /// effect's own targets are not included: the effect allocates them
+    /// itself, so the diagnostic never recorded them growing.
     pub fn remove(&mut self, id: FilterKey) -> u64 {
         let Some(entry) = self.entries.remove(&id) else {
             return 0;
         };
-        entry.gate.close();
-        entry
-            .io
-            .iter()
-            .flat_map(|(_, targets)| [&targets.input.0, &targets.output.0])
-            .map(|texture| {
-                u64::from(texture.width())
-                    * u64::from(texture.height())
-                    * super::texel_bytes(texture.format())
-            })
-            .sum()
+        entry.wakes.clear();
+        entry.io_bytes()
     }
 
-    /// Sets each filter's wake gate to the surfaces whose frames run it;
-    /// a filter no frame runs wakes nothing.
-    pub fn set_surfaces(&self, uses: &FxHashMap<FilterKey, Vec<SurfaceVisibility>>) {
+    /// Sets each filter's wakes to the surfaces whose frames run it; a
+    /// filter no frame runs wakes nothing.
+    pub fn set_surfaces(&self, uses: &FxHashMap<FilterKey, Vec<CompletionWaker>>) {
         for (id, entry) in &self.entries {
-            entry
-                .gate
-                .set(uses.get(id).map(Vec::as_slice).unwrap_or_default());
+            entry.wakes.set(
+                uses.get(id).map(Vec::as_slice).unwrap_or_default(),
+                &entry.dirty,
+            );
         }
     }
 
@@ -396,36 +526,40 @@ impl Registry {
     }
 
     /// Drops every entry's input/output targets — grow-only caches the
-    /// renderer releases explicitly outside the hot frame path (#169 A4).
-    /// Returns the freed bytes for diagnostics.
+    /// renderer releases explicitly outside the hot frame path (#169 A4) —
+    /// and tells each effect to drop the retained targets its next encode
+    /// recreates, such as a chain's intermediates. Returns the freed io
+    /// bytes for diagnostics; the effect's own targets are not included:
+    /// the allocation diagnostic never recorded them growing, so it must
+    /// not record them being retired.
     pub(super) fn trim(&mut self) -> u64 {
         let mut bytes = 0;
         for entry in self.entries.values_mut() {
             for (_, targets) in std::mem::take(&mut entry.io) {
-                for texture in [targets.input.0, targets.output.0] {
-                    bytes += u64::from(texture.width())
-                        * u64::from(texture.height())
-                        * super::texel_bytes(texture.format());
-                }
+                bytes += targets.bytes();
             }
+            entry.effect.trim();
         }
         bytes
     }
 
-    pub fn gpu_bytes(&self) -> u64 {
+    /// Device-resident bytes of every registered chain's targets: the
+    /// registry's per-size input/output pairs plus each effect's own
+    /// retained targets (a multi-pass chain's intermediates).
+    pub fn target_bytes(&self) -> u64 {
         self.entries
             .values()
-            .flat_map(|entry| entry.io.iter())
-            .flat_map(|(_, targets)| [&targets.input.0, &targets.output.0])
-            .map(|texture| {
-                u64::from(texture.width())
-                    * u64::from(texture.height())
-                    * if texture.format() == wgpu::TextureFormat::Rgba16Float {
-                        8
-                    } else {
-                        4
-                    }
-            })
+            .map(|entry| entry.io_bytes() + entry.effect.retained_memory().targets)
+            .sum()
+    }
+
+    /// Device-resident bytes of the auxiliary images registered chains
+    /// uploaded themselves; textures bound from the host's own are the
+    /// host's and excluded.
+    pub fn image_bytes(&self) -> u64 {
+        self.entries
+            .values()
+            .map(|entry| entry.effect.retained_memory().images)
             .sum()
     }
 
@@ -441,11 +575,11 @@ impl Registry {
         &mut self,
         id: FilterKey,
         context: &EffectContext<'_>,
-        scratch: &super::ScratchTarget,
-        size: (u32, u32),
+        mut scope: Scope<'_>,
         timing: EffectFrameTiming,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Result<(), RenderError> {
+        let (scratch, size) = (scope.target, scope.size);
         let (device, queue) = (context.device, context.queue);
         let entry = self
             .entries
@@ -480,19 +614,10 @@ impl Registry {
         let format = scratch.texture.format();
         entry.check_setup(id, context, format)?;
         let targets_index = entry.targets_index(device, size, format, timing.sequence());
-        let targets = &entry.io[targets_index].1;
+        let targets = &mut entry.io[targets_index].1;
+        targets.load(device, encoder, &mut scope, format);
         let (input_texture, input_view) = &targets.input;
         let (output_texture, output_view) = &targets.output;
-        let extent = wgpu::Extent3d {
-            width: size.0,
-            height: size.1,
-            depth_or_array_layers: 1,
-        };
-        encoder.copy_texture_to_texture(
-            scratch.texture.as_image_copy(),
-            input_texture.as_image_copy(),
-            extent,
-        );
         let input = EffectInput {
             device,
             queue,
@@ -517,11 +642,7 @@ impl Registry {
             .effect
             .encode(&input, &output, encoder)
             .map_err(|error| RenderError::Render(format!("filter {id:?}: {error}")))?;
-        encoder.copy_texture_to_texture(
-            output_texture.as_image_copy(),
-            scratch.texture.as_image_copy(),
-            extent,
-        );
+        targets.store(device, encoder, scope, format);
         Ok(())
     }
 }
@@ -529,7 +650,7 @@ impl Registry {
 impl Drop for Registry {
     fn drop(&mut self) {
         for entry in self.entries.values() {
-            entry.gate.close();
+            entry.wakes.clear();
         }
     }
 }
@@ -589,9 +710,9 @@ mod tests {
 
     fn entry() -> Entry {
         Entry {
-            effect: Box::new(filtrate::Executor::new(GaussianBlur(2.0_f32))),
+            effect: Box::new(filtrate::Executor::new(GaussianBlur::new(2.0_f32))),
             dirty: Arc::new(AtomicBool::new(false)),
-            gate: Arc::new(WakeGate::default()),
+            wakes: Arc::new(SurfaceWakes::default()),
             again: false,
             sequence: None,
             setup: None,

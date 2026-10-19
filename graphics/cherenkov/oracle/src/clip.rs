@@ -131,17 +131,30 @@ fn clipped(subject: &[Segment], clip_edges: &[Segment], rule: FillRule) -> Vec<S
 #[must_use]
 pub fn intersect_edges(shape: &[Segment], shape_rule: FillRule, clip: &[Segment]) -> Vec<Segment> {
     let mut out = clipped(shape, clip, FillRule::NonZero);
-    out.extend(clipped(clip, shape, shape_rule));
-    // Where shape and clip edges coincide, both passes can emit the same
-    // directed segment; keep each once so coverage is not doubled.
-    out.sort_by(|a, b| {
-        a.0.total_cmp(&b.0)
-            .then(a.1.total_cmp(&b.1))
-            .then(a.2.total_cmp(&b.2))
-            .then(a.3.total_cmp(&b.3))
-    });
-    out.dedup();
+    // Where a clip edge runs along a shape edge in the same direction, the
+    // shape pass already keeps that boundary (its midpoint lies on the
+    // clip); keeping the clip's portion too would trace it twice. The two
+    // passes split at different parameters, so under a rotation their
+    // endpoints differ in the last bits and only geometry can tell them
+    // apart. Opposite directions are kept: they cancel, as the boundary of
+    // shapes that only touch must.
+    out.extend(
+        clipped(clip, shape, shape_rule)
+            .into_iter()
+            .filter(|&segment| !runs_along(shape, segment)),
+    );
     out
+}
+
+/// Whether `segment`'s midpoint lies on an edge of `edges` that points the
+/// same way.
+fn runs_along(edges: &[Segment], segment: Segment) -> bool {
+    let (x0, y0, x1, y1) = segment;
+    let (mx, my) = (x0.midpoint(x1), y0.midpoint(y1));
+    edges.iter().any(|&(ex0, ey0, ex1, ey1)| {
+        (x1 - x0).mul_add(ex1 - ex0, (y1 - y0) * (ey1 - ey0)) > 0.0
+            && point_seg_dist(mx, my, ex0, ey0, ex1, ey1) < 1e-9
+    })
 }
 
 /// Distance from `(px, py)` to segment `(x0,y0)-(x1,y1)`.
@@ -161,4 +174,49 @@ fn on_edge(edges: &[Segment], px: f64, py: f64) -> bool {
     edges
         .iter()
         .any(|&(x0, y0, x1, y1)| point_seg_dist(px, py, x0, y0, x1, y1) < 1e-9)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coverage::Coverage;
+
+    /// `rect`'s boundary carried through `transform`, as directed edges.
+    fn rect_edges(rect: kurbo::Rect, transform: kurbo::Affine) -> Vec<Segment> {
+        let corners = [
+            (rect.x0, rect.y0),
+            (rect.x1, rect.y0),
+            (rect.x1, rect.y1),
+            (rect.x0, rect.y1),
+        ]
+        .map(|corner| transform * kurbo::Point::from(corner));
+        (0..4)
+            .map(|index| {
+                let (from, to) = (corners[index], corners[(index + 1) % 4]);
+                (from.x, from.y, to.x, to.y)
+            })
+            .collect()
+    }
+
+    /// A band spanning a rotated clip's full width shares two of its
+    /// edges; the intersection traces each shared edge once, so its
+    /// coverage is exactly the band's area and nothing streaks outside it.
+    #[test]
+    fn a_shape_sharing_a_rotated_clips_edges_covers_its_own_area() {
+        let transform = kurbo::Affine::translate((40.0, 4.0))
+            * kurbo::Affine::rotate(0.4)
+            * kurbo::Affine::scale(0.9);
+        let clip = rect_edges(kurbo::Rect::new(24.0, 16.0, 120.0, 128.0), transform);
+        let band = rect_edges(kurbo::Rect::new(24.0, 40.0, 120.0, 44.0), transform);
+        let mut coverage = Coverage::new(160, 160);
+        for (x0, y0, x1, y1) in intersect_edges(&band, FillRule::NonZero, &clip) {
+            coverage.add_line(x0, y0, x1, y1);
+        }
+        let area: f64 = coverage.finish(FillRule::NonZero).iter().sum();
+        let expected = 96.0 * 4.0 * 0.81;
+        assert!(
+            (area - expected).abs() < 1e-6,
+            "covered area {area}, the band's is {expected}"
+        );
+    }
 }

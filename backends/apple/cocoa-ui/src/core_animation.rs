@@ -37,15 +37,35 @@ pub fn without_animation(body: impl FnOnce()) {
 ///
 /// Commit is the boundary after which a layer added this transaction is on
 /// screen, so an animation started then animates from its initial value
-/// instead of landing already at its end state. `CATransaction` replaces any
-/// completion block already installed, as the framework's own setter does.
+/// instead of landing already at its end state. `CATransaction` holds one
+/// completion block — a second `setCompletionBlock` replaces rather than
+/// appends — so `on_commit` chains onto whatever is already installed: a
+/// second registration this transaction runs after the first instead of
+/// silently dropping it.
 pub fn on_commit(body: impl FnOnce() + 'static) {
     use std::cell::RefCell;
 
+    // Retain the completion already installed — an earlier `on_commit`'s
+    // chain, or the framework's own — since `setCompletionBlock` below
+    // releases the transaction's reference to it. The `take` at run time
+    // keeps each link single-shot if the chain is ever re-invoked.
+    // SAFETY: a plain getter on the current transaction — no aliasing,
+    // no lifetime transfer; the pointer's validity is established below.
+    let previous = unsafe { CATransaction::completionBlock() };
+    let previous = RefCell::new(if previous.is_null() {
+        None
+    } else {
+        // SAFETY: `previous` is a live block the transaction retains;
+        // `copy` extends it into an owned `RcBlock`.
+        Some(unsafe { &*previous }.copy())
+    });
     // The completion block is `Fn`, but Core Animation evaluates it once;
     // the option still guards a double evaluation.
     let body = RefCell::new(Some(body));
     let block = block2::RcBlock::new(move || {
+        if let Some(previous) = previous.borrow_mut().take() {
+            previous.call(());
+        }
         if let Some(body) = body.borrow_mut().take() {
             body();
         }
@@ -150,6 +170,10 @@ pub enum Timing {
 
 /// Runs `body` while `timing` plays its animatable changes: a
 /// `UIViewPropertyAnimator` on iOS, an `NSAnimationContext` group on macOS.
+///
+/// The curve the animator plays: `UICubicTimingParameters` for `Bezier`,
+/// a mass-1 `UISpringTimingParameters` for `Spring` (the animator's
+/// `duration` argument is unused there; the spring's physics sets it).
 ///
 /// # Panics
 ///

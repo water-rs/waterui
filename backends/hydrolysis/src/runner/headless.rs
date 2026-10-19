@@ -1,11 +1,11 @@
 //! Pump-based headless runtime for tests, snapshots and offscreen rendering.
 
 use super::*;
-#[cfg(feature = "frame-profile")]
-use crate::platform::SurfaceProvider as _;
 use crate::renderer::MenuShortcutRegistry;
 #[cfg(feature = "accessibility")]
-use crate::renderer::accessibility::AccessibilityActivationPointError;
+use crate::renderer::accessibility::{
+    AccessibilityActivationPointError, AccessibilityContentTypes, WINDOW_ID_STRIDE,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
@@ -13,6 +13,10 @@ pub(super) struct HeadlessPlatformWindow {
     inner: OffscreenWindow,
     pending_events: VecDeque<InputEvent>,
     redraw_requested: Cell<bool>,
+    #[cfg(test)]
+    pub(super) frame_wake_count: Rc<Cell<u32>>,
+    #[cfg(test)]
+    pub(super) frame_transaction: Option<Rc<super::window::FrameTransaction>>,
     /// The occlusion report tests drive through [`Self::set_occluded`] —
     /// the default `false` a headless window behaves with in production.
     occluded: Cell<bool>,
@@ -25,6 +29,10 @@ pub(super) struct HeadlessPlatformWindow {
     /// through [`HeadlessRuntime::set_touch_scroll_config`], like a real
     /// touch platform pushing its `ViewConfiguration` values.
     touch_scroll_config: Cell<Option<crate::platform::TouchScrollConfig>>,
+    /// The last blur-behind request `set_blur_behind` delivered — the
+    /// headless stand-in for the compositor protocol a real host dispatches
+    /// to, read by the runner's background tests.
+    blur_behind: Cell<Option<bool>>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -49,9 +57,14 @@ impl HeadlessPlatformWindow {
             inner: OffscreenWindow::on_context(gpu, width, height, format),
             pending_events: VecDeque::new(),
             redraw_requested: Cell::new(false),
+            #[cfg(test)]
+            frame_wake_count: Rc::new(Cell::new(0)),
+            #[cfg(test)]
+            frame_transaction: None,
             occluded: Cell::new(false),
             pointer_position: None,
             touch_scroll_config: Cell::new(None),
+            blur_behind: Cell::new(None),
         }
     }
 
@@ -120,6 +133,26 @@ impl PlatformWindow for HeadlessPlatformWindow {
         self.redraw_requested.set(true);
     }
 
+    /// The headless pump is driven explicitly by the harness — a request
+    /// recorded on the frame signals is consumed by the next pump the test
+    /// calls, so the wake does nothing in production. Tests count posts and
+    /// can apply Android's transaction gate before mounting the runtime.
+    fn frame_wake(&self) -> Rc<dyn Fn()> {
+        #[cfg(test)]
+        {
+            let count = Rc::clone(&self.frame_wake_count);
+            let wake: Rc<dyn Fn()> = Rc::new(move || {
+                count.set(count.get() + 1);
+            });
+            self.frame_transaction.as_ref().map_or_else(
+                || Rc::clone(&wake),
+                |transaction| transaction.frame_wake(Rc::clone(&wake)),
+            )
+        }
+        #[cfg(not(test))]
+        Rc::new(|| {})
+    }
+
     fn is_occluded(&self) -> bool {
         self.occluded.get()
     }
@@ -139,8 +172,13 @@ impl PlatformWindow for HeadlessPlatformWindow {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl crate::platform::GpuSurfaceWindow for HeadlessPlatformWindow {
-    fn surface(&mut self) -> &mut dyn crate::platform::SurfaceProvider {
+    type Presentation = crate::platform::OffscreenSurface;
+    fn surface(&mut self) -> &mut crate::platform::OffscreenSurface {
         crate::platform::GpuSurfaceWindow::surface(&mut self.inner)
+    }
+
+    fn set_blur_behind(&mut self, blur: bool) {
+        self.blur_behind.set(Some(blur));
     }
 }
 
@@ -150,6 +188,12 @@ impl HeadlessPlatformWindow {
     /// — a test's stand-in for the window-system visibility signal.
     pub(super) fn set_occluded(&self, occluded: bool) {
         self.occluded.set(occluded);
+    }
+
+    /// The last blur-behind request the runner pushed — `None` until the
+    /// first `set_blur_behind` arrives.
+    pub(super) const fn blur_behind(&self) -> Option<bool> {
+        self.blur_behind.get()
     }
 
     /// The last (min, max) content-size limits the runner applied, for tests.
@@ -166,6 +210,7 @@ impl HeadlessPlatformWindow {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 /// The outcome of one headless frame pump.
+#[non_exhaustive]
 pub struct HeadlessPumpResult {
     /// Whether the pump rebuilt the view tree.
     pub rebuilt: bool,
@@ -178,6 +223,10 @@ pub struct HeadlessPumpResult {
     #[cfg(feature = "accessibility")]
     /// The accessibility tree update the frame produced.
     pub tree_update: Option<AccessibilityTreeUpdate>,
+    #[cfg(feature = "accessibility")]
+    /// The content types the emitted tree's text fields declared — the map
+    /// the update publishes beside it.
+    pub content_types: AccessibilityContentTypes,
     /// The captured frame snapshot, when capture was requested.
     pub snapshot: Option<HeadlessSnapshot>,
     #[cfg(feature = "accessibility")]
@@ -194,7 +243,7 @@ pub struct HeadlessRuntime {
     popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow>>,
     /// The style the runtime was launched with, kept so popup windows'
     /// renderers measure and encode with the same widget theme.
-    theme: Rc<dyn crate::engine::WidgetTheme>,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
     /// Every window this runtime opens renders on this one device: the main
     /// window, and each popup it later vends. Requesting a device per window
     /// made a runtime that opens a popup pay for two.
@@ -316,15 +365,31 @@ impl HeadlessRuntime {
     /// The layout is unchanged — it stays in logical units — so this only makes
     /// the captured image sharper. A preview meant to be viewed on a `HiDPI`
     /// display should raise this above 1.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `scale_factor` is not finite and positive.
     #[must_use]
     pub fn with_scale_factor(mut self, scale_factor: f64) -> Self {
-        self.runtime.platform.set_scale_factor(scale_factor);
+        self.set_scale_factor(scale_factor);
         self
+    }
+
+    /// Moves the display onto a new scale factor mid-run: a window dragged
+    /// between monitors of different densities reports a scale change, and
+    /// the runtime rebuilds its scale-dependent state — capture chains and
+    /// other texel-parameterized content — for the frames after this call.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `scale_factor` is not finite and positive.
+    pub fn set_scale_factor(&mut self, scale_factor: f64) {
+        self.runtime.platform.set_scale_factor(scale_factor);
     }
 
     /// Creates a headless runtime for `WaterUI` test hosts.
     ///
-    /// This constructor allows compute-capable software adapters for CI-only
+    /// This constructor allows software adapters for CI-only
     /// semantic testing while keeping [`Self::new`] on production adapter
     /// selection, and resolves font families strictly
     /// ([`FontFamilyResolution::Strict`]): a named family the collection
@@ -429,19 +494,26 @@ impl HeadlessRuntime {
         install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
-        let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-        ));
-        // The application's fonts, built once: the system collection plus the
-        // staged fonts directory, exactly as the windowed runners load them.
+        let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
+        // The application's fonts, built once: the platform's collection plus
+        // the staged fonts directory, exactly as the windowed runners load
+        // them.
         // Every window's renderer is seeded from this collection, and a
         // self-drawn component that typesets text itself reads it out of the
         // environment instead of enumerating the system's fonts for itself.
-        let fonts = FontCollection::new(native_resource_fonts(
-            waterui_core::ResourceContext::from_environment(&env),
-        ));
+        let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
+        // The capture service mounts its subtree under a snapshot of the
+        // assembled environment — the theme tokens, hooks and font
+        // collection a window's subtree resolves — so it must be installed
+        // last (water-rs/waterui#2703).
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::new(
+                Rc::clone(&theme),
+                env.clone(),
+                family_resolution,
+            ),
+        ));
 
         // Headless binaries (preview, tests) have no platform runner to install
         // a tracing subscriber; honor `RUST_LOG` here so they stay debuggable.
@@ -466,6 +538,8 @@ impl HeadlessRuntime {
             ),
         ));
 
+        window.arm_close_requests(&env);
+
         let mut platform = HeadlessPlatformWindow::on_context(
             gpu.clone(),
             width.max(1),
@@ -473,13 +547,16 @@ impl HeadlessRuntime {
             wgpu::TextureFormat::Rgba8Unorm,
         );
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(Rc::clone(&theme), family_resolution);
-        super::seed_core(&mut renderer, &fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&theme),
+            SessionTextEngine::from_collection(&fonts, family_resolution),
+        );
         renderer.set_window_id(
             env.get::<MenuShortcutRegistry>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
+        renderer.set_window_closable(window.closable);
 
         Self {
             env,
@@ -515,15 +592,25 @@ impl HeadlessRuntime {
             height,
             wgpu::TextureFormat::Rgba8Unorm,
         );
+        // The vended window's host reports the same touch-gesture
+        // parameters the main window's does: a `set_touch_scroll_config`
+        // call applies to every window the runtime owns.
+        platform
+            .touch_scroll_config
+            .set(self.runtime.platform.touch_scroll_config.get());
         platform.apply_properties(&window);
-        let mut renderer = HydrolysisRenderer::new(Rc::clone(&self.theme), self.family_resolution);
-        super::seed_core(&mut renderer, &self.fonts);
+        let mut renderer = HydrolysisRenderer::with_engine(
+            Rc::clone(&self.theme),
+            SessionTextEngine::from_collection(&self.fonts, self.family_resolution),
+        );
         renderer.set_window_id(
             self.env
                 .get::<MenuShortcutRegistry>()
                 .expect("install_headless_window_managers seeds MenuShortcutRegistry")
                 .mint_window_id(),
         );
+        renderer.set_window_closable(window.closable);
+        window.arm_close_requests(&self.env);
         RuntimeWindow::new(
             window,
             platform,
@@ -605,7 +692,7 @@ impl HeadlessRuntime {
     /// Performs an accessibility action against the merged tree.
     ///
     /// Popup-window node ids are shifted into their own stride in the merged
-    /// update (see [`SemanticCore::take_merged_accessibility_tree_update`]),
+    /// update (see `SemanticCore::take_merged_accessibility_tree_update`),
     /// so a request whose target lands in a popup's range demuxes back to that
     /// window's core — the action targets (a menu item's activation, a picker
     /// row's selection) live there. Returns whether the action changed state,
@@ -616,11 +703,7 @@ impl HeadlessRuntime {
     /// already closed.
     #[cfg(feature = "accessibility")]
     pub fn perform_accessibility_action(&mut self, request: AccessibilityActionRequest) -> bool {
-        /// The same id range
-        /// [`SemanticCore::take_merged_accessibility_tree_update`] assigns
-        /// each popup.
-        const WINDOW_ID_STRIDE: u64 = 1 << 32;
-
+        // Popup ranges are the shared `WINDOW_ID_STRIDE` the merge assigns.
         let target = request.target_node.0;
         let (window, request) = if target >= WINDOW_ID_STRIDE {
             let index = target / WINDOW_ID_STRIDE - 1;
@@ -660,11 +743,14 @@ impl HeadlessRuntime {
     /// tree.
     #[cfg(feature = "accessibility")]
     pub fn accessibility_tree(&mut self) -> Option<AccessibilityTreeUpdate> {
-        self.runtime.renderer.accessibility_tree(
-            self.popup_windows
-                .iter_mut()
-                .map(|popup| &mut *popup.renderer),
-        )
+        self.runtime
+            .renderer
+            .accessibility_tree(
+                self.popup_windows
+                    .iter_mut()
+                    .map(|popup| &mut *popup.renderer),
+            )
+            .map(|merged| merged.tree_update)
     }
 
     /// The point a pointer could actually reach inside `node`'s accessibility
@@ -700,9 +786,10 @@ impl HeadlessRuntime {
     ///
     /// # Errors
     /// Returns [`AccessibilityActivationPointError::NoNode`] when the id
-    /// resolves to a closed popup or a node with no projected region, and
-    /// [`AccessibilityActivationPointError::UnknownNode`] when no window
-    /// holds it.
+    /// resolves to a closed popup or no window holds it, and
+    /// [`AccessibilityActivationPointError::NoBounds`] or
+    /// [`AccessibilityActivationPointError::EmptyFragment`] when the node has
+    /// no projected region.
     #[cfg(feature = "accessibility")]
     pub fn accessibility_activation_point(
         &self,
@@ -710,11 +797,7 @@ impl HeadlessRuntime {
         x_fraction: f64,
         y_fraction: f64,
     ) -> Result<kurbo::Point, AccessibilityActivationPointError> {
-        /// The same id range
-        /// [`SemanticCore::take_merged_accessibility_tree_update`] assigns
-        /// each popup.
-        const WINDOW_ID_STRIDE: u64 = 1 << 32;
-
+        // Popup ranges are the shared `WINDOW_ID_STRIDE` the merge assigns.
         let target = node_id.0;
         if target >= WINDOW_ID_STRIDE {
             let index = target / WINDOW_ID_STRIDE - 1;
@@ -794,6 +877,17 @@ impl HeadlessRuntime {
             })
     }
 
+    /// Blocks until work parked outside the runtime — a timer, a fetch, a
+    /// decode on a worker thread — re-queues a task on this runtime's local
+    /// executor, returning whether one arrived within `timeout`.
+    ///
+    /// The event-driven wait for a host that is settled but still waiting on
+    /// such work: the next pump drains what arrived.
+    #[must_use]
+    pub fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        self.local_executor.wait_queued(timeout)
+    }
+
     /// Whether a state change has been requested but not yet flushed, so the
     /// semantics this runtime last produced are stale.
     ///
@@ -829,10 +923,22 @@ impl HeadlessRuntime {
 
     /// The touch-gesture parameters this runtime's host reports — a test's
     /// stand-in for the platform's `ViewConfiguration` push, applied by the
-    /// next input dispatch.
+    /// next input dispatch. Every window the host owns reports them:
+    /// already-mounted popups are set here, and popups it vends later are
+    /// seeded from the main window's platform.
     #[cfg(any(test, feature = "testing"))]
     pub fn set_touch_scroll_config(&mut self, config: crate::platform::TouchScrollConfig) {
         self.runtime.platform.set_touch_scroll_config(config);
+        for popup in &mut self.popup_windows {
+            popup.platform.set_touch_scroll_config(config);
+        }
+    }
+
+    /// The environment the runtime renders its windows in, for tests that
+    /// read what a frame resolved against — its colour scheme, say.
+    #[cfg(test)]
+    pub(crate) const fn env(&self) -> &Environment {
+        &self.env
     }
 
     /// The main window's renderer, for tests that assert on frame internals.
@@ -945,8 +1051,8 @@ impl HeadlessRuntime {
             let _ = advance_runtime(popup, &self.env, at);
         }
         // A popup whose state flipped `Closed` — its menu group dismissed it
-        // or a close request arrived — leaves the merged tree. Flag the main
-        // window so the update re-emits without it.
+        // — leaves the merged tree. Flag the main window so the update
+        // re-emits without it.
         if self
             .popup_windows
             .iter()
@@ -1028,13 +1134,31 @@ impl HeadlessRuntime {
         if render_result.is_some() {
             // The renderer's frame-work counters are sampled after the frame's
             // render and its readback have both submitted on the same queue,
-            // so they cover all the GPU work this pump ran for it.
-            profile.counters.frame_work = self.runtime.renderer.frame_work_counters();
+            // so they cover all the GPU work this pump ran for it. The frame's
+            // own snapshot already left the profile inside the render pump —
+            // the tail drained here is the work that ran after it (the
+            // readback's own submissions), which joins the same frame's count.
+            profile
+                .counters
+                .frame_work
+                .accumulate(self.runtime.renderer.take_frame_work_counters());
         }
         profile.phases.executor_before = executor_before;
         profile.phases.input = input;
         profile.phases.animation = animation;
         profile.phases.executor_after = executor_after;
+
+        #[cfg(feature = "accessibility")]
+        let merged = self.runtime.renderer.take_merged_accessibility_tree_update(
+            self.popup_windows
+                .iter_mut()
+                .map(|popup| &mut *popup.renderer),
+        );
+        #[cfg(feature = "accessibility")]
+        let (tree_update, content_types) = merged
+            .map_or((None, AccessibilityContentTypes::new()), |merged| {
+                (Some(merged.tree_update), merged.content_types)
+            });
 
         HeadlessPumpResult {
             rebuilt: rebuilt
@@ -1049,11 +1173,9 @@ impl HeadlessRuntime {
                     result.stages
                 }),
             #[cfg(feature = "accessibility")]
-            tree_update: self.runtime.renderer.take_merged_accessibility_tree_update(
-                self.popup_windows
-                    .iter_mut()
-                    .map(|popup| &mut *popup.renderer),
-            ),
+            tree_update,
+            #[cfg(feature = "accessibility")]
+            content_types,
             snapshot: render_result.and_then(|result| result.snapshot),
             #[cfg(feature = "accessibility")]
             ui_focus: self.runtime.renderer.focused_ui_node(),
@@ -1291,9 +1413,9 @@ mod generation_tests {
             if self.font.is_none() {
                 self.font = Some(
                     resources
-                        .font(FontSource::bytes(
-                            crate::renderer::tests::installed_font_bytes("Roboto"),
-                        ))
+                        .font(FontSource::bytes(crate::text::fonts::installed_font_bytes(
+                            "Roboto",
+                        )))
                         .expect("test font registers on the engine's resource table"),
                 );
             }
@@ -1408,6 +1530,7 @@ mod generation_tests {
         runtime.pump_at(true, t0);
         assert_eq!(rebuilds.get(), 0, "first mount must not rebuild");
         assert!(builds.get() >= 1, "first frame records the scene");
+        let builds_before_replacement = builds.get();
         assert_eq!(installs.get(), 1, "mount installs the invalidator once");
 
         // Destroy the actual device through wgpu, then drive the device's own
@@ -1469,7 +1592,7 @@ mod generation_tests {
         runtime.pump_at(true, t0 + Duration::from_millis(48));
         assert_eq!(rebuilds.get(), 1, "later frames do not rebuild again");
         assert!(
-            builds.get() >= 3,
+            builds.get() > builds_before_replacement,
             "semantic view state survives replacement"
         );
 
@@ -1482,7 +1605,7 @@ mod generation_tests {
             .expect("the re-installed invalidator is held by the content");
         invalidator();
         assert!(
-            runtime.runtime.renderer.take_patch_request(),
+            runtime.runtime.renderer.root_is_dirty(),
             "re-installed invalidator requests a frame on the new engine"
         );
     }

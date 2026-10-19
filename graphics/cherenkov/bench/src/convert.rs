@@ -13,7 +13,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_encode, to_working};
+use cherenkov_oracle::color::{linear_p3_to_linear_srgb, srgb_decode, srgb_encode, to_working};
 use cherenkov_scene::{
     BlendMode, Color, ColorSpace, Draw, Extend, Feature, FillRule, ImagePaint, Item, Layer,
     NormalizedCoord, Paint, ResourceHash, Scene, Shape, StrokeStyle,
@@ -339,6 +339,27 @@ fn visit_draw(p: &mut Prepared, d: &Draw, blobs: &Blobs) -> Result<(), BenchErro
         }
     }
     Ok(())
+}
+
+/// The filtrate filter a scene's
+/// [`LayerFilter::OverscrollStretch`](cherenkov_scene::LayerFilter::OverscrollStretch)
+/// names: its frame's coefficients, extent and stretch in `f32`.
+#[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "scene filter parameters use f64; filtrate parameters use f32"
+)]
+#[must_use]
+pub fn overscroll_stretch(
+    frame: Affine,
+    size: kurbo::Size,
+    stretch: kurbo::Vec2,
+) -> filtrate::filters::OverscrollStretch<f32> {
+    filtrate::filters::OverscrollStretch {
+        frame: frame.as_coeffs().map(|value| value as f32),
+        size: [size.width as f32, size.height as f32],
+        stretch: [stretch.x as f32, stretch.y as f32],
+    }
 }
 
 /// The `Paint::Image` inside a draw's paint, when any.
@@ -896,16 +917,6 @@ pub fn rgba8_to_working(width: u32, height: u32, rgba8: &[u8]) -> cherenkov_orac
     img
 }
 
-/// sRGB transfer-function decode (inverse of `srgb_encode`).
-#[must_use]
-fn srgb_decode(e: f64) -> f64 {
-    if e <= 0.04045 {
-        e / 12.92
-    } else {
-        ((e + 0.055) / 1.055).powf(2.4)
-    }
-}
-
 /// IEEE 754 binary16 → `f32`, used by the skia-vulkan/`RGBAF16` readback.
 #[must_use]
 #[expect(
@@ -977,6 +988,140 @@ mod front {
 
     use super::{Blobs, coord_bits};
     use crate::BenchError;
+
+    /// A scene backdrop group's capture scale at the engine's `f32`
+    /// boundary. The scene's `f64` must narrow exactly, so the oracle and
+    /// the engine run the same scale; a scale that does not is an error,
+    /// never rounded.
+    ///
+    /// # Errors
+    /// `BenchError::Engine` when the scale is not a valid
+    /// [`cherenkov::CaptureScale`] or is not exactly representable in `f32`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the narrowing is checked to be exact"
+    )]
+    pub fn capture_scale(
+        group: &cherenkov_scene::BackdropGroup,
+    ) -> Result<cherenkov::CaptureScale, BenchError> {
+        let narrowed = group.scale as f32;
+        let scale = cherenkov::CaptureScale::new(narrowed)
+            .map_err(|error| BenchError::Engine(format!("backdrop group {}: {error}", group.id)))?;
+        if f64::from(narrowed).to_bits() != group.scale.to_bits() {
+            return Err(BenchError::Engine(format!(
+                "backdrop group {}: capture scale {} is not exactly representable in f32",
+                group.id, group.scale
+            )));
+        }
+        Ok(scale)
+    }
+
+    /// A scene blend space as the engine's.
+    pub const fn engine_blend_space(space: cherenkov_scene::BlendSpace) -> cherenkov::BlendSpace {
+        match space {
+            cherenkov_scene::BlendSpace::Linear => cherenkov::BlendSpace::Linear,
+            cherenkov_scene::BlendSpace::SrgbEncoded => cherenkov::BlendSpace::SrgbEncoded,
+        }
+    }
+
+    /// A scene backdrop group's capture spec at the engine boundary: the
+    /// scale exactly as [`capture_scale`], plus its pyramid level count,
+    /// member blend space and union smoothing distance — the level count
+    /// and distance narrowed only when the `f32` holds the scene's `f64`
+    /// exactly.
+    ///
+    /// # Errors
+    /// `BenchError::Engine` when the scale or union distance is not exactly
+    /// representable in `f32`, the level count is not a valid
+    /// [`cherenkov::CaptureLevels`], or the union distance is not a valid
+    /// [`cherenkov::BackdropUnion`].
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the union narrowing is checked to be exact"
+    )]
+    pub fn backdrop_spec(
+        group: &cherenkov_scene::BackdropGroup,
+    ) -> Result<cherenkov::BackdropSpec, BenchError> {
+        let scale = capture_scale(group)?;
+        let levels = cherenkov::CaptureLevels::new(group.levels)
+            .map_err(|error| BenchError::Engine(format!("backdrop group {}: {error}", group.id)))?;
+        let mut spec = cherenkov::BackdropSpec::new(scale, levels)
+            .blend_space(engine_blend_space(group.blend_space));
+        if let Some(k) = group.union {
+            let narrowed = k as f32;
+            if f64::from(narrowed).to_bits() != k.to_bits() {
+                return Err(BenchError::Engine(format!(
+                    "backdrop group {}: union smoothing {} is not exactly representable in f32",
+                    group.id, k
+                )));
+            }
+            spec = spec.union(cherenkov::BackdropUnion::new(narrowed).map_err(|error| {
+                BenchError::Engine(format!("backdrop group {}: {error}", group.id))
+            })?);
+        }
+        Ok(spec)
+    }
+
+    /// A scene member layer's `backdrop_outer` at the engine boundary:
+    /// `outer` narrowed to `f32` only when the narrow is exact, then
+    /// validated as a [`cherenkov::BackdropOuter`] — the same treatment
+    /// the union smoothing gets in [`backdrop_spec`].
+    ///
+    /// # Errors
+    /// `BenchError::Engine` when the extent is not exactly representable
+    /// in `f32` or is not a valid `BackdropOuter`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the outer narrowing is checked to be exact"
+    )]
+    pub fn backdrop_outer(outer: f64, group: u32) -> Result<cherenkov::BackdropOuter, BenchError> {
+        let narrowed = outer as f32;
+        if f64::from(narrowed).to_bits() != outer.to_bits() {
+            return Err(BenchError::Engine(format!(
+                "backdrop group {group}: outer extent {outer} is not exactly representable in f32"
+            )));
+        }
+        cherenkov::BackdropOuter::new(narrowed)
+            .map_err(|error| BenchError::Engine(format!("backdrop group {group}: {error}")))
+    }
+
+    /// A scene `backdrop_effect` at the engine's `f32` boundary.
+    ///
+    /// # Errors
+    /// `BenchError::Engine` when a level ramp's parameters are not a valid
+    /// [`cherenkov::LevelRamp`].
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "effect parameters are f32 at the engine boundary"
+    )]
+    pub fn backdrop_effect(
+        spec: &cherenkov_scene::BackdropEffectSpec,
+    ) -> Result<cherenkov::BackdropEffect, BenchError> {
+        use cherenkov_scene::BackdropEffectSpec as S;
+        Ok(match spec {
+            S::ColorMatrix { matrix } => cherenkov::ColorMatrix(matrix.map(|v| v as f32)).into(),
+            S::Refraction { depth, strength } => cherenkov::Refraction {
+                depth: *depth as f32,
+                strength: *strength as f32,
+            }
+            .into(),
+            S::RimLight { width, color, gain } => cherenkov::Rim {
+                width: *width as f32,
+                color: color.map(|v| v as f32),
+                gain: *gain as f32,
+            }
+            .into(),
+            S::Level {
+                depth,
+                edge_level,
+                interior_level,
+            } => {
+                cherenkov::LevelRamp::new(*depth as f32, *edge_level as f32, *interior_level as f32)
+                    .map_err(|error| BenchError::Engine(format!("backdrop level ramp: {error}")))?
+                    .into()
+            }
+        })
+    }
 
     // ---------------------------------------------------------------------
     // Scene → front-end recording ops, shared by the `cherenkov` (GPU) and
@@ -1316,10 +1461,13 @@ mod front {
         })
     }
 
-    /// A scene group → one scoped [`Op::Group`] of member ops.
+    /// A scene group → one scoped [`Op::Group`] of member ops. `filter`
+    /// registers a group's filter with the engine and returns its id; the
+    /// caller keeps the registration alive while the ops are drawn.
     ///
     /// # Errors
-    /// [`BenchError`] on an unregistered resource or an unsupported feature.
+    /// [`BenchError`] on an unregistered resource, a filter `filter`
+    /// cannot register, or an unsupported feature.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "group opacity is f32 at the engine boundary"
@@ -1330,24 +1478,28 @@ mod front {
         images: &HashMap<(ResourceHash, cherenkov_scene::ImageEncoding), cherenkov::ImageId>,
         blobs: &Blobs,
         front: &Front,
+        filter: &mut dyn FnMut(
+            &cherenkov_scene::LayerFilter,
+        ) -> Result<cherenkov::FilterId, BenchError>,
     ) -> Result<Op, BenchError> {
         let mut ops = Vec::with_capacity(group.items.len());
         for item in &group.items {
             ops.push(match item {
                 cherenkov_scene::GroupItem::Draw(d) => op(d, fonts, images, blobs, front)?,
                 cherenkov_scene::GroupItem::Group(inner) => {
-                    group_op(inner, fonts, images, blobs, front)?
+                    group_op(inner, fonts, images, blobs, front, filter)?
                 }
             });
         }
+        let mut engine_group = cherenkov::Group::new()
+            .opacity(group.opacity as f32)
+            .blend(engine_blend(group.blend))
+            .blend_space(engine_blend_space(group.blend_space));
+        if let Some(scene_filter) = group.filter.as_deref() {
+            engine_group = engine_group.filter(filter(scene_filter)?);
+        }
         Ok(Op::Group {
-            group: cherenkov::Group::new()
-                .opacity(group.opacity as f32)
-                .blend(engine_blend(group.blend))
-                .blend_space(match group.blend_space {
-                    cherenkov_scene::BlendSpace::Linear => cherenkov::BlendSpace::Linear,
-                    cherenkov_scene::BlendSpace::SrgbEncoded => cherenkov::BlendSpace::SrgbEncoded,
-                }),
+            group: engine_group,
             ops,
         })
     }
@@ -1431,6 +1583,94 @@ mod front {
                 }),
         })
     }
+
+    /// A built engine layer a scene `Layer::id` can name as a backdrop
+    /// group's anchor: the GPU and CPU adapters' `ContentLayer`.
+    pub trait AnchorLayer<T: cherenkov::Backdrop> {
+        /// The engine layer handle (`None`-backed layers resolve to the
+        /// surface root, as each adapter's `ContentLayer::handle` does).
+        fn handle<'a>(&'a self, surface: &'a cherenkov::Surface<T>) -> &'a cherenkov::Layer;
+        /// The scene `Layer::id` this layer was built under, if any.
+        fn scene_id(&self) -> Option<u32>;
+    }
+
+    /// Builds the scene's engine backdrop groups. A group's `anchor`
+    /// names the `Layer::id` of a layer in `content_layers`, so the
+    /// groups exist only once every layer is built.
+    ///
+    /// # Errors
+    /// [`BenchError::Engine`] when an anchor names no built layer.
+    pub fn build_backdrop_groups<T, L>(
+        surface: &cherenkov::Surface<T>,
+        groups: &[cherenkov_scene::BackdropGroup],
+        content_layers: &[L],
+        engine: &'static str,
+        make: impl Fn(
+            &cherenkov::Surface<T>,
+            &cherenkov_scene::BackdropGroup,
+            Option<&cherenkov::Layer>,
+        ) -> Result<cherenkov::BackdropGroup, BenchError>,
+    ) -> Result<HashMap<u32, cherenkov::BackdropGroup>, BenchError>
+    where
+        T: cherenkov::Backdrop,
+        L: AnchorLayer<T>,
+    {
+        let anchors: HashMap<u32, usize> = content_layers
+            .iter()
+            .enumerate()
+            .filter_map(|(i, cl)| cl.scene_id().map(|id| (id, i)))
+            .collect();
+        let mut backdrop_groups = HashMap::new();
+        for group in groups {
+            let anchor = group
+                .anchor
+                .map(|id| {
+                    anchors
+                        .get(&id.get())
+                        .map(|&i| content_layers[i].handle(surface))
+                        .ok_or_else(|| {
+                            BenchError::Engine(format!(
+                                "{engine}: backdrop group {} anchors at an unbuilt layer {}",
+                                group.id, id
+                            ))
+                        })
+                })
+                .transpose()?;
+            backdrop_groups.insert(group.id, make(surface, group, anchor)?);
+        }
+        Ok(backdrop_groups)
+    }
+
+    /// A backdrop member deferred to `apply_backdrop_members`: the
+    /// layer's `ContentLayer` index, its group's id, its sample effect
+    /// and outer band.
+    pub type PendingMember = (
+        usize,
+        u32,
+        Option<cherenkov::BackdropEffect>,
+        cherenkov::BackdropOuter,
+    );
+
+    /// Points each pending member layer's backdrop at its group.
+    pub fn apply_backdrop_members<T, L>(
+        surface: &cherenkov::Surface<T>,
+        pending: Vec<PendingMember>,
+        content_layers: &[L],
+        backdrop_groups: &HashMap<u32, cherenkov::BackdropGroup>,
+    ) where
+        T: cherenkov::Backdrop,
+        L: AnchorLayer<T>,
+    {
+        surface.update(|tx| {
+            for (index, gid, effect, outer) in pending {
+                let edit = &mut tx[content_layers[index].handle(surface)];
+                let group = &backdrop_groups[&gid];
+                let sample =
+                    effect.map_or_else(|| group.sample(), |effect| group.sample_with(effect));
+                edit.backdrop(sample.outer(outer));
+            }
+        });
+    }
 }
 
 #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
@@ -1462,5 +1702,35 @@ mod tests {
         );
         let wght = skrifa::raw::types::F2Dot14::from_f32(1.0).to_bits();
         assert!(bits.contains(&wght), "wght=1.0 bits missing: {bits:?}");
+    }
+
+    /// The scene format bounds `levels` itself; that bound must be the
+    /// engine's, or a loadable scene would fail to convert.
+    #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
+    #[test]
+    fn scene_level_bound_is_the_engine_bound() {
+        assert_eq!(
+            cherenkov_scene::BackdropGroup::MAX_LEVELS,
+            cherenkov::CaptureLevels::MAX
+        );
+    }
+
+    /// A capture scale reaches the engine only when it narrows to `f32`
+    /// exactly: `0.1` would run the engines at a different scale than the
+    /// oracle.
+    #[cfg(any(feature = "cherenkov", feature = "cherenkov-cpu"))]
+    #[test]
+    fn capture_scale_narrows_exactly_or_fails() {
+        let group = |scale| cherenkov_scene::BackdropGroup::new(1, Vec::new(), scale, 1);
+        let quarter = capture_scale(&group(0.25)).expect("0.25 is exact in f32");
+        assert_eq!(quarter.get().to_bits(), 0.25f32.to_bits());
+        assert!(matches!(
+            capture_scale(&group(0.1)),
+            Err(BenchError::Engine(_))
+        ));
+        assert!(matches!(
+            capture_scale(&group(1.5)),
+            Err(BenchError::Engine(_))
+        ));
     }
 }

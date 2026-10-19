@@ -347,6 +347,17 @@ impl Window {
         self.delegate.ivars().close.replace(Some(Rc::new(handler)));
     }
 
+    /// Calls `handler` every time the user asks to close the window — the
+    /// close button, ⌘W or `performClose:` — replacing any handler set
+    /// before. The window closes only when the handler answers `true`; with
+    /// no handler it closes outright.
+    pub fn on_should_close(&self, handler: impl Fn() -> bool + 'static) {
+        self.delegate
+            .ivars()
+            .should_close
+            .replace(Some(Rc::new(handler)));
+    }
+
     /// Calls `handler` every time the window finishes a resize, live or
     /// otherwise, replacing any handler set before.
     pub fn on_resize(&self, handler: impl Fn() + 'static) {
@@ -542,6 +553,7 @@ impl Drop for Window {
 }
 
 type Handler = Rc<dyn Fn()>;
+type ShouldClose = Rc<dyn Fn() -> bool>;
 
 #[derive(Default)]
 struct DelegateIvars {
@@ -554,6 +566,7 @@ struct DelegateIvars {
     deminiaturized: RefCell<Option<Handler>>,
     entered_fullscreen: RefCell<Option<Handler>>,
     exited_fullscreen: RefCell<Option<Handler>>,
+    should_close: RefCell<Option<ShouldClose>>,
 }
 
 impl DelegateIvars {
@@ -585,6 +598,15 @@ define_class!(
             guarded("windowWillClose:", || {
                 DelegateIvars::fire(&self.ivars().close);
             });
+        }
+
+        #[unsafe(method(windowShouldClose:))]
+        fn window_should_close(&self, _sender: &NSWindow) -> bool {
+            guarded("windowShouldClose:", || {
+                // Cloned out of the cell so the handler may replace itself.
+                let handler = self.ivars().should_close.borrow().clone();
+                handler.is_none_or(|handler| handler())
+            })
         }
 
         #[unsafe(method(windowDidResize:))]

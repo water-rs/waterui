@@ -67,6 +67,10 @@ impl Default for ColumnWidth {
 /// Visible columns requested from the native adaptive split container.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each column visibility variant by variant; a new column visibility must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NavigationSplitColumnVisibility {
     /// The platform chooses visibility from the current window configuration.
     #[default]
@@ -79,10 +83,18 @@ pub enum NavigationSplitColumnVisibility {
     DetailOnly = 3,
 }
 
+// A constant visibility is a signal too, so `column_visibility` takes a plain
+// value as readily as a binding.
+nami::impl_constant!(NavigationSplitColumnVisibility);
+
 /// Native split presentation selected by a public split style.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each split style variant by variant; a new split style must fail their build instead of falling into a wildcard arm"
+)]
 pub enum NativeNavigationSplitStyle {
     /// Platform default adaptive presentation.
     Automatic = 0,
@@ -105,6 +117,10 @@ pub mod split_style {
 
     /// Platform-default adaptive split style.
     #[derive(Debug, Clone, Copy, Default)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "field-less style marker used by name"
+    )]
     pub struct Automatic;
 
     impl NavigationSplitStyle for Automatic {
@@ -115,6 +131,10 @@ pub mod split_style {
 
     /// Balanced leading and detail columns.
     #[derive(Debug, Clone, Copy, Default)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "field-less style marker used by name"
+    )]
     pub struct Balanced;
 
     impl NavigationSplitStyle for Balanced {
@@ -125,6 +145,10 @@ pub mod split_style {
 
     /// Detail-prominent split style.
     #[derive(Debug, Clone, Copy, Default)]
+    #[expect(
+        clippy::exhaustive_structs,
+        reason = "field-less style marker used by name"
+    )]
     pub struct ProminentDetail;
 
     impl NavigationSplitStyle for ProminentDetail {
@@ -313,6 +337,12 @@ waterui_core::impl_debug!(NavigationSplitView);
 
 impl NavigationSplitView {
     /// Creates a two-column split driven by a caller-owned optional selection.
+    ///
+    /// At compact widths exactly one column is visible: the detail while
+    /// `selection` is `Some`, and the sidebar while it is `None`. The platform
+    /// back control (including a completed back gesture) writes `None` into
+    /// the selection. Start with `None` to open on the sidebar; the binding is
+    /// the single source of truth for the visible compact column.
     pub fn new<T, Sidebar, Detail>(
         selection: &Binding<Option<T>>,
         sidebar: Sidebar,

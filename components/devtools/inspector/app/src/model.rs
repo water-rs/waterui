@@ -28,6 +28,7 @@ const EVENT_HISTORY: usize = 500;
 
 /// Where the inspector is in its connection lifecycle.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Connection {
     /// Trying to reach the target.
     Connecting,
@@ -38,7 +39,8 @@ pub enum Connection {
 }
 
 /// A section of the inspector, and the sidebar selection type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
 pub enum Section {
     /// Connection and target summary.
     Overview,
@@ -92,8 +94,17 @@ impl Section {
     }
 }
 
+impl Identifiable for Section {
+    type Id = Self;
+
+    fn id(&self) -> Self {
+        *self
+    }
+}
+
 /// One row of the flattened accessibility tree.
 #[derive(Debug, Clone, PartialEq, Eq, Identifiable)]
+#[non_exhaustive]
 pub struct TreeRow {
     /// Node identity, which is also the reconciliation key.
     #[id]
@@ -116,6 +127,7 @@ pub struct TreeRow {
 
 /// One row of the task table.
 #[derive(Debug, Clone, PartialEq, Eq, Identifiable)]
+#[non_exhaustive]
 pub struct TaskRow {
     /// Task type name, which is also its identity.
     #[id]
@@ -132,6 +144,7 @@ pub struct TaskRow {
 
 /// One log line.
 #[derive(Debug, Clone, PartialEq, Eq, Identifiable)]
+#[non_exhaustive]
 pub struct LogRow {
     /// Monotonic identity; log records have no natural key.
     #[id]
@@ -148,6 +161,7 @@ pub struct LogRow {
 
 /// One reactive-graph node, as the inspector understands it.
 #[derive(Debug, Clone, PartialEq, Eq, Identifiable)]
+#[non_exhaustive]
 pub struct SignalRow {
     /// Node identity.
     #[id]
@@ -166,6 +180,7 @@ pub struct SignalRow {
 
 /// One stall, with whatever stack was affordable to capture.
 #[derive(Debug, Clone, PartialEq, Identifiable)]
+#[non_exhaustive]
 pub struct StallRow {
     /// Monotonic identity; stalls have no natural key.
     #[id]

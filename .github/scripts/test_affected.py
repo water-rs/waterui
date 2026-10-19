@@ -5,9 +5,9 @@ and the MSRV-relevance extraction, which compares parsed manifest content
 so layout and comment edits do not re-arm the MSRV leg.
 
 The tool-level behaviours — root-package swallowing, the in-package
-markdown carve-out and the graph-derived test-asset trigger — run against
-the real repository in `test_affected_tool`, skipped when the built
-determinator binary is absent.
+markdown carve-out and the `nextest-fixtures` check of the `test-fonts`
+setup-script rule against the package graph — run against the real
+repository, skipped when the built determinator binary is absent.
 """
 
 import json
@@ -217,15 +217,154 @@ def test_root_package_sources_select_waterui():
     assert "waterui" in report["affected"]
 
 
+def _fixture_check(edits):
+    """Run `affected nextest-fixtures` on a detached worktree of HEAD with
+    `edits` applied; returns the completed process."""
+    sha = _commit_with(edits)
+    with tempfile.TemporaryDirectory(prefix="affected-fixtures-") as tmp:
+        root = Path(tmp) / "tree"
+        subprocess.check_call(
+            ["git", "worktree", "add", "--detach", "--quiet", str(root), sha],
+            cwd=REPO,
+        )
+        try:
+            # The edits only add or drop an edge between workspace
+            # members, which re-resolves the lockfile without the network.
+            return subprocess.run(
+                [str(TOOL), "nextest-fixtures", "--root", str(root)],
+                capture_output=True,
+                text=True,
+                cwd=REPO,
+                env={**os.environ, "CARGO_NET_OFFLINE": "true"},
+            )
+        finally:
+            subprocess.check_call(
+                ["git", "worktree", "remove", "--force", str(root)], cwd=REPO
+            )
+
+
 @pytestmark_tool
-def test_controls_only_diff_is_a_test_asset_consumer():
-    # `waterui-controls` dev-depends on `waterui-testing`, the crate whose
-    # styled tests resolve the installed test fonts by family name. The
-    # consumer set is derived from the graph, so this diff must be flagged
-    # without naming the crate anywhere.
-    report = _report({"components/foundation/controls/src/lib.rs": "// doc\n"})
-    assert report["workspace"] is False
-    assert "waterui-controls" in report["affected"]
-    assert "waterui-controls" in report["test_asset_consumers"]
-    assert "hydrolysis" in report["test_asset_consumers"]
-    assert "waterui-testing" in report["test_asset_consumers"]
+def test_test_fonts_rule_matches_the_graph():
+    result = _fixture_check({})
+    assert result.returncode == 0, result.stderr
+
+
+@pytestmark_tool
+def test_dropping_a_testing_edge_flags_the_rule():
+    manifest = "components/foundation/controls/Cargo.toml"
+    text = (REPO / manifest).read_text()
+    edge = 'waterui-testing = { path = "../../../testing" }\n'
+    assert edge in text
+    result = _fixture_check({manifest: text.replace(edge, "")})
+    assert result.returncode == 1
+    assert (
+        'extra (their tests do not link waterui-testing): ["waterui-controls"]'
+        in result.stderr
+    )
+
+
+@pytestmark_tool
+def test_gaining_a_testing_edge_flags_the_rule():
+    manifest = "utils/meta/Cargo.toml"
+    text = (REPO / manifest).read_text()
+    assert "[dev-dependencies]" not in text
+    edge = '\n[dev-dependencies]\nwaterui-testing = { path = "../../testing" }\n'
+    result = _fixture_check({manifest: text + edge})
+    assert result.returncode == 1
+    assert (
+        'missing (their tests link waterui-testing): ["waterui-meta"]'
+        in result.stderr
+    )
+
+
+# The `macos` matrix: a leg exists only for a target with an Apple-gated
+# crate in scope, so no macOS runner starts to find nothing to lint.
+from apple_gated import CRATES, IOS_SIM, SIM_GROUPS, crates_for, legs
+
+
+def leg_targets(scope):
+    return [leg["target"] for leg in legs(scope)]
+
+
+def test_no_apple_gated_crate_starts_no_leg():
+    assert legs("") == []
+    assert legs("waterui-core waterui-layout") == []
+
+
+def test_workspace_starts_every_leg():
+    sim = [leg for leg in legs("workspace") if leg["target"] == IOS_SIM]
+    assert leg_targets("workspace") == ["", "", ""] + [IOS_SIM] * len(sim)
+    host = [leg for leg in legs("workspace") if leg["target"] == ""]
+    # One pass per host leg: run back to back they overran the budget.
+    assert [(leg["hydrolysis"], leg["waterui-cli"], leg["apple-gated"]) for leg in host] == [
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ]
+    # The simulator legs: the checked feature set, then one leg per crate
+    # group — the single all-crates leg overran the budget cold (#2521).
+    assert [(leg["hydrolysis"], leg["group"]) for leg in sim] == [
+        (True, ""),
+        *((False, name) for name, _ in SIM_GROUPS),
+    ]
+    assert all(leg["apple-gated"] == (leg["group"] != "") for leg in sim)
+
+
+def test_simulator_groups_partition_the_full_crate_list():
+    groups = [crates for _, crates in SIM_GROUPS]
+    assert sorted(crate for group in groups for crate in group) == sorted(CRATES)
+    for name, _ in SIM_GROUPS:
+        assert crates_for(IOS_SIM, "workspace", name) == next(
+            list(crates) for group_name, crates in SIM_GROUPS if group_name == name
+        )
+
+
+def test_host_only_crates_start_only_host_legs():
+    assert legs("waterui-cli") == [
+        {
+            "name": "aarch64-apple-darwin (waterui-cli)",
+            "target": "",
+            "hydrolysis": False,
+            "waterui-cli": True,
+            "apple-gated": False,
+            "group": "",
+        }
+    ]
+    assert leg_targets("waterui-testing cherenkov-bench") == ["", IOS_SIM, IOS_SIM]
+
+
+def test_simulator_legs_follow_the_groups_the_scope_touches():
+    sim_legs = [leg["group"] for leg in legs("waterui-testing cherenkov-bench") if leg["target"] == IOS_SIM]
+    assert sim_legs == ["facade", "engine"]
+    # hydrolysis is in scope through no crate here, so its feature-set
+    # leg stays off.
+    assert not any(leg["hydrolysis"] for leg in legs("waterui-testing cherenkov-bench"))
+    sim_legs = [leg["group"] for leg in legs("hydrolysis") if leg["target"] == IOS_SIM]
+    assert sim_legs == ["", "backend"]
+
+
+def test_simulator_compatible_crates_start_both_legs():
+    assert leg_targets("cherenkov-oracle") == ["", IOS_SIM]
+    assert not any(leg["hydrolysis"] for leg in legs("cherenkov-oracle"))
+
+
+def test_simulator_lints_the_same_all_targets_group():
+    assert crates_for(IOS_SIM, "waterui cherenkov") == ["waterui", "cherenkov"]
+    assert crates_for("", "waterui cherenkov") == ["waterui", "cherenkov"]
+
+
+def test_a_group_selects_its_crates_within_scope():
+    assert crates_for(IOS_SIM, "waterui cherenkov", "facade") == ["waterui"]
+    assert crates_for(IOS_SIM, "waterui cherenkov", "engine") == ["cherenkov"]
+
+
+def test_an_unknown_group_or_a_host_group_is_an_error():
+    with pytest.raises(ValueError):
+        crates_for(IOS_SIM, "workspace", "bogus")
+    with pytest.raises(ValueError):
+        crates_for("", "workspace", "engine")
+
+
+def test_an_unknown_target_is_an_error():
+    with pytest.raises(ValueError):
+        crates_for("x86_64-apple-ios", "workspace")

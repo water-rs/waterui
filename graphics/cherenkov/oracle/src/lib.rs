@@ -21,6 +21,13 @@
 //!   from `FLIP.h` (NVlabs/flip, BSD-3-Clause — Andersson et al., HPG 2020
 //!   and HDR-FLIP 2021), plus maximum local error (max per-channel
 //!   absolute difference after a 3×3 box filter) and a magma error heatmap.
+//! - [`yuv`] decodes NV12 and P010 frames into the working space, chroma
+//!   reconstructed bilinearly at its sited position.
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 pub mod blend;
 pub mod clip;
@@ -38,9 +45,10 @@ pub mod present;
 pub mod projective;
 pub mod render;
 pub mod resources;
-mod sdf;
+pub mod sdf;
 pub mod shadow;
 pub mod tone;
+pub mod yuv;
 
 pub use image::{F32Image, Image};
 pub use metrics::Metrics;

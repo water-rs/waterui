@@ -107,6 +107,69 @@ thermal status (`dumpsys thermalservice` severity on Android,
 `/sys/class/thermal` zone temperature, screen state and brightness
 where readable, alongside the `placement` block `--cpu` already
 produces. Screen brightness is not recorded on macOS or Windows.
+
+## Comparing two builds on the Pixel
+
+GPU time scales with the GPU clock, and the default governor picks the clock
+per process from recent load: identical builds measured back to back land on
+different operating points and differ by the clock ratio. On Android `measure`
+records the GPU's clock residency over the measured window (`gpu_clock`, from
+the Mali driver's `time_in_state`), so every report shows the clocks its GPU
+time ran at.
+
+`scripts/pixel_compare.py run` compares two Android builds over interleaved
+base/head rounds with the GPU and CPU 7 pinned to one clock each
+(`--gpu-khz`, `--cpu-khz`; 649 MHz and 2.294 GHz by default), restoring the
+original limits afterwards. Every invocation's controls are checked and
+recorded — screen off, thermal status, cooling devices, the pinned policy
+ranges, GPU and CPU residency, CPU placement — and a failed control stops the
+collection. `scripts/pixel_compare.py analyze OUT` reports, per scene, the
+median of each arm's per-invocation GPU p50, the change, and its 95% interval
+from a hierarchical bootstrap over invocations and their frames. A scene whose
+whole interval lies above +2% fails at any width. Any other scene is decided
+only when its interval is no wider than the 2% limit: it fails above +2% and
+passes otherwise. A wider interval is `unresolved`, never a pass; that holds
+for an interval wholly below −2% too, since the limit bounds a cost increase
+and a decrease is no failure. Full-size scenes resolve in 120
+frames per invocation. `--governor` leaves the clocks to the governors, for
+the 8.33 ms p99 budget check:
+
+    bench/scripts/pixel_compare.py run --serial pixel-9-pro:5555 \
+        --base bench-dev --head bench-change \
+        --scene scenes/perf/map --scene scenes/perf/chart --out compare
+    bench/scripts/pixel_compare.py analyze compare
+
+### Sub-millisecond scenes: shader-core cycles
+
+A scene whose GPU time is a fraction of a millisecond is not judged by GPU
+time on the Pixel (#2775). Its frame is latency-bound: a fixed buffer clear
+added just before the pass moved continuous-s50 by −2.5% at
+`--frames 1200 --rounds 16`, because added work is absorbed or changes the
+GPU's power state. Such scenes are compared by cost instead:
+`measure --gpu-counters` reads the Mali hardware counters through the kbase
+driver (root), waits for the GPU to go idle after every measured frame and
+samples, so each frame records exactly the counters its own work added —
+shader-core active cycles summed over the cores, with fragment, non-fragment,
+GPU-active and tiler cycles and fragment warps beside them. The wait changes
+the run's GPU timings, so a counter run is never read for time. The counter
+layout read is the Mali-G715's; another GPU fails rather than read a
+different layout under these names.
+
+`pixel_compare.py run --gpu-counters` compares the shader-core active cycles
+under the same interval rule. Every process settles at its own cycle level,
+a few percent apart for identical binaries, while frames inside one agree to
+about 1%, so these scenes need many short invocations:
+
+    bench/scripts/pixel_compare.py run --serial pixel-9-pro:5555 --gpu-counters \
+        --rounds 32 --frames 300 --base bench-dev --head bench-change \
+        --scene scenes/corpus/continuous-s50 \
+        --scene scenes/corpus/stroke-join-continuous-s00-miter-lo --out compare-cycles
+
+At those settings an identical-binary comparison passes both 96 px scenes
+(intervals within ±1.1%). A 4 KiB buffer clear added to every pass fails them
+at +5.1% and +4.7%, and the same clear adds the same cycles to chart, so added
+work reads as the same cost in every scene.
+
 ## Sparse live updates
 
 `scenes/perf/live-dashboard` changes one two-digit glyph run and one bar height

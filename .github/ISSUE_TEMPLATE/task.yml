@@ -7,7 +7,7 @@ body:
       value: |
         Maintenance tasks are self-contained pieces of work that are neither defects nor user-facing features: extractions, cleanups, CI plumbing, dependency surgery.
 
-        Title convention: `<area>: <what changes>`, e.g. `ci: the Android FFI leg is never compiled`.
+        Title convention: `<area>: <what changes>`, e.g. `ci: the Hydrolysis Android leg is never compiled`.
   - type: textarea
     id: what
     attributes:

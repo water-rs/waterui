@@ -1,14 +1,19 @@
-//! Renderer presentation tests for `SceneView`: intrinsic-size layout
-//! proposals and the captured-frame path that runs `build_scene`.
+//! Rendered-runtime contracts for `SceneView`: intrinsic-size layout
+//! proposals and the captured-frame path that runs `build_scene`. The layout
+//! semantics are the engine's — how `SceneContent::intrinsic_size` feeds a
+//! proposal — so these stay with the backend, mounted under `TestStyle`.
 //!
 //! Received from water-rs/waterui under water-rs/waterui#1130 (class 2 —
 //! renderer presentation); every case names its origin file and asserts what
-//! it asserted there, mounted under `Material3::defaults()` on the rendered
-//! runtime.
+//! it asserted there.
+
+mod support;
 
 use std::cell::Cell;
 use std::rc::Rc;
 
+use kurbo::Rect;
+use support::{mount_rendered, node_bounds_with_role};
 use waterui::View;
 use waterui::ViewExt as _;
 use waterui::component::hstack;
@@ -17,10 +22,8 @@ use waterui::graphics::{RecordingResources, SceneContent, SceneView};
 use waterui::layout::frame::Frame;
 use waterui::layout::scroll::ScrollView;
 use waterui::text::text;
-use waterui_core::handler::AnyViewBuilder;
+use waterui_core::Environment;
 use waterui_core::layout::Size;
-use waterui_core::{AnyView, Environment};
-use waterui_testing::{NodeBounds, OffscreenApp, Role, ui};
 
 struct TestSceneContent(Rc<Cell<bool>>);
 
@@ -34,7 +37,7 @@ impl SceneContent for TestSceneContent {
     ) -> bool {
         self.0.set(true);
         recorder.fill(
-            kurbo::Rect::from_origin_size(
+            Rect::from_origin_size(
                 kurbo::Point::new(8.0, 8.0),
                 kurbo::Size::new(f64::from(width.min(40.0)), f64::from(height.min(24.0))),
             ),
@@ -69,7 +72,7 @@ impl SceneContent for NaturallySizedContent {
         height: f32,
     ) -> bool {
         recorder.fill(
-            kurbo::Rect::from_origin_size(
+            Rect::from_origin_size(
                 kurbo::Point::ZERO,
                 kurbo::Size::new(f64::from(width), f64::from(height)),
             ),
@@ -99,10 +102,6 @@ fn sizeless_scene() -> impl View {
         .a11y_label("Sizeless scene")
 }
 
-fn scene_bounds(app: &mut OffscreenApp, label: &str) -> NodeBounds {
-    app.query().role(Role::IMAGE).label(label).single().bounds()
-}
-
 /// (a) The scroll axis proposes nothing, so the scene is laid out at the height
 /// it naturally is instead of collapsing to zero — the defect in #253. The
 /// viewport is deliberately shorter than the content so the scroll view's
@@ -111,14 +110,17 @@ fn scene_bounds(app: &mut OffscreenApp, label: &str) -> NodeBounds {
 /// Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn scene_with_a_natural_size_keeps_it_on_an_unconstrained_scroll_axis() {
-    let mut app = ui()
-        .viewport(100, 120)
-        .theme(hydrolysis_m3::Material3::defaults())
-        .mount_offscreen(|| ScrollView::vertical(naturally_sized_scene()));
+    let mut app = mount_rendered(
+        Environment::new(),
+        || ScrollView::vertical(naturally_sized_scene()),
+        100,
+        120,
+    );
+    app.settle();
 
-    let bounds = scene_bounds(&mut app, "Intrinsic scene");
+    let bounds = node_bounds_with_role(app.tree(), accesskit::Role::Image, "Intrinsic scene");
     assert!(
-        (bounds.height() - NaturallySizedContent::NATURAL.height).abs() < 0.5,
+        (bounds.height() - f64::from(NaturallySizedContent::NATURAL.height)).abs() < 0.5,
         "the unconstrained scroll axis must resolve to the natural height, got {}",
         bounds.height()
     );
@@ -130,16 +132,19 @@ fn scene_with_a_natural_size_keeps_it_on_an_unconstrained_scroll_axis() {
 /// Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn scene_with_a_natural_size_still_fills_a_frame() {
-    let mut app = ui()
-        .viewport(400, 400)
-        .theme(hydrolysis_m3::Material3::defaults())
-        .mount_offscreen(|| {
+    let mut app = mount_rendered(
+        Environment::new(),
+        || {
             Frame::new(naturally_sized_scene())
                 .width(160.0)
                 .height(90.0)
-        });
+        },
+        400,
+        400,
+    );
+    app.settle();
 
-    let bounds = scene_bounds(&mut app, "Intrinsic scene");
+    let bounds = node_bounds_with_role(app.tree(), accesskit::Role::Image, "Intrinsic scene");
     assert!(
         (bounds.width() - 160.0).abs() < 0.5 && (bounds.height() - 90.0).abs() < 0.5,
         "a framed scene must fill its frame, got {}x{}",
@@ -155,12 +160,15 @@ fn scene_with_a_natural_size_still_fills_a_frame() {
 /// Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn one_named_axis_drives_the_other_by_the_natural_aspect_ratio() {
-    let mut app = ui()
-        .viewport(200, 120)
-        .theme(hydrolysis_m3::Material3::defaults())
-        .mount_offscreen(|| ScrollView::vertical(naturally_sized_scene()));
+    let mut app = mount_rendered(
+        Environment::new(),
+        || ScrollView::vertical(naturally_sized_scene()),
+        200,
+        120,
+    );
+    app.settle();
 
-    let bounds = scene_bounds(&mut app, "Intrinsic scene");
+    let bounds = node_bounds_with_role(app.tree(), accesskit::Role::Image, "Intrinsic scene");
     // 200 is twice the natural width, so the height is twice the natural height.
     assert!(
         (bounds.width() - 200.0).abs() < 0.5 && (bounds.height() - 400.0).abs() < 0.5,
@@ -176,12 +184,15 @@ fn one_named_axis_drives_the_other_by_the_natural_aspect_ratio() {
 /// Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn scene_without_a_natural_size_still_fills_its_container() {
-    let mut app = ui()
-        .viewport(200, 120)
-        .theme(hydrolysis_m3::Material3::defaults())
-        .mount_offscreen(|| ScrollView::vertical(sizeless_scene()));
+    let mut app = mount_rendered(
+        Environment::new(),
+        || ScrollView::vertical(sizeless_scene()),
+        200,
+        120,
+    );
+    app.settle();
 
-    let bounds = scene_bounds(&mut app, "Sizeless scene");
+    let bounds = node_bounds_with_role(app.tree(), accesskit::Role::Image, "Sizeless scene");
     assert!(
         (bounds.width() - 200.0).abs() < 0.5 && (bounds.height() - 120.0).abs() < 0.5,
         "a scene with no natural size must fill the viewport, got {}x{}",
@@ -197,19 +208,22 @@ fn scene_without_a_natural_size_still_fills_its_container() {
 /// Origin: waterui `testing/src/tests.rs`.
 #[test]
 fn a_naturally_sized_scene_does_not_eat_the_row() {
-    let mut app = ui()
-        .viewport(400, 200)
-        .theme(hydrolysis_m3::Material3::defaults())
-        .mount_offscreen(|| {
+    let mut app = mount_rendered(
+        Environment::new(),
+        || {
             hstack((
                 naturally_sized_scene(),
                 text("beside it").a11y_label("beside it"),
             ))
-        });
+        },
+        400,
+        200,
+    );
+    app.settle();
 
-    let bounds = scene_bounds(&mut app, "Intrinsic scene");
+    let bounds = node_bounds_with_role(app.tree(), accesskit::Role::Image, "Intrinsic scene");
     assert!(
-        (bounds.width() - NaturallySizedContent::NATURAL.width).abs() < 0.5,
+        (bounds.width() - f64::from(NaturallySizedContent::NATURAL.width)).abs() < 0.5,
         "a content-sized scene takes its own width and leaves the rest of the row \
          to its sibling, got {}",
         bounds.width()
@@ -222,10 +236,14 @@ fn a_naturally_sized_scene_does_not_eat_the_row() {
 /// Origin: waterui `testing/src/tests.rs`
 /// (`smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer`), exercised
 /// through `HeadlessRuntime`'s public pump — the same `capture_window_tree` →
-/// `render_scene_to_texture` → readback chain, instead of the crate-private
+/// `render_scene_to_texture` → readback chain, instead of the public
 /// `readback_texture_rgba8` helper the origin called directly.
 #[test]
 fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
+    use hydrolysis::testing::TestStyle;
+    use waterui_core::AnyView;
+    use waterui_core::handler::AnyViewBuilder;
+
     let build_called = Rc::new(Cell::new(false));
     let content = AnyViewBuilder::new({
         let build_called = Rc::clone(&build_called);
@@ -236,7 +254,7 @@ fn smoke_scene_view_snapshot_runs_build_scene_and_returns_buffer() {
         content,
         96,
         72,
-        hydrolysis_m3::Material3::defaults(),
+        TestStyle::new(),
     );
 
     let mut settled = false;

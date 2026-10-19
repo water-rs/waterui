@@ -52,7 +52,7 @@ impl Entry {
                 entry_point: Some(FRAGMENT_ENTRY),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: super::TARGET_FORMAT,
+                    format: super::WORKING_FORMAT,
                     blend: None,
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -79,7 +79,7 @@ const FRAGMENT_ENTRY: &str = "main";
 fn module_text(source: &ShaderSource) -> String {
     format!(
         "{}\n{}\n{}",
-        include_str!("color.wgsl"),
+        include_str!(concat!(env!("OUT_DIR"), "/color.wgsl")),
         include_str!("paint.wgsl"),
         source.source
     )
@@ -142,9 +142,9 @@ impl Registry {
     /// The browser variant of [`Registry::add`], awaiting the validation
     /// scope without blocking the JS event loop.
     #[cfg(target_arch = "wasm32")]
-    #[expect(
+    #[allow(
         clippy::future_not_send,
-        reason = "the browser engine is single-threaded and its futures run on the page's event loop"
+        reason = "the browser uses the page event loop; wgpu handles' Send bound varies with Cargo feature unification"
     )]
     pub async fn add(
         &mut self,
@@ -206,14 +206,14 @@ impl Registry {
                 "shader paint",
                 key.size,
                 super::TARGET_USAGES,
-                super::TARGET_FORMAT,
+                super::WORKING_FORMAT,
             );
             crate::diag::create(
                 device,
                 "shader paint",
                 u64::from(key.size.0)
                     * u64::from(key.size.1)
-                    * super::texel_bytes(super::TARGET_FORMAT),
+                    * super::texel_bytes(super::WORKING_FORMAT),
             );
             let globals = uniform_buffer(device, 16);
             let parameters = uniform_buffer(device, 256);
@@ -233,6 +233,7 @@ impl Registry {
             });
             Texture {
                 image: super::GpuImage {
+                    sampling_flags: 0,
                     texture,
                     view,
                     width: key.size.0,

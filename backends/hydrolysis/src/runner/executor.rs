@@ -11,9 +11,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, mpsc};
-#[cfg(test)]
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, mpsc};
 
 use executor_core::LocalExecutor;
 use executor_core::async_task::{AsyncTask, Runnable};
@@ -44,12 +42,12 @@ pub struct HeadlessMainThreadExecutor {
     /// changes hands only on this thread, unlike the waker-visible atomics.
     owners: Rc<Cell<usize>>,
     /// Count of runnables ever delivered to the channel, bumped under the
-    /// mutex and signaled on the condvar by the wake path. Tests wait on this
-    /// edge — a real timer re-queueing its task — instead of guessing the
-    /// reactor thread's latency with a fixed sleep. The count trails `pending`
-    /// deliberately: it moves only once the runnable is in the channel, so a
-    /// waiter that wakes on it can drain immediately.
-    #[cfg(test)]
+    /// mutex and signaled on the condvar by the wake path. A host with
+    /// nothing to pump waits on this edge — a timer or an I/O reactor
+    /// re-queueing its task — instead of guessing the waker's latency with
+    /// a fixed sleep. The count trails `pending` deliberately: it moves only
+    /// once the runnable is in the channel, so a waiter that wakes on it can
+    /// drain immediately.
     queued: Arc<(Mutex<usize>, Condvar)>,
 }
 
@@ -75,7 +73,6 @@ impl HeadlessMainThreadExecutor {
             pending: Arc::new(AtomicUsize::new(0)),
             accepting: Arc::new(AtomicBool::new(true)),
             owners: Rc::new(Cell::new(0)),
-            #[cfg(test)]
             queued: Arc::new((Mutex::new(0), Condvar::new())),
         }
     }
@@ -109,13 +106,15 @@ impl HeadlessMainThreadExecutor {
     }
 
     /// Blocks until a waker delivers a runnable to the queue, returning
-    /// whether one arrived within `timeout`.
+    /// whether one arrived within `timeout` — immediately when one is
+    /// already queued.
     ///
-    /// Tests that arm a real timer — `debounce`'s `async_io::Timer` — must
-    /// wait on this wake edge rather than a fixed sleep: a loaded runner can
-    /// take arbitrarily long to fire the wake, while an idle one answers in
-    /// microseconds. False means the timer never re-queued its task.
-    #[cfg(test)]
+    /// Work parked on a real timer or I/O — `debounce`'s `async_io::Timer`,
+    /// a photo decoding on a blocking pool — re-queues its task from another
+    /// thread, and this wake edge is the only signal that it did: a loaded
+    /// machine can take arbitrarily long to fire it, while an idle one
+    /// answers in microseconds. False means nothing re-queued in time.
+    #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn wait_queued(&self, timeout: core::time::Duration) -> bool {
         let (lock, queued) = &*self.queued;
         let deadline = std::time::Instant::now() + timeout;
@@ -163,7 +162,6 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
         let runnable_tx = self.runnable_tx.clone();
         let pending = Arc::clone(&self.pending);
         let accepting = Arc::clone(&self.accepting);
-        #[cfg(test)]
         let queued = Arc::clone(&self.queued);
         let (runnable, task) = executor_core::async_task::spawn_local(fut, move |runnable| {
             pending.fetch_add(1, Ordering::SeqCst);
@@ -174,12 +172,9 @@ impl LocalExecutor for HeadlessMainThreadExecutor {
             };
             match delivery {
                 Ok(()) => {
-                    #[cfg(test)]
-                    {
-                        let (lock, queued) = &*queued;
-                        *lock.lock().unwrap() += 1;
-                        queued.notify_all();
-                    }
+                    let (lock, queued) = &*queued;
+                    *lock.lock().unwrap() += 1;
+                    queued.notify_all();
                 }
                 Err(unsent) => {
                     pending.fetch_sub(1, Ordering::SeqCst);

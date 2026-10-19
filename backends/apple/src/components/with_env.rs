@@ -72,7 +72,8 @@ impl SubView for WithEnvSubView {
 /// `wuiContentFrame(of: contentView, in: self)`: the whole bounds when the
 /// content manages its own safe area, the host's safe-area rect otherwise.
 fn content_frame(host: &HostView, child: &PlatformView) -> Rect {
-    crate::native_layout::content_frame(child, host)
+    let host_view: &PlatformView = host;
+    crate::native_layout::LayoutContext::of(host_view).content_frame(child)
 }
 
 /// Installs the `with_env` handler on the dispatcher: `Metadata<Environment>`
@@ -94,18 +95,16 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // `contentView.frame = wuiContentFrame(of:in:)`.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let frame = content_frame(host, state.child.view());
                 view::set_frame(state.child.view(), frame);
             }
         });
 
         // `WuiPrimaryContentProviding`: the primary-content chain descends
-        // into the content.
+        // into the content — §7.1's fill answer resolves through it, so
+        // `Color.opacity(..)` in a background slot stays a fill.
         crate::primary_content::forward(&host, state.child.view());
 
         // `setPlacementProposal`: the proposal selected for this wrapper is

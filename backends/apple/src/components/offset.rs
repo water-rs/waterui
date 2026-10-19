@@ -13,9 +13,7 @@ use core::cell::RefCell;
 #[cfg(target_os = "ios")]
 use cocoa_ui::Point;
 use cocoa_ui::{PlatformView, Rect, view};
-use waterui::animation::Animation;
 use waterui::reactive::Signal;
-use waterui::reactive::watcher::Metadata as WatchMetadata;
 use waterui::style::Offset;
 use waterui_core::Metadata;
 use waterui_core::layout::{ProposalSize, StretchAxis, SubView, ViewDimensions};
@@ -28,35 +26,6 @@ use crate::proposal;
 use cocoa_ui::appkit::HostView;
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::HostView;
-
-/// `withPlatformAnimation`: the watcher metadata's `Animation` mapped to a
-/// kit timing — `Default` parses to the 0.25s bezier the FFI spells it as.
-fn with_platform_animation(metadata: &WatchMetadata, body: impl FnOnce() + 'static) {
-    let timing = match metadata.try_get::<Animation>() {
-        None => return body(),
-        Some(Animation::Default) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        },
-        Some(Animation::Spring { stiffness, damping }) => {
-            cocoa_ui::core_animation::Timing::Spring {
-                stiffness: f64::from(stiffness),
-                damping: f64::from(damping),
-            }
-        }
-    };
-    cocoa_ui::core_animation::animate_with(timing, body);
-}
 
 /// The leaf's live state: the mounted child and the current translation.
 struct OffsetState {
@@ -108,6 +77,31 @@ fn apply_transform(state: &OffsetState, host: &PlatformView) {
     view::invalidate_captured_rendering(host);
 }
 
+/// `UIKit`: position the content in the untransformed space, then re-apply
+/// the translation. `center` is a `frame` property, and reading or writing
+/// `frame` while `transform` is not the identity is undefined
+/// (`UIView.transform`) — the autoresizing-mask constraints `UIKit`
+/// synthesizes for a translated view resolve the transformed frame, which
+/// is how a re-centering pass can absorb part of the translation and land
+/// the content short of its offset.
+#[cfg(target_os = "ios")]
+fn position_content(state: &OffsetState, host: &PlatformView) {
+    let bounds = view::bounds(host);
+    view::set_transform(
+        state.child.view(),
+        cocoa_ui::objc2_core_graphics::CGAffineTransformMakeTranslation(0.0, 0.0),
+    );
+    view::set_bounds(
+        state.child.view(),
+        Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height),
+    );
+    view::set_center(
+        state.child.view(),
+        Point::new(bounds.size.width / 2.0, bounds.size.height / 2.0),
+    );
+    apply_transform(state, host);
+}
+
 /// The wrapper's layout face: the content's answers everywhere.
 struct OffsetSubView {
     /// The leaf's state.
@@ -147,6 +141,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
         cocoa_ui::layer::ensure_layer(&host);
         let mounted = ctx.render(metadata.content).mount(&host);
         crate::primary_content::forward(&host, mounted.view());
+        #[cfg(target_os = "ios")]
+        // This wrapper drives the content's bounds and center itself on
+        // every layout pass and moves it visually with `transform`. Letting
+        // `UIKit` translate the autoresizing mask into frame-pinning
+        // constraints makes the transform participate in constraint
+        // solving — the pinned frame absorbs part of the translation and
+        // the content lands short of its declared offset.
+        view::set_translates_autoresizing(mounted.view(), false);
+        #[cfg(target_os = "macos")]
         view::set_translates_autoresizing(mounted.view(), true);
 
         let state = Rc::new(RefCell::new(OffsetState {
@@ -158,29 +161,13 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The content always fills the wrapper before the transform moves
         // it visually.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host_view| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let state = state.borrow();
                 #[cfg(target_os = "ios")]
-                let bounds = view::bounds(host_view);
-                #[cfg(target_os = "ios")]
-                {
-                    view::set_bounds(
-                        state.child.view(),
-                        Rect::new(0.0, 0.0, bounds.size.width, bounds.size.height),
-                    );
-                    view::set_center(
-                        state.child.view(),
-                        Point::new(bounds.size.width / 2.0, bounds.size.height / 2.0),
-                    );
-                }
+                position_content(&state, host_view);
                 #[cfg(target_os = "macos")]
-                {
-                    apply_transform(&state, host_view);
-                }
+                apply_transform(&state, host_view);
             }
         });
 
@@ -221,7 +208,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let host = host.clone();
             move |wctx| {
                 state.borrow_mut().x = *wctx.value();
-                with_platform_animation(wctx.metadata(), {
+                crate::animation::with_platform_animation(wctx.metadata(), {
                     let state = Rc::clone(&state);
                     let host = host.clone();
                     move || {
@@ -235,7 +222,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             let state = Rc::clone(&state);
             move |wctx| {
                 state.borrow_mut().y = *wctx.value();
-                with_platform_animation(wctx.metadata(), {
+                crate::animation::with_platform_animation(wctx.metadata(), {
                     let state = Rc::clone(&state);
                     let host = host.clone();
                     move || {

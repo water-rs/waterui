@@ -11,6 +11,9 @@ other package. The Rust side derives exactly the same tables for a tree
 tree) — the two must not drift, so this script never reads anything from
 the CLI.
 
+Run `python3 .github/scripts/framework_manifest.py --self-check` to verify
+the manifest metadata round trip without checking out or publishing a release.
+
 `stable` certifies the framework release tag release-plz published
 (`v<version>`), or — under release preflight, where the release does not
 exist yet — the candidate revision it will publish. The named revision is
@@ -123,19 +126,19 @@ def channel_scaffold(framework, channel):
     return scaffold, experimental
 
 
-def build_manifest(channel, tag, revision, repository):
-    """Write `framework.json` for the checked-out revision."""
+def manifest_data(channel, tag, revision, repository, run_id, run_attempt):
+    """The certified manifest for the checked-out revision."""
     framework = tomllib.loads(Path("Cargo.toml").read_text())
     metadata = framework["package"]["metadata"]["waterui"]
     scaffold, experimental = channel_scaffold(framework, channel)
-    manifest = {
+    return {
         "schema_version": 2,
         "channel": channel,
         "repository": repository,
         "revision": revision,
         "tag": tag,
-        "run_id": int(os.environ["GITHUB_RUN_ID"]),
-        "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+        "run_id": run_id,
+        "run_attempt": run_attempt,
         "lockfiles": lockfile_hashes(),
         "scaffold": scaffold,
         # The packages the channel withholds: stable's git-pinned scaffold
@@ -146,6 +149,14 @@ def build_manifest(channel, tag, revision, repository):
         # manifest without a schema change.
         "metadata": metadata,
     }
+
+
+def build_manifest(channel, tag, revision, repository):
+    """Write `framework.json` for the checked-out revision."""
+    manifest = manifest_data(
+        channel, tag, revision, repository,
+        int(os.environ["GITHUB_RUN_ID"]), int(os.environ["GITHUB_RUN_ATTEMPT"]),
+    )
     Path("framework.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
@@ -153,6 +164,18 @@ def checkout(revision):
     """Put the worktree at `revision` so every recorded fact names the tree
     being certified rather than whatever the job happened to check out."""
     git("checkout", revision)
+
+
+def self_check():
+    """Verify the release serializer carries the framework's deployment floor."""
+    framework = tomllib.loads(Path("Cargo.toml").read_text())
+    expected = framework["package"]["metadata"]["waterui"]["apple-deployment-targets"]
+    for channel in ("stable", "nightly"):
+        manifest = manifest_data(channel, "self-check", git("rev-parse", "HEAD"), "water-rs/waterui", 1, 1)
+        actual = json.loads(json.dumps(manifest))["metadata"]["apple-deployment-targets"]
+        assert actual == expected
+        for platform in ("macos", "ios"):
+            assert re.fullmatch(r"\d+(?:\.\d+)*", actual[platform])
 
 
 def prepare_stable(tag, revision):
@@ -212,7 +235,8 @@ def prepare_nightly():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="channel", required=True)
+    parser.add_argument("--self-check", action="store_true", help="verify metadata serialization offline")
+    commands = parser.add_subparsers(dest="channel")
     stable = commands.add_parser(
         "stable", help="certify a published framework release"
     )
@@ -228,10 +252,14 @@ def main():
         "nightly", help="certify the dev revision a green full-matrix run tested"
     )
     args = parser.parse_args()
-    if args.channel == "nightly":
+    if args.self_check:
+        self_check()
+    elif args.channel == "nightly":
         prepare_nightly()
-    else:
+    elif args.channel == "stable":
         prepare_stable(args.tag, args.revision)
+    else:
+        parser.error("a channel or --self-check is required")
 
 
 if __name__ == "__main__":

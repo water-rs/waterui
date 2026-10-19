@@ -3,10 +3,12 @@
 //! formatted-value child beside the buttons.
 //!
 //! Mirrors `WuiStepper`: the label hugs the leading edge, the stepper hugs
-//! the trailing edge, and the formatted value sits between them — the row
-//! stretches horizontally while its height stays intrinsic. The
-//! `Binding<i32>` is two-way: watchers push value changes onto the control,
-//! and the control's action writes user steps back into the binding.
+//! the trailing edge, and the formatted value sits between them. The
+//! payload's stretch axis — `Horizontal` while the label is visible, `None`
+//! when hidden (`docs/layout-spec.md` §3) — picks whether the row fills its
+//! offer; its height stays intrinsic either way. The `Binding<i32>` is
+//! two-way: watchers push value changes onto the control, and the control's
+//! action writes user steps back into the binding.
 
 use alloc::rc::Rc;
 use alloc::string::String;
@@ -164,11 +166,14 @@ fn layout_children(view: &PlatformView, state: &StepperState) {
 }
 
 /// The container's layout face: reports `WuiStepper.sizeThatFits`'s answer —
-/// the proposed width (never below the minimum) when a label shares the
-/// row, the minimum otherwise; always the intrinsic height. Stretches
-/// horizontally at priority 0.
+/// the proposed width (never below the minimum) while the payload stretches,
+/// the minimum otherwise; always the intrinsic height.
 struct StepperSubView {
     state: Rc<RefCell<StepperState>>,
+    /// The payload's `NativeView::stretch_axis` — `Horizontal` with a visible
+    /// label, `None` with a hidden one; the one statement of the rule, read
+    /// once at install.
+    stretch: StretchAxis,
 }
 
 impl core::fmt::Debug for StepperSubView {
@@ -192,13 +197,11 @@ impl SubView for StepperSubView {
             .map_or_else(ChildSizes::default, child_sizes);
         let stepper_size = state.stepper.intrinsic_size();
         let min_width = min_width(sizes, stepper_size.width);
-        let has_label = sizes.label.width > 0.0 && sizes.label.height > 0.0;
-        let width = if has_label {
-            proposal
-                .width
-                .map_or(min_width, |w| f64::from(w).max(min_width))
-        } else {
-            min_width
+        let width = match (self.stretch, proposal.width) {
+            (StretchAxis::Horizontal, Some(proposed)) if proposed.is_finite() => {
+                f64::from(proposed).max(min_width)
+            }
+            _ => min_width,
         };
         ViewDimensions::new(Size::new(
             width as f32,
@@ -207,7 +210,7 @@ impl SubView for StepperSubView {
     }
 
     fn stretch_axis(&self) -> StretchAxis {
-        StretchAxis::Horizontal
+        self.stretch
     }
 
     fn priority(&self) -> i32 {
@@ -243,6 +246,7 @@ fn accessibility_value(formatted: Option<&String>, value: i32) -> String {
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_native::<StepperConfig>(|config, ctx| {
         let mtm = ctx.mtm();
+        let stretch = waterui_core::NativeView::stretch_axis(&config);
         let host = HostView::new(mtm, Rect::ZERO);
         let stepper = Stepper::new(mtm);
         stepper.set_range(
@@ -296,6 +300,7 @@ pub fn install(dispatcher: &mut Dispatcher) {
             host_view,
             StepperSubView {
                 state: Rc::clone(&state),
+                stretch,
             },
         );
 

@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 
 use accesskit::{Action as AccessibilityAction, ActionData as AccessibilityActionData};
 use hydrolysis::{AccessibilityActivationPointError, HeadlessRuntime};
+use waterui::component::text_field::ContentType;
 
 use crate::app::SemanticApp;
 use crate::driver::RuntimeDriver;
@@ -24,7 +25,10 @@ pub struct Selector {
     busy: Option<bool>,
     value_exact: Option<String>,
     value_contains: Option<String>,
+    placeholder_exact: Option<String>,
+    placeholder_contains: Option<String>,
     hidden: Option<bool>,
+    content_type: Option<ContentType>,
     scope: Option<QueryScope>,
 }
 
@@ -42,7 +46,10 @@ impl Default for Selector {
             busy: None,
             value_exact: None,
             value_contains: None,
+            placeholder_exact: None,
+            placeholder_contains: None,
             hidden: Some(false),
+            content_type: None,
             scope: None,
         }
     }
@@ -137,10 +144,31 @@ impl Selector {
         self
     }
 
+    /// Restricts matches to an exact placeholder.
+    #[must_use]
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder_exact = Some(placeholder.into());
+        self
+    }
+
+    /// Restricts matches to placeholders containing text.
+    #[must_use]
+    pub fn placeholder_contains(mut self, placeholder: impl Into<String>) -> Self {
+        self.placeholder_contains = Some(placeholder.into());
+        self
+    }
+
     /// Includes or excludes hidden nodes.
     #[must_use]
     pub const fn hidden(mut self, hidden: bool) -> Self {
         self.hidden = Some(hidden);
+        self
+    }
+
+    /// Restricts matches to a declared text-field content type.
+    #[must_use]
+    pub const fn content_type(mut self, content_type: ContentType) -> Self {
+        self.content_type = Some(content_type);
         self
     }
 
@@ -199,8 +227,17 @@ impl Selector {
         if let Some(value) = self.value_contains.as_deref() {
             parts.push(format!("value_contains={value:?}"));
         }
+        if let Some(placeholder) = self.placeholder_exact.as_deref() {
+            parts.push(format!("placeholder={placeholder:?}"));
+        }
+        if let Some(placeholder) = self.placeholder_contains.as_deref() {
+            parts.push(format!("placeholder_contains={placeholder:?}"));
+        }
         if let Some(hidden) = self.hidden {
             parts.push(format!("hidden={hidden}"));
+        }
+        if let Some(content_type) = self.content_type {
+            parts.push(format!("content_type={content_type:?}"));
         }
         if let Some(scope) = self.scope() {
             parts.push(scope.describe());
@@ -281,8 +318,29 @@ impl Selector {
             }
         }
 
+        if let Some(expected) = self.placeholder_exact.as_deref()
+            && node.placeholder() != Some(expected)
+        {
+            return false;
+        }
+
+        if let Some(expected) = self.placeholder_contains.as_deref() {
+            let Some(placeholder) = node.placeholder() else {
+                return false;
+            };
+            if !placeholder.contains(expected) {
+                return false;
+            }
+        }
+
         if let Some(expected) = self.hidden
             && node.hidden() != expected
+        {
+            return false;
+        }
+
+        if let Some(expected) = self.content_type
+            && node.content_type() != Some(expected)
         {
             return false;
         }

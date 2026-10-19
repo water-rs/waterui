@@ -80,6 +80,10 @@ impl Default for Color {
 
 /// A colour already in the working space: resolves to itself.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "newtype over a working-space color: the wrapped color is the whole value"
+)]
 pub struct Working(pub WorkingColor);
 
 impl Resolvable for Working {
@@ -195,6 +199,7 @@ impl<T> DerefMut for WithOpacity<T> {
 
 /// Errors that can occur when parsing hexadecimal color strings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HexColorError {
     /// The provided string does not have the expected 6 hexadecimal digits.
     InvalidLength,
@@ -473,6 +478,10 @@ macro_rules! environment_color {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
         #[derive(Debug, Clone, Copy)]
+        #[expect(
+            clippy::exhaustive_structs,
+            reason = "field-less color token resolved by type and used by name"
+        )]
         pub struct $name;
 
         impl Resolvable for $name {
@@ -535,6 +544,7 @@ environment_color!(
     ErrorForegroundColor,
     "Error-foreground color key for environment queries."
 );
+environment_color!(ScrimColor, "Scrim color key for environment queries.");
 
 /// The light or dark appearance the application is drawn in.
 ///
@@ -544,6 +554,10 @@ environment_color!(
 /// a map style — resolve [`CurrentColorScheme`] so the choice follows a
 /// switch instead of being made once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the application draws in light or dark appearance"
+)]
 pub enum ColorScheme {
     /// Light appearance (light backgrounds, dark text).
     #[default]
@@ -556,6 +570,10 @@ impl_constant!(ColorScheme);
 
 /// Environment key that resolves to the installed [`ColorScheme`].
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less environment key used by name"
+)]
 pub struct CurrentColorScheme;
 
 impl Resolvable for CurrentColorScheme {
@@ -588,6 +606,7 @@ macro_rules! color_const {
         paste! {
             #[derive(Debug, Clone, Copy)]
             #[doc=$doc]
+            #[expect(clippy::exhaustive_structs, reason = "field-less color token resolved by type and used by name")]
             pub struct $name;
 
             impl $name {
@@ -652,51 +671,28 @@ waterui_core::raw_view!(Color, waterui_core::layout::StretchAxis::Both);
 /// Hex parsing helpers shared by color constructors.
 pub mod parse;
 
-// https://www.w3.org/TR/css-color-4/#color-conversion-code
-/// Converts an sRGB channel to linear light.
+/// Converts an sRGB channel to linear light, the transfer mirrored through
+/// zero so extended values stay extended (CSS Color 4's `lin_sRGB`).
 #[must_use]
 pub fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
+    filtrate_core::space::srgb_decode(c)
 }
 
-/// Converts a linear-light channel to sRGB.
+/// Converts a linear-light channel to sRGB, the inverse of
+/// [`srgb_to_linear`].
 #[must_use]
 pub fn linear_to_srgb(c: f32) -> f32 {
-    if c <= 0.003_130_8 {
-        c * 12.92
-    } else {
-        1.055_f32.mul_add(c.powf(1.0 / 2.4), -0.055)
-    }
+    filtrate_core::space::srgb_encode(c)
 }
 
-// Conversion matrix from P3 to sRGB
-// https://www.w3.org/TR/css-color-4/#color-conversion-code
+/// Linear Display P3 to linear sRGB, with the engine's matrix.
 pub(crate) fn p3_to_linear_srgb(p3: [f32; 3]) -> [f32; 3] {
-    [
-        1.224_940_1_f32.mul_add(p3[0], -0.224_940_1 * p3[1]),
-        (-0.042_030_1_f32).mul_add(p3[0], 1.042_030_1 * p3[1]),
-        (-0.019_721_1_f32).mul_add(
-            p3[0],
-            (-0.078_636_1_f32).mul_add(p3[1], 1.098_357_2 * p3[2]),
-        ),
-    ]
+    filtrate_core::space::transform(&filtrate_core::space::P3_TO_SRGB, p3)
 }
 
-// Conversion matrix from sRGB to P3 (inverse of p3_to_linear_srgb)
-// https://www.w3.org/TR/css-color-4/#color-conversion-code
+/// Linear sRGB to linear Display P3, the inverse of [`p3_to_linear_srgb`].
 pub(crate) fn linear_srgb_to_p3(srgb: [f32; 3]) -> [f32; 3] {
-    [
-        0.822_461_9_f32.mul_add(srgb[0], 0.177_538_1 * srgb[1]),
-        0.033_194_2_f32.mul_add(srgb[0], 0.966_805_8 * srgb[1]),
-        0.017_082_6_f32.mul_add(
-            srgb[0],
-            0.072_397_4_f32.mul_add(srgb[1], 0.910_519_9 * srgb[2]),
-        ),
-    ]
+    filtrate_core::space::transform(&filtrate_core::space::SRGB_TO_P3, srgb)
 }
 
 const fn clamp_unit(value: f32) -> f32 {

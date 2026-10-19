@@ -14,8 +14,8 @@ pub mod label;
 pub use label::{IconPosition, IntoLabel, Label, LabelDisplayMode, label};
 pub mod menu;
 pub use menu::{
-    Command, CommandExt, CommandRole, Menu, MenuBarView, MenuItem, MenuView, Shortcut,
-    ShortcutModifiers,
+    Command, CommandExt, CommandRole, Menu, MenuBarView, MenuItem, MenuView, NamedKey, Shortcut,
+    ShortcutKey, ShortcutModifiers,
 };
 pub mod size;
 pub use size::ControlSize;
@@ -24,6 +24,8 @@ pub mod slider;
 pub use slider::{Slider, slider};
 pub mod text_field;
 pub use text_field::{TextField, field};
+pub mod text_selection;
+pub use text_selection::{CustomTextSelection, TextSelection};
 pub mod toggle;
 pub use toggle::{Toggle, ToggleStyle, toggle};
 

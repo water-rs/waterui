@@ -9,7 +9,9 @@ sources and installs them into the current user's font location, where the
 test host's system font discovery resolves them by family name like any other
 installed font.
 
-Install once per machine; re-running is idempotent:
+`cargo nextest run` installs them on demand through the `test-fonts` setup
+script in `.config/nextest.toml`; a manual `cargo test` run installs once
+per machine, and re-running is idempotent:
 
     uv run backends/hydrolysis/test-fonts/install.py
 
@@ -26,6 +28,17 @@ carry fails with an error naming the family and this script — run it, then
 re-run the test.
 
 ## The faces
+
+The generator verifies local fixture files even when their installed copies are
+already present. Shaping/recording tests load those pinned bytes directly, rather
+than letting system discovery select another face with the same family name.
+
+Noto Sans Regular is the full Noto Sans 2.015 face pinned in the CLI registry,
+kept intact for the combining-mark fallback regression and licensed under OFL.
+
+The same regression registers Material's pinned web Roboto variable face directly.
+Its generated `Roboto-Web-Variable.ttf` is not installed into system discovery,
+so it does not replace the existing static Roboto fixtures.
 
 Roboto, from the release the `water` CLI's font registry ships to applications
 (<https://github.com/googlefonts/roboto/releases/download/v2.138/roboto-android.zip>),

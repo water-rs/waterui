@@ -27,12 +27,13 @@ use waterui_layout::stack::{VStack, vstack, zstack};
 
 use nami::collection::List;
 use waterui::graphics::Color;
+use waterui_backend_core::View;
 use waterui_core::dynamic::watch;
 use waterui_core::layout::{Layout, ProposalSize, Rect, Size, SubView, SubviewPlacement};
+use waterui_core::transition::PropertyTransition;
 use waterui_core::views::ForEach;
 use waterui_graphics::color::signal_color;
 use waterui_layout::AbsoluteLayout;
-use waterui_layout::collection_transition::collection_transition;
 use waterui_layout::container::LazyContainer;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::ZStackLayout;
@@ -321,7 +322,7 @@ fn collection_runtime(list: &List<SelfId<u64>>) -> HeadlessRuntime {
 /// re-composited without any structural rebuild of the rest of the tree.
 #[test]
 fn collection_add_patches_without_rebuild() {
-    let list: List<SelfId<u64>> = List::new();
+    let mut list: List<SelfId<u64>> = List::new();
     let mut runtime = collection_runtime(&list);
     let start = Instant::now();
     let empty = runtime
@@ -355,7 +356,8 @@ fn collection_add_patches_without_rebuild() {
 /// evicted; survivors keep theirs).
 #[test]
 fn collection_remove_patches_without_rebuild() {
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
+    let mut list: List<SelfId<u64>> =
+        List::from(vec![SelfId::new(1), SelfId::new(2), SelfId::new(3)]);
     let mut runtime = collection_runtime(&list);
     let start = Instant::now();
     let three = runtime
@@ -600,7 +602,7 @@ fn dynamic_growth_from_empty_renders_content_without_rebuild() {
 }
 
 /// Each item paints a reactive background driven by `selected` (the selected id
-/// fills `ACTIVE`, the rest fill `INACTIVE`), inside a `collection_transition`,
+/// fills `ACTIVE`, the rest fill `INACTIVE`), inside a `.transition()` collection,
 /// which routes the `VStack` collection to the retained per-item path — the same
 /// path the navigation-drawer active-indicator pill uses. A sibling whose *height*
 /// tracks the same `selected` binding forces a selection change to reflow the
@@ -615,9 +617,11 @@ fn reactive_bg_collection(selected: &Binding<u32>) -> AnyView {
         let background = is_selected
             .select(Color::srgb(200, 90, 160), Color::srgb(228, 224, 236))
             .computed();
-        AnyView::new(().size(120.0, 40.0).background(signal_color(background)))
+        ().size(120.0, 40.0)
+            .background(signal_color(background))
+            .transition(PropertyTransition::opacity())
+            .animation(Animation::linear(Duration::from_millis(1)))
     });
-    let collection = collection_transition(collection, Animation::linear(Duration::from_millis(1)));
     let height = selected
         .clone()
         .map(|s| crate::num_cast::u32_as_f32(s).mul_add(30.0, 40.0));
@@ -684,21 +688,29 @@ fn reused_collection_item_reactive_background_tracks_on_selection() {
     );
 }
 
-/// A `collection_transition` stack whose rows are distinct solid colors, so a
+/// A `.transition(opacity)` stack whose rows are distinct solid colors, so a
 /// snapshot uniquely identifies which rows are visible and at what extent.
 fn transition_color_stack(list: &List<SelfId<u64>>) -> AnyView {
-    let collection = VStack::for_each(list.clone(), |item: SelfId<u64>| {
-        #[allow(clippy::cast_possible_truncation)]
-        let shade = 40 + (*item as u8) * 70;
-        AnyView::new(().size(120.0, 40.0).background(Color::srgb(shade, 90, 160)))
-    });
-    AnyView::new(collection_transition(
-        collection,
-        Animation::linear(Duration::from_millis(1_000)),
-    ))
+    transition_color_stack_with(list, PropertyTransition::opacity())
 }
 
-/// Removing an item from a `collection_transition` collection animates it out:
+/// The same fixture with a caller-chosen transition declaration.
+fn transition_color_stack_with<T: waterui_core::transition::Transition + Clone>(
+    list: &List<SelfId<u64>>,
+    transition: T,
+) -> AnyView {
+    let collection = VStack::for_each(list.clone(), move |item: SelfId<u64>| {
+        #[allow(clippy::cast_possible_truncation)]
+        let shade = 40 + (*item as u8) * 70;
+        ().size(120.0, 40.0)
+            .background(Color::srgb(shade, 90, 160))
+            .transition(transition.clone())
+            .animation(Animation::linear(Duration::from_millis(1_000)))
+    });
+    AnyView::new(collection)
+}
+
+/// Removing an item from a `.transition()` collection animates it out:
 /// a mid-flight frame differs from both the before frame (the row is collapsing)
 /// and the settled frame (it has not finished), and after the animation the
 /// frame is pixel-identical to a fresh build of the final membership — the
@@ -722,7 +734,8 @@ fn collection_membership_exit_animates_then_settles() {
         .expect("ground-truth frame must produce a snapshot");
 
     // Subject: rows 0, 1, 2; remove the middle row and watch it collapse out.
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
+    let mut list: List<SelfId<u64>> =
+        List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
@@ -788,7 +801,7 @@ fn collection_membership_enter_animates_then_settles() {
         .expect("ground-truth frame must produce a snapshot");
 
     // Subject: rows 0 and 2; insert row 1 between them and watch it grow in.
-    let list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
     let builder = {
         let list = list.clone();
         AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
@@ -826,6 +839,214 @@ fn collection_membership_enter_animates_then_settles() {
         settled.rgba8 == expected.rgba8,
         "after the enter animation completes the collection must render \
          pixel-identical to a fresh build of the grown membership"
+    );
+}
+
+/// The bottom-right pixel — the window background the rows draw over.
+fn background_pixel(snapshot: &crate::runner::HeadlessSnapshot) -> [u8; 4] {
+    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
+    let height = usize::try_from(snapshot.height).expect("snapshot height fits usize");
+    let offset = ((height - 1) * width + width - 1) * 4;
+    snapshot.rgba8[offset..offset + 4]
+        .try_into()
+        .expect("a pixel is 4 bytes")
+}
+
+/// The color of the bottom-most solid row band in `snapshot` — the last
+/// collection row's rendered pixels. The color is read back from a real frame
+/// rather than reconstructed from the fixture's `srgb` values, so it matches
+/// whatever the surface's color pipeline produces.
+fn bottom_row_color(snapshot: &crate::runner::HeadlessSnapshot) -> [u8; 4] {
+    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
+    let height = usize::try_from(snapshot.height).expect("snapshot height fits usize");
+    let background = background_pixel(snapshot);
+    for y in (0..height).rev() {
+        let mut counts: std::collections::HashMap<[u8; 4], usize> =
+            std::collections::HashMap::new();
+        for x in 0..width {
+            let offset = (y * width + x) * 4;
+            let pixel: [u8; 4] = snapshot.rgba8[offset..offset + 4]
+                .try_into()
+                .expect("a pixel is 4 bytes");
+            if pixel != background && pixel[3] == 255 {
+                *counts.entry(pixel).or_default() += 1;
+            }
+        }
+        if let Some((color, count)) = counts.into_iter().max_by_key(|(_, count)| *count)
+            && count >= 30
+        {
+            return color;
+        }
+    }
+    panic!("no solid row band found in the frame — the last row never rendered");
+}
+
+/// The first scanline holding at least four pixels of `color`, top to bottom —
+/// the probed row's top edge in this frame. Rows are 120px wide, so an edge's
+/// own scanline carries the row's exact color in quantity while the blended
+/// boundary pixels above it do not.
+fn top_edge(snapshot: &crate::runner::HeadlessSnapshot, color: [u8; 4]) -> Option<usize> {
+    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
+    let height = usize::try_from(snapshot.height).expect("snapshot height fits usize");
+    (0..height).find(|&y| {
+        (0..width)
+            .filter(|&x| {
+                let offset = (y * width + x) * 4;
+                snapshot.rgba8[offset..offset + 4] == color
+            })
+            .count()
+            >= 4
+    })
+}
+
+/// layout-spec.md §4.5: re-inserting an item whose exit is still mid-flight
+/// creates an independent new instance with its own slot and insertion clock —
+/// the departing ghost keeps fading inside its held slot until the removal
+/// clock completes. The bottom row is the probe: while the ghost holds its
+/// slot the sibling does not move; the re-insertion allocates a slot
+/// immediately, so the reversal frame drops the sibling a whole row pitch
+/// instead of nudging it.
+#[test]
+fn collection_membership_exit_reinsertion_adds_an_independent_instance() {
+    let mut list: List<SelfId<u64>> =
+        List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let sibling = bottom_row_color(&before);
+    let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
+
+    // Remove the middle row and let the exit run ~500ms of its 1000ms course:
+    // the ghost holds the departed slot at full size, so the bottom row does
+    // not move while the removal clock runs.
+    let _ = list.remove(1);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-exit frame must produce a snapshot");
+    let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-exit");
+    assert!(
+        mid_edge.abs_diff(resting_edge) <= 1,
+        "~500ms into a 1000ms exit the ghost must still hold the departed slot, \
+         so the bottom row stays at rest (rest {resting_edge}, mid {mid_edge})"
+    );
+
+    // Re-insert the same id before the exit finishes: the reversal frame. The
+    // new instance allocates its slot immediately — the bottom row drops a
+    // full row pitch — while the ghost's clock keeps running independently.
+    list.insert(1, SelfId::new(1));
+    let reversal = runtime
+        .pump_at(true, start + Duration::from_millis(532))
+        .snapshot
+        .expect("reversal frame must produce a snapshot");
+    let reversal_edge =
+        top_edge(&reversal, sibling).expect("the bottom row renders on the reversal frame");
+    assert!(
+        reversal_edge >= mid_edge + 20,
+        "the re-inserted instance must allocate its own slot immediately: the \
+         bottom row drops a row pitch on the reversal frame instead of riding \
+         a resumed presence ({mid_edge} -> {reversal_edge})"
+    );
+
+    // Both clocks then settle at the restored membership: the removal clock
+    // releases the ghost's slot at ~1016ms and the new instance's enter
+    // finishes at ~1532ms.
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    assert!(
+        settled.rgba8 == before.rgba8,
+        "after both clocks settle, the restored membership must render \
+         pixel-identical to the initial rest frame"
+    );
+}
+
+/// layout-spec.md §4.5: removing an item whose enter is still mid-flight
+/// replaces the live entry with a ghost that holds its slot until the removal
+/// clock completes — a fixed-size layout-only slot, so the sibling neither
+/// snaps back nor keeps sliding. Same probe as the exit reversal: the bottom
+/// row's edge already rode the instantly allocated slot down, and the ghost
+/// holds it there for the full clock instead of releasing it early.
+#[test]
+fn collection_membership_enter_reversal_holds_the_allocated_slot() {
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let sibling = bottom_row_color(&before);
+    let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
+
+    // Insert the middle row: the new instance allocates its slot immediately,
+    // pushing the bottom row down a full row pitch while the enter fades in.
+    list.insert(1, SelfId::new(1));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-enter frame must produce a snapshot");
+    let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-enter");
+    assert!(
+        resting_edge + 10 < mid_edge,
+        "~500ms into a 1000ms enter the bottom row must already be displaced \
+         (rest {resting_edge}, mid {mid_edge})"
+    );
+
+    // Remove it again before the enter finishes: the reversal frame. The
+    // ghost holds the same slot the enter had allocated, so the sibling stays
+    // exactly where it was — the removal clock releases it ~1000ms later, not
+    // on this frame.
+    let _ = list.remove(1);
+    let reversal = runtime
+        .pump_at(true, start + Duration::from_millis(532))
+        .snapshot
+        .expect("reversal frame must produce a snapshot");
+    let reversal_edge =
+        top_edge(&reversal, sibling).expect("the bottom row renders on the reversal frame");
+    assert!(
+        reversal_edge.abs_diff(mid_edge) <= 2,
+        "the ghost holds the allocated slot through the reversal frame: the \
+         sibling stays put under the removal clock ({mid_edge} -> \
+         {reversal_edge})"
+    );
+
+    // The removal clock then releases the slot and settles back at the
+    // original membership.
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    assert!(
+        settled.rgba8 == before.rgba8,
+        "after the resumed exit completes, the original membership must render \
+         pixel-identical to the initial rest frame"
     );
 }
 
@@ -933,4 +1154,545 @@ fn nested_applied_filters_capture_inner_before_outer() {
     assert_red(&snapshot, 48, 48);
     assert_blue(&snapshot, 48, 12);
     assert_blue(&snapshot, 12, 48);
+}
+
+/// layout-spec.md §4.5: a removal that lands after a long frame idle still
+/// runs the full 1000ms removal clock — the ghost is born at the reconcile's
+/// own frame instant, so an idle stretch cannot feed a stale collection-wide
+/// tick into the fresh clock and pop the held slot early.
+#[test]
+fn collection_removal_after_idle_holds_the_sibling_slot() {
+    let mut list: List<SelfId<u64>> =
+        List::from(vec![SelfId::new(0), SelfId::new(1), SelfId::new(2)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let sibling = bottom_row_color(&before);
+
+    // A first dirty frame stamps the transition tick; let that insertion
+    // settle, then capture the pre-removal baseline: the sibling edge while
+    // the departing row is still live. The tree then goes idle for ten
+    // seconds with no frames at all.
+    list.insert(1, SelfId::new(3));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let seeded = runtime
+        .pump_at(true, start + Duration::from_millis(1_032))
+        .snapshot
+        .expect("pre-removal frame must produce a snapshot");
+    let resting_edge =
+        top_edge(&seeded, sibling).expect("the bottom row renders before the removal");
+
+    // Remove original row 1 (index 2 after the seed insert) after the idle:
+    // the membership change lands inside one reconcile at ~t0+10s, and its
+    // fresh ghost's first delta must measure from the reconcile's own
+    // instant — not the stale tick. The event frame itself still shows the
+    // ghost holding the departed slot.
+    let _ = list.remove(2);
+    let event = runtime
+        .pump_at(true, start + Duration::from_secs(10))
+        .snapshot
+        .expect("removal event frame must produce a snapshot");
+    let event_edge = top_edge(&event, sibling).expect("the bottom row renders at the event");
+    assert!(
+        event_edge.abs_diff(resting_edge) <= 1,
+        "at the removal event the ghost must already hold the departed slot \
+         (rest {resting_edge}, event {event_edge})"
+    );
+
+    // ~500ms into the 1000ms removal the ghost still holds the departed
+    // slot, so the sibling's top edge has not moved.
+    let mid = runtime
+        .pump_at(
+            true,
+            start + Duration::from_secs(10) + Duration::from_millis(500),
+        )
+        .snapshot
+        .expect("mid-exit frame must produce a snapshot");
+    let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-exit");
+    assert!(
+        mid_edge.abs_diff(resting_edge) <= 1,
+        "~500ms into the removal the ghost must still hold the slot after an \
+         idle stretch (rest {resting_edge}, mid {mid_edge})"
+    );
+
+    // At +1001ms the removal clock has completed: the slot releases and the
+    // sibling moves up a full row pitch.
+    let settled = runtime
+        .pump_at(
+            true,
+            start + Duration::from_secs(10) + Duration::from_millis(1_001),
+        )
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    let settled_edge = top_edge(&settled, sibling).expect("the bottom row renders after the exit");
+    assert!(
+        settled_edge + 20 < resting_edge,
+        "after the removal clock completes the sibling must move up the \
+         released row pitch (rest {resting_edge}, settled {settled_edge})"
+    );
+}
+
+/// An insertion that lands after a long frame idle starts at zero presence:
+/// the new row is absent at the event itself and mid-insertion 500ms later,
+/// never retroactively settled by the idle stretch that preceded it.
+#[test]
+fn collection_insertion_after_idle_starts_absent_then_grows() {
+    let truth_list: List<SelfId<u64>> = List::from(vec![
+        SelfId::new(0),
+        SelfId::new(1),
+        SelfId::new(2),
+        SelfId::new(3),
+    ]);
+    let truth_builder = AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&truth_list));
+    let mut truth_runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        truth_builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let expected = truth_runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("ground-truth frame must produce a snapshot");
+
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(2)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || transition_color_stack(&list))
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let sibling = bottom_row_color(&before);
+    let before_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
+
+    // A first dirty frame stamps the transition tick; then the tree goes
+    // idle for ten seconds with no frames at all — the fresh clock's first
+    // delta must still measure from the reconcile's own instant.
+    list.push(SelfId::new(3));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_032));
+
+    // Insert row 1 after the idle: the slot is allocated on this frame —
+    // the bottom row drops a pitch — but the row itself starts at zero
+    // presence, so the band inside its slot is still the background.
+    list.insert(1, SelfId::new(1));
+    let event = runtime
+        .pump_at(true, start + Duration::from_secs(10))
+        .snapshot
+        .expect("insertion event frame must produce a snapshot");
+    let event_edge = top_edge(&event, sibling).expect("the bottom row renders at the event");
+    assert!(
+        event_edge >= before_edge + 20,
+        "the insertion allocates the new row's slot immediately: the bottom \
+         row drops a row pitch at the event (before {before_edge}, event \
+         {event_edge})"
+    );
+    let band_y = before_edge + 10;
+    let band_event = pixel_at(&event, 200, band_y);
+    let band_bg = background_pixel(&event);
+    assert_eq!(
+        band_event, band_bg,
+        "at the insertion event the new row must start absent: its slot band \
+         still shows the background"
+    );
+
+    // +500ms: the enter is mid-flight — the band blends the row in, so its
+    // contrast against the background is nonzero but still below the settled
+    // contrast read at the same coordinate after the clock completes.
+    let mid = runtime
+        .pump_at(
+            true,
+            start + Duration::from_secs(10) + Duration::from_millis(500),
+        )
+        .snapshot
+        .expect("mid-enter frame must produce a snapshot");
+    let settled = runtime
+        .pump_at(
+            true,
+            start + Duration::from_secs(10) + Duration::from_millis(1_001),
+        )
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    let mid_contrast = rgb_contrast(pixel_at(&mid, 200, band_y), band_bg);
+    let settled_contrast = rgb_contrast(pixel_at(&settled, 200, band_y), band_bg);
+    assert!(
+        mid_contrast > 0 && mid_contrast < settled_contrast,
+        "~500ms into a 1000ms enter the inserted row must be visibly growing \
+         in — contrast {mid_contrast} between 0 and settled {settled_contrast}"
+    );
+    assert_eq!(
+        pixel_at(&settled, 200, band_y),
+        pixel_at(&expected, 200, band_y),
+        "after the enter completes the band matches the settled ground truth"
+    );
+}
+
+/// Squared RGB distance between two pixels — a monotonic blend measure.
+fn rgb_contrast(pixel: [u8; 4], reference: [u8; 4]) -> u32 {
+    pixel
+        .iter()
+        .zip(reference.iter())
+        .take(3)
+        .map(|(&a, &b)| {
+            let diff = i32::from(a) - i32::from(b);
+            u32::try_from(diff * diff).expect("a squared channel difference fits u32")
+        })
+        .sum()
+}
+
+/// The RGBA value of one pixel in `snapshot`.
+fn pixel_at(snapshot: &crate::runner::HeadlessSnapshot, x: usize, y: usize) -> [u8; 4] {
+    let width = usize::try_from(snapshot.width).expect("snapshot width fits usize");
+    let offset = (y * width + x) * 4;
+    snapshot.rgba8[offset..offset + 4]
+        .try_into()
+        .expect("a pixel is 4 bytes")
+}
+
+/// A `.transition(...)` no structural site swaps — here the window root —
+/// fails fast instead of drawing through: it has no clock to run on.
+#[test]
+#[should_panic(expected = "structural transition owner")]
+fn transition_outside_a_structural_site_panics() {
+    let builder = AnyViewBuilder::<AnyView>::new(|| {
+        AnyView::new(
+            ().size(80.0, 40.0)
+                .transition(PropertyTransition::opacity()),
+        )
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let _ = runtime.pump_at(true, Instant::now());
+}
+
+/// A transition still needing pixel capture after reduction is rejected when
+/// the collection starts the removal clock — not drawn through.
+#[derive(Clone, Copy)]
+struct CaptureOnlyTransition;
+
+impl waterui_core::transition::Transition for CaptureOnlyTransition {
+    fn captures_content(&self, _phase: waterui_core::transition::TransitionPhase) -> bool {
+        true
+    }
+}
+
+/// The removal event on a capture-requiring spec panics where the ghost
+/// starts — the capture overlay is water-rs/waterui#1388, never a silent
+/// fallback.
+#[test]
+#[should_panic(expected = "pixel-capture transitions")]
+fn pixel_transition_on_a_collection_item_panics() {
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            transition_color_stack_with(&list, CaptureOnlyTransition)
+        })
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let _ = runtime.pump_at(true, start);
+    let _ = list.remove(0);
+    let _ = runtime.pump_at(true, start + Duration::from_millis(16));
+}
+
+/// With reduce-motion declared, the capture transition's reduced form is a
+/// property transition — opacity still animates and nothing panics.
+#[test]
+fn reduced_pixel_transition_runs_as_opacity() {
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            transition_color_stack_with(&list, CaptureOnlyTransition)
+        })
+    };
+    let mut env = test_environment();
+    env.insert(waterui_core::transition::ReduceMotion(true));
+    let mut runtime =
+        HeadlessRuntime::new_for_tests(env, builder, 400, 640, MinimalTestTheme::default());
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let sibling = bottom_row_color(&before);
+    let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
+    // Probe the departed row's band centre — one pitch above the sibling's
+    // top edge — so the ghost's fading opacity is measured in-band.
+    let band_y = resting_edge.saturating_sub(25);
+    let band_bg = background_pixel(&before);
+    let band_initial = pixel_at(&before, 200, band_y);
+    let opaque_contrast = rgb_contrast(band_initial, band_bg);
+    assert!(
+        opaque_contrast > 0,
+        "the departing row must start opaque inside its band"
+    );
+
+    let _ = list.remove(0);
+    // The reduced spec resolves to opacity: the ghost holds its slot while
+    // fading, so the sibling's top edge is unchanged.
+    let event = runtime
+        .pump_at(true, start + Duration::from_millis(16))
+        .snapshot
+        .expect("removal event frame must produce a snapshot");
+    let event_edge = top_edge(&event, sibling).expect("the bottom row renders at the event");
+    assert!(
+        event_edge.abs_diff(resting_edge) <= 1,
+        "the ghost must hold the departed slot at the event (rest {resting_edge}, event {event_edge})"
+    );
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-exit frame must produce a snapshot");
+    let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-exit");
+    assert!(
+        mid_edge.abs_diff(resting_edge) <= 1,
+        "~500ms into the removal the ghost must still hold the slot (rest {resting_edge}, mid {mid_edge})"
+    );
+    let mid_contrast = rgb_contrast(pixel_at(&mid, 200, band_y), band_bg);
+    assert!(
+        mid_contrast > 0 && mid_contrast < opaque_contrast,
+        "~500ms into the removal the ghost must be partially faded — contrast \
+         {mid_contrast} between 0 and opaque {opaque_contrast}"
+    );
+
+    // After the clock completes the slot releases and the sibling moves up.
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    let settled_edge = top_edge(&settled, sibling).expect("the bottom row renders after the exit");
+    assert!(
+        settled_edge + 20 < resting_edge,
+        "after the reduced removal completes the sibling must move up (rest {resting_edge}, settled {settled_edge})"
+    );
+}
+
+/// A blur transition on a row is realized as a property: halfway through the
+/// removal the ghost still holds its slot and draws blurred — different from
+/// both the rest frame and the settled frame — and the removal then settles
+/// exactly like any other.
+#[test]
+fn blur_transition_on_a_collection_item_blurs_the_ghost() {
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || {
+            transition_color_stack_with(&list, PropertyTransition::blur(4.0))
+        })
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let sibling = bottom_row_color(&before);
+    let resting_edge = top_edge(&before, sibling).expect("the bottom row renders at rest");
+    let _ = list.remove(0);
+    // The ghost's clock is born at the removal frame; +516ms samples a
+    // nonzero radius mid-flight.
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-exit frame must produce a snapshot");
+    assert!(
+        mid.rgba8 != before.rgba8,
+        "halfway through the blur removal the ghost is not drawn at rest"
+    );
+    let mid_edge = top_edge(&mid, sibling).expect("the bottom row renders mid-exit");
+    assert!(
+        mid_edge.abs_diff(resting_edge) <= 1,
+        "the blurred ghost still holds its slot (rest {resting_edge}, mid {mid_edge})"
+    );
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    let settled_edge = top_edge(&settled, sibling).expect("the bottom row renders after the exit");
+    assert!(
+        settled_edge + 20 < resting_edge,
+        "after the blur removal completes the sibling moves up (rest {resting_edge}, \
+         settled {settled_edge})"
+    );
+}
+
+/// A `.transition(...)` inside a type-erased row is owned by the row: the
+/// declaration is claimed from the built row rather than from the declared
+/// view's static type, so the removal animates and settles like a typed row.
+#[test]
+fn transition_inside_an_erased_collection_row_is_owned_by_the_row() {
+    fn erased_rows(list: &List<SelfId<u64>>) -> AnyView {
+        AnyView::new(VStack::for_each(list.clone(), |item: SelfId<u64>| {
+            #[allow(clippy::cast_possible_truncation)]
+            let shade = 40 + (*item as u8) * 70;
+            AnyView::new(
+                ().size(120.0, 40.0)
+                    .background(Color::srgb(shade, 90, 160))
+                    .transition(PropertyTransition::opacity())
+                    .animation(Animation::linear(Duration::from_millis(1_000))),
+            )
+        }))
+    }
+    let truth_list: List<SelfId<u64>> = List::from(vec![SelfId::new(1)]);
+    let mut truth_runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        AnyViewBuilder::<AnyView>::new(move || erased_rows(&truth_list)),
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let expected = truth_runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("ground-truth frame must produce a snapshot");
+
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || erased_rows(&list))
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let _ = list.remove(0);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-exit frame must produce a snapshot");
+    assert!(
+        mid.rgba8 != before.rgba8 && mid.rgba8 != expected.rgba8,
+        "halfway through the removal the erased row's ghost is fading"
+    );
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    assert!(
+        settled.rgba8 == expected.rgba8,
+        "after the removal the stack renders pixel-identical to a fresh build"
+    );
+}
+
+/// A non-virtualized collection (an `AbsoluteLayout` overlay) owns its rows'
+/// transitions the same way: a removed row's ghost fades over the row under
+/// it, then the collection settles to a fresh build of the final membership.
+#[test]
+fn absolute_collection_row_removal_fades_then_settles() {
+    fn overlay_rows(list: &List<SelfId<u64>>) -> AnyView {
+        AnyView::new(zstack((
+            ().size(360.0, 600.0),
+            LazyContainer::new(
+                AbsoluteLayout,
+                ForEach::new(list.clone(), |item: SelfId<u64>| {
+                    let id = u8::try_from(*item % 4).unwrap_or(0);
+                    Color::srgb(40 + id * 50, 90, 160)
+                        .size(80.0, 40.0)
+                        .transition(PropertyTransition::opacity())
+                        .animation(Animation::linear(Duration::from_millis(1_000)))
+                }),
+            ),
+        )))
+    }
+    let truth_list: List<SelfId<u64>> = List::from(vec![SelfId::new(0)]);
+    let mut truth_runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        AnyViewBuilder::<AnyView>::new(move || overlay_rows(&truth_list)),
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let expected = truth_runtime
+        .pump_at(true, Instant::now())
+        .snapshot
+        .expect("ground-truth frame must produce a snapshot");
+
+    let mut list: List<SelfId<u64>> = List::from(vec![SelfId::new(0), SelfId::new(1)]);
+    let builder = {
+        let list = list.clone();
+        AnyViewBuilder::<AnyView>::new(move || overlay_rows(&list))
+    };
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        400,
+        640,
+        MinimalTestTheme::default(),
+    );
+    let start = Instant::now();
+    let before = runtime
+        .pump_at(true, start)
+        .snapshot
+        .expect("initial frame must produce a snapshot");
+    let _ = list.remove(1);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let mid = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("mid-exit frame must produce a snapshot");
+    assert!(
+        mid.rgba8 != before.rgba8 && mid.rgba8 != expected.rgba8,
+        "halfway through the removal the top row's ghost is fading over the row under it"
+    );
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("settled frame must produce a snapshot");
+    assert!(
+        settled.rgba8 == expected.rgba8,
+        "after the removal the overlay renders pixel-identical to a fresh build"
+    );
 }

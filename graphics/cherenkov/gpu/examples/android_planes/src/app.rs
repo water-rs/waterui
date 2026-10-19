@@ -218,7 +218,7 @@ impl Run {
             .expect("surface control from window");
         logcat::line("SurfaceControl \"cherenkov harness\" created");
         let surface = engine
-            .surface(SurfaceControlTarget::new(parent, size))
+            .surface(SurfaceControlTarget::new(parent, size), || {})
             .expect("surface-control surface");
         logcat::line(&format!("surface target {}x{} created", size.0, size.1));
         surface.clear_color(WorkingColor::new([0.01, 0.012, 0.018, 1.0]));

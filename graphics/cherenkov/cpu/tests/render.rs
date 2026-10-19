@@ -20,7 +20,7 @@ const RED: WorkingColor = WorkingColor::new([1., 0., 0., 1.]);
 fn a_half_edge_rect_has_exact_coverage() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()]
@@ -29,7 +29,12 @@ fn a_half_edge_rect_has_exact_coverage() {
     engine.render(FrameTime::now()).expect("render");
     let rb = surface.readback().expect("readback");
     let at = |x: usize, y: usize| rb.pixels[y * 64 + x];
-    assert_eq!(at(20, 20), [1.0, 0.0, 0.0, 1.0], "interior");
+    // Full coverage of an opaque fill writes the paint unchanged.
+    assert_eq!(
+        at(20, 20).map(f32::to_bits),
+        [1.0, 0.0, 0.0, 1.0].map(f32::to_bits),
+        "interior"
+    );
     let left = at(8, 20);
     assert!(
         (left[0] - 0.5).abs() < 1e-6 && (left[3] - 0.5).abs() < 1e-6,
@@ -41,7 +46,8 @@ fn a_half_edge_rect_has_exact_coverage() {
         "right edge: {right:?}"
     );
     // Fully transparent outside.
-    assert_eq!(at(0, 0), [0.0; 4]);
+    // No coverage leaves the cleared zero.
+    assert_eq!(at(0, 0).map(f32::to_bits), [0.0; 4].map(f32::to_bits));
 }
 
 #[test]
@@ -49,7 +55,7 @@ fn linear_f16_is_the_f16_rounding_of_f32() {
     let engine = engine();
     for format in [OffscreenFormat::LinearF32, OffscreenFormat::LinearF16] {
         let surface = engine
-            .surface(Offscreen::new((64, 64), format))
+            .surface(Offscreen::new((64, 64), format), || {})
             .expect("surface");
         surface.update(|tx| {
             tx[surface.root()]
@@ -62,7 +68,8 @@ fn linear_f16_is_the_f16_rounding_of_f32() {
             OffscreenFormat::LinearF32 => assert!((px[3] - 0.5).abs() < 1e-6),
             OffscreenFormat::LinearF16 => {
                 let half = half::f16::from_f32(0.5).to_f32();
-                assert_eq!(px[3], half);
+                // The F16 target stores the f16 rounding the reference computes the same way.
+                assert_eq!(px[3].to_bits(), half.to_bits());
             }
         }
     }
@@ -81,7 +88,7 @@ fn even_odd_leaves_the_centre_of_concentric_squares_empty() {
     let engine = engine();
     let centre = |even_odd: bool| {
         let surface = engine
-            .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+            .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
             .expect("surface");
         let content = surface.record(|c| {
             if even_odd {
@@ -96,15 +103,25 @@ fn even_odd_leaves_the_centre_of_concentric_squares_empty() {
         engine.render(FrameTime::now()).expect("render");
         surface.readback().expect("readback").pixels[32 * 64 + 32]
     };
-    assert_eq!(centre(true), [0.0; 4], "even-odd centre");
-    assert_eq!(centre(false), [1.0, 0.0, 0.0, 1.0], "non-zero centre");
+    // The even-odd hole has zero coverage: the cleared zero.
+    assert_eq!(
+        centre(true).map(f32::to_bits),
+        [0.0; 4].map(f32::to_bits),
+        "even-odd centre"
+    );
+    // Full non-zero coverage writes the opaque paint unchanged.
+    assert_eq!(
+        centre(false).map(f32::to_bits),
+        [1.0, 0.0, 0.0, 1.0].map(f32::to_bits),
+        "non-zero centre"
+    );
 }
 
 #[test]
 fn a_rotated_rects_coverage_sums_to_its_area() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -128,7 +145,7 @@ fn a_rotated_rects_coverage_sums_to_its_area() {
 fn a_half_opacity_group_halves_the_alpha() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|c| {
@@ -152,7 +169,10 @@ fn render_f32(
     body: impl FnOnce(&mut cherenkov::Recorder),
 ) -> Vec<[f32; 4]> {
     let surface = engine
-        .surface(Offscreen::new((width, height), OffscreenFormat::LinearF32))
+        .surface(
+            Offscreen::new((width, height), OffscreenFormat::LinearF32),
+            || {},
+        )
         .expect("surface");
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(body));
@@ -266,6 +286,34 @@ fn a_radial_gradient_interpolates_from_the_centre() {
 }
 
 #[test]
+fn identical_radial_circles_cannot_repeat_or_reflect() {
+    for extend in [Extend::Repeat, Extend::Reflect] {
+        let engine = engine();
+        let grad = RadialGradient {
+            extend,
+            ..RadialGradient::two_point((32.0, 32.0), 16.0, (32.0, 32.0), 16.0)
+                .stop(0.0, RED)
+                .stop(1.0, RED)
+        };
+        let surface = engine
+            .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| {
+                c.fill(Rect::new(0.0, 0.0, 64.0, 64.0), Paint::from(grad.clone()));
+            }));
+        });
+        let Err(err) = engine.render(FrameTime::now()) else {
+            panic!("identical circles rendered under {extend:?}");
+        };
+        assert!(
+            matches!(err, cherenkov::RenderError::IdenticalRadialCircles(e) if e == extend),
+            "{extend:?}: {err}"
+        );
+    }
+}
+
+#[test]
 fn srgb_encoded_interpolation_midpoint_is_not_linear_half() {
     let engine = engine();
     let grad = LinearGradient::new((0.0, 0.0), (64.0, 0.0))
@@ -348,7 +396,7 @@ fn a_glyph_run_renders_and_the_second_frame_hits_the_cache() {
 fn sweep_renders_and_remaining_unsupported_features_report_their_names() {
     let engine = engine();
     let surface = engine
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     let sweep = SweepGradient::new((32.0, 32.0), 0.0, std::f64::consts::TAU)
         .stop(0.0, RED)
@@ -384,7 +432,7 @@ fn sweep_renders_and_remaining_unsupported_features_report_their_names() {
         style: cherenkov::GlyphStyle::Fill,
     };
     let surface2 = engine2
-        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32))
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
         .expect("surface");
     surface2.update(|tx| {
         tx[surface2.root()].content(surface2.record(|c| c.glyphs(run.clone(), RED)));
@@ -400,4 +448,66 @@ fn sweep_renders_and_remaining_unsupported_features_report_their_names() {
         .map(|p| f64::from(p[3]))
         .sum();
     assert!(area > 10.0, "transformed glyph coverage {area}");
+}
+
+/// A static scene records its content again every frame, and the new
+/// lowering takes the swept geometry of the realization it replaces. The
+/// result must be bit-identical to lowering the same content in a fresh
+/// engine, including when only the paint changed between the records.
+#[test]
+fn re_recorded_overlapping_geometry_renders_like_a_fresh_lowering() {
+    // A five-point star filled non-zero overlaps itself, and a thick
+    // zigzag stroke overlaps at its joins: both are swept.
+    let mut star = BezPath::new();
+    for k in 0..5 {
+        let angle = f64::from(k).mul_add(0.8, -0.5) * std::f64::consts::PI;
+        let point = (
+            28.0f64.mul_add(angle.cos(), 32.0),
+            28.0f64.mul_add(angle.sin(), 32.0),
+        );
+        if k == 0 {
+            star.move_to(point);
+        } else {
+            star.line_to(point);
+        }
+    }
+    star.close_path();
+    let mut zigzag = BezPath::new();
+    zigzag.move_to((6.0, 50.0));
+    zigzag.line_to((30.0, 10.0));
+    zigzag.line_to((34.0, 58.0));
+    zigzag.line_to((58.0, 12.0));
+    let draw = |color: WorkingColor| {
+        let (star, zigzag) = (star.clone(), zigzag.clone());
+        move |c: &mut cherenkov::Recorder| {
+            c.fill(star, color);
+            c.stroke(zigzag, Stroke::new(9.0), color);
+        }
+    };
+    let first = WorkingColor::new([0.0, 0.0, 1.0, 0.5]);
+    let second = WorkingColor::new([1.0, 0.0, 0.0, 0.5]);
+
+    let engine = engine();
+    let surface = engine
+        .surface(Offscreen::new((64, 64), OffscreenFormat::LinearF32), || {})
+        .expect("surface");
+    let mut frames = Vec::new();
+    for color in [first, first, second] {
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(draw(color)));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        frames.push(surface.readback().expect("readback").pixels);
+    }
+    for (frame, color) in frames.iter().zip([first, first, second]) {
+        let fresh = render_f32(&self::engine(), 64, 64, draw(color));
+        assert!(
+            frame
+                .iter()
+                .flatten()
+                .map(|v| v.to_bits())
+                .eq(fresh.iter().flatten().map(|v| v.to_bits())),
+            "a re-recorded frame differs from a fresh lowering"
+        );
+    }
 }

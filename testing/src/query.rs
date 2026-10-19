@@ -1,4 +1,5 @@
 use hydrolysis::HeadlessRuntime;
+use waterui::component::text_field::ContentType;
 
 use crate::app::SemanticApp;
 use crate::driver::RuntimeDriver;
@@ -105,9 +106,27 @@ impl<R: RuntimeDriver> Query<'_, R> {
         self
     }
 
+    /// Restricts the query to nodes with exactly matching placeholders.
+    pub fn placeholder(mut self, placeholder: impl Into<String>) -> Self {
+        self.selector = self.selector.placeholder(placeholder);
+        self
+    }
+
+    /// Restricts the query to nodes whose placeholders contain the provided text.
+    pub fn placeholder_contains(mut self, placeholder: impl Into<String>) -> Self {
+        self.selector = self.selector.placeholder_contains(placeholder);
+        self
+    }
+
     /// Includes or excludes hidden nodes.
     pub fn hidden(mut self, hidden: bool) -> Self {
         self.selector = self.selector.hidden(hidden);
+        self
+    }
+
+    /// Restricts the query to nodes declaring the given content type.
+    pub fn content_type(mut self, content_type: ContentType) -> Self {
+        self.selector = self.selector.content_type(content_type);
         self
     }
 

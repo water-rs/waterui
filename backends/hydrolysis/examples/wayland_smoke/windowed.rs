@@ -69,7 +69,8 @@ pub fn main() {
     // `run` installs the style's tokens (fonts, colors) over the framework
     // defaults before the first frame; the app-level environment carries none.
     run(
-        app(Environment::new()),
-        hydrolysis_m3::Material3::defaults(),
+        app,
+        Environment::new(),
+        hydrolysis::testing::TestStyle::new(),
     );
 }

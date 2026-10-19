@@ -27,7 +27,7 @@ fn shader_paint_uses_shape_coverage_and_presentation_time() -> Result<(), Box<dy
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader =
         engine.shader(ShaderSource::wgsl(include_str!("shaders/paint.wgsl")).animated())?;
-    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     let layer = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].push(&layer);
@@ -76,7 +76,7 @@ fn producer_color_helpers_match_working_space_and_alpha() -> Result<(), Box<dyn 
 {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.shader(ShaderSource::wgsl(include_str!("shaders/srgb.wgsl")))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 4), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 4), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
@@ -113,7 +113,7 @@ fn live_shader_operands_keep_other_cached_texture_uses() -> Result<(), Box<dyn s
     let shader = engine.shader(ShaderSource::wgsl(
         "@fragment fn main() -> @location(0) vec4<f32> { return params[0]; }",
     ))?;
-    let surface = wait!(engine.surface(Offscreen::new((16, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((16, 8), OffscreenFormat::LinearF16), || {}))?;
     let value = nami::binding([1.0_f32, 0.0, 0.0, 1.0]);
     let id = shader.id();
     surface.update(|tx| {
@@ -151,7 +151,7 @@ split_test! {
 fn clipped_paths_keep_full_geometry_shader_coordinates() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.shader(ShaderSource::wgsl("@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> { return vec4<f32>(uv.x, 0.0, 0.0, 1.0); }"))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let mut path = cherenkov::kurbo::BezPath::new();
     path.move_to((-8.0, 0.0));
     path.line_to((8.0, 0.0));
@@ -186,7 +186,7 @@ fn removed_shader_reports_an_error_instead_of_panicking() -> Result<(), Box<dyn 
     let shader = engine.shader(ShaderSource::wgsl(
         "@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
     ))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let id = shader.id();
     drop(shader);
     surface.update(|tx| {
@@ -223,7 +223,7 @@ fn shader_strokes_and_degenerate_geometry_keep_ordinary_coverage()
     let shader = engine.shader(ShaderSource::wgsl(
         "@fragment fn main() -> @location(0) vec4<f32> { return vec4<f32>(1.0); }",
     ))?;
-    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     for geometry in 0..3 {
         let mut outputs = Vec::new();
         for paint in [
@@ -266,7 +266,7 @@ split_test! {
 fn shader_stroke_coordinates_include_the_outline() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
     let shader = engine.shader(ShaderSource::wgsl("@fragment fn main(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> { return vec4<f32>(uv.x, 0.0, 0.0, 1.0); }"))?;
-    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.stroke(
