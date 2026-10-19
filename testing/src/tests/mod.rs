@@ -84,6 +84,7 @@ fn node(
         label: label.map(ToOwned::to_owned),
         identifier: None,
         value: value.map(ToOwned::to_owned),
+        placeholder: None,
         bounds: None,
         enabled,
         selected: false,
@@ -979,6 +980,35 @@ fn tap_gesture_publishes_click_action_on_the_wrapped_node() {
         1,
         "only the tappable view claims a button element"
     );
+}
+
+/// A `TextField` prompt publishes the `aria-placeholder` semantic on the
+/// field's own node (#1071): before the snapshot carried the property, a
+/// field with a prompt and one without produced identical snapshots.
+#[test]
+fn text_field_prompt_publishes_placeholder_on_the_node() {
+    use waterui::prelude::*;
+
+    let email = Binding::container(Str::from(""));
+    let plain = Binding::container(Str::from(""));
+    let mut app = ui().mount(move || {
+        vstack((
+            TextField::new(text("Email"), &email).prompt("name@example.com"),
+            TextField::new(text("Plain"), &plain),
+        ))
+    });
+
+    let prompted = app.query().role(Role::TEXT_INPUT).label("Email").single();
+    assert_eq!(prompted.node().placeholder(), Some("name@example.com"));
+    // The placeholder is a first-class selector predicate, the way `label` and
+    // `value` are.
+    app.query()
+        .role(Role::TEXT_INPUT)
+        .placeholder("name@example.com")
+        .assert_exists();
+
+    let unprompted = app.query().role(Role::TEXT_INPUT).label("Plain").single();
+    assert_eq!(unprompted.node().placeholder(), None);
 }
 
 /// Explicit `.color(...)` is a view-tree attribute: on the semantic pipeline

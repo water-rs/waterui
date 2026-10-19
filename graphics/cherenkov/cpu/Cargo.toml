@@ -25,6 +25,9 @@ rayon = "1"
 rustc-hash = "2"
 tracing = "0.1"
 
+[target.'cfg(any(target_vendor = "apple", target_os = "android"))'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 cherenkov = { path = "..", features = ["testing"] }
 cherenkov-oracle = { path = "../oracle" }

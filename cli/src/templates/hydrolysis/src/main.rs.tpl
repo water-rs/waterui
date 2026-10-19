@@ -94,6 +94,9 @@ fn main() {
     initialize_cef_runtime();
     {% endif %}
     let env = waterui::configure_environment!(waterui::env::Environment::new());
-    let app = {{ ctx.crate_name_ident() }}::app(env);
-    hydrolysis::run(app, hydrolysis_m3::Material3::defaults());
+    hydrolysis::run(
+        {{ ctx.crate_name_ident() }}::app,
+        env,
+        hydrolysis_m3::Material3::defaults(),
+    );
 }
