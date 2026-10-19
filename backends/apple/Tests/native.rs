@@ -125,6 +125,7 @@ fn trials() -> Vec<Trial> {
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
         tests.extend(safe_area::trials());
+        tests.extend(offset::trials());
     }
     tests.extend(migration::trials());
     tests.extend(owner_lifetimes::trials());
@@ -1220,6 +1221,69 @@ mod resolve {
             (gap - 8.0).abs() < 0.5,
             "icon-to-title gap — expected 8 pt, got {gap}"
         );
+    }
+}
+
+/// `Metadata<Offset>` on `UIKit`: the content moves visually through its
+/// `transform`, and the wrapper's layout pass positions its bounds and
+/// center. `UIKit` resolves `frame`/`center` writes under a non-identity
+/// transform through the autoresizing-mask constraints it synthesizes for
+/// a translated view — a re-layout can absorb part of the translation and
+/// the content lands short of its declared offset (#2713).
+#[cfg(target_os = "ios")]
+mod offset {
+    use cocoa_ui::view;
+    use waterui::style::Offset;
+    use waterui_apple::native_test_support::{mount_uikit, render_environment};
+    use waterui_backend_core::AnyView;
+    use waterui_core::Metadata;
+
+    use super::mtm;
+
+    fn t(name: &'static str, body: fn()) -> libtest_mimic::Trial {
+        libtest_mimic::Trial::test(format!("offset::{name}"), move || {
+            body();
+            Ok(())
+        })
+    }
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![t(
+            "relayout_keeps_the_full_translation",
+            relayout_keeps_the_full_translation,
+        )]
+    }
+
+    /// Two layout passes must leave the declared translation whole and the
+    /// content centered in the wrapper's untransformed space — the state the
+    /// offset contract resolves to, whatever path the passes took there.
+    fn relayout_keeps_the_full_translation() {
+        let mount = mount_uikit(
+            mtm(),
+            AnyView::new(Metadata::new("x", Offset::new(-120.0, -160.0))),
+            &render_environment(),
+        );
+        for _ in 0..2 {
+            mount.window.layoutIfNeeded();
+        }
+        let wrapper = view::retain_base(mount.content.view());
+        let content = &view::subviews(&wrapper)[0];
+        let bounds = view::bounds(&wrapper);
+
+        // The anchor sits at the wrapper's midpoint; the transform carries
+        // the offset on top of it.
+        let position = content.layer().position();
+        assert_eq!(position.x, bounds.size.width / 2.0);
+        assert_eq!(position.y, bounds.size.height / 2.0);
+
+        let transform = content.transform();
+        assert_eq!(transform.tx, -120.0);
+        assert_eq!(transform.ty, -160.0);
+
+        // A manually positioned, transform-moved child must not let the
+        // autoresizing mask pin its frame — the pinned frame is the channel
+        // the absorption came through.
+        assert!(!content.translatesAutoresizingMaskIntoConstraints());
     }
 }
 
