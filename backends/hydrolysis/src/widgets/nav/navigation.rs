@@ -1840,9 +1840,9 @@ impl NavigationStackRenderState {
     /// own record pass — the stack's slot places them at its full size
     /// either way.
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
-        self.root.as_mut().is_some_and(
-            crate::renderer::navigation_state::StackPage::take_layout_dirty_if_built,
-        )
+        self.root
+            .as_mut()
+            .is_some_and(crate::renderer::navigation_state::StackPage::take_layout_dirty_if_built)
     }
 }
 

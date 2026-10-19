@@ -478,7 +478,7 @@ impl View for DriftingRow {
 /// retained sub-view keeps the scene at its first box forever
 /// (water-rs/waterui#1957).
 #[test]
-fn retained_subview_relayouts_when_a_scene_leafs_natural_size_moves() {
+fn retained_subview_relayouts_when_a_scene_leaves_natural_size_moves() {
     use crate::renderer::{RenderContext, tree::RetainedSubview};
     use kurbo::{Affine, Rect as SceneRect};
     use waterui_graphics::SceneView;
@@ -511,7 +511,11 @@ fn retained_subview_relayouts_when_a_scene_leafs_natural_size_moves() {
             .size()
             .width
     };
-    assert_eq!(scene_width(), 100.0, "the scene mounts at its natural width");
+    assert_eq!(
+        scene_width(),
+        100.0,
+        "the scene mounts at its natural width"
+    );
     natural.set(200.0);
     assert!(
         retained.take_layout_dirty(),

@@ -63,8 +63,7 @@ impl ProgressRenderState {
     /// feed the indicator's, so an enclosing retained sub-view must see them
     /// (water-rs/waterui#1957).
     pub(crate) fn take_layout_dirty(&mut self) -> bool {
-        self.label.take_layout_dirty_if_built()
-            | self.value_label.take_layout_dirty_if_built()
+        self.label.take_layout_dirty_if_built() | self.value_label.take_layout_dirty_if_built()
     }
 }
 
