@@ -316,6 +316,217 @@ fn retained_subview_relayouts_when_a_layout_signal_invalidates() {
     );
 }
 
+/// A `Widget` leaf measures from the `RetainedSubview`s it owns — a toggle's
+/// label sub-view is not part of the retained node's own tree, so a layout
+/// signal firing *inside* that label marks the label's cells only. The leaf's
+/// `take_layout_dirty` arm must fold the mark out or the outer sub-view keeps
+/// the toggle at its first measured box (water-rs/waterui#1957).
+#[test]
+fn retained_subview_relayouts_when_a_widget_leaf_label_invalidates() {
+    use crate::renderer::{RenderContext, tree::RetainedSubview};
+    use kurbo::{Affine, Rect as SceneRect};
+    use waterui_controls::label::Label;
+    use waterui_controls::toggle::toggle;
+    use waterui_layout::frame::Frame;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let max_width = nami::Binding::container(120.0f32);
+    let constraint = max_width.clone();
+    let on = nami::Binding::container(false);
+    let trace = Rc::new(RefCell::new(Vec::new()));
+    let probe_trace = Rc::clone(&trace);
+    // The toggle always wraps its label in a `RetainedSubview`; a custom-content
+    // label keeps that sub-view in charge of the probe's layout.
+    let mut retained = RetainedSubview::new(AnyView::new(toggle(
+        Label::new("flag", move || {
+            Frame::new(ProbeContent {
+                vertical: false,
+                trace: Rc::clone(&probe_trace),
+                builds: Rc::new(Cell::new(0)),
+            })
+            .max_width(constraint.clone())
+        }),
+        &on,
+    )));
+    let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds: rect,
+    };
+    let proposal = ProposalSize::new(Some(800.0), Some(600.0));
+    under_root_record(&mut renderer, |renderer| {
+        retained.place(renderer, ctx, &env, proposal, rect, None);
+    });
+    assert_eq!(
+        trace.borrow().last().expect("mount places").proposal.width,
+        Some(120.0)
+    );
+    max_width.set(400.0);
+    assert!(
+        retained.take_layout_dirty(),
+        "the label sub-view's layout mark must reach the enclosing retained \
+         sub-view through the widget leaf"
+    );
+    under_root_record(&mut renderer, |renderer| {
+        retained.place(renderer, ctx, &env, proposal, rect, None);
+    });
+    assert_eq!(
+        trace
+            .borrow()
+            .last()
+            .expect("the widget's label mark must re-place the retained subtree")
+            .proposal
+            .width,
+        Some(160.0),
+        "max_width 120 → 400 must re-measure the label: the 160-wide probe is \
+         no longer capped, while a stale first box would still report 120"
+    );
+}
+
+/// Scene content whose natural width is driven by a cell — the drift a
+/// retained sub-view must notice (water-rs/waterui#1957).
+struct Drifting {
+    natural: Rc<Cell<f32>>,
+}
+
+impl waterui_graphics::SceneContent for Drifting {
+    fn build_scene(
+        &mut self,
+        _recorder: &mut waterui_graphics::draw::Recorder,
+        _resources: &mut waterui_graphics::RecordingResources<'_>,
+        _width: f32,
+        _height: f32,
+    ) -> bool {
+        false
+    }
+
+    fn intrinsic_size(&self) -> Option<Size> {
+        Some(Size::new(self.natural.get(), 50.0))
+    }
+
+    fn rebuild_for_engine(&mut self) {}
+}
+
+/// A two-child row that places each child at the size it measures under an
+/// open proposal and records every placement — the scene's own frame is the
+/// observable a stale box would freeze.
+#[derive(Debug)]
+struct RecordingRow {
+    trace: Trace,
+}
+
+impl Layout for RecordingRow {
+    fn size_that_fits(&self, proposal: ProposalSize, children: &[&dyn SubView]) -> Size {
+        let sizes = children
+            .iter()
+            .map(|child| child.measure(proposal).size)
+            .collect::<Vec<_>>();
+        Size::new(
+            sizes.iter().map(|size| size.width).sum(),
+            sizes.iter().map(|size| size.height).fold(0.0, f32::max),
+        )
+    }
+
+    fn place(
+        &self,
+        bounds: Rect,
+        _proposal: ProposalSize,
+        children: &[&dyn SubView],
+    ) -> Vec<SubviewPlacement> {
+        let open = ProposalSize::UNSPECIFIED;
+        let mut cursor = bounds.x();
+        let placements: Vec<_> = children
+            .iter()
+            .map(|child| {
+                let size = child.measure(open).size;
+                let placement = SubviewPlacement::new(
+                    Rect::new(Point::new(cursor, bounds.y()), size),
+                    ProposalSize::new(Some(size.width), Some(size.height)),
+                );
+                cursor += size.width;
+                placement
+            })
+            .collect();
+        self.trace.borrow_mut().push(Observation {
+            proposal: open,
+            frames: placements.iter().map(|placement| placement.frame).collect(),
+        });
+        placements
+    }
+}
+
+/// `[scene | color]` — the row's first frame is the scene's laid-out box.
+struct DriftingRow {
+    scene: waterui_graphics::SceneView,
+    trace: Trace,
+}
+
+impl View for DriftingRow {
+    fn body(self, _env: &Environment) -> impl View {
+        FixedContainer::new(
+            RecordingRow { trace: self.trace },
+            (self.scene, Color::srgb_hex("#2563EB")),
+        )
+    }
+}
+
+/// A `SceneView` leaf's measured box comes from `intrinsic_size()` — a value,
+/// not a consumable mark — so a natural-size change after mount (a reloaded
+/// image's viewBox) leaves no flag behind. The leaf's `take_layout_dirty` arm
+/// must re-probe the last proposal and report the drift, or the enclosing
+/// retained sub-view keeps the scene at its first box forever
+/// (water-rs/waterui#1957).
+#[test]
+fn retained_subview_relayouts_when_a_scene_leafs_natural_size_moves() {
+    use crate::renderer::{RenderContext, tree::RetainedSubview};
+    use kurbo::{Affine, Rect as SceneRect};
+    use waterui_graphics::SceneView;
+
+    let env = test_environment();
+    let mut renderer = test_renderer();
+    let natural = Rc::new(Cell::new(100.0f32));
+    let trace = Rc::new(RefCell::new(Vec::new()));
+    let mut retained = RetainedSubview::new(AnyView::new(DriftingRow {
+        scene: SceneView::new(Drifting {
+            natural: Rc::clone(&natural),
+        }),
+        trace: Rc::clone(&trace),
+    }));
+    let rect = SceneRect::new(0.0, 0.0, 800.0, 600.0);
+    let ctx = RenderContext {
+        local: Affine::IDENTITY,
+        bounds: rect,
+    };
+    let proposal = ProposalSize::new(Some(800.0), Some(600.0));
+    under_root_record(&mut renderer, |renderer| {
+        retained.place(renderer, ctx, &env, proposal, rect, None);
+    });
+    let scene_width = || {
+        trace
+            .borrow()
+            .last()
+            .expect("the retained subtree must be placed")
+            .frames[0]
+            .size()
+            .width
+    };
+    assert_eq!(scene_width(), 100.0, "the scene mounts at its natural width");
+    natural.set(200.0);
+    assert!(
+        retained.take_layout_dirty(),
+        "a changed natural size must surface as layout drift through the leaf"
+    );
+    under_root_record(&mut renderer, |renderer| {
+        retained.place(renderer, ctx, &env, proposal, rect, None);
+    });
+    assert_eq!(
+        scene_width(),
+        200.0,
+        "the scene's new natural width must re-place the row at the same rect"
+    );
+}
+
 #[test]
 fn scroll_preserves_its_unconstrained_content_axis() {
     let env = test_environment();

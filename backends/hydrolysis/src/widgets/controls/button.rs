@@ -63,6 +63,15 @@ impl ButtonRenderState {
         }
     }
 
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the button's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view
+            .as_mut()
+            .is_some_and(RetainedSubview::take_layout_dirty_if_built)
+    }
+
     /// Create the general (non-title) label sub-view at tree-build time. A plain
     /// `TitleOnly` label stays `None` and is rendered as styled text each frame.
     /// The sub-view is created unbuilt and unpainted: the theme supplies the
@@ -369,6 +378,16 @@ impl MenuRenderState {
             let icon_only = self.icon_only;
             subview.map_source(|view| button_label_view(color, view, icon_only));
             subview.ensure_built(renderer, env);
+        }
+    }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the trigger's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        match &mut self.label {
+            MenuLabel::View(subview) => subview.take_layout_dirty_if_built(),
+            MenuLabel::Title(_) => false,
         }
     }
 }
