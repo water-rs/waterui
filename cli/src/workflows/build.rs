@@ -2209,7 +2209,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         };
 
         let shared_runtime = reported_shared_runtime(&reported)?;
-        let shared_runtime_libraries = reported_shared_runtimes(&reported)?;
+        let shared_runtime_libraries = reported_shared_runtimes(&reported);
         let app_library = match self.project.as_ref() {
             Some(project) => app_library_artifact(&reported, &project.root().join("Cargo.toml"))?,
             None => None,
@@ -3126,9 +3126,7 @@ pub(crate) fn compiler_artifacts(
 /// image set: the `waterui-dylib` top image plus each layer dylib of the
 /// layered chain (water-rs/waterui#1615). Selected by `crate_types` alone, so
 /// no layer name is ever hardcoded; sorted for a deterministic staging order.
-fn reported_shared_runtimes(
-    artifacts: &[cargo_metadata::Artifact],
-) -> Result<Vec<PathBuf>, RustBuildError> {
+fn reported_shared_runtimes(artifacts: &[cargo_metadata::Artifact]) -> Vec<PathBuf> {
     let mut reported = Vec::new();
     for artifact in artifacts {
         if !artifact
@@ -3147,7 +3145,7 @@ fn reported_shared_runtimes(
     }
     reported.sort();
     reported.dedup();
-    Ok(reported)
+    reported
 }
 
 fn reported_shared_runtime(
@@ -4133,10 +4131,8 @@ mod tests {
             ),
         );
 
-        let runtimes = reported_shared_runtimes(
-            &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
-        )
-        .expect("runtime set");
+        let runtimes =
+            reported_shared_runtimes(&crate::build::compiler_artifacts(stdout.as_bytes()).unwrap());
         assert_eq!(runtimes, vec![top, foundation, graphics]);
     }
 
