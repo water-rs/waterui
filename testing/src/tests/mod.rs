@@ -942,6 +942,46 @@ fn a11y_identifier_flows_from_modifier_to_selector() {
     app.query().identifier("login.submit").tap();
 }
 
+/// A tap gesture with no naming scope of its own still publishes an
+/// activatable element: the wrapped node takes the `Button` claim's `Click`
+/// and `Focus` actions and its activation, so a tappable `text("T")` reads
+/// the way a `Button` does instead of serializing identically to plain
+/// text (water-rs/waterui#1070).
+#[test]
+fn tap_gesture_publishes_click_action_on_the_wrapped_node() {
+    let taps = Rc::new(Cell::new(0_u32));
+    let taps_for_view = Rc::clone(&taps);
+    let mut app = ui().mount(move || {
+        let taps_for_view = Rc::clone(&taps_for_view);
+        vstack((
+            text("T").on_tap(move || {
+                taps_for_view.set(taps_for_view.get() + 1);
+            }),
+            text("Plain"),
+        ))
+    });
+
+    let tappable = app.query().role(Role::BUTTON).label("T").single();
+    assert!(
+        tappable
+            .node()
+            .actions()
+            .contains(&accesskit::Action::Click),
+        "the wrapped node advertises Click"
+    );
+    tappable.tap(&mut app);
+    assert_eq!(taps.get(), 1, "the click action runs the tap handler");
+
+    // The untapped sibling stays inert — a plain label with no actions.
+    let plain = app.query().role(Role::LABEL).label("Plain").single();
+    assert_eq!(plain.node().actions(), []);
+    assert_eq!(
+        app.query().role(Role::BUTTON).all().len(),
+        1,
+        "only the tappable view claims a button element"
+    );
+}
+
 /// A `TextField` prompt publishes the `aria-placeholder` semantic on the
 /// field's own node (#1071): before the snapshot carried the property, a
 /// field with a prompt and one without produced identical snapshots.

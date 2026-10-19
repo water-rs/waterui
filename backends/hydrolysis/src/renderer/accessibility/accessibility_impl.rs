@@ -2153,6 +2153,22 @@ impl SemanticCore {
         self.drain_scope_donations(scope, node_id)
     }
 
+    /// Collapse a tap gesture's synthesized claim around exactly one wrapped
+    /// node into that node — the wrapped element keeps its own identity and
+    /// any real action it registered, and takes the claim's `Click`, `Focus`
+    /// and activation (water-rs/waterui#1070). No bounds travel with it: a
+    /// claim the gesture synthesized carries the frame it was assigned, and
+    /// the wrapped node's own bounds are already the honest answer.
+    ///
+    /// A no-op unless the claim has exactly one semantic child — zero or
+    /// several leave the claim's node standing as the composite's
+    /// representative.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn collapse_synthesized_claim(&mut self, node_id: AccessibilityNodeId) {
+        self.accessibility
+            .collapse_single_child_container(node_id, None);
+    }
+
     #[cfg(feature = "accessibility")]
     #[expect(
         clippy::option_if_let_else,
