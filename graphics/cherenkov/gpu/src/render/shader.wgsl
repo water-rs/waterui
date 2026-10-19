@@ -558,11 +558,14 @@ fn backdrop_sample(q: vec2<f32>) -> vec4<f32> {
 // `floor(level)` and `ceil(level)`, mixed by `fract(level)`.
 fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32> {
     let lc = clamp(level, 0.0, backdrop_levels - 1.0);
-    let k0 = u32(floor(lc));
-    let k1 = min(k0 + 1u, u32(backdrop_levels) - 1u);
+    let base = floor(lc);
+    let k0 = u32(base);
     let lo = backdrop_sample_at(q, k0);
+    let phase = lc - base;
+    if phase == 0.0 { return lo; }
+    let k1 = min(k0 + 1u, u32(backdrop_levels) - 1u);
     let hi = backdrop_sample_at(q, k1);
-    return mix(lo, hi, lc - floor(lc));
+    return mix(lo, hi, phase);
 }
 
 // The effect entry's pixel input: the device-space sample point, the

@@ -124,6 +124,14 @@ scaffold-packages = [
     "waterui-gtk",
     "waterui-winui",
 ]
+# Third-party crates the facade re-exports into its public API, mapped to
+# the facade path the re-export answers at. A project that also depends on
+# one of these directly must resolve the same package the framework does:
+# a second copy in the graph means the types the two sides share stop
+# matching, and cargo reports the split as hundreds of type errors that
+# never name a version. The `water` CLI fails on that divergence before it
+# reaches the compiler.
+reexported-dependencies = { anyhow = "waterui::Error", bytemuck = "waterui::graphics::bytemuck", cherenkov = "waterui::graphics::cherenkov", cherenkov-cpu = "waterui::graphics::cherenkov_cpu", cherenkov-gpu = "waterui::graphics::cherenkov_gpu", cherenkov-record = "waterui::graphics::draw", color = "waterui::graphics::Color", executor-core = "waterui::task", filtrate = "waterui::graphics::filtrate", filtrate-core = "waterui::media::Filter", keyboard-types = "waterui::graphics::input", nami = "waterui::reactive", nami-core = "waterui::reactive", native-executor = "waterui::task", pastey = "waterui::pastey", serde = "waterui::webview::serde", serde_json = "waterui::webview::serde_json", suiteki = "waterui::Str", tracing = "waterui::log", url = "waterui::media::Url", waterkit-haptic = "waterui::Intensity", wgpu = "waterui::graphics::wgpu" }
 
 [lib]
 path = "facade.rs"
@@ -132,7 +140,7 @@ path = "facade.rs"
 version = "0.5.1"
 edition = "2024"
 authors = ["Lexo Liu"]
-rust-version = "1.95"
+rust-version = "1.99"
 license = "Apache-2.0 OR MIT"
 readme = "README.md"
 repository = "https://github.com/water-rs/waterui"
@@ -704,3 +712,22 @@ waterui-math = { git = "https://github.com/water-rs/math", branch = "dev" }
 # `dev` implements 0.5's (water-rs/suiteki#29). Drop once a release carries
 # it.
 suiteki = { git = "https://github.com/water-rs/suiteki", branch = "dev" }
+# `homedir` (via axoupdater) and `clipboard-rs` (via waterkit-clipboard) pin
+# `windows` 0.61 and 0.59 — both inside gpu-allocator's `>=0.58, <=0.62`
+# range, so any relock can settle gpu-allocator on a different `windows`
+# than wgpu-hal's and split the ID3D12 types at the dx12 boundary
+# (#2797). The forks' `windows-0.62-signed` branch carries only the
+# `windows = "0.62"` requirement bump (homedir also renames
+# `Error::from_win32` to `from_thread`); drop the pins once releases admit
+# 0.62.
+homedir = { git = "https://github.com/water-rs/homedir", branch = "windows-0.62-signed" }
+clipboard-rs = { git = "https://github.com/water-rs/clipboard-rs", branch = "windows-0.62-signed" }
+# tree-sitter-md 0.5.3's wasm32 build compiles tree-sitter-language's
+# `wasm/unsupported/tree-sitter-0.26` shims, which #error against the
+# tree-sitter 0.27 this workspace carries — the grammar needs its build
+# adapted to 0.27, proposed upstream as
+# tree-sitter-grammars/tree-sitter-markdown#265 and unreleased. The patch
+# is that PR's branch on our own fork, so `markdown`/`flow-markdown` build
+# for the web (water-rs/waterui#1349). Drop it once a `tree-sitter-md`
+# release includes the fix.
+tree-sitter-md = { git = "https://github.com/lexoliu/tree-sitter-markdown", branch = "wasm-tree-sitter-0.27" }

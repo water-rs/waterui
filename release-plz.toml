@@ -302,9 +302,15 @@ version_group = "waterui"
 
 # Tooling
 
-# The CLI releases on its own version line — it is not in the waterui
-# version group — under `cli/v*` tags (bare `v*` belongs to the
-# facade, `hydrolysis-v*` to Hydrolysis). Publishing stays in-band: this
+# The CLI is in the waterui version group: it depends on group crates
+# through workspace `^` requirements, so an independent line could ship a
+# patch release whose dependency edge crosses a `0.x` minor — a breaking
+# move for consumers that no published-version bump on the CLI itself
+# would signal (#2688). Sharing the group version makes every release
+# that moves those edges a minor bump by construction. Tag naming stays
+# namespaced — `cli/v*` tags (bare `v*` belongs to the facade,
+# `hydrolysis-v*` to Hydrolysis) — so release.yml can tell the CLI's
+# release from the framework's. Publishing stays in-band: this
 # repository's `release` job runs on the `main` push itself, so crates.io
 # trusted publishing issues it an OIDC token, and release-plz publishes
 # `waterui-cli` in dependency order after the workspace crates it
@@ -314,5 +320,6 @@ version_group = "waterui"
 # the `water` binary builds.
 [[package]]
 name = "waterui-cli"
+version_group = "waterui"
 git_release_name = "cli/v{{ version }}"
 git_tag_name = "cli/v{{ version }}"

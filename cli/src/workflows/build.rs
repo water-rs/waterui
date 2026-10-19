@@ -347,6 +347,28 @@ pub fn configure_generated_crate_compilation(command: &mut Command) {
     command.env("CARGO_INCREMENTAL", "0");
 }
 
+/// The environment variable that asks every Cargo build the CLI drives to
+/// write a `--timings` HTML report.
+///
+/// Cargo has no config key or environment variable for `--timings` (an
+/// unknown `build.timings` key is silently ignored), so a caller that wants
+/// the report for the builds behind `water build`/`water package`/`water run`
+/// has no other way to reach the flag. The nightly fresh-user e2e sets it to
+/// record where a cold app build spends its time; reports land in the
+/// target directory's `cargo-timings/`.
+pub const CARGO_TIMINGS_ENV: &str = "WATER_CARGO_TIMINGS";
+
+/// Whether [`CARGO_TIMINGS_ENV`] is set to a truthy value (`1`, `true`,
+/// `yes`, `on`, case-insensitive) in `host`'s environment.
+fn cargo_timings_requested(host: &crate::toolchain::Host) -> bool {
+    host.env(CARGO_TIMINGS_ENV).is_some_and(|value| {
+        matches!(
+            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 /// Prepend the managed tool directories (`~/.water/tools/<name>/<version>`)
 /// to the build's `PATH` so build scripts resolve a pinned `dxc`, JDK, and
 /// friends by name — the user never edits `PATH`. A no-op when nothing is
@@ -2283,6 +2305,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             .args(cargo_target.cargo_args(crate_type_override))
             .args(["--target", self.triple.to_string().as_str()])
             .args(framework.then_some("--locked"))
+            .args(cargo_timings_requested(&self.host).then_some("--timings"))
             .current_dir(&self.path);
 
         // A managed crate builds outside the project, so Cargo's config
@@ -3705,6 +3728,33 @@ mod tests {
         executable_suffix, lib_extension_for_triple, reported_shared_runtime,
         resolve_dxc_runtime_in, resolve_rust_standard_library_in,
     };
+
+    #[test]
+    fn cargo_timings_follow_the_truthy_environment_switch() {
+        let cases = [
+            (Some("1"), true),
+            (Some("true"), true),
+            (Some(" YES "), true),
+            (Some("on"), true),
+            (Some("0"), false),
+            (Some("false"), false),
+            (Some(""), false),
+            (None, false),
+        ];
+        for (value, expected) in cases {
+            let vars: Vec<(&str, &str)> = value
+                .map(|value| (super::CARGO_TIMINGS_ENV, value))
+                .into_iter()
+                .collect();
+            let host = crate::toolchain::Host::new(Vec::<std::path::PathBuf>::new(), vars);
+            assert_eq!(
+                super::cargo_timings_requested(&host),
+                expected,
+                "{}={value:?}",
+                super::CARGO_TIMINGS_ENV
+            );
+        }
+    }
 
     fn shared_runtime_artifact_json(
         manifest: &std::path::Path,

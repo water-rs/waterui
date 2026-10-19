@@ -269,18 +269,23 @@ jobs:
 
       - name: Install cargo-dist
         if: ${{ !matrix.container }}
-        uses: taiki-e/install-action@v2
+        uses: ./.github/actions/install-tool
         with:
           tool: cargo-dist@${{ env.DIST_VERSION }}
+          path: ~/.cargo/bin/cargo-dist*
 
       # cargo-binstall picks the glibc build for a gnu host; dist's own
       # installer measures the container's glibc and takes the static musl
-      # build when it is too old.
+      # build when it is too old. A bare `curl | sh` has no retry budget —
+      # the flags carry the same minutes-scale resilience install-action
+      # gives the non-container leg, so a transient CDN 5xx cannot kill the
+      # release build (#1116).
       - name: Install cargo-dist (container)
         if: matrix.container
         shell: bash
         run: |
           curl --proto '=https' --tlsv1.2 -LsSf \
+            --connect-timeout 30 --retry 8 --retry-delay 10 --retry-all-errors \
             "https://github.com/axodotdev/cargo-dist/releases/download/v${{ env.DIST_VERSION }}/cargo-dist-installer.sh" | sh
 
       # The manifest goes to stdout; the global build reads it back from
@@ -325,9 +330,10 @@ jobs:
           ref: ${{ env.TAG }}
 
       - name: Install cargo-dist
-        uses: taiki-e/install-action@v2
+        uses: ./.github/actions/install-tool
         with:
           tool: cargo-dist@${{ env.DIST_VERSION }}
+          path: ~/.cargo/bin/cargo-dist*
 
       - name: Download build artifacts
         uses: actions/download-artifact@v4
@@ -412,6 +418,23 @@ jobs:
             target/distrib/*.zip
             target/distrib/*.sha256
             target/distrib/sha256.sum
+            target/distrib/waterui-cli-installer.sh
+            target/distrib/waterui-cli-installer.ps1
+
+      # The documented installer URL needs a location that names the CLI
+      # release line: this repository's `releases/latest` can be the
+      # framework's, and the archived water-rs/cli repository receives no
+      # new releases. `cli-latest` is a permanent release this step keeps
+      # carrying the newest CLI installers — `make_latest: false` keeps it
+      # from ever becoming the repository's latest release, and axoupdater's
+      # release listing drops it because `cli-latest` is not a version tag.
+      - name: Republish the installers under cli-latest
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cli-latest
+          name: water CLI installer (latest)
+          make_latest: false
+          files: |
             target/distrib/waterui-cli-installer.sh
             target/distrib/waterui-cli-installer.ps1
 

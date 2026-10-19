@@ -95,8 +95,10 @@ fn nested_when_inside_a_when_payload_materializes() {
     assert!(pump_until_settled(&mut runtime).is_some());
     outer.set(true);
     let update = pump_until_settled(&mut runtime).expect("the payload republishes the tree");
+    // The banner row carries `on_tap`, so its element now reports `Button` —
+    // a bare tap gesture claims an activatable node (water-rs/waterui#1070).
     let (_, banner) =
-        find_by_label(&update, Role::Label, "banner").expect("the outer payload materialized");
+        find_by_label(&update, Role::Button, "banner").expect("the outer payload materialized");
     let bounds = banner.bounds().expect("the row has bounds");
 
     // The inner flip is driven through the gesture path on the payload row.
