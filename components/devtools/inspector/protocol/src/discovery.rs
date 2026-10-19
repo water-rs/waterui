@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// What a running application publishes about its inspector endpoint.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[expect(
     clippy::exhaustive_structs,
     reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
@@ -39,6 +39,20 @@ pub struct Advertisement {
     pub addr: SocketAddr,
     /// Token the endpoint requires.
     pub token: String,
+}
+
+// The token is a credential: the file carries it to whoever is allowed to
+// read the file; diagnostics are not.
+impl std::fmt::Debug for Advertisement {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Advertisement")
+            .field("pid", &self.pid)
+            .field("app_name", &self.app_name)
+            .field("backend", &self.backend)
+            .field("addr", &self.addr)
+            .field("token", &"[redacted]")
+            .finish()
+    }
 }
 
 impl Advertisement {
@@ -284,6 +298,30 @@ mod tests {
             addr: "127.0.0.1:23106".parse().expect("a valid address"),
             token: String::from("token"),
         }
+    }
+
+    /// The token is a credential: `Debug` carries the advertised
+    /// identity — pid, name, backend, address — never the secret value.
+    #[test]
+    fn the_debug_form_never_shows_the_token() {
+        let mut advertised = advertisement(1234);
+        advertised.token = String::from("s3cret-advertisement-token");
+        let rendered = format!("{advertised:?}");
+        assert!(
+            !rendered.contains("s3cret-advertisement-token"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("1234"), "{rendered}");
+        assert!(rendered.contains("Gallery"), "{rendered}");
+        assert!(rendered.contains("hydrolysis"), "{rendered}");
+        assert!(rendered.contains("23106"), "{rendered}");
+        // `Debug` redacts the readout only — the wire and on-disk form still
+        // carry the real token, which is how the client authenticates.
+        let serialized = serde_json::to_value(&advertised).expect("serialization");
+        assert_eq!(
+            serialized["token"], "s3cret-advertisement-token",
+            "{serialized}"
+        );
     }
 
     #[test]

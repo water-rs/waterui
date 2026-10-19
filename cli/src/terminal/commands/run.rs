@@ -1603,7 +1603,7 @@ const fn platform_name(platform: TargetPlatform) -> &'static str {
     }
 }
 
-const fn backend_name(backend: TargetBackend) -> &'static str {
+pub(super) const fn backend_name(backend: TargetBackend) -> &'static str {
     match backend {
         TargetBackend::Apple => "Apple",
         TargetBackend::Gtk4 => "GTK4",
@@ -1660,7 +1660,7 @@ fn validate_log_pipeline_args(
 
 /// Handle a device event.
 ///
-fn handle_device_event(
+pub(super) fn handle_device_event(
     shell: &Shell,
     host: &waterui_cli::toolchain::Host,
     event: DeviceEvent,
@@ -1816,6 +1816,26 @@ mod tests {
             run_profile(&run_args(&["--profiling"]), TargetBackend::Hydrolysis),
             BuildProfile::Profiling
         );
+    }
+
+    /// Legacy assignments can reach the parser before workflow validation;
+    /// Debug must hide the whole declaration while retaining device details.
+    #[test]
+    fn the_args_debug_hides_legacy_assignments_after_parsing() {
+        let args = run_args(&[
+            "--platform",
+            "android",
+            "--device",
+            "pixel-9-pro",
+            "--env",
+            "WATERUI_INSPECTOR_TOKEN=s3cret-runtime-token",
+        ]);
+        let rendered = format!("{args:?}");
+        assert!(!rendered.contains("s3cret-runtime-token"), "{rendered}");
+        assert!(!rendered.contains("WATERUI_INSPECTOR_TOKEN"), "{rendered}");
+        assert!(rendered.contains("env_declarations: 1"), "{rendered}");
+        assert!(rendered.contains("pixel-9-pro"), "{rendered}");
+        assert!(rendered.contains("Android"), "{rendered}");
     }
 
     #[test]

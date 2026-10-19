@@ -145,7 +145,7 @@ impl LogLevel {
 }
 
 /// Options for running an application on a device
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct RunOptions {
     /// # Note
     ///
@@ -162,6 +162,24 @@ pub struct RunOptions {
     /// If true, stream all native platform logs (`NSLog`, `print`, etc.), not just `WaterUI` logs.
     /// This filters by process ID instead of subsystem, which is noisier but includes all output.
     native_logs: bool,
+}
+
+// Environment values are where credentials such as the inspector's session
+// token travel to the child: the names are printable, the values are not.
+impl std::fmt::Debug for RunOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunOptions")
+            .field(
+                "env_vars",
+                &self
+                    .env_vars
+                    .keys()
+                    .collect::<std::collections::BTreeSet<_>>(),
+            )
+            .field("log_level", &self.log_level)
+            .field("native_logs", &self.native_logs)
+            .finish()
+    }
 }
 
 impl RunOptions {
@@ -2584,6 +2602,19 @@ mod tests {
 
     use smol::channel::unbounded;
 
+    /// Environment values are where credentials travel — `Debug` names
+    /// the variables without spelling their values.
+    #[test]
+    fn run_options_debug_names_env_vars_without_their_values() {
+        let mut options = super::RunOptions::new();
+        options.insert_env_var(
+            "WATERUI_INSPECTOR_TOKEN".to_string(),
+            "s3cret-env-value".to_string(),
+        );
+        let rendered = format!("{options:?}");
+        assert!(!rendered.contains("s3cret-env-value"), "{rendered}");
+        assert!(rendered.contains("WATERUI_INSPECTOR_TOKEN"), "{rendered}");
+    }
     #[cfg(unix)]
     use super::test_support::{ProcessGroupGuard, term_ignoring_fixture};
     use super::{
