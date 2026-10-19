@@ -495,9 +495,6 @@ impl HeadlessRuntime {
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
         let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-        ));
         // The application's fonts, built once: the platform's collection plus
         // the staged fonts directory, exactly as the windowed runners load
         // them.
@@ -506,6 +503,17 @@ impl HeadlessRuntime {
         // environment instead of enumerating the system's fonts for itself.
         let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
+        // The capture service mounts its subtree under a snapshot of the
+        // assembled environment — the theme tokens, hooks and font
+        // collection a window's subtree resolves — so it must be installed
+        // last (water-rs/waterui#2703).
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::new(
+                Rc::clone(&theme),
+                env.clone(),
+                family_resolution,
+            ),
+        ));
 
         // Headless binaries (preview, tests) have no platform runner to install
         // a tracing subscriber; honor `RUST_LOG` here so they stay debuggable.

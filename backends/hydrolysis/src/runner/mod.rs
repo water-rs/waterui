@@ -371,15 +371,23 @@ pub fn run(app: impl FnOnce(Environment) -> App, env: Environment, style: impl c
     env.insert(HydrolysisTextContextMenuMode::Overlay);
     crate::theme::install_theme_tokens(&mut env, Some(&style));
     let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
-    env.insert(waterui_core::ViewRenderer::new(
-        crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-    ));
     // The application's fonts, discovered once. Every window's renderer is
     // seeded from this collection, and a self-drawn component that typesets
     // text itself reads it out of the environment instead of enumerating the
     // system's fonts for itself.
     let fonts = crate::text::fonts::native_collection(&env);
     fonts.clone().install(&mut env);
+    // The capture service mounts its subtree under a snapshot of the
+    // assembled environment — the theme tokens, hooks and font collection a
+    // window's subtree resolves — so it must be installed last
+    // (water-rs/waterui#2703).
+    env.insert(waterui_core::ViewRenderer::new(
+        crate::view_renderer::HydrolysisViewRenderer::new(
+            Rc::clone(&theme),
+            env.clone(),
+            FontFamilyResolution::Lenient,
+        ),
+    ));
     let shortcuts = env
         .get::<MenuShortcutRegistry>()
         .expect("install_headless_window_managers seeds MenuShortcutRegistry")
