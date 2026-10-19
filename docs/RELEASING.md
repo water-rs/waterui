@@ -60,9 +60,10 @@ For a release that carries new names — `cherenkov`, `cherenkov-record`,
 are the current set — claim each name from a maintainer machine ahead of the
 release:
 
-1. Publish an empty 0.0.0 for the name — `cargo publish -p <name>` on a
-   checkout whose manifest declares `version = "0.0.0"` — which registers the
-   name on crates.io without shipping real content.
+1. Publish an empty placeholder crate under the name at 0.0.0 — a scratch
+   `cargo new --lib <name>` with `version = "0.0.0"`, a description and the
+   license fields, published with the `cargo login` already on that machine —
+   which registers the name on crates.io without shipping real content.
 2. Configure trusted publishing for it on crates.io
    (`https://crates.io/crates/<name>/settings`, repository `water-rs/waterui`,
    workflow `release.yml`).
