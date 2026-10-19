@@ -248,7 +248,6 @@ fn bounds(
                 local,
                 font,
                 glyph,
-                origin,
                 size,
             } => {
                 let font = &fonts[font];
@@ -259,9 +258,7 @@ fn bounds(
                     continue;
                 };
                 (
-                    *local
-                        * Affine::translate((f64::from(origin[0]), f64::from(origin[1])))
-                        * Affine::scale(f64::from(*size)),
+                    *local * Affine::scale(f64::from(*size)),
                     decoded.em,
                 )
             }

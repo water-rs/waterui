@@ -7519,16 +7519,15 @@ impl GpuRenderer {
                 em,
                 width,
                 height,
-                texels,
+                upload,
             } => {
                 if !self.bitmaps.contains_key(&key) {
                     let image = create_gpu_image(
                         &self.device,
                         &self.queue,
                         "bitmap glyph",
-                        width,
-                        height,
-                        &texels,
+                        (width, height),
+                        &upload,
                     );
                     self.bitmaps.insert(key, GpuBitmap { image, em });
                 }
@@ -10803,51 +10802,31 @@ fn upload_bands(row: u64, rows: u32, limit: u64) -> impl Iterator<Item = (u32, u
     })
 }
 
-fn image_texels(
-    pixels: &[u8],
-    color_space: cherenkov::ImageColorSpace,
-    premultiplied: bool,
-) -> Vec<u8> {
-    let mut data = Vec::with_capacity(pixels.len() * 2);
-    for px in pixels.as_chunks::<4>().0 {
-        // Quantized codes un-premultiply to at most 1.0.
-        image_storage::push_working_f16(
-            px.map(|v| f64::from(v) / 255.0),
-            color_space,
-            premultiplied,
-            1.0,
-            &mut data,
-        );
-    }
-    data
-}
-
 fn create_gpu_image(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     label: &'static str,
-    width: u32,
-    height: u32,
-    texels: &[u8],
+    (width, height): (u32, u32),
+    data: &image_storage::Upload<'_>,
 ) -> GpuImage {
     let (texture, view) = create_target(
         device,
         label,
         (width, height),
-        image_usage(device, WORKING_FORMAT, (width, height)),
-        WORKING_FORMAT,
+        image_usage(device, data.format, (width, height)),
+        data.format,
     );
     write_texels(
         device,
         queue,
         label,
         &texture,
-        WORKING_FORMAT,
+        data.format,
         (width, height),
-        texels,
+        &data.bytes,
     );
     GpuImage {
-        sampling_flags: 0,
+        sampling_flags: data.flags,
         texture,
         view,
         width,
