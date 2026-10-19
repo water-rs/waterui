@@ -2477,6 +2477,14 @@ mod gpu_surface {
                 capture_opening_over_a_failed_hold_balances,
             ),
             Trial::test(
+                "gpu_surface::a_scope_end_after_teardown_settles_quietly",
+                a_scope_end_after_teardown_settles_quietly,
+            ),
+            Trial::test(
+                "gpu_surface::a_scope_end_beyond_the_orphaned_count_still_panics",
+                a_scope_end_beyond_the_orphaned_count_still_panics,
+            ),
+            Trial::test(
                 "gpu_surface::a_failed_child_answers_the_terminal_capture_outcome_once",
                 a_failed_child_answers_the_terminal_capture_outcome_once,
             ),
@@ -2684,6 +2692,47 @@ mod gpu_surface {
         assert!(
             !mounted.first_paint_participation(),
             "the failed hold survives the scope's open and close"
+        );
+        Ok(())
+    }
+
+    /// A capture's registration can owe the surface an `end` after the
+    /// mount is gone — a frame still in flight settles on the main
+    /// queue whenever the GPU finishes with it, which may follow the
+    /// owner's teardown. Two open scopes deepen the count teardown
+    /// orphans; both late ends then settle quietly instead of tripping
+    /// the balance assert a live surface answers.
+    pub fn a_scope_end_after_teardown_settles_quietly() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        mounted.begin_capture(Rc::new(|| {}));
+        mounted.begin_capture(Rc::new(|| {}));
+        // Unmounts mid-scope and delivers both owed ends — a panic here
+        // is the pre-fix crash a late-settling registration produced.
+        mounted.unmount_then_end_captures(2);
+        Ok(())
+    }
+
+    /// The orphaned count keeps the balance honest: an end beyond what
+    /// teardown recorded is still the unbalanced scope the assert
+    /// names, not a quiet drop.
+    pub fn a_scope_end_beyond_the_orphaned_count_still_panics() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        mounted.begin_capture(Rc::new(|| {}));
+        // One scope was open at teardown; the second late end is owed
+        // by nobody.
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                mounted.unmount_then_end_captures(2);
+            }))
+            .is_err(),
+            "a scope end beyond the orphaned count still panics"
         );
         Ok(())
     }
@@ -3200,8 +3249,15 @@ mod filtered {
                 && !filtered.render_in_flight()),
             "the first frame's capture defers on the nested filter's pending setup"
         );
+        // A redraw the scene child requested during the flight legitimately
+        // resumes the link for one recapture through the `Deferred` arm —
+        // the contract is the settled state, not the first sampled instant.
+        // `paused && nothing in flight` is unreachable inside that resumed
+        // window, and unreachable entirely if the link recaptured at display
+        // rate: under that bug the pump times out instead of passing.
         assert!(
-            filtered.link_paused(),
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.link_paused()
+                && !filtered.render_in_flight()),
             "a live-context deferral leaves the link paused — no display-rate recapture"
         );
         assert!(
