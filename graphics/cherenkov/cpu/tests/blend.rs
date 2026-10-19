@@ -1,9 +1,9 @@
 //! Group compositing is clipped as an operation, including destination modes.
 #![cfg(not(target_arch = "wasm32"))]
-use cherenkov::kurbo::Rect;
+use cherenkov::kurbo::{Circle, Rect, RoundedRect};
 use cherenkov::{
-    BlendMode, BlendSpace, Color, Draw, Engine, FrameTime, Group, Offscreen, OffscreenFormat, Srgb,
-    WorkingColor,
+    BlendMode, BlendSpace, Color, Draw, Engine, FrameTime, Group, LinearGradient, Offscreen,
+    OffscreenFormat, Paint, Srgb, WorkingColor,
 };
 use cherenkov_cpu::{Raster, RasterConfig};
 
@@ -297,6 +297,69 @@ fn clipped_blend_layer_scales_source_by_clip_coverage() {
         [0.0_f32; 4].map(f32::to_bits),
         "clear inside clip"
     );
+}
+
+/// #2908's original failing shape: a non-separable blended layer under a
+/// clip compositing HDR content. The blended source's achromatic HDR
+/// greys (`channel = x = l > 1`) made `clip_color`'s `x > 1` clip divide
+/// by `x - l = 0` — 140-146 NaN pixels per corpus scene
+/// (`blend-{color,hue,saturation}-clip-hdr`). The shared affine domain
+/// the modes now evaluate over keeps every channel finite.
+#[test]
+fn nonseparable_blends_under_a_clip_on_hdr_stay_finite() {
+    for mode in [
+        BlendMode::Color,
+        BlendMode::Hue,
+        BlendMode::Saturation,
+        BlendMode::Luminosity,
+    ] {
+        let engine = Engine::<Raster>::new(RasterConfig::default()).expect("engine");
+        let surface = engine
+            .surface(Offscreen::new((24, 24), OffscreenFormat::LinearF32), || {})
+            .expect("surface");
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|c| {
+                c.fill(
+                    Rect::new(0.0, 0.0, 24.0, 24.0),
+                    Paint::from(
+                        LinearGradient::new((0.0, 0.0), (24.0, 24.0))
+                            .stop(0.0, WorkingColor::new([4.0, 0.5, 0.0, 1.0]))
+                            .stop(1.0, WorkingColor::new([0.0, 2.0, 4.0, 1.0])),
+                    ),
+                );
+            }));
+        });
+        let layer = surface.layer();
+        surface.update(|tx| {
+            tx[&layer].blend(mode);
+            tx[&layer].clip(RoundedRect::new(4.0, 4.0, 20.0, 20.0, 4.0));
+            tx[surface.root()].push(&layer);
+        });
+        surface.update(|tx| {
+            tx[&layer].content(surface.record(|c| {
+                // The gradient crosses achromatic HDR grey — the exact
+                // input whose `x = l` collapsed to 0/0.
+                c.fill(
+                    Circle::new((12.0, 12.0), 10.0),
+                    Paint::from(
+                        LinearGradient::new((6.0, 6.0), (18.0, 18.0))
+                            .stop(0.0, WorkingColor::new([2.0, 4.0, 0.5, 1.0]))
+                            .stop(1.0, WorkingColor::new([16.0, 16.0, 16.0, 1.0])),
+                    ),
+                );
+            }));
+        });
+        engine.render(FrameTime::now()).expect("render");
+        let pixels = surface.readback().expect("pixels").pixels;
+        for (i, px) in pixels.iter().enumerate() {
+            assert!(
+                px.iter().all(|c| c.is_finite()),
+                "{mode:?} wrote non-finite pixel {i} (x={}, y={}): {px:?}",
+                i % 24,
+                i / 24
+            );
+        }
+    }
 }
 
 /// Two overlapping opaque `PlusLighter` layers: coverage saturates at 1,
