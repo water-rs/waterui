@@ -275,8 +275,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
                 vec![kit::tap(host, count as usize, buttons, {
                     move |state, recognizer| {
                         if state == GestureState::Ended {
-                            let location =
-                                recognizer.locationInView(recognizer.view().as_deref());
+                            let location = recognizer.locationInView(recognizer.view().as_deref());
                             on_recognized(GesturePayload::Tap(TapEvent::new(
                                 gesture_point(location.x, location.y),
                                 count,
@@ -291,8 +290,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
                 vec![kit::click(host, count as usize, buttons, {
                     move |state, recognizer| {
                         if state == GestureState::Ended {
-                            let location =
-                                recognizer.locationInView(recognizer.view().as_deref());
+                            let location = recognizer.locationInView(recognizer.view().as_deref());
                             on_recognized(GesturePayload::Tap(TapEvent::new(
                                 gesture_point(location.x, location.y),
                                 count,
@@ -312,8 +310,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
                 vec![kit::long_press(host, seconds, buttons, {
                     move |state, recognizer| {
                         if state == GestureState::Began {
-                            let location =
-                                recognizer.locationInView(recognizer.view().as_deref());
+                            let location = recognizer.locationInView(recognizer.view().as_deref());
                             on_recognized(GesturePayload::LongPress(LongPressEvent::new(
                                 gesture_point(location.x, location.y),
                                 duration,
@@ -328,8 +325,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
                 vec![kit::press(host, seconds, buttons, {
                     move |state, recognizer| {
                         if state == GestureState::Began {
-                            let location =
-                                recognizer.locationInView(recognizer.view().as_deref());
+                            let location = recognizer.locationInView(recognizer.view().as_deref());
                             on_recognized(GesturePayload::LongPress(LongPressEvent::new(
                                 gesture_point(location.x, location.y),
                                 duration,
@@ -410,8 +406,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
                         } else {
                             0.0
                         };
-                        let center =
-                            recognizer.locationInView(recognizer.view().as_deref());
+                        let center = recognizer.locationInView(recognizer.view().as_deref());
                         on_recognized(GesturePayload::Magnification(MagnificationEvent::new(
                             phase,
                             gesture_point(center.x, center.y),
@@ -452,8 +447,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
                             }
                             _ => (scale.get(), 0.0),
                         };
-                        let center =
-                            recognizer.locationInView(recognizer.view().as_deref());
+                        let center = recognizer.locationInView(recognizer.view().as_deref());
                         on_recognized(GesturePayload::Magnification(MagnificationEvent::new(
                             phase,
                             gesture_point(center.x, center.y),
@@ -484,8 +478,7 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
                         } else {
                             0.0
                         };
-                        let center =
-                            $rec.locationInView($rec.view().as_deref());
+                        let center = $rec.locationInView($rec.view().as_deref());
                         on_recognized(GesturePayload::Rotation(RotationEvent::new(
                             phase,
                             gesture_point(center.x, center.y),
@@ -689,7 +682,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use waterui::gesture::{DragGesture, LongPressGesture, PointerButtons, TapGesture};
+    use waterui::gesture::PointerButtons;
+    #[cfg(target_os = "macos")]
+    use waterui::gesture::{DragGesture, LongPressGesture, TapGesture};
 
     #[test]
     fn button_mask_carries_pointer_button_bits_verbatim() {
@@ -706,10 +701,7 @@ mod tests {
     #[test]
     fn phase_of_maps_the_recognizer_states() {
         assert_eq!(phase_of(GestureState::Began), Some(GesturePhase::Started));
-        assert_eq!(
-            phase_of(GestureState::Changed),
-            Some(GesturePhase::Updated)
-        );
+        assert_eq!(phase_of(GestureState::Changed), Some(GesturePhase::Updated));
         assert_eq!(phase_of(GestureState::Ended), Some(GesturePhase::Ended));
         assert_eq!(
             phase_of(GestureState::Cancelled),
@@ -770,12 +762,11 @@ mod tests {
         assert_eq!(opened.velocity, GesturePoint::new(100.0, -50.0));
         assert_eq!(opened.button, PointerButton::Primary);
 
-        let updated = report(GestureState::Changed, (25.0, 0.0))
-            .expect("an open drag reports its changes");
+        let updated =
+            report(GestureState::Changed, (25.0, 0.0)).expect("an open drag reports its changes");
         assert_eq!(updated.phase, GesturePhase::Updated);
 
-        let ended = report(GestureState::Ended, (25.0, 0.0))
-            .expect("an open drag reports its end");
+        let ended = report(GestureState::Ended, (25.0, 0.0)).expect("an open drag reports its end");
         assert_eq!(ended.phase, GesturePhase::Ended);
         assert!(
             report(GestureState::Ended, (25.0, 0.0)).is_none(),
@@ -842,8 +833,12 @@ mod tests {
         assert!(!activates_on_press(&drag));
         assert!(!activates_on_press(&hold.clone().then(drag.clone())));
         assert!(activates_on_press(&hold.clone().then(tap.clone())));
-        assert!(activates_on_press(&hold.clone().simultaneously_with(tap.clone())));
-        assert!(!activates_on_press(&hold.clone().simultaneously_with(drag.clone())));
+        assert!(activates_on_press(
+            &hold.clone().simultaneously_with(tap.clone())
+        ));
+        assert!(!activates_on_press(
+            &hold.clone().simultaneously_with(drag.clone())
+        ));
         assert!(activates_on_press(&drag.clone().exclusively_before(tap)));
         assert!(!activates_on_press(&hold.exclusively_before(drag)));
     }
