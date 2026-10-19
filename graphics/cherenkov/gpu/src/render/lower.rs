@@ -631,7 +631,6 @@ impl ContentData {
         // clear them too or orphaned entries outlive every compaction
         // check (#119).
         self.storage.refs.clear();
-        self.storage.gpu_paths.clear();
         previous
     }
 
@@ -705,6 +704,18 @@ struct PreparedGpu {
 }
 
 impl EmissionStorage {
+    fn retain_gpu_paths(&mut self, ops: &[Op]) {
+        self.gpu_paths.retain(|index, _| {
+            matches!(
+                ops.get(*index),
+                Some(Op::Path {
+                    gpu_candidate: true,
+                    ..
+                })
+            )
+        });
+    }
+
     /// Reclaim obsolete ranges after patches without rebuilding valid leaves.
     fn compact(&mut self, emissions: &mut [Realization<Emission>]) {
         if self.templates.is_empty() {
@@ -3861,6 +3872,7 @@ impl<'a> Lowering<'a> {
         }
         if let Some(content) = caches.get_mut(&id) {
             let (ops, emissions, source) = content.retained.prepared_source();
+            content.storage.retain_gpu_paths(ops);
             content.storage.compact(emissions);
             let changed = self.ops(
                 source,
@@ -5977,6 +5989,8 @@ mod tests {
 
     #[test]
     fn automatic_coverage_keeps_gpu_emissions_frame_local() {
+        use std::sync::Arc;
+
         let (device, _queue) = device_and_queue().expect("coverage test device");
         let atlas = Atlas::new(&device, u64::MAX);
         let fonts = FxHashMap::default();
@@ -6016,10 +6030,12 @@ mod tests {
                 paint: ResolvedPaint::Solid([1.0; 4]),
             };
             let mut cache = Realization::default();
-            let mut storage = EmissionStorage::default();
+            let mut retained = ContentData::new(cherenkov::Picture::record(|_| {}));
+            let mut previous_geometry = None;
             // CPU pending atlas patches are applied by the renderer before reuse.
             // GPU paths have no retained realization and can be lowered anew.
             for _ in 0..if gpu { 2 } else { 1 } {
+                retained.storage.retain_gpu_paths(std::slice::from_ref(&op));
                 let mut frame = Frame::default();
                 let mut anchors = AnchorScratch::default();
                 let mut raster = path::EmitScratch::new();
@@ -6036,7 +6052,7 @@ mod tests {
                         (0, &op),
                         None,
                         &mut cache,
-                        &mut storage,
+                        &mut retained.storage,
                         &glyphs,
                         &cherenkov::DisplayList::default(),
                     )
@@ -6055,6 +6071,15 @@ mod tests {
                 assert_eq!(cache.valid, !gpu);
                 if gpu {
                     assert!(cache.data.is_none(), "GPU emissions cannot be retained");
+                    if let Some(previous) = &previous_geometry {
+                        assert!(
+                            Arc::ptr_eq(previous, &retained.storage.gpu_paths[&0].path.elements),
+                            "re-recording unchanged content must reuse prepared geometry"
+                        );
+                    }
+                    previous_geometry =
+                        Some(Arc::clone(&retained.storage.gpu_paths[&0].path.elements));
+                    retained.replace(cherenkov::Picture::record(|_| {}));
                 }
             }
         }
