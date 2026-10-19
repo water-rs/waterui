@@ -65,28 +65,23 @@ impl Lowering<'_, '_> {
             * Affine::translate(shadow.offset);
         let edges = flatten_edges(placement * path, FLATTEN_TOL);
         let (edges, rule) = resolve_edges(edges, rule);
-        let mut coverage = coverage_mask(&edges, rule, width, height);
+        // Every parallel pass installs on the renderer's pool: the
+        // closures capture only the bound locals — `Send` inputs — never
+        // `self` (its borrowed fields are not `Send`).
+        let (pool, level) = (self.pool, self.level);
+        let mut coverage = pool.install(|| coverage_mask(&edges, rule, width, height));
         if shadow.spread != 0.0 {
             let taps = spread_taps([ma, mb, mc, md], shadow.spread, f64::from(i32::MAX))?;
-            coverage = convolve(
-                self.level,
-                &coverage,
-                width,
-                height,
-                &taps,
-                if shadow.spread > 0.0 { 1 } else { 2 },
-            );
+            coverage = pool.install(|| {
+                convolve(level, &coverage, width, height, &taps, {
+                    if shadow.spread > 0.0 { 1 } else { 2 }
+                })
+            });
         }
         if shadow.sigma > 0.0 {
             for axis in [[ma, mb], [mc, md]] {
-                coverage = convolve(
-                    self.level,
-                    &coverage,
-                    width,
-                    height,
-                    &gaussian_taps(axis, sigma, f64::from(i32::MAX))?,
-                    0,
-                );
+                let taps = gaussian_taps(axis, sigma, f64::from(i32::MAX))?;
+                coverage = pool.install(|| convolve(level, &coverage, width, height, &taps, 0));
             }
         }
         // Retain only visible output. The padded contributors are temporary.

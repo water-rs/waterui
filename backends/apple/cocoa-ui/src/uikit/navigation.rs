@@ -24,7 +24,7 @@ use std::fmt;
 use std::rc::Rc;
 
 use block2::RcBlock;
-use objc2::rc::Retained;
+use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_foundation::{NSArray, NSObjectProtocol, NSString};
@@ -748,6 +748,34 @@ pub fn first_button(view: &objc2_ui_kit::UIView) -> Option<Retained<UIButton>> {
     None
 }
 
+/// Mirrors `button`'s enabled state onto `item`.
+///
+/// Seeds `isEnabled` from the button's current value, then keeps the item
+/// in step through the button's enabled handler. The handler holds the
+/// item weakly — the item's action already retains the button, so a
+/// strong hold back would cycle.
+///
+/// # Panics
+///
+/// When `button` is not a [`CocoaUiButton`]: every `UIButton` this crate
+/// constructs is the subclass, so a plain `UIButton` found in rendered
+/// content means an invariant was broken somewhere else.
+///
+/// [`CocoaUiButton`]: crate::uikit::button::CocoaUiButton
+pub fn mirror_enabled(button: &UIButton, item: &UIBarButtonItem) {
+    item.setEnabled(button.isEnabled());
+    let button = button
+        .downcast_ref::<crate::uikit::button::CocoaUiButton>()
+        .expect("every `UIButton` cocoa-ui constructs is a `CocoaUiButton`");
+    let weak = Weak::new(item);
+    button.set_enabled_handler(move |enabled| {
+        let Some(item) = weak.load() else {
+            return;
+        };
+        item.setEnabled(enabled);
+    });
+}
+
 /// A `UIBarButtonItem` drawing `image` inside the bar's chrome — the symbol
 /// and view-rendered icons alike; `action` fires on tap.
 #[must_use]
@@ -762,6 +790,34 @@ pub fn image_bar_item(
         UIBarButtonItem::initWithImage_style_target_action(
             mtm.alloc(),
             image,
+            UIBarButtonItemStyle::Plain,
+            None,
+            None,
+        )
+    };
+    if let Some(action) = action {
+        item.setPrimaryAction(Some(&handler_action(mtm, move || action())));
+    }
+    item
+}
+
+/// A `UIBarButtonItem` whose title the bar draws itself.
+///
+/// A text toolbar button goes through here. Hosting the rendered button
+/// would hand the bar a `UIButton` whose configuration carries no title,
+/// and the bar draws that as an empty capsule.
+#[must_use]
+pub fn title_bar_item(
+    mtm: MainThreadMarker,
+    title: &str,
+    action: Option<Rc<dyn Fn()>>,
+) -> Retained<UIBarButtonItem> {
+    // SAFETY: `initWithTitle:style:target:action:` is a `UIBarButtonItem`
+    // designated initializer; nil target/action are valid.
+    let item = unsafe {
+        UIBarButtonItem::initWithTitle_style_target_action(
+            mtm.alloc(),
+            Some(&NSString::from_str(title)),
             UIBarButtonItemStyle::Plain,
             None,
             None,

@@ -98,10 +98,9 @@ waterui-testing = { path = "../../../testing", features = ["ts"] }
 # tests need a rendered session, and a rendered session needs a `Style`.
 hydrolysis-m3.workspace = true
 # The catalog test reads `waterui_meta_ts_catalog` back out of the test
-# executable's own symbol table, which is the path the `water` CLI takes
-# through a user crate's rlib.
+# executable's metadata directory section, which is the path the `water` CLI
+# takes through a user crate's rlib.
 object = { version = "0.37", default-features = false, features = ["read", "std"] }
-rustc-demangle = "0.1"
 # The OTA tests sign real bundles with a key generated in the test, serve
 # them from a socket the test owns, and cache them in a directory that goes
 # away with the test.

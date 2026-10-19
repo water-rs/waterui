@@ -31,9 +31,15 @@ use crate::dispatch::Dispatcher;
 use crate::proposal;
 
 #[cfg(target_os = "macos")]
+use cocoa_ui::accessibility::{self as a11y, Role};
+#[cfg(target_os = "macos")]
 use cocoa_ui::appkit::gesture::GestureAttachment;
 #[cfg(target_os = "macos")]
 use cocoa_ui::appkit::{HostView, gesture as kit};
+#[cfg(target_os = "macos")]
+use cocoa_ui::objc2::runtime::ProtocolObject;
+#[cfg(target_os = "macos")]
+use cocoa_ui::objc2_app_kit::{NSAccessibility, NSView};
 #[cfg(target_os = "ios")]
 use cocoa_ui::uikit::gesture::GestureAttachment;
 #[cfg(target_os = "ios")]
@@ -218,6 +224,25 @@ fn attach(host: &HostView, gesture: &Gesture, on_recognized: Recognized) -> Vec<
     }
 }
 
+/// Whether a press — an assistive client's `AXPress` — activates the
+/// gesture's action: a `Tap` anywhere in the composition is what makes
+/// the host operable; long-presses, drags and the two-finger gestures
+/// describe activations a press does not stand in for.
+#[cfg(target_os = "macos")]
+fn activates_on_press(gesture: &Gesture) -> bool {
+    match gesture {
+        Gesture::Tap(_) => true,
+        Gesture::Then(then) => activates_on_press(then.first()) || activates_on_press(then.then()),
+        Gesture::Simultaneous(pair) => {
+            activates_on_press(pair.first()) || activates_on_press(pair.second())
+        }
+        Gesture::Exclusive(pair) => {
+            activates_on_press(pair.first()) || activates_on_press(pair.second())
+        }
+        _ => false,
+    }
+}
+
 /// Installs the `gesture` handler on the dispatcher.
 pub fn install(dispatcher: &mut Dispatcher) {
     dispatcher.register_view::<Metadata<GestureObserver>>(|metadata, ctx| {
@@ -253,6 +278,24 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let on_recognized: Recognized = Rc::new(move || {
             (action.borrow_mut())(&env);
         });
+
+        // `AXPress` on the wrapper runs the gesture's action — a `Tap`
+        // anywhere in the composition is what makes the host operable to
+        // assistive clients (water-rs/waterui#1490).
+        #[cfg(target_os = "macos")]
+        if activates_on_press(&metadata.value.gesture) {
+            let on_recognized = Rc::clone(&on_recognized);
+            host.set_accessibility_press_handler(move |_| {
+                on_recognized();
+                true
+            });
+            let host_view: &NSView = &host;
+            a11y::set_role(
+                ProtocolObject::<dyn NSAccessibility>::from_ref(host_view),
+                Role::Group,
+            );
+        }
+
         let attachments = attach(&host, &metadata.value.gesture, on_recognized);
 
         let mut leaf = NativeLeaf::new(

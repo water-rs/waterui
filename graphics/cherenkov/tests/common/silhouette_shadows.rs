@@ -42,6 +42,7 @@ pub fn retained_and_padded<B: Backend>(config: B::Config) {
         wait!(engine.render(FrameTime::now())).expect("live shadow");
         assert_eq!(engine.stats().commands_lowered, 1);
         let pixels = wait!(actual.readback()).expect("pixels").pixels;
+        assert!(pixels[24 * 64 + 8][3] > 0.25, "shadow interior must remain visible");
         reference.update(|tx| {
             tx[reference.root()].content(reference.record(|r| {
                 r.transform(Affine::translate((32.0, 32.0)), |r| {

@@ -112,6 +112,7 @@ fn trials() -> Vec<Trial> {
                 Ok(())
             }),
         ]);
+        tests.extend(gesture_ax::trials());
         #[cfg(feature = "gpu_surface")]
         {
             tests.extend(gpu_surface::trials());
@@ -124,6 +125,7 @@ fn trials() -> Vec<Trial> {
         tests.extend(navigation::trials());
         tests.extend(controller_bounds::trials());
         tests.extend(safe_area::trials());
+        tests.extend(offset::trials());
     }
     tests.extend(migration::trials());
     tests.extend(owner_lifetimes::trials());
@@ -1219,6 +1221,69 @@ mod resolve {
             (gap - 8.0).abs() < 0.5,
             "icon-to-title gap — expected 8 pt, got {gap}"
         );
+    }
+}
+
+/// `Metadata<Offset>` on `UIKit`: the content moves visually through its
+/// `transform`, and the wrapper's layout pass positions its bounds and
+/// center. `UIKit` resolves `frame`/`center` writes under a non-identity
+/// transform through the autoresizing-mask constraints it synthesizes for
+/// a translated view — a re-layout can absorb part of the translation and
+/// the content lands short of its declared offset (#2713).
+#[cfg(target_os = "ios")]
+mod offset {
+    use cocoa_ui::view;
+    use waterui::style::Offset;
+    use waterui_apple::native_test_support::{mount_uikit, render_environment};
+    use waterui_backend_core::AnyView;
+    use waterui_core::Metadata;
+
+    use super::mtm;
+
+    fn t(name: &'static str, body: fn()) -> libtest_mimic::Trial {
+        libtest_mimic::Trial::test(format!("offset::{name}"), move || {
+            body();
+            Ok(())
+        })
+    }
+
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        vec![t(
+            "relayout_keeps_the_full_translation",
+            relayout_keeps_the_full_translation,
+        )]
+    }
+
+    /// Two layout passes must leave the declared translation whole and the
+    /// content centered in the wrapper's untransformed space — the state the
+    /// offset contract resolves to, whatever path the passes took there.
+    fn relayout_keeps_the_full_translation() {
+        let mount = mount_uikit(
+            mtm(),
+            AnyView::new(Metadata::new("x", Offset::new(-120.0, -160.0))),
+            &render_environment(),
+        );
+        for _ in 0..2 {
+            mount.window.layoutIfNeeded();
+        }
+        let wrapper = view::retain_base(mount.content.view());
+        let content = &view::subviews(&wrapper)[0];
+        let bounds = view::bounds(&wrapper);
+
+        // The anchor sits at the wrapper's midpoint; the transform carries
+        // the offset on top of it.
+        let position = content.layer().position();
+        assert_eq!(position.x, bounds.size.width / 2.0);
+        assert_eq!(position.y, bounds.size.height / 2.0);
+
+        let transform = content.transform();
+        assert_eq!(transform.tx, -120.0);
+        assert_eq!(transform.ty, -160.0);
+
+        // A manually positioned, transform-moved child must not let the
+        // autoresizing mask pin its frame — the pinned frame is the channel
+        // the absorption came through.
+        assert!(!content.translatesAutoresizingMaskIntoConstraints());
     }
 }
 
@@ -2476,6 +2541,14 @@ mod gpu_surface {
                 capture_opening_over_a_failed_hold_balances,
             ),
             Trial::test(
+                "gpu_surface::a_scope_end_after_teardown_settles_quietly",
+                a_scope_end_after_teardown_settles_quietly,
+            ),
+            Trial::test(
+                "gpu_surface::a_scope_end_beyond_the_orphaned_count_still_panics",
+                a_scope_end_beyond_the_orphaned_count_still_panics,
+            ),
+            Trial::test(
                 "gpu_surface::a_failed_child_answers_the_terminal_capture_outcome_once",
                 a_failed_child_answers_the_terminal_capture_outcome_once,
             ),
@@ -2683,6 +2756,47 @@ mod gpu_surface {
         assert!(
             !mounted.first_paint_participation(),
             "the failed hold survives the scope's open and close"
+        );
+        Ok(())
+    }
+
+    /// A capture's registration can owe the surface an `end` after the
+    /// mount is gone — a frame still in flight settles on the main
+    /// queue whenever the GPU finishes with it, which may follow the
+    /// owner's teardown. Two open scopes deepen the count teardown
+    /// orphans; both late ends then settle quietly instead of tripping
+    /// the balance assert a live surface answers.
+    pub fn a_scope_end_after_teardown_settles_quietly() -> Result<(), libtest_mimic::Failed> {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        mounted.begin_capture(Rc::new(|| {}));
+        mounted.begin_capture(Rc::new(|| {}));
+        // Unmounts mid-scope and delivers both owed ends — a panic here
+        // is the pre-fix crash a late-settling registration produced.
+        mounted.unmount_then_end_captures(2);
+        Ok(())
+    }
+
+    /// The orphaned count keeps the balance honest: an end beyond what
+    /// teardown recorded is still the unbalanced scope the assert
+    /// names, not a quiet drop.
+    pub fn a_scope_end_beyond_the_orphaned_count_still_panics() -> Result<(), libtest_mimic::Failed>
+    {
+        let mtm = mtm();
+        let mounted = pollster::block_on(MountedSceneSurface::mount(mtm))
+            .map_err(|error| format!("a mounted SceneView surface: {error}"))?;
+        mounted.ensure_attached();
+        mounted.begin_capture(Rc::new(|| {}));
+        // One scope was open at teardown; the second late end is owed
+        // by nobody.
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                mounted.unmount_then_end_captures(2);
+            }))
+            .is_err(),
+            "a scope end beyond the orphaned count still panics"
         );
         Ok(())
     }
@@ -3199,8 +3313,15 @@ mod filtered {
                 && !filtered.render_in_flight()),
             "the first frame's capture defers on the nested filter's pending setup"
         );
+        // A redraw the scene child requested during the flight legitimately
+        // resumes the link for one recapture through the `Deferred` arm —
+        // the contract is the settled state, not the first sampled instant.
+        // `paused && nothing in flight` is unreachable inside that resumed
+        // window, and unreachable entirely if the link recaptured at display
+        // rate: under that bug the pump times out instead of passing.
         assert!(
-            filtered.link_paused(),
+            pump_main_until(MAIN_QUEUE_DEADLINE, || filtered.link_paused()
+                && !filtered.render_in_flight()),
             "a live-context deferral leaves the link paused — no display-rate recapture"
         );
         assert!(
@@ -7489,13 +7610,20 @@ mod list_scroll {
 /// `set_page` apply through the stack's `UINavigationControllerDelegate`.
 #[cfg(target_os = "ios")]
 mod navigation {
-    use cocoa_ui::objc2_ui_kit::{UINavigationController, UIView, UIViewController};
+    use cocoa_ui::objc2_ui_kit::{
+        UIBarButtonItem, UINavigationController, UIView, UIViewController,
+    };
     use cocoa_ui::uikit::view_controller::owning_controller;
     use cocoa_ui::uikit::{NavContentController, NavPage};
     use cocoa_ui::{PlatformView, Retained, view};
+    use waterui::Str;
+    use waterui::ViewExt as _;
+    use waterui::component::toggle::toggle;
+    use waterui::component::{ButtonStyle, button};
+    use waterui::icon::SystemIcon;
     use waterui::navigation::{
         NavigationStack, NavigationToolbar, NavigationToolbarItem, NavigationToolbarPlacement,
-        NavigationView,
+        NavigationView, ToolbarItemIcon,
     };
     use waterui::prelude::text;
     use waterui::reactive::binding;
@@ -7560,7 +7688,192 @@ mod navigation {
                     Ok(())
                 },
             ),
+            libtest_mimic::Trial::test("navigation::a_text_toolbar_button_draws_its_title", || {
+                a_text_toolbar_button_draws_its_title();
+                Ok(())
+            }),
+            libtest_mimic::Trial::test(
+                "navigation::a_text_toolbar_item_follows_its_button_disabled_state",
+                || {
+                    a_text_toolbar_item_follows_its_button_disabled_state();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_symbol_toolbar_item_follows_its_button_disabled_state",
+                || {
+                    a_symbol_toolbar_item_follows_its_button_disabled_state();
+                    Ok(())
+                },
+            ),
+            libtest_mimic::Trial::test(
+                "navigation::a_checkbox_toolbar_item_follows_its_disabled_state",
+                || {
+                    a_checkbox_toolbar_item_follows_its_disabled_state();
+                    Ok(())
+                },
+            ),
         ]
+    }
+
+    /// The bar item's title as a plain string.
+    fn bar_item_title(item: &UIBarButtonItem) -> String {
+        item.title()
+            .map(|text| text.to_string())
+            .unwrap_or_default()
+    }
+
+    /// A leading text button is the bar's own title item, and the title
+    /// follows the label. Hosting the button would hand the bar a `UIButton`
+    /// whose configuration carries no title, which the bar draws as an empty
+    /// capsule. Plain text beside it stays a hosted view.
+    fn a_text_toolbar_button_draws_its_title() {
+        let title = binding(Str::from("Edit"));
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarLeading,
+                        button(waterui::text!("{title}")).style(ButtonStyle::Plain),
+                    ),
+                    NavigationToolbarItem::new(
+                        NavigationToolbarPlacement::TopBarTrailing,
+                        text("12 unread"),
+                    ),
+                ],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let leading = top
+            .navigationItem()
+            .leftBarButtonItems()
+            .expect("the leading text button is a bar item");
+        assert_eq!(leading.count(), 1, "the root page has one leading item");
+        let leading = leading.objectAtIndex(0);
+        assert_eq!(bar_item_title(&leading), "Edit");
+        assert!(
+            leading.customView().is_none(),
+            "the word is the bar item's title, not a hosted view"
+        );
+
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the trailing caption is a bar item");
+        assert!(
+            trailing.objectAtIndex(0).customView().is_some(),
+            "plain text stays a hosted view"
+        );
+
+        title.set(Str::from("Done"));
+        assert_eq!(bar_item_title(&leading), "Done");
+    }
+
+    /// A leading text button's bar item follows the button's `disabled`
+    /// state: `sendActions` ignores `isEnabled`, so the bar item is what
+    /// the bar disables — it must start disabled and re-enable with the
+    /// button.
+    fn a_text_toolbar_item_follows_its_button_disabled_state() {
+        let disabled = binding(true);
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root")).navigation_toolbar(NavigationToolbar::new(
+                vec![NavigationToolbarItem::new(
+                    NavigationToolbarPlacement::TopBarLeading,
+                    button("Save")
+                        .style(ButtonStyle::Plain)
+                        .disabled(disabled.clone()),
+                )],
+            )),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let leading = top
+            .navigationItem()
+            .leftBarButtonItems()
+            .expect("the leading text button is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            !leading.isEnabled(),
+            "the bar item starts disabled with the button"
+        );
+        disabled.set(false);
+        assert!(
+            leading.isEnabled(),
+            "the bar item follows the button back to enabled"
+        );
+    }
+
+    /// A trailing symbol item follows the same rule: the bar-drawn item
+    /// tracks the content button's `disabled` state.
+    fn a_symbol_toolbar_item_follows_its_button_disabled_state() {
+        let disabled = binding(true);
+        let mut item = NavigationToolbarItem::new(
+            NavigationToolbarPlacement::TopBarTrailing,
+            button("Save")
+                .style(ButtonStyle::Plain)
+                .disabled(disabled.clone()),
+        );
+        item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("checkmark")));
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root"))
+                .navigation_toolbar(NavigationToolbar::new(vec![item])),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the trailing symbol item is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            !trailing.isEnabled(),
+            "the bar item starts disabled with the button"
+        );
+        disabled.set(false);
+        assert!(
+            trailing.isEnabled(),
+            "the bar item follows the button back to enabled"
+        );
+    }
+
+    /// The enabled mirror does not depend on the content being a `button`:
+    /// a checkbox toggle's control is a `UIButton` in the leaf's subtree,
+    /// so the item's icon follows its `disabled` state like any other.
+    fn a_checkbox_toolbar_item_follows_its_disabled_state() {
+        let disabled = binding(true);
+        let checked = binding(false);
+        let mut item = NavigationToolbarItem::new(
+            NavigationToolbarPlacement::TopBarTrailing,
+            toggle("Done", &checked)
+                .checkbox()
+                .disabled(disabled.clone()),
+        );
+        item.icon = Some(ToolbarItemIcon::System(SystemIcon::new("checkmark")));
+        let leaf = resolve::render(NavigationStack::new(
+            NavigationView::new("Inbox", text("root"))
+                .navigation_toolbar(NavigationToolbar::new(vec![item])),
+        ));
+        let nav =
+            nav_controller_in(leaf.view()).expect("the stack mounts a UINavigationController");
+        let top = nav.topViewController().expect("the stack has a root page");
+        let trailing = top
+            .navigationItem()
+            .rightBarButtonItems()
+            .expect("the trailing icon item is a bar item")
+            .objectAtIndex(0);
+        assert!(
+            !trailing.isEnabled(),
+            "the bar item starts disabled with the checkbox"
+        );
+        disabled.set(false);
+        assert!(
+            trailing.isEnabled(),
+            "the bar item follows the checkbox back to enabled"
+        );
     }
 
     /// The root page's intent is recorded in `set_page` while
@@ -8025,5 +8338,94 @@ mod webview {
                 &controller,
             ),
         );
+    }
+}
+
+/// `AppKit` accessibility coverage for gestures — regression tests for
+/// water-rs/waterui#1490. `NSClickGestureRecognizer` gives an `on_tap`
+/// view no assistive affordance, so the wrapper the gesture renders must
+/// itself be an element answering `accessibilityPerformPress` — the
+/// `AXPress` action `AppKit` puts on an element whose class overrides it.
+#[cfg(target_os = "macos")]
+mod gesture_ax {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    use cocoa_ui::PlatformView;
+    use cocoa_ui::objc2::runtime::ProtocolObject;
+    use cocoa_ui::objc2::{msg_send, sel};
+    use cocoa_ui::objc2_app_kit::NSAccessibility;
+    use waterui::ViewExt as _;
+    use waterui::prelude::text;
+
+    use super::{resolve, trial_each};
+
+    /// What an assistive client gets for `press` — the answer
+    /// `accessibilityPerformPress` returns.
+    fn perform_press(view: &PlatformView) -> bool {
+        // SAFETY: `accessibilityPerformPress` answers a `BOOL`.
+        unsafe { msg_send![view, accessibilityPerformPress] }
+    }
+
+    /// Whether the element offers `AXPress` to an assistive client.
+    fn press_allowed(view: &PlatformView) -> bool {
+        // SAFETY: `isAccessibilitySelectorAllowed:` takes a selector and
+        // answers a `BOOL`.
+        unsafe { msg_send![view, isAccessibilitySelectorAllowed: sel!(accessibilityPerformPress)] }
+    }
+
+    /// The gesture's `HostView` is an element whose press runs the tap's
+    /// action.
+    fn a_tap_gesture_answers_accessibility_perform_press() {
+        let pressed = Rc::new(Cell::new(0u32));
+        let leaf = resolve::render({
+            let pressed = Rc::clone(&pressed);
+            text("tap").on_tap(move || pressed.set(pressed.get() + 1))
+        });
+        let host = leaf.view();
+        let element = ProtocolObject::<dyn NSAccessibility>::from_ref(host);
+        assert!(
+            element.isAccessibilityElement(),
+            "the tap host must sit in the accessibility tree"
+        );
+        assert!(press_allowed(host), "the tap host must offer AXPress");
+        assert!(perform_press(host), "the tap host must handle a press");
+        assert_eq!(pressed.get(), 1, "the press must run the tap's action");
+    }
+
+    /// A long-press host claims no `AXPress`: a press does not stand in
+    /// for a hold.
+    fn a_long_press_gesture_keeps_the_default_press_answer() {
+        let pressed = Rc::new(Cell::new(0u32));
+        let leaf = resolve::render({
+            let pressed = Rc::clone(&pressed);
+            text("hold").on_long_press_gesture(500, move || {
+                pressed.set(pressed.get() + 1);
+            })
+        });
+        let host = leaf.view();
+        assert!(
+            !press_allowed(host),
+            "a long-press host must not offer AXPress"
+        );
+        assert!(
+            !perform_press(host),
+            "a long-press host must not claim a press"
+        );
+        assert_eq!(pressed.get(), 0);
+    }
+
+    /// The `gesture_ax::` trials.
+    pub fn trials() -> Vec<libtest_mimic::Trial> {
+        trial_each(vec![
+            (
+                "gesture_ax::a_tap_gesture_answers_accessibility_perform_press".to_owned(),
+                Box::new(a_tap_gesture_answers_accessibility_perform_press),
+            ),
+            (
+                "gesture_ax::a_long_press_gesture_keeps_the_default_press_answer".to_owned(),
+                Box::new(a_long_press_gesture_keeps_the_default_press_answer),
+            ),
+        ])
     }
 }
