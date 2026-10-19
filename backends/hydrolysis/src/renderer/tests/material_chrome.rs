@@ -413,22 +413,11 @@ fn a_member_binds_clip_transform_shader_and_uniforms() {
     );
 }
 
-/// A member recorded inside a transformed scope draws in the scope layer's
-/// space: `close_scope` re-expresses the member's transform through
-/// `origin.inverse()`, the same conversion runs and live items get —
-/// otherwise the member mounts under the scope layer with the node's space
-/// still in its transform and the scope transform reaches it twice
-/// (water-rs/waterui#2894).
-#[test]
-fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
-    use crate::renderer::FrameSignals;
-    use crate::renderer::mount::program::Item;
-    use crate::renderer::mount::{
-        NodeCell, Placement, PlacementClock, ProgramBuilder, ScopeKey, ScopeProps,
-    };
-
+/// The recorded `GLASS` backdrop material the scope-space tests mount
+/// inside their scopes.
+fn glass_material() -> cherenkov_record::BackdropMaterial {
     let draw = chrome_draw(GLASS, GLASS_SHADER, Vec::new());
-    let material = cherenkov_record::Content::record_layered(
+    cherenkov_record::Content::record_layered(
         &cherenkov_record::LayoutSize::new(),
         cherenkov_record::MaterialScope::SOLO,
         |recorder| {
@@ -444,13 +433,35 @@ fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
     .into_iter()
     .next()
     .expect("the layered record carries the one material")
-    .material;
+    .material
+}
+
+/// A fresh program builder bound to `clock`'s placements.
+fn scope_program_builder(
+    clock: &Rc<crate::renderer::mount::PlacementClock>,
+) -> crate::renderer::mount::ProgramBuilder {
+    use crate::renderer::FrameSignals;
+    use crate::renderer::mount::{NodeCell, Placement, ProgramBuilder};
+
+    ProgramBuilder::new(NodeCell::new(
+        FrameSignals::new(std::time::Instant::now()),
+        Placement::new(clock),
+    ))
+}
+
+/// A member recorded inside a transformed scope draws in the scope layer's
+/// space: `close_scope` re-expresses the member's transform through
+/// `origin.inverse()`, the same conversion runs and live items get —
+/// otherwise the member mounts under the scope layer with the node's space
+/// still in its transform and the scope transform reaches it twice
+/// (water-rs/waterui#2894).
+#[test]
+fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
+    use crate::renderer::mount::program::Item;
+    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeProps};
 
     let clock = PlacementClock::new();
-    let mut builder = ProgramBuilder::new(NodeCell::new(
-        FrameSignals::new(std::time::Instant::now()),
-        Placement::new(&clock),
-    ));
+    let mut builder = scope_program_builder(&clock);
     builder.open_scope(
         ScopeKey {
             role: "transition",
@@ -463,7 +474,7 @@ fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
         },
         Placement::new(&clock),
     );
-    builder.push_chrome(material, Affine::translate((5.0, 6.0)), true);
+    builder.push_chrome(glass_material(), Affine::translate((5.0, 6.0)), true);
     builder.close_scope();
     let program = builder.finish();
     let [Item::Scope { items, .. }] = program.items.as_slice() else {
@@ -491,30 +502,8 @@ fn a_member_in_a_transformed_scope_draws_in_the_scopes_space() {
 /// transform applied once.
 #[test]
 fn a_nested_scope_mounts_with_each_transform_applied_once() {
-    use crate::renderer::FrameSignals;
     use crate::renderer::mount::program::Item;
-    use crate::renderer::mount::{
-        NodeCell, Placement, PlacementClock, ProgramBuilder, ScopeKey, ScopeProps,
-    };
-
-    let draw = chrome_draw(GLASS, GLASS_SHADER, Vec::new());
-    let material = cherenkov_record::Content::record_layered(
-        &cherenkov_record::LayoutSize::new(),
-        cherenkov_record::MaterialScope::SOLO,
-        |recorder| {
-            recorder.backdrop_material(
-                draw.shape.clone(),
-                draw.shader,
-                draw.capture,
-                draw.effect.clone(),
-            );
-        },
-    )
-    .runs
-    .into_iter()
-    .next()
-    .expect("the layered record carries the one material")
-    .material;
+    use crate::renderer::mount::{Placement, PlacementClock, ScopeKey, ScopeProps};
 
     let outer = Affine::translate((30.0, 40.0));
     let inner = Affine::translate((5.0, 6.0));
@@ -524,10 +513,7 @@ fn a_nested_scope_mounts_with_each_transform_applied_once() {
     let clip = ShapeData::Rect(kurbo::Rect::new(0.0, 0.0, 10.0, 10.0));
 
     let clock = PlacementClock::new();
-    let mut builder = ProgramBuilder::new(NodeCell::new(
-        FrameSignals::new(std::time::Instant::now()),
-        Placement::new(&clock),
-    ));
+    let mut builder = scope_program_builder(&clock);
     builder.open_scope(
         ScopeKey {
             role: "outer",
@@ -552,7 +538,7 @@ fn a_nested_scope_mounts_with_each_transform_applied_once() {
         },
         Placement::new(&clock),
     );
-    builder.push_chrome(material, recorded, true);
+    builder.push_chrome(glass_material(), recorded, true);
     builder.close_scope();
     builder.close_scope();
     let program = builder.finish();
