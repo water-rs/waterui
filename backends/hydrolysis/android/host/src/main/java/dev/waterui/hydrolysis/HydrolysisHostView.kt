@@ -127,7 +127,16 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                     }
                 if (imeAnimating && imeRunning) {
                     val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
-                    pushMetrics(windowLocalEdges(ime))
+                    if (pushMetrics(windowLocalEdges(ime))) {
+                        // §7.1's frame-by-frame rule: this progress step
+                        // already runs inside the frame's traversal, ahead
+                        // of the draw whose synced transaction moves the
+                        // IME window. Rendering now queues the GPU band's
+                        // buffer into the same composite; the vsync post a
+                        // plain metrics push schedules would render one
+                        // frame late (water-rs/waterui#1913).
+                        session?.frameScheduler?.pumpNow("ime-progress")
+                    }
                 } else {
                     // A non-IME animation (e.g. a system-bar hide/show)
                     // lands here too and pushes the persisted
@@ -143,9 +152,14 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                 if (animation.typeMask and WindowInsetsCompat.Type.ime() != 0) {
                     imeAnimating = false
                     // The last progress frame is not guaranteed to carry
-                    // fraction 1.0 — publish the settled insets.
+                    // fraction 1.0 — publish the settled insets. `onEnd`
+                    // runs inside the traversal like `onProgress`, so a
+                    // changed snapshot pumps now rather than letting the
+                    // settle value lag the keyboard by a frame.
                     lastRootInsets = ViewCompat.getRootWindowInsets(this@HydrolysisHostView)
-                    pushMetrics()
+                    if (pushMetrics()) {
+                        session?.frameScheduler?.pumpNow("ime-settled")
+                    }
                 }
             }
         }
@@ -247,8 +261,13 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
         )
     }
 
-    private fun pushMetrics(keyboardEdgesOverride: IntArray? = null) {
-        val session = session ?: return
+    /**
+     * Returns whether a changed snapshot was pushed. `onProgress` pumps the
+     * frame itself when the IME step changed the metrics — an unchanged
+     * snapshot needs no transaction at all.
+     */
+    private fun pushMetrics(keyboardEdgesOverride: IntArray? = null): Boolean {
+        val session = session ?: return false
         val metrics = resources.displayMetrics
         val configuration = resources.configuration
         val rootInsets = lastRootInsets ?: ViewCompat.getRootWindowInsets(this)
@@ -297,7 +316,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
             maxFlingVelocity == lastMaxFlingVelocity &&
             scrollFriction == lastScrollFriction
         ) {
-            return
+            return false
         }
         lastMetricsWidth = width
         lastMetricsHeight = height
@@ -332,6 +351,7 @@ constructor(context: Context, internal val session: HydrolysisSession? = null) :
                 scrollFriction,
             )
         }
+        return true
     }
 
     // ------------------------------------------------------------------
