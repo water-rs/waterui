@@ -406,8 +406,10 @@ struct SurfaceState {
     ready_waiters: RefCell<Vec<std::task::Waker>>,
     /// Whether content accessibility republishes after the next frame.
     needs_a11y_refresh: Cell<bool>,
-    /// Window/app observers re-arming presentation edges.
-    observers: RefCell<Vec<cocoa_ui::notification::NotificationObserver>>,
+    /// The surface's visibility observation: ancestor-chain wakes, the
+    /// enclosing scroll viewports and the owning window/scene lifecycle,
+    /// rebound together and fully detached on drop (#1545).
+    visibility_watch: RefCell<Option<cocoa_ui::visibility::VisibilityWatch>>,
     /// The proposal the surface was last measured under.
     last_proposal: Cell<Option<ProposalSize>>,
     /// The last measurement the renderer answered — reused while setup
@@ -621,7 +623,7 @@ impl SurfaceState {
             current_scale: Cell::new(1.0),
             ready_waiters: RefCell::new(Vec::new()),
             needs_a11y_refresh: Cell::new(true),
-            observers: RefCell::new(Vec::new()),
+            visibility_watch: RefCell::new(None),
             last_proposal: Cell::new(None),
             last_resolved_size: RefCell::new(None),
         }
@@ -979,21 +981,8 @@ fn configure_dynamic_range(
 /// Whether this surface's window can put a frame in front of someone —
 /// `canPresentNow`.
 fn can_present_now(view: &Retained<SurfaceView>) -> bool {
-    let Some(window) = cocoa_ui::view::window(view.as_platform_view()) else {
-        return false;
-    };
-    #[cfg(target_os = "macos")]
-    {
-        if window.isMiniaturized() {
-            return false;
-        }
-        cocoa_ui::appkit::is_visible(&window)
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let _ = window;
-        cocoa_ui::uikit::application_is_active()
-    }
+    cocoa_ui::view::window(view.as_platform_view())
+        .is_some_and(|window| cocoa_ui::visibility::window_presentable(&window))
 }
 
 /// Whether this surface takes part in its window's first-paint readiness —
@@ -1014,32 +1003,13 @@ fn participates_in_first_paint(view: &Retained<SurfaceView>) -> bool {
         && can_present_now(view)
 }
 
-/// Whether the surface draws — `isEffectivelyVisible`: narrower than
-/// `can_present_now` on the states that announce when they clear.
+/// Whether the surface draws — `isEffectivelyVisible`: a frame could land
+/// on screen right now. The window can present, no ancestor hides it or
+/// zeroes its alpha, and an ancestor's clip — a scroll viewport — leaves
+/// some of it uncovered (#1545); `VisibilityWatch` wakes every one of
+/// those edges, so a parked surface resumes when it scrolls back in.
 fn is_effectively_visible(view: &Retained<SurfaceView>) -> bool {
-    let Some(window) = cocoa_ui::view::window(view.as_platform_view()) else {
-        return false;
-    };
-    if !cocoa_ui::view::has_visible_ancestry(&cocoa_ui::view::retain_base(view)) {
-        return false;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        // A window that is on no display cannot present; gating here keeps
-        // an offscreen window from rendering frames nobody sees.
-        if window.screen().is_none() {
-            return false;
-        }
-        if window.isMiniaturized() {
-            return false;
-        }
-        cocoa_ui::appkit::is_visible(&window)
-    }
-    #[cfg(target_os = "ios")]
-    {
-        let _ = window;
-        cocoa_ui::uikit::application_is_active()
-    }
+    cocoa_ui::visibility::presentable(view.as_platform_view())
 }
 
 /// Positions the presentation layer and tells Core Animation the frames are
@@ -1696,73 +1666,29 @@ fn complete_ready(state: &SurfaceState) {
     }
 }
 
-// MARK: - Window observers (WuiWindowOcclusion)
+// MARK: - Visibility watch
 
-/// (Re)arms the occlusion / miniaturization / activation observers for the
-/// window `view` now sits in — `updateWindowObservers`.
-fn update_window_observers(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
-    let mut observers = state.observers.borrow_mut();
-    observers.clear();
-    let Some(window) = cocoa_ui::view::window(view.as_platform_view()) else {
+/// (Re)binds the surface's visibility watch to the hierarchy `view` now
+/// sits in — ancestors, scroll viewports and the owning window or scene —
+/// so each edge that can change [`is_effectively_visible`] re-runs the
+/// presentation demand.
+fn refresh_visibility_watch(state: &Rc<SurfaceState>, view: &Retained<SurfaceView>) {
+    let platform = view.as_platform_view();
+    let mut slot = state.visibility_watch.borrow_mut();
+    if let Some(watch) = slot.as_ref() {
+        watch.refresh(platform);
         return;
-    };
-    #[cfg(target_os = "ios")]
-    let _ = &window;
-    let mtm = cocoa_ui::MainThreadMarker::new().expect("main thread");
-    let fire = {
-        let weak = Rc::downgrade(state);
-        let view = view.clone();
-        move || {
+    }
+    let weak = Rc::downgrade(state);
+    let target = view.clone();
+    *slot = Some(cocoa_ui::visibility::VisibilityWatch::new(
+        platform,
+        Rc::new(move || {
             if let Some(state) = weak.upgrade() {
-                update_presentation_demand(&state, &view);
+                update_presentation_demand(&state, &target);
             }
-        }
-    };
-    #[cfg(target_os = "macos")]
-    {
-        observers.push(cocoa_ui::appkit::watch_occlusion(mtm, &window, {
-            let fire = fire.clone();
-            move || fire()
-        }));
-        for notification in [
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_app_kit::NSWindowDidMiniaturizeNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_app_kit::NSWindowDidDeminiaturizeNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_app_kit::NSWindowDidChangeScreenNotification },
-        ] {
-            let name = notification;
-            observers.push(cocoa_ui::notification::observe_object(
-                mtm,
-                &cocoa_ui::notification::NotificationName::framework(name),
-                window.as_ref(),
-                {
-                    let fire = fire.clone();
-                    move || fire()
-                },
-            ));
-        }
-    }
-    #[cfg(target_os = "ios")]
-    {
-        for notification in [
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_ui_kit::UIApplicationDidBecomeActiveNotification },
-            // SAFETY: the notification names are system constants.
-            unsafe { cocoa_ui::objc2_ui_kit::UIApplicationWillResignActiveNotification },
-        ] {
-            let name = notification;
-            observers.push(cocoa_ui::notification::observe(
-                mtm,
-                &cocoa_ui::notification::NotificationName::framework(name),
-                {
-                    let fire = fire.clone();
-                    move || fire()
-                },
-            ));
-        }
-    }
+        }),
+    ));
 }
 
 // MARK: - Input (WuiGpuSurfaceInput)
@@ -2230,7 +2156,7 @@ impl Drop for MountGuard {
         }
         *self.state.presentation.borrow_mut() = Presentation::detached();
         self.state.park.clear();
-        self.state.observers.borrow_mut().clear();
+        self.state.visibility_watch.borrow_mut().take();
         self.state.view.borrow_mut().unmount();
         drop(self.state.bound.borrow_mut().take());
         if let Some(input) = &self.input {
@@ -2408,7 +2334,7 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
                 if let Some(attached) = state.presentation.borrow_mut().attached_mut() {
                     attached.demand.keep_redrawing.set(false);
                 }
-                state.observers.borrow_mut().clear();
+                state.visibility_watch.borrow_mut().take();
                 return;
             };
             if let Some(scale) = view.backing_scale() {
@@ -2416,7 +2342,7 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
             }
             let _ = window;
             update_presentation_frame(&state, &view);
-            update_window_observers(&state, &view);
+            refresh_visibility_watch(&state, &view);
             update_presentation_demand(&state, &view);
         }
     });
@@ -2425,7 +2351,12 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
         platform_view.set_visibility_changed_handler({
             let state = state.clone();
             let view = platform_view.clone();
-            move || update_presentation_demand(&state, &view)
+            move || {
+                // A reparent inside the window moves the ancestor chain
+                // the watch subscribed to.
+                refresh_visibility_watch(&state, &view);
+                update_presentation_demand(&state, &view);
+            }
         });
         platform_view.set_backing_changed_handler({
             let state = state.clone();
@@ -2447,7 +2378,12 @@ fn wire_view_handlers(platform_view: &Retained<SurfaceView>, state: &Rc<SurfaceS
         platform_view.set_visibility_changed_handler({
             let state = state.clone();
             let view = platform_view.clone();
-            move || update_presentation_demand(&state, &view)
+            move || {
+                // A reparent inside the window moves the ancestor chain
+                // the watch subscribed to.
+                refresh_visibility_watch(&state, &view);
+                update_presentation_demand(&state, &view);
+            }
         });
         platform_view.set_backing_changed_handler({
             let state = state.clone();

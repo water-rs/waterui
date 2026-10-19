@@ -534,16 +534,15 @@ mod imp {
     }
 
     /// `UIKit`: windowed on a foreground-active scene, the ancestor chain
-    /// clear of hidden or transparent links, and the window-space bounds
-    /// inside the window and every clipping ancestor's window-space bounds.
+    /// clear of hidden or transparent links ([`crate::view::has_visible_ancestry`]:
+    /// the window's own alpha is a reveal state, not hidden content), and
+    /// the window-space bounds inside the window and every clipping
+    /// ancestor's window-space bounds.
     pub fn presentable(view: &UIView) -> bool {
         let Some(window) = view.window() else {
             return false;
         };
-        if !window_presentable(&window) {
-            return false;
-        }
-        if view.isHidden() || view.alpha() <= 0.0 {
+        if !window_presentable(&window) || !crate::view::has_visible_ancestry(view) {
             return false;
         }
         // `convertRect:toView:nil` — every rectangle lands in the window's
@@ -552,9 +551,6 @@ mod imp {
         let mut zone = window.bounds();
         let mut ancestor = view.superview();
         while let Some(candidate) = ancestor {
-            if candidate.isHidden() || candidate.alpha() <= 0.0 {
-                return false;
-            }
             if clips_descendants(&candidate) {
                 let clip = candidate.convertRect_toView(candidate.bounds(), None);
                 match intersect(zone, clip) {
