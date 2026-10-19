@@ -11,30 +11,35 @@ impl_widget_behavior!(
     crate::widgets::controls::button::render_button_node,
     crate::widgets::controls::button::measure_button_node
     ; prepare: ensure_label_built
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::button::emit_button_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::controls::toggle::ToggleRenderState,
     crate::widgets::controls::toggle::render_toggle_node,
     crate::widgets::controls::toggle::measure_toggle_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::toggle::emit_toggle_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::controls::slider::SliderRenderState,
     crate::widgets::controls::slider::render_slider_node,
     crate::widgets::controls::slider::measure_slider_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::slider::emit_slider_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::controls::stepper::StepperRenderState,
     crate::widgets::controls::stepper::render_stepper_node,
     crate::widgets::controls::stepper::measure_stepper_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::stepper::emit_stepper_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::controls::progress::ProgressRenderState,
     crate::widgets::controls::progress::render_progress_node,
     crate::widgets::controls::progress::measure_progress_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::progress::emit_progress_accessibility
 );
 impl_widget_behavior!(
@@ -42,42 +47,49 @@ impl_widget_behavior!(
     crate::widgets::controls::button::render_menu_node,
     crate::widgets::controls::button::measure_menu_node
     ; prepare: ensure_label_built
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::button::emit_menu_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::controls::date_picker::DatePickerRenderState,
     crate::widgets::controls::date_picker::render_date_picker_node,
     crate::widgets::controls::date_picker::measure_date_picker_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::date_picker::emit_date_picker_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::controls::color_picker::ColorPickerRenderState,
     crate::widgets::controls::color_picker::render_color_picker_node,
     crate::widgets::controls::color_picker::measure_color_picker_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::color_picker::emit_color_picker_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::controls::picker::PickerRenderState,
     crate::widgets::controls::picker::render_picker_node,
     crate::widgets::controls::picker::measure_picker_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::picker::emit_picker_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::controls::text_field::TextFieldRenderState,
     crate::widgets::controls::text_field::render_text_field_node,
     crate::widgets::controls::text_field::measure_text_field_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::text_field::emit_text_field_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::controls::text_field::SecureFieldRenderState,
     crate::widgets::controls::text_field::render_secure_field_node,
     crate::widgets::controls::text_field::measure_secure_field_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::controls::text_field::emit_secure_field_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::layout::badge::BadgeRenderState,
     crate::widgets::layout::badge::render_badge_node,
     crate::widgets::layout::badge::measure_badge_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::layout::badge::emit_badge_accessibility
 );
 
@@ -332,7 +344,8 @@ impl RenderNode {
     /// renderer to build on); the cloneable config drives the field +
     /// accessibility, and its `items`/`selection` signals are read through
     /// `read_signal` each frame so a membership or selection change schedules a
-    /// frame. Stretch is content-sized (read from the config).
+    /// frame. The node's stretch is the payload's own axis: `Horizontal` for a
+    /// segmented picker, content-sized otherwise.
     pub(super) fn build_picker(
         config: PickerConfig,
         env: &Environment,

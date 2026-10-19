@@ -4,6 +4,7 @@ use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, WidgetRenderContext, local_interaction_state,
     measure_label_intrinsic,
 };
+use crate::theme::StepperEnd;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -11,7 +12,6 @@ use accesskit::{
 use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
-use waterui_backend_core::widget::StepperEnd;
 use waterui_controls::stepper::StepperConfig;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
@@ -45,6 +45,13 @@ impl StepperRenderState {
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the stepper's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
 impl HydroNativeView for Native<StepperConfig> {
@@ -52,7 +59,7 @@ impl HydroNativeView for Native<StepperConfig> {
         state: &mut crate::renderer::HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_stepper_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -137,7 +144,7 @@ pub fn measure_stepper_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let metrics = theme.stepper_metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
@@ -367,7 +374,7 @@ pub fn measure_stepper_intrinsic(
     stepper: &StepperConfig,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let metrics = theme.stepper_metrics();
     let label_size = measure_label_intrinsic(&stepper.label, state, env, theme);
@@ -413,7 +420,7 @@ pub fn emit_stepper_accessibility(
 /// own height on the buttons' centre line — see [`label_beside_control_bounds`].
 fn stepper_control_and_label_bounds(
     bounds: kurbo::Rect,
-    metrics: waterui_backend_core::widget::StepperMetrics,
+    metrics: crate::theme::StepperMetrics,
     label_height: f64,
 ) -> (kurbo::Rect, kurbo::Rect) {
     let button_size = bounds
@@ -441,8 +448,8 @@ fn stepper_control_and_label_bounds(
 #[cfg(test)]
 mod tests {
     use super::stepper_control_and_label_bounds;
+    use crate::theme::StepperMetrics;
     use kurbo::Rect;
-    use waterui_backend_core::widget::StepperMetrics;
 
     #[test]
     fn label_shares_the_controls_centre_line() {

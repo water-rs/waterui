@@ -148,6 +148,7 @@ impl AndroidSigningConfig {
 /// How a release-variant Gradle package is signed once `--unsigned` and the
 /// manifest's `[signing.android]` are reconciled.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReleaseSigning {
     /// Signed with the validated `[signing.android]` configuration.
     Signed,

@@ -15,6 +15,7 @@ use executor_core::async_task::{self, AsyncTask, Runnable};
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod anchored_overlay;
 mod animation_slots;
+mod chrome_primitives;
 mod chrome_safe_area;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod context_menu_occlusion;
@@ -60,8 +61,10 @@ mod mid_flush_subview;
 pub mod mirror;
 mod navigation_back;
 mod navigation_layers;
+mod navigation_text_input;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
+mod opacity_binding;
 mod perf_full_rebuild;
 mod perf_scroll;
 #[cfg(not(target_arch = "wasm32"))]
@@ -80,9 +83,12 @@ mod scroll_hit_clip;
 mod semantic_runtime;
 mod shadow;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
+mod structural_transitions;
+#[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod tab_item_layout;
 mod teardown_order;
 mod text_ink;
+mod top_edge;
 mod touch_scroll;
 mod tree;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
@@ -117,8 +123,8 @@ use waterui_navigation::NavigationView;
 #[cfg(feature = "accessibility")]
 use waterui_navigation::tab::{Tab, TabsLayout};
 
-use crate::engine::WidgetTheme;
-use waterui_backend_core::widget::{
+use crate::theme::WidgetTheme;
+use crate::theme::{
     BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionFocusBinding,
     InteractionMotion, ListMetrics, ModalInteraction, NavigationMetrics, NavigationMotion,
     PickerMetrics, ProgressIndicatorStyle, ProgressMetrics, ProgressMotion, RadioIndicatorState,
@@ -1309,6 +1315,77 @@ fn capture_root_window<V: waterui_core::View>(
     renderer.finish_rebuild_frame();
 }
 
+/// `docs/layout-spec.md` §6: a segmented picker answers the proposal width and
+/// its intrinsic height, and its intrinsic width when the width is unbounded;
+/// a menu picker answers its intrinsic size under any offer.
+#[cfg(feature = "accessibility")]
+#[test]
+fn a_segmented_picker_takes_the_width_it_is_offered() {
+    fn picked_width(view: impl waterui_core::View + 'static, window: Rect) -> f64 {
+        let env = test_environment();
+        let mut renderer = test_renderer();
+        capture_root_window(&mut renderer, view, &env, window);
+        let update = renderer
+            .take_accessibility_tree_update()
+            .expect("a picker must publish an accessibility tree");
+        let (_, node) = update
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("Mode"))
+            .expect("the picker node must exist");
+        node.bounds().expect("the picker must carry bounds").width()
+    }
+    let picker = |style| {
+        let selection = Binding::i32(0);
+        Picker::new(
+            "Mode",
+            vec![text("One").tag(0), text("Two").tag(1), text("Three").tag(2)],
+            &selection,
+        )
+        .style(style)
+    };
+    let window = Rect::new(0.0, 0.0, 480.0, 200.0);
+
+    // The retained node's own answers, straight from its measure: an
+    // unbounded width proposal is the intrinsic width, and a finite one is
+    // taken whole by a segmented picker only.
+    let env = test_environment();
+    let theme: Rc<dyn WidgetTheme> = Rc::new(MinimalTestTheme::default());
+    let mut renderer = test_renderer();
+    let mut hydro = HydroState::new(SessionTextEngine::system(FontFamilyResolution::Strict));
+    let mut measure = |style, width: Option<f32>| {
+        let mut node = crate::widgets::controls::picker::PickerRenderState::from_config(
+            waterui_core::view::ConfigurableView::config(picker(style)),
+        );
+        node.prebuild(&mut renderer, &env);
+        crate::widgets::controls::picker::measure_picker_node(
+            &node,
+            ProposalSize::new(width, None),
+            &mut hydro,
+            &env,
+            &theme,
+        )
+        .size
+    };
+    let segmented = measure(PickerStyle::Segmented, None);
+    assert!(
+        segmented.width < 300.0,
+        "an unbounded width proposal answers the intrinsic width, got {}",
+        segmented.width
+    );
+    let offered = measure(PickerStyle::Segmented, Some(300.0));
+    approx::assert_relative_eq!(offered.width, 300.0);
+    approx::assert_relative_eq!(offered.height, segmented.height);
+    let menu = measure(PickerStyle::Menu, None);
+    assert_eq!(measure(PickerStyle::Menu, Some(300.0)), menu);
+
+    approx::assert_relative_eq!(
+        picked_width(picker(PickerStyle::Segmented).width(300.0), window),
+        300.0
+    );
+    approx::assert_relative_eq!(picked_width(picker(PickerStyle::Segmented), window), 480.0);
+}
+
 /// A composed container carrying a non-`Group` role is a real container in the
 /// accessibility tree: a navigation bar/rail declares itself a tab list so
 /// assistive technology can tell that the tabs inside belong together. Only the
@@ -1732,9 +1809,8 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
 
     use waterui_core::{Signal, Str};
     use waterui_webview::{
-        BackendEvent, Cookie, CustomWebViewController, OriginPolicy, ScriptInjectionTime,
-        ScriptMessageHandler, WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController,
-        WebViewHandle,
+        BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler,
+        WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
     };
 
     /// The smallest controller that can still create a `WebView`: the handle
@@ -1748,6 +1824,12 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
             TestWebViewHandle {
                 watchers: WatcherSet::new(),
             }
+        }
+
+        // No interception facility: the double has no engine to route an asset
+        // origin through, and the assertion it serves never opens assets.
+        fn asset_origin(&self) -> Option<waterui_webview::Url> {
+            None
         }
     }
 
@@ -1771,12 +1853,6 @@ fn a_webview_with_no_engine_to_draw_it_panics() {
         fn inject_script(&self, _key: &str, _script: &str, _time: ScriptInjectionTime) {}
         fn add_handler(&self, _name: &str, _handler: Box<ScriptMessageHandler>) {}
         fn remove_handler(&self, _name: &str) {}
-        fn set_bridge_origins(&self, _policy: OriginPolicy) {}
-        // No interception facility: the double has no engine to route an asset
-        // origin through, and the assertion it serves never opens assets.
-        fn asset_origin(&self) -> Option<waterui_webview::Url> {
-            None
-        }
         fn set_cookie(&self, _cookie: Cookie<'static>) {}
         fn set_redirects_enabled(&self, _enabled: impl Signal<Output = bool>) {}
         fn watch(&self, f: impl Fn(BackendEvent) + 'static) -> WatcherGuard {
@@ -2209,8 +2285,8 @@ fn disabled_picker_family_and_tabs_expose_no_mutating_actions() {
     reason = "the local-space mapping must carry the wave's progress and opacity through untouched, so the values stay bit-identical"
 )]
 fn interaction_press_origin_is_converted_to_widget_local_space() {
-    let mut press_waves = waterui_backend_core::widget::PressWaves::EMPTY;
-    press_waves.push(waterui_backend_core::widget::PressWave {
+    let mut press_waves = crate::theme::PressWaves::EMPTY;
+    press_waves.push(crate::theme::PressWave {
         origin: Some(Point::new(125.0, 84.0)),
         progress: 0.5,
         opacity: 0.12,
@@ -2247,7 +2323,7 @@ fn interaction_state_does_not_migrate_between_semantic_identities() {
     renderer
         .hit_test
         .interaction
-        .begin_press(&slot, Point::new(20.0, 20.0), at);
+        .begin_press(&slot, Point::new(20.0, 20.0), None, at);
     renderer.finish_rebuild_frame();
 
     renderer.begin_rebuild_frame();
@@ -2276,7 +2352,7 @@ fn began_press_samples_a_visible_press_layer_after_fade_in() {
     renderer
         .hit_test
         .interaction
-        .begin_press(&slot, Point::new(20.0, 20.0), at);
+        .begin_press(&slot, Point::new(20.0, 20.0), None, at);
     renderer.finish_rebuild_frame();
 
     // Advance past the press fade-in (105ms in MinimalTestTheme) and re-bind:
@@ -2325,6 +2401,79 @@ fn interaction_engine_resolves_focus_state() {
     approx::assert_relative_eq!(state.focus_progress, 1.0);
 }
 
+/// `press_progress` is the physical-press morph value: it animates towards
+/// 1 while the press is held and — unlike a ripple wave's grow progress,
+/// which holds its grown shape through the fade-out — plays back towards 0
+/// on release (water-rs/waterui#1588).
+#[test]
+fn press_progress_animates_while_pressed_and_back_on_release() {
+    let mut renderer = test_renderer();
+    let env = test_environment();
+    let bounds = Rect::new(0.0, 0.0, 80.0, 80.0);
+    let owner = Rc::new(());
+    let key = InteractionKey::for_rc(&owner, 0);
+
+    renderer.begin_rebuild_frame();
+    let (resting, slot, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    approx::assert_relative_eq!(resting.press_progress, 0.0);
+
+    // The press lands between flushes; the next bind resolves it as PRESSED
+    // and the morph (15ms linear in MinimalTestTheme) is in flight.
+    let pressed_at = renderer.frame_instant();
+    renderer
+        .hit_test
+        .interaction
+        .begin_press(&slot, Point::new(20.0, 20.0), None, pressed_at);
+
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    assert!(state.state.contains(InteractionState::PRESSED));
+
+    renderer.set_frame_instant(pressed_at + Duration::from_millis(8));
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    assert!(
+        state.press_progress > 0.0 && state.press_progress < 1.0,
+        "the press morph must be in flight while the press is held: {}",
+        state.press_progress
+    );
+
+    // Once the animation has settled the held press reports 1.
+    let held_at = pressed_at + Duration::from_millis(60);
+    renderer.set_frame_instant(held_at);
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    approx::assert_relative_eq!(state.press_progress, 1.0);
+
+    // Release: the morph plays `press_shape` backwards from the release
+    // instant — it must not snap back to 0 in one frame.
+    renderer.hit_test.interaction.clear_all_presses(held_at);
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    assert!(!state.state.contains(InteractionState::PRESSED));
+
+    renderer.set_frame_instant(held_at + Duration::from_millis(8));
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key.clone(), bounds, &env);
+    renderer.finish_rebuild_frame();
+    assert!(
+        state.press_progress > 0.0 && state.press_progress < 1.0,
+        "the morph must animate back on release instead of snapping: {}",
+        state.press_progress
+    );
+
+    renderer.set_frame_instant(held_at + Duration::from_millis(60));
+    renderer.begin_rebuild_frame();
+    let (state, _, _) = renderer.bind_interaction_target(key, bounds, &env);
+    renderer.finish_rebuild_frame();
+    approx::assert_relative_eq!(state.press_progress, 0.0);
+}
+
 #[test]
 fn interactive_pointer_target_activates_on_release_inside() {
     let mut renderer = test_renderer();
@@ -2365,6 +2514,9 @@ fn touch_press_delays_ripple_and_move_cancels_click() {
         true
     });
     let started = renderer.frame_instant();
+    // The host reports the touch-gesture parameters a real touch
+    // platform publishes — a touch press without them panics.
+    renderer.set_touch_scroll_config(Some(crate::platform::TouchScrollConfig::android_default()));
 
     assert!(!renderer.handle_pointer_down_with_source(
         7,
@@ -2664,6 +2816,11 @@ pub struct MinimalTestTheme {
     /// The `InputFieldMetrics` this theme reports; `None` answers the fixture
     /// defaults `input_field_metrics` carries below.
     input_metrics: Option<InputFieldMetrics>,
+    /// The engine-provided chrome `button_chrome` hands out.
+    button_chrome: Option<crate::theme::Chrome>,
+    /// How many `draw_button_chrome` and `draw_button_state_layer` calls
+    /// the theme received.
+    button_chrome_draws: Rc<std::cell::Cell<usize>>,
 }
 
 impl MinimalTestTheme {
@@ -2673,6 +2830,19 @@ impl MinimalTestTheme {
     pub fn with_input_metrics(mut self, metrics: InputFieldMetrics) -> Self {
         self.input_metrics = Some(metrics);
         self
+    }
+
+    /// Hands out `chrome` from `button_chrome`, so buttons realize it with
+    /// live operands.
+    #[must_use]
+    pub fn with_button_chrome(mut self, chrome: crate::theme::Chrome) -> Self {
+        self.button_chrome = Some(chrome);
+        self
+    }
+
+    /// The count of `draw_button_chrome` and `draw_button_state_layer` calls.
+    pub fn button_chrome_draws(&self) -> Rc<std::cell::Cell<usize>> {
+        Rc::clone(&self.button_chrome_draws)
     }
 }
 
@@ -2727,6 +2897,7 @@ impl WidgetTheme for MinimalTestTheme {
             press_fade_in: Animation::linear(Duration::from_millis(105)),
             press_fade_out: Animation::linear(Duration::from_millis(375)),
             press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+            press_shape: Animation::linear(Duration::from_millis(15)),
             minimum_press_duration: Duration::from_millis(225),
             touch_delay: Duration::from_millis(150),
         }
@@ -2772,6 +2943,10 @@ impl WidgetTheme for MinimalTestTheme {
         ButtonMetrics::new(0.0, 0.0, 41.0, 43.0)
     }
 
+    fn button_chrome(&self, _spec: crate::theme::ButtonSpec) -> Option<crate::theme::Chrome> {
+        self.button_chrome.clone()
+    }
+
     fn draw_button_chrome(
         &self,
         _draw: &mut Recorder,
@@ -2780,6 +2955,20 @@ impl WidgetTheme for MinimalTestTheme {
         _icon_only: bool,
         _state: WidgetInteractionState,
     ) {
+        self.button_chrome_draws
+            .set(self.button_chrome_draws.get() + 1);
+    }
+
+    fn draw_button_state_layer(
+        &self,
+        _draw: &mut Recorder,
+        _bounds: Rect,
+        _style: ButtonStyle,
+        _icon_only: bool,
+        _state: WidgetInteractionState,
+    ) {
+        self.button_chrome_draws
+            .set(self.button_chrome_draws.get() + 1);
     }
 
     /// Fills `registry` with the test's shader sources and capture

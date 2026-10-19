@@ -366,6 +366,10 @@ fn dropping_a_font_frees_its_renderer_state() -> Result<(), Box<dyn std::error::
     let Some(engine) = wait!(engine(GpuConfig::default())) else {
         return Ok(());
     };
+    // A second font stays alive for the whole test so the baseline below
+    // already carries the `commit_writes` lists a same-size text commit
+    // retains — what the assertion compares is A's cells alone (#2711).
+    let font_b = engine.font(font())?;
     let font = engine.font(font())?;
     let font_id = font.id();
     let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
@@ -376,6 +380,13 @@ fn dropping_a_font_frees_its_renderer_state() -> Result<(), Box<dyn std::error::
             }));
         });
     };
+    let runs_b = text_runs(font_b.id(), 8, 24.0);
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|c| {
+            c.glyphs(runs_b[0].clone(), WorkingColor::WHITE);
+        }));
+    });
+    wait!(engine.render(cherenkov::FrameTime::now()))?;
     solid(&surface);
     wait!(engine.render(cherenkov::FrameTime::now()))?;
     let without_glyphs = wait!(engine.memory()).cpu;

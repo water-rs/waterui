@@ -135,7 +135,7 @@ pub struct OwnerRegistrations {
     pub platform_view_placements: Vec<RetainedEntry<PlatformViewRegistration>>,
     /// Modal scopes — the single flat `modal_interaction` slot keeps
     /// only the frontmost live registration.
-    pub modal_scope: Vec<RetainedEntry<waterui_backend_core::widget::ModalInteraction>>,
+    pub modal_scope: Vec<RetainedEntry<crate::theme::ModalInteraction>>,
 }
 
 /// The window-side half of the retained model: which cells have ever
@@ -327,5 +327,5 @@ owner_tagged!(
 
 impl SetRegistrationOwner for () {}
 impl SetRegistrationOwner for crate::renderer::input::NativeViewOcclusion {}
-impl SetRegistrationOwner for waterui_backend_core::widget::ModalInteraction {}
+impl SetRegistrationOwner for crate::theme::ModalInteraction {}
 impl SetRegistrationOwner for PlatformViewRegistration {}

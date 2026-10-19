@@ -130,11 +130,15 @@ impl RenderNode {
         // the renderer.
         match self {
             Self::Dynamic(node) => {
-                if node.apply_pending(renderer) {
+                // Apply the swap first (detaching an outgoing instance into
+                // its ghost and starting an incoming instance's clock), then
+                // advance every clock this host owns.
+                let changed = if node.apply_pending(renderer) {
                     true
                 } else {
                     node.child.borrow_mut().patch(renderer)
-                }
+                };
+                node.advance_transitions(renderer) | changed
             }
             Self::Container(container) => {
                 let mut changed = false;
@@ -290,11 +294,22 @@ impl RenderNode {
                 .fold(false, |dirty, entry| entry.node.take_layout_dirty() | dirty),
             Self::LazyStack(node) => node.item_cache.borrow_mut().take_layout_dirty(),
             Self::Text(node) => node.layout_dirty.replace(false),
-            Self::Color(_)
-            | Self::SceneView(_)
-            | Self::GpuContent(_)
-            | Self::ExternalFrame(_)
-            | Self::Widget(_) => false,
+            // These leaves' measured size can change after mount — a
+            // reloaded scene's natural size, a stream learning its size
+            // once decoding starts — and they hold no consumable mark;
+            // `size_drifted` re-probes the last proposal and answers the
+            // drift, which the next `measure` clears by rewriting
+            // `measured` (water-rs/waterui#1957).
+            Self::SceneView(node) => node.size_drifted(),
+            Self::GpuContent(node) => node.size_drifted(),
+            Self::ExternalFrame(node) => node.size_drifted(),
+            // A widget's measured size is a function of the
+            // `RetainedSubview`s it owns (labels, nav bars, badges):
+            // their marks are its marks — each sub-view keeps a consumed
+            // mark in its own `needs_layout`, so reporting it here does
+            // not starve the sub-view's own flush.
+            Self::Widget(node) => node.behavior.take_layout_dirty(),
+            Self::Color(_) => false,
         }
     }
 }

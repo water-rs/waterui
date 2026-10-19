@@ -4,13 +4,13 @@ use super::*;
 use crate::renderer::mount::RetainedScopes;
 
 #[cfg(feature = "accessibility")]
+use crate::theme::InteractionFocusBinding;
+#[cfg(feature = "accessibility")]
 use std::borrow::Cow;
 #[cfg(feature = "accessibility")]
 use std::collections::{BTreeSet, VecDeque};
 #[cfg(feature = "accessibility")]
 use std::ops::RangeInclusive;
-#[cfg(feature = "accessibility")]
-use waterui_backend_core::widget::InteractionFocusBinding;
 #[cfg(feature = "accessibility")]
 use waterui_form::picker::date::{DatePickerType, DateTime};
 
@@ -346,7 +346,12 @@ pub enum AccessibilityActionTarget {
     /// navigation between rows is built on these actions
     /// (water-rs/waterui#1223).
     ListRow {
+        /// The row's index in the list's row set.
         index: usize,
+        /// The row's position in the list's extent index: removal ghosts
+        /// still holding their slots (layout-spec.md §4.5) shift it past
+        /// `index`.
+        position: usize,
         handle: ScrollHandle,
         extents: Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
         /// §7.1's touched-edge extension the list's handle was rebound with:
@@ -1227,6 +1232,37 @@ impl SemanticCore {
         self.accessibility.pending_tree_update.take()
     }
 
+    /// Publishes an accessibility focus move as a focus-only tree update:
+    /// only the focus field changed, so the update carries no nodes and no
+    /// tree structure — the host applies it incrementally. A full update
+    /// still pending is corrected in place instead. Returns `false` when a
+    /// quiet publish cannot describe the move and the caller must arm the
+    /// normal flush: focus landing on a node the last emit never produced
+    /// (`accessibility.focus` still updated — the next emit carries it), or
+    /// an open modal scope, whose reachable-subtree focus clamp only
+    /// `assembled_tree_update` resolves (water-rs/waterui#2940).
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn publish_accessibility_focus(&mut self, focus: AccessibilityNodeId) -> bool {
+        if let Some(update) = self.accessibility.pending_tree_update.as_mut() {
+            update.focus = focus;
+            return true;
+        }
+        let emitted = &self.accessibility.nodes;
+        let focus_is_emitted =
+            focus == ACCESSIBILITY_ROOT_NODE_ID || emitted.iter().any(|(id, _)| *id == focus);
+        let modal_open = emitted.iter().any(|(_, node)| node.is_modal());
+        if emitted.is_empty() || !focus_is_emitted || modal_open {
+            return false;
+        }
+        self.accessibility.pending_tree_update = Some(AccessibilityTreeUpdate {
+            nodes: Vec::new(),
+            tree: None,
+            tree_id: AccessibilityTreeId::ROOT,
+            focus,
+        });
+        true
+    }
+
     /// The tree this window would publish if it emitted now: the last
     /// emitted node set with the current focus, rebuilt from the live
     /// registry. A clean frame has nothing new to say, but the merged
@@ -1327,6 +1363,14 @@ impl SemanticCore {
                 tree_update: merged,
                 content_types,
             });
+        }
+        // A focus-only main update carries no root for the popup graft —
+        // rebuild the main window's full emission and keep the moved focus.
+        if merged.nodes.is_empty()
+            && let Some(mut full) = self.current_accessibility_tree_update()
+        {
+            full.focus = merged.focus;
+            merged = full;
         }
 
         let mut root_children = merged
@@ -1520,6 +1564,7 @@ impl SemanticCore {
             }
             AccessibilityActionTarget::ListRow {
                 index,
+                position,
                 handle,
                 extents,
                 extension,
@@ -1528,7 +1573,7 @@ impl SemanticCore {
             } => match action {
                 AccessibilityAction::Focus => {
                     self.scroll_list_row_into_view(
-                        index,
+                        position,
                         &handle,
                         &extents,
                         extension,
@@ -1550,9 +1595,13 @@ impl SemanticCore {
                         clicked
                     }
                 }
-                AccessibilityAction::ScrollIntoView => {
-                    self.scroll_list_row_into_view(index, &handle, &extents, extension, target_node)
-                }
+                AccessibilityAction::ScrollIntoView => self.scroll_list_row_into_view(
+                    position,
+                    &handle,
+                    &extents,
+                    extension,
+                    target_node,
+                ),
                 _ => panic!("hydrolysis accessibility list row does not support action {action:?}"),
             },
         };
@@ -1772,7 +1821,7 @@ impl SemanticCore {
     #[cfg(feature = "accessibility")]
     pub(crate) fn scroll_list_row_into_view(
         &self,
-        index: usize,
+        position: usize,
         handle: &ScrollHandle,
         extents: &Rc<RefCell<crate::renderer::lazy::VirtualExtentIndex>>,
         extension: crate::renderer::EdgeOffsets,
@@ -1780,8 +1829,8 @@ impl SemanticCore {
     ) -> bool {
         let metrics = handle.metrics();
         let extents = extents.borrow();
-        let row_start = extents.offset_of(index);
-        let row_end = extents.offset_of(index + 1);
+        let row_start = extents.offset_of(position);
+        let row_end = extents.offset_of(position + 1);
         // The rebound viewport covers the §7.1 extension into the avoided
         // bands; the reveal resolves against the laid-out frame's window —
         // a screen-reader focus move must not land a row under the band.
@@ -2102,6 +2151,22 @@ impl SemanticCore {
         };
         self.mark_a11y_unit();
         self.drain_scope_donations(scope, node_id)
+    }
+
+    /// Collapse a tap gesture's synthesized claim around exactly one wrapped
+    /// node into that node — the wrapped element keeps its own identity and
+    /// any real action it registered, and takes the claim's `Click`, `Focus`
+    /// and activation (water-rs/waterui#1070). No bounds travel with it: a
+    /// claim the gesture synthesized carries the frame it was assigned, and
+    /// the wrapped node's own bounds are already the honest answer.
+    ///
+    /// A no-op unless the claim has exactly one semantic child — zero or
+    /// several leave the claim's node standing as the composite's
+    /// representative.
+    #[cfg(feature = "accessibility")]
+    pub(crate) fn collapse_synthesized_claim(&mut self, node_id: AccessibilityNodeId) {
+        self.accessibility
+            .collapse_single_child_container(node_id, None);
     }
 
     #[cfg(feature = "accessibility")]

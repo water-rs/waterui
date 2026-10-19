@@ -23,6 +23,7 @@ use waterui_core::AnyView;
 use waterui_graphics::FilteredView;
 use waterui_graphics::filtrate::{
     Effect, EffectContext, EffectInput, EffectOutput, EffectRenderResult, EffectSetupResult,
+    RetainedMemory,
 };
 use waterui_graphics::scene_view::SceneViewMergeToParent;
 
@@ -139,6 +140,12 @@ impl Effect for CopyTextureEffect {
         );
         Ok(false)
     }
+
+    fn retained_memory(&self) -> RetainedMemory {
+        RetainedMemory::default()
+    }
+
+    fn trim(&mut self) {}
 }
 
 #[derive(Clone)]

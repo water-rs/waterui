@@ -13,6 +13,10 @@ use crate::toolchain::{
 
 /// `dxc` on the host's `PATH` or under the managed tool directory.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct Dxc;
 
 impl Dxc {
@@ -41,6 +45,10 @@ impl Toolchain for Dxc {
 /// Install `dxc` from the pinned `microsoft/DirectXShaderCompiler` release
 /// into `~/.water/tools`.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct DxcInstallation;
 
 /// Errors that can occur while installing `dxc`.

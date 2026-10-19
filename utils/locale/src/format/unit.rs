@@ -23,18 +23,34 @@ pub trait LengthUnit: Copy + Clone {
 
 /// Meter unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Meter;
 
 /// Feet unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Feet;
 
 /// Kilometer unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Kilometer;
 
 /// Mile unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Mile;
 
 impl LengthUnit for Meter {
@@ -187,14 +203,26 @@ pub trait TemperatureUnit: Copy + Clone {
 
 /// Celsius unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Celsius;
 
 /// Fahrenheit unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Fahrenheit;
 
 /// Kelvin unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Kelvin;
 
 impl TemperatureUnit for Celsius {
@@ -306,18 +334,34 @@ pub trait MassUnit: Copy + Clone {
 
 /// Kilogram unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Kilogram;
 
 /// Gram unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Gram;
 
 /// Pound unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Pound;
 
 /// Ounce unit marker.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less unit marker used by name"
+)]
 pub struct Ounce;
 
 impl MassUnit for Kilogram {

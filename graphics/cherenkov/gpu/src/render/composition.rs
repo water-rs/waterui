@@ -90,6 +90,12 @@ pub enum Materialization {
     /// same-pass read-after-write (#2191). Both land here, because the
     /// distinction is the device's, not the plan's.
     DeviceAccess,
+    /// The device's attachment access would let an epoch run, but it
+    /// has no lazily allocated memory to keep the epoch's slots in, so
+    /// the engine installed no executor and the frame is never planned
+    /// (#2689). A software rasterizer such as llvmpipe lands here: it
+    /// has no tile memory for an epoch to save traffic through.
+    TransientMemory,
 }
 
 impl Materialization {
@@ -111,6 +117,7 @@ impl Materialization {
             Self::Ordering => "ordering",
             Self::NoExecutor => "no-executor",
             Self::DeviceAccess => "device-access",
+            Self::TransientMemory => "transient-memory",
         }
     }
 }
@@ -333,11 +340,12 @@ pub struct Traffic {
 /// The fragment stage a tile pipeline composites with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
-    /// Solid and gradient paints.
+    /// The solid-paint stage.
     Simple,
     /// The silhouette-shadow stage.
     Shadow,
-    /// A full paint reading another slot.
+    /// The full paint stage, including gradients and
+    /// corresponding-pixel source reads.
     Source,
     /// The slot clear that reopens a logical image inside an epoch.
     Clear,

@@ -20,6 +20,8 @@ mod input;
 mod install;
 #[cfg(any(feature = "chromium", feature = "webview"))]
 mod page;
+#[cfg(feature = "webview")]
+mod renderer;
 mod runtime;
 #[cfg(target_os = "macos")]
 #[doc(hidden)]

@@ -22,6 +22,7 @@ pub fn media_block_01() {
                 // inherent on Photo — attach it BEFORE filters,
                 PhotoEvent::Loaded => (), // which wrap the view in a Filtered<..> type
                 PhotoEvent::Error(_msg) => (),
+                _ => (), // the event enum is #[non_exhaustive]
             })
             .blur(radius.clone())
             .saturation(sat.clone())
@@ -156,6 +157,7 @@ pub fn media_block_05() -> impl View {
             WebViewEvent::Loaded => (),
             WebViewEvent::Redirect { from: _, to: _ } => (),
             WebViewEvent::Error(_) => (),
+            _ => (), // the event enum is #[non_exhaustive]
         })
 }
 
@@ -216,7 +218,7 @@ pub mod media_block_07 {
         async fn greet(&self, name: String) -> Json<Greeting> {
             Json(Greeting::for_name(name))
         }
-        // fn returning a signal  ->  mirrored state: `waterui.state.address`, `waterui.watch("address", cb)`
+        // fn returning a signal  ->  mirrored state: after `await waterui.ready`, `waterui.state.address`, `waterui.watch("address", cb)`
         fn address(&self) -> Binding<Str> {
             self.address.clone()
         } // Binding: JS writes flow back

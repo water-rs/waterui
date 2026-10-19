@@ -699,11 +699,11 @@ fn reference() -> OffscreenImage {
             [r, g, b, 255]
         })
         .collect();
-    OffscreenImage {
-        width: u32::try_from(FRAME.0).expect("fits"),
-        height: u32::try_from(FRAME.1).expect("fits"),
+    OffscreenImage::new(
+        u32::try_from(FRAME.0).expect("fits"),
+        u32::try_from(FRAME.1).expect("fits"),
         rgba8,
-    }
+    )
 }
 
 /// One gallery render: file name, plane layout, code generator, colour.

@@ -469,28 +469,52 @@ pub fn run(app: App, style: impl crate::Style) {
         super::menu_bar::register_menu_bar(&menu_bar, &env);
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
-        let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-        ));
+        let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
 
         // The application's fonts are fetched while the GPU adapter and device
         // are requested; neither waits on the other. The window's renderer is
         // seeded from the collection, and a self-drawn component that typesets
         // text itself reads it out of the environment instead of building a
         // collection of its own.
-        let (mut platform, (fonts, deferred_fonts)) = futures::join!(
+        let (platform, (fonts, deferred_fonts)) = futures::join!(
             BrowserWindow::new(
                 Rc::clone(&browser_schedule),
                 Rc::clone(&browser_occlusion_wake),
             ),
             load_web_fonts()
         );
+        // A browser without WebGPU cannot host the window. The page shows why
+        // in place of the app, and the runner ends here rather than panicking:
+        // a panic traps the wasm instance inside the executor's poll, which
+        // leaves the executor wedged and panicking again on its next task.
+        let mut platform = match platform {
+            Ok(platform) => platform,
+            Err(error) => {
+                tracing::error!(
+                    cause = %std::error::Error::source(&error)
+                        .expect("every BrowserGpuUnavailable carries the browser's error"),
+                    "hydrolysis web runner: {error}"
+                );
+                crate::platform::report_fatal_error(&error.to_string());
+                return;
+            }
+        };
         platform.apply_properties(&window);
         // The root content lays out inside the page's safe area while
         // backgrounds reach under the browser and system chrome around it.
         env.insert(crate::platform::WindowSafeArea(platform.safe_area()));
         fonts.collection().clone().install(&mut env);
+        // The capture service mounts its subtree under a snapshot of the
+        // assembled environment — the theme tokens, hooks and font
+        // collection a window's subtree resolves — so it must be installed
+        // last (water-rs/waterui#2703).
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::new(
+                Rc::clone(&theme),
+                env.clone(),
+                FontFamilyResolution::Lenient,
+            ),
+        ));
         let mut renderer = HydrolysisRenderer::with_engine(
             theme,
             SessionTextEngine::from_collection(fonts.collection(), FontFamilyResolution::Lenient),

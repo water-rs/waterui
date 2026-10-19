@@ -53,10 +53,15 @@ const fn is_apple_triple(triple: &Triple) -> bool {
 /// The rustup toolchain a project's builds run under: the one its own
 /// directory selects, whatever directory the generated crate compiles in.
 ///
+/// The generated crates a build compiles live in the build cache, outside
+/// the project tree, so rustup would resolve them to its default toolchain
+/// rather than the project's `rust-toolchain.toml`; every cargo and rustc
+/// invocation made on the project's behalf names this toolchain instead.
+///
 /// # Errors
 /// Returns an error when rustup resolves no toolchain for the project.
 pub async fn project_toolchain(project: &Project) -> eyre::Result<String> {
-    Ok(crate::toolchain::rust::project_rustup_toolchain(project.host(), project.root()).await?)
+    project.facts().active_toolchain(project.root()).await
 }
 
 /// Resolve the Rust standard-library directory for a target triple under
@@ -65,23 +70,11 @@ pub async fn project_toolchain(project: &Project) -> eyre::Result<String> {
 /// # Errors
 /// Returns an error if rustc cannot resolve an existing target library directory.
 pub async fn rust_target_libdir(
-    host: &crate::toolchain::Host,
+    project: &Project,
     triple: &Triple,
     toolchain: &str,
 ) -> eyre::Result<PathBuf> {
-    let target = triple.to_string();
-    let host = host.with_env("RUSTUP_TOOLCHAIN", toolchain);
-    let output = host
-        .run(
-            "rustc",
-            ["--print", "target-libdir", "--target", target.as_str()],
-        )
-        .await?;
-    let libdir = output.trim();
-    if libdir.is_empty() {
-        bail!("`rustc --print target-libdir --target {target}` returned an empty path");
-    }
-    let path = PathBuf::from(libdir);
+    let path = project.facts().target_libdir(triple, toolchain).await?;
     if !path.is_dir() {
         bail!(
             "Rust target libdir does not exist for dynamic linking: {}",
@@ -152,6 +145,10 @@ impl CargoTarget<'_> {
 /// The outcome of one Cargo invocation: the profile directory everything
 /// landed under and the artifact Cargo reported for the selected target.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a build describes every field of the artifact it produced; a new field must fail every producer's build"
+)]
 pub struct BuiltTarget {
     /// Explicit Cargo features used for this invocation. Post-build metadata
     /// scans must resolve the same graph instead of inferring launcher features.
@@ -301,6 +298,7 @@ pub struct ArtifactLock {
 /// How long `build_inner` keeps a `--bin` build's artifact lock, resolved
 /// against which path the binary is launched through.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ArtifactLockScope {
     /// Until the launched image is mapped: the returned [`BuiltTarget`]
     /// carries the lock inside its `executable`, so the shared
@@ -322,6 +320,7 @@ pub enum ArtifactLockScope {
 
 /// Selects how Rust dependencies are linked into a native application.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RustLinkage {
     /// Link the `WaterUI` runtime into the application archive.
     Static,
@@ -335,7 +334,7 @@ pub enum RustLinkage {
 /// `-C incremental` is part of a unit's profile, the profile feeds Cargo's `-C metadata`,
 /// and `-C metadata` is mangled into every symbol name. Two builds in the same flow that
 /// disagree about incremental therefore produce runtimes whose symbols cannot resolve
-/// against each other: a preview support app built one way and a preview module built the
+/// against each other: a generated binary built one way and the shared runtime dylib built the
 /// other share a `libwaterui_dylib.dylib` filename and roughly 33,000 mismatched symbols,
 /// and the module fails to `dlopen` on a missing generic instantiation.
 ///
@@ -346,6 +345,28 @@ pub enum RustLinkage {
 /// which requires incremental to be off, covers what that sharing cannot.
 pub fn configure_generated_crate_compilation(command: &mut Command) {
     command.env("CARGO_INCREMENTAL", "0");
+}
+
+/// The environment variable that asks every Cargo build the CLI drives to
+/// write a `--timings` HTML report.
+///
+/// Cargo has no config key or environment variable for `--timings` (an
+/// unknown `build.timings` key is silently ignored), so a caller that wants
+/// the report for the builds behind `water build`/`water package`/`water run`
+/// has no other way to reach the flag. The nightly fresh-user e2e sets it to
+/// record where a cold app build spends its time; reports land in the
+/// target directory's `cargo-timings/`.
+pub const CARGO_TIMINGS_ENV: &str = "WATER_CARGO_TIMINGS";
+
+/// Whether [`CARGO_TIMINGS_ENV`] is set to a truthy value (`1`, `true`,
+/// `yes`, `on`, case-insensitive) in `host`'s environment.
+fn cargo_timings_requested(host: &crate::toolchain::Host) -> bool {
+    host.env(CARGO_TIMINGS_ENV).is_some_and(|value| {
+        matches!(
+            value.to_string_lossy().trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
 }
 
 /// Prepend the managed tool directories (`~/.water/tools/<name>/<version>`)
@@ -466,7 +487,7 @@ impl RustDynamicLibraries {
         // dependency is the runtime dylib's own).
         let needed_std = needed.iter().find(|name| is_rust_standard_library(name));
         let toolchain = project_toolchain(project).await?;
-        let target_libdir = rust_target_libdir(project.host(), triple, &toolchain).await?;
+        let target_libdir = rust_target_libdir(project, triple, &toolchain).await?;
         let standard_library = if let Some(name) = needed_std {
             StagedDynamicLibrary::needed(
                 name,
@@ -1045,6 +1066,7 @@ pub struct RustBuild {
 /// `release` profiles through `CARGO_PROFILE_*` overrides, so they work on
 /// user projects and generated crates alike without manifest changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum BuildProfile {
     /// The `dev` profile as declared: unoptimized, with debug info.
     #[default]
@@ -1103,12 +1125,10 @@ impl BuildProfile {
                 ("CARGO_PROFILE_DEV_OVERFLOW_CHECKS", "false"),
             ],
             Self::Release => &[
-                ("CARGO_PROFILE_RELEASE_OPT_LEVEL", "3"),
                 ("CARGO_PROFILE_RELEASE_PANIC", "unwind"),
                 ("CARGO_PROFILE_RELEASE_LTO", "off"),
             ],
             Self::Profiling => &[
-                ("CARGO_PROFILE_RELEASE_OPT_LEVEL", "3"),
                 ("CARGO_PROFILE_RELEASE_PANIC", "unwind"),
                 ("CARGO_PROFILE_RELEASE_LTO", "off"),
                 ("CARGO_PROFILE_RELEASE_DEBUG", "true"),
@@ -1145,10 +1165,11 @@ pub struct BuildOptions {
 impl BuildOptions {
     /// Create options for a development build that uses the shared Rust runtime.
     ///
-    /// Development runs want wall-clock speed: `Release` and `Profiling` force
-    /// `opt-level 3` rather than the size-optimized `opt-level "z"` the
-    /// packaging profile declares, and `Optimized`/`Profiling`/`Release` all
-    /// carry `CARGO_PROFILE_*` overrides the cargo invocation applies.
+    /// Development runs want wall-clock speed: `Optimized` lifts the dev
+    /// profile to `opt-level 1` while `Release` and `Profiling` run the
+    /// declared release profile's `opt-level 3`, and
+    /// `Optimized`/`Profiling`/`Release` all carry `CARGO_PROFILE_*`
+    /// overrides the cargo invocation applies.
     #[must_use]
     pub fn development(profile: BuildProfile) -> Self {
         Self {
@@ -1161,6 +1182,20 @@ impl BuildOptions {
             cargo_envs: profile.development_envs(),
             progress: None,
         }
+    }
+
+    /// Create options for `backend`'s default development build — the
+    /// profile a flag-free `water build` and `water run` select.
+    ///
+    /// Every development build of a backend's generated crate that has no
+    /// profile flag of its own — previews, the MCP runtime — starts here, so
+    /// it compiles the shared runtime and its dependency graph under the
+    /// same `CARGO_PROFILE_*` overrides as `water run`. A different profile
+    /// re-fingerprints every unit in the shared target directory, and each
+    /// switch between the two commands would recompile the framework.
+    #[must_use]
+    pub fn default_development(backend: crate::platform::TargetBackend) -> Self {
+        Self::development(backend.default_development_profile())
     }
 
     /// Link the Rust runtime in, whatever the caller asked for.
@@ -1182,8 +1217,8 @@ impl BuildOptions {
     /// Create options for a self-contained package build.
     ///
     /// A packaged artifact builds under the profile the workspace declares —
-    /// no `CARGO_PROFILE_*` overrides: the release profile's size tuning
-    /// (`opt-level "z"`, symbol stripping) is the shipped configuration.
+    /// no `CARGO_PROFILE_*` overrides: the release profile's tuning
+    /// (`opt-level 3`, LTO, symbol stripping) is the shipped configuration.
     #[must_use]
     pub const fn packaging(profile: BuildProfile) -> Self {
         Self {
@@ -1294,6 +1329,7 @@ impl BuildOptions {
 
 /// Errors that can occur during the Rust build process.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum RustBuildError {
     /// Failed to execute cargo build.
     #[error("Failed to execute cargo build: {0}")]
@@ -1312,6 +1348,10 @@ pub enum RustBuildError {
 /// the compile visibly alive on every terminal. Events are parsed from
 /// cargo's own output, never generated by a timer.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal renders each compile event variant by variant"
+)]
 pub enum CompileEvent {
     /// A `name vversion` status line: one crate unit moved through cargo's
     /// pipeline. `phase` is cargo's status word — `Compiling`, `Checking`,
@@ -1902,8 +1942,9 @@ Automatic meson installation failed: {install_err}\n\n{}",
             ));
         }
 
+        let mut reported = compiler_artifacts(&output.stdout)?;
         let mut artifact =
-            reported_artifact(&output.stdout, &self.path, cargo_target, artifact_extension)?;
+            reported_artifact(&reported, &self.path, cargo_target, artifact_extension)?;
 
         // A dependency's final `dylib`/`cdylib` artifact uplifts to an
         // unhashed name (`deps/libwaterui_dylib.so`), so one filename serves
@@ -1913,7 +1954,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         // runtime; rebuild_stale_shared_dylibs repairs that from the
         // dep-info written alongside.
         self.rebuild_stale_shared_dylibs(
-            &mut output,
+            &mut reported,
             &mut artifact,
             release,
             cargo_target,
@@ -1948,11 +1989,9 @@ Automatic meson installation failed: {install_err}\n\n{}",
             }
         };
 
-        let shared_runtime = reported_shared_runtime(&output.stdout)?;
+        let shared_runtime = reported_shared_runtime(&reported)?;
         let app_library = match self.project.as_ref() {
-            Some(project) => {
-                app_library_artifact(&output.stdout, &project.root().join("Cargo.toml"))?
-            }
+            Some(project) => app_library_artifact(&reported, &project.root().join("Cargo.toml"))?,
             None => None,
         };
         Ok(BuiltTarget {
@@ -1979,10 +2018,11 @@ Automatic meson installation failed: {install_err}\n\n{}",
     /// this source's artifact. The rebuild compiles the cleaned package
     /// anew, so a unit it still reports `fresh` in the same state is a
     /// cache this CLI cannot repair by rebuilding, reported instead of
-    /// retried. `artifact` is reselected from the rebuild's output.
+    /// retried. `artifact` is reselected from the rebuild's output, and
+    /// `reported` replaced by the rebuild's `compiler-artifact` messages.
     async fn rebuild_stale_shared_dylibs(
         &self,
-        output: &mut std::process::Output,
+        reported: &mut Vec<cargo_metadata::Artifact>,
         artifact: &mut PathBuf,
         release: bool,
         cargo_target: CargoTarget<'_>,
@@ -1990,7 +2030,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
         user_rustflags: &[String],
     ) -> Result<(), RustBuildError> {
         let needed = needed_libraries_of(artifact).await?;
-        let stale = stale_shared_dylib_packages(&output.stdout, &needed).await?;
+        let stale = stale_shared_dylib_packages(reported, &needed).await?;
         if stale.is_empty() {
             return Ok(());
         }
@@ -2004,11 +2044,11 @@ Automatic meson installation failed: {install_err}\n\n{}",
             );
             clean_cargo_package(&self.host, &self.path, &unit.package, &target_dir).await?;
         }
-        *output = self
+        let output = self
             .cargo_build_output(release, cargo_target, user_rustflags)
             .await?;
         if !output.status.success() {
-            let combined = combined_build_output(output);
+            let combined = combined_build_output(&output);
             return Err(RustBuildError::FailToBuildRustLibrary(
                 std::io::Error::other(format!(
                     "Cargo build failed:\n{}",
@@ -2016,10 +2056,10 @@ Automatic meson installation failed: {install_err}\n\n{}",
                 )),
             ));
         }
-        *artifact =
-            reported_artifact(&output.stdout, &self.path, cargo_target, artifact_extension)?;
+        *reported = compiler_artifacts(&output.stdout)?;
+        *artifact = reported_artifact(reported, &self.path, cargo_target, artifact_extension)?;
         let needed = needed_libraries_of(artifact).await?;
-        let unrecovered = stale_shared_dylib_packages(&output.stdout, &needed).await?;
+        let unrecovered = stale_shared_dylib_packages(reported, &needed).await?;
         if !unrecovered.is_empty() {
             return Err(unrecoverable_shared_dylib_error(&unrecovered, &target_dir));
         }
@@ -2265,6 +2305,7 @@ Automatic meson installation failed: {install_err}\n\n{}",
             .args(cargo_target.cargo_args(crate_type_override))
             .args(["--target", self.triple.to_string().as_str()])
             .args(framework.then_some("--locked"))
+            .args(cargo_timings_requested(&self.host).then_some("--timings"))
             .current_dir(&self.path);
 
         // A managed crate builds outside the project, so Cargo's config
@@ -2444,10 +2485,18 @@ Automatic meson installation failed: {install_err}\n\n{}",
 
         let mut command = cargo_metadata::MetadataCommand::new();
         command.no_deps().current_dir(&self.path);
-        let metadata = self.host.cargo_metadata(&command).await.map_err(|e| {
+        let metadata = match &self.project {
+            Some(project) => project.facts().cargo_metadata(&command).await,
+            None => self
+                .host
+                .cargo_metadata(&command)
+                .await
+                .map_err(eyre::Report::from),
+        }
+        .map_err(|error| {
             RustBuildError::FailToBuildRustLibrary(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                e,
+                error.to_string(),
             ))
         })?;
         Ok(metadata.target_directory.as_std_path().to_path_buf())
@@ -2628,20 +2677,21 @@ fn crate_type_artifact_extension(crate_type: &str, triple: &Triple) -> Option<&'
 /// Returns an error when no `compiler-artifact` message for the selected
 /// target reports a matching file, or the reported file does not exist.
 pub(crate) fn reported_artifact(
-    stdout: &[u8],
+    reported: &[cargo_metadata::Artifact],
     crate_dir: &Path,
     cargo_target: CargoTarget<'_>,
     artifact_extension: Option<&'static str>,
 ) -> Result<PathBuf, RustBuildError> {
     let manifest_path = canonical_manifest_path(crate_dir)?;
-    let mut artifacts = Vec::new();
-    for artifact in compiler_artifacts(stdout)? {
-        if cargo_target.matches(&artifact.target)
-            && same_manifest_path(artifact.manifest_path.as_std_path(), &manifest_path)
-        {
-            artifacts.push(artifact);
-        }
-    }
+    let manifest = BuiltManifest::open(&manifest_path)?;
+    let artifacts: Vec<_> = reported
+        .iter()
+        .filter(|artifact| {
+            cargo_target.matches(&artifact.target)
+                && manifest.is(artifact.manifest_path.as_std_path())
+        })
+        .cloned()
+        .collect();
     reported_artifact_file(&artifacts, cargo_target, artifact_extension, &manifest_path)
 }
 
@@ -2851,9 +2901,11 @@ pub(crate) fn compiler_artifacts(
     Ok(artifacts)
 }
 
-fn reported_shared_runtime(stdout: &[u8]) -> Result<Option<PathBuf>, RustBuildError> {
+fn reported_shared_runtime(
+    artifacts: &[cargo_metadata::Artifact],
+) -> Result<Option<PathBuf>, RustBuildError> {
     let mut reported = Vec::new();
-    for artifact in compiler_artifacts(stdout)? {
+    for artifact in artifacts {
         if artifact_package_name(&artifact.package_id) != "waterui-dylib"
             || !artifact
                 .target
@@ -2901,11 +2953,12 @@ fn reported_shared_runtime(stdout: &[u8]) -> Result<Option<PathBuf>, RustBuildEr
 /// Returns an error when cargo's message stream cannot be parsed or reports
 /// two indistinguishable library artifacts for the crate.
 pub(crate) fn app_library_artifact(
-    stdout: &[u8],
+    artifacts: &[cargo_metadata::Artifact],
     manifest_path: &Path,
 ) -> Result<Option<PathBuf>, RustBuildError> {
+    let manifest = BuiltManifest::open(manifest_path)?;
     let mut candidates: BTreeMap<u8, BTreeSet<PathBuf>> = BTreeMap::new();
-    for artifact in compiler_artifacts(stdout)? {
+    for artifact in artifacts {
         if !artifact.target.kind.iter().any(|kind| {
             matches!(
                 kind,
@@ -2915,7 +2968,7 @@ pub(crate) fn app_library_artifact(
                     | cargo_metadata::TargetKind::CDyLib
                     | cargo_metadata::TargetKind::StaticLib
             )
-        }) || !same_manifest_path(artifact.manifest_path.as_std_path(), manifest_path)
+        }) || !manifest.is(artifact.manifest_path.as_std_path())
         {
             continue;
         }
@@ -2963,14 +3016,67 @@ fn app_library_extension_rank(path: &Path) -> Option<u8> {
     }
 }
 
-/// Whether a `manifest_path` cargo reported is `expected`, the manifest of
-/// the crate this build ran. Cargo reports the path in the spelling its own
-/// working directory carried — a verbatim `\\?\` or an 8.3 short-name root on
-/// Windows — so a lexical miss canonicalizes the reported path (it exists;
-/// cargo just built from it) before deciding.
-pub(crate) fn same_manifest_path(reported: &Path, expected: &Path) -> bool {
-    reported == expected
-        || dunce::canonicalize(reported).is_ok_and(|canonical| canonical == expected)
+/// The manifest of the crate a build ran, by path and by file identity.
+struct BuiltManifest<'a> {
+    path: &'a Path,
+    file: FileIdentity,
+}
+
+/// What makes a file the same file under any spelling of its path: its
+/// device and inode — one `stat` — on Unix, its volume and file index on
+/// Windows.
+#[cfg(unix)]
+#[derive(PartialEq, Eq)]
+struct FileIdentity {
+    device: u64,
+    inode: u64,
+}
+
+#[cfg(unix)]
+impl FileIdentity {
+    fn of(path: &Path) -> io::Result<Self> {
+        use std::os::unix::fs::MetadataExt as _;
+        let metadata = std::fs::metadata(path)?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+        })
+    }
+}
+
+#[cfg(not(unix))]
+#[derive(PartialEq, Eq)]
+struct FileIdentity(same_file::Handle);
+
+#[cfg(not(unix))]
+impl FileIdentity {
+    fn of(path: &Path) -> io::Result<Self> {
+        same_file::Handle::from_path(path).map(Self)
+    }
+}
+
+impl<'a> BuiltManifest<'a> {
+    fn open(path: &'a Path) -> Result<Self, RustBuildError> {
+        let file = FileIdentity::of(path).map_err(|error| {
+            RustBuildError::FailToBuildRustLibrary(io::Error::new(
+                error.kind(),
+                format!(
+                    "cannot inspect the built manifest {}: {error}",
+                    path.display()
+                ),
+            ))
+        })?;
+        Ok(Self { path, file })
+    }
+
+    /// Whether a `manifest_path` cargo reported is this manifest. Cargo
+    /// reports the path in the spelling its own working directory carried —
+    /// a symlinked root, a verbatim `\\?\` or an 8.3 short-name root on
+    /// Windows — so a lexical miss compares the files themselves (the
+    /// reported one exists; cargo just built from it).
+    fn is(&self, reported: &Path) -> bool {
+        reported == self.path || FileIdentity::of(reported).is_ok_and(|file| file == self.file)
+    }
 }
 
 /// Picks the single file the selected target emitted out of its collected
@@ -3143,11 +3249,11 @@ fn unrecoverable_shared_dylib_error(
 /// same records [`RustDynamicLibraries::resolve`] stages under — empty when
 /// the artifact is not a linked image; see [`dep_info_path`].
 async fn stale_shared_dylib_packages(
-    stdout: &[u8],
+    artifacts: &[cargo_metadata::Artifact],
     needed: &[String],
 ) -> Result<Vec<StaleSharedDylib>, RustBuildError> {
     let mut stale: Vec<StaleSharedDylib> = Vec::new();
-    for artifact in compiler_artifacts(stdout)? {
+    for artifact in artifacts {
         if !artifact.fresh {
             continue;
         }
@@ -3623,6 +3729,33 @@ mod tests {
         resolve_dxc_runtime_in, resolve_rust_standard_library_in,
     };
 
+    #[test]
+    fn cargo_timings_follow_the_truthy_environment_switch() {
+        let cases = [
+            (Some("1"), true),
+            (Some("true"), true),
+            (Some(" YES "), true),
+            (Some("on"), true),
+            (Some("0"), false),
+            (Some("false"), false),
+            (Some(""), false),
+            (None, false),
+        ];
+        for (value, expected) in cases {
+            let vars: Vec<(&str, &str)> = value
+                .map(|value| (super::CARGO_TIMINGS_ENV, value))
+                .into_iter()
+                .collect();
+            let host = crate::toolchain::Host::new(Vec::<std::path::PathBuf>::new(), vars);
+            assert_eq!(
+                super::cargo_timings_requested(&host),
+                expected,
+                "{}={value:?}",
+                super::CARGO_TIMINGS_ENV
+            );
+        }
+    }
+
     fn shared_runtime_artifact_json(
         manifest: &std::path::Path,
         file: &std::path::Path,
@@ -3673,7 +3806,8 @@ mod tests {
         );
 
         assert_eq!(
-            reported_shared_runtime(stdout.as_bytes()).expect("runtime report"),
+            reported_shared_runtime(&crate::build::compiler_artifacts(stdout.as_bytes()).unwrap())
+                .expect("runtime report"),
             Some(runtime)
         );
     }
@@ -3687,7 +3821,8 @@ mod tests {
             "app",
         );
         assert_eq!(
-            reported_shared_runtime(stdout.as_bytes()).expect("runtime report"),
+            reported_shared_runtime(&crate::build::compiler_artifacts(stdout.as_bytes()).unwrap())
+                .expect("runtime report"),
             None
         );
 
@@ -3729,7 +3864,8 @@ mod tests {
         );
 
         let error =
-            reported_shared_runtime(stdout.as_bytes()).expect_err("ambiguous runtime report");
+            reported_shared_runtime(&crate::build::compiler_artifacts(stdout.as_bytes()).unwrap())
+                .expect_err("ambiguous runtime report");
         let message = error.to_string();
         assert!(message.contains(&first_manifest.display().to_string()));
         assert!(message.contains(&second_manifest.display().to_string()));
@@ -3867,11 +4003,7 @@ mod tests {
             envs.contains(unwind),
             "profiling links the shared runtime too"
         );
-        for key in [
-            "CARGO_PROFILE_RELEASE_OPT_LEVEL",
-            "CARGO_PROFILE_RELEASE_DEBUG",
-            "CARGO_PROFILE_RELEASE_STRIP",
-        ] {
+        for key in ["CARGO_PROFILE_RELEASE_DEBUG", "CARGO_PROFILE_RELEASE_STRIP"] {
             assert!(
                 envs.iter().any(|(env_key, _)| env_key == key),
                 "profiling keeps debug info and symbols: missing {key} in {envs:?}"
@@ -4351,7 +4483,7 @@ mod tests {
             artifact_json(&manifest, &reported, "demo_hydrolysis_deadbeef"),
         );
         let resolved = super::reported_artifact(
-            stdout.as_bytes(),
+            &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
             &crate_dir,
             CargoTarget::Lib,
             Some("rlib"),
@@ -4362,7 +4494,7 @@ mod tests {
         let foreign_only = artifact_json(&other_manifest, &other_file, "other");
         assert!(
             super::reported_artifact(
-                foreign_only.as_bytes(),
+                &crate::build::compiler_artifacts(foreign_only.as_bytes()).unwrap(),
                 &crate_dir,
                 CargoTarget::Lib,
                 Some("rlib"),
@@ -4420,9 +4552,13 @@ mod tests {
         })
         .to_string();
 
-        let resolved =
-            super::reported_artifact(stdout.as_bytes(), &crate_dir, CargoTarget::Lib, Some("a"))
-                .expect("the declared static archive resolves");
+        let resolved = super::reported_artifact(
+            &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+            &crate_dir,
+            CargoTarget::Lib,
+            Some("a"),
+        )
+        .expect("the declared static archive resolves");
         assert_eq!(resolved, archive);
     }
 
@@ -4500,9 +4636,12 @@ mod tests {
             // A `fresh` unit whose dep-info names another source's checkout.
             write_dep_info(&foreign_source);
             let needed = vec!["libwaterui_dylib.so".to_string()];
-            let stale = super::stale_shared_dylib_packages(artifact(true).as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(artifact(true).as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert_eq!(
                 stale,
                 [super::StaleSharedDylib {
@@ -4516,16 +4655,22 @@ mod tests {
 
             // The same file written by this unit's own source is trusted.
             write_dep_info(&own_source);
-            let stale = super::stale_shared_dylib_packages(artifact(true).as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(artifact(true).as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(stale.is_empty(), "our own artifact is never stale");
 
             // A unit cargo just emitted needs no dep-info check at all.
             write_dep_info(&foreign_source);
-            let stale = super::stale_shared_dylib_packages(artifact(false).as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(artifact(false).as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(stale.is_empty(), "a non-fresh unit wrote the file itself");
         });
     }
@@ -4595,9 +4740,12 @@ mod tests {
             .to_string();
 
             let needed = vec!["libwaterui_dylib-0123456789abcdef.so".to_string()];
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(
                 stale.is_empty(),
                 "a fresh dylib whose hashed dep-info names its own sources is trusted: {stale:?}"
@@ -4665,9 +4813,12 @@ mod tests {
             .to_string();
 
             let needed = vec!["libwaterui_dylib-0123456789abcdef.so".to_string()];
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(
                 stale.is_empty(),
                 "the needed name spells the hashed dep-info a hardlinked uplift leaves: {stale:?}"
@@ -4734,9 +4885,12 @@ mod tests {
             .to_string();
 
             let needed = vec!["libwaterui_dylib-0123456789abcdef.so".to_string()];
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(
                 stale.is_empty(),
                 "the needed name spells the hashed dep-info a copied uplift leaves: {stale:?}"
@@ -4809,9 +4963,12 @@ mod tests {
             // The retargeted consumer records the unhashed install name; the
             // hashed dep-info a `deps/` sibling pairs with is the only `.d`.
             let needed = vec!["@rpath/libwaterui_dylib.dylib".to_string()];
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &needed)
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &needed,
+            )
+            .await
+            .expect("scan");
             assert!(
                 stale.is_empty(),
                 "the hashed `deps/<crate>-<meta>.d` the sibling dylib pairs with resolves: {stale:?}"
@@ -5025,9 +5182,12 @@ mod tests {
             // No linked artifact records the unit here — a static archive
             // carries no dynamic section — so the unhashed unit-directory
             // spelling is the record found.
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &[])
-                .await
-                .expect("scan");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &[],
+            )
+            .await
+            .expect("scan");
             assert_eq!(stale.len(), 1, "{stale:?}");
             assert_eq!(stale[0].package, "waterui-dylib");
             assert!(
@@ -5092,9 +5252,12 @@ mod tests {
             })
             .to_string();
 
-            let stale = super::stale_shared_dylib_packages(stdout.as_bytes(), &[])
-                .await
-                .expect("a fresh dylib without dep-info is recovered, not reported");
+            let stale = super::stale_shared_dylib_packages(
+                &crate::build::compiler_artifacts(stdout.as_bytes()).unwrap(),
+                &[],
+            )
+            .await
+            .expect("a fresh dylib without dep-info is recovered, not reported");
             assert_eq!(
                 stale,
                 [super::StaleSharedDylib {
@@ -5382,6 +5545,20 @@ mod tests {
     /// The project resolves the framework from a local checkout — the pinned
     /// revision by default, or `WATERUI_PATH` to exercise a working tree — so
     /// the test builds the same `waterui` commit the crate's git deps pin.
+    /// Turns on the facade's `assets` feature on the `waterui` entry of
+    /// `dependencies`, when that table has one.
+    fn opt_in_assets(dependencies: &mut toml_edit::Item) {
+        let Some(waterui) = dependencies
+            .as_table_like_mut()
+            .and_then(|table| table.get_mut("waterui"))
+        else {
+            return;
+        };
+        let mut features = toml_edit::Array::new();
+        features.push("assets");
+        waterui["features"] = toml_edit::value(features);
+    }
+
     #[test]
     #[ignore = "builds a release app against the enclosing workspace"]
     fn release_build_stages_include_bundle_mounts() {
@@ -5422,6 +5599,23 @@ mod tests {
             let mut source = std::fs::read_to_string(&lib_rs).expect("lib.rs");
             source.push_str("\nwaterui::include_bundle!(\"bundle\", as = media);\n");
             std::fs::write(&lib_rs, source).expect("write lib.rs");
+
+            // `include_bundle!` is the facade's `assets` feature, which a
+            // plain scaffold intentionally leaves off — the fixture opts in
+            // the way an author does: `features = ["assets"]` on every
+            // `waterui` dependency the generated manifest carries (#1637).
+            let manifest_path = root.join("Cargo.toml");
+            let mut manifest = std::fs::read_to_string(&manifest_path)
+                .expect("read Cargo.toml")
+                .parse::<toml_edit::DocumentMut>()
+                .expect("the generated Cargo.toml parses");
+            opt_in_assets(&mut manifest["dependencies"]);
+            if let Some(target) = manifest["target"].as_table_mut() {
+                for (_, section) in target.iter_mut() {
+                    opt_in_assets(&mut section["dependencies"]);
+                }
+            }
+            std::fs::write(&manifest_path, manifest.to_string()).expect("write Cargo.toml");
 
             crate::backend::reinit_backend::<crate::hydrolysis::backend::HydrolysisBackend>(
                 &project,

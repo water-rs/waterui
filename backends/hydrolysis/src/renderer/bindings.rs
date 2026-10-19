@@ -288,10 +288,18 @@ impl SemanticCore {
             .hit_test
             .pending_context_menu_hold
             .map(|hold| hold.started_at + CONTEXT_MENU_HOLD_DURATION);
-        [gesture_deadline, caret_deadline, hold_deadline]
-            .into_iter()
-            .flatten()
-            .min()
+        // A released press on an engine-realized chrome wakes the runner
+        // when its minimum press duration ends, not every frame until then.
+        let release_deadline = self.next_live_release_deadline();
+        [
+            gesture_deadline,
+            caret_deadline,
+            hold_deadline,
+            release_deadline,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     pub fn sync_active_interactions_after_layout(&mut self, pointer: Option<(f32, f32)>) {
@@ -307,11 +315,12 @@ impl SemanticCore {
         gesture: Gesture,
         action: BoxedAction<()>,
     ) -> crate::gesture::GestureTarget {
-        // `bounds` is node-local: the recognizer starts with it, and
-        // materialization re-registers every gesture at its resolved
-        // window rect and merged paint rank.
+        // `bounds` is node-local: the recognizer starts with it and an
+        // identity mapping, and materialization re-registers every gesture
+        // at its resolved window rect, window-to-local transform and merged
+        // paint rank.
         let target = self.gesture_engine.register_target(
-            bounds,
+            crate::gesture::GesturePlacement::new(bounds, kurbo::Affine::IDENTITY),
             gesture,
             action,
             self.render_depth,
@@ -334,16 +343,21 @@ impl SemanticCore {
     /// at that row's current node-local bounds. The recognizer state machine is
     /// shared, so a drag that began before this frame keeps running.
     ///
-    /// The retained record resolves the target's window rect and merged paint
-    /// rank at materialization — its birth order is not reused, since a stale
-    /// rank would weigh it against siblings it was never painted with.
+    /// The retained record resolves the target's window rect, window-to-local
+    /// transform and merged paint rank at materialization — its birth order
+    /// is not reused, since a stale rank would weigh it against siblings it
+    /// was never painted with.
     pub(crate) fn register_retained_gesture_target(
         &mut self,
         target: &crate::gesture::GestureTarget,
         bounds: kurbo::Rect,
         group_id: usize,
     ) {
-        let mut target = target.with_bounds_depth_and_group(bounds, self.render_depth, group_id);
+        let mut target = target.with_placement_depth_and_group(
+            crate::gesture::GesturePlacement::new(bounds, kurbo::Affine::IDENTITY),
+            self.render_depth,
+            group_id,
+        );
         target.order = 0;
         self.register_retained(
             mount::RegisteredGesture {

@@ -32,7 +32,7 @@ use mdi::view_gallery;
 use waterui::Identifiable;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove, Section, row};
-use waterui::id::{Id, SelfId};
+use waterui::id::Id;
 use waterui::navigation::{NavigationSplitView, NavigationView, Navigator};
 use waterui::prelude::theme_color::{Accent, Foreground, SurfaceVariant};
 use waterui::prelude::*;
@@ -620,8 +620,8 @@ fn album_sidebar(selection: Binding<Option<Album>>) -> impl View {
     // through a binding mapped to and from those row ids.
     let selection = Binding::mapping(
         &selection,
-        |album| album.map(|album| SelfId::new(album as usize)),
-        move |binding, index| binding.set(index.map(|index| ALBUMS[index.into_inner()])),
+        |album| album.map(|album| album as usize),
+        move |binding, index| binding.set(index.map(|index| ALBUMS[index])),
     );
     List::content((Section::new("Albums").content((
         album_row(Album::Recents),

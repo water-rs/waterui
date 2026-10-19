@@ -195,6 +195,33 @@ impl Host {
         self.std_output
     }
 
+    /// A host whose builds stay off the network.
+    ///
+    /// `offline` binds `CARGO_NET_OFFLINE` — the switch Cargo reads for its
+    /// own `--offline` — so the policy reaches the CLI's own downloads and
+    /// every Cargo invocation the host spawns alike.
+    #[must_use]
+    pub fn with_offline(&self, offline: bool) -> Self {
+        if offline {
+            self.with_env("CARGO_NET_OFFLINE", "true")
+        } else {
+            self.clone()
+        }
+    }
+
+    /// Whether this host is asked to keep builds off the network.
+    ///
+    /// `CARGO_NET_OFFLINE` carries it — set in the environment or bound by a
+    /// command's `--offline` flag through [`Host::with_offline`] — spelled
+    /// the way the environment spells booleans (`1`, `true`, `yes`, `on`).
+    #[must_use]
+    pub fn offline(&self) -> bool {
+        self.env("CARGO_NET_OFFLINE").is_some_and(|value| {
+            let value = value.to_string_lossy().trim().to_ascii_lowercase();
+            matches!(value.as_str(), "1" | "true" | "yes" | "on")
+        })
+    }
+
     /// An environment variable on this host.
     ///
     /// Lookup is case-sensitive on Unix and case-insensitive on Windows,
@@ -671,6 +698,19 @@ impl Host {
         &self,
         command: &MetadataCommand,
     ) -> Result<Metadata, cargo_metadata::Error> {
+        let json = self.cargo_metadata_json(command).await?;
+        unblock(move || MetadataCommand::parse(json)).await
+    }
+
+    /// The JSON document [`Host::cargo_metadata`] parses — the first stdout
+    /// line of the run that opens a JSON object.
+    ///
+    /// # Errors
+    /// Every error [`MetadataCommand::exec`] reports before parsing.
+    pub async fn cargo_metadata_json(
+        &self,
+        command: &MetadataCommand,
+    ) -> Result<String, cargo_metadata::Error> {
         let invocation = command.cargo_command();
         let mut cargo = self.command("cargo");
         cargo.args(invocation.get_args()).kill_on_drop(true);
@@ -683,20 +723,18 @@ impl Host {
                 None => cargo.env_remove(key),
             };
         }
+        tracing::debug!(args = ?invocation.get_args().collect::<Vec<_>>(), "spawning cargo metadata");
         let output = cargo.output().await?;
-        unblock(move || {
-            if !output.status.success() {
-                return Err(cargo_metadata::Error::CargoMetadata {
-                    stderr: String::from_utf8(output.stderr)?,
-                });
-            }
-            let json = std::str::from_utf8(&output.stdout)?
-                .lines()
-                .find(|line| line.starts_with('{'))
-                .ok_or(cargo_metadata::Error::NoJson)?;
-            MetadataCommand::parse(json)
-        })
-        .await
+        if !output.status.success() {
+            return Err(cargo_metadata::Error::CargoMetadata {
+                stderr: String::from_utf8(output.stderr)?,
+            });
+        }
+        let json = std::str::from_utf8(&output.stdout)?
+            .lines()
+            .find(|line| line.starts_with('{'))
+            .ok_or(cargo_metadata::Error::NoJson)?;
+        Ok(json.to_owned())
     }
 
     /// Run `program` to completion with nothing of this process in its hands:

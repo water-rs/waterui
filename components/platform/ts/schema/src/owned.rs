@@ -12,6 +12,7 @@ use crate::tree::{
 
 /// An owned [`TypeSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum Schema {
     /// See [`TypeSchema::Unit`].
     Unit,
@@ -59,6 +60,7 @@ pub enum Schema {
 
 /// An owned [`StructSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Struct {
     /// The type name.
     pub name: String,
@@ -68,6 +70,7 @@ pub struct Struct {
 
 /// An owned [`FieldSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Field {
     /// The field name.
     pub name: String,
@@ -77,6 +80,7 @@ pub struct Field {
 
 /// An owned [`EnumSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Enum {
     /// The type name.
     pub name: String,
@@ -88,6 +92,7 @@ pub struct Enum {
 
 /// An owned [`EnumRepresentation`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum Representation {
     /// See [`EnumRepresentation::StringUnion`].
     StringUnion,
@@ -102,6 +107,7 @@ pub enum Representation {
 
 /// An owned [`VariantSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Variant {
     /// The variant name.
     pub name: String,
@@ -111,6 +117,7 @@ pub struct Variant {
 
 /// An owned [`VariantPayload`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum Payload {
     /// See [`VariantPayload::Unit`].
     Unit,

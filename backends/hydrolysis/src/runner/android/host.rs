@@ -34,10 +34,8 @@ use super::accessibility::AccessibilitySnapshot;
 use super::gpu::{AndroidGpuContext, AndroidSurface};
 use super::ime::ImeBridge;
 use super::jni::JniError;
-use crate::engine::WidgetTheme;
 use crate::platform::{
-    GpuSurfaceWindow, InputEvent, PlatformWindow, PresentationSurface as _, TextInputState,
-    validated_window_frame,
+    GpuSurfaceWindow, InputEvent, PlatformWindow, TextInputState, validated_window_frame,
 };
 use crate::renderer::{
     FontFamilyResolution, HydrolysisRenderer, HydrolysisTextContextMenuMode, MenuShortcutRegistry,
@@ -54,6 +52,7 @@ use crate::runner::{
     install_native_component_hooks, menu_bar,
 };
 use crate::text::SessionTextEngine;
+use crate::theme::WidgetTheme;
 use crate::time::Instant;
 
 /// One coherent metrics snapshot the host pushes — size, density, font scale,
@@ -299,33 +298,6 @@ impl HostBridge {
         self.call(HostMethodId::PlatformViewsChanged, &[]);
     }
 
-    /// Delivers a fatal error (GPU loss, unrecoverable renderer failure) —
-    /// the host raises it as an exception on the UI thread.
-    fn fatal_error(&self, message: &str) {
-        let Ok(mut env) = self.vm.get_env() else {
-            tracing::error!(
-                target: "waterui::hydrolysis::android",
-                %message,
-                "fatal error raised with no attached JNIEnv"
-            );
-            return;
-        };
-        let Ok(message) = env.new_string(message) else {
-            return;
-        };
-        let jni_args = [JValue::Object(&message).as_jni()];
-        // SAFETY: as in `call_with_env` — the cached id matches
-        // `onNativeFatalError`'s `(Ljava/lang/String;)V` signature exactly.
-        let _ = unsafe {
-            env.call_method_unchecked(
-                &self.host_view,
-                self.methods[HostMethodId::FatalError as usize],
-                ReturnType::Primitive(Primitive::Void),
-                &jni_args,
-            )
-        };
-    }
-
     /// The window's content asked to close — the host finishes the activity.
     fn close_requested(&self) {
         self.call(HostMethodId::CloseRequested, &[]);
@@ -551,10 +523,13 @@ impl PlatformWindow for AndroidHostWindow {
             max_fling_velocity: crate::num_cast::f64_as_f32(
                 f64::from(metrics.max_fling_velocity_px) / density,
             ),
-            fling: crate::platform::FlingDeceleration {
-                physical_coeff: physical_coeff_px / density,
-                friction: metrics.scroll_friction,
-            },
+            physics: crate::platform::ScrollPhysics::android(
+                crate::platform::SplineDeceleration {
+                    physical_coeff: physical_coeff_px / density,
+                    friction: metrics.scroll_friction,
+                },
+                crate::platform::EdgeStretch::android(density),
+            ),
         })
     }
 
@@ -835,6 +810,19 @@ impl UiThreadServices {
     }
 }
 
+/// Installs the capture service. It mounts its subtree under a snapshot of
+/// `env` — the theme tokens, hooks and font collection a window's subtree
+/// resolves — so it must be installed once the session environment is
+/// otherwise complete (water-rs/waterui#2703).
+fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn WidgetTheme>) {
+    let renderer = crate::view_renderer::HydrolysisViewRenderer::new(
+        Rc::clone(theme),
+        env.clone(),
+        FontFamilyResolution::Lenient,
+    );
+    env.insert(waterui_core::ViewRenderer::new(renderer));
+}
+
 impl AndroidSession {
     /// Mounts the registered app on the host view: builds the environment,
     /// GPU context and the runtime window. `services` is the UI-thread
@@ -882,9 +870,6 @@ impl AndroidSession {
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&*style));
         let theme: Rc<dyn WidgetTheme> = style;
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-        ));
         let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
         let shortcuts = env
@@ -917,6 +902,8 @@ impl AndroidSession {
             jni_env,
             bridge.host_view.clone(),
         )?;
+
+        install_view_renderer(&mut env, &theme);
 
         let mut windows = VecDeque::from(windows);
         let window = windows
@@ -1103,14 +1090,11 @@ impl AndroidSession {
             }
             self.sync_back_navigation_available();
         }
-        // A lost device is fatal for the session — surface it through the
-        // host's explicit error callback, not a silently black band.
-        if self.runtime.platform.surface.device_loss().is_lost() {
-            self.runtime
-                .platform
-                .bridge
-                .fatal_error("hydrolysis android: wgpu device lost");
-        }
+        // A lost device is recreated inside the frame above
+        // (`PresentationSurface::ensure_live`, water-rs/waterui#2742); a
+        // recreation that exhausts its loss budget panics there, which the
+        // JNI `guard` raises as `IllegalStateException` — the same explicit
+        // error surface a fatal host callback would have been.
         if should_close {
             self.runtime.platform.bridge.close_requested();
         }

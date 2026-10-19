@@ -309,9 +309,7 @@ impl RenderNode {
                         .borrow_mut()
                         .layout(renderer, &node.env, safe_area, proposal, size);
                 }
-                node.child
-                    .borrow()
-                    .flush(renderer, ctx, env, kurbo::Affine::IDENTITY);
+                node.flush_content(renderer, ctx, env);
             }
             Self::Retain(node) => node
                 .child
@@ -440,6 +438,13 @@ impl RenderNode {
                     }
                     WrapperEffect::LayoutPriority(_) => {
                         // Layout-only: nothing to apply while drawing.
+                        node.child
+                            .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
+                    }
+                    WrapperEffect::Transition(declaration) => {
+                        // The owning site paints the transition around its
+                        // whole instance; the declaration itself draws through.
+                        declaration.assert_owned();
                         node.child
                             .flush(renderer, ctx, child_env, kurbo::Affine::IDENTITY);
                     }
@@ -768,9 +773,13 @@ impl RenderNode {
                         );
                         let viewport = renderer.current_placement();
                         viewport.set_content_offset(-offset);
-                        renderer
-                            .program()
-                            .begin_inner(viewport_rect, offset, Rc::clone(&viewport));
+                        let stretch = renderer.scroll_stretch(&handle);
+                        renderer.program().begin_inner(
+                            viewport_rect,
+                            offset,
+                            stretch,
+                            Rc::clone(&viewport),
+                        );
                         let world = renderer.record_world(content_ctx.local);
                         renderer.push_lazy_viewport(crate::renderer::lifecycle::LazyViewport {
                             bounds: lazy_viewport,
@@ -901,17 +910,32 @@ impl RenderNode {
                 let child_env = &node.env;
                 match &node.effect {
                     WrapperEffect::GestureObserver(effect) => {
-                        let claimed_node = HydrolysisRenderer::emit_gesture_observer_accessibility(
+                        let claim = HydrolysisRenderer::emit_gesture_observer_accessibility(
                             renderer, child_env, effect,
                         );
                         // The gesture's node claimed the naming scope: the
                         // content walks under the same shielded environment a
                         // naming container hands its children, so a leaf cannot
                         // repeat the claim's role and label as a second node.
+                        // A *synthesized* claim (a bare `.on_tap` with no
+                        // naming scope of its own) drops the
+                        // name-from-contents marker instead: the wrapped
+                        // content keeps its own nodes and the claim collapses
+                        // onto a lone one below, so the action lands on the
+                        // node the gesture wraps rather than on a swallowed
+                        // composite (water-rs/waterui#1070).
                         let content_env;
-                        let walk_env = if claimed_node.is_some() {
-                            content_env = accessibility_container_child_environment(child_env)
-                                .unwrap_or_else(|| child_env.clone());
+                        let walk_env = if let Some(claim) = &claim {
+                            content_env = accessibility_container_child_environment(&claim.env)
+                                .map_or_else(
+                                    || claim.env.clone(),
+                                    |mut walk_env| {
+                                        if claim.synthesized {
+                                            walk_env.remove::<AccessibilityNameFromContents>();
+                                        }
+                                        walk_env
+                                    },
+                                );
                             &content_env
                         } else {
                             child_env
@@ -920,8 +944,14 @@ impl RenderNode {
                         // claims this naming scope — an observer that registers
                         // no node (a long-press, or a silenced tap) must not
                         // consume the flag, or it suppresses the inner element
-                        // the flag names (water-rs/hydrolysis#266).
-                        if claimed_node.is_some()
+                        // the flag names (water-rs/hydrolysis#266). The claim
+                        // parents the content's nodes for the walk — without it
+                        // they register beside the claim and the synthesized
+                        // claim's single-child collapse has nothing to merge.
+                        if let Some(claim) = &claim {
+                            renderer.push_accessibility_parent(claim.node_id);
+                        }
+                        if claim.is_some()
                             && child_env
                                 .get::<AccessibilityChildren>()
                                 .is_some_and(AccessibilityChildren::excludes_descendants)
@@ -932,8 +962,14 @@ impl RenderNode {
                         } else {
                             node.child.emit_accessibility(renderer, walk_env);
                         }
-                        if let Some(node_id) = claimed_node {
-                            renderer.drain_claim_scope(node_id, child_env);
+                        if claim.is_some() {
+                            renderer.pop_accessibility_parent();
+                        }
+                        if let Some(claim) = claim {
+                            renderer.drain_claim_scope(claim.node_id, &claim.env);
+                            if claim.synthesized {
+                                renderer.collapse_synthesized_claim(claim.node_id);
+                            }
                         }
                     }
                     WrapperEffect::Focused(value) => {
@@ -976,6 +1012,10 @@ impl RenderNode {
                         } else {
                             node.child.emit_accessibility(renderer, child_env);
                         }
+                    }
+                    WrapperEffect::Transition(declaration) => {
+                        declaration.assert_owned();
+                        node.child.emit_accessibility(renderer, child_env);
                     }
                     _ => node.child.emit_accessibility(renderer, child_env),
                 }

@@ -128,6 +128,7 @@ use crate::live::LivePhotoSource;
 /// # }
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Media {
     /// An image from a URL that will be displayed using the [`Photo`] component.
     Image(Url),

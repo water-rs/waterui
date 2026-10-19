@@ -19,11 +19,23 @@ const VARIANT_SIMPLE: u32 = 0u;
 const VARIANT_SHADOW: u32 = 1u;
 const VARIANT_FULL: u32 = 2u;
 const VARIANT_UNION: u32 = 3u;
+const VARIANT_LONG_GRADIENT: u32 = 4u;
+// Every span but the union's: GPU-routed path draws (#2543).
+const VARIANT_CELL: u32 = 5u;
+const VARIANT_IMAGE: u32 = 6u;
 
 @group(1) @binding(0) var source: texture_2d<f32>;
 // The blend backdrop: a copy of the target's region, sampled like `source`.
 @group(1) @binding(1) var backdrop: texture_2d<f32>;
 @group(1) @binding(2) var image_tex: texture_2d<f32>;
+
+// image-source
+// The sRGB transfer decode of each 8-bit code (`image_storage::transfer_table`).
+struct ImageDecode {
+    linear: array<f32, 256>,
+}
+@group(0) @binding(5) var<storage, read> image_decode: ImageDecode;
+// image-source
 
 // Abramowitz & Stegun 7.1.26, |error| < 1.5e-7.
 fn erf(x: f32) -> f32 {
@@ -115,12 +127,6 @@ fn shadow(s: Shape, p: vec2<f32>, sigma: f32) -> f32 {
     return clamp(acc, 0.0, 1.0);
 }
 
-fn srgb_encode(c: vec3<f32>) -> vec3<f32> {
-    let lo = c * 12.92;
-    let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
-    return select(hi, lo, c <= vec3<f32>(0.0031308));
-}
-
 // Returns false when EXTEND_NONE leaves t outside [0,1] — the caller
 // returns transparent. NaN fails the range test and is also rejected.
 fn extend_ok(t: f32, mode: u32) -> bool {
@@ -154,12 +160,31 @@ fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
         c = stops[first + count - 1u].color;
     } else {
         var i = first;
+        // long-gradient-stub
+        if VARIANT == VARIANT_LONG_GRADIENT {
+            var end = first + count - 1u;
+            loop {
+                if end - i <= 1u {
+                    break;
+                }
+                let mid = i + (end - i) / 2u;
+                if t < stops[mid].offset {
+                    end = mid;
+                } else {
+                    i = mid;
+                }
+            }
+        } else {
+        // long-gradient-stub
         loop {
             if i + 1u >= first + count - 1u || t < stops[i + 1u].offset {
                 break;
             }
             i += 1u;
         }
+        // long-gradient-stub
+        }
+        // long-gradient-stub
         let s0 = stops[i];
         let s1 = stops[i + 1u];
         let span = s1.offset - s0.offset;
@@ -168,7 +193,7 @@ fn eval_stops(first: u32, count: u32, interp: u32, t: f32) -> vec4<f32> {
     }
     var rgb = c.rgb;
     if interp == INTERP_SRGB {
-        rgb = SRGB_TO_P3 * srgb_decode(rgb);
+        rgb = SPACE_SRGB_TO_P3 * space_srgb_decode(rgb);
     }
     return vec4<f32>(rgb * c.a, c.a);
 }
@@ -254,9 +279,58 @@ fn sweep_t(i: u32, p: vec2<f32>) -> f32 {
     return (theta - start) / span;
 }
 
+// A loaded image texel in the working representation. Only the image
+// variant (and union, which carries everything) converts source texels:
+// the `// image-source` spans are dropped from every other variant, whose
+// image paints all sample working texels (flags 0).
+fn image_working_texel(encoded: vec4<f32>, flags: u32) -> vec4<f32> {
+    // image-source
+    if (flags & 4096u) != 0u { return image_source_texel(encoded, flags); }
+    // image-source
+    return encoded;
+}
+
+// image-source
+// Conversion happens separately at each tap, BEFORE interpolation. In
+// particular neither straight alpha nor encoded premultiplied alpha may be
+// hardware-filtered and subsequently converted to the working representation.
+// Flag bits (`image_storage`): 12 source texels, 13 premultiplied, 14 the
+// transfer function, 15 sRGB primaries, 16 the transfer table.
+fn image_source_texel(encoded: vec4<f32>, flags: u32) -> vec4<f32> {
+    let a = encoded.a;
+    var rgb = encoded.rgb;
+    if (flags & 65536u) != 0u {
+        // A straight 8-bit code: its decode is a table entry.
+        let code = vec3<u32>(round(rgb * 255.0));
+        rgb = vec3<f32>(
+            image_decode.linear[code.r],
+            image_decode.linear[code.g],
+            image_decode.linear[code.b],
+        );
+    } else {
+        if (flags & 8192u) != 0u && a > 0.0 {
+            rgb = min(rgb / a, vec3<f32>(1.0));
+        }
+        if (flags & 16384u) != 0u {
+            rgb = select(pow(max((rgb + 0.055) / 1.055, vec3<f32>(0.0)), vec3<f32>(2.4)), rgb / 12.92, rgb <= vec3<f32>(0.04045));
+        }
+    }
+    if (flags & 32768u) != 0u {
+        rgb = mat3x3<f32>(
+            vec3<f32>(0.822461969, 0.033194199, 0.017082631),
+            vec3<f32>(0.177538031, 0.966805801, 0.072397441),
+            vec3<f32>(0.0, 0.0, 0.910519929)
+        ) * rgb;
+    }
+    let linear = vec4<f32>(rgb * a, a);
+    // Match the previous upload's working-f16 rounding before interpolation.
+    return quantizeToF16(linear);
+}
+// image-source
+
 // Samples `tex` like the oracle's sample_image: texel centres at n + 0.5,
 // coordinate already in image-pixel space after the per-axis extend.
-fn sample_image_tex(tex: texture_2d<f32>, u: f32, v: f32, w: f32, h: f32, bilinear: bool) -> vec4<f32> {
+fn sample_image_tex(tex: texture_2d<f32>, u: f32, v: f32, w: f32, h: f32, bilinear: bool, flags: u32) -> vec4<f32> {
     let dims = vec2<f32>(w, h);
     if bilinear {
         // Clamp the sample coordinate into texel-centre space before the
@@ -265,19 +339,19 @@ fn sample_image_tex(tex: texture_2d<f32>, u: f32, v: f32, w: f32, h: f32, biline
         let lo = vec2<i32>(floor(f));
         let hi = min(lo + 1, vec2<i32>(dims) - 1);
         let t = f - floor(f);
-        let c00 = textureLoad(tex, vec2<i32>(lo.x, lo.y), 0);
-        let c10 = textureLoad(tex, vec2<i32>(hi.x, lo.y), 0);
-        let c01 = textureLoad(tex, vec2<i32>(lo.x, hi.y), 0);
-        let c11 = textureLoad(tex, vec2<i32>(hi.x, hi.y), 0);
+        let c00 = image_working_texel(textureLoad(tex, vec2<i32>(lo.x, lo.y), 0), flags);
+        let c10 = image_working_texel(textureLoad(tex, vec2<i32>(hi.x, lo.y), 0), flags);
+        let c01 = image_working_texel(textureLoad(tex, vec2<i32>(lo.x, hi.y), 0), flags);
+        let c11 = image_working_texel(textureLoad(tex, vec2<i32>(hi.x, hi.y), 0), flags);
         return mix(mix(c00, c10, t.x), mix(c01, c11, t.x), t.y);
     }
     let xy = clamp(round(vec2<f32>(u, v) - 0.5), vec2<f32>(0.0), dims - 1.0);
-    return textureLoad(tex, vec2<i32>(xy), 0);
+    return image_working_texel(textureLoad(tex, vec2<i32>(xy), 0), flags);
 }
 
 // Image paint: `grad`/`grad2` carry the local→image affine [a b c d e f]
 // and the image size [w, h]; meta_.w packs extend_x | extend_y<<4 |
-// sampling<<8. The extends run in image-pixel space, like the oracle's
+// sampling<<8 and source conversion flags in bits 12–16. The extends run in image-pixel space, like the oracle's
 // eval_image_paint.
 fn paint_image(i: u32, local: vec2<f32>) -> vec4<f32> {
     let g = instances[i].grad;
@@ -296,7 +370,7 @@ fn paint_image(i: u32, local: vec2<f32>) -> vec4<f32> {
     }
     let u = extend_t(tu, ex) * g2.z;
     let v = extend_t(tv, ey) * g2.w;
-    return sample_image_tex(image_tex, u, v, g2.z, g2.w, ((meta_w >> 8u) & 1u) != 0u);
+    return sample_image_tex(image_tex, u, v, g2.z, g2.w, ((meta_w >> 8u) & 1u) != 0u, meta_w);
 }
 
 // Bilinear inverse in f32, solving for v. The f64 oracle solves for u.
@@ -370,6 +444,13 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
         point = vec2<f32>(linear.x * local.x + linear.z * local.y,
                           linear.y * local.x + linear.w * local.y) + offset;
     }
+    // long-gradient-stub
+    // Specialize dispatch without changing the kind used to evaluate the
+    // gradient. The scoped bindings vanish from the short/union modules.
+    let gradient_kind = kind;
+    {
+    let kind = select(kind, PAINT_LINEAR, VARIANT == VARIANT_LONG_GRADIENT);
+    // long-gradient-stub
     switch kind {
         case PAINT_SOLID: {
             return vec4<f32>(color.rgb * color.a, color.a);
@@ -385,6 +466,9 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
             return paint_image(i, point);
         }
         default: {
+            // long-gradient-stub
+            let kind = gradient_kind;
+            // long-gradient-stub
             let meta_w = meta_.w;
             let extend = (meta_w >> 20u) & 0xfu;
             var t: f32;
@@ -422,6 +506,9 @@ fn paint(i: u32, meta_: vec4<u32>, color: vec4<f32>, local: vec2<f32>, device: v
             return eval_stops(instances[i].meta_.z, count, interp, extend_t(t, extend));
         }
     }
+    // long-gradient-stub
+    }
+    // long-gradient-stub
 }
 
 // Per-member backdrop effects: a member composite bilinearly samples the
@@ -471,11 +558,14 @@ fn backdrop_sample(q: vec2<f32>) -> vec4<f32> {
 // `floor(level)` and `ceil(level)`, mixed by `fract(level)`.
 fn backdrop_sample_level(q: vec2<f32>, level: f32) -> vec4<f32> {
     let lc = clamp(level, 0.0, backdrop_levels - 1.0);
-    let k0 = u32(floor(lc));
-    let k1 = min(k0 + 1u, u32(backdrop_levels) - 1u);
+    let base = floor(lc);
+    let k0 = u32(base);
     let lo = backdrop_sample_at(q, k0);
+    let phase = lc - base;
+    if phase == 0.0 { return lo; }
+    let k1 = min(k0 + 1u, u32(backdrop_levels) - 1u);
     let hi = backdrop_sample_at(q, k1);
-    return mix(lo, hi, lc - floor(lc));
+    return mix(lo, hi, phase);
 }
 
 // The effect entry's pixel input: the device-space sample point, the
@@ -653,9 +743,9 @@ fn fs_simple(in: VsOut, classified: bool) -> vec4<f32> {
             if classified {
                 texel = vec2<i32>(floor(in.local));
             } else {
-                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
+                texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
             }
-            cov = textureLoad(atlas, texel, 0).r;
+            cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
         }
         case KIND_SPAN: {
             cov = 1.0;
@@ -710,6 +800,10 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
     var ellipse = false;
     var ellipse_half = vec2<f32>(0.0);
     var inst_index = ii;
+    // cell-buffer
+    // A GPU-routed path's emitted instances order by its anchor.
+    inst_index = select(ii, bitcast<u32>(inst.params.x), (inst.meta_.w & 0x80000000u) != 0u);
+    // cell-buffer
     var tier = 0u;
     var promoted = false;
     if inst.meta_.x == KIND_REGION {
@@ -788,7 +882,11 @@ fn vs_opaque(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -
 @vertex
 fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> PartialOut {
     var out = quad_vertex(array<u32, 8>(0u, 1u, 2u, 5u, 5u, 5u, 5u, 5u)[vi], ii);
-    out.position.z = bitcast<f32>(0x3e000000u + ii * 8u);
+    var depth_index = ii;
+    // cell-buffer
+    depth_index = select(ii, bitcast<u32>(instances[ii].params.x), (instances[ii].meta_.w & 0x80000000u) != 0u);
+    // cell-buffer
+    out.position.z = bitcast<f32>(0x3e000000u + depth_index * 8u);
     let inst = instances[ii];
     let s = inst.shape;
     if inst.meta_.x == KIND_FILL && s.exponent == 2.0 && all(s.radii == vec4<f32>(s.half.x)) {
@@ -802,7 +900,7 @@ fn vs_partial(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) 
     if opaque_span(instances[ii]) {
         out.position = vec4<f32>(0.0, 0.0, 0.0, 1.0);
     }
-    let local = select(out.local, out.device - out.cell.xy + out.cell.zw, out.meta_.x == KIND_GLYPH);
+    let local = select(out.local, out.device - out.cell.xy + cell_texel_origin(out.cell.zw, out.meta_.w), out.meta_.x == KIND_GLYPH);
     return PartialOut(out.position, local, ii, out.affine1.zw);
 }
 
@@ -816,6 +914,12 @@ fn fs_partial(in: PartialOut) -> @location(0) vec4<f32> {
     let inst = instances[in.instance];
     var data: VsOut;
     data.local = in.local;
+    // cell-buffer
+    // A buffer cell's origin, interior run and flag for `path_cell_coverage`.
+    data.cell = vec4<f32>(inst.bounds.xy, inst.uv.xy);
+    data.shape_a = vec4<f32>(inst.shape.half, inst.shape.aspect, inst.shape.exponent);
+    data.meta_.w = inst.meta_.w;
+    // cell-buffer
     data.meta_.x = select(inst.meta_.x, KIND_GLYPH, inst.meta_.x == KIND_REGION);
     data.color = inst.color;
     data.params.y = inst.params.y;
@@ -843,7 +947,10 @@ fn fs_shadow(in: VsOut) -> vec4<f32> {
     return move_space(vec4<f32>(in.color.rgb * in.color.a, in.color.a) * cov, SPACE_LINEAR, globals.space);
 }
 
-fn fs_full(in: VsOut) -> vec4<f32> {
+fn fs_full(fragment: VsOut) -> vec4<f32> {
+    // A device-space quad paints, clips and samples at its pixel, never at
+    // a point interpolated across the quad.
+    let in = device_quad_pixel(fragment);
     // The constants every fragment needs arrive as flat varyings; the
     // storage array is read only for kind-specific fields (inner, clip,
     // mask, gradient data).
@@ -879,8 +986,8 @@ fn fs_full(in: VsOut) -> vec4<f32> {
             }
         }
         case KIND_GLYPH: {
-            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(in.cell.zw);
-            cov = textureLoad(atlas, texel, 0).r;
+            let texel = vec2<i32>(floor(in.device - in.cell.xy)) + vec2<i32>(cell_texel_origin(in.cell.zw, in.meta_.w));
+            cov = path_cell_coverage(texel, in.cell.zw, in.shape_a.xy, in.meta_.w);
         }
         case KIND_SPAN: {
             cov = 1.0;
@@ -909,6 +1016,13 @@ fn fs_full(in: VsOut) -> vec4<f32> {
     // the backdrop and the blended result.
     let inside_cov = clamp(cov, 0.0, 1.0);
     cov = inside_cov * in.params.y;
+    // long-gradient-stub
+    // LongGradient is selected only for linear, radial and sweep paints;
+    // texture composites and backdrop effects cannot reach this module.
+    if VARIANT == VARIANT_LONG_GRADIENT {
+        return move_space(paint(i, in.meta_, in.color, in.local, in.device) * cov, SPACE_LINEAR, globals.space);
+    }
+    // long-gradient-stub
     // A PAINT_TEXTURE instance samples a target texture: a plain member
     // sample (mode 0, no FLAG_BLEND_SRC) converts the texel into the
     // pass's space and blends over by fixed function; a composite blends

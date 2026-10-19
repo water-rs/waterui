@@ -26,6 +26,7 @@ use crate::toolchain::Host;
 /// a project that declares `pnpm` is never built with `bun`.
 #[derive(Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Debug, Default, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
+#[non_exhaustive]
 pub enum PackageManager {
     /// Bun (`bun`).
     #[default]
@@ -111,6 +112,7 @@ impl PackageManager {
 /// The macro never reads this — only the CLI does. Absent section and absent
 /// key both mean [`PackageManager::Bun`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct WebConfig {
     /// The package manager used for `run build`, `run dev`, `create vite`,
     /// and `install` in the frontend project.
@@ -219,6 +221,7 @@ pub const DEV_URL_ENV: &str = "WATERUI_DEV_URL";
 
 /// A target `water run` can hand a dev-server URL to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum DevTarget {
     /// A desktop process the CLI spawns (macOS, GTK, Hydrolysis).
     Desktop,
@@ -667,6 +670,7 @@ fn echo_dev_server_line(line: &str) {
 
 /// Where the frontend of an initialized project comes from.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WebSource {
     /// Scaffold a new Vite project into `web/`.
     New,
@@ -676,6 +680,7 @@ pub enum WebSource {
 
 /// What to do with a frontend found outside `web/`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ExistingFrontendMode {
     /// Copy it into `web/` (excluding `node_modules` and `.git`), then install.
     Copy,
@@ -685,6 +690,7 @@ pub enum ExistingFrontendMode {
 
 /// The answers `water init` needs, each supplied by a flag or a prompt.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct InitAnswers {
     /// `--web new|<path>`: the frontend source, if the flag settled it.
     pub web: Option<WebSource>,
@@ -695,9 +701,30 @@ pub struct InitAnswers {
     pub package_manager: Option<PackageManager>,
 }
 
+impl InitAnswers {
+    /// Answers choosing `web` as the frontend source, adopting an existing
+    /// frontend in `web_mode`, managed by `package_manager`.
+    #[must_use]
+    pub const fn new(
+        web: Option<WebSource>,
+        web_mode: Option<ExistingFrontendMode>,
+        package_manager: Option<PackageManager>,
+    ) -> Self {
+        Self {
+            web,
+            web_mode,
+            package_manager,
+        }
+    }
+}
+
 /// One step of `water init`. The command executes these in order; the plan is
 /// pure so the decision tree is testable without touching disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal performs each init action variant by variant"
+)]
 pub enum InitAction {
     /// Move the listed top-level entries into `web/`.
     MoveFrontendToWeb {
@@ -857,6 +884,7 @@ fn relative_path_arg(project_root: &Path, source: &Path) -> eyre::Result<String>
 /// Read from `web/package.json` dependencies — the dependencies the template
 /// ships are the one ground truth `create vite` gives us.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WebFramework {
     /// `vanilla`/`vanilla-ts`: no framework dependency.
     Vanilla,
@@ -901,6 +929,7 @@ impl WebFramework {
 /// What `web/package.json` says about a scaffolded frontend: the framework
 /// dependency and whether `typescript` is a devDependency.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct WebFrontend {
     /// The framework the starter's dependencies declare.
     pub framework: WebFramework,
@@ -962,6 +991,7 @@ pub fn detect_web_frontend(package_json: &str) -> Option<WebFrontend> {
 
 /// What [`apply_brand_overlay`] did, and what it could not.
 #[derive(Debug, Default)]
+#[non_exhaustive]
 pub struct WebOverlayReport {
     /// The detected frontend (`None` when `package.json` did not parse).
     pub frontend: Option<WebFrontend>,
@@ -1412,11 +1442,11 @@ mod tests {
         machine.install("bun");
         machine.respond("bun_run_build", "the bundler's complaint");
         let host = machine.host([("WATERUI_FAKE_PM_EXIT", "1")]);
-        let meta = BundleMountMeta {
-            mount: "web".to_string(),
-            path: machine.dir("app/dist"),
-            project: Some(machine.dir("app")),
-        };
+        let meta = BundleMountMeta::new(
+            "web".to_string(),
+            machine.dir("app/dist"),
+            Some(machine.dir("app")),
+        );
         let error = smol::block_on(build_frontend(&host, PackageManager::Bun, &meta)).unwrap_err();
         assert!(
             error.to_string().contains("the bundler's complaint"),

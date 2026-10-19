@@ -27,25 +27,38 @@ impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationViewRenderState,
     crate::widgets::nav::navigation::render_navigation_view_node,
     crate::widgets::nav::navigation::measure_navigation_view_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::nav::navigation::emit_navigation_view_accessibility
+    ; page: navigation_page_transition
 );
+
+/// The declaration on a navigation view's content root — the page root a
+/// navigation stack owns.
+fn navigation_page_transition(
+    state: &crate::widgets::nav::navigation::NavigationViewRenderState,
+) -> Option<waterui_core::transition::TransitionSpec> {
+    super::transition::claim_transition(state.content_node())
+}
 impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationSplitRenderState,
     crate::widgets::nav::navigation::render_navigation_split_node,
     crate::widgets::nav::navigation::measure_navigation_split_node
     ; prepare: prepare_columns
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::nav::navigation::emit_navigation_split_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::nav::navigation::NavigationStackRenderState,
     crate::widgets::nav::navigation::render_navigation_stack_node,
     crate::widgets::nav::navigation::measure_navigation_stack_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::nav::navigation::emit_navigation_stack_accessibility
 );
 impl_widget_behavior!(
     crate::widgets::nav::tabs::TabsRenderState,
     crate::widgets::nav::tabs::render_tabs_node,
     crate::widgets::nav::tabs::measure_tabs_node
+    ; dirty: take_layout_dirty
     ; a11y: crate::widgets::nav::tabs::emit_tabs_accessibility
 );
 impl_widget_behavior!(
@@ -105,7 +118,9 @@ impl RenderNode {
     ) -> Self {
         use crate::widgets::layout::list::ListRenderState;
         let stretch = waterui_core::NativeView::stretch_axis(&config);
-        let state = Rc::new(RefCell::new(ListRenderState::from_config(config, renderer)));
+        let state = Rc::new(RefCell::new(ListRenderState::from_config(
+            config, env, renderer,
+        )));
         Self::build_widget(renderer, state, stretch, env)
     }
 

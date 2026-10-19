@@ -17,6 +17,7 @@ use eyre::eyre;
 
 /// Information about a macOS window.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct WindowInfo {
     /// The window ID (used for screencapture -l).
     pub window_id: u32,

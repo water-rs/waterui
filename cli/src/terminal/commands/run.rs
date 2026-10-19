@@ -241,6 +241,13 @@ pub struct Args {
     #[arg(long)]
     no_dev_server: bool,
 
+    /// Run without accessing the network — the same switch as
+    /// `cargo build --offline`, and `CARGO_NET_OFFLINE` is honoured the same
+    /// way. A declared font missing from the font cache then fails the run
+    /// instead of being fetched.
+    #[arg(long)]
+    offline: bool,
+
     /// Skip the confirmation prompt required by experimental backends
     /// (needed in non-interactive environments).
     #[arg(short = 'y', long)]
@@ -266,6 +273,7 @@ impl std::fmt::Debug for Args {
             .field("profiling", &self.profiling)
             .field("debug", &self.debug)
             .field("no_dev_server", &self.no_dev_server)
+            .field("offline", &self.offline)
             .field("yes", &self.yes)
             .finish()
     }
@@ -494,7 +502,7 @@ async fn run_tui_app(shell: &Shell, args: Args) -> Result<()> {
 
     let project_path = crate::project_path::canonicalize(&args.path)?;
     let project = Box::pin(Project::open_for_build(
-        &waterui_cli::toolchain::Host::current(),
+        &waterui_cli::toolchain::Host::current().with_offline(args.offline),
         &project_path,
         ManagedBackends::NONE,
     ))
@@ -533,7 +541,7 @@ async fn prepare_run_context(shell: &Shell, args: &Args) -> Result<Option<RunCon
     )?);
     let managed_backends = managed_backends(platform, backend);
     let project = Box::pin(Project::open_for_build(
-        &waterui_cli::toolchain::Host::current(),
+        &waterui_cli::toolchain::Host::current().with_offline(args.offline),
         &project_path,
         managed_backends,
     ))
@@ -778,10 +786,9 @@ async fn augment_event_with_crash_report(
             let Some(report) = find_latest_ips_report(ctx).await else {
                 return DeviceEvent::Crashed(crash);
             };
-            DeviceEvent::Crashed(Crash {
-                report: Some(Box::new(report)),
-                ..crash
-            })
+            let mut crash = crash;
+            crash.report = Some(Box::new(report));
+            DeviceEvent::Crashed(crash)
         }
         other => other,
     }
@@ -1760,6 +1767,7 @@ mod tests {
             profiling: false,
             debug: false,
             no_dev_server: false,
+            offline: false,
             yes: false,
         };
         let debug = format!("{args:?}");

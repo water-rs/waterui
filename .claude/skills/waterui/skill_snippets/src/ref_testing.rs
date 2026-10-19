@@ -186,11 +186,9 @@ pub mod gated {
         app.query().drag_by_with(
             dx,
             dy,
-            DragOptions {
-                steps: 12,
-                frame_per_step: true,
-                pointer: waterui_testing::PointerKind::Mouse,
-            },
+            DragOptions::default()
+                .with_steps(12)
+                .with_frame_per_step(true),
         );
 
         app.query().drag_between(fx, fy, tx, ty);

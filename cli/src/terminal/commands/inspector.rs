@@ -103,6 +103,13 @@ pub struct Args {
     /// Project directory path (defaults to current directory).
     #[arg(long, default_value = ".")]
     path: PathBuf,
+
+    /// Build the inspector app without accessing the network — the same
+    /// switch as `cargo build --offline`, and `CARGO_NET_OFFLINE` is
+    /// honoured the same way. A declared font missing from the font cache
+    /// then fails instead of being fetched.
+    #[arg(long)]
+    offline: bool,
 }
 
 impl Args {

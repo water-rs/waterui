@@ -1,7 +1,7 @@
 use std::ops::Range;
 
 use super::*;
-use crate::render::composite::plan::{Limits, Ordering};
+use crate::render::composite::plan::{Formats, Limits, Ordering};
 use crate::render::composition::Materialization;
 use crate::render::instance::{Instance, KIND_SPAN};
 use crate::render::lower::{DrawRange, Pass, ShaderVariant};
@@ -17,6 +17,7 @@ fn pass(target: Target, clear: bool, source: Option<Source>, instance: u32) -> P
             pipeline: PipelineKind::SrcOver,
             variant: ShaderVariant::Full,
             instances: instance..instance + 1,
+            gpu: None,
         }],
         space: cherenkov::BlendSpace::Linear,
         region: [0, 0, 16, 16],
@@ -34,6 +35,14 @@ fn limits(slots: u8) -> Limits {
         slots,
         format: wgpu::TextureFormat::Rgba16Float,
         ordering: Ordering::PerPixel,
+    }
+}
+
+/// A working-format surface with isolation scratches in `scratch`.
+const fn formats(scratch: wgpu::TextureFormat) -> Formats {
+    Formats {
+        surface: wgpu::TextureFormat::Rgba16Float,
+        scratch,
     }
 }
 
@@ -63,7 +72,7 @@ fn scratch_generations_do_not_alias_lifetimes() {
         pass(Target::Scratch(0), true, None, 3),
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
     ]);
-    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(2));
+    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(2));
     let first = plan.targets[1];
     let second = plan.targets[3];
     assert_ne!(first, second);
@@ -101,7 +110,7 @@ fn a_cleared_output_separates_two_native_passes() {
         pass(Target::Scratch(0), true, None, 4),
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 5),
     ]);
-    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(4));
+    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
     assert_ne!(plan.targets[2], plan.targets[5]);
     assert_eq!(plan.epoch_at(1).expect("first epoch").passes, 1..3);
     assert_eq!(plan.epoch_at(4).expect("second epoch").passes, 4..6);
@@ -131,7 +140,7 @@ fn a_reused_slot_clears_every_region_its_image_covers() {
     let mut frame = frame(passes);
     // The read corresponds to the image's own region, as `epoch` demands.
     frame.instances[5].bounds = [0.0, 0.0, 4.0, 4.0];
-    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(4));
+    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
     let epoch = plan.epoch_at(1).expect("one epoch covers both generations");
     assert_eq!(epoch.passes, 1..6);
     let op = |pass: usize| {
@@ -158,11 +167,11 @@ fn attachment_budget_materializes_outer_image_without_recomputing() {
         pass(Target::Scratch(0), false, Some(Source::Scratch(1)), 3),
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
     ]);
-    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(2));
+    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(2));
     assert_eq!(plan.materialization(1), Some(Materialization::SlotLimit));
     assert_eq!(plan.materialization(2), None);
     assert_eq!(plan.epoch_at(2).unwrap().passes, 2..4);
-    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(4));
+    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
     assert_eq!(plan.materialization(1), None);
     assert_eq!(plan.materialization(2), None);
     assert_eq!(plan.epoch_at(1).unwrap().passes, 1..5);
@@ -182,7 +191,7 @@ fn sibling_groups_reuse_one_slot() {
         pass(Target::Scratch(0), false, Some(Source::Scratch(1)), 5),
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 6),
     ]);
-    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(4));
+    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
     let epoch = plan.epoch_at(1).expect("one epoch covers the whole tree");
     assert_eq!(epoch.passes, 1..7);
     // Slot zero stores the part; the parent group and the two siblings
@@ -241,7 +250,7 @@ fn per_pass_ordering_admits_no_epoch() {
     ]);
     let plan = ExecutionPlan::build(
         &frame,
-        wgpu::TextureFormat::Rgba16Float,
+        formats(wgpu::TextureFormat::Rgba16Float),
         Limits {
             ordering: Ordering::PerPass,
             ..limits(4)
@@ -260,7 +269,7 @@ fn neighborhood_reads_and_overlapping_snapshots_materialize() {
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
     ]);
     frame.instances[2].meta[1] = crate::render::instance::PAINT_BACKDROP;
-    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(4));
+    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
     assert!(plan.epoch_at(1).is_none());
     assert_eq!(
         plan.materialization(1),
@@ -268,11 +277,11 @@ fn neighborhood_reads_and_overlapping_snapshots_materialize() {
     );
     frame.instances[2].meta[1] = PAINT_TEXTURE;
     frame.passes[2].backdrop_copy = Some([0, 0, 16, 16]);
-    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(4));
+    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
     assert!(plan.epoch_at(1).is_some());
     frame.instances.push(frame.instances[2]);
     frame.passes[2].ranges[0].instances.end = 4;
-    let plan = ExecutionPlan::build(&frame, wgpu::TextureFormat::Rgba16Float, limits(4));
+    let plan = ExecutionPlan::build(&frame, formats(wgpu::TextureFormat::Rgba16Float), limits(4));
     assert!(plan.epoch_at(1).is_none());
     assert_eq!(
         plan.materialization(1),
@@ -289,7 +298,7 @@ fn cached_paint_updates_preserve_lifetimes_and_motion_rechecks_locality() {
     ]);
     let mut cache = crate::render::composite::cache::Cache::default();
     let mut plan = ExecutionPlan::default();
-    let format = wgpu::TextureFormat::Rgba16Float;
+    let format = formats(wgpu::TextureFormat::Rgba16Float);
     assert!(cache.update(&mut plan, &frame, format, limits(2)));
     let image = plan.targets[1];
     frame.instances[1].color = [1.5, 0.3, 0.0, 0.8];
@@ -325,7 +334,7 @@ fn every_materialization_reason_is_attributed() {
     ];
 
     // A surface part is the frame's output: never an epoch's intermediate.
-    let plan = ExecutionPlan::build(&frame(fuses.clone()), format, limits(4));
+    let plan = ExecutionPlan::build(&frame(fuses.clone()), formats(format), limits(4));
     assert_eq!(plan.materialization(0), Some(Materialization::Persistent));
     assert_eq!(plan.materialization(1), None);
 
@@ -335,7 +344,7 @@ fn every_materialization_reason_is_attributed() {
             pass(Target::Part(0), true, None, 0),
             pass(Target::Scratch(0), true, None, 1),
         ]),
-        format,
+        formats(format),
         limits(4),
     );
     assert_eq!(plan.materialization(1), Some(Materialization::NoInterval));
@@ -348,7 +357,7 @@ fn every_materialization_reason_is_attributed() {
             pass(Target::Scratch(0), true, None, 1),
             pass(Target::Scratch(0), false, Some(Source::Scratch(0)), 2),
         ]),
-        format,
+        formats(format),
         limits(4),
     );
     assert_eq!(
@@ -367,7 +376,7 @@ fn every_materialization_reason_is_attributed() {
             pass(Target::Part(0), false, Some(Source::Scratch(0)), 4),
             pass(Target::Part(0), false, Some(Source::Scratch(1)), 5),
         ]),
-        format,
+        formats(format),
         limits(4),
     );
     assert_eq!(plan.materialization(1), Some(Materialization::External));
@@ -375,7 +384,7 @@ fn every_materialization_reason_is_attributed() {
     // A scratch format the tile attachments cannot carry.
     let plan = ExecutionPlan::build(
         &frame(fuses.clone()),
-        wgpu::TextureFormat::Rgba8Unorm,
+        formats(wgpu::TextureFormat::Rgba8Unorm),
         limits(4),
     );
     assert_eq!(plan.materialization(1), Some(Materialization::Format));
@@ -389,20 +398,20 @@ fn every_materialization_reason_is_attributed() {
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 3),
     ]);
     shifted.passes[2].space = cherenkov::BlendSpace::SrgbEncoded;
-    let plan = ExecutionPlan::build(&shifted, format, limits(4));
+    let plan = ExecutionPlan::build(&shifted, formats(format), limits(4));
     assert_eq!(plan.materialization(1), Some(Materialization::BlendSpace));
 
     // The intermediate covers pixels the epoch's attachment region, which
     // is its output's, does not.
     let mut wider = frame(fuses.clone());
     wider.passes[1].region = [0, 0, 32, 32];
-    let plan = ExecutionPlan::build(&wider, format, limits(4));
+    let plan = ExecutionPlan::build(&wider, formats(format), limits(4));
     assert_eq!(plan.materialization(1), Some(Materialization::Region));
 
     // A blend the on-chip executor does not implement.
     let mut projective = frame(fuses);
     projective.passes[2].ranges[0].pipeline = PipelineKind::Projective { replace: false };
-    let plan = ExecutionPlan::build(&projective, format, limits(4));
+    let plan = ExecutionPlan::build(&projective, formats(format), limits(4));
     assert_eq!(
         plan.materialization(1),
         Some(Materialization::UnsupportedOp)
@@ -422,7 +431,7 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
         pass(Target::Scratch(0), true, None, 1),
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
     ]);
-    let plan = ExecutionPlan::build(&fused, format, limits(4));
+    let plan = ExecutionPlan::build(&fused, formats(format), limits(4));
     let report = composition::frame_report(
         7,
         3,
@@ -466,7 +475,7 @@ fn frame_report_attributes_the_epoch_and_the_traffic_around_it() {
         pass(Target::Part(0), false, Some(Source::Scratch(0)), 2),
     ]);
     blurred.instances[2].meta[1] = crate::render::instance::PAINT_BACKDROP;
-    let plan = ExecutionPlan::build(&blurred, format, limits(4));
+    let plan = ExecutionPlan::build(&blurred, formats(format), limits(4));
     let report = composition::frame_report(
         8,
         3,

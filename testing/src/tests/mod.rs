@@ -1,4 +1,5 @@
 mod harness;
+mod transitions;
 
 use super::*;
 use std::cell::Cell;
@@ -24,7 +25,7 @@ use waterui::layout::scroll::ScrollView;
 use waterui::text::Text;
 use waterui_canvas::Canvas;
 use waterui_core::layout::{Point, Rect, Size};
-use waterui_core::{AnyView, Native, Signal, View};
+use waterui_core::{AnyView, ContentLedger, Native, Signal, View};
 
 #[derive(Debug)]
 struct NoopDriver;
@@ -60,6 +61,10 @@ impl RuntimeDriver for NoopDriver {
     fn clear_ui_focus(&mut self) -> bool {
         false
     }
+
+    fn wait_for_local_work(&self, _timeout: Duration) -> bool {
+        false
+    }
 }
 
 fn node_id(raw: u64) -> NodeId {
@@ -79,6 +84,7 @@ fn node(
         label: label.map(ToOwned::to_owned),
         identifier: None,
         value: value.map(ToOwned::to_owned),
+        placeholder: None,
         bounds: None,
         enabled,
         selected: false,
@@ -158,6 +164,7 @@ fn mounted_on<R: RuntimeDriver>(runtime: R, tree: TreeSnapshot) -> SemanticApp<R
         viewport: (0, 0),
         clock: None,
         resources: ResourceSampler::new(),
+        ledger: ContentLedger::new(),
     }
 }
 
@@ -204,6 +211,10 @@ impl RuntimeDriver for EmitThenSettleDriver {
     fn request_redraw(&mut self) {}
 
     fn clear_ui_focus(&mut self) -> bool {
+        false
+    }
+
+    fn wait_for_local_work(&self, _timeout: Duration) -> bool {
         false
     }
 }
@@ -272,6 +283,14 @@ fn semantic_builder_does_not_require_theme_package() {
 mod token_probe {
     use std::time::Duration;
 
+    use hydrolysis::theme::{
+        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
+        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
+        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
+        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
+        TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
+        WidgetInteractionState, WidgetTheme,
+    };
     use kurbo::{BezPath, Point, Rect};
     use waterui::animation::Animation;
     use waterui::color::Srgb;
@@ -285,14 +304,6 @@ mod token_probe {
     use waterui::text::font::Font;
     use waterui::theme::{color as theme_color, install_color_signal, installed_color_signal};
     use waterui::{Color, EasingCurve, Environment, Signal as _, SignalExt as _, View};
-    use waterui_backend_core::widget::{
-        BadgeMetrics, ButtonMetrics, DividerMetrics, InputFieldMetrics, InteractionMotion,
-        ListMetrics, NavigationMetrics, NavigationMotion, PickerMetrics, ProgressIndicatorStyle,
-        ProgressMetrics, ProgressMotion, RadioIndicatorState, RadioSelectionMotion, SliderMetrics,
-        SliderValueIndicatorMetrics, StepperEnd, StepperMetrics, TabItemLayout, TableMetrics,
-        TabsMetrics, TextCaretMotion, TextContextMenuMetrics, ToggleMetrics,
-        WidgetInteractionState, WidgetTheme,
-    };
 
     use crate::Style;
 
@@ -345,6 +356,7 @@ mod token_probe {
                 press_fade_in: Animation::linear(Duration::from_millis(105)),
                 press_fade_out: Animation::linear(Duration::from_millis(375)),
                 press_grow: Animation::bezier(Duration::from_millis(450), 0.2, 0.0, 0.0, 1.0),
+                press_shape: Animation::linear(Duration::from_millis(15)),
                 minimum_press_duration: Duration::from_millis(225),
                 touch_delay: Duration::from_millis(150),
             }
@@ -928,6 +940,75 @@ fn a11y_identifier_flows_from_modifier_to_selector() {
         "both buttons stay queryable by role"
     );
     app.query().identifier("login.submit").tap();
+}
+
+/// A tap gesture with no naming scope of its own still publishes an
+/// activatable element: the wrapped node takes the `Button` claim's `Click`
+/// and `Focus` actions and its activation, so a tappable `text("T")` reads
+/// the way a `Button` does instead of serializing identically to plain
+/// text (water-rs/waterui#1070).
+#[test]
+fn tap_gesture_publishes_click_action_on_the_wrapped_node() {
+    let taps = Rc::new(Cell::new(0_u32));
+    let taps_for_view = Rc::clone(&taps);
+    let mut app = ui().mount(move || {
+        let taps_for_view = Rc::clone(&taps_for_view);
+        vstack((
+            text("T").on_tap(move || {
+                taps_for_view.set(taps_for_view.get() + 1);
+            }),
+            text("Plain"),
+        ))
+    });
+
+    let tappable = app.query().role(Role::BUTTON).label("T").single();
+    assert!(
+        tappable
+            .node()
+            .actions()
+            .contains(&accesskit::Action::Click),
+        "the wrapped node advertises Click"
+    );
+    tappable.tap(&mut app);
+    assert_eq!(taps.get(), 1, "the click action runs the tap handler");
+
+    // The untapped sibling stays inert — a plain label with no actions.
+    let plain = app.query().role(Role::LABEL).label("Plain").single();
+    assert_eq!(plain.node().actions(), []);
+    assert_eq!(
+        app.query().role(Role::BUTTON).all().len(),
+        1,
+        "only the tappable view claims a button element"
+    );
+}
+
+/// A `TextField` prompt publishes the `aria-placeholder` semantic on the
+/// field's own node (#1071): before the snapshot carried the property, a
+/// field with a prompt and one without produced identical snapshots.
+#[test]
+fn text_field_prompt_publishes_placeholder_on_the_node() {
+    use waterui::prelude::*;
+
+    let email = Binding::container(Str::from(""));
+    let plain = Binding::container(Str::from(""));
+    let mut app = ui().mount(move || {
+        vstack((
+            TextField::new(text("Email"), &email).prompt("name@example.com"),
+            TextField::new(text("Plain"), &plain),
+        ))
+    });
+
+    let prompted = app.query().role(Role::TEXT_INPUT).label("Email").single();
+    assert_eq!(prompted.node().placeholder(), Some("name@example.com"));
+    // The placeholder is a first-class selector predicate, the way `label` and
+    // `value` are.
+    app.query()
+        .role(Role::TEXT_INPUT)
+        .placeholder("name@example.com")
+        .assert_exists();
+
+    let unprompted = app.query().role(Role::TEXT_INPUT).label("Plain").single();
+    assert_eq!(unprompted.node().placeholder(), None);
 }
 
 /// Explicit `.color(...)` is a view-tree attribute: on the semantic pipeline

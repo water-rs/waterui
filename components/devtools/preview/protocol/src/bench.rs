@@ -42,6 +42,10 @@ pub fn bench_report_file_name(crate_name: &str, bench_name: &str) -> String {
 
 /// One executed bench: its identity, run shape, budgets, and measurements.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
+)]
 pub struct BenchReport {
     /// Package that declared the bench.
     pub crate_name: String,
@@ -58,6 +62,7 @@ pub struct BenchReport {
 
 /// Frame-run shape of one bench execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BenchRunConfig {
     /// Unrecorded frames run before sampling.
     pub warmups: u32,
@@ -67,8 +72,22 @@ pub struct BenchRunConfig {
     pub repetitions: u32,
 }
 
+impl BenchRunConfig {
+    /// `warmups` unrecorded frames, then `repetitions` measurements of
+    /// `samples` recorded frames each.
+    #[must_use]
+    pub const fn new(warmups: u32, samples: u32, repetitions: u32) -> Self {
+        Self {
+            warmups,
+            samples,
+            repetitions,
+        }
+    }
+}
+
 /// Optional per-metric ceilings applied to every measurement a bench records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct BenchBudgets {
     /// Maximum allowed 95th-percentile frame time, in microseconds.
     pub max_p95_us: Option<u64>,
@@ -84,8 +103,44 @@ pub struct BenchBudgets {
     pub max_clip_layers: Option<u64>,
 }
 
+/// One `with_<budget>` builder method per budget; `None` leaves the metric
+/// uncapped.
+macro_rules! budget_setters {
+    ($($(#[$doc:meta])* $method:ident => $budget:ident: $ty:ty;)*) => {
+        $(
+            $(#[$doc])*
+            #[must_use]
+            pub const fn $method(mut self, limit: Option<$ty>) -> Self {
+                self.$budget = limit;
+                self
+            }
+        )*
+    };
+}
+
+impl BenchBudgets {
+    budget_setters! {
+        /// Caps the 95th-percentile frame time, in microseconds.
+        with_max_p95_us => max_p95_us: u64;
+        /// Caps the mean frame time, in microseconds.
+        with_max_mean_us => max_mean_us: u64;
+        /// Caps the share of sampled frames that rebuilt (0.0..=1.0).
+        with_max_rebuild_ratio => max_rebuild_ratio: f64;
+        /// Caps the compositor scene layers one frame submits.
+        with_max_scene_layers => max_scene_layers: u64;
+        /// Caps the embedded GPU surface layers one frame submits.
+        with_max_gpu_surface_layers => max_gpu_surface_layers: u64;
+        /// Caps the clip layers one frame pushes.
+        with_max_clip_layers => max_clip_layers: u64;
+    }
+}
+
 /// Aggregated statistics of one perf measurement.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
+)]
 pub struct PerfMeasurement {
     /// Scenario name.
     pub name: String,
@@ -145,6 +200,10 @@ pub struct PerfMeasurement {
 
 /// Frame phase aggregates of a perf measurement.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
+)]
 pub struct PerfPhases {
     /// Mean rebuild phase time in microseconds.
     pub rebuild_mean_us: u64,
@@ -174,6 +233,10 @@ pub struct PerfPhases {
 
 /// One recorded perf frame.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "wire record that waterui-testing fills field by field for the CLI to read; a new measurement must fail its producer's build rather than be left unset"
+)]
 pub struct PerfFrame {
     /// Frame index within the measurement.
     pub index: u64,

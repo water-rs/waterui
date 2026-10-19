@@ -92,18 +92,15 @@ waterui-ts-engine-quickjs.workspace = true
 waterui = { path = "../../..", features = ["ts", "media"] }
 # With `ts` on, a session installs the runtime loaded from the bundle
 # `WATERUI_TS_BUNDLE` names; `tests/hosts.rs` and the `bundle_var_*` targets
-# are what hold that contract, and `waterui-preview` with the same feature is
-# the other host that installs it.
+# are what hold that contract.
 waterui-testing = { path = "../../../testing", features = ["ts"] }
-waterui-preview = { path = "../../devtools/preview/runtime", features = ["ts"] }
 # The style the offscreen test mounts run under — the pointer and geometry
 # tests need a rendered session, and a rendered session needs a `Style`.
 hydrolysis-m3.workspace = true
 # The catalog test reads `waterui_meta_ts_catalog` back out of the test
-# executable's own symbol table, which is the path the `water` CLI takes
-# through a user crate's rlib.
+# executable's metadata directory section, which is the path the `water` CLI
+# takes through a user crate's rlib.
 object = { version = "0.37", default-features = false, features = ["read", "std"] }
-rustc-demangle = "0.1"
 # The OTA tests sign real bundles with a key generated in the test, serve
 # them from a socket the test owns, and cache them in a directory that goes
 # away with the test.

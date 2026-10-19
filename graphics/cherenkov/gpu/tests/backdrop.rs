@@ -3,7 +3,8 @@
 use cherenkov::kurbo::{Affine, Circle, Ellipse, Rect, RoundedRect};
 use cherenkov::{__engine_fn as split_fn, __engine_test as split_test, __engine_wait as wait};
 use cherenkov::{
-    BackdropOuter, Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, WorkingColor,
+    BackdropOuter, Bytes, Draw, Engine, FrameTime, Offscreen, OffscreenFormat, Pressure,
+    WorkingColor,
 };
 use cherenkov_gpu::{Gpu, GpuConfig};
 
@@ -124,6 +125,97 @@ fn blurred_backdrop_keeps_extended_range() -> Result<(), Box<dyn std::error::Err
     // `backdrop_captures` — only the one capture texture does.
     assert_eq!(memory.backdrop_captures, Bytes(64 * 64 * 8));
     assert_eq!(memory.backdrop_capture_format, Some("rgba16float"));
+    Ok(())
+}
+}
+
+split_test! {
+/// `filter_targets` counts the capture chain's held targets (#1941): the
+/// registry's input/output pair plus the executor's intermediates, freed
+/// with the group.
+fn filtered_group_reports_its_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(4.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&glass);
+        tx[&glass]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let memory = wait!(engine.memory());
+    // footprint = ceil(4 * 4) = 16 → region (8-16..56+16) ∩ 0..64 = 64×64.
+    // The chain holds an input/output pair at the capture's format plus
+    // the one intermediate the blur's two passes share — three
+    // Rgba16Float targets.
+    assert_eq!(memory.filter_targets, Bytes(3 * 64 * 64 * 8));
+    // The targets go with the chain: removing the group frees them.
+    surface.update(|tx| {
+        tx[&glass].clear_backdrop();
+    });
+    drop(group);
+    wait!(engine.render(FrameTime::now()))?;
+    assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+    Ok(())
+}
+}
+
+split_test! {
+/// Memory pressure frees the chain's retained intermediates together with
+/// the registry's io pair (#2765); the next frame recreates them.
+fn trim_drops_the_chain_targets() -> Result<(), Box<dyn std::error::Error>> {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {}))?;
+    let group = surface.backdrop_group(
+        filtrate::filters::GaussianBlur::new(4.0f32),
+        cherenkov::CaptureScale::FULL,
+    );
+    let glass = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].content(surface.record(|r| {
+            r.fill(
+                Rect::new(0.0, 0.0, 64.0, 64.0),
+                WorkingColor::new([1.0, 0.0, 0.0, 1.0]),
+            );
+        }));
+        tx[surface.root()].push(&glass);
+        tx[&glass]
+            .clip(Rect::new(8.0, 8.0, 56.0, 56.0))
+            .backdrop(group.sample());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    // footprint = ceil(4 * 4) = 16 → region (8-16..56+16) ∩ 0..64 = 64×64.
+    // The io pair alone would be two targets; the blur's shared
+    // intermediate puts the chain above it.
+    let held = wait!(engine.memory()).filter_targets;
+    assert!(held > Bytes(2 * 64 * 64 * 8), "held {held:?}");
+    for (pressure, red) in [(Pressure::Critical, 0.5), (Pressure::Moderate, 1.0)] {
+        engine.trim(pressure);
+        assert_eq!(wait!(engine.memory()).filter_targets, Bytes(0));
+        // A frame with nothing to redraw does not run the chain; new
+        // backdrop content does, and the chain recreates its targets.
+        surface.update(|tx| {
+            tx[surface.root()].content(surface.record(|r| {
+                r.fill(
+                    Rect::new(0.0, 0.0, 64.0, 64.0),
+                    WorkingColor::new([red, 0.0, 0.0, 1.0]),
+                );
+            }));
+        });
+        wait!(engine.render(FrameTime::now()))?;
+        assert_eq!(wait!(engine.memory()).filter_targets, held);
+    }
     Ok(())
 }
 }
@@ -758,16 +850,25 @@ fn shader_effect_reads_the_recording_scale() -> Result<(), Box<dyn std::error::E
     assert_pixel(pixel(&one, 11, 20), [1.0, 0.0, 0.0, 1.0], 1e-3);
     assert_pixel(pixel(&one, 12, 20), [0.0, 0.0, 0.0, 1.0], 1e-3);
     assert_pixel(pixel(&one, 4, 20), [0.0, 0.0, 1.0, 1.0], 1e-3);
+    // The doubled device pixels must match the logical ones up to one f16
+    // step, not bit-exactly: how `own_sdf / scale` rounds into the LinearF16
+    // store is the adapter's own choice, and the Windows adapters land one
+    // step off the others (#2725): 0.9995117 is 1 - 2^-11, the f16 value
+    // just below 1.0. The 0.001 bound admits two such steps below 1.0 and
+    // one above it, where the spacing is 2^-10.
     for y in 0..64 {
         for x in 0..64 {
             for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                assert_eq!(
-                    pixel(&two, 2 * x + dx, 2 * y + dy),
-                    pixel(&one, x, y),
-                    "device pixel ({}, {}) at scale 2 against logical pixel ({x}, {y})",
-                    2 * x + dx,
-                    2 * y + dy,
-                );
+                let actual = pixel(&two, 2 * x + dx, 2 * y + dy);
+                let expected = pixel(&one, x, y);
+                for (a, e) in actual.iter().zip(expected) {
+                    assert!(
+                        (a - e).abs() <= 0.001,
+                        "device pixel ({}, {}) at scale 2 against logical pixel ({x}, {y}): {actual:?} vs {expected:?}",
+                        2 * x + dx,
+                        2 * y + dy,
+                    );
+                }
             }
         }
     }

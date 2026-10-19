@@ -66,7 +66,8 @@ const DEFAULT_TASK_WINDOW_MS: u64 = 100;
 const DEFAULT_STALL_RATIO: f64 = 0.90;
 
 /// Where the endpoint is listening and the token required to talk to it.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct InspectorEndpointInfo {
     /// Bound socket address.
     pub addr: SocketAddr,
@@ -87,7 +88,8 @@ impl std::fmt::Debug for InspectorEndpointInfo {
 }
 
 /// Runtime endpoint configuration.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct InspectorServerConfig {
     /// Address to bind.
     pub host: IpAddr,
@@ -120,6 +122,29 @@ impl std::fmt::Debug for InspectorServerConfig {
 }
 
 impl InspectorServerConfig {
+    /// A configuration binding `host`:`port` (`0` picks an ephemeral port),
+    /// accepting `token`, aggregating task occupancy every `task_window`,
+    /// reporting polls above `stall_ratio` of the frame budget as stalls, and
+    /// advertising itself as `app_name`.
+    #[must_use]
+    pub const fn new(
+        host: IpAddr,
+        port: u16,
+        token: String,
+        task_window: Duration,
+        stall_ratio: f64,
+        app_name: String,
+    ) -> Self {
+        Self {
+            host,
+            port,
+            token,
+            task_window,
+            stall_ratio,
+            app_name,
+        }
+    }
+
     /// Builds a configuration from the environment, if inspection is enabled.
     ///
     /// Inspection is enabled by `WATERUI_INSPECTOR_TOKEN`. Optional settings:

@@ -21,6 +21,7 @@ use crate::{
 /// build cache; a local runtime checkout is discovered at
 /// `waterui_path/backends/apple`, never declared.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct AppleBackend {
     /// Path to the generated Apple project below the managed backends root.
     pub project_path: PathBuf,
@@ -126,17 +127,24 @@ impl AppleBackend {
             .collect();
         // The generated project names the launch assets the catalog will
         // hold, so the two are decided from the same resolution.
-        let launch = crate::assets::project_launch_assets(project)?;
+        let launch = crate::assets::project_launch_plan(project)?;
         let launch_entry = templates::LaunchTemplateEntry {
-            has_background: launch.plan().background(ColorScheme::Light).is_some(),
-            has_image: launch.has_artwork(),
+            has_background: launch.background(ColorScheme::Light).is_some(),
+            has_image: launch.image().is_some(),
         };
+        let framework = project.resolved_framework().await?;
+        // The generated crates name the in-tree `waterui-apple` member — a
+        // framework whose manifest declares no `apple-backend-path` ships the
+        // backend as the external package it was before the move, and cannot
+        // host this layout. Judge the manifest here, before a single scaffold
+        // file is written, rather than inside `member_dependency` mid-render.
+        framework.require_in_tree_member(crate::framework::APPLE_BACKEND)?;
         Ok(TemplateContext::for_project_manifest(
             project.host(),
             manifest,
             crate_name_for_template,
             app_name,
-            project.resolved_framework().await?,
+            framework,
             project.local_sources(),
         )
         .with_backend_project_path(project.backend_path::<Self>())

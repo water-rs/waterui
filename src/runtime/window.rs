@@ -38,6 +38,7 @@ use waterui_layout::{Point, Rect, Size};
 
 pub use super::window_close::CloseReply;
 use super::window_close::{CloseRequest, Question};
+use super::window_focus::FocusRequest;
 
 use crate::app::{application_identifier, application_name};
 #[cfg(feature = "snackbar")]
@@ -218,6 +219,10 @@ pub struct Window {
     /// shared by `Rc` with [`WindowHandle`] and armed by the backend when the
     /// window is realized.
     close_request: CloseRequest,
+    /// The focus machine [`WindowHandle::focus`] files into, shared by
+    /// `Rc` with [`WindowHandle`] and armed by the backend when the window
+    /// is realized.
+    focus_request: FocusRequest,
 }
 
 /// A window's own icon: straight-alpha sRGB RGBA8 pixels and their size.
@@ -342,6 +347,7 @@ impl IntoWindowIcon for Binding<Option<WindowIcon>> {
 /// live handle — monitor geometry read elsewhere stays authoritative in the
 /// backend that produced it.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub struct Monitor {
     /// Bounds in the global logical coordinate space window frames use.
     pub frame: Rect,
@@ -354,8 +360,32 @@ pub struct Monitor {
     pub name: Option<Str>,
 }
 
+impl Monitor {
+    /// A display spanning `frame`, of which `visible_frame` is free of
+    /// desktop chrome, at `scale_factor` physical pixels per logical point,
+    /// named `name` when the platform reports one.
+    #[must_use]
+    pub const fn new(
+        frame: Rect,
+        visible_frame: Rect,
+        scale_factor: f64,
+        name: Option<Str>,
+    ) -> Self {
+        Self {
+            frame,
+            visible_frame,
+            scale_factor,
+            name,
+        }
+    }
+}
+
 /// Which monitor a window is placed on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends resolve each monitor selector variant by variant; a new selector must fail their build instead of falling into a wildcard arm"
+)]
 pub enum MonitorSelector {
     /// The platform's primary display (macOS: the one carrying the menu bar).
     #[default]
@@ -372,6 +402,7 @@ pub enum MonitorSelector {
 /// The backend resolves `monitor` each time the window is shown, calls `place`
 /// with the result, and writes the returned rect into `Window::frame` before
 /// the window becomes visible.
+#[non_exhaustive]
 pub struct WindowPlacement {
     /// The monitor a backend resolves before calling `place`.
     pub monitor: MonitorSelector,
@@ -397,6 +428,10 @@ impl Debug for WindowPlacement {
 /// doing — a drop-down terminal is the canonical case: it overlays focused
 /// work and takes the keyboard only when its policy says so.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each activation policy variant by variant on every desktop platform"
+)]
 pub enum Activation {
     /// Showing the window activates the app and focuses the window.
     #[default]
@@ -413,6 +448,10 @@ pub enum Activation {
 /// state binding represents a window that has not yet been shown. Setting
 /// the binding to [`Self::Normal`] is what triggers the window to open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window state variant by variant; a new window state must fail their build instead of falling into a wildcard arm"
+)]
 pub enum WindowState {
     /// The window is in its normal state.
     Normal,
@@ -430,6 +469,10 @@ pub enum WindowState {
 
 /// Where a window stacks relative to other applications' windows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window level variant by variant; a new window level must fail their build instead of falling into a wildcard arm"
+)]
 pub enum WindowLevel {
     /// The window stacks with other windows as focus moves between them.
     #[default]
@@ -442,6 +485,10 @@ impl_constant!(WindowLevel);
 
 /// How urgently a window asks for the user's attention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each attention request variant by variant; a new attention request must fail their build instead of falling into a wildcard arm"
+)]
 pub enum UserAttention {
     /// Something the user may want to look at: a finished task, a mention.
     Informational,
@@ -453,6 +500,10 @@ pub enum UserAttention {
 
 /// The visual style of a window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window style variant by variant; a new window style must fail their build instead of falling into a wildcard arm"
+)]
 pub enum WindowStyle {
     /// Standard window with title bar and controls.
     #[default]
@@ -479,6 +530,7 @@ pub enum WindowStyle {
 ///
 /// [`Material`](Self::Material) is described on the variant.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub enum WindowBackground {
     /// Opaque background in the theme's [`Background`] colour.
     #[default]
@@ -547,6 +599,10 @@ impl From<WindowBackground> for Binding<WindowBackground> {
 /// concrete colour to paint behind the content, or the material to realize
 /// at the window.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each window background variant by variant; a new window background must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ResolvedWindowBackground {
     /// Paint this colour behind the window's content. An opacity below one
     /// asks for a translucent window. [`WindowBackground::Opaque`] resolves
@@ -711,6 +767,7 @@ impl Window {
             resize_increments: None,
             icon: Binding::container(None),
             close_request,
+            focus_request: FocusRequest::new(),
         }
     }
 
@@ -982,6 +1039,15 @@ impl Window {
         self.close_request.arm(env, self.closable);
     }
 
+    /// Arms focus requests with `hook` — the platform call
+    /// [`WindowHandle::focus`] dispatches into. A backend calls it when it
+    /// realizes the window; a platform that cannot activate a mapped window
+    /// leaves the machine unarmed and the call panics.
+    #[doc(hidden)]
+    pub fn arm_focus_requests(&self, hook: impl FnMut() + 'static) {
+        self.focus_request.arm(hook);
+    }
+
     /// Files a user close request — the one entry point a backend calls when
     /// the platform asks to close the window. `env` is the environment the
     /// window renders under; the call arms the machine with it, so the
@@ -1013,6 +1079,7 @@ impl Window {
             background: self.background.clone(),
             icon: self.icon.clone(),
             close_request: self.close_request.clone(),
+            focus_request: self.focus_request.clone(),
         }
     }
 
@@ -1115,6 +1182,7 @@ pub struct WindowHandle {
     background: Binding<WindowBackground>,
     icon: Binding<Option<WindowIcon>>,
     close_request: CloseRequest,
+    focus_request: FocusRequest,
 }
 
 impl WindowHandle {
@@ -1155,6 +1223,35 @@ impl WindowHandle {
     /// Restore the window to its normal state.
     pub fn restore(&self) {
         self.state.set(WindowState::Normal);
+    }
+
+    /// Bring the window in front and give it keyboard focus — the classic
+    /// "show me the existing settings window" request.
+    ///
+    /// Platform behaviour:
+    ///
+    /// - **macOS:** a miniaturized window deminiaturizes first, then
+    ///   `makeKeyAndOrderFront:` and `NSApp.activate()` — the cooperative
+    ///   activation macOS 14 introduced, which the system may still
+    ///   decline.
+    /// - **iOS:** `makeKeyAndVisible` — the window becomes its scene's
+    ///   key window.
+    /// - **Hydrolysis/winit:** `focus_window` — X11
+    ///   `_NET_ACTIVE_WINDOW` and Windows `SetForegroundWindow` behind
+    ///   it; the window manager may still decline, and on Wayland an
+    ///   activation token is required, which only exists when the request
+    ///   follows a user gesture — otherwise the request is best-effort.
+    /// - **Headless/semantic runners:** unarmed; the call panics.
+    ///
+    /// A handle that outlived its window's teardown files into nothing:
+    /// the request is a no-op.
+    ///
+    /// # Panics
+    ///
+    /// When the window has not been realized yet, and on the platforms
+    /// with no mapped-window activation — headless and semantic runners.
+    pub fn focus(&self) {
+        self.focus_request.request();
     }
 
     /// Ask the platform to draw the user's attention to the window, until

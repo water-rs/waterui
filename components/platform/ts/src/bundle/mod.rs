@@ -38,7 +38,7 @@
 //! # The hosts that have no loader
 //!
 //! A host that mounts a view outside an application — a `waterui-testing`
-//! session, the `water preview` support app — ships no baseline and no
+//! session — ships no baseline and no
 //! requirement, so it takes the bundle the `water` CLI names in
 //! [`BUNDLE_VARIABLE`] instead. [`configured`] is that path, and it is the
 //! only one that reads the process environment.

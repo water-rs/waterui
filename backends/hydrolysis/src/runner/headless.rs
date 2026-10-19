@@ -210,6 +210,7 @@ impl HeadlessPlatformWindow {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 /// The outcome of one headless frame pump.
+#[non_exhaustive]
 pub struct HeadlessPumpResult {
     /// Whether the pump rebuilt the view tree.
     pub rebuilt: bool,
@@ -242,7 +243,7 @@ pub struct HeadlessRuntime {
     popup_windows: Vec<RuntimeWindow<HeadlessPlatformWindow>>,
     /// The style the runtime was launched with, kept so popup windows'
     /// renderers measure and encode with the same widget theme.
-    theme: Rc<dyn crate::engine::WidgetTheme>,
+    theme: Rc<dyn crate::theme::WidgetTheme>,
     /// Every window this runtime opens renders on this one device: the main
     /// window, and each popup it later vends. Requesting a device per window
     /// made a runtime that opens a popup pay for two.
@@ -493,10 +494,7 @@ impl HeadlessRuntime {
         install_headless_window_managers(&mut env, Rc::clone(&pending_window_queue));
         env.insert(HydrolysisTextContextMenuMode::Overlay);
         crate::theme::install_theme_tokens(&mut env, Some(&style));
-        let theme: Rc<dyn crate::engine::WidgetTheme> = Rc::new(style);
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(Rc::clone(&theme)),
-        ));
+        let theme: Rc<dyn crate::theme::WidgetTheme> = Rc::new(style);
         // The application's fonts, built once: the platform's collection plus
         // the staged fonts directory, exactly as the windowed runners load
         // them.
@@ -505,6 +503,17 @@ impl HeadlessRuntime {
         // environment instead of enumerating the system's fonts for itself.
         let fonts = crate::text::fonts::native_collection(&env);
         fonts.clone().install(&mut env);
+        // The capture service mounts its subtree under a snapshot of the
+        // assembled environment — the theme tokens, hooks and font
+        // collection a window's subtree resolves — so it must be installed
+        // last (water-rs/waterui#2703).
+        env.insert(waterui_core::ViewRenderer::new(
+            crate::view_renderer::HydrolysisViewRenderer::new(
+                Rc::clone(&theme),
+                env.clone(),
+                family_resolution,
+            ),
+        ));
 
         // Headless binaries (preview, tests) have no platform runner to install
         // a tracing subscriber; honor `RUST_LOG` here so they stay debuggable.
@@ -583,6 +592,12 @@ impl HeadlessRuntime {
             height,
             wgpu::TextureFormat::Rgba8Unorm,
         );
+        // The vended window's host reports the same touch-gesture
+        // parameters the main window's does: a `set_touch_scroll_config`
+        // call applies to every window the runtime owns.
+        platform
+            .touch_scroll_config
+            .set(self.runtime.platform.touch_scroll_config.get());
         platform.apply_properties(&window);
         let mut renderer = HydrolysisRenderer::with_engine(
             Rc::clone(&self.theme),
@@ -862,6 +877,17 @@ impl HeadlessRuntime {
             })
     }
 
+    /// Blocks until work parked outside the runtime — a timer, a fetch, a
+    /// decode on a worker thread — re-queues a task on this runtime's local
+    /// executor, returning whether one arrived within `timeout`.
+    ///
+    /// The event-driven wait for a host that is settled but still waiting on
+    /// such work: the next pump drains what arrived.
+    #[must_use]
+    pub fn wait_for_local_work(&self, timeout: Duration) -> bool {
+        self.local_executor.wait_queued(timeout)
+    }
+
     /// Whether a state change has been requested but not yet flushed, so the
     /// semantics this runtime last produced are stale.
     ///
@@ -897,10 +923,15 @@ impl HeadlessRuntime {
 
     /// The touch-gesture parameters this runtime's host reports — a test's
     /// stand-in for the platform's `ViewConfiguration` push, applied by the
-    /// next input dispatch.
+    /// next input dispatch. Every window the host owns reports them:
+    /// already-mounted popups are set here, and popups it vends later are
+    /// seeded from the main window's platform.
     #[cfg(any(test, feature = "testing"))]
     pub fn set_touch_scroll_config(&mut self, config: crate::platform::TouchScrollConfig) {
         self.runtime.platform.set_touch_scroll_config(config);
+        for popup in &mut self.popup_windows {
+            popup.platform.set_touch_scroll_config(config);
+        }
     }
 
     /// The environment the runtime renders its windows in, for tests that
@@ -1103,8 +1134,14 @@ impl HeadlessRuntime {
         if render_result.is_some() {
             // The renderer's frame-work counters are sampled after the frame's
             // render and its readback have both submitted on the same queue,
-            // so they cover all the GPU work this pump ran for it.
-            profile.counters.frame_work = self.runtime.renderer.frame_work_counters();
+            // so they cover all the GPU work this pump ran for it. The frame's
+            // own snapshot already left the profile inside the render pump —
+            // the tail drained here is the work that ran after it (the
+            // readback's own submissions), which joins the same frame's count.
+            profile
+                .counters
+                .frame_work
+                .accumulate(self.runtime.renderer.take_frame_work_counters());
         }
         profile.phases.executor_before = executor_before;
         profile.phases.input = input;

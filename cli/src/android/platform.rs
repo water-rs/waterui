@@ -5,6 +5,7 @@
 //! invocation the Hydrolysis app and embedded library builds drive.
 
 use std::path::{Path, PathBuf};
+use std::process::ExitStatus;
 
 use eyre::{self, WrapErr as _, bail};
 use smol::{fs, unblock};
@@ -33,10 +34,10 @@ fn gradle_cmd(
 }
 
 /// Run the Gradle wrapper inside `backend_path` on `tasks`, wiring the JDK
-/// and SDK the toolchain resolves plus any corporate proxy properties, and
-/// bail with the captured output when the build fails. The shared tail of
-/// every Gradle invocation the CLI drives — app packaging and the embedded
-/// library's assemble/publish alike.
+/// and SDK the toolchain resolves plus any corporate proxy properties.
+///
+/// A failing build reports the process status and both captured streams.
+/// The shared tail of every Gradle invocation the CLI drives.
 pub(crate) async fn run_gradle_tasks(
     host: &Host,
     backend_path: &Path,
@@ -81,16 +82,112 @@ pub(crate) async fn run_gradle_tasks(
     let output = cmd.output().await?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        bail!(
-            "Gradle build failed in {}:\n{}\n{}",
-            backend_path.display(),
-            stdout.trim(),
-            stderr.trim()
-        );
+        bail!("{}", gradle_failure_report(host, backend_path, &output));
     }
     Ok(())
+}
+
+fn append_block(message: &mut String, text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    message.push('\n');
+    message.push_str(text);
+}
+
+fn exit_status_summary(status: ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt as _;
+        if let Some(signal) = status.signal() {
+            return format!("killed by signal {signal}");
+        }
+    }
+    status.code().map_or_else(
+        || format!("status {status}"),
+        |code| format!("exit code {code}"),
+    )
+}
+
+fn gradle_failure_report(
+    host: &Host,
+    backend_path: &Path,
+    output: &std::process::Output,
+) -> String {
+    let mut message = format!(
+        "Gradle build failed in {} ({}):",
+        backend_path.display(),
+        exit_status_summary(output.status),
+    );
+    append_block(&mut message, &String::from_utf8_lossy(&output.stdout));
+    append_block(&mut message, &String::from_utf8_lossy(&output.stderr));
+    // A daemon-side failure — a configuration crash, or the daemon dying
+    // mid-build — can reach the client as a bare nonzero exit while the
+    // streams hold nothing past the startup banner. Gradle records the real
+    // diagnostic in `daemon-*.out.log` under the Gradle user home; appending
+    // its tail is the difference between a triagable report and the bare
+    // "exit code 1" a CI leg otherwise surfaces.
+    if !message.contains("FAILURE:")
+        && let Some(log) = gradle_daemon_log_tail(host)
+    {
+        message.push_str("\n--- tail of the Gradle daemon log ---\n");
+        message.push_str(log.trim_end());
+        message.push('\n');
+    }
+    message
+}
+
+/// Tail of the daemon log the invocation that just failed most likely wrote.
+///
+/// `GRADLE_USER_HOME` wins over `~/.gradle` the same way it does for Gradle
+/// itself. A log untouched for fifteen minutes belongs to an earlier build —
+/// surfacing it would attribute a stale diagnostic to this failure, so it is
+/// ignored. Every miss is `None`, never an error: this lookup is diagnostics
+/// for a build that has already failed.
+fn gradle_daemon_log_tail(host: &Host) -> Option<String> {
+    use std::time::{Duration, SystemTime};
+
+    // The report wants the failure's context, not the daemon's whole life.
+    const TAIL: usize = 16 * 1024;
+    const MAX_AGE: Duration = Duration::from_mins(15);
+
+    let gradle_home = host
+        .env_string("GRADLE_USER_HOME")
+        .map(PathBuf::from)
+        .or_else(|| host.home_dir().map(|home| home.join(".gradle")))?;
+    let daemon_root = gradle_home.join("daemon");
+    let now = SystemTime::now();
+
+    let mut newest: Option<(SystemTime, PathBuf)> = None;
+    for version in std::fs::read_dir(daemon_root).ok()?.flatten() {
+        let Ok(entries) = std::fs::read_dir(version.path()) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !(name.starts_with("daemon-") && name.ends_with(".out.log")) {
+                continue;
+            }
+            let Ok(mtime) = entry.metadata().and_then(|meta| meta.modified()) else {
+                continue;
+            };
+            if now.duration_since(mtime).unwrap_or_default() > MAX_AGE {
+                continue;
+            }
+            if newest.as_ref().is_none_or(|(stamped, _)| mtime > *stamped) {
+                newest = Some((mtime, entry.path()));
+            }
+        }
+    }
+    let (_, path) = newest?;
+
+    let bytes = std::fs::read(path).ok()?;
+    let text = String::from_utf8_lossy(&bytes[bytes.len().saturating_sub(TAIL)..]);
+    (!text.trim().is_empty()).then(|| text.into_owned())
 }
 
 fn apply_gradle_proxy_env(host: &Host, cmd: &mut smol::process::Command) -> eyre::Result<()> {
@@ -248,6 +345,7 @@ pub(crate) const ANDROID_MAX_PAGE_SIZE_LINK_ARG: &str = "-Clink-arg=-Wl,-z,max-p
 
 /// Represents an Android platform for a specific architecture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum AndroidAbi {
     /// ARM64 (arm64-v8a) - modern Android devices
     Arm64V8a,
@@ -621,7 +719,7 @@ pub(crate) async fn android_path_env(
 /// scripts probe, the `CMake` toolchain file for native dependencies, and the
 /// `pkg-config` cross overrides.
 ///
-/// The support app and the preview module it loads must compile their shared
+/// A generated crate and the shared runtime it links must compile their shared
 /// dependency graph identically, so both take their environment from this one
 /// list rather than each spelling it out.
 pub(crate) fn android_cargo_envs(
@@ -771,7 +869,12 @@ fn elf_needs_libcxx(data: &[u8]) -> Option<bool> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use std::path::{Path, PathBuf};
+
     use super::elf_needs_libcxx;
+    #[cfg(unix)]
+    use crate::toolchain::Host;
 
     #[test]
     fn elf_needs_libcxx_rejects_non_elf_data() {
@@ -782,5 +885,171 @@ mod tests {
         assert_eq!(elf_needs_libcxx(b"not an elf"), None);
         assert_eq!(elf_needs_libcxx(&[]), None);
         assert_eq!(elf_needs_libcxx(&[0x7f, b'E', b'L', b'F']), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_reports_the_killing_signal() {
+        const SCRIPT: &str = "#!/bin/sh\nkill -KILL $$\n";
+        let report = GradleRun::new(SCRIPT).failure();
+        assert_mentions(&report, "killed by signal 9");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_reports_the_status_and_both_streams() {
+        const SCRIPT: &str = r"#!/bin/sh
+set -eu
+PATH=/bin:/usr/bin
+export PATH
+cat <<'EOF'
+Fetching distribution.
+Downloading https://services.gradle.org/distributions/gradle-9.7.1-bin.zip
+Welcome to Gradle 9.7.1!
+Starting a Gradle Daemon (subsequent builds will be faster)
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.7.1/userguide/configuration_cache_enabling.html
+EOF
+cat >&2 <<'EOF'
+* What went wrong:
+> from-stderr
+EOF
+exit 3
+";
+        let report = GradleRun::new(SCRIPT).failure();
+        assert_mentions(&report, "exit code 3");
+        assert_mentions(&report, "Welcome to Gradle 9.7.1!");
+        assert_mentions(&report, "from-stderr");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_surfaces_the_daemon_log_when_streams_lack_detail() {
+        // The silent nightly failure: the client printed only the startup
+        // banner and exited 1, while the diagnostic lived in the daemon's
+        // own log under the fresh user's Gradle home.
+        const SCRIPT: &str = "#!/bin/sh\nexit 1\n";
+        let run = GradleRun::new(SCRIPT);
+        let daemon_dir = run.home.join(".gradle/daemon/9.7.1");
+        std::fs::create_dir_all(&daemon_dir).expect("daemon log directory");
+        std::fs::write(
+            daemon_dir.join("daemon-7.out.log"),
+            "startup noise\nerror: something exploded inside the daemon\n",
+        )
+        .expect("daemon log");
+        std::fs::write(
+            daemon_dir.join("daemon-3.out.log"),
+            "error: a stale failure from another run\n",
+        )
+        .expect("stale daemon log");
+        // The newest daemon log is the one read; make the stale file's mtime
+        // older so `daemon-7` wins regardless of directory order.
+        let stale = filetime::FileTime::from_unix_time(1_000_000, 0);
+        filetime::set_file_mtime(daemon_dir.join("daemon-3.out.log"), stale)
+            .expect("backdate the stale log");
+
+        let report = run.failure();
+        assert_mentions(&report, "exit code 1");
+        assert_mentions(&report, "something exploded inside the daemon");
+        assert!(
+            !report.contains("a stale failure"),
+            "stale daemon log must not leak into the report:\n{report}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gradle_failure_ignores_a_stale_daemon_log() {
+        const SCRIPT: &str = "#!/bin/sh\nexit 1\n";
+        let run = GradleRun::new(SCRIPT);
+        let daemon_dir = run.home.join(".gradle/daemon/9.7.1");
+        std::fs::create_dir_all(&daemon_dir).expect("daemon log directory");
+        std::fs::write(
+            daemon_dir.join("daemon-7.out.log"),
+            "error: a failure from a build that ran hours ago\n",
+        )
+        .expect("daemon log");
+        let stale = filetime::FileTime::from_unix_time(1_000_000, 0);
+        filetime::set_file_mtime(daemon_dir.join("daemon-7.out.log"), stale)
+            .expect("backdate the log");
+
+        let report = run.failure();
+        assert!(
+            !report.contains("hours ago"),
+            "a stale daemon log must not be attributed to this failure:\n{report}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exit_status_summary_names_a_code_and_a_signal() {
+        use std::os::unix::process::ExitStatusExt as _;
+
+        let code = std::process::ExitStatus::from_raw(1 << 8);
+        assert_eq!(super::exit_status_summary(code), "exit code 1");
+        let signal = std::process::ExitStatus::from_raw(9);
+        assert_eq!(super::exit_status_summary(signal), "killed by signal 9");
+    }
+
+    #[cfg(unix)]
+    struct GradleRun {
+        _root: tempfile::TempDir,
+        project: PathBuf,
+        home: PathBuf,
+    }
+
+    #[cfg(unix)]
+    impl GradleRun {
+        fn new(script: &str) -> Self {
+            let root = tempfile::tempdir().expect("create the gradle fixture");
+            let project = root.path().join("android");
+            let home = root.path().join("home");
+            std::fs::create_dir_all(project.join("gradle/wrapper")).expect("wrapper directory");
+            std::fs::write(project.join("gradle/wrapper/gradle-wrapper.jar"), [])
+                .expect("wrapper jar");
+            std::fs::create_dir_all(&home).expect("home");
+            write_executable(&project.join("gradlew"), script);
+            Self {
+                _root: root,
+                project,
+                home,
+            }
+        }
+
+        fn failure(&self) -> String {
+            let host = Host::new(Vec::<PathBuf>::new(), None::<(&str, &str)>)
+                .with_home(self.home.clone())
+                .with_cwd(self.project.clone());
+            let error = smol::block_on(super::run_gradle_tasks(
+                &host,
+                &self.project,
+                &["assembleDebug"],
+                &[],
+            ))
+            .expect_err("the gradle wrapper must fail");
+            format!("{error}")
+        }
+    }
+
+    #[cfg(unix)]
+    fn write_executable(path: &Path, body: &str) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create the script directory");
+        }
+        std::fs::write(path, body).expect("write the script");
+        let mut permissions = std::fs::metadata(path)
+            .expect("stat the script")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions).expect("mark the script executable");
+    }
+
+    #[cfg(unix)]
+    fn assert_mentions(report: &str, needle: &str) {
+        assert!(
+            report.contains(needle),
+            "report should contain {needle:?}:\n{report}"
+        );
     }
 }

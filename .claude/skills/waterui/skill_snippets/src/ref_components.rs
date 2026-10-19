@@ -646,7 +646,7 @@ pub mod components_block_21 {
         let _ = {
             List::for_each(records.clone(), |r| ListItem::new(text(r.title)))
                 .editing(is_editing.clone()) // impl IntoComputed<bool>
-                .on_delete(|ListDelete(i), s: AppState| {
+                .on_delete(|ListDelete(i), mut s: AppState| {
                     let _ = s.rows.remove(i);
                 })
                 .on_move(|ListMove(m), _s: AppState| {
@@ -665,16 +665,17 @@ pub fn components_block_22() -> impl View {
     use waterui::animation::Animation;
     use waterui::reactive::collection::List as ReactiveList;
 
-    fn row_view(r: Record) -> Text {
+    fn row_view(r: Record) -> impl View {
         text(r.title)
+            .transition(PropertyTransition::opacity())
+            .animation(Animation::ease_in_out(Duration::from_millis(250)))
     }
     let rows = ReactiveList::<Record>::new();
 
-    use waterui::layout::collection_transition;
+    use waterui::PropertyTransition;
     use waterui::layout::stack::VStack;
 
-    let drawer = VStack::for_each(rows.clone(), row_view).spacing(4.0);
-    collection_transition(drawer, Animation::ease_in_out(Duration::from_millis(250)))
+    VStack::for_each(rows.clone(), row_view).spacing(4.0)
 }
 
 // ---------------------------------------------------------------------------
@@ -698,12 +699,10 @@ pub fn components_block_23() -> impl View {
 // Not counted as a rust block.
 // ---------------------------------------------------------------------------
 pub fn components_list_item_prose() {
-    use waterui::id::SelfId;
-
     let signal = Binding::bool(true);
     let section = ListSection::default();
-    let selection = Binding::container(None::<SelfId<usize>>);
-    let multi = Binding::container(alloc::collections::BTreeSet::<SelfId<usize>>::new());
+    let selection = Binding::container(None::<usize>);
+    let multi = Binding::container(alloc::collections::BTreeSet::<usize>::new());
 
     let _ = ListItem::new(text("a")).deletable(signal.clone());
     let _ = ListItem::new(text("a")).section(section);

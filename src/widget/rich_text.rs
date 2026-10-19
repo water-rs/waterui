@@ -158,6 +158,10 @@ pub enum RichTextElement {
 
 /// Column alignment metadata for Markdown tables.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "closed: the Markdown table column alignments (none, left, center, right)"
+)]
 pub enum MarkdownTableAlignment {
     /// No explicit alignment.
     None,

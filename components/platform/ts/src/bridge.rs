@@ -34,6 +34,7 @@ use crate::view::ViewSlot;
 /// from a memo — the bridge asks `isSignal`. A `{ read, … }` value crossed as
 /// data, so its keys answer the question here.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ReactiveSource {
     /// A writable reactive value: a JS `Signal`, or a `{ read, write,
     /// subscribe }` value.

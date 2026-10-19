@@ -19,7 +19,6 @@ use waterui_assets_planner::{
 use super::icon::encode_macos_icns;
 use super::icon::{
     IconSource, LINUX_HICOLOR_SIZES, WINDOW_ICON_SIZE, encode_png, render_android_foreground,
-    render_apple_icon,
 };
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::project::Project;
@@ -224,18 +223,18 @@ fn with_bundled_fonts(
             );
         }
     }
-    staged.assets.extend(
-        planned
-            .into_iter()
-            .map(|(logical_path, source_path)| PlannedAsset {
-                mount: String::new(),
+    staged
+        .assets
+        .extend(planned.into_iter().map(|(logical_path, source_path)| {
+            PlannedAsset::new(
+                String::new(),
                 source_path,
-                relative_path: logical_path.clone(),
+                logical_path.clone(),
                 logical_path,
-                kind: AssetKind::Font,
-                role: AssetRole::Regular,
-            }),
-    );
+                AssetKind::Font,
+                AssetRole::Regular,
+            )
+        }));
     Ok(staged)
 }
 
@@ -351,6 +350,23 @@ impl LaunchAssets {
 pub fn launch_assets(project: &Project) -> eyre::Result<LaunchAssets> {
     let manifest = build_main_manifest(project)?;
     launch_assets_from(project, &manifest)
+}
+
+/// Resolves the project's launch screen — `[launch]` over `[theme]`, and
+/// the root `Launch.*` artwork path — without decoding any artwork, for
+/// callers that only name what the launch screen holds.
+///
+/// # Errors
+///
+/// Fails when the assets cannot be planned.
+pub fn launch_plan(project: &Project) -> eyre::Result<LaunchPlan> {
+    let manifest = build_main_manifest(project)?;
+    let water = project.manifest();
+    Ok(LaunchPlan::resolve(
+        water.launch.as_ref(),
+        water.theme.as_ref(),
+        &manifest,
+    ))
 }
 
 fn launch_assets_from(project: &Project, manifest: &BundleManifest) -> eyre::Result<LaunchAssets> {
@@ -543,12 +559,12 @@ pub fn scan_project_fonts(manifest: &BundleManifest) -> eyre::Result<Vec<super::
 /// Enough for the icon paths: `include_bundle!` mounts are sibling namespaces
 /// that can never claim the `AppIcon` role.
 fn build_main_manifest(project: &Project) -> eyre::Result<BundleManifest> {
-    Ok(BundleManifest {
-        crate_root: project.root().to_path_buf(),
-        assets_root: project.assets_dir(),
-        mounts: Vec::new(),
-        assets: plan_main_assets(project)?,
-    })
+    Ok(BundleManifest::new(
+        project.root().to_path_buf(),
+        project.assets_dir(),
+        Vec::new(),
+        plan_main_assets(project)?,
+    ))
 }
 
 fn plan_main_assets(project: &Project) -> eyre::Result<Vec<PlannedAsset>> {
@@ -617,19 +633,16 @@ pub async fn build_manifest(
             crate::web::build_frontend(project.host(), package_manager, &meta).await?;
         }
         assets.extend(plan_mount(&meta.path, &meta.mount)?);
-        mounts.push(BundleMount {
-            name: meta.mount,
-            root: meta.path,
-        });
+        mounts.push(BundleMount::new(meta.mount, meta.path));
     }
 
     assets.sort_by(|left, right| left.logical_path.cmp(&right.logical_path));
-    Ok(BundleManifest {
-        crate_root: project.root().to_path_buf(),
-        assets_root: project.assets_dir(),
+    Ok(BundleManifest::new(
+        project.root().to_path_buf(),
+        project.assets_dir(),
         mounts,
         assets,
-    })
+    ))
 }
 
 async fn copy_manifest_assets(manifest: &BundleManifest, dest_root: &Path) -> eyre::Result<()> {
@@ -1043,6 +1056,12 @@ async fn write_apple_root_contents(xcassets_dest: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Writes every `AppIcon.appiconset` slot full-bleed — the `mac` idiom
+/// included. The asset catalog renders `mac` slots through the system icon
+/// plate, which applies its own mask and inset, so baking the icon-grid
+/// inset into the PNG would shrink the artwork twice (#1656). The loose
+/// `.icns` a hand-assembled bundle serves keeps the inset shape instead —
+/// `render_macos_icon` in `icon.rs`.
 async fn write_apple_app_icon(source: &IconSource, xcassets_dest: &Path) -> eyre::Result<()> {
     #[derive(Serialize)]
     struct ImageItem<'a> {
@@ -1070,11 +1089,7 @@ async fn write_apple_app_icon(source: &IconSource, xcassets_dest: &Path) -> eyre
     let mut images = Vec::new();
     for &(idiom, size, scale, pixels) in APPLE_APP_ICON_SPECS {
         let file_name = apple_app_icon_file(idiom, size, scale);
-        write_png(
-            &render_apple_icon(source, idiom, pixels)?,
-            &appicon_dir.join(&file_name),
-        )
-        .await?;
+        write_png(&source.render(pixels)?, &appicon_dir.join(&file_name)).await?;
         images.push(ImageItem {
             idiom,
             size,
@@ -1599,6 +1614,35 @@ mod tests {
         });
     }
 
+    /// The asset catalog's `mac` slots render through the system icon
+    /// plate, which owns the mask and inset — the PNGs must be full-bleed
+    /// or the artwork is shrunk twice (#1656). The loose-`.icns` path keeps
+    /// the baked inset — `macos_icns_icon_is_inset_and_rounded` in
+    /// `icon.rs`.
+    #[test]
+    fn apple_app_icon_mac_slots_render_full_bleed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        smol::block_on(async {
+            write_apple_app_icon(&IconSource::default_logo(), temp.path())
+                .await
+                .expect("app icon set");
+            let decoded = image::open(
+                temp.path()
+                    .join(APPLE_APP_ICON_SET)
+                    .join("AppIcon-mac-512x512@2x.png"),
+            )
+            .expect("mac slot must be a decodable png")
+            .to_rgba8();
+            assert_eq!(decoded.dimensions(), (1024, 1024));
+            assert_eq!(
+                decoded.get_pixel(0, 0).0[3],
+                u8::MAX,
+                "the plate owns the macOS mask: the catalog slot keeps the \
+                 artwork's corner"
+            );
+        });
+    }
+
     #[test]
     fn apple_launch_image_is_written_at_three_scales() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1623,10 +1667,7 @@ mod tests {
 
     #[test]
     fn android_colors_derive_the_launcher_background_and_carry_the_launch_colors() {
-        let theme = ThemeConfig {
-            accent: Some(DEFAULT_ACCENT),
-            ..ThemeConfig::default()
-        };
+        let theme = ThemeConfig::default().with_accent(DEFAULT_ACCENT);
         let no_launch = LaunchAssets {
             plan: LaunchPlan::resolve(None, None, &empty_manifest()),
             artwork: None,
@@ -1655,10 +1696,10 @@ mod tests {
 
         let launch = LaunchAssets {
             plan: LaunchPlan::resolve(
-                Some(&LaunchConfig {
-                    background: Some(HexColor::from_rgb([0x0B, 0x1E, 0x3F])),
-                    background_dark: Some(HexColor::from_rgb([0, 0, 0])),
-                }),
+                Some(&LaunchConfig::new(
+                    Some(HexColor::from_rgb([0x0B, 0x1E, 0x3F])),
+                    Some(HexColor::from_rgb([0, 0, 0])),
+                )),
                 None,
                 &empty_manifest(),
             ),
@@ -1718,12 +1759,7 @@ mod tests {
     }
 
     fn empty_manifest() -> BundleManifest {
-        BundleManifest {
-            crate_root: PathBuf::new(),
-            assets_root: PathBuf::new(),
-            mounts: Vec::new(),
-            assets: Vec::new(),
-        }
+        BundleManifest::new(PathBuf::new(), PathBuf::new(), Vec::new(), Vec::new())
     }
 
     /// Re-staging an unchanged manifest must rewrite nothing: a full
@@ -1736,19 +1772,19 @@ mod tests {
             let tempdir = tempfile::tempdir().expect("tempdir");
             let source = tempdir.path().join("note.txt");
             std::fs::write(&source, b"asset bytes").expect("write source");
-            let manifest = BundleManifest {
-                crate_root: tempdir.path().to_path_buf(),
-                assets_root: tempdir.path().to_path_buf(),
-                mounts: Vec::new(),
-                assets: vec![PlannedAsset {
-                    mount: String::new(),
-                    source_path: source.clone(),
-                    relative_path: PathBuf::from("note.txt"),
-                    logical_path: PathBuf::from("note.txt"),
-                    kind: AssetKind::Data,
-                    role: AssetRole::Regular,
-                }],
-            };
+            let manifest = BundleManifest::new(
+                tempdir.path().to_path_buf(),
+                tempdir.path().to_path_buf(),
+                Vec::new(),
+                vec![PlannedAsset::new(
+                    String::new(),
+                    source.clone(),
+                    PathBuf::from("note.txt"),
+                    PathBuf::from("note.txt"),
+                    AssetKind::Data,
+                    AssetRole::Regular,
+                )],
+            );
             let bundle = tempdir.path().join("staged").join(ASSET_ROOT_DIR);
             write_library_resources(&manifest, &tempdir.path().join("staged"))
                 .await

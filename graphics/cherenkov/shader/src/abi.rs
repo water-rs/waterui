@@ -11,6 +11,7 @@ pub const WORKING_SPACE_WGSL: &str = "struct WorkingSpace { luma: vec3<f32> }";
 
 /// What a snippet does to pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SnippetKind {
     /// Maps one colour to one colour.
     Color,
@@ -26,6 +27,10 @@ pub enum SnippetKind {
 /// sample computes `prefix(lerp(a, b))` where materializing first computes
 /// `lerp(prefix(a), prefix(b))`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "executors create a native sampler for each filter mode variant by variant; a new mode must fail their build"
+)]
 pub enum SamplerFilter {
     /// The executor must bind a nearest (point) sampler: every sample returns
     /// an exact texel, so a colour prefix commutes with the access.
@@ -39,6 +44,7 @@ pub enum SamplerFilter {
 /// `input`. Folding is only equivalent when every access is an exact texel
 /// read; see [`Snippet::parse`](crate::Snippet::parse).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum FoldBlocker {
     /// A sample of `input` goes through the declared filtering sampler: the
     /// fold computes `prefix(lerp(a, b))` where materializing first computes
@@ -55,6 +61,7 @@ pub enum FoldBlocker {
 
 /// The precision of colour values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Precision {
     /// 32-bit floats.
     F32,
@@ -80,6 +87,10 @@ impl Precision {
 
 /// The type of one snippet parameter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "executors lay out each parameter type variant by variant; a new type must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ParamType {
     /// `f32`.
     F32,
@@ -149,6 +160,7 @@ impl ParamType {
 
 /// A constant value for a specialized parameter.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub enum ParamValue {
     /// An `f32`.
     F32(f32),
@@ -208,6 +220,7 @@ impl From<[f32; 4]> for ParamValue {
 
 /// One declared snippet parameter.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Param {
     /// The member name in the snippet's `Params` struct.
     pub name: String,

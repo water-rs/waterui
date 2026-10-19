@@ -668,6 +668,11 @@ pub fn render_environment() -> Environment {
         black(),
     );
     waterui::theme::install_color_signal::<waterui::theme::color::Accent>(&mut env, black());
+    // A selectable list's rows re-theme onto the selection role.
+    waterui::theme::install_color_signal::<waterui::theme::color::SelectionForeground>(
+        &mut env,
+        black(),
+    );
     waterui::theme::install_font_signal::<Body>(&mut env, binding(Body::DEFAULT).computed());
     waterui::theme::install_font_signal::<Caption>(&mut env, binding(Caption::DEFAULT).computed());
     waterui::theme::install_font_signal::<Subheadline>(
@@ -794,6 +799,7 @@ pub mod menus {
     /// One row of a built menu — what a case asserts without touching
     /// `NSMenuItem`.
     #[derive(Debug)]
+    #[non_exhaustive]
     pub struct MenuRow {
         /// The row's title.
         pub title: String,

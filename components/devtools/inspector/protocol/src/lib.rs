@@ -43,6 +43,10 @@ pub fn protocol_info() -> InspectorProtocolInfo {
 
 /// Protocol metadata exchanged during the handshake.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct InspectorProtocolInfo {
     /// Build commit of the peer's protocol crate.
     pub build_commit: String,
@@ -58,6 +62,10 @@ impl InspectorProtocolInfo {
 
 /// Description of the application being inspected.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct TargetInfo {
     /// Process id of the target application.
     pub pid: u32,
@@ -68,7 +76,11 @@ pub struct TargetInfo {
 }
 
 /// Messages sent by the inspector to the target application.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum InspectorClientMessage {
     /// Authenticate and declare which channels to open.
     Hello {
@@ -112,6 +124,10 @@ impl std::fmt::Debug for InspectorClientMessage {
 
 /// Messages sent by the target application to the inspector.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub enum InspectorServerMessage {
     /// Handshake accepted.
     Welcome {
@@ -158,6 +174,10 @@ pub enum InspectorServerMessage {
 
 /// An event together with its sequence metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"
+)]
 pub struct InspectorEventEnvelope {
     /// Monotonic sequence number, unique across all channels.
     pub seq: u64,

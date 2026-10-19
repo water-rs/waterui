@@ -36,6 +36,7 @@ use crate::{
 /// How the decoded picture fills the bounds it is given.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
+#[non_exhaustive]
 pub enum ContentMode {
     /// Fit the video within the bounds while maintaining aspect ratio (letterbox/pillarbox).
     #[default]
@@ -49,6 +50,10 @@ pub enum ContentMode {
 /// Packing layout for an equirectangular spherical-video source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(i32)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations unpack each stereo layout variant by variant; a new layout must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SphericalStereoLayout {
     /// One panorama shared by both eyes or displayed as an ordinary 360-degree view.
     #[default]
@@ -238,6 +243,10 @@ impl EquirectangularProjection {
 
 /// Projection used to present decoded video frames.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations present each projection variant by variant; a new projection must fail their build instead of falling into a wildcard arm"
+)]
 pub enum VideoProjection {
     /// Ordinary planar presentation using [`ContentMode`].
     #[default]
@@ -319,6 +328,10 @@ impl Default for Volume {
 
 /// Subtitle track selection policy for a player instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations select subtitles variant by variant; a new policy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SubtitleSelection {
     /// Use the player's default choice.
     #[default]
@@ -331,6 +344,10 @@ pub enum SubtitleSelection {
 
 /// Audio track selection policy for a player instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations select tracks variant by variant; a new policy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum AudioTrackSelection {
     /// Use the player's default or autoselected audio track.
     #[default]
@@ -341,6 +358,10 @@ pub enum AudioTrackSelection {
 
 /// Video-quality track selection policy for a player instance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the video realizations select tracks variant by variant; a new policy must fail their build instead of falling into a wildcard arm"
+)]
 pub enum VideoTrackSelection {
     /// Let adaptive playback select the video quality.
     #[default]
@@ -560,6 +581,7 @@ impl VideoTrackInfo {
 
 /// Origin of one subtitle track in the active presentation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SubtitleTrackOrigin {
     /// Application-supplied sidecar asset.
     Sidecar,
@@ -700,6 +722,7 @@ impl TrackCatalog {
 /// `Video` / `VideoPlayer` use one policy object so apps can explicitly choose
 /// between VOD buffering behavior and realtime behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PlaybackPolicy {
     /// `true` for realtime streams (low-latency/live), `false` for VOD/static files.
     pub realtime: bool,
@@ -723,6 +746,7 @@ pub struct PlaybackPolicy {
 /// output route, or active interactive features cannot satisfy the invariant.
 /// They never begin on one path and silently fall back to another.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PlaybackPowerPolicy {
     /// Let the backend select its canonical path while preserving all features.
     #[default]
@@ -735,6 +759,7 @@ pub enum PlaybackPowerPolicy {
 
 /// Active media-output architecture selected by a backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PlaybackOutputPath {
     /// A native player owns its platform-defined media path.
     PlatformManaged,
@@ -1162,6 +1187,7 @@ impl PlaybackMetrics {
 
 /// Events emitted by video components.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Event {
     /// The video is ready to play.
     ReadyToPlay,
@@ -1319,6 +1345,10 @@ impl BoundVideoEventHandler {
 /// Backends must source playback state from this object rather than creating a
 /// second view-specific player state.
 #[doc(hidden)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the video realizations destructure the whole playback contract, so a new field must fail their build instead of being ignored"
+)]
 pub struct PlaybackConfiguration<H = Option<VideoEventHandler>> {
     /// Command handle for playlist navigation and transport controls.
     pub controller: PlayerController,
@@ -1476,6 +1506,10 @@ impl<H> PlaybackConfiguration<H> {
 ///
 /// This is a raw video view that displays video content without any native controls.
 /// Use this when you want to build your own custom video UI.
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the video realizations destructure the whole configuration, so a new field must fail their build instead of being ignored"
+)]
 pub struct VideoConfig<H = Option<VideoEventHandler>> {
     /// Shared session state and controls.
     pub playback: PlaybackConfiguration<H>,
@@ -1642,6 +1676,10 @@ pub fn video(item: impl Into<MediaItem>) -> Video {
 /// Configuration for the [`VideoPlayer`] component.
 ///
 /// This configuration defines an interactive player with platform-appropriate controls.
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "the video realizations destructure the whole configuration, so a new field must fail their build instead of being ignored"
+)]
 pub struct VideoPlayerConfig<H = Option<VideoEventHandler>> {
     /// Shared session state and controls.
     pub playback: PlaybackConfiguration<H>,

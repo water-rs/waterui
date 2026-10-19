@@ -48,6 +48,13 @@ impl DatePickerRenderState {
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the picker's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
 impl HydroNativeView for Native<DatePickerConfig> {
@@ -55,7 +62,7 @@ impl HydroNativeView for Native<DatePickerConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_date_picker_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -104,11 +111,7 @@ pub fn date_picker_accessibility(
             node.add_action(AccessibilityAction::SetValue);
         }
         let origin = ctx.map(|ctx| {
-            let bounds = ctx.bounds;
-            waterui_core::layout::Point::new(
-                crate::num_cast::f64_as_f32(bounds.x0),
-                crate::num_cast::f64_as_f32(bounds.y1),
-            )
+            crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds))
         });
         if let Some(node_id) = renderer.register_accessibility_leaf(
             ctx,
@@ -143,7 +146,7 @@ pub fn measure_date_picker_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let config = &render_state.config;
     let metrics = theme.picker_metrics(PickerStyle::Menu);
@@ -310,10 +313,9 @@ pub fn render_date_picker_parts(
         text_bounds,
     );
 
-    let origin = waterui_core::layout::Point::new(
-        crate::num_cast::f64_as_f32(hit_bounds.x0),
-        crate::num_cast::f64_as_f32(hit_bounds.y1),
-    );
+    // The popup anchors in window space at the field's bottom edge.
+    let origin =
+        crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(hit_bounds));
     // The popup opens in the picker's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let picker_env = env.clone();

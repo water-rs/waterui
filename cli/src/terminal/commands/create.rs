@@ -93,14 +93,7 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
     {
         return Err(draft.discard(error).await);
     }
-    let spinner = shell.spinner("Scaffolding generated crates and fetching declared fonts...");
-    let fetched = draft.finish().await;
-    if let Some(pb) = spinner {
-        pb.finish_and_clear();
-    }
-    for (name, path) in fetched? {
-        success!(shell, "Fetched font '{name}' to {}", path.display());
-    }
+    let _project = draft.finish();
     print_create_summary(shell, &plan);
     Ok(())
 }
@@ -167,22 +160,19 @@ async fn create_project(shell: &Shell, host: &Host, plan: &CreatePlan) -> Result
     let draft = ProjectDraft::create(
         host,
         &plan.project_path,
-        CreateOptions {
-            name: plan.name.clone(),
-            bundle_identifier: BundleIdentifier::try_from(plan.bundle_id.as_str())
-                .map_err(|error| eyre!(error))?,
-            waterui_path: plan.waterui_path.clone(),
-            channel: plan.channel,
-            framework_manifest: plan.framework_manifest.clone(),
-            framework: None,
-            framework_lock: None,
-            author: whoami::username()
+        CreateOptions::new(
+            plan.name.clone(),
+            BundleIdentifier::try_from(plan.bundle_id.as_str()).map_err(|error| eyre!(error))?,
+            whoami::username()
                 .map_err(|error| eyre!("Failed to determine project author: {error}"))?,
-            web: (plan.template == CreateTemplate::Web).then(|| WebScaffold {
-                package_manager: plan.package_manager,
-                include_arg: "web".to_string(),
-            }),
-        },
+        )
+        .with_waterui_path(plan.waterui_path.clone())
+        .with_channel(plan.channel)
+        .with_framework_manifest(plan.framework_manifest.clone())
+        .with_web(
+            (plan.template == CreateTemplate::Web)
+                .then(|| WebScaffold::new(plan.package_manager, "web")),
+        ),
     )
     .await?;
     if let Some(pb) = spinner {
@@ -284,23 +274,17 @@ mod tests {
         let project = waterui_cli::project::Project::create(
             &waterui_cli::toolchain::Host::current(),
             root,
-            waterui_cli::project::CreateOptions {
-                name: name.to_string(),
-                bundle_identifier: waterui_cli::project_types::BundleIdentifier::try_from(
-                    "dev.waterui.webapp",
-                )
-                .expect("bundle identifier"),
-                waterui_path: Some(waterui_checkout.to_path_buf()),
-                channel: None,
-                framework_manifest: None,
-                framework: None,
-                framework_lock: None,
-                author: "water test".to_string(),
-                web: Some(waterui_cli::project::WebScaffold {
-                    package_manager: super::PackageManager::Bun,
-                    include_arg: "web".to_string(),
-                }),
-            },
+            waterui_cli::project::CreateOptions::new(
+                name.to_string(),
+                waterui_cli::project_types::BundleIdentifier::try_from("dev.waterui.webapp")
+                    .expect("bundle identifier"),
+                "water test".to_string(),
+            )
+            .with_waterui_path(Some(waterui_checkout.to_path_buf()))
+            .with_web(Some(waterui_cli::project::WebScaffold::new(
+                super::PackageManager::Bun,
+                "web",
+            ))),
         )
         .await
         .expect("project scaffold");

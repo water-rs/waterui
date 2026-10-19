@@ -19,6 +19,7 @@ use waterui_url::Url;
 
 /// Which origins may reach the bridge.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum BridgeOrigins {
     /// Only the origin the web view was opened at. The default.
     #[default]
@@ -53,22 +54,25 @@ impl OriginPolicy {
         }
     }
 
+    /// The policy that admits no document at all.
+    ///
+    /// What a web view opened without a bridge gets: it has no handler and no
+    /// state for a document to reach, so nothing may claim either.
+    #[must_use]
+    pub const fn deny_all() -> Self {
+        Self {
+            origins: BridgeOrigins::Initial,
+            initial: None,
+        }
+    }
+
     /// Whether a document at `url` may use the bridge.
+    ///
+    /// The rules decide, one at a time, through [`OriginRule::admits_document`]
+    /// — the same matcher a backend that only holds the rules applies.
     #[must_use]
     pub fn allows(&self, url: &Url) -> bool {
-        match &self.origins {
-            BridgeOrigins::Any => true,
-            BridgeOrigins::LocalFiles => url.is_local(),
-            BridgeOrigins::Initial => match (&self.initial, origin_of(url)) {
-                (Some(initial), Some(origin)) => *initial == origin,
-                // An opaque origin — `data:`, `blob:`, a sandboxed frame — matches
-                // nothing, which is the point: it cannot be authenticated.
-                _ => false,
-            },
-            BridgeOrigins::Allowed(allowed) => {
-                origin_of(url).is_some_and(|origin| allowed.contains(&origin))
-            }
-        }
+        self.rules().iter().any(|rule| rule.admits_document(url))
     }
 
     /// The rules a backend matches the calling frame's origin against.
@@ -110,11 +114,7 @@ impl OriginPolicy {
     /// which is the point: it cannot be authenticated.
     #[must_use]
     pub fn allows_origin(&self, origin: &str) -> bool {
-        self.rules().iter().any(|rule| match rule {
-            OriginRule::Any => true,
-            OriginRule::LocalFiles => origin.starts_with("file://"),
-            OriginRule::Exact(allowed) => allowed == origin,
-        })
+        self.rules().iter().any(|rule| rule.allows(Some(origin)))
     }
 
     /// The rules in the newline-separated form the FFI carries.
@@ -143,6 +143,7 @@ impl OriginPolicy {
 /// what made `file://*` — a valid `WebKit` injection rule — unmatchable against
 /// the `file://` origin every engine reports for a local document.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum OriginRule {
     /// Every origin, including whatever the page navigates to next.
     Any,
@@ -161,6 +162,42 @@ impl OriginRule {
             Self::LocalFiles => "file:",
             Self::Exact(origin) => origin.as_str(),
         }
+    }
+
+    /// Whether a document whose origin is `origin` is admitted by this rule.
+    ///
+    /// `origin` is the `scheme://host[:port]` form every engine reports for a
+    /// frame — `file://` for a local document — or `None` when the document's
+    /// origin is opaque (`about:`, `data:`, `blob:`). An opaque origin matches
+    /// nothing except [`OriginRule::Any`], which is the point: it cannot be
+    /// authenticated.
+    ///
+    /// [`OriginPolicy::allows_origin`] is this matcher applied across a whole
+    /// policy; a backend that holds bare rules — the CEF renderer process is
+    /// one — shares it from here rather than writing a second matcher.
+    #[must_use]
+    pub fn allows(&self, origin: Option<&str>) -> bool {
+        match (self, origin) {
+            (Self::Any, _) => true,
+            (Self::LocalFiles, Some(origin)) => origin.starts_with("file://"),
+            (Self::Exact(allowed), Some(origin)) => *allowed == origin,
+            _ => false,
+        }
+    }
+
+    /// Whether the document at `url` is admitted by this rule: [`allows`]
+    /// applied to the origin the URL names — `scheme://host[:port]` for a web
+    /// document, `file://` for a local one, none for an opaque one.
+    ///
+    /// [`allows`]: Self::allows
+    #[must_use]
+    pub fn admits_document(&self, url: &Url) -> bool {
+        let origin = if url.is_local() {
+            Some(Str::from_static("file://"))
+        } else {
+            origin_of(url)
+        };
+        self.allows(origin.as_deref())
     }
 
     /// Reads the rules back from the wire form produced by
@@ -252,6 +289,31 @@ mod tests {
     fn policy(origins: BridgeOrigins, initial: &str) -> OriginPolicy {
         let initial: Url = initial.parse().expect("a valid initial URL");
         OriginPolicy::new(origins, &initial)
+    }
+
+    #[test]
+    fn deny_all_admits_no_document_and_crosses_as_the_empty_wire() {
+        let policy = OriginPolicy::deny_all();
+        let page: Url = "https://app.waterui.dev/".parse().expect("parses");
+        assert!(!policy.allows(&page));
+        assert!(!policy.allows_origin("https://app.waterui.dev"));
+        assert_eq!(policy.wire().as_str(), "");
+        assert_eq!(
+            OriginRule::parse_wire(&policy.wire()),
+            Vec::<OriginRule>::new()
+        );
+    }
+
+    #[test]
+    fn a_rule_admits_a_document_by_the_origin_its_url_names() {
+        let exact = OriginRule::Exact("http://localhost:3000".into());
+        let at = |url: &str| url.parse::<Url>().expect("parses");
+        assert!(exact.admits_document(&at("http://localhost:3000/page?q=1")));
+        assert!(!exact.admits_document(&at("http://localhost:3001/page")));
+        assert!(!exact.admits_document(&at("data:text/html,opaque")));
+        assert!(OriginRule::LocalFiles.admits_document(&at("file:///tmp/page.html")));
+        assert!(!OriginRule::LocalFiles.admits_document(&at("https://app.waterui.dev/")));
+        assert!(OriginRule::Any.admits_document(&at("data:text/html,opaque")));
     }
 
     #[test]

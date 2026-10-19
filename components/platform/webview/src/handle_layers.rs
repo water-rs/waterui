@@ -29,7 +29,7 @@ macro_rules! webview_handle {
         $(#[doc = $trait_doc:literal])*
         pub trait $public:ident;
         trait $shim:ident;
-        impl $wrapper:ident . $field:ident;
+        impl $wrapper:ident . $field:ident . $handle:ident;
 
         uniform {
             $(
@@ -84,7 +84,7 @@ macro_rules! webview_handle {
                 $(#[cfg($cfg)])?
                 $(#[doc = $doc])*
                 pub fn $name(&self $(, $arg: $ty)*) $(-> $ret)? {
-                    self.$field.$name($($arg),*)
+                    self.$field.$handle.$name($($arg),*)
                 }
             )*
             $($wrapper_extra)*

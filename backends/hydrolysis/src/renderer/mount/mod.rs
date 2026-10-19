@@ -10,7 +10,8 @@
 //! [`layers`](self::layers) — the retained layer set and the one
 //! [`Mount`] a window commits through; [`target`](self::target) — the
 //! target seam; [`registry`](self::registry) — the retained registries;
-//! `animated` — animated-scalar and morph-progress sampling.
+//! `animated` — animated-scalar and morph-progress sampling; `stretch` —
+//! the overscroll stretch filter a scroll node's inner layer draws with.
 
 mod animated;
 pub mod backdrop;
@@ -20,6 +21,7 @@ pub mod placement;
 pub mod program;
 pub mod registry;
 pub mod scopes;
+mod stretch;
 pub mod target;
 
 pub use cell::{Dirty, NodeCell, NodeCore};

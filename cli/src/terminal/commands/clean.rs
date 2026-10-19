@@ -617,19 +617,13 @@ mod tests {
 
     fn write_manifest(project_root: &Path, name: &str) {
         fs::create_dir_all(project_root).expect("create project root");
-        let manifest = Manifest::new(Package {
-            name: name.to_owned(),
+        let manifest = Manifest::new(Package::new(
+            name,
             // The identifier doubles as the Android package name, so a
             // hyphenated project name cannot be used verbatim.
-            bundle_identifier: BundleIdentifier::try_from(format!(
-                "dev.waterui.{}",
-                name.replace('-', "_")
-            ))
-            .expect("test bundle identifier must be valid"),
-            assets_path: String::from("assets"),
-            accessory: false,
-            embedded: false,
-        });
+            BundleIdentifier::try_from(format!("dev.waterui.{}", name.replace('-', "_")))
+                .expect("test bundle identifier must be valid"),
+        ));
         block_on(manifest.save(project_root)).expect("save manifest");
     }
 }

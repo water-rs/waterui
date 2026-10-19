@@ -15,6 +15,10 @@ use crate::scene::resources::RecordingResources;
 
 /// Environment marker: render `SceneView` directly in the backend scene.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less environment marker inserted by name"
+)]
 pub struct SceneViewMergeToParent;
 
 /// Callback used by scene content to request another frame.
@@ -69,7 +73,9 @@ pub trait SceneContent: 'static {
     /// A new registration is validated on the calling thread and queued on
     /// the target — an image beyond
     /// [`RecordingResources::image_limits`](crate::resources::RecordingResources::image_limits)
-    /// fails right there with `ResourceError::TooLarge`; see the contract on
+    /// fails right there with `ResourceError::TooLarge`, and one that does
+    /// not fit the image budget beside the images already registered with
+    /// `ResourceError::OverBudget`; see the contract on
     /// [`SceneResources`](crate::resources::SceneResources#blocking).
     /// The id to record comes from [`RecordingResources::name`], which holds
     /// the registration for this recording. It is the only way to get an id

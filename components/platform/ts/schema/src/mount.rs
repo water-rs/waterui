@@ -71,8 +71,8 @@ pub const fn mount_encoded_len(module: &str, props: &str, contract_hash: u64) ->
 ///
 /// `N` must be `mount_encoded_len(module, props, contract_hash) + 1`, for the
 /// same reason [`encode`](crate::encode) requires it of a props contract: the
-/// CLI finds a static's end at its first NUL, because a Mach-O symbol carries
-/// no size.
+/// array is the payload of a metadata directory record, whose reader cuts it
+/// at the first NUL.
 ///
 /// # Panics
 /// Fails const evaluation when `N` is not
@@ -95,6 +95,7 @@ pub const fn encode_mount<const N: usize>(
 
 /// One mount point, recovered from an artifact.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct MountPoint {
     /// The module id: the `.tsx` path relative to the crate's manifest
     /// directory, forward-slashed, extension kept.

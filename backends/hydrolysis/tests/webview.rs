@@ -22,9 +22,8 @@ use waterui::{Color, Environment, Str};
 use waterui_core::accessibility::{AccessibilityRole, default_role};
 use waterui_core::{AnyView, Metadata, Retain, Signal};
 use waterui_webview::{
-    BackendEvent, Cookie, CustomWebViewController, OriginPolicy, ScriptInjectionTime,
-    ScriptMessageHandler, Url, WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController,
-    WebViewHandle,
+    BackendEvent, Cookie, CustomWebViewController, ScriptInjectionTime, ScriptMessageHandler, Url,
+    WatcherGuard, WatcherSet, WebView, WebViewConfig, WebViewController, WebViewHandle,
 };
 
 const DOCS_URL: &str = "https://waterui.dev/docs";
@@ -62,6 +61,11 @@ impl CustomWebViewController for TestController {
             navigations: Rc::clone(&self.navigations),
             watchers: WatcherSet::new(),
         }
+    }
+
+    /// No engine means no interception facility an asset origin could stand on.
+    fn asset_origin(&self) -> Option<Url> {
+        None
     }
 }
 
@@ -108,14 +112,7 @@ impl WebViewHandle for TestHandle {
 
     fn remove_handler(&self, _name: &str) {}
 
-    fn set_bridge_origins(&self, _policy: OriginPolicy) {}
-
     fn set_cookie(&self, _cookie: Cookie<'static>) {}
-
-    /// No engine means no interception facility an asset origin could stand on.
-    fn asset_origin(&self) -> Option<Url> {
-        None
-    }
 
     fn set_redirects_enabled(&self, _enabled: impl Signal<Output = bool>) {}
 

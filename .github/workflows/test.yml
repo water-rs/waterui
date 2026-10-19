@@ -84,9 +84,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Retires superseded generations of only this job's two cache
-      # families (cargo-sources-Linux-*, lint-target-Linux-X64-*) on its
-      # own ref, then saves the replacement archives.
+      # Saves the replacement archives, then retires the superseded
+      # generations of only this job's two cache families
+      # (cargo-sources-Linux-*, lint-target-Linux-X64-*) on its own ref.
       actions: write
     # Pull requests keep the 10-minute gate. An integration push that misses
     # the exact `lint-target` key writes the archive every later run restores,
@@ -116,6 +116,11 @@ jobs:
       - name: Rust toolchain fingerprint
         id: rustc-fingerprint
         run: echo "hash=$(rustc -vV | sha256sum | cut -d' ' -f1)" >> "${GITHUB_OUTPUT}"
+      # Every cargo step below appends its JSON messages here (diagnostics
+      # still render to the log): the units they name are what the writer
+      # keeps when it prunes `target` before saving it.
+      - name: Cargo message log
+        run: echo "CARGO_MESSAGES=${RUNNER_TEMP}/cargo-messages.jsonl" >> "${GITHUB_ENV}"
       - name: Restore Cargo sources
         id: cargo-sources
         uses: ./.github/actions/cargo-sources
@@ -191,23 +196,23 @@ jobs:
       - name: Clippy (workspace)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true'
         # waterui-apple / cocoa-ui compile only on Apple hosts; the macOS legs carry them.
-        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check --workspace --exclude '*-example' --exclude waterui-apple --exclude cocoa-ui --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Check and clippy (affected packages)
         if: inputs.full == false && inputs['comment-only'] == false && inputs.affected != 'workspace' && steps.writer.outputs.sweep != 'true' && steps.linux-scope.outputs.args != ''
         env:
           LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
           read -ra args <<< "${LINUX_ARGS}"
-          cargo check --locked --profile ci-check "${args[@]}" --all-targets
-          cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
+          cargo check --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
+          cargo clippy --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       - name: Clippy and rustdoc (comment-only owners)
         if: inputs.full == false && inputs['comment-only'] == true && steps.linux-scope.outputs.args != ''
         env:
           LINUX_ARGS: ${{ steps.linux-scope.outputs.args }}
         run: |
           read -ra args <<< "${LINUX_ARGS}"
-          cargo clippy --locked --profile ci-check "${args[@]}" --all-targets -- -D warnings
-          RUSTDOCFLAGS="-D warnings" cargo doc --locked --profile ci-check --no-deps "${args[@]}"
+          cargo clippy --locked --profile ci-check "${args[@]}" --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
+          RUSTDOCFLAGS="-D warnings" cargo doc --locked --profile ci-check --no-deps "${args[@]}" --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       # Filters and their portable description without the GPU stack: no other
       # pass builds `effects` with `gpu` off, so a GPU item leaking into the
       # description would otherwise go unnoticed until a non-GPU target built it.
@@ -215,7 +220,7 @@ jobs:
       # `waterui` turns `gpu` back on through feature unification.
       - name: Clippy (graphics effects without gpu)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'waterui-graphics')
-        run: cargo clippy --locked --profile ci-check -p waterui-graphics --no-default-features --features effects -- -D warnings
+        run: cargo clippy --locked --profile ci-check -p waterui-graphics --no-default-features --features effects --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # filtrate with the wgpu stack off: its `webgl` feature (a deliberate
       # compile_error off wasm32) is the only GPU runtime the crate has, so
       # this is the shared filter core in the shape non-GPU embedders
@@ -225,7 +230,7 @@ jobs:
       # package is in scope.
       - name: Clippy (filtrate without wgpu)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'filtrate')
-        run: cargo clippy --locked --profile ci-check -p filtrate --no-default-features --all-targets -- -D warnings
+        run: cargo clippy --locked --profile ci-check -p filtrate --no-default-features --all-targets --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The scene crate's `generator` feature compiles the corpus-writing
       # binaries (`generate-corpus`, `prepare-fonts`) that every scene
       # consumer's assets come from; the cherenkov repository kept a
@@ -233,7 +238,7 @@ jobs:
       # behind the default-feature pass.
       - name: Clippy (cherenkov-scene generator)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'cherenkov-scene')
-        run: cargo clippy --locked --profile ci-check -p cherenkov-scene --all-targets --features generator -- -D warnings
+        run: cargo clippy --locked --profile ci-check -p cherenkov-scene --all-targets --features generator --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # cherenkov-bench's test targets sit behind the adapter features:
       # the default-feature workspace pass never enables them, and the
       # `--all-features` sweep excludes the bench crate (`skia-metal` is
@@ -243,7 +248,7 @@ jobs:
       # already-built graph.
       - name: Check (cherenkov-bench test targets)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'cherenkov-bench')
-        run: cargo check --locked --profile ci-check -p cherenkov-bench --tests --features cherenkov,cherenkov-cpu
+        run: cargo check --locked --profile ci-check -p cherenkov-bench --tests --features cherenkov,cherenkov-cpu --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       # Then every crate's own optional features. This pass used to be
       # `cargo clippy --all-targets --all-features`, with neither `-p` nor
       # `--workspace`: the root manifest carries both `[workspace]` and
@@ -271,7 +276,7 @@ jobs:
       - name: Clippy (all features, workspace)
         if: inputs.full
         run: |
-          cargo clippy --locked --profile ci-check --workspace --all-targets --all-features \
+          cargo clippy --locked --profile ci-check --workspace --all-targets --all-features --message-format=json-render-diagnostics \
             --exclude '*-example' \
             --exclude waterui-apple \
             --exclude cocoa-ui \
@@ -279,13 +284,13 @@ jobs:
             --exclude waterui-browser-cef \
             --exclude filtrate \
             --exclude cherenkov-bench \
-            -- -D warnings
+            -- -D warnings >> "${CARGO_MESSAGES}"
       # `waterui-core`'s `nightly` feature turns on `feature(never_type)`, which
       # is a hard E0554 on the stable channel this job pins. Everything else the
       # crate has, it gets here.
       - name: Clippy (waterui-core, every stable feature)
         if: inputs.full
-        run: cargo clippy --locked --profile ci-check -p waterui-core --all-targets --features std,serde -- -D warnings
+        run: cargo clippy --locked --profile ci-check -p waterui-core --all-targets --features std,serde --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # `compile-only` swaps in CEF's `dox` stubs and stops the build script
       # downloading the distribution that `cef-runtime` — and the `real_engine`
       # test target — need, so the two can never be enabled together. This is
@@ -295,11 +300,12 @@ jobs:
       # `--all-targets` skips it for want of its required feature.
       - name: Clippy (waterui-browser-cef, CEF runtime)
         if: inputs.full
-        run: cargo clippy --locked --profile ci-check -p waterui-browser-cef --all-targets --features chromium,webview -- -D warnings
+        run: cargo clippy --locked --profile ci-check -p waterui-browser-cef --all-targets --features chromium,webview --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # The feature combination Hydrolysis's own CI swept (#1428): the
       # all-features pass above covers the superset, but a feature interaction
       # that only this set compiles — webview-system stays off because its
-      # WKWebView bridge exists on macOS alone — would regress invisibly
+      # WKWebView bridge exists on macOS alone, where the `macos-lint`
+      # composite's host leg carries it — would regress invisibly
       # otherwise. The bare check is the other half of that contract: call
       # sites a feature gates out rot under every enabled leg.
       #
@@ -309,22 +315,22 @@ jobs:
       # (#2047). Measured at 27 s on top of the default-feature graph.
       - name: Clippy (hydrolysis, checked feature set)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
-        run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit -- -D warnings
+        run: cargo clippy --locked --profile ci-check -p hydrolysis --all-targets --features accessibility,inspector-signals,testing,web,winit --message-format=json-render-diagnostics -- -D warnings >> "${CARGO_MESSAGES}"
       # Rustdoc under the same set: the comment-only owners pass documents
       # hydrolysis with `default = []`, so intra-doc links inside the runner
       # modules these features gate in are never resolved there (#2013).
       - name: Rustdoc (hydrolysis, checked feature set)
         if: inputs.full || inputs.affected == 'workspace' || steps.writer.outputs.sweep == 'true' || contains(inputs.affected, 'hydrolysis')
-        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --profile ci-check -p hydrolysis --no-deps --features accessibility,inspector-signals,testing,web,winit
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --locked --profile ci-check -p hydrolysis --no-deps --features accessibility,inspector-signals,testing,web,winit --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       - name: Check (hydrolysis, no features)
         if: inputs.full
-        run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib
+        run: cargo check --locked --profile ci-check -p hydrolysis --no-default-features --lib --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       # The cli's own CI ran a no-default-features check on every change
       # (water-rs/cli ci.yml): `default` bundles svg-icons+preview,
       # and nothing else in this workspace compiles the bare shape.
       - name: Check (waterui-cli, no default features)
         if: inputs.full || contains(inputs.affected, 'waterui-cli')
-        run: cargo check --locked --profile ci-check -p waterui-cli --no-default-features --all-targets
+        run: cargo check --locked --profile ci-check -p waterui-cli --no-default-features --all-targets --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       # The waterui skill's snippet compile gate: every rust fence in
       # .claude/skills/waterui is transcribed into .claude/skills/waterui/skill_snippets
       # and must keep compiling. The non-default feature exposes the test/bench
@@ -332,42 +338,75 @@ jobs:
       # they address elements that do not exist by design and must never run.
       - name: Skill snippet compile gate
         if: inputs.full
-        run: cargo check --locked --profile ci-check -p skill_snippets --all-targets --features compile-gate-tests
+        run: cargo check --locked --profile ci-check -p skill_snippets --all-targets --features compile-gate-tests --message-format=json-render-diagnostics >> "${CARGO_MESSAGES}"
       # Every cargo step above writes `target`, so it exists exactly when
       # one of them ran; a run that compiled and left none fails here.
       - name: Target size
         if: steps.linux-scope.outputs.compiles == 'true'
         run: du -sh target
-      # Retirement runs after every check has passed and BEFORE the saves:
-      # a lockfile bump mints a new key, so the superseded generations of
-      # this job's own two families on this exact ref are deleted first —
-      # otherwise the save itself can evict a live, unrelated cache while
-      # the stale generation sits under quota. Ref-scoped family prefixes
-      # only: pull-request caches, other families, and other workspaces are
-      # never touched; API failures fail the step, they are not swallowed.
-      - name: Retire superseded cache generations
+      # The cache writes run after every check has passed, in an order that
+      # keeps a restorable `lint-target` and `cargo-sources` on this ref at
+      # every moment (#2670): sweep the other purposes' superseded entries,
+      # save each replacement once the headroom check proves it fits next
+      # to everything live, and only then retire the generation it
+      # supersedes. Retiring first left pull requests with no archive for
+      # the length of the upload.
+      #
+      # One live entry per cache purpose on this ref — the shared sweep
+      # covers families no single job owns (install-tool pins, apt
+      # packages, in-tree tool builds) (#1441). This job's own superseded
+      # generation is still the newest of its purpose here, so it stays.
+      - name: Sweep superseded cache generations
         if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') }}
         uses: ./.github/actions/retire-cargo-caches
         with:
-          families: cargo-sources-${{ runner.os }}-,lint-target-${{ runner.os }}-${{ runner.arch }}-
           primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}|${{ steps.lint-target.outputs.cache-primary-key }}
-          # One live entry per cache purpose on this ref — the shared sweep
-          # covers families no single job owns (install-tool pins, apt
-          # packages, in-tree tool builds) (#1441).
           sweep: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      # A target restored through the prefix key carries every superseded
+      # lockfile generation's units; the archive keeps only what this
+      # run's cargo steps used.
+      - name: Prune lint target
+        if: steps.writer.outputs.sweep == 'true'
+        uses: ./.github/actions/prune-cargo-target
+        with:
+          messages: ${{ env.CARGO_MESSAGES }}
       - name: Save Cargo sources
+        id: save-sources
         if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/cargo-sources
         with:
           operation: save
           primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
-      - name: Save lint target cache
+          limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Lint target cache headroom
+        id: lint-headroom
         if: steps.writer.outputs.sweep == 'true'
+        uses: ./.github/actions/cache-headroom
+        with:
+          path: target
+          key: ${{ steps.lint-target.outputs.cache-primary-key }}
+          limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Save lint target cache
+        if: steps.writer.outputs.sweep == 'true' && steps.lint-headroom.outputs.fits == 'true'
         uses: actions/cache/save@v4
         with:
           path: target
           key: ${{ steps.lint-target.outputs.cache-primary-key }}
+      # Ref-scoped family prefixes only: pull-request caches, other
+      # families, and other refs are never touched. It refuses to retire
+      # anything unless both primary keys exist, so a save that did not
+      # land can never leave pull requests without an archive. A save the
+      # headroom check skipped (no room) keeps the old generations too.
+      - name: Retire superseded cache generations
+        if: ${{ !inputs.full && (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.save-sources.outputs.saved != 'false' && steps.lint-headroom.outputs.fits != 'false' }}
+        uses: ./.github/actions/retire-cargo-caches
+        with:
+          families: cargo-sources-${{ runner.os }}-,lint-target-${{ runner.os }}-${{ runner.arch }}-
+          primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}|${{ steps.lint-target.outputs.cache-primary-key }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   # The crates whose wasm-only paths nothing else compiles.
   #
@@ -423,13 +462,16 @@ jobs:
       # lints; only the workspace crate is named here. Hydrolysis's `web`
       # feature is its browser runner — it used to be linted for wasm32 in the
       # hydrolysis repository's own CI and moved in with the tree (#1428).
+      # Its web video bridge needs `video` as well (#2799), and
+      # `webview-system` is the `<iframe>` bridge — the only leg that can
+      # lint it (water-rs/waterui#1795).
       - name: Lint the wasm32-only paths
         run: |
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
             -p waterui-media \
             -- -D warnings
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
-            -p hydrolysis --features web \
+            -p hydrolysis --features web,video,webview-system \
             -- -D warnings
           # The bare build is a separate gate: every feature off selects a
           # third of the backend's `cfg(feature)` surface that `web` never

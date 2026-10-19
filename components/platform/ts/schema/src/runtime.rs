@@ -44,6 +44,7 @@ use crate::format::{FORMAT_VERSION, kind, payload_kind, runtime_part};
 
 /// Which half of the runtime fingerprint a payload carries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum RuntimePart {
     /// The JavaScript library embedded in `waterui-ts`.
     Library,
@@ -63,6 +64,7 @@ impl RuntimePart {
 
 /// One half of the runtime fingerprint, recovered from an artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct RuntimeHalf {
     /// Which half this is.
     pub part: RuntimePart,
@@ -219,6 +221,7 @@ impl fmt::Display for RuntimeFingerprint {
 
 /// Why a fingerprint's text form could not be read.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum FingerprintParseError {
     /// The text does not have the three dash-separated parts.
     #[error(

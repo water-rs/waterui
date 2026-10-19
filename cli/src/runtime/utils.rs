@@ -12,6 +12,7 @@ use thiserror::Error;
 
 /// An external command could not be executed or exited unsuccessfully.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CommandError {
     /// The command could not be spawned.
     #[error("failed to spawn `{program}`: {source}")]
@@ -208,6 +209,7 @@ pub fn parse_semver_version(input: &str) -> Result<Version, VersionParseError> {
 
 /// A version string `parse_semver_version` could not normalize.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum VersionParseError {
     /// The version string was empty.
     #[error("version is empty")]
@@ -358,7 +360,28 @@ pub fn copy_file_if_changed_sync(from: &Path, to: &Path) -> io::Result<()> {
 fn copy_file_overwriting(from: &Path, to: &Path) -> io::Result<()> {
     let from_modified = std::fs::metadata(from)?.modified()?;
     replace_with_copy(from, to)?;
-    filetime::set_file_mtime(to, filetime::FileTime::from_system_time(from_modified))
+    set_file_mtime(to, filetime::FileTime::from_system_time(from_modified))
+}
+
+/// Stamp `time` on `path`, which may carry a read-only mode inherited from
+/// the copy's source.
+///
+/// `filetime::set_file_mtime` opens the path for `GENERIC_WRITE`, which
+/// Windows refuses on a read-only file even though only attributes change.
+/// `FILE_WRITE_ATTRIBUTES` is the access a timestamp write actually needs.
+#[cfg(windows)]
+fn set_file_mtime(path: &Path, time: filetime::FileTime) -> io::Result<()> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let file = std::fs::OpenOptions::new()
+        .access_mode(windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES)
+        .open(path)?;
+    filetime::set_file_handle_times(&file, None, Some(time))
+}
+
+#[cfg(not(windows))]
+fn set_file_mtime(path: &Path, time: filetime::FileTime) -> io::Result<()> {
+    filetime::set_file_mtime(path, time)
 }
 
 /// Remove `to` and copy `from`'s bytes in its place — `reflink_or_copy`
@@ -373,6 +396,15 @@ fn replace_with_copy(from: &Path, to: &Path) -> io::Result<()> {
     match std::fs::remove_file(to) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        #[cfg(windows)]
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            // A copy that kept a read-only mode cannot be unlinked until the
+            // attribute is cleared; Unix ignores it for unlink.
+            let mut permissions = std::fs::metadata(to)?.permissions();
+            permissions.set_readonly(false);
+            std::fs::set_permissions(to, permissions)?;
+            std::fs::remove_file(to)?;
+        }
         Err(error) => return Err(error),
     }
     reflink_copy::reflink_or_copy(from, to).map(|_| ())

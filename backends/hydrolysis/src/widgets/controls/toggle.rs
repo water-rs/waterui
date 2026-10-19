@@ -44,6 +44,13 @@ impl ToggleRenderState {
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the toggle's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
 impl HydroNativeView for Native<ToggleConfig> {
@@ -51,7 +58,7 @@ impl HydroNativeView for Native<ToggleConfig> {
         state: &mut crate::renderer::HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_toggle_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -134,7 +141,7 @@ pub fn measure_toggle_node(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let metrics = theme.toggle_metrics(render_state.config.style);
     let label_size = render_state.label_view.measure_built(state, env, theme);
@@ -341,7 +348,7 @@ pub fn measure_toggle_intrinsic(
     toggle: &ToggleConfig,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let metrics = theme.toggle_metrics(toggle.style);
     let label_size = measure_label_intrinsic(&toggle.label, state, env, theme);
@@ -365,7 +372,7 @@ pub fn measure_toggle_intrinsic(
 fn toggle_control_and_label_bounds(
     bounds: kurbo::Rect,
     style: ToggleStyle,
-    metrics: waterui_backend_core::widget::ToggleMetrics,
+    metrics: crate::theme::ToggleMetrics,
     label_size: LayoutSize,
 ) -> (kurbo::Rect, kurbo::Rect) {
     let control_y0 = bounds.y0 + ((bounds.height() - metrics.height) / 2.0).max(0.0);
@@ -444,8 +451,8 @@ pub fn emit_toggle_accessibility(
 #[cfg(test)]
 mod tests {
     use super::toggle_control_and_label_bounds;
+    use crate::theme::ToggleMetrics;
     use kurbo::Rect;
-    use waterui_backend_core::widget::ToggleMetrics;
     use waterui_controls::toggle::ToggleStyle;
     use waterui_core::layout::Size;
 

@@ -124,24 +124,19 @@ pub async fn run(shell: &Shell, args: Args) -> Result<()> {
 
     let suite = run_bench_suite(
         &waterui_cli::toolchain::Host::current(),
-        BenchRunOptions {
+        BenchRunOptions::new(
             path,
-            filter: args.filter,
-            config: BenchRunConfig {
-                warmups: args.warmups,
-                samples: args.samples,
-                repetitions: args.repetitions,
-            },
-            report_dir: args.report_dir,
-            budget_caps: BenchBudgets {
-                max_p95_us: args.max_p95_us,
-                max_mean_us: args.max_mean_us,
-                max_rebuild_ratio: args.max_rebuild_ratio,
-                max_scene_layers: args.max_scene_layers,
-                max_gpu_surface_layers: args.max_gpu_surface_layers,
-                max_clip_layers: args.max_clip_layers,
-            },
-        },
+            args.filter,
+            BenchRunConfig::new(args.warmups, args.samples, args.repetitions),
+            args.report_dir,
+            BenchBudgets::default()
+                .with_max_p95_us(args.max_p95_us)
+                .with_max_mean_us(args.max_mean_us)
+                .with_max_rebuild_ratio(args.max_rebuild_ratio)
+                .with_max_scene_layers(args.max_scene_layers)
+                .with_max_gpu_surface_layers(args.max_gpu_surface_layers)
+                .with_max_clip_layers(args.max_clip_layers),
+        ),
     )
     .await?;
 

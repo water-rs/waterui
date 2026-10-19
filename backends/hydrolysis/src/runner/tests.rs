@@ -12,6 +12,7 @@ use crate::platform::{
 use crate::renderer::tests::MinimalTestTheme;
 use crate::renderer::{FontFamilyResolution, HydrolysisRenderer, InteractionKey};
 use crate::text::SessionTextEngine;
+use crate::theme::TextCaretMotion;
 use core::time::Duration;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,7 +20,6 @@ use std::time::Instant;
 use waterui::component::list::{List, ListItem};
 use waterui::window::{Window, WindowState};
 use waterui::{Binding, Signal, ViewExt as _};
-use waterui_backend_core::widget::TextCaretMotion;
 use waterui_core::animation::Animation;
 use waterui_core::id::SelfId;
 use waterui_core::{AnyView, Environment, binding};
@@ -1678,4 +1678,38 @@ fn pump_frame_transaction(
             signals_pending: runtime.renderer.has_pending_frame_request(),
         },
     )
+}
+
+/// The run entry installs its tracing subscriber before it invokes the app
+/// factory: events the application emits while building its `App` reach the
+/// log instead of being dropped (water-rs/waterui#2513). The headless
+/// one-shot `run` is the only `hydrolysis::run` that returns — the winit
+/// `run` never does, so this test exists only under that cfg — and only
+/// where the headless one-shot `run` itself exists: not on Android, whose
+/// host mounts `runner::android` instead.
+#[cfg(all(not(hydrolysis_winit), not(target_os = "android")))]
+#[test]
+fn a_run_installs_tracing_before_the_app_factory_runs() {
+    // SAFETY: nextest gives each test its own process, so mutating the
+    // environment races with nothing.
+    unsafe { std::env::set_var("RUST_LOG", "trace") };
+    let mut factory_saw_subscriber = false;
+    super::run(
+        |env| {
+            // `set_global_default` succeeds only where no subscriber exists:
+            // an Err means `run` installed the subscriber first, an Ok means
+            // the factory ran against none — the #2513 order.
+            factory_saw_subscriber = tracing::subscriber::set_global_default(
+                tracing::subscriber::NoSubscriber::default(),
+            )
+            .is_err();
+            waterui::app::App::new_with_windows(Vec::new(), env)
+        },
+        Environment::new(),
+        crate::testing::TestStyle::new(),
+    );
+    assert!(
+        factory_saw_subscriber,
+        "the app factory ran before the tracing subscriber was installed"
+    );
 }

@@ -15,6 +15,11 @@
 //! - [`Engine::render`] drains every surface's queued change set into one
 //!   commit per frame, samples the animations at the frame time and renders
 //!   on the render thread.
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 // The recording layer — and now the layer tree — is `cherenkov-record`;
 // these imports keep its modules at their old `crate::*` paths so engine
@@ -71,7 +76,7 @@ pub use crate::display_list::{
 };
 pub use crate::engine::Engine;
 pub use crate::engine::{CompletionWaker, FrameScope, SurfaceWakes};
-pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError};
+pub use crate::error::{EngineError, RenderError, ResourceError, SurfaceError, SurfaceRejection};
 pub use crate::frame::{
     DEFAULT_REFRESH, FrameId, FrameStats, FrameTime, FrameTiming, Next, Offscreen, OffscreenFormat,
     PassTiming, Phases, Readback,
@@ -79,7 +84,7 @@ pub use crate::frame::{
 pub use crate::glyph::{FontId, Glyph, GlyphRun, GlyphStyle};
 pub use crate::image::{
     Astc4x4, Bc7, Etc2Rgba, Format, ImageColorSpace, ImageData, ImageFormat, ImageUpload, Rgba8,
-    Rgba16F,
+    Rgba16F, srgb_decode,
 };
 pub use crate::message::{FontData, InstallOp, ProducerId};
 pub use crate::paint::{

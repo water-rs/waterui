@@ -496,6 +496,7 @@ pub(super) const fn schedule_animation_update<P: PlatformWindow>(
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A captured headless frame: raw pixels, the alpha convention the
 /// producing surface reports, plus dimensions.
+#[non_exhaustive]
 pub struct HeadlessSnapshot {
     /// Snapshot width in pixels.
     pub width: u32,
@@ -521,6 +522,7 @@ pub(super) struct RenderWindowResult {
 
 /// Phase timing for one Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FramePhases {
     /// Time spent draining local executor work before input dispatch.
     pub executor_before: Duration,
@@ -548,6 +550,7 @@ pub struct FramePhases {
 
 /// Counter snapshot for one Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrameCounters {
     /// Number of rebuild loop iterations in this frame.
     pub rebuild_iterations: u32,
@@ -588,6 +591,7 @@ pub struct FrameCounters {
 
 /// Detailed profile for one Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrameProfile {
     /// Total wall-clock duration for the frame pump.
     pub total: Duration,
@@ -1113,6 +1117,11 @@ crate::engine::cfg_async_fn! {
         display_scale: f64,
         capture_snapshot: bool,
     } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+    // Restore a lost device generation before any handle is read: the
+    // recovered device, its fresh context id and the reconfigured
+    // swapchain are what the frame below renders on. An unrecoverable
+    // device panics inside, naming the recorded losses.
+    surface.ensure_live();
     let (width, height) = surface.size();
     let format = surface.format();
     let output_alpha = surface.output_alpha();
@@ -1130,7 +1139,7 @@ crate::engine::cfg_async_fn! {
             queue: surface.queue(),
             device_loss: surface.device_loss().clone(),
             gpu_context_id: context.context_id,
-            shared_device: context.shared_device,
+            shared_device: context.shared_device.clone(),
             display_scale,
             width,
             height,
@@ -1199,6 +1208,10 @@ crate::engine::cfg_async_fn! {
     let present_started_at = Instant::now();
     surface.present(frame);
     let present = present_started_at.elapsed();
+    // The submitted frame credits this device generation as productive —
+    // the recovery budget clears its loss streak once the queue reports
+    // the submission done.
+    surface.device_loss().note_frame_presented();
     Ok(SurfaceRenderResult {
         acquire,
         render,
@@ -1226,11 +1239,15 @@ impl GpuSurfaceFrame for crate::platform::WinitSurface {
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
         let render_started_at = Instant::now();
+        // Restore a lost device generation before the render target is
+        // built: the engine window is rebuilt on the new context id.
+        self.ensure_live();
         let (target, engine_target) =
             self.render_targets(display_scale, crate::renderer::working_color(clear_color));
         renderer
             .render_window_frame(&target, engine_target)
             .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+        self.device_loss().note_frame_presented();
         Ok(SurfaceRenderResult {
             acquire: Duration::ZERO,
             render: render_started_at.elapsed(),
@@ -1258,12 +1275,19 @@ impl GpuSurfaceFrame for crate::platform::BrowserSurface {
         display_scale: f64,
     ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
         let render_started_at = Instant::now();
+        // Restore a lost device generation before the render target is
+        // built; a still-dead one reports the surface lost so the pump
+        // reschedules and the next frame retries under the loss budget.
+        if !self.ensure_live().await {
+            return Err(crate::platform::SurfaceError::Lost);
+        }
         let (target, root, window_slot) =
             self.render_targets(display_scale, crate::renderer::working_color(clear_color));
         renderer
             .render_dom_frame(&target, root, window_slot)
             .await
             .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+        self.device_loss().note_frame_presented();
         Ok(SurfaceRenderResult {
             acquire: Duration::ZERO,
             render: render_started_at.elapsed(),
@@ -1459,7 +1483,7 @@ crate::engine::cfg_async_fn! {
                             applied_filter_effect_us,
                             rendered: false,
                             captured_snapshot: false,
-                            frame_work: runtime.renderer.frame_work_counters(),
+                            frame_work: runtime.renderer.take_frame_work_counters(),
                         },
                         ..FrameProfile::default()
                     },
@@ -1469,6 +1493,14 @@ crate::engine::cfg_async_fn! {
                 panic!("hydrolysis surface acquisition failed validation")
             }
         };
+        if P::SAMPLES_TOP_EDGE {
+            let (width, _) = runtime.platform.content_size();
+            let width = f64::from(width) / runtime.platform.scale_factor();
+            let color = runtime
+                .renderer
+                .top_edge_color(width, crate::renderer::working_color(clear_color));
+            runtime.platform.set_top_edge_color(color);
+        }
         let acquire_duration = rendered.acquire;
         let render_duration = rendered.render;
         let present_duration = rendered.present;
@@ -1508,7 +1540,7 @@ crate::engine::cfg_async_fn! {
                 applied_filter_effect_us,
                 rendered: true,
                 captured_snapshot: capture_snapshot,
-                frame_work: runtime.renderer.frame_work_counters(),
+                frame_work: runtime.renderer.take_frame_work_counters(),
             },
             ..FrameProfile::default()
         };
@@ -1958,12 +1990,8 @@ where
                     false
                 } else {
                     let key_env = input_env(runtime, env);
-                    let press = KeyPress {
-                        key: logical_key.clone(),
-                        code: physical_code,
-                        modifiers: modifiers.into(),
-                        repeat,
-                    };
+                    let press =
+                        KeyPress::new(logical_key.clone(), physical_code, modifiers.into(), repeat);
                     let outcome = if runtime.renderer.handle_embedded_key(&KeyDelivery {
                         pressed: true,
                         logical: &logical_key,

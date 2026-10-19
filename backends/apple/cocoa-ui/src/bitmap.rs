@@ -247,11 +247,37 @@ pub fn make_offscreen_window(
     window
 }
 
+/// A scene-less `CaptureWindow` for a Mac Catalyst process that runs
+/// without `UIApplicationMain`.
+///
+/// The window attaches to the screen's unassociated window scene, so a
+/// hierarchy inside it gets the trait environment and layout pass native
+/// controls build their parts in, while `UIKit` creates no `NSWindow` for
+/// it — nothing is registered with the window server. `application` is
+/// the proof the `AppKit` application that scene requires exists.
+#[cfg(target_abi = "macabi")]
+#[must_use]
+pub fn scene_less_capture_window(
+    mtm: objc2::MainThreadMarker,
+    _application: &crate::uikit::catalyst::BackgroundApplication,
+    size: Size,
+) -> Retained<CaptureWindow> {
+    // SAFETY: `initWithFrame:` is `UIView`'s designated initializer, which
+    // `UIWindow` inherits for a window that names no scene.
+    unsafe {
+        objc2::msg_send![
+            CaptureWindow::alloc(mtm),
+            initWithFrame: objc2_core_foundation::CGRect::from(Rect::new(0.0, 0.0, size.width, size.height))
+        ]
+    }
+}
+
 #[cfg(target_os = "ios")]
 objc2::define_class!(
     // SAFETY: `UIWindow` asks a subclass to initialize through a designated
-    // initializer, which `make_offscreen_window` does, and the class holds no
-    // ivars and implements no `Drop`.
+    // initializer, which `make_offscreen_window` and
+    // `scene_less_capture_window` do, and the class holds no ivars and
+    // implements no `Drop`.
     #[unsafe(super(objc2_ui_kit::UIWindow))]
     #[name = "CocoaUiCaptureWindow"]
     #[thread_kind = MainThreadOnly]
@@ -399,15 +425,16 @@ pub fn view_template_image(
 
 /// Any connected `UIWindowScene`:
 /// capture windows must attach to a real scene, and any connected one works.
+/// `None` also in a process without a `UIApplication`, which connects no
+/// scene.
 #[cfg(target_os = "ios")]
 #[must_use]
 /// # Panics
 ///
-/// On a failure to enumerate the application's connected scenes.
+/// Off the main thread.
 pub fn any_window_scene() -> Option<Retained<objc2_ui_kit::UIWindowScene>> {
-    use objc2_ui_kit::UIApplication;
     let mtm = objc2::MainThreadMarker::new().expect("main thread");
-    let application = UIApplication::sharedApplication(mtm);
+    let application = crate::uikit::shared_application(mtm)?;
     let scenes = application.connectedScenes();
     let iterator = scenes.iter();
     for scene in iterator {

@@ -120,9 +120,62 @@ struct Key {
     slots: u8,
 }
 
+/// `engine_tile.metallib` — the short-gradient tile module.
+const TILE_METALLIB: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile.metallib"));
+/// `engine_tile_long.metallib` — the variant-4 tile module.
+const LONG_TILE_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_long.metallib"));
+/// `engine_tile_image.metallib` — the variant-6 (image source) tile module.
+const IMAGE_TILE_METALLIB: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/engine_tile_image.metallib"));
+
+/// The passthrough module for one tile family: the declared entries are
+/// identical across families — the attachment interfaces wrap whichever
+/// `fs_*` bodies the family's preincluded source carried.
+fn tile_module(device: &wgpu::Device, metallib: &'static [u8]) -> wgpu::ShaderModule {
+    let mut entries: Vec<wgpu::PassthroughShaderEntryPoint<'static>> =
+        ["vs_main", "tile_clear_vertex"]
+            .into_iter()
+            .map(|name| wgpu::PassthroughShaderEntryPoint {
+                name: Cow::Borrowed(name),
+                workgroup_size: (0, 0, 0),
+            })
+            .collect();
+    for target in 0..SLOTS {
+        let sources = ["simple", "shadow", "clear"]
+            .map(String::from)
+            .into_iter()
+            .chain((0..SLOTS).map(|source| source.to_string()));
+        for source in sources {
+            entries.push(wgpu::PassthroughShaderEntryPoint {
+                name: Cow::Owned(format!("tile_{target}_{source}")),
+                workgroup_size: (0, 0, 0),
+            });
+        }
+    }
+    // SAFETY: build.rs validates the shared WGSL and compiles the
+    // native interfaces against it. Bindings and colour slots match
+    // this executor's fixed layout and pipeline key.
+    unsafe {
+        device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
+            label: Some("tile composition"),
+            metallib: Some(Cow::Borrowed(metallib)),
+            entry_points: Cow::Owned(entries),
+            ..Default::default()
+        })
+    }
+}
+
 #[derive(Default)]
 pub struct Executor {
+    /// The short tile module, created on its family's first pipeline.
     module: Option<wgpu::ShaderModule>,
+    /// The long-gradient tile module, created on its family's first
+    /// pipeline.
+    module_long: Option<wgpu::ShaderModule>,
+    /// The image-source tile module, created on its family's first
+    /// pipeline.
+    module_image: Option<wgpu::ShaderModule>,
     pipelines: FxHashMap<Key, wgpu::RenderPipeline>,
 }
 
@@ -138,48 +191,25 @@ impl Executor {
         key: Key,
         created: &mut bool,
     ) -> &wgpu::RenderPipeline {
-        let module = self.module.get_or_insert_with(|| {
-            let mut entries: Vec<wgpu::PassthroughShaderEntryPoint<'static>> =
-                ["vs_main", "tile_clear_vertex"]
-                    .into_iter()
-                    .map(|name| wgpu::PassthroughShaderEntryPoint {
-                        name: Cow::Borrowed(name),
-                        workgroup_size: (0, 0, 0),
-                    })
-                    .collect();
-            for target in 0..SLOTS {
-                let sources = ["simple", "shadow", "clear"]
-                    .map(String::from)
-                    .into_iter()
-                    .chain((0..SLOTS).map(|source| source.to_string()));
-                for source in sources {
-                    entries.push(wgpu::PassthroughShaderEntryPoint {
-                        name: Cow::Owned(format!("tile_{target}_{source}")),
-                        workgroup_size: (0, 0, 0),
-                    });
-                }
-            }
-            // SAFETY: build.rs validates the shared WGSL and compiles the
-            // native interfaces against it. Bindings and colour slots match
-            // this executor's fixed layout and pipeline key.
-            unsafe {
-                device.create_shader_module_passthrough(wgpu::ShaderModuleDescriptorPassthrough {
-                    label: Some("tile composition"),
-                    metallib: Some(Cow::Borrowed(include_bytes!(concat!(
-                        env!("OUT_DIR"),
-                        "/engine_tile.metallib"
-                    )))),
-                    entry_points: Cow::Owned(entries),
-                    ..Default::default()
-                })
-            }
-        });
+        // The module is the family's, the entries are shared: variants 4
+        // and 6 draw through the full entry names in their own modules.
+        let module = match key.variant {
+            4 => self
+                .module_long
+                .get_or_insert_with(|| tile_module(device, LONG_TILE_METALLIB)),
+            6 => self
+                .module_image
+                .get_or_insert_with(|| tile_module(device, IMAGE_TILE_METALLIB)),
+            _ => self
+                .module
+                .get_or_insert_with(|| tile_module(device, TILE_METALLIB)),
+        };
         self.pipelines.entry(key).or_insert_with(|| {
             *created = true;
             let entry = match key.variant {
                 0 => format!("tile_{}_simple", key.target),
                 1 => format!("tile_{}_shadow", key.target),
-                2 => format!("tile_{}_{}", key.target, key.source),
+                2 | 4 | 5 => format!("tile_{}_{}", key.target, key.source),
                 3 => format!("tile_{}_clear", key.target),
                 _ => unreachable!("closed tile shader set"),
             };
@@ -245,7 +275,7 @@ fn note(
             variant: match key.variant {
                 0 => report::Variant::Simple,
                 1 => report::Variant::Shadow,
-                2 => report::Variant::Source,
+                2 | 4 | 6 => report::Variant::Source,
                 3 => report::Variant::Clear,
                 _ => unreachable!("closed tile shader set"),
             },
@@ -430,9 +460,14 @@ pub fn encode(
                 // A union member is `PAINT_BACKDROP` sampling its group's
                 // capture: a neighbourhood (or effect) read that
                 // `ExecutionPlan::epoch` never admits into a tile epoch.
+                // `Cell` is a draw module (`DrawRange::module`), never a
+                // range's lowered variant.
+                ShaderVariant::Cell => unreachable!("no range is lowered with the cell module"),
                 ShaderVariant::Union => {
                     unreachable!("a union sample reads its capture; no tile epoch admits it")
                 }
+                ShaderVariant::LongGradient => 4,
+                ShaderVariant::Image => 6,
             };
             let key = Key {
                 target: op.target,
@@ -458,7 +493,7 @@ pub fn encode(
                 .is_some_and(|(image, mask)| *image == range.image && *mask == range.mask)
             {
                 bound = Some((range.image.clone(), range.mask));
-                let key: Bind1Key = (None, false, range.image.clone(), range.mask);
+                let key: Bind1Key = (None, None, range.image.clone(), range.mask);
                 let bind = surf.binds1.entry(key).or_insert_with(|| {
                     stats.bind_groups_created += 1;
                     make_bind1(

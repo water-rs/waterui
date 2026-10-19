@@ -25,6 +25,11 @@
 # example.
 set -euo pipefail
 
+if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 2) )); then
+  echo "::error::package-examples.sh needs bash >= 4.2 (found ${BASH_VERSION}); /bin/bash 3.2 lets SIGCHLD interrupt writes with EINTR (#2683)" >&2
+  exit 1
+fi
+
 platform="${PLATFORM:?PLATFORM must be ios or macos}"
 workspace="${GITHUB_WORKSPACE:-$(pwd)}"
 waterui_dir="${WATERUI_DIR:?WATERUI_DIR must point at the prepared waterui checkout}"
@@ -113,8 +118,9 @@ for example in ${selected_examples[@]+"${selected_examples[@]}"}; do
   echo "::group::package ${example} (${platform})"
 
   app_path=""
+  : > "${run_log}"
   if water package --platform "${package_platform}" --backend apple --release \
-      --path "${example_path}" > "${run_log}" 2>&1; then
+      --path "${example_path}" >> "${run_log}" 2>&1; then
     app_path="$(find_packaged_app "${run_log}")"
   fi
 

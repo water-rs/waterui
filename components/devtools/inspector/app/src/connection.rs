@@ -33,7 +33,8 @@ const RETRY_DELAY: Duration = Duration::from_secs(1);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Where to connect and with what credential.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Target {
     /// Endpoint published by the target application.
     pub addr: SocketAddr,

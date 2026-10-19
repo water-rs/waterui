@@ -51,7 +51,7 @@ impl TargetBackend {
     /// Whether the backend is experimental — shipped without full testing
     /// ahead of milestone releases — so selecting it asks for confirmation.
     pub const fn is_experimental(self) -> bool {
-        matches!(self, Self::Gtk4 | Self::WinUi)
+        self.lib_backend().is_experimental()
     }
 
     /// The backend's display name.

@@ -8,8 +8,6 @@ use kurbo::Rect;
 use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
-#[cfg(feature = "accessibility")]
-use waterui_core::layout::Point as LayoutPoint;
 use waterui_core::layout::{HorizontalAlignment, ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::{AnyView, Environment, Native};
 use waterui_form::picker::color::ColorPickerConfig;
@@ -56,6 +54,13 @@ impl ColorPickerRenderState {
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the picker's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
 impl HydroNativeView for Native<ColorPickerConfig> {
@@ -63,7 +68,7 @@ impl HydroNativeView for Native<ColorPickerConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_color_picker_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -115,11 +120,7 @@ pub fn color_picker_accessibility(
         // node carries the anchor; a semantic node carries none and mounts the
         // same window with no placement at all.
         let origin = ctx.map(|ctx| {
-            let bounds = ctx.bounds;
-            LayoutPoint::new(
-                crate::num_cast::f64_as_f32(bounds.x0),
-                crate::num_cast::f64_as_f32(bounds.y1),
-            )
+            crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds))
         });
         let action_target = (!disabled).then(|| {
             let value = color_picker.value.clone();
@@ -183,7 +184,7 @@ pub fn measure_color_picker_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let input_metrics = theme.input_field_metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
@@ -226,7 +227,7 @@ fn measure_color_picker_intrinsic(
     color_picker: &ColorPickerConfig,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let input_metrics = theme.input_field_metrics();
     let label_size = measure_label_intrinsic(&color_picker.label, state, env, theme);
@@ -371,10 +372,9 @@ pub fn render_color_picker_parts(
         );
     }
 
-    let origin = waterui_core::layout::Point::new(
-        crate::num_cast::f64_as_f32(hit_bounds.x0),
-        crate::num_cast::f64_as_f32(hit_bounds.y1),
-    );
+    // The popup anchors in window space at the field's bottom edge.
+    let origin =
+        crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(hit_bounds));
     // The popup opens in the picker's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let picker_env = env.clone();

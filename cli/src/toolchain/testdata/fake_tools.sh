@@ -237,6 +237,11 @@ rustc)
             fi
             respond RUSTC_VERBOSE
             ;;
+        --print)
+            # `rustc --print <what>` answers the staged `RUSTC_PRINT_<what>`
+            # file (`<what>` carries `-`, so only the file form fits).
+            respond_file "RUSTC_PRINT_$2"
+            ;;
         *)
             exit 2
             ;;
@@ -580,10 +585,46 @@ git)
     esac
     exit 0
     ;;
-cmake | meson | wasm-pack | spirv-opt | sh | bash)
+cmake | meson | spirv-opt | sh | bash)
     case "$*" in
         --version | -version | -v)
             printf '%s 1.0.0 (waterui-test)\n' "$tool"
+            ;;
+    esac
+    exit 0
+    ;;
+wasm-pack)
+    case "$1" in
+        --version | -version | -v)
+            printf '%s 1.0.0 (waterui-test)\n' "$tool"
+            ;;
+        build)
+            # `build` runs in the managed crate's directory: what it observes
+            # there — whether the crate's lock and its seed stamp were in
+            # place before the build was invoked — goes on the log so a test
+            # can assert the CLI seeded before it invoked wasm-pack.
+            if [ -n "${WATERUI_FAKE_LOG-}" ]; then
+                _wp_lock=absent
+                _wp_seed=absent
+                [ -f Cargo.lock ] && _wp_lock=present
+                [ -f Cargo.lock.seed ] && _wp_seed=present
+                printf 'wasm-pack-observes Cargo.lock=%s Cargo.lock.seed=%s\n' \
+                    "$_wp_lock" "$_wp_seed" >> "$WATERUI_FAKE_LOG"
+            fi
+            # Emit the bundle artifact the CLI's web shell reads:
+            # `<out-dir>/<out-name>_bg.wasm`.
+            _wp_out=""
+            _wp_name=app
+            _wp_prev=""
+            for _wp_arg in "$@"; do
+                if [ "$_wp_prev" = "--out-dir" ]; then _wp_out="$_wp_arg"; fi
+                if [ "$_wp_prev" = "--out-name" ]; then _wp_name="$_wp_arg"; fi
+                _wp_prev="$_wp_arg"
+            done
+            if [ -n "$_wp_out" ]; then
+                /bin/mkdir -p "$_wp_out"
+                printf 'fake wasm\n' > "${_wp_out}/${_wp_name}_bg.wasm"
+            fi
             ;;
     esac
     exit 0

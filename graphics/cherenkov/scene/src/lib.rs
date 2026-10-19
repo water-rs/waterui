@@ -11,6 +11,11 @@
 //! their BLAKE3 hash in lowercase hex. Every scene declares the [`Feature`]s
 //! it uses so that an adapter can report a scene as unsupported instead of
 //! silently emulating it.
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 mod backdrop;
 mod builder;
@@ -31,8 +36,8 @@ pub use builder::{LayerBuilder, SceneBuilder};
 pub use color::{Color, ColorSpace};
 pub use draw::{
     BlendMode, BlendSpace, Draw, Extend, FillRule, Glyph, GlyphRun, GradientStop, ImageColorSpace,
-    ImageEncoding, ImagePaint, LinearGradient, MeshColorInterpolation, MeshGradient,
-    MeshGradientError, NormalizedCoord, Paint, RadialGradient, Sampling, StrokeStyle,
+    ImageCompression, ImageEncoding, ImagePaint, LinearGradient, MeshColorInterpolation,
+    MeshGradient, MeshGradientError, NormalizedCoord, Paint, RadialGradient, Sampling, StrokeStyle,
     SweepGradient,
 };
 pub use error::SceneError;

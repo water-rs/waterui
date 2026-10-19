@@ -51,6 +51,7 @@ struct CefHelperInfoPlistTemplate<'a> {
 
 /// Apple Info.plist usage-description entry for a macOS app bundle.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct MacOsUsageDescription {
     /// Raw Info.plist key such as `NSCameraUsageDescription`.
     pub plist_key: &'static str,
@@ -60,6 +61,7 @@ pub struct MacOsUsageDescription {
 
 /// The two names a macOS `.app` bundle carries.
 #[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
 pub struct MacOsAppNames<'a> {
     /// Human-readable bundle name — `<app_name>.app` and `CFBundleName`.
     pub app_name: &'a str,
@@ -137,6 +139,7 @@ pub async fn package_binary_as_app(
 /// How a packaged macOS `.app` is code-signed.
 #[cfg(target_os = "macos")]
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum MacOsSigning {
     /// A development signature: ad hoc, or the first installed development
     /// identity when the app needs a stable one.
@@ -154,6 +157,7 @@ pub enum MacOsSigning {
 /// What a macOS distribution package signs and notarizes with.
 #[cfg(target_os = "macos")]
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct DistributionSigning {
     /// The Apple Developer team the package signs for — the certificate
     /// subject OU the Developer ID Application identity must carry.

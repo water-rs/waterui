@@ -82,6 +82,15 @@ impl SliderRenderState {
         self.min_value_label.ensure_built(renderer, env);
         self.max_value_label.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-views' layout-dirty marks: their measured sizes
+    /// feed the slider's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+            | self.min_value_label.take_layout_dirty_if_built()
+            | self.max_value_label.take_layout_dirty_if_built()
+    }
 }
 
 impl HydroNativeView for Native<SliderConfig> {
@@ -89,7 +98,7 @@ impl HydroNativeView for Native<SliderConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_slider_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -172,7 +181,7 @@ pub fn measure_slider_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let metrics = theme.slider_metrics(render_state.size);
     let label_size = render_state.label_view.measure_built(state, env, theme);
@@ -535,7 +544,12 @@ pub fn render_slider_parts(
     if disabled {
         return;
     }
-    let inverse_transform = ctx.renderer_mut().current_hit_transform().inverse();
+    // The drag's point lands in window space and the track is node-local:
+    // resolve the inverse through the region's live placement at invoke
+    // time. The registration outlives this record, so a transform captured
+    // here goes stale the moment an ancestor moves the slider without
+    // re-recording it (a scroll, a transition).
+    let placement = ctx.renderer_mut().current_placement();
     let value_epsilon = slider_value_epsilon(span, usable_track);
     let keyboard_value = value_binding.clone();
     let keyboard_step = span / 100.0;
@@ -543,7 +557,7 @@ pub fn render_slider_parts(
         hit_bounds,
         press_slot,
         move |_renderer, point, _env| {
-            let local_point = inverse_transform * point;
+            let local_point = placement.resolved_transform(true).inverse() * point;
             let x = local_point.x.clamp(track_left, track_right);
             let t = (x - track_left) / usable_track;
             let next = span.mul_add(t, range_start);

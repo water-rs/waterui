@@ -171,9 +171,20 @@ impl TestMachine {
     }
 
     /// Stage canned output for a fake-tool response key.
+    ///
+    /// The dispatchers emit a canned file's contents line-wise — `.sh`'s
+    /// `print_file` terminates an unterminated final line and `.cmd`'s
+    /// `type` cannot append a bare LF — so the newline normalization lives
+    /// here instead: a non-empty response is staged newline-terminated and
+    /// both dispatchers then emit identical bytes.
     pub fn respond(&self, key: &str, contents: &str) {
         let dir = self.responses();
         fs::create_dir_all(&dir).expect("create responses dir");
+        let contents = if contents.is_empty() || contents.ends_with('\n') {
+            contents.to_owned()
+        } else {
+            format!("{contents}\n")
+        };
         fs::write(dir.join(key), contents).expect("write canned response");
     }
 
@@ -197,7 +208,8 @@ impl TestMachine {
     }
 
     /// The declared host: `PATH` is only `bin/`, `cwd` is the scratch root,
-    /// and the environment is exactly `vars` plus `HOME`/`USERPROFILE` and
+    /// and the environment is exactly `vars` plus `HOME`/`USERPROFILE`, the
+    /// profile's `LOCALAPPDATA` a Windows session always carries, and
     /// `WATERUI_FAKE_RESPONSES`.
     pub fn host<K, V>(&self, vars: impl IntoIterator<Item = (K, V)>) -> Host
     where
@@ -240,6 +252,10 @@ impl TestMachine {
             ),
             (OsString::from("HOME"), self.home().into_os_string()),
             (OsString::from("USERPROFILE"), self.home().into_os_string()),
+            (
+                OsString::from("LOCALAPPDATA"),
+                self.home().join("AppData").join("Local").into_os_string(),
+            ),
         ];
         declared.extend(
             vars.into_iter()

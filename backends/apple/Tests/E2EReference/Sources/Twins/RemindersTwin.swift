@@ -4,7 +4,10 @@
 // by a "My Lists" section of colored-badge rows. The detail shows a large bold
 // accent-colored leading title, a divider, and "Today"/"Upcoming" reminder
 // sections under small bold leading headers. Initial state: Today selected,
-// empty search, all rows visible.
+// empty search, all rows visible. At compact width the split opens on the
+// detail column, matching WaterUI's compact rule since #1844: the detail is
+// presented while the selection is non-empty and the sidebar while it is
+// None, and the platform back action writes None into the selection.
 //
 // The example draws Material Design Icons; the twin draws the same glyphs
 // from their SVG paths through MaterialIcon — calendar_today, calendar_clock,
@@ -106,12 +109,23 @@ struct RemindersTwin: View {
   @State private var search = ""
 
   var body: some View {
-    NavigationSplitView {
+    NavigationSplitView(preferredCompactColumn: compactColumn) {
       sidebar
         .navigationSplitViewColumnWidth(min: 240, ideal: 300, max: 420)
     } detail: {
       detail
     }
+  }
+
+  // The selection binding is the single source of truth for the collapsed
+  // column: the split presents its detail while the selection is non-empty,
+  // and a back navigation to the sidebar clears it.
+  private var compactColumn: Binding<NavigationSplitViewColumn> {
+    Binding(
+      get: { selection == nil ? .sidebar : .detail },
+      set: { column in
+        if column == .sidebar { selection = nil }
+      })
   }
 
   private var sidebar: some View {

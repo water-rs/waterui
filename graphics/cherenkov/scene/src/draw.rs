@@ -261,6 +261,35 @@ pub enum ImageColorSpace {
     LinearP3,
 }
 
+/// The block-compressed RGBA encodings accepted by image resources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageCompression {
+    /// ASTC LDR, 4×4 texels per 16-byte block.
+    Astc4x4,
+    /// BC7, 4×4 texels per 16-byte block.
+    Bc7,
+    /// ETC2 RGB plus EAC alpha, 4×4 texels per 16-byte block.
+    Etc2Rgba,
+}
+
+impl ImageCompression {
+    /// Encoded byte length, or `None` when dimensions exceed the address space.
+    #[must_use]
+    pub const fn byte_len(self, width: u32, height: u32) -> Option<usize> {
+        let (block_width, block_height, block_bytes) = match self {
+            Self::Astc4x4 | Self::Bc7 | Self::Etc2Rgba => (4, 4, 16),
+        };
+        let Some(blocks) = (width as usize)
+            .div_ceil(block_width)
+            .checked_mul((height as usize).div_ceil(block_height))
+        else {
+            return None;
+        };
+        blocks.checked_mul(block_bytes)
+    }
+}
+
 /// How an image resource's bytes decode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "encoding", rename_all = "kebab-case")]
@@ -282,6 +311,19 @@ pub enum ImageEncoding {
         height: u32,
         /// The encoded primaries.
         color_space: ImageColorSpace,
+    },
+    /// Raw 4×4 compressed blocks in row-major block order.
+    BlockCompressed {
+        /// Compression encoding.
+        format: ImageCompression,
+        /// Logical width, excluding partial-block padding.
+        width: u32,
+        /// Logical height, excluding partial-block padding.
+        height: u32,
+        /// Encoded transfer function and primaries.
+        color_space: ImageColorSpace,
+        /// RGB is multiplied by alpha in the encoded space.
+        premultiplied: bool,
     },
 }
 
@@ -315,6 +357,12 @@ impl ImageEncoding {
                 height,
                 color_space: ImageColorSpace::LinearSrgb | ImageColorSpace::LinearP3,
             } if width > 0 && height > 0 => Ok(()),
+            Self::BlockCompressed {
+                format,
+                width,
+                height,
+                ..
+            } if width > 0 && height > 0 && format.byte_len(width, height).is_some() => Ok(()),
             _ => Err(SceneError::InvalidImageEncoding(*self)),
         }
     }

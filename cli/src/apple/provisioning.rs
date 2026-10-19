@@ -39,15 +39,16 @@ fn profile_directories(home: &Path) -> Vec<PathBuf> {
 /// What the app being signed requires from a development provisioning
 /// profile.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct SigningRequest<'a> {
     /// The development team the build signs under.
     pub team: &'a str,
     /// The bundle identifier of the app.
     pub bundle_id: &'a str,
     /// Hardware UDID of the destination device when the package is bound to
-    /// one (`water run`); `None` for a device-agnostic package
-    /// (`water package`), which accepts any profile covering at least one
-    /// device.
+    /// one (`water run`, `water package --device`); `None` for a
+    /// device-agnostic `water package`, which accepts a profile covering at
+    /// least one device but fails rather than guessing when several qualify.
     pub device_udid: Option<&'a str>,
     /// The entitlements the app declares — its `<scheme>.entitlements`
     /// dictionary. The selected profile must grant every entry.
@@ -64,6 +65,7 @@ pub struct SigningRequest<'a> {
 /// The identity and prefix are part of the selection so the signer can
 /// never pair the profile with a different — or unusable — certificate.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct ProfileSelection {
     /// Location of the profile on disk.
     pub path: PathBuf,
@@ -79,6 +81,7 @@ pub struct ProfileSelection {
 
 /// Why one installed `.mobileprovision` was rejected for a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProfileRejection {
     /// `TeamIdentifier` does not contain the requested team.
     WrongTeam {
@@ -216,6 +219,61 @@ impl fmt::Display for NoMatchingProfile {
 
 impl std::error::Error for NoMatchingProfile {}
 
+/// More than one installed `.mobileprovision` satisfied the signing request.
+///
+/// Nothing in the request picks between the candidates — each embeds a
+/// different `ProvisionedDevices` list, so selecting by file order would
+/// decide which devices the package installs on; the selection fails and
+/// lists every candidate instead.
+#[derive(Debug)]
+pub struct AmbiguousProfiles {
+    /// The qualifying candidates — `ProfileSelection` pairs each profile's
+    /// path and decoded plist with the identity it would sign under.
+    profiles: Vec<ProfileSelection>,
+}
+
+/// The device coverage the ambiguity error lists per profile: a
+/// `ProvisionedDevices` count, or `all devices` for `ProvisionsAllDevices`.
+fn profile_device_coverage(data: &plist::Dictionary) -> String {
+    if data
+        .get("ProvisionsAllDevices")
+        .and_then(plist::Value::as_boolean)
+        == Some(true)
+    {
+        return "all devices".to_string();
+    }
+    let count = data
+        .get("ProvisionedDevices")
+        .and_then(plist::Value::as_array)
+        .map_or(0, Vec::len);
+    format!("{count} device{}", if count == 1 { "" } else { "s" })
+}
+
+impl fmt::Display for AmbiguousProfiles {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "more than one installed provisioning profile qualifies:")?;
+        for profile in &self.profiles {
+            write!(
+                f,
+                "\n  {} — UUID {}, provisions {}",
+                profile.path.display(),
+                profile
+                    .data
+                    .get("UUID")
+                    .and_then(plist::Value::as_string)
+                    .unwrap_or("<unknown>"),
+                profile_device_coverage(&profile.data),
+            )?;
+        }
+        write!(
+            f,
+            "\npass `--device <udid>` so the package is provisioned for the device it is meant for"
+        )
+    }
+}
+
+impl std::error::Error for AmbiguousProfiles {}
+
 /// Decode a `.mobileprovision`'s CMS `SignedData` envelope into its plist
 /// dictionary.
 ///
@@ -241,6 +299,13 @@ pub fn decode_mobileprovision(der_bytes: &[u8]) -> eyre::Result<plist::Dictionar
         bail!("provisioning profile's payload is not a plist dictionary");
     };
     Ok(dictionary)
+}
+
+/// The profile's `ExpirationDate`, when present and typed as a date.
+fn profile_expiration(data: &plist::Dictionary) -> Option<SystemTime> {
+    data.get("ExpirationDate")
+        .and_then(plist::Value::as_date)
+        .map(SystemTime::from)
 }
 
 /// The `TeamIdentifier` entries a decoded profile names.
@@ -355,13 +420,10 @@ fn evaluate_candidate(
 
     // A selected profile must prove a valid future expiry: a missing or
     // mistyped `ExpirationDate` is rejected, never assumed valid.
-    let expiration = match data.get("ExpirationDate").and_then(plist::Value::as_date) {
-        Some(expires) => SystemTime::from(expires),
-        None => {
-            return Err(ProfileRejection::InvalidMetadata {
-                key: "ExpirationDate",
-            });
-        }
+    let Some(expiration) = profile_expiration(data) else {
+        return Err(ProfileRejection::InvalidMetadata {
+            key: "ExpirationDate",
+        });
     };
     if now >= expiration {
         return Err(ProfileRejection::Expired);
@@ -461,11 +523,17 @@ fn evaluate_candidate(
 
 /// Why [`select_development_profile`] could not return a selection.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum SelectError {
     /// Every candidate was rejected — or none are installed. Provisioning
     /// may produce a valid one.
     #[error("{0}")]
     NoMatch(NoMatchingProfile),
+    /// Several installed profiles satisfy the request and nothing in it
+    /// picks between them. Provisioning cannot resolve ambiguity, so the
+    /// caller must not retry on this variant.
+    #[error("{0}")]
+    Ambiguous(AmbiguousProfiles),
     /// A profile directory, profile file, home-directory lookup or the
     /// `security` tool failed. Unlike [`Self::NoMatch`], retrying selection
     /// after provisioning cannot fix an I/O or tool error, so the caller
@@ -485,6 +553,9 @@ pub enum SelectError {
 /// # Errors
 /// - [`SelectError::NoMatch`]: no installed profile qualifies; every
 ///   candidate's rejection is listed.
+/// - [`SelectError::Ambiguous`]: more than one installed profile qualifies
+///   and the request leaves no semantic preference between them — the
+///   error lists every surviving candidate.
 /// - [`SelectError::Failed`]: a real I/O or tool failure — a profile
 ///   directory or file that exists but cannot be read, a home directory
 ///   that cannot be located, `security find-identity` failing.
@@ -548,7 +619,7 @@ pub async fn select_development_profile(
         usable_development_identities(host).await?
     };
 
-    let mut wildcard_match: Option<ProfileSelection> = None;
+    let mut accepted = Vec::new();
     for path in candidates {
         let bytes = fs::read(&path).await.map_err(|error| {
             SelectError::Failed(
@@ -567,20 +638,16 @@ pub async fn select_development_profile(
             }
         };
         match evaluate_candidate(&data, request, &identities, now) {
-            Ok(accepted) => {
-                let selection = ProfileSelection {
-                    path,
-                    data,
-                    app_id_prefix: accepted.app_id_prefix,
-                    identity: accepted.identity,
-                };
-                // Exact-`application-identifier` matches win over wildcard
-                // ones: a profile Xcode minted for this bundle id carries
-                // the right `AppIDName`.
-                if accepted.kind == AppIdMatch::Exact {
-                    return Ok(selection);
-                }
-                wildcard_match.get_or_insert(selection);
+            Ok(candidate) => {
+                accepted.push((
+                    candidate.kind,
+                    ProfileSelection {
+                        path,
+                        data,
+                        app_id_prefix: candidate.app_id_prefix,
+                        identity: candidate.identity,
+                    },
+                ));
             }
             Err(rejection) => {
                 debug!("rejecting {}: {rejection}", path.display());
@@ -588,10 +655,45 @@ pub async fn select_development_profile(
             }
         }
     }
-    if let Some(selection) = wildcard_match {
-        return Ok(selection);
+
+    choose_profile(request, accepted, rejections)
+}
+
+/// Pick among the `accepted` candidates — never by file order.
+///
+/// Every candidate of a device-bound request covers its device, so the
+/// request has a semantic preference: an exact `application-identifier`
+/// match outranks a wildcard one, since a profile Xcode minted for this
+/// bundle id carries the right `AppIDName`, and among those the latest
+/// expiry wins, since Xcode keeps a renewed profile beside the one it
+/// replaces. A device-agnostic package has no disambiguator at all: each
+/// qualifying profile embeds a different `ProvisionedDevices` list, so
+/// choosing one would decide which devices the package can install on.
+fn choose_profile(
+    request: &SigningRequest<'_>,
+    mut accepted: Vec<(AppIdMatch, ProfileSelection)>,
+    rejections: Vec<(PathBuf, ProfileRejection)>,
+) -> Result<ProfileSelection, SelectError> {
+    if request.device_udid.is_some() {
+        if accepted.iter().any(|(kind, _)| *kind == AppIdMatch::Exact) {
+            accepted.retain(|(kind, _)| *kind == AppIdMatch::Exact);
+        }
+        return accepted
+            .into_iter()
+            .map(|(_, selection)| selection)
+            .max_by_key(|selection| profile_expiration(&selection.data))
+            .ok_or(SelectError::NoMatch(NoMatchingProfile { rejections }));
     }
-    Err(SelectError::NoMatch(NoMatchingProfile { rejections }))
+    match accepted.len() {
+        0 => Err(SelectError::NoMatch(NoMatchingProfile { rejections })),
+        1 => Ok(accepted.pop().expect("one accepted candidate").1),
+        _ => Err(SelectError::Ambiguous(AmbiguousProfiles {
+            profiles: accepted
+                .into_iter()
+                .map(|(_, selection)| selection)
+                .collect(),
+        })),
+    }
 }
 
 /// The keychain's usable development identities via `security
@@ -696,6 +798,7 @@ pub fn signing_entitlements(
 /// A provisioning failure reported by `xcodebuild`, mapped to the action the
 /// user takes next. Each variant is one failure class Xcode reports.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ProvisionError {
     /// Xcode has no Apple ID signed in.
     #[error(
@@ -1412,10 +1515,24 @@ mod tests {
         cms_envelope(&payload)
     }
 
-    /// A `Host` over a scratch machine whose `security` reports the given
-    /// find-identity output.
+    /// A scratch machine standing in for the Mac `select_development_profile`
+    /// scans.
     fn selection_machine() -> crate::toolchain::testing::TestMachine {
         crate::toolchain::testing::TestMachine::new()
+    }
+
+    /// A scratch machine whose `security find-identity` reports the fixture
+    /// certificate as its one usable development identity.
+    fn machine_with_usable_identity() -> crate::toolchain::testing::TestMachine {
+        let machine = selection_machine();
+        install_security(
+            &machine,
+            &format!(
+                "     1) {} \"Apple Development: test@example.invalid\"\n     1 valid identities found\n",
+                crate::apple::toolchain::certificate_sha1_hex(DEV_CERT)
+            ),
+        );
+        machine
     }
 
     fn profiles_dir(machine: &crate::toolchain::testing::TestMachine) -> PathBuf {
@@ -1438,14 +1555,8 @@ mod tests {
 
     #[test]
     fn selection_pairs_profile_and_identity() {
-        let machine = selection_machine();
+        let machine = machine_with_usable_identity();
         let hash = crate::apple::toolchain::certificate_sha1_hex(DEV_CERT);
-        install_security(
-            &machine,
-            &format!(
-                "     1) {hash} \"Apple Development: test@example.invalid\"\n     1 valid identities found\n"
-            ),
-        );
         let host = machine.host(Vec::<(String, String)>::new());
         let profile = profile_fixture(TEAM, &format!("{TEAM}.{BUNDLE}"), Some(vec![UDID]), false);
         let profile_path = write_profile(&profiles_dir(&machine), "aaa.mobileprovision", &profile);
@@ -1462,14 +1573,8 @@ mod tests {
 
     #[test]
     fn selection_prefers_the_later_valid_identity_over_a_stale_exact() {
-        let machine = selection_machine();
+        let machine = machine_with_usable_identity();
         let hash = crate::apple::toolchain::certificate_sha1_hex(DEV_CERT);
-        install_security(
-            &machine,
-            &format!(
-                "     1) {hash} \"Apple Development: test@example.invalid\"\n     1 valid identities found\n"
-            ),
-        );
         let host = machine.host(Vec::<(String, String)>::new());
         let dir = profiles_dir(&machine);
 
@@ -1493,6 +1598,178 @@ mod tests {
         .expect("the wildcard candidate with a usable identity is selected");
         assert_eq!(selection.path, usable_path);
         assert_eq!(selection.identity, hash);
+    }
+
+    /// A device-bound request selects the profile covering the destination
+    /// device; a profile that does not cover it is rejected even when it
+    /// sorts earlier by file name.
+    #[test]
+    fn device_bound_request_selects_the_covering_profile() {
+        let machine = machine_with_usable_identity();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let dir = profiles_dir(&machine);
+        write_profile(
+            &dir,
+            "aaa.mobileprovision",
+            &profile_fixture(
+                TEAM,
+                &format!("{TEAM}.{BUNDLE}"),
+                Some(vec!["00008140-9999OTHERDEVICE"]),
+                false,
+            ),
+        );
+        let covering_path = write_profile(
+            &dir,
+            "zzz.mobileprovision",
+            &profile_fixture(TEAM, &format!("{TEAM}.*"), Some(vec![UDID]), false),
+        );
+
+        let selection = smol::block_on(select_development_profile(
+            &host,
+            &request(&plist::Dictionary::new()),
+        ))
+        .expect("the covering profile is selected");
+        assert_eq!(selection.path, covering_path);
+    }
+
+    /// A device-bound request with no covering profile is a `NoMatch` whose
+    /// rejection names the uncovered UDID — the caller then asks Xcode to
+    /// provision one.
+    #[test]
+    fn device_bound_request_rejects_a_profile_not_covering_the_device() {
+        let machine = machine_with_usable_identity();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let dir = profiles_dir(&machine);
+        write_profile(
+            &dir,
+            "aaa.mobileprovision",
+            &profile_fixture(
+                TEAM,
+                &format!("{TEAM}.{BUNDLE}"),
+                Some(vec!["00008140-9999OTHERDEVICE"]),
+                false,
+            ),
+        );
+
+        match smol::block_on(select_development_profile(
+            &host,
+            &request(&plist::Dictionary::new()),
+        )) {
+            Err(SelectError::NoMatch(no_match)) => {
+                assert_eq!(
+                    no_match.rejections,
+                    [(
+                        dir.join("aaa.mobileprovision"),
+                        ProfileRejection::DeviceNotProvisioned {
+                            udid: UDID.to_string()
+                        }
+                    )]
+                );
+            }
+            other => panic!("expected NoMatch, got {other:?}"),
+        }
+    }
+
+    /// Xcode keeps a renewed profile beside the one it replaces: when both
+    /// cover the destination device, the later expiry is selected whatever
+    /// the file order.
+    #[test]
+    fn device_bound_request_prefers_the_later_expiry() {
+        let machine = machine_with_usable_identity();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let dir = profiles_dir(&machine);
+        let renewed_expiry = SystemTime::now() + std::time::Duration::from_hours(30 * 24);
+        let mut renewed =
+            profile_fixture(TEAM, &format!("{TEAM}.{BUNDLE}"), Some(vec![UDID]), false);
+        renewed.insert(
+            "ExpirationDate".to_string(),
+            plist::Value::Date(renewed_expiry.into()),
+        );
+        let mut older = profile_fixture(TEAM, &format!("{TEAM}.{BUNDLE}"), Some(vec![UDID]), false);
+        older.insert(
+            "ExpirationDate".to_string(),
+            plist::Value::Date((SystemTime::now() + std::time::Duration::from_hours(24)).into()),
+        );
+        write_profile(&dir, "aaa.mobileprovision", &older);
+        let renewed_path = write_profile(&dir, "zzz.mobileprovision", &renewed);
+
+        let selection = smol::block_on(select_development_profile(
+            &host,
+            &request(&plist::Dictionary::new()),
+        ))
+        .expect("a covering profile is selected");
+        assert_eq!(selection.path, renewed_path);
+    }
+
+    /// Two qualifying profiles and no device to choose between them is an
+    /// ambiguity the caller resolves — exact and wildcard candidates alike
+    /// count, since each embeds a different `ProvisionedDevices` list.
+    #[test]
+    fn deviceless_request_fails_on_ambiguous_profiles() {
+        let machine = machine_with_usable_identity();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let dir = profiles_dir(&machine);
+        let mut first = profile_fixture(
+            TEAM,
+            &format!("{TEAM}.{BUNDLE}"),
+            Some(vec![UDID, "00008140-9999OTHERDEVICE"]),
+            false,
+        );
+        first.insert(
+            "UUID".to_string(),
+            plist::Value::String("AAAAAAAA-0000-0000-0000-000000000001".to_string()),
+        );
+        let first_path = write_profile(&dir, "aaa.mobileprovision", &first);
+        let second_path = write_profile(
+            &dir,
+            "bbb.mobileprovision",
+            &profile_fixture(TEAM, &format!("{TEAM}.*"), Some(vec![UDID]), false),
+        );
+
+        let empty = plist::Dictionary::new();
+        let mut request = request(&empty);
+        request.device_udid = None;
+        match smol::block_on(select_development_profile(&host, &request)) {
+            Err(SelectError::Ambiguous(ambiguous)) => {
+                let message = ambiguous.to_string();
+                for path in [&first_path, &second_path] {
+                    assert!(
+                        message.contains(&path.display().to_string()),
+                        "the error lists {path:?}: {message}"
+                    );
+                }
+                assert!(message.contains("AAAAAAAA-0000-0000-0000-000000000001"));
+                assert!(message.contains("2 devices"), "{message}");
+                assert!(message.contains("--device"), "{message}");
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    /// One qualifying profile is selected with no device named; rejected
+    /// candidates add no ambiguity.
+    #[test]
+    fn deviceless_request_selects_the_single_qualifying_profile() {
+        let machine = machine_with_usable_identity();
+        let host = machine.host(Vec::<(String, String)>::new());
+        let dir = profiles_dir(&machine);
+        let selected_path = write_profile(
+            &dir,
+            "aaa.mobileprovision",
+            &profile_fixture(TEAM, &format!("{TEAM}.{BUNDLE}"), Some(vec![UDID]), false),
+        );
+        write_profile(
+            &dir,
+            "zzz.mobileprovision",
+            &profile_fixture(TEAM, &format!("{TEAM}.{BUNDLE}"), Some(vec![UDID]), true),
+        );
+
+        let empty = plist::Dictionary::new();
+        let mut request = request(&empty);
+        request.device_udid = None;
+        let selection = smol::block_on(select_development_profile(&host, &request))
+            .expect("the one qualifying profile is selected");
+        assert_eq!(selection.path, selected_path);
     }
 
     #[test]

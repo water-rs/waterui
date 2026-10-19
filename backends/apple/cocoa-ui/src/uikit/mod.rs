@@ -36,6 +36,8 @@ mod application;
 mod badge;
 pub mod button;
 mod calendar_view;
+#[cfg(target_abi = "macabi")]
+pub mod catalyst;
 mod color_view;
 pub mod color_well;
 mod context_menu;
@@ -76,7 +78,7 @@ pub use application::{
     ApplicationHandlers, MenuBuilder, WindowScene, request_main_menu_rebuild, run,
 };
 pub use badge::BadgeView;
-pub use button::Button;
+pub use button::{Button, CocoaUiButton};
 pub use calendar_view::CalendarView;
 pub use color_view::ColorView;
 pub use colors::UiColor;
@@ -104,7 +106,7 @@ pub use menu::{elements, menu, menu_with_identifier};
 pub use navigation::{
     BarButton, LargeTitle, NavBar, NavContentController, NavPage, NavSearch, NavigationController,
     SearchBarPlacement, SearchUpdater, bar_item, bar_item_accessibility_label, first_button,
-    first_control, image_bar_item,
+    first_control, image_bar_item, mirror_enabled, title_bar_item,
 };
 pub use search_bar::SearchBar;
 pub use split::{ColumnWidth, SplitColumnController, SplitController};
@@ -115,4 +117,5 @@ pub use table::{SectionKind, TableCell, TableHeaderFooterView, TableSource, Tabl
 pub use tabs::{TabContentController, TabSpec, TabsController};
 pub use text_field::{SecureField, TextField};
 pub use view_controller::ViewController;
+pub(crate) use window::shared_application;
 pub use window::{Window, application_is_active, main_screen_scale, window_of};

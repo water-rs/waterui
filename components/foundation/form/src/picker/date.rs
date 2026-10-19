@@ -26,6 +26,10 @@ pub struct DatePickerConfig {
 
 /// Enum representing the different types of date pickers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "backends realize each date picker type variant by variant; a new date picker type must fail their build instead of falling into a wildcard arm"
+)]
 pub enum DatePickerType {
     /// Date only.
     Date,

@@ -71,6 +71,7 @@ struct InspectorRequirements {
 /// platform and device selection describe the inspected target, never where
 /// the client launches.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InspectorTarget {
     /// An endpoint this machine can dial directly: an application running
     /// here, or any address the network reaches (a simulator's loopback, a
@@ -86,8 +87,21 @@ pub enum InspectorTarget {
     },
 }
 
+/// Target platform for launching Inspector app.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum InspectorPlatform {
+    /// iOS Simulator.
+    IosSimulator,
+    /// macOS.
+    Macos,
+    /// Android (device or emulator).
+    Android,
+}
+
 /// Launch options for Inspector app.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct InspectorLaunchOptions {
     /// The endpoint of the application to inspect.
     pub target: InspectorTarget,
@@ -410,7 +424,6 @@ async fn scaffold_inspector_app(
         waterui_path,
         framework,
         false,
-        None,
         project.local_sources(),
     )
     .with_project_packages(project_packages);

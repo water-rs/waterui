@@ -209,7 +209,7 @@ pub use waterui_url::Url;
 
 #[doc(inline)]
 pub use waterui_core::{
-    AnyView, Error, Str, animation,
+    AnyView, ContentLedger, Error, Str, animation,
     easing::{self, EasingCurve, Interpolatable},
     env::{self, Environment},
     event,
@@ -219,6 +219,12 @@ pub use waterui_core::{
     impl_extractor, key, raw_view,
     resolve::{self, AnyResolvable, Resolvable},
     views,
+};
+
+// Selective re-exports only: `waterui::transition` stays free for the
+// `waterui-transition` pixel-effects crate re-export (#1389).
+pub use waterui_core::transition::{
+    AnyTransition, Edge, PropertyTransition, ReduceMotion, Transition,
 };
 
 /// Haptic feedback intensity for the `on_*_haptic` modifiers.

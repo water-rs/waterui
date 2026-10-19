@@ -88,10 +88,13 @@ fn throw(context: &JSContext, error: &JsError) -> Retained<JSValue> {
 fn exception_error(exception: &JSValue) -> JsError {
     // SAFETY: `exception` is a live `JSValue`.
     if unsafe { exception.isObject() } {
-        JsError {
-            name: property_string(exception, "name").unwrap_or_else(|| String::from("Error")),
-            message: property_string(exception, "message").unwrap_or_default(),
-            stack: property_string(exception, "stack"),
+        let error = JsError::new(
+            property_string(exception, "name").unwrap_or_else(|| String::from("Error")),
+            property_string(exception, "message").unwrap_or_default(),
+        );
+        match property_string(exception, "stack") {
+            Some(stack) => error.with_stack(stack),
+            None => error,
         }
     } else {
         JsError::new("Error", string(exception).unwrap_or_default())

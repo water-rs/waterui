@@ -8,13 +8,13 @@ use crate::renderer::{
     Edge, HydroNativeView, HydroState, RetainedSubview, WidgetRenderContext, measure_tabs_layout,
     tabs_button_rect, tabs_content_proposal,
 };
+use crate::theme::TabItemLayout;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
 };
 use nami::{Binding, Signal};
 use waterui::navigation::tab::{NativeTabStyle, TabIcon, TabsLayout};
-use waterui_backend_core::widget::TabItemLayout;
 use waterui_controls::label::LabelDisplayMode;
 use waterui_core::id::Id;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
@@ -101,6 +101,21 @@ impl TabsRenderState {
             .position(|tab| tab.tag == selected_id)
             .unwrap_or_else(|| panic!("hydrolysis Tabs selection is not present in tabs"))
     }
+
+    /// Consume every tab's label/icon/content layout-dirty marks: their
+    /// measured sizes feed the bar's, so an enclosing retained sub-view
+    /// must see them (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.tabs.iter_mut().fold(false, |dirty, tab| {
+            dirty
+                | tab.label.take_layout_dirty_if_built()
+                | tab
+                    .icon
+                    .as_mut()
+                    .is_some_and(RetainedSubview::take_layout_dirty_if_built)
+                | tab.content.take_layout_dirty_if_built()
+        })
+    }
 }
 
 impl HydroNativeView for Native<TabsLayout> {
@@ -108,7 +123,7 @@ impl HydroNativeView for Native<TabsLayout> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_tabs_layout(
             view.as_inner(),
@@ -123,7 +138,7 @@ impl HydroNativeView for Native<TabsLayout> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> ViewDimensions {
         ViewDimensions::new(measure_tabs_layout(
@@ -226,7 +241,7 @@ pub fn measure_tabs_node(
     proposal: ProposalSize,
     hydro: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let label_env = tab_label_env(env);
     let item_sizes: Vec<(LayoutSize, Option<LayoutSize>)> = state
@@ -359,7 +374,7 @@ fn render_tabs_parts(
     env: &Environment,
     chrome: crate::renderer::ChromeGroup<1>,
     layout: TabItemLayout,
-    theme_metrics: waterui_backend_core::widget::TabsMetrics,
+    theme_metrics: crate::theme::TabsMetrics,
 ) {
     let (selection, style, tab_count) = {
         let st = state.borrow();
@@ -603,7 +618,7 @@ const fn tabs_dock_edge(style: NativeTabStyle) -> Edge {
 pub fn tabs_bar_item_extent(
     container_width: f64,
     style: NativeTabStyle,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> f64 {
     match style {
         NativeTabStyle::Sidebar => theme.tabs_metrics(TabItemLayout::Vertical).bar_height,
@@ -620,11 +635,11 @@ pub fn tabs_bar_item_extent(
     reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
 )]
 pub fn tabs_decide_layout(
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     style: NativeTabStyle,
     proposed_width: Option<f64>,
     item_sizes: &[(LayoutSize, Option<LayoutSize>)],
-) -> (TabItemLayout, waterui_backend_core::widget::TabsMetrics) {
+) -> (TabItemLayout, crate::theme::TabsMetrics) {
     let extent = match proposed_width {
         Some(width) => tabs_bar_item_extent(width, style, theme),
         None => {
@@ -655,7 +670,7 @@ pub fn tabs_decide_layout(
 pub fn tabs_item_natural_width(
     label_size: LayoutSize,
     icon_size: Option<LayoutSize>,
-    metrics: &waterui_backend_core::widget::TabsMetrics,
+    metrics: &crate::theme::TabsMetrics,
     layout: TabItemLayout,
 ) -> f64 {
     let content_width = match (layout, icon_size) {
@@ -677,7 +692,7 @@ fn tabs_item_content_rects(
     button_rect: kurbo::Rect,
     icon_size: Option<LayoutSize>,
     label_size: LayoutSize,
-    metrics: &waterui_backend_core::widget::TabsMetrics,
+    metrics: &crate::theme::TabsMetrics,
     layout: TabItemLayout,
 ) -> (Option<kurbo::Rect>, kurbo::Rect) {
     let Some(icon_size) = icon_size else {
@@ -744,7 +759,7 @@ fn tabs_item_content_rects(
 fn tabs_label_rect(
     button_rect: kurbo::Rect,
     label_size: waterui_core::layout::Size,
-    metrics: &waterui_backend_core::widget::TabsMetrics,
+    metrics: &crate::theme::TabsMetrics,
 ) -> kurbo::Rect {
     let max_width = metrics
         .button_horizontal_inset
