@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version = "1.95"
 license.workspace = true
 repository.workspace = true
+readme = "../README.md"
+keywords = ["graphics", "2d", "display-list", "recording", "rendering"]
+categories = ["graphics", "rendering"]
 
 [features]
 serde = ["dep:serde", "color/serde", "kurbo/serde"]

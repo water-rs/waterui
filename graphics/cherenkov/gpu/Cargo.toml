@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../README.md"
+keywords = ["graphics", "2d", "gpu", "wgpu", "rendering"]
+categories = ["graphics", "rendering"]
 
 [features]
 # Harness-only YUV decode uniform and shader. Not part of `interop`.

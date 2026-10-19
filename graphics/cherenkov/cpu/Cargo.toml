@@ -5,6 +5,9 @@ description = "CPU raster backend for the Cherenkov 2D rendering engine"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../README.md"
+keywords = ["graphics", "2d", "rasterizer", "embedded", "cpu"]
+categories = ["graphics", "rendering", "embedded"]
 
 # Bench and test access to the span kernels, the pattern `cherenkov`'s
 # `testing` feature uses: `testing::kernels`, no public API.
