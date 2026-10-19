@@ -48,7 +48,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::main_queue_owned::Shared;
-use cocoa_ui::capture::{CapturableSurface, CaptureDeferred, SurfaceCaptureCompletion};
+use cocoa_ui::capture::{CapturableSurface, CaptureError, SurfaceCaptureCompletion};
 use cocoa_ui::{PlatformView, Retained};
 use std::ptr::NonNull;
 
@@ -921,6 +921,15 @@ struct NativeFilterOwner {
     external_redraw: RefCell<Option<Rc<dyn Fn()>>>,
     /// Subscription guards — dropping them cancels the watches.
     guards: RefCell<Vec<WatchGuard>>,
+    /// A frame of this surface reached its presentation channel —
+    /// `finish_capture`'s settled `Ok` is this leaf's only output path.
+    presented: Cell<bool>,
+    /// A settled terminal failure — the first presented frame can never
+    /// land.
+    failed: Cell<bool>,
+    /// First-paint waiters armed through `register_ready_waiter`,
+    /// drained on the next settled render.
+    ready_waiters: RefCell<Vec<std::task::Waker>>,
 }
 
 impl std::fmt::Debug for NativeFilterOwner {
@@ -1634,7 +1643,7 @@ impl CapturableSurface for NativeFilterCapturable {
     /// renders into the compositor's texture through the
     /// issued-context-owned `CIContext` with a real command submission.
     /// `Ok(())` lands only after the command buffer reports completion;
-    /// `Err(CaptureDeferred)` for a stale preparation, a dropped leaf or
+    /// `Err(CaptureError::Deferred)` for a stale preparation, a dropped leaf or
     /// a Metal error.
     fn render_prepared_external_texture(
         &self,
@@ -1644,11 +1653,11 @@ impl CapturableSurface for NativeFilterCapturable {
         completion: SurfaceCaptureCompletion,
     ) {
         let Some(owner) = self.owner.upgrade() else {
-            completion(Err(CaptureDeferred));
+            completion(Err(CaptureError::Deferred));
             return;
         };
         let Some(prepared) = owner.external_prepared.borrow_mut().take() else {
-            completion(Err(CaptureDeferred));
+            completion(Err(CaptureError::Deferred));
             return;
         };
         if !std::ptr::eq(texture, &raw const *prepared.target) {
@@ -1656,12 +1665,12 @@ impl CapturableSurface for NativeFilterCapturable {
             // the preparation is stale, not a hard failure. Put it back
             // so its own render still finds it.
             *owner.external_prepared.borrow_mut() = Some(prepared);
-            completion(Err(CaptureDeferred));
+            completion(Err(CaptureError::Deferred));
             return;
         }
         let Some(mtm) = MainThreadMarker::new() else {
             *owner.external_prepared.borrow_mut() = Some(prepared);
-            completion(Err(CaptureDeferred));
+            completion(Err(CaptureError::Deferred));
             return;
         };
         let work = crate::main_queue_owned::shared(
@@ -1673,12 +1682,43 @@ impl CapturableSurface for NativeFilterCapturable {
             mtm,
         );
         let input = Retained::clone(&work.get(mtm).prepared.input);
-        owner.capture.capture(&input, move |captured| {
+        let generation = work.get(mtm).prepared.context.generation();
+        owner.capture.capture(&input, generation, move |captured| {
             let work = Arc::clone(&work);
             cocoa_ui::main_queue::enqueue(move |mtm| {
-                finish_capture(&work, captured, mtm);
+                finish_capture(&work, captured.is_ok(), mtm);
             });
         });
+    }
+
+    /// This leaf's only output path is the external render: a settled
+    /// `Ok` from `finish_capture` is the frame's presentation receipt.
+    fn has_presented_frame(&self) -> bool {
+        self.owner.upgrade().is_some_and(|o| o.presented.get())
+    }
+
+    /// A mounted native filter that has neither presented nor failed
+    /// participates in its window's first-paint readiness.
+    fn participates_in_first_paint(&self) -> bool {
+        self.owner
+            .upgrade()
+            .is_some_and(|o| !o.presented.get() && !o.failed.get())
+    }
+
+    /// Wakes after the next settled successful render — `finish_capture`
+    /// drains the list; a dropped leaf wakes now so the wait never hangs.
+    fn register_ready_waiter(&self, waker: std::task::Waker) {
+        let Some(owner) = self.owner.upgrade() else {
+            waker.wake();
+            return;
+        };
+        owner.ready_waiters.borrow_mut().push(waker);
+    }
+
+    /// A dropped leaf or a settled `Failed` — the first frame can never
+    /// land.
+    fn presentation_failed(&self) -> bool {
+        self.owner.upgrade().is_none_or(|o| o.failed.get())
     }
 }
 
@@ -1690,18 +1730,31 @@ impl CapturableSurface for NativeFilterCapturable {
 fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMarker) {
     let work_inner = work.get(mtm);
     macro_rules! settle {
-        ($result:expr) => {
+        ($result:expr) => {{
+            let result = $result;
+            if let Some(owner) = work_inner.owner.upgrade() {
+                match &result {
+                    Ok(()) => {
+                        owner.presented.set(true);
+                        for waiter in owner.ready_waiters.borrow_mut().drain(..) {
+                            waiter.wake();
+                        }
+                    }
+                    Err(CaptureError::Failed(_)) => owner.failed.set(true),
+                    Err(CaptureError::Deferred) => {}
+                }
+            }
             if let Some(completion) = work_inner.completion.borrow_mut().take() {
-                completion($result);
+                completion(result);
             }
             return;
-        };
+        }};
     }
     let Some(owner) = work_inner.owner.upgrade() else {
-        settle!(Err(CaptureDeferred));
+        settle!(Err(CaptureError::Deferred));
     };
     if !captured {
-        settle!(Err(CaptureDeferred));
+        settle!(Err(CaptureError::Deferred));
     }
     // Obsolescence: the frame's exact context `Arc` was recorded at
     // prepare; if the runtime has moved to a different issue, this
@@ -1711,7 +1764,7 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
         &crate::gpu_runtime::runtime(&owner.env).context(),
         &work_inner.prepared.context,
     ) {
-        settle!(Err(CaptureDeferred));
+        settle!(Err(CaptureError::Deferred));
     }
     // The captured content as a `CIImage`, tagged with its actual
     // native-raster space — extended-linear Display P3 on this branch's
@@ -1738,7 +1791,7 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
     let Some(mut image) = (unsafe {
         CIImage::imageWithMTLTexture_options(&work_inner.prepared.input, Some(&image_options))
     }) else {
-        settle!(Err(CaptureDeferred));
+        settle!(Err(CaptureError::Deferred));
     };
     // The frame's own filter instances — inputs were synced at prepare
     // to the issue timestamp; only `inputImage` is wired now.
@@ -1831,7 +1884,7 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
                 let work_inner = work.get(mtm);
                 let Some(owner) = work_inner.owner.upgrade() else {
                     if let Some(completion) = work_inner.completion.borrow_mut().take() {
-                        completion(Err(CaptureDeferred));
+                        completion(Err(CaptureError::Deferred));
                     }
                     return;
                 };
@@ -1845,7 +1898,7 @@ fn finish_capture(work: &Shared<CaptureWork>, captured: bool, mtm: MainThreadMar
                     completion(if completed {
                         Ok(())
                     } else {
-                        Err(CaptureDeferred)
+                        Err(CaptureError::Deferred)
                     });
                 }
             });
@@ -1982,11 +2035,7 @@ pub fn mount(
         }
     }
 
-    let capture = Rc::new(cocoa_ui::capture::ViewCapture::new(
-        mtm,
-        content_view,
-        crate::components::gpu_surface::capturable_resolver(),
-    ));
+    let capture = Rc::new(cocoa_ui::capture::ViewCapture::new(mtm, content_view));
     let owner = Rc::new(NativeFilterOwner {
         view: cocoa_ui::view::retain_base(&view),
         layer,
@@ -2004,6 +2053,9 @@ pub fn mount(
         external_count: Cell::new(0),
         external_redraw: RefCell::new(None),
         guards: RefCell::new(Vec::new()),
+        presented: Cell::new(false),
+        failed: Cell::new(false),
+        ready_waiters: RefCell::new(Vec::new()),
     });
 
     // Initial input values — through the layer key path, the only legal
