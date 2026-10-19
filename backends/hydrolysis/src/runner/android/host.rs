@@ -838,6 +838,19 @@ impl UiThreadServices {
     }
 }
 
+/// Installs the capture service. It mounts its subtree under a snapshot of
+/// `env` — the theme tokens, hooks and font collection a window's subtree
+/// resolves — so it must be installed once the session environment is
+/// otherwise complete (water-rs/waterui#2703).
+fn install_view_renderer(env: &mut Environment, theme: &Rc<dyn WidgetTheme>) {
+    let renderer = crate::view_renderer::HydrolysisViewRenderer::new(
+        Rc::clone(theme),
+        env.clone(),
+        FontFamilyResolution::Lenient,
+    );
+    env.insert(waterui_core::ViewRenderer::new(renderer));
+}
+
 impl AndroidSession {
     /// Mounts the registered app on the host view: builds the environment,
     /// GPU context and the runtime window. `services` is the UI-thread
@@ -918,17 +931,7 @@ impl AndroidSession {
             bridge.host_view.clone(),
         )?;
 
-        // The capture service mounts its subtree under a snapshot of the
-        // assembled environment — the theme tokens, hooks and font
-        // collection a window's subtree resolves — so it must be installed
-        // last (water-rs/waterui#2703).
-        env.insert(waterui_core::ViewRenderer::new(
-            crate::view_renderer::HydrolysisViewRenderer::new(
-                Rc::clone(&theme),
-                env.clone(),
-                FontFamilyResolution::Lenient,
-            ),
-        ));
+        install_view_renderer(&mut env, &theme);
 
         let mut windows = VecDeque::from(windows);
         let window = windows
