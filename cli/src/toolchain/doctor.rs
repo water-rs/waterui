@@ -637,8 +637,8 @@ impl ProjectContext {
     /// A platform's scope comes from the platform itself: outside a
     /// project it is host-default only when the host builds for it — its
     /// own Apple toolchain on macOS, its own desktop on Linux or Windows.
-    /// Android, the web and the ESP32 chips are cross-compiled targets a
-    /// project must select.
+    /// Android and the web are cross-compiled targets a project must
+    /// select.
     fn platform_scope(&self, platform: TargetPlatform) -> BackendScope {
         self.manifest.as_ref().map_or_else(
             || {

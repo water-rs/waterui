@@ -668,7 +668,7 @@ async fn copy_assets_and_fonts(
     let font_declarations = assets::scan_fonts(
         project,
         &backend_path.join("Cargo.toml"),
-        &[platform.font_platform()?],
+        &[platform.font_platform()],
     )
     .await?;
     let mut resolved_fonts = assets::resolve_fonts(project.host(), font_declarations).await?;

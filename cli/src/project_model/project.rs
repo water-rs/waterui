@@ -3971,9 +3971,6 @@ mod managed_backends_tests {
             TargetPlatform::Linux,
             TargetPlatform::Windows,
             TargetPlatform::Web,
-            TargetPlatform::Esp32S3,
-            TargetPlatform::Esp32C3,
-            TargetPlatform::Esp32P4,
         ] {
             assert_eq!(
                 ManagedBackends::for_platform(platform),
