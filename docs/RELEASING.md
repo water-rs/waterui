@@ -57,20 +57,19 @@ cohort cannot happen.
 
 For a release that carries new names — `cherenkov`, `cherenkov-record`,
 `cherenkov-gpu`, `cherenkov-cpu`, `waterui-meta`, and the `waterui-ts` family
-are the current set — choose one of:
+are the current set — claim each name from a maintainer machine ahead of the
+release:
 
-- Publish each new name once by hand from the merged `main` commit
-  (`cargo publish -p <name> --locked` with a token scoped to
-  `publish-new` for exactly that name), in dependency order, then let the
-  workflow publish the rest.
-- Add a `CARGO_REGISTRY_TOKEN` repository secret holding a token scoped for
-  `publish-new` and `publish-update` across the crate names, run the release,
-  then configure a trusted publisher for each new crate
-  (`https://crates.io/crates/<name>/settings`, repository `water-rs/waterui`,
-  workflow `release.yml`) and delete the secret again.
+1. Publish an empty 0.0.0 for the name — `cargo publish -p <name>` on a
+   checkout whose manifest declares `version = "0.0.0"` — which registers the
+   name on crates.io without shipping real content.
+2. Configure trusted publishing for it on crates.io
+   (`https://crates.io/crates/<name>/settings`, repository `water-rs/waterui`,
+   workflow `release.yml`).
 
-Either way, every later release of those crates goes through trusted
-publishing like the rest of the workspace.
+Once the name exists on the index, the publish-set guard passes and every
+release of the crate goes through trusted publishing like the rest of the
+workspace.
 
 ## Published-channel verification
 

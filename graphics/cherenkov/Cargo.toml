@@ -1,6 +1,6 @@
 [package]
 name = "cherenkov"
-version = "0.1.0"
+version = "0.0.0"
 description = "GPU 2D rendering engine for modern hardware"
 edition.workspace = true
 rust-version = "1.95"
@@ -12,7 +12,7 @@ testing = []
 
 [dependencies]
 arc-swap = "1"
-cherenkov-record = { version = "0.1.0", path = "record", features = ["serde"] }
+cherenkov-record = { version = "0.0.0", path = "record", features = ["serde"] }
 crossbeam-channel.workspace = true
 web-time = "1"
 filtrate-core = { version = "0.2.0", path = "../filtrate/core" }

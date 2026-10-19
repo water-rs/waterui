@@ -1,6 +1,6 @@
 [package]
 name = "cherenkov-cpu"
-version = "0.1.0"
+version = "0.0.0"
 description = "CPU raster backend for the Cherenkov 2D rendering engine"
 edition.workspace = true
 license.workspace = true
@@ -13,7 +13,7 @@ testing = []
 
 [dependencies]
 arrayvec = "0.7"
-cherenkov = { version = "0.1.0", path = ".." }
+cherenkov = { version = "0.0.0", path = ".." }
 fearless_simd = "0.4"
 filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
 kurbo = "0.13"

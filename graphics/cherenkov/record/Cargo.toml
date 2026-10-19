@@ -1,6 +1,6 @@
 [package]
 name = "cherenkov-record"
-version = "0.1.0"
+version = "0.0.0"
 description = "Render-target-neutral recording layer of the Cherenkov 2D engine"
 edition.workspace = true
 rust-version = "1.95"

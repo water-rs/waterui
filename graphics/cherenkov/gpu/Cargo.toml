@@ -1,6 +1,6 @@
 [package]
 name = "cherenkov-gpu"
-version = "0.1.0"
+version = "0.0.0"
 description = "wgpu backend for the Cherenkov 2D rendering engine"
 edition.workspace = true
 rust-version.workspace = true
@@ -14,7 +14,7 @@ bench = []
 [dependencies]
 filtrate = { version = "0.2.1", path = "../../filtrate" }
 filtrate-core = { version = "0.2.0", path = "../../filtrate/core" }
-cherenkov = { version = "0.1.0", path = ".." }
+cherenkov = { version = "0.0.0", path = ".." }
 wgpu = "30.0.1"
 pollster = "0.4"
 bytemuck = { version = "1", features = ["derive"] }

@@ -223,10 +223,10 @@ nami-core = "0.5"
 # registration, the layer tree and GPU content. The whole `cherenkov` family
 # lives in this repository under `graphics/` and publishes from here on its
 # own line under `cherenkov-*` tags.
-cherenkov = { version = "0.1.0", path = "graphics/cherenkov" }
-cherenkov-cpu = { version = "0.1.0", path = "graphics/cherenkov/cpu" }
-cherenkov-gpu = { version = "0.1.0", path = "graphics/cherenkov/gpu" }
-cherenkov-record = { version = "0.1.0", path = "graphics/cherenkov/record" }
+cherenkov = { version = "0.0.0", path = "graphics/cherenkov" }
+cherenkov-cpu = { version = "0.0.0", path = "graphics/cherenkov/cpu" }
+cherenkov-gpu = { version = "0.0.0", path = "graphics/cherenkov/gpu" }
+cherenkov-record = { version = "0.0.0", path = "graphics/cherenkov/record" }
 pin-project-lite = "0.2"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
