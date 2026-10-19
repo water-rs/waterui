@@ -455,6 +455,7 @@ simctl_cleanup() {
   fi
   if (( rc == 124 )); then
     echo "::error::${example}: 'simctl ${what} ${bundle}' was killed at the ${CLEANUP_DEADLINE_S}s cleanup deadline; last receipt in ${receipts_file}."
+    collect_simulator_stall_diagnostics "'simctl ${what} ${bundle}' killed at the cleanup deadline"
     rm -f "${child_err}"
     return 1
   fi
@@ -468,6 +469,56 @@ simctl_cleanup() {
   echo "::error::${example}: 'simctl ${what} ${bundle}' failed (exit ${rc}); stderr retained above."
   rm -f "${child_err}"
   return 1
+}
+
+# When a supervised iOS command is killed at its deadline the receipts say
+# WHICH command and how long it ran — they cannot say WHY the simulator
+# channel wedged. The runs behind #1539 showed the app's first paint, then
+# screenshot, terminate and uninstall all timing out: the evidence needed is
+# the app's own stack, the host simulator services' state, and the device's
+# recent log, collected while the wedge still stands rather than after a
+# clean retry. The samples self-limit at 3 s and both `log show` reads run
+# under DIAG_DEADLINE_S — a wedged channel must not stall the collection —
+# and the output lands in logs_dir, which the e2e-logs artifact bundle
+# already ships.
+DIAG_DEADLINE_S=30
+collect_simulator_stall_diagnostics() {
+  local reason="$1"
+  local diag="${logs_dir}/${platform}-${example}-stall-diagnostics.log"
+  local diag_deadline_at
+  diag_deadline_at="$("${command_deadline}" deadline --seconds "${DIAG_DEADLINE_S}")"
+  {
+    echo "=== simulator stall diagnostics: ${reason} ($(date -u '+%Y-%m-%dT%H:%M:%SZ')) ==="
+    echo "--- shard app process (pid ${app_pid:-unset}) ---"
+    if [[ -n "${app_pid:-}" ]] && kill -0 "${app_pid}" 2>/dev/null; then
+      sample "${app_pid}" 3 1 2>&1 | head -60
+    else
+      echo "app pid ${app_pid:-unset} is not running"
+    fi
+    echo "--- host simulator service state ---"
+    local svc_pids
+    svc_pids="$(pgrep -f "CoreSimulator|SimulatorTrampoline|simctl" 2>/dev/null | tr '\n' ',' | sed 's/,$//')"
+    [[ -n "${svc_pids}" ]] && ps -o pid,stat,etime,command -p "${svc_pids}" || true
+    echo "--- host simulator service stacks (sample 3s each) ---"
+    local svc
+    for svc in $(pgrep -f "CoreSimulatorService|SimulatorTrampoline" 2>/dev/null); do
+      sample "${svc}" 3 1 2>&1 | sed -n '1,40p'
+    done
+    echo "--- host log, simulator domain, last 5m ---"
+    # `log show` can take tens of seconds on a loaded host — supervised so
+    # the collection keeps its own bound even when the log is slow.
+    "${command_deadline}" run --label "diag:host-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- log show --last 5m --style compact \
+      --predicate 'process CONTAINS[c] "simulator" OR subsystem CONTAINS[c] "CoreSimulator"' \
+      2>/dev/null | tail -80 || true
+    echo "--- device log, last 3m ---"
+    "${command_deadline}" run --label "diag:simctl-log-show" \
+      --deadline-at "${diag_deadline_at}" --receipt "${receipts_file}" \
+      -- xcrun simctl spawn "${SIMULATOR_UDID}" log show --last 3m --style compact \
+      2>/dev/null | tail -60 || true
+  } >> "${diag}" 2>&1
+  echo "::notice::${example}: simulator stall diagnostics written to ${diag} (uploaded with e2e-logs)."
 }
 
 # Sends SIGTERM to a LaunchServices-launched pid and waits for it to actually
@@ -920,6 +971,10 @@ for example in ${shard_examples[@]+"${shard_examples[@]}"}; do
     kill "${stream_pid}" 2>/dev/null || true
     failures+=("${example}: capture")
     if [[ "${platform}" == "ios" ]]; then
+      # A capture that never landed on iOS is the channel-stall class #1539
+      # tracks: collect app/service stacks and the device log while the
+      # wedge still stands, then run the usual bounded cleanup.
+      collect_simulator_stall_diagnostics "capture_settled failed for ${example}"
       simctl_cleanup terminate "${bundle_id}" || failures+=("${example}: cleanup terminate")
       simctl_cleanup uninstall "${bundle_id}" || failures+=("${example}: cleanup uninstall")
     else
