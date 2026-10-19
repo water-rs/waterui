@@ -29,6 +29,7 @@ use crate::render::lower::{
     SdfKind, UnionSample,
 };
 use crate::render::paint::PaintData;
+use crate::render::shadow;
 use crate::{Band as BandOut, BandPixels};
 use cherenkov::OffscreenFormat;
 use fearless_simd::{Simd, f32x4};
@@ -841,34 +842,6 @@ impl RowWalk for Line<'_> {
         let [x0, y0, x1, y1] = self.p;
         self.acc.accumulate::<E>(x0, y0, x1, y1);
     }
-}
-
-/// Abramowitz & Stegun 7.1.26 — the same approximation the GPU WGSL
-/// uses, |error| < 1.5e-7.
-#[expect(
-    clippy::many_single_char_names,
-    clippy::excessive_precision,
-    clippy::suboptimal_flops,
-    reason = "the A&S formula and its coefficients are cited verbatim"
-)]
-#[expect(
-    clippy::inline_always,
-    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
-)]
-#[inline(always)]
-fn erf(x: f32) -> f32 {
-    let s = x.signum();
-    let a = x.abs();
-    let t = (0.327_591_1_f32.mul_add(a, 1.0)).recip();
-    let y = 1.0
-        - (1.061_405_429_f32
-            .mul_add(t, -1.453_152_027)
-            .mul_add(t, 1.421_413_741)
-            .mul_add(t, -0.284_496_736)
-            .mul_add(t, 0.254_829_592))
-            * t
-            * (-a * a).exp();
-    s * y
 }
 
 /// `exp(-x²/2σ²) / (σ√2π)`.
@@ -2631,7 +2604,16 @@ fn run<S: Simd>(
                 color,
                 bbox,
                 clip,
-            } => band.shadow(stack, rbox, radii, *sigma_eff, color, *bbox, clip.as_ref()),
+            } => band.shadow(
+                simd,
+                stack,
+                rbox,
+                radii,
+                *sigma_eff,
+                color,
+                *bbox,
+                clip.as_ref(),
+            ),
             Item::Project(item) => band.project(stack, item),
             Item::Silhouette { slot, paint, clip } => {
                 band.glyph(simd, stack, slot, 0, 0, paint, clip.as_ref());
@@ -3149,8 +3131,9 @@ impl Band<'_> {
         reason = "compiled under the dispatched CPU level so mul_add is one instruction"
     )]
     #[inline(always)]
-    fn shadow(
+    fn shadow<S: Simd>(
         &mut self,
+        simd: S,
         stack: &mut Vec<Plane>,
         rbox: &[f32; 4],
         radii: &[f32; 4],
@@ -3215,9 +3198,27 @@ impl Band<'_> {
         // straight-wall x-integral, one `erf` pair per column computed
         // once for the whole item.
         let mut x_term: Option<Vec<f32>> = None;
-        let mut xl = [0.0_f32; SHADOW_N];
-        let mut xr = [0.0_f32; SHADOW_N];
-        let mut wg = [0.0_f32; SHADOW_N];
+        let flat_sample = [shadow::Sample {
+            left: -half[0],
+            right: half[0],
+            weight: 1.0,
+        }];
+        let mut samples = [shadow::Sample::default(); SHADOW_N];
+        // One pixel centre per lane, each computed independently as
+        // `(x as f32 + 0.5) - cx`; a 1–3-lane tail pads with the first
+        // lane's valid centre and its outputs are never read.
+        let coverage4 = |x0: usize, lanes: usize, samples: &[shadow::Sample]| {
+            let mut centres = [(x0 as f32 + 0.5) - cx; 4];
+            for (j, c) in centres.iter_mut().enumerate().take(lanes) {
+                *c = (x0 + j) as f32 + 0.5 - cx;
+            }
+            simd.as_array_f32x4(shadow::integral4(
+                simd,
+                simd.load_array_f32x4(centres),
+                inv_sqrt2_sigma,
+                samples,
+            ))
+        };
         for y in y_lo..y_hi {
             let py_i = self.y0 + y;
             let py = py_i as f32 + 0.5 - cy;
@@ -3239,12 +3240,14 @@ impl Band<'_> {
                     (radii[3], radii[2])
                 };
                 let ay = yi.abs();
-                xl[n] = -half[0] + corner_inset(rl, ay - (half[1] - rl));
-                xr[n] = half[0] - corner_inset(rr, ay - (half[1] - rr));
-                wg[n] = *w;
-                flat &= xl[n] == -half[0] && xr[n] == half[0];
-                xlm = xlm.max(xl[n]);
-                xrm = xrm.min(xr[n]);
+                samples[n] = shadow::Sample {
+                    left: -half[0] + corner_inset(rl, ay - (half[1] - rl)),
+                    right: half[0] - corner_inset(rr, ay - (half[1] - rr)),
+                    weight: *w,
+                };
+                flat &= samples[n].left == -half[0] && samples[n].right == half[0];
+                xlm = xlm.max(samples[n].left);
+                xrm = xrm.min(samples[n].right);
                 s += w;
                 n += 1;
             }
@@ -3255,13 +3258,16 @@ impl Band<'_> {
             if flat {
                 // Separable: `cov = x_term[px] * s` across the row.
                 let t = x_term.get_or_insert_with(|| {
-                    (cx_lo..cx_hi)
-                        .map(|x| {
-                            let px = x as f32 + 0.5 - cx;
-                            0.5 * (erf((half[0] - px) * inv_sqrt2_sigma)
-                                - erf((-half[0] - px) * inv_sqrt2_sigma))
-                        })
-                        .collect()
+                    let mut term = Vec::with_capacity(cx_hi - cx_lo);
+                    let mut x = cx_lo;
+                    while x < cx_hi {
+                        let lanes = (cx_hi - x).min(4);
+                        for cov in coverage4(x, lanes, &flat_sample).into_iter().take(lanes) {
+                            term.push(cov);
+                        }
+                        x += 4;
+                    }
+                    term
                 });
                 for x in cx_lo..cx_hi {
                     let cov = t[x - cx_lo] * s;
@@ -3288,24 +3294,26 @@ impl Band<'_> {
                 .clamp(x_in_lo, cx_hi);
             let (dst, space) = top(&mut *self.fb, self.space, stack.as_mut_slice());
             let edge = |dst: &mut [[f32; 4]], f: usize, t: usize| {
-                for x in f..t {
-                    let px = x as f32 + 0.5 - cx;
-                    let mut cov = 0.0_f32;
-                    for k in 0..n {
-                        cov += 0.5
-                            * (erf((xr[k] - px) * inv_sqrt2_sigma)
-                                - erf((xl[k] - px) * inv_sqrt2_sigma))
-                            * wg[k];
+                let mut x = f;
+                while x < t {
+                    let lanes = (t - x).min(4);
+                    for (j, cov) in coverage4(x, lanes, &samples[..n])
+                        .into_iter()
+                        .enumerate()
+                        .take(lanes)
+                    {
+                        if cov <= 0.0 {
+                            continue;
+                        }
+                        let x = x + j;
+                        let cc = clip_mask.map_or(1.0, |m| m[py_i * self.w + x]);
+                        if cc <= 0.0 {
+                            continue;
+                        }
+                        let src = color.map(|v| v * cov.clamp(0.0, 1.0) * cc);
+                        dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
                     }
-                    if cov <= 0.0 {
-                        continue;
-                    }
-                    let cc = clip_mask.map_or(1.0, |m| m[py_i * self.w + x]);
-                    if cc <= 0.0 {
-                        continue;
-                    }
-                    let src = color.map(|v| v * cov.clamp(0.0, 1.0) * cc);
-                    dst[y * self.w + x] = src_over(dst[y * self.w + x], member(src, space));
+                    x += 4;
                 }
             };
             edge(&mut *dst, cx_lo, x_in_lo);
