@@ -1,19 +1,35 @@
 name: Cache headroom
 
 description: >-
-  Fails the job unless the archive about to be saved fits under the
-  repository's Actions cache storage limit next to every entry that exists
-  now. Writers save the replacement generation BEFORE retiring the one it
+  Makes room for the archive about to be saved, then reports through the
+  `fits` output whether the save should run; it never fails the job over
+  space. Writers save the replacement generation BEFORE retiring the one it
   supersedes, so pull requests always find one of the two; this check is
   what keeps that save from pushing usage over the limit, where GitHub
   evicts caches by last access and takes live, unrelated entries with it.
   The archive size is measured with the pipeline actions/cache uses
   (tar | zstd -T0 --long=30), and current usage is the sum of the live
   cache listing — the usage endpoint is refreshed only about every five
-  minutes, so it can miss a save that just finished. The limit comes from
-  the ACTIONS_CACHE_LIMIT_BYTES repository variable, because reading the
-  configured storage limit needs repository admin rights the job token
-  does not carry.
+  minutes, so it can miss a save that just finished.
+
+  GitHub's own LRU eviction keeps usage parked at the storage cap, so an
+  archive can only fit once something is deleted. When it does not fit,
+  the check deletes, oldest last access first, pull-request caches
+  (`refs/pull/*`, disposable: a pull request restores its base branch's
+  entries) and superseded generations on integration refs — every entry
+  but the newest of its purpose on its ref, a purpose being the key minus a
+  trailing `-<8+ hex>` fingerprint, exactly as retire-cargo-caches groups
+  them. The entry being replaced (the newest of the saved key's purpose) is
+  never deleted, so pull requests keep an archive for the length of the
+  upload (#2670). Pull-request entries never count as live usage: they are
+  always deletable. If the archive still does not fit, it warns and sets
+  `fits` to "false"; callers skip the save and the retirement after it.
+
+  The limit is the repository's configured storage limit
+  (`GET /actions/cache/storage-limit`, max_cache_size_gb GiB) when the
+  token may read it, else the ACTIONS_CACHE_LIMIT_BYTES repository
+  variable, else GitHub's 10 GiB default. The cap is binary: the default
+  10 GB quota is 10737418240 bytes.
 
 inputs:
   path:
@@ -23,11 +39,22 @@ inputs:
     description: The key the save step writes, named in the report.
     required: true
   limit-bytes:
-    description: The repository's cache storage limit in bytes (vars.ACTIONS_CACHE_LIMIT_BYTES).
-    required: true
+    description: >-
+      Fallback cache storage limit in bytes (vars.ACTIONS_CACHE_LIMIT_BYTES),
+      used when the configured limit cannot be read. Empty falls back to
+      10737418240 (10 GiB).
+    required: false
+    default: ""
   github-token:
-    description: Token that can list the repository's Actions caches.
+    description: Token with actions:write that can list and delete the repository's Actions caches.
     required: true
+
+outputs:
+  fits:
+    description: >-
+      "true" when the archive fits under the limit (after any deletions)
+      and the save should run, "false" when the caller must skip it.
+    value: ${{ steps.check.outputs.fits }}
 
 runs:
   using: composite
@@ -47,6 +74,7 @@ runs:
         bytes="$(tar -cPf - "${paths[@]}" | zstd -q -T0 --long=30 -c | wc -c | tr -d ' ')"
         echo "bytes=${bytes}" >> "${GITHUB_OUTPUT}"
     - name: Check headroom
+      id: check
       uses: actions/github-script@v7
       env:
         ARCHIVE_BYTES: ${{ steps.archive.outputs.bytes }}
@@ -55,29 +83,98 @@ runs:
       with:
         github-token: ${{ inputs.github-token }}
         script: |
-          const limitText = process.env.LIMIT_BYTES;
-          if (!/^[0-9]+$/.test(limitText)) {
-            core.setFailed(limitText === ''
-              ? 'ACTIONS_CACHE_LIMIT_BYTES is not set: set the repository variable to the Actions cache storage limit in bytes'
-              : `ACTIONS_CACHE_LIMIT_BYTES is not a byte count: ${limitText}`);
-            return;
-          }
-          const limit = Number(limitText);
-          const archive = Number(process.env.ARCHIVE_BYTES);
+          const GiB = 1024 ** 3;
           const { owner, repo } = context.repo;
+          const key = process.env.CACHE_KEY;
+          const archive = Number(process.env.ARCHIVE_BYTES);
+
+          let limit;
+          let source;
+          try {
+            const { data } = await github.request(
+              'GET /repos/{owner}/{repo}/actions/cache/storage-limit', { owner, repo });
+            if (Number.isFinite(data.max_cache_size_gb) && data.max_cache_size_gb > 0) {
+              limit = data.max_cache_size_gb * GiB;
+              source = `storage-limit ${data.max_cache_size_gb} GiB`;
+            }
+          } catch (error) {
+            core.info(`storage-limit endpoint unavailable (${error.status ?? error.message}); falling back`);
+          }
+          if (limit === undefined) {
+            const limitText = process.env.LIMIT_BYTES;
+            if (/^[0-9]+$/.test(limitText)) {
+              limit = Number(limitText);
+              source = 'ACTIONS_CACHE_LIMIT_BYTES';
+            } else {
+              if (limitText !== '') core.warning(`ACTIONS_CACHE_LIMIT_BYTES is not a byte count: ${limitText}; using the 10 GiB default`);
+              limit = 10 * GiB;
+              source = 'default 10 GiB';
+            }
+          }
+
+          // Materialize the whole list first: deleting mid-iteration would
+          // shift page offsets.
           const entries = await github.paginate(
             github.rest.actions.getActionsCacheList,
             { owner, repo, per_page: 100 });
-          const usage = entries.reduce((sum, e) => sum + e.size_in_bytes, 0);
-          const needed = usage + archive;
-          const report = `${process.env.CACHE_KEY}: ${archive} B archive + ${usage} B in ${entries.length} live entries = ${needed} B against ACTIONS_CACHE_LIMIT_BYTES ${limit} B`;
-          if (needed > limit) {
-            const largest = [...entries]
+          const isPull = (e) => e.ref.startsWith('refs/pull/');
+          const purposeOf = (k) => k.replace(/-[0-9a-fA-F]{8,}$/, '');
+          const newest = new Map();
+          for (const e of entries) {
+            if (isPull(e)) continue;
+            const id = `${e.ref}\n${purposeOf(e.key)}`;
+            const cur = newest.get(id);
+            if (!cur || Date.parse(e.created_at) > Date.parse(cur.created_at)) newest.set(id, e);
+          }
+          const deletable = entries
+            .filter((e) => e.key !== key &&
+              (isPull(e) || newest.get(`${e.ref}\n${purposeOf(e.key)}`) !== e))
+            .sort((a, b) => Date.parse(a.last_accessed_at) - Date.parse(b.last_accessed_at));
+
+          const sum = (list) => list.reduce((s, e) => s + e.size_in_bytes, 0);
+          const live = entries.filter((e) => !isPull(e));
+          let total = sum(entries);
+          let usage = sum(live);
+          const report = () => `${key}: ${archive} B archive + ${usage} B in ${live.length} live entries = ${usage + archive} B against ${limit} B (${source})`;
+
+          // Delete until the save fits next to EVERYTHING still stored, so
+          // GitHub's own eviction is never the thing that makes room.
+          // Delete nothing when even deleting every candidate would not make
+          // the archive fit: the save is skipped either way.
+          const deleted = [];
+          const reachable = usage - sum(deletable.filter((e) => !isPull(e))) + archive <= limit;
+          for (const e of reachable ? deletable : []) {
+            if (total + archive <= limit) break;
+            try {
+              await github.rest.actions.deleteActionsCacheById({ owner, repo, cache_id: e.id });
+            } catch (error) {
+              // 404: already gone (another writer, or expiry). Anything else
+              // stops the cleanup; the check below then decides on what is left.
+              if (error.status !== 404) {
+                core.warning(`could not delete ${e.key} on ${e.ref}: ${error.message}`);
+                break;
+              }
+            }
+            total -= e.size_in_bytes;
+            if (!isPull(e)) {
+              usage -= e.size_in_bytes;
+              live.splice(live.indexOf(e), 1);
+            }
+            deleted.push(`${e.key} on ${e.ref} (${e.size_in_bytes} B)`);
+          }
+          if (deleted.length > 0) {
+            core.info(`made room by deleting ${deleted.length} entries: ${deleted.join(', ')}`);
+          }
+
+          if (usage + archive > limit) {
+            const largest = [...live]
               .sort((a, b) => b.size_in_bytes - a.size_in_bytes)
               .slice(0, 5)
               .map((e) => `${e.key} on ${e.ref} (${e.size_in_bytes} B)`)
               .join(', ');
-            core.setFailed(`saving would exceed the cache limit and evict live caches: ${report}; largest entries: ${largest}`);
+            core.warning(`skipping the save: it would exceed the cache limit and evict live caches: ${report()}; largest entries: ${largest}`);
+            core.setOutput('fits', 'false');
             return;
           }
-          core.info(`headroom ok: ${report}`);
+          core.info(`headroom ok: ${report()}`);
+          core.setOutput('fits', 'true');

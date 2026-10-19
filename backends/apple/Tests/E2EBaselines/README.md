@@ -14,9 +14,12 @@ simply do not exist and the pixel step reports "no baseline yet" rather than
 pretending coverage.
 
 - `ios/` and `macos/` — marker files only, never captures:
-- `<example>.skip` — an empty marker that skips pixel comparison for an
-  example whose first screen cannot be made deterministic (continuous
-  animation, live media). The launch and non-blank checks still apply.
+- `<example>.skip` — an empty marker declaring a first screen that cannot
+  be made deterministic (continuous animation, live media). The capture
+  takes exactly one supervised frame after the first-paint marker rather
+  than spending the settle budget asking for stability the example cannot
+  produce; the launch and non-blank checks still apply, and pixel
+  comparison is skipped.
 - `<example>.visual` — the semantic class for output that is not
   pixel-stable by construction (GPU-rendered, e.g. `filter`). Never
   pixel-compared: the WaterUI capture — and the SwiftUI twin capture where a

@@ -421,6 +421,7 @@ jobs:
       # release-line target cache remains explicitly cold unless a cache
       # written on `main` or the default branch exists.
       - name: Save Cargo sources
+        id: save-sources
         if: (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true'
         uses: ./.github/actions/cargo-sources
         with:
@@ -429,6 +430,7 @@ jobs:
           limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Compiled target cache headroom
+        id: target-headroom
         if: github.ref == 'refs/heads/dev' && steps.apple-target.outputs.cache-hit != 'true'
         uses: ./.github/actions/cache-headroom
         with:
@@ -437,7 +439,7 @@ jobs:
           limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Save compiled target cache
-        if: github.ref == 'refs/heads/dev' && steps.apple-target.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/dev' && steps.apple-target.outputs.cache-hit != 'true' && steps.target-headroom.outputs.fits == 'true'
         uses: actions/cache/save@v4
         with:
           path: target
@@ -446,9 +448,10 @@ jobs:
       # families, and other refs are never touched. `apple-target` is a
       # family of this ref only on `dev`, where it is written. Nothing is
       # retired unless every primary key exists, so a save that did not
-      # land can never leave pull requests without an archive.
+      # land can never leave pull requests without an archive. A save the
+      # headroom check skipped (no room) keeps the old generations too.
       - name: Retire superseded cache generations
-        if: github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main'
+        if: (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.save-sources.outputs.saved != 'false' && steps.target-headroom.outputs.fits != 'false'
         uses: ./.github/actions/retire-cargo-caches
         with:
           families: cargo-sources-${{ runner.os }}-${{ github.ref == 'refs/heads/dev' && format(',apple-target-{0}-{1}-', runner.os, runner.arch) || '' }}

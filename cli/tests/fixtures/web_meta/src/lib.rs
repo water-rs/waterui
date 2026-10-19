@@ -3,6 +3,6 @@
 
 /// Never called — the expansion only has to compile; evaluating it would go
 /// looking for a staged bundle this test process does not have.
-pub fn web_view() -> waterui::webview::WebViewOpen {
-    waterui::include_web!("web")
+pub fn web_view(resources: &waterui::ResourceContext) -> waterui::webview::WebViewOpen {
+    waterui::include_web!(resources, "web")
 }

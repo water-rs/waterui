@@ -235,18 +235,10 @@ impl Project {
             ));
             updates.push((path.join("Water.lock"), lockfile));
         }
-        let mut updates: Vec<_> = updates
+        let updates: Vec<_> = updates
             .into_iter()
             .map(|(file, contents)| (file, Some(contents)))
             .collect();
-        if channel == FrameworkChannel::Stable
-            && previous
-                .framework
-                .as_ref()
-                .is_some_and(|previous| previous.channel() != Some(FrameworkChannel::Stable))
-        {
-            updates.push((path.join("Water.lock"), None));
-        }
         apply_channel_selection(host, &path, framework, updates).await?;
         Self::open_for_preview_build(host, path)
             .await
@@ -2511,7 +2503,7 @@ async fn resolve_cargo_layout(
     cargo_layout_from(
         host,
         &application_manifest,
-        framework,
+        framework.as_ref(),
         &metadata,
         water_lock.as_deref(),
     )
@@ -2562,7 +2554,7 @@ impl Fact for CargoLayoutFact {
         cargo_layout_from(
             scope.host(),
             &application_manifest,
-            self.framework.clone(),
+            self.framework.as_ref(),
             &metadata,
             water_lock.as_deref(),
         )
@@ -2575,15 +2567,16 @@ impl Fact for CargoLayoutFact {
 fn cargo_layout_from(
     host: &Host,
     application_manifest: &Path,
-    framework: Option<ResolvedFramework>,
+    framework: Option<&ResolvedFramework>,
     metadata: &cargo_metadata::Metadata,
     water_lock: Option<&[u8]>,
 ) -> eyre::Result<CargoLayout> {
     validate_resolved_cli(host, metadata)?;
-    if let Some(framework) = framework
-        && let Some(lockfile) = water_lock
-    {
-        framework.validate_dependencies(metadata, lockfile)?;
+    if let Some(framework) = framework {
+        framework.validate_public_api_dependencies(metadata)?;
+        if let Some(lockfile) = water_lock {
+            framework.validate_dependencies(metadata, lockfile)?;
+        }
     }
 
     let root_package = package_at_manifest(metadata, application_manifest)?;
@@ -2631,7 +2624,11 @@ fn package_at_manifest<'a>(
     metadata
         .packages
         .iter()
-        .find(|package| package.manifest_path.as_std_path() == application_manifest)
+        .find(|package| {
+            // Cargo may report the manifest under a verbatim `\\?\`-prefixed
+            // spelling where `application_manifest` carries the ordinary one.
+            dunce::simplified(package.manifest_path.as_std_path()) == application_manifest
+        })
         .ok_or_else(|| {
             eyre::eyre!(
                 "Cargo metadata omitted the application package at {}",

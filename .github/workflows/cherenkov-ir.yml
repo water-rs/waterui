@@ -157,9 +157,10 @@ jobs:
         run: >-
           echo "version=$(cargo metadata --format-version 1 --locked
           | jq -r '.packages[] | select(.name == "gungraun") | .version')" >> "$GITHUB_OUTPUT"
-      - uses: taiki-e/install-action@v2
+      - uses: ./.github/actions/install-tool
         with:
           tool: gungraun-runner@${{ steps.runner.outputs.version }}
+          path: ~/.cargo/bin/gungraun-runner*
       # A pull request's merge commit is measured against its first
       # parent, the dev commit it merges into; a dispatch resolves its
       # inputs' merge base. Revisions the checkout does not hold are
