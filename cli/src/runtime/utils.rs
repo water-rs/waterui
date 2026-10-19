@@ -397,6 +397,10 @@ fn replace_with_copy(from: &Path, to: &Path) -> io::Result<()> {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         #[cfg(windows)]
+        #[expect(
+            clippy::permissions_set_readonly_false,
+            reason = "Windows-only: clears the read-only attribute so the file can be unlinked; there is no Unix mode to widen"
+        )]
         Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
             // A copy that kept a read-only mode cannot be unlinked until the
             // attribute is cleared; Unix ignores it for unlink.
