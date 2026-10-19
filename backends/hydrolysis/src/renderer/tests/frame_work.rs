@@ -614,28 +614,38 @@ fn gpu_content_under_clips_and_effects() {
     let mut runtime = runtime_with(view);
     let mut frames = Frames::new();
 
-    // The surface's async setup needs a few executor drains before it renders.
+    // The surface's async setup needs a few executor drains before it
+    // renders. Each pump's counters are its own, so the layer mount is
+    // asserted on the frame that actually mounted the GPU content layer —
+    // the first whose mount stats list one.
+    let mut mount_frame = None;
     for _ in 0..12 {
-        if renders.load(core::sync::atomic::Ordering::Relaxed) > 0 {
+        if renders.load(core::sync::atomic::Ordering::Relaxed) > 0
+            && mount_frame.is_some()
+        {
             break;
         }
         let at = frames.at();
-        let _ = runtime.pump_at(false, at);
+        let result = runtime.pump_at(false, at);
+        if mount_frame.is_none() && result.profile.counters.gpu_content_layers >= 1 {
+            mount_frame = Some(result.profile.counters);
+        }
     }
     assert!(
         renders.load(core::sync::atomic::Ordering::Relaxed) > 0,
         "the GPU surface must have drawn"
     );
+    assert_retained_engine_counters(
+        &mount_frame.expect("the GPU content layer must have mounted on some frame"),
+    );
 
     let (counters, _snapshot) = frames.render(&mut runtime);
     let m = counters.frame_work;
-    assert!(
-        counters.gpu_content_layers >= 1,
-        "a GPU surface under a clip composites as a GPU content layer"
-    );
     assert!(m.gpu_submissions > 0, "the probe's submit is counted");
-    assert!(m.recorded_view_contents > 0);
-    assert_retained_engine_counters(&counters);
+    assert_eq!(
+        m.recorded_view_contents, 0,
+        "the settled frame re-presents the probe's own output; it records nothing"
+    );
 }
 
 /// The determinism clause: two capturing pumps of the same view at the same

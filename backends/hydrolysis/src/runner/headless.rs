@@ -1126,8 +1126,14 @@ impl HeadlessRuntime {
         if render_result.is_some() {
             // The renderer's frame-work counters are sampled after the frame's
             // render and its readback have both submitted on the same queue,
-            // so they cover all the GPU work this pump ran for it.
-            profile.counters.frame_work = self.runtime.renderer.frame_work_counters();
+            // so they cover all the GPU work this pump ran for it. The frame's
+            // own snapshot already left the profile inside the render pump —
+            // the tail drained here is the work that ran after it (the
+            // readback's own submissions), which joins the same frame's count.
+            profile
+                .counters
+                .frame_work
+                .accumulate(self.runtime.renderer.take_frame_work_counters());
         }
         profile.phases.executor_before = executor_before;
         profile.phases.input = input;
