@@ -12327,7 +12327,6 @@ dependencies = [
  "executor-core",
  "futures",
  "shaderloom",
- "tracing",
  "waterkit-camera",
  "waterkit-permission",
  "waterui",

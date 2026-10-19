@@ -21,7 +21,6 @@ shaderloom = { workspace = true, features = ["runtime"] }
 futures.workspace = true
 executor-core.workspace = true
 wgpu.workspace = true
-tracing.workspace = true
 
 [build-dependencies]
 shaderloom = { workspace = true, features = ["build"] }
