@@ -87,18 +87,6 @@ pub enum InspectorTarget {
     },
 }
 
-/// Target platform for launching Inspector app.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum InspectorPlatform {
-    /// iOS Simulator.
-    IosSimulator,
-    /// macOS.
-    Macos,
-    /// Android (device or emulator).
-    Android,
-}
-
 /// Launch options for Inspector app.
 #[derive(Clone)]
 #[non_exhaustive]
@@ -107,6 +95,15 @@ pub struct InspectorLaunchOptions {
     pub target: InspectorTarget,
     /// One-time token used by runtime endpoint and inspector app.
     pub token: String,
+}
+
+impl InspectorLaunchOptions {
+    /// Options pointing the launched app at the inspector on `target`,
+    /// authenticating with `token`.
+    #[must_use]
+    pub const fn new(target: InspectorTarget, token: String) -> Self {
+        Self { target, token }
+    }
 }
 
 // The token is a credential: it travels to the endpoint, never into

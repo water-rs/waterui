@@ -178,12 +178,6 @@ impl std::fmt::Debug for RunOptions {
             )
             .field("log_level", &self.log_level)
             .field("native_logs", &self.native_logs)
-            .field(
-                "replace_existing_macos_app_instances",
-                &self.replace_existing_macos_app_instances,
-            )
-            .field("forward_tcp_ports", &self.forward_tcp_ports)
-            .field("app_log_file", &self.app_log_file)
             .finish()
     }
 }

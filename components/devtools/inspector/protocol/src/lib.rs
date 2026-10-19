@@ -76,7 +76,7 @@ pub struct TargetInfo {
 }
 
 /// Messages sent by the inspector to the target application.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[expect(
     clippy::exhaustive_enums,
     reason = "inspector wire type: the handshake rejects a peer from another protocol build, so every producer and consumer is built together and a new field or variant must fail their build"

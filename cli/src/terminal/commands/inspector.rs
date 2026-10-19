@@ -190,10 +190,7 @@ async fn prepare_selected_inspector(
     let prepared = prepare_inspector(host, &project_path, Some(shell.build_progress())).await?;
     Ok((
         prepared,
-        InspectorLaunchOptions {
-            target: inspector_target,
-            token,
-        },
+        InspectorLaunchOptions::new(inspector_target, token),
     ))
 }
 
@@ -409,6 +406,7 @@ mod tests {
             platform: CliInspectorPlatform::Android,
             device: Some(String::from("pixel-9-pro:5555")),
             path: temp.path().to_path_buf(),
+            offline: false,
         };
         let shell = crate::shell::Shell::new(true);
 
