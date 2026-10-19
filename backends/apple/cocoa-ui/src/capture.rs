@@ -37,9 +37,9 @@ use std::sync::{Arc, Mutex};
 
 use block2::RcBlock;
 use dispatch2::{DispatchQoS, DispatchQueue, GlobalQueueIdentifier, MainThreadBound};
-use objc2::{ClassType, Message};
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
+use objc2::{ClassType, Message};
 use objc2_core_foundation::{CFRetained, CGAffineTransform};
 use objc2_core_graphics::{
     CGBitmapContextCreate, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo, CGImageComponentInfo,
@@ -1548,8 +1548,7 @@ fn has_unresolved_metal_layer(view: &PlatformView) -> bool {
             return true;
         }
     }
-    crate::layer::layer_of(view)
-        .is_some_and(|layer| metal_in_layer_tree(&layer, &subview_layers))
+    crate::layer::layer_of(view).is_some_and(|layer| metal_in_layer_tree(&layer, &subview_layers))
 }
 
 /// Whether `layer` or a descendant sublayer is a `CAMetalLayer`; roots in
