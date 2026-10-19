@@ -23,7 +23,7 @@ use nami::Signal;
 use waterui::app::{
     App, AppParts, LastWindowPolicy, TerminationHandle, TerminationHost, TerminationKind,
 };
-use waterui::window::{FocusRequestKind, Monitor, MonitorSelector, Window, WindowState};
+use waterui::window::{Monitor, MonitorSelector, Window, WindowState};
 use waterui_core::Environment;
 #[cfg(hydrolysis_wayland_platform)]
 use waterui_core::Str;
@@ -944,6 +944,20 @@ fn load_staged_window_icon(
     }
 }
 
+/// Arms `WindowHandle::focus` on `window`: the request reaches winit's
+/// `focus_window` — `_NET_ACTIVE_WINDOW`, `SetForegroundWindow`, a Wayland
+/// activation-token request, as the handle's docs say. The hook holds the
+/// native window weakly, so a request filed through a handle that outlived
+/// the window's teardown is a no-op.
+fn arm_window_focus_requests(window: &Window, native_window: &Arc<NativeWindow>) {
+    let native = Arc::downgrade(native_window);
+    window.arm_focus_requests(move || {
+        if let Some(native) = native.upgrade() {
+            native.focus_window();
+        }
+    });
+}
+
 fn native_window_attributes(
     window: &Window,
     env: &Environment,
@@ -1155,13 +1169,7 @@ impl WinitRunner {
                 .create_window(attributes)
                 .expect("hydrolysis runner: failed to create winit window"),
         );
-        // `focus` files into winit's `focus_window` — `_NET_ACTIVE_WINDOW`,
-        // `SetForegroundWindow`, a Wayland activation-token request, as the
-        // handle's docs say. winit exposes no order-front-without-focus
-        // primitive, so `raise` declines loudly rather than silently
-        // delivering the focus it did not ask for; the request machine
-        // re-arms through the panic, so `focus` still works afterwards.
-        let focus_native = Arc::downgrade(&native_window);
+        arm_window_focus_requests(&window, &native_window);
         #[cfg(hydrolysis_wayland_platform)]
         if let Some(xid) = x11_state_watch::x11_window_id(&native_window) {
             // The window is on X11, so the app's own server connection is
@@ -1210,17 +1218,6 @@ impl WinitRunner {
         let renderer = HydrolysisRenderer::with_engine(Rc::clone(&self.theme), text);
         let closable = window.closable;
         window.arm_close_requests(&self.env);
-        window.arm_focus_requests(move |kind| match kind {
-            FocusRequestKind::Raise => panic!(
-                "hydrolysis runner: `WindowHandle::raise` is unsupported — \
-                 winit exposes no order-front-without-focus primitive; use `focus`"
-            ),
-            FocusRequestKind::Focus => {
-                if let Some(native) = focus_native.upgrade() {
-                    native.focus_window();
-                }
-            }
-        });
         let mut runtime =
             RuntimeWindow::new(window, platform, renderer, self.render_diagnostics_config);
         runtime

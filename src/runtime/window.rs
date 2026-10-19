@@ -38,7 +38,6 @@ use waterui_layout::{Point, Rect, Size};
 
 pub use super::window_close::CloseReply;
 use super::window_close::{CloseRequest, Question};
-pub use super::window_focus::FocusRequestKind;
 use super::window_focus::FocusRequest;
 
 use crate::app::{application_identifier, application_name};
@@ -220,10 +219,9 @@ pub struct Window {
     /// shared by `Rc` with [`WindowHandle`] and armed by the backend when the
     /// window is realized.
     close_request: CloseRequest,
-    /// The raise/focus machine [`WindowHandle::raise`] and
-    /// [`WindowHandle::focus`] file into, shared by `Rc` with
-    /// [`WindowHandle`] and armed by the backend when the window is
-    /// realized.
+    /// The focus machine [`WindowHandle::focus`] files into, shared by
+    /// `Rc` with [`WindowHandle`] and armed by the backend when the window
+    /// is realized.
     focus_request: FocusRequest,
 }
 
@@ -1041,13 +1039,12 @@ impl Window {
         self.close_request.arm(env, self.closable);
     }
 
-    /// Arms raise/focus requests with `hook` — the platform calls
-    /// [`WindowHandle::raise`] and [`WindowHandle::focus`] dispatch into. A
-    /// backend calls it when it realizes the window; a platform that cannot
-    /// move a mapped window leaves the machine unarmed and those calls
-    /// panic.
+    /// Arms focus requests with `hook` — the platform call
+    /// [`WindowHandle::focus`] dispatches into. A backend calls it when it
+    /// realizes the window; a platform that cannot activate a mapped window
+    /// leaves the machine unarmed and the call panics.
     #[doc(hidden)]
-    pub fn arm_focus_requests(&self, hook: impl FnMut(FocusRequestKind) + 'static) {
+    pub fn arm_focus_requests(&self, hook: impl FnMut() + 'static) {
         self.focus_request.arm(hook);
     }
 
@@ -1228,34 +1225,6 @@ impl WindowHandle {
         self.state.set(WindowState::Normal);
     }
 
-    /// Order the window in front of its sibling windows, leaving keyboard
-    /// focus where it is.
-    ///
-    /// Platform behaviour:
-    ///
-    /// - **macOS:** `orderFront:` — the window comes forward inside its
-    ///   level; key status and app activation are untouched.
-    /// - **iOS:** `makeKeyAndVisible` — `UIKit` has no
-    ///   raise-without-key, so the window also becomes its scene's key
-    ///   window.
-    /// - **Hydrolysis/winit:** unsupported — no platform it covers has an
-    ///   order-front-without-focus primitive — the call panics.
-    /// - **Headless/semantic runners:** unarmed; the call panics.
-    ///
-    /// Raising does not restore a minimized window — [`Self::restore`]
-    /// does — and does not activate the application; [`Self::focus`] does
-    /// both where the platform allows it. A handle that outlived its
-    /// window's teardown files into nothing: the request is a no-op.
-    ///
-    /// # Panics
-    ///
-    /// When the window has not been realized yet, and on the platforms
-    /// with no raise primitive — Hydrolysis/winit, headless and semantic
-    /// runners.
-    pub fn raise(&self) {
-        self.focus_request.request(FocusRequestKind::Raise);
-    }
-
     /// Bring the window in front and give it keyboard focus — the classic
     /// "show me the existing settings window" request.
     ///
@@ -1282,7 +1251,7 @@ impl WindowHandle {
     /// When the window has not been realized yet, and on the platforms
     /// with no mapped-window activation — headless and semantic runners.
     pub fn focus(&self) {
-        self.focus_request.request(FocusRequestKind::Focus);
+        self.focus_request.request();
     }
 
     /// Ask the platform to draw the user's attention to the window, until

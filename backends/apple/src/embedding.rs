@@ -309,7 +309,7 @@ fn bind_root(
         let mut declaration = declaration.borrow_mut();
         let toolbar = declaration.toolbar.take();
         declaration.arm_close_requests(&observed_env);
-        *observed_binding.borrow_mut() = Some(crate::windows::bind_root_window(
+        let bound = crate::windows::bind_root_window(
             window,
             root,
             &observed_env,
@@ -327,9 +327,12 @@ fn bind_root(
             declaration
                 .has_close_handler()
                 .then(|| declaration.handle()),
-            Some(&declaration),
             mtm,
-        ));
+        );
+        // `WindowHandle::focus` — armed here, where the declaration and the
+        // realized window meet.
+        crate::windows::wire_focus_requests(&declaration, bound.window(), mtm);
+        *observed_binding.borrow_mut() = Some(bound);
     });
     let on_window = attach.clone();
     root.set_window_handler(move |root| on_window(root));

@@ -25,8 +25,8 @@ mod imp {
     use waterui::animation::Animation;
     use waterui::reactive::{Binding, Computed, Signal};
     use waterui::window::{
-        FocusRequestKind, ResolvedWindowBackground, UserAttention, Window, WindowBackground,
-        WindowHandle, WindowLevel, WindowState, WindowStyle as WuiStyle, resolve_background,
+        ResolvedWindowBackground, UserAttention, Window, WindowBackground, WindowHandle,
+        WindowLevel, WindowState, WindowStyle as WuiStyle, resolve_background,
     };
     use waterui_backend_core::Environment;
 
@@ -367,8 +367,16 @@ mod imp {
     /// watchers — the platform delegate hooks fire only while the kit window
     /// wrapper lives, which the host guarantees for its own window.
     pub struct RootWindowBinding {
-        _window: Rc<cocoa_ui::appkit::Window>,
+        window: Rc<cocoa_ui::appkit::Window>,
         _keepalive: Rc<RefCell<Option<KeepAlive>>>,
+    }
+
+    impl RootWindowBinding {
+        /// The adopted window — the embed path arms the declaration's
+        /// focus hook against it after `bind_root_window` returns.
+        pub const fn window(&self) -> &Rc<cocoa_ui::appkit::Window> {
+            &self.window
+        }
     }
 
     /// `WuiRootWindowBinding`'s port: binds the app's first declared window to
@@ -400,13 +408,9 @@ mod imp {
         closable: bool,
         resizable: bool,
         close_requests: Option<WindowHandle>,
-        focus_requests: Option<&Window>,
         mtm: MainThreadMarker,
     ) -> RootWindowBinding {
         let window = Rc::new(cocoa_ui::appkit::Window::adopt(mtm, window));
-        if let Some(declaration) = focus_requests {
-            wire_focus_requests(declaration, &window, mtm);
-        }
         let mut keepalive = KeepAlive::default();
 
         // Adopt the declared style, now and when it changes — adopting must
@@ -459,7 +463,7 @@ mod imp {
         }
 
         RootWindowBinding {
-            _window: window,
+            window,
             _keepalive: keepalive,
         }
     }
@@ -610,17 +614,16 @@ mod imp {
         }
     }
 
-    /// `WindowHandle::raise`/`focus`: the armed hook `realize` and
-    /// `bind_root_window` both install. Raise orders the window front
-    /// inside its level, leaving key status alone; focus restores a
-    /// miniaturized window first, makes it key and asks for app
-    /// activation — the cooperative `activate` the system may still
-    /// decline, as the handle's docs say. The hook holds the window
+    /// `WindowHandle::focus`: the armed hook `realize` installs, and the
+    /// embed path's `bind_root` installs after `bind_root_window` returns.
+    /// Focus restores a miniaturized window first, makes it key and asks
+    /// for app activation — the cooperative `activate` the system may
+    /// still decline, as the handle's docs say. The hook holds the window
     /// weakly: the machine outlives teardown in a `WindowHandle`, and a
     /// request filed there must no-op rather than order a closed window
     /// back on screen — the same post-teardown answer the winit hook's
     /// weak reference gives.
-    fn wire_focus_requests(
+    pub fn wire_focus_requests(
         declaration: &Window,
         window: &Rc<cocoa_ui::appkit::Window>,
         mtm: MainThreadMarker,
@@ -628,20 +631,15 @@ mod imp {
         declaration.arm_focus_requests({
             let window = Rc::downgrade(window);
             let application = cocoa_ui::appkit::Application::shared(mtm);
-            move |kind| {
+            move || {
                 let Some(window) = window.upgrade() else {
                     return;
                 };
-                match kind {
-                    FocusRequestKind::Raise => window.order_front(),
-                    FocusRequestKind::Focus => {
-                        if window.is_miniaturized() {
-                            window.deminiaturize();
-                        }
-                        window.make_key_and_order_front();
-                        application.activate();
-                    }
+                if window.is_miniaturized() {
+                    window.deminiaturize();
                 }
+                window.make_key_and_order_front();
+                application.activate();
             }
         });
     }
@@ -1143,14 +1141,13 @@ mod imp {
         mtm: MainThreadMarker,
     ) -> WindowHost {
         let mut keepalive = KeepAlive::default();
-        // `WindowHandle::raise`/`focus`: `UIKit` keeps one primitive —
-        // `makeKeyAndVisible` orders the window front and makes it key —
-        // so both requests land on it, as the handle docs say. The hook
-        // holds the window weakly: a request filed through a handle that
-        // outlived its scene finds nothing to act on.
+        // `WindowHandle::focus`: `UIKit` keeps one primitive —
+        // `makeKeyAndVisible` orders the window front and makes it key.
+        // The hook holds the window weakly: a request filed through a
+        // handle that outlived its scene finds nothing to act on.
         declaration.arm_focus_requests({
             let window = cocoa_ui::objc2::rc::Weak::from_retained(&pending.window);
-            move |_kind| {
+            move || {
                 if let Some(window) = window.load() {
                     window.makeKeyAndVisible();
                 }
@@ -1263,6 +1260,8 @@ mod imp {
 }
 
 pub use imp::install_manager;
+#[cfg(target_os = "macos")]
+pub use imp::wire_focus_requests;
 #[cfg(target_os = "ios")]
 pub use imp::{Scenes, bind_background, connect, connect_embedded, declare};
 #[cfg(target_os = "macos")]
