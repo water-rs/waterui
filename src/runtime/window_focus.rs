@@ -71,8 +71,8 @@ impl Drop for Dispatch<'_> {
 }
 
 /// Re-seats the hook the running request took out — through unwind too,
-/// so a hook that panics declining a request it cannot perform leaves the
-/// machine armed for the kinds it can.
+/// so a hook that panics leaves the machine armed for the requests that
+/// follow.
 struct PutBack<'a> {
     shared: &'a RefCell<Shared>,
     hook: Option<Box<dyn FnMut()>>,
