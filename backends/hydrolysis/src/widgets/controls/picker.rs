@@ -69,6 +69,13 @@ impl PickerRenderState {
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the picker's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
 /// The label view a menu picker draws inside its field: the picker's own label
@@ -237,13 +244,10 @@ pub fn picker_accessibility(
                     let selection = picker.selection.clone();
                     let open = Rc::clone(&menu_open);
                     let request = ctx.as_ref().zip(theme).map(|(ctx, theme)| {
-                        let bounds = ctx.bounds;
                         let metrics = theme.picker_metrics(PickerStyle::Menu);
+                        let bounds = renderer.resolve_window_rect(ctx.bounds);
                         (
-                            waterui_core::layout::Point::new(
-                                crate::num_cast::f64_as_f32(bounds.x0),
-                                crate::num_cast::f64_as_f32(bounds.y1),
-                            ),
+                            crate::widgets::util::popup_anchor(bounds),
                             bounds.width(),
                             menu_picker_row_height(max_item_text_height, metrics),
                             metrics,
@@ -644,11 +648,10 @@ pub fn render_menu_picker(
         let field_open_state = Rc::clone(&menu_open);
         let picker_selection = selection;
         let menu_entries = entries;
-        let menu_origin = waterui_core::layout::Point::new(
-            crate::num_cast::f64_as_f32(hit_bounds.x0),
-            crate::num_cast::f64_as_f32(hit_bounds.y1),
-        );
-        let menu_width = hit_bounds.width();
+        // The popup anchors in window space at the field's bottom edge.
+        let window_bounds = ctx.renderer_mut().resolve_window_rect(hit_bounds);
+        let menu_origin = crate::widgets::util::popup_anchor(window_bounds);
+        let menu_width = window_bounds.width();
         // The popup opens in the picker's environment layered over the
         // dispatch's (water-rs/hydrolysis#140).
         let picker_env = env.clone();

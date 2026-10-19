@@ -828,14 +828,16 @@ fn node_want<'a>(guard: &'a std::cell::Ref<'_, Option<NodeLayers>>) -> Want<'a> 
     }
 }
 
-fn gpu_content_pixels(
-    transform: kurbo::Affine,
-    bounds: kurbo::Rect,
-    display_scale: f64,
-) -> (u32, u32) {
+/// The install's device-pixel size under `transform` — the node's
+/// window-space transform. The root transform already maps layout points
+/// onto the target's pixel grid (`set_window_viewport`'s
+/// `Affine::scale(scale_factor)`), so the display scale lives in
+/// `transform` and must not be multiplied in again
+/// (water-rs/waterui#2935).
+fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u32) {
     let [a, b, c, d, _, _] = transform.as_coeffs();
-    let x_scale = a.hypot(b) * display_scale;
-    let y_scale = c.hypot(d) * display_scale;
+    let x_scale = a.hypot(b);
+    let y_scale = c.hypot(d);
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -1345,7 +1347,7 @@ fn mount_gpu<T: LayerTarget>(
 ) {
     let fresh = ensure_install(cx, layers, true);
     let world = cx.window_transform * cell.placement().resolved_transform(false);
-    let pixels = gpu_content_pixels(world, bounds, cx.display_scale);
+    let pixels = gpu_content_pixels(world, bounds);
     let (install, props) = layers.install.as_mut().expect("install ensured");
     let mut runtime = runtime.borrow_mut();
     if fresh {

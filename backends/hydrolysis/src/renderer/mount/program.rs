@@ -383,8 +383,11 @@ impl ProgramBuilder {
             .scopes
             .pop()
             .expect("hydrolysis program: close_scope without an open scope");
-        // Runs record in the node's space; a scope layer placed by a
-        // transform draws them in its own.
+        // Items record in the node's space; a scope layer placed by a
+        // transform draws them in its own. A member left unconverted mounts
+        // under the scope layer with the node's space still in its
+        // transform — the scope transform would reach it twice
+        // (water-rs/waterui#2894).
         if scope.origin != kurbo::Affine::IDENTITY {
             let into_scope = scope.origin.inverse();
             for item in &mut scope.items {
@@ -395,6 +398,7 @@ impl ProgramBuilder {
                         *run = moved;
                     }
                     Item::Live(live) => live.transform = into_scope * live.transform,
+                    Item::Chrome(chrome) => chrome.transform = into_scope * chrome.transform,
                     _ => {}
                 }
             }

@@ -383,6 +383,13 @@ struct SurfaceState {
     /// hidden while nonzero (`beginCaptureSuppression`). The layer is the
     /// view's, not the presentation state's, so this stays a plain field.
     capture_suppression: Cell<u32>,
+    /// External-render scopes the mount's teardown orphaned: a capture's
+    /// `SurfaceRegistration` ends its external rendering on the frame's
+    /// settle or the map's part — on the main queue, possibly after the
+    /// mount is gone and `Presentation::detached` cleared the scope. The
+    /// teardown records how many ends are still owed so a late settle
+    /// closes quietly; an end beyond the count is still unbalanced.
+    orphaned_external_scopes: Cell<u32>,
     /// The explicit HDR preference `resolved_hdr_preference` produced.
     explicit_range: Option<cocoa_ui::dynamic_range::DynamicRange>,
     /// `rendererDynamicRange`'s latch: wgpu keeps the negotiated format
@@ -606,6 +613,7 @@ impl SurfaceState {
             wants_input_events,
             dirty: Cell::new(false),
             capture_suppression: Cell::new(0),
+            orphaned_external_scopes: Cell::new(0),
             explicit_range,
             latched_renderer_range: Cell::new(None),
             configured_range: Cell::new(None),
@@ -1918,14 +1926,26 @@ impl cocoa_ui::capture::CapturableSurface for Capturable {
     fn end_external_rendering(&self, resume: bool) {
         {
             let mut slot = self.state.presentation.borrow_mut();
-            let Some(external) = &mut slot.capture else {
-                panic!("GpuSurface external rendering scopes are unbalanced");
-            };
-            if let Some(remaining) = NonZeroU32::new(external.depth.get() - 1) {
-                external.depth = remaining;
+            if let Some(external) = &mut slot.capture {
+                if let Some(remaining) = NonZeroU32::new(external.depth.get() - 1) {
+                    external.depth = remaining;
+                    return;
+                }
+                slot.capture = None;
+            } else {
+                // The mount may be gone while a still-settling capture's
+                // registration still owes this end — teardown recorded the
+                // scopes it orphaned, so the late settle closes quietly.
+                // Nothing resumes on a dead surface, and an end beyond the
+                // recorded count is the unbalance the assert names.
+                let orphaned = self.state.orphaned_external_scopes.get();
+                assert!(
+                    orphaned > 0,
+                    "GpuSurface external rendering scopes are unbalanced"
+                );
+                self.state.orphaned_external_scopes.set(orphaned - 1);
                 return;
             }
-            slot.capture = None;
         }
         if resume {
             owe_and_reschedule(&self.state, &self.view);
@@ -2191,6 +2211,23 @@ impl fmt::Debug for MountGuard {
 
 impl Drop for MountGuard {
     fn drop(&mut self) {
+        // An open external-render scope outlives the mount: the capture's
+        // registration ends it on a later settle or map part, on this same
+        // queue, after the presentation reset below has cleared the scope.
+        // Recording the orphaned depth keeps that late end quiet — and
+        // still counted, so an end nobody is owed stays a panic.
+        let orphaned = self
+            .state
+            .presentation
+            .borrow()
+            .capture
+            .as_ref()
+            .map_or(0, |external| external.depth.get());
+        if orphaned > 0 {
+            self.state
+                .orphaned_external_scopes
+                .set(self.state.orphaned_external_scopes.get() + orphaned);
+        }
         *self.state.presentation.borrow_mut() = Presentation::detached();
         self.state.park.clear();
         self.state.observers.borrow_mut().clear();
@@ -2943,6 +2980,25 @@ pub mod native_test {
         pub fn end_capture(&self, resume: bool) {
             use cocoa_ui::capture::CapturableSurface;
             self.capturable.end_external_rendering(resume);
+        }
+
+        /// Ends the mount — the owner dropping the leaf — while capture
+        /// scopes are still open, then delivers `ends` late ends through
+        /// the capturable the registration itself would still hold: the
+        /// settle ordering a still-in-flight frame produces when the
+        /// mount's owner lets go first.
+        ///
+        /// # Panics
+        ///
+        /// When `ends` exceeds the scopes teardown orphaned — the same
+        /// balance assert a live surface answers.
+        pub fn unmount_then_end_captures(self, ends: u32) {
+            let capturable = self.capturable.clone();
+            drop(self.leaf);
+            for _ in 0..ends {
+                use cocoa_ui::capture::CapturableSurface;
+                capturable.end_external_rendering(false);
+            }
         }
 
         /// Drives the production `park_for_publication` — the settle the
