@@ -473,7 +473,10 @@ define_class!(
     impl TableView {
         /// A view that moves to another window or leaves its window lands
         /// the flight it was running — a parked flight's clock ticks only
-        /// for the window it armed on.
+        /// for the window it armed on. Every window transition also marks
+        /// the keyboard pass — a surface returning to a window whose
+        /// region moved while it was away recomputes the contribution,
+        /// and the flag outlives a `window()` that still answers none.
         #[unsafe(method(didMoveToWindow))]
         fn did_move_to_window(&self) {
             guarded("TableView didMoveToWindow", || {
@@ -481,12 +484,9 @@ define_class!(
                 let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
                 self.ivars().flight.land();
                 self.ivars().keyboard.clear();
+                self.mark_keyboard();
                 if self.window().is_some() {
                     self.ivars().keyboard.attach(self, self.mtm());
-                    // Re-entering a window whose keyboard moved while the
-                    // view was out of the tree — a popped page's surface —
-                    // recomputes the contribution on the next pass.
-                    self.mark_keyboard();
                 }
             });
         }
@@ -537,8 +537,8 @@ impl TableView {
     /// The window's keyboard region marked this surface for a region
     /// change — the next layout pass recomputes the keyboard
     /// contribution, and the mark itself queues that pass. Called by
-    /// the region's whole-window walk and by `didMoveToWindow` on
-    /// re-entry.
+    /// the region's whole-window walk and by `didMoveToWindow` on every
+    /// window transition.
     pub(crate) fn mark_keyboard(&self) {
         self.ivars().keyboard.mark();
         self.setNeedsLayout();
