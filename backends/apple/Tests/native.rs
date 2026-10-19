@@ -508,9 +508,11 @@ mod appkit_input {
         let content = window.contentView().expect("the window has a content view");
         let size = content.frame().size;
         let advance = |what: &str| {
-            let last = offset();
+            let last = offset().to_bits();
             assert!(
-                pump_main_until(MAIN_QUEUE_DEADLINE, || { offset() != last || !in_flight() }),
+                pump_main_until(MAIN_QUEUE_DEADLINE, || {
+                    offset().to_bits() != last || !in_flight()
+                }),
                 "the flight must keep writing before {what}"
             );
             assert!(
