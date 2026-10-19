@@ -2236,6 +2236,10 @@ pub use unified::{
     write_library_resources,
 };
 
+/// The directory name the staged `waterui_assets` bundle carries wherever a
+/// backend `resources/` tree is laid out.
+pub use unified::ASSET_ROOT_DIR;
+
 /// The directory name the staged asset bundle carries inside an Android
 /// `src/main/assets/` root.
 pub use unified::ASSET_ROOT_DIR as ANDROID_ASSET_BUNDLE_DIR;

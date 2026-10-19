@@ -4,7 +4,15 @@ use cherenkov::{__engine_test as split_test, __engine_wait as wait};
 mod common;
 split_test! {
 fn live_shadows_keep_offscreen_contributors_and_outer_clips() {
-    wait!(common::retained_and_padded::<cherenkov_gpu::Gpu>(cherenkov_gpu::GpuConfig::default()));
+    for scratch_format in [
+        cherenkov_gpu::ScratchFormat::LinearF16,
+        cherenkov_gpu::ScratchFormat::Rgba8Unorm,
+    ] {
+        wait!(common::retained_and_padded::<cherenkov_gpu::Gpu>(cherenkov_gpu::GpuConfig {
+            scratch_format,
+            ..cherenkov_gpu::GpuConfig::default()
+        }));
+    }
 }
 }
 

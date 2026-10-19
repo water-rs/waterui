@@ -63,6 +63,7 @@ struct ProbeLog {
     setups: Arc<AtomicU32>,
     renders: Arc<AtomicU32>,
     formats: Arc<Mutex<Vec<wgpu::TextureFormat>>>,
+    sizes: Arc<Mutex<Vec<(u32, u32)>>>,
 }
 
 impl ProbeLog {
@@ -79,6 +80,11 @@ impl ProbeLog {
         let mut formats = self.formats.lock().expect("formats log").clone();
         formats.dedup();
         formats
+    }
+
+    /// The last attachment size the view was handed, in device pixels.
+    fn last_size(&self) -> Option<(u32, u32)> {
+        self.sizes.lock().expect("sizes log").last().copied()
     }
 }
 
@@ -101,6 +107,11 @@ impl GpuContent for FillProbe {
             .lock()
             .expect("formats log")
             .push(frame.format);
+        self.log
+            .sizes
+            .lock()
+            .expect("sizes log")
+            .push((frame.width, frame.height));
         let mut encoder = frame
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -417,6 +428,31 @@ fn opaque_and_non_opaque_content_present_identically() {
         pixels.iter().all(|pixel| *pixel == expected),
         "every pixel of the window belongs to the surface, at both ends of the comparison"
     );
+}
+
+/// water-rs/waterui#2935: the install's pixel size is the node's bounds under
+/// its device transform, and the root transform already carries the display
+/// scale — so a scale-2 window hands the surface `bounds * 2` device pixels,
+/// not `bounds * 4`.
+#[test]
+fn a_gpu_content_view_renders_at_one_display_scale() {
+    for (scale, expected) in [
+        (1.0_f64, (WINDOW_WIDTH, WINDOW_HEIGHT)),
+        (2.0, (WINDOW_WIDTH * 2, WINDOW_HEIGHT * 2)),
+    ] {
+        let log = ProbeLog::default();
+        let (width, height) = full_window_bindings();
+        let mut runtime = runtime_with(&log, true, &width, &height, scale);
+        let mut frames = Frames::new();
+        settled(&mut runtime, &mut frames, &log);
+
+        assert_eq!(
+            log.last_size(),
+            Some(expected),
+            "a {scale}x window must give the surface {expected:?} device pixels, \
+             not the bounds times the scale twice"
+        );
+    }
 }
 
 /// Whether a captured `Rgba8Unorm` texel is [`FILL`], allowing the slack the

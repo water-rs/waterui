@@ -563,6 +563,45 @@ impl ResolvedFramework {
             .and_then(toml::Value::as_str)
     }
 
+    /// Assert the selected framework's layout carries `member` in-tree —
+    /// its `[package.metadata.waterui]` declares `member.path_key`.
+    ///
+    /// This is the converse of `minimum-cli-version`: the framework records
+    /// the CLI floor it needs, and the CLI generates against the framework
+    /// layout it requires. The judgment reads the selected manifest's
+    /// declared metadata — never a version number — so a stable release
+    /// resolved before the member moved in-tree fails here, ahead of any
+    /// scaffold output, instead of surfacing inside `member_source` as an
+    /// unexplained missing-member error mid-render.
+    ///
+    /// A local `waterui_path` checkout is judged by the filesystem, not by
+    /// this table — `member_dependency`'s checkout probe owns that failure.
+    ///
+    /// # Errors
+    /// Returns an error naming the installed CLI, the selected framework's
+    /// coordinates, the layout the CLI requires, and the channels that
+    /// supply it, when the selected framework declares no `member.path_key`.
+    pub(crate) fn require_in_tree_member(&self, member: FrameworkMember) -> Result<()> {
+        if self.member_path(member).is_some() {
+            return Ok(());
+        }
+        let Some((repository, revision)) = self.git_coordinates()? else {
+            return Ok(());
+        };
+        bail!(
+            "water {} generates against the in-tree `{}` member \
+             (`{}` under `[package.metadata.waterui]`); \
+             the selected framework ({repository}@{revision}) predates that \
+             layout — it ships the backend as the external package it was \
+             before the move. Select a channel whose framework carries it \
+             (`water channel dev` or `water channel nightly`), or install \
+             the CLI matching the stable release.",
+            env!("CARGO_PKG_VERSION"),
+            member.package,
+            member.path_key,
+        );
+    }
+
     /// The `(repository, revision)` the framework tree itself resolves from
     /// on a channel selection — `dev` and `nightly` the selected revision,
     /// `stable` the certified release's provenance. `None` names a local
@@ -2779,18 +2818,19 @@ fn resolve_packages(
                 dependency.version = Some(format!("={version}").parse()?);
             }
             Some(source) if source.is_git() => {
-                let Some(cargo_lock::package::GitReference::Rev(revision)) = source.git_reference()
-                else {
-                    bail!(
-                        "framework package {name} must use an immutable Git revision in the framework manifest"
-                    );
+                // Whatever form the framework's pin takes — a `rev`, a
+                // `branch` a `[patch]` follows upstream, a `tag`, or the
+                // repository's head — the lock records the commit it
+                // resolved to, and that precise commit is the immutable
+                // revision a scaffolded project pins. The requirement is
+                // written `rev` so the generated manifest never carries a
+                // moving target.
+                let Some(revision) = source.precise() else {
+                    bail!("framework package {name}'s git source records no resolved commit");
                 };
                 validate_revision(revision)?;
-                if source.precise() != Some(revision.as_str()) {
-                    bail!("framework package {name} does not resolve its declared revision");
-                }
                 dependency.git = Some(source.url().to_string());
-                dependency.rev = Some(revision.clone());
+                dependency.rev = Some(revision.to_owned());
             }
             Some(source) => bail!("unsupported framework package source for {name}: {source}"),
         }
@@ -5024,6 +5064,40 @@ mod tests {
     }
 
     #[test]
+    fn a_branch_pinned_scaffold_package_resolves_its_locked_commit() {
+        // A `[patch]` following a moving branch — `hydrolysis-m3`'s
+        // `branch = "dev"` while its split surfaces stabilize — locks a
+        // `?branch=dev#<commit>` source. The scaffold pins the precise
+        // commit the lock records, never the branch: a generated manifest
+        // carries no moving target.
+        let m3_commit = "0add1da1efe14f4b42349de93c687df033ec258e";
+        let m3_source =
+            format!("git+https://github.com/water-rs/hydrolysis-m3?branch=dev#{m3_commit}");
+        let lock = Lockfile {
+            packages: vec![
+                package("waterui", "0.3.0", None),
+                package("hydrolysis-m3", "0.3.1", Some(&m3_source)),
+            ],
+            version: cargo_lock::ResolveVersion::V4,
+            root: None,
+            metadata: BTreeMap::default(),
+            patch: cargo_lock::Patch::default(),
+        };
+        let scaffold = BTreeMap::from([
+            ("waterui-version".to_string(), "0.3.0".to_string()),
+            ("hydrolysis-m3-version".to_string(), "0.3.1".to_string()),
+        ]);
+        let packages =
+            resolve_packages(&scaffold, &lock, framework_repository(), &"a".repeat(40)).unwrap();
+        let m3 = &packages["hydrolysis-m3"];
+        assert_eq!(
+            m3.git.as_deref(),
+            Some("https://github.com/water-rs/hydrolysis-m3")
+        );
+        assert_eq!(m3.rev.as_deref(), Some(m3_commit));
+    }
+
+    #[test]
     fn stable_dependency_honors_a_declared_git_source() {
         // A persisted stable selection written before `experimental-packages`
         // existed can still carry a `{name}-git`/`{name}-rev` pair in
@@ -6204,6 +6278,33 @@ rev = "d68d9e9825bcd1ffee762323881c13a2e7a3f639""#,
             let error = framework.member_source(member).unwrap_err().to_string();
             assert!(error.contains(key), "{error}");
         }
+    }
+
+    #[test]
+    fn in_tree_member_requirement_accepts_the_declared_layout_on_every_channel() {
+        for framework in [stable_framework(), dev_framework(), nightly_framework()] {
+            for member in [APPLE_BACKEND, HYDROLYSIS] {
+                framework.require_in_tree_member(member).unwrap();
+            }
+        }
+    }
+
+    /// The pre-move layout failure must name the installed CLI, the selected
+    /// framework's coordinates, the declaration it lacks, and the channels
+    /// that carry the member — the remedies #1953 asks the failure to state.
+    #[test]
+    fn in_tree_member_requirement_names_the_cli_framework_and_remedy() {
+        let mut framework = stable_framework();
+        framework.metadata.remove("apple-backend-path");
+        let error = framework
+            .require_in_tree_member(APPLE_BACKEND)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(env!("CARGO_PKG_VERSION")), "{error}");
+        assert!(error.contains("apple-backend-path"), "{error}");
+        assert!(error.contains("waterui-apple"), "{error}");
+        assert!(error.contains("water channel dev"), "{error}");
+        assert!(error.contains("water channel nightly"), "{error}");
     }
 
     /// The stable member-substitution table: every `path` member the root

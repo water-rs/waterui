@@ -339,6 +339,7 @@ const fn format_name(format: wgpu::TextureFormat) -> &'static str {
 }
 
 /// One isolation scratch or backdrop texture.
+#[derive(Clone)]
 struct ScratchTarget {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -9810,7 +9811,8 @@ impl GpuRenderer {
                 };
                 // First shadow of the engine's life builds the blur
                 // pipeline here (#170).
-                self.shadow_blur
+                stats.passes += self
+                    .shadow_blur
                     .get_or_insert_with(|| {
                         shadow::Blur::new(&self.device, self.shader_delivery, self.scratch_format)
                     })
@@ -9819,10 +9821,9 @@ impl GpuRenderer {
                         &mut encoder,
                         &surf.scratch[&depth],
                         (pass.region[2], pass.region[3]),
+                        lower::shadow_support(&surf.frame, i),
                         *parameters,
                     )?;
-                stats.passes +=
-                    u32::from(parameters.spread != 0.0) + 2 * u32::from(parameters.sigma > 0.0);
             }
             if let Some((_, filter)) = surf.frame.filters.iter().find(|(pass, _)| *pass == i) {
                 let capture = match pass.target {
