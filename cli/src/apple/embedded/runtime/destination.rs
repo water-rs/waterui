@@ -97,7 +97,8 @@ pub(super) async fn macos_objects(
     Ok(objects)
 }
 
-#[cfg(test)]
+// The only test spawns `xcrun` against the macOS SDK.
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
     use object::{Object, ObjectSymbol};

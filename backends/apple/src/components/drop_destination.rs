@@ -211,11 +211,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
 
         // The content always fills the wrapper — `contentView.frame = bounds`.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 let state = state.borrow();
                 view::set_frame(state.child.view(), view::bounds(host));
             }
@@ -245,11 +242,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
                 &types,
                 Some(kit::DropHandlers {
                     entered: {
-                        let state = Rc::downgrade(&state);
+                        let state = Rc::clone(&state);
                         Rc::new(move |info| {
-                            let Some(state) = state.upgrade() else {
-                                return NSDragOperation::None;
-                            };
                             if is_accepted(info, &state) {
                                 call_enter(&state);
                                 NSDragOperation::Copy
@@ -259,11 +253,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
                         })
                     },
                     updated: {
-                        let state = Rc::downgrade(&state);
+                        let state = Rc::clone(&state);
                         Rc::new(move |info| {
-                            let Some(state) = state.upgrade() else {
-                                return NSDragOperation::None;
-                            };
                             if is_accepted(info, &state) {
                                 NSDragOperation::Copy
                             } else {
@@ -272,22 +263,16 @@ pub fn install(dispatcher: &mut Dispatcher) {
                         })
                     },
                     exited: {
-                        let state = Rc::downgrade(&state);
+                        let state = Rc::clone(&state);
                         Rc::new(move |info| {
-                            let Some(state) = state.upgrade() else {
-                                return;
-                            };
                             if is_accepted(info, &state) {
                                 call_exit(&state);
                             }
                         })
                     },
                     perform: {
-                        let state = Rc::downgrade(&state);
+                        let state = Rc::clone(&state);
                         Rc::new(move |info| {
-                            let Some(state) = state.upgrade() else {
-                                return false;
-                            };
                             if let Some(any) = info.source_payload()
                                 && let Some(payload) = shared_payload(&any)
                                 && accepts(&state, &payload)

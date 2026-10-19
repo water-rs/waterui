@@ -4,7 +4,7 @@ use std::{
     rc::Rc,
 };
 
-use accesskit::{Action, ActionRequest, Node, NodeId, Role, Toggled, TreeId, TreeUpdate};
+use accesskit::{Action, ActionRequest, Node, NodeId, Point, Role, Toggled, TreeId, TreeUpdate};
 use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{Event, HtmlElement};
 
@@ -37,8 +37,11 @@ impl WebAccessibilityBridge {
             .expect("web accessibility root is not an HtmlElement");
         root.set_id("waterui-accessibility");
         let style = root.style();
+        // Absolute, not fixed: Safari treats a viewport-sized fixed element
+        // as the page's fixed bar and tints its status-bar and toolbar bands
+        // from it, which paints them black over the GPU canvas.
         for (name, value) in [
-            ("position", "fixed"),
+            ("position", "absolute"),
             ("inset", "0"),
             ("pointer-events", "none"),
             ("overflow", "hidden"),
@@ -72,6 +75,13 @@ impl WebAccessibilityBridge {
                 false
             }
         });
+        let accesskit_nodes: HashMap<_, _> =
+            update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+        let parents: HashMap<_, _> = update
+            .nodes
+            .iter()
+            .flat_map(|(id, node)| node.children().iter().map(move |child| (*child, *id)))
+            .collect();
         for (id, node) in &update.nodes {
             self.ensure_node(*id);
             let element = self
@@ -80,10 +90,12 @@ impl WebAccessibilityBridge {
                 .expect("new DOM accessibility node missing")
                 .element
                 .clone();
-            apply_node(&element, node);
+            apply_node(
+                &element,
+                node,
+                positioned_ancestor_origin(*id, &parents, &accesskit_nodes),
+            );
         }
-        let accesskit_nodes: HashMap<_, _> =
-            update.nodes.iter().map(|(id, node)| (*id, node)).collect();
         for (id, node) in &update.nodes {
             let parent = self
                 .nodes
@@ -121,9 +133,17 @@ impl WebAccessibilityBridge {
                 .root
                 .owner_document()
                 .expect("accessibility root has no document");
-            let already_focused =
-                document.active_element().as_ref() == Some(focused.element.as_ref());
-            if !already_focused && focused.element.tab_index() >= 0 {
+            let active = document.active_element();
+            let already_focused = active.as_ref() == Some(focused.element.as_ref());
+            // DOM focus follows Hydrolysis focus only while it already lives
+            // in this tree, as it does for a screen-reader user. Otherwise it
+            // sits on the runtime's input surfaces — the canvas for keys, the
+            // hidden input for text — and moving it here would take keyboard
+            // and text input away from the app.
+            let focus_in_tree = active
+                .as_ref()
+                .is_some_and(|active| self.root.contains(Some(active.as_ref())));
+            if focus_in_tree && !already_focused && focused.element.tab_index() >= 0 {
                 focused
                     .element
                     .focus()
@@ -146,7 +166,8 @@ impl WebAccessibilityBridge {
             .dyn_into::<HtmlElement>()
             .expect("DOM accessibility node is not an HtmlElement");
         element.style().set_css_text(
-            "position:absolute;pointer-events:none;color:transparent;background:transparent;",
+            // Hydrolysis draws its own focus ring; the mirror draws none.
+            "position:absolute;pointer-events:none;color:transparent;background:transparent;outline:none;",
         );
 
         let click_actions = Rc::clone(&self.actions);
@@ -202,7 +223,28 @@ fn set_optional_attribute(element: &HtmlElement, name: &str, value: Option<&str>
     }
 }
 
-fn apply_node(element: &HtmlElement, node: &Node) {
+/// Window position of the nearest ancestor that carries bounds.
+///
+/// AccessKit bounds are window coordinates, while each mirror node is
+/// positioned inside its parent's element; an ancestor without bounds sits at
+/// its own parent's origin, so the offset comes from the nearest one with
+/// bounds.
+fn positioned_ancestor_origin(
+    id: NodeId,
+    parents: &HashMap<NodeId, NodeId>,
+    nodes: &HashMap<NodeId, &Node>,
+) -> Point {
+    let mut current = id;
+    while let Some(parent) = parents.get(&current) {
+        if let Some(bounds) = nodes[parent].bounds() {
+            return bounds.origin();
+        }
+        current = *parent;
+    }
+    Point::ZERO
+}
+
+fn apply_node(element: &HtmlElement, node: &Node, origin: Point) {
     let is_text = matches!(node.role(), Role::TextRun | Role::Label | Role::Paragraph);
     element.set_text_content(is_text.then(|| node.label()).flatten());
     set_optional_attribute(element, "role", aria_role(node.role()));
@@ -282,8 +324,8 @@ fn apply_node(element: &HtmlElement, node: &Node) {
     if let Some(bounds) = node.bounds() {
         let style = element.style();
         for (name, value) in [
-            ("left", format!("{}px", bounds.x0)),
-            ("top", format!("{}px", bounds.y0)),
+            ("left", format!("{}px", bounds.x0 - origin.x)),
+            ("top", format!("{}px", bounds.y0 - origin.y)),
             ("width", format!("{}px", bounds.width().max(0.0))),
             ("height", format!("{}px", bounds.height().max(0.0))),
         ] {

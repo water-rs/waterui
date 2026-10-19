@@ -76,17 +76,15 @@ pub fn install(dispatcher: &mut Dispatcher) {
         let host_view: &PlatformView = &host;
 
         let mounted = ctx.render(metadata.content).mount(host_view);
+
         view::set_translates_autoresizing(mounted.view(), true);
 
         let state = Rc::new(RetainState { child: mounted });
 
         // `contentView.frame = bounds`.
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |host| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 view::set_frame(state.child.view(), view::bounds(host));
             }
         });

@@ -10,7 +10,8 @@ rustflags = ["-Clinker-flavor=lld-link"]
 [env]
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_ios_sim = "-target arm64-apple-ios-simulator"
 # Cherenkov's native Apple contract (graphics/cherenkov/docs/api.md) requires
-# OS 26 APIs.
+# OS 26 APIs. The deployment agreement test checks these against the framework
+# metadata in Cargo.toml.
 MACOSX_DEPLOYMENT_TARGET = "26.0"
 IPHONEOS_DEPLOYMENT_TARGET = "26.0"
 

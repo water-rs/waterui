@@ -48,6 +48,14 @@ pub fn trials() -> Vec<Trial> {
             "appkit::input_view",
             valid_attributes_for_marked_text_returns_attribute_names
         ),
+        case!(
+            "appkit::metal_presenter",
+            an_armed_presenter_constructs_pauses_and_invalidates_cleanly
+        ),
+        case!(
+            "appkit::metal_presenter",
+            a_presenter_on_a_screenless_window_delivers_nothing
+        ),
         case!("appkit::label", a_factory_label_survives_debug_ivar_checks),
         case!(
             "appkit::visibility",
@@ -68,12 +76,13 @@ pub fn trials() -> Vec<Trial> {
         ),
         case!(
             "capture",
-            a_capture_claim_restores_containment_and_survives_release
+            a_capture_preserves_containment_and_survives_release
         ),
         case!(
             "capture",
             a_detached_capture_renders_and_teardown_stays_clean
         ),
+        case!("capture", a_hidden_capture_renders_without_revealing),
     ])
 }
 
@@ -203,6 +212,111 @@ fn valid_attributes_for_marked_text_returns_attribute_names() {
         // SAFETY: `validAttributesForMarkedText` is the view's own getter.
         unsafe { msg_send![&*view, validAttributesForMarkedText] };
     assert!(attributes.count() >= 3);
+}
+
+/// Checks the presenter's arm lifecycle on an on-screen host: it
+/// constructs paused, `set_paused` toggles the link's arm state,
+/// `invalidate` stops delivery for good, and nothing arrives afterwards.
+/// Actual `CAMetalDisplayLink` delivery is never observed on this runner
+/// (the paravirtual display paces nothing), so the link's delivery count
+/// is asserted silent rather than counted.
+fn an_armed_presenter_constructs_pauses_and_invalidates_cleanly() {
+    use cocoa_ui::metal_presenter::MetalPresenter;
+    use cocoa_ui::objc2_app_kit::{NSScreen, NSView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+    use cocoa_ui::objc2_quartz_core::CAMetalLayer;
+
+    let mtm = marker();
+    let main = NSScreen::screens(mtm)
+        .iter()
+        .next()
+        .expect("the suite requires a real screen")
+        .frame();
+    let window = Window::new(
+        mtm,
+        Rect::new(main.origin.x + 40.0, main.origin.y + 40.0, 200.0, 200.0),
+        WindowStyle::empty(),
+    );
+    let view = NSView::new(mtm);
+    view.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 200.0)));
+    let layer = CAMetalLayer::new();
+    layer.setDrawableSize(cocoa_ui::objc2_core_foundation::CGSize::new(200.0, 200.0));
+    view.setLayer(Some(&layer));
+    view.setWantsLayer(true);
+    window.native().setContentView(Some(&view));
+    window.native().orderFrontRegardless();
+
+    let updates = Rc::new(Cell::new(0u32));
+    let presenter = MetalPresenter::new(layer, {
+        let updates = Rc::clone(&updates);
+        Rc::new(move |_| updates.set(updates.get() + 1))
+    });
+
+    // The presenter starts paused; arming schedules link updates on the
+    // main run loop. Delivery itself cannot be asserted on this runner —
+    // the paravirtual display paces `CAMetalDisplayLink` for nothing, not
+    // even a plain Swift window — so the check is contract-level only:
+    // arming and re-pausing are accepted, and drop stays silent.
+    assert!(presenter.is_paused());
+    presenter.set_paused(false);
+    assert!(!presenter.is_paused());
+    presenter.set_paused(true);
+    presenter.set_paused(false);
+    drop(presenter);
+    crate::harness::pump_main_until(0.3, || false);
+    assert_eq!(updates.get(), 0, "a dropped link delivered a frame");
+    window.close();
+}
+
+/// Checks a `MetalPresenter` on a `CAMetalLayer`-backed view in a window
+/// outside every screen: construction is safe, an armed link delivers no
+/// frame within a bounded run-loop window, and drop leaves nothing
+/// queued.
+fn a_presenter_on_a_screenless_window_delivers_nothing() {
+    use cocoa_ui::metal_presenter::MetalPresenter;
+    use cocoa_ui::objc2_app_kit::{NSScreen, NSView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+    use cocoa_ui::objc2_quartz_core::CAMetalLayer;
+
+    let mtm = marker();
+    // A frame whose origin lies to the right of every screen's extent.
+    let offscreen = NSScreen::screens(mtm)
+        .iter()
+        .fold(0.0_f64, |right, screen| {
+            let frame = screen.frame();
+            right.max(frame.origin.x + frame.size.width)
+        })
+        + 10_000.0;
+    let window = Window::new(
+        mtm,
+        Rect::new(offscreen, 0.0, 200.0, 200.0),
+        WindowStyle::empty(),
+    );
+    let view = NSView::new(mtm);
+    view.setFrame(NSRect::new(NSPoint::ZERO, NSSize::new(200.0, 200.0)));
+    let layer = CAMetalLayer::new();
+    layer.setDrawableSize(cocoa_ui::objc2_core_foundation::CGSize::new(200.0, 200.0));
+    view.setLayer(Some(&layer));
+    view.setWantsLayer(true);
+    window.native().setContentView(Some(&view));
+
+    let updates = Rc::new(Cell::new(0u32));
+    let presenter = MetalPresenter::new(layer, {
+        let updates = Rc::clone(&updates);
+        Rc::new(move |_| updates.set(updates.get() + 1))
+    });
+
+    presenter.set_paused(false);
+    crate::harness::pump_main_until(0.5, || false);
+    assert_eq!(
+        updates.get(),
+        0,
+        "a link hosted outside every screen delivered a frame"
+    );
+    drop(presenter);
+    crate::harness::pump_main_until(0.3, || false);
+    assert_eq!(updates.get(), 0, "a dropped link delivered a frame");
+    window.close();
 }
 
 /// The `labelWithString:` factory allocs through `self` without running
@@ -492,15 +606,15 @@ fn the_wrapper_forwards_title_level_size_and_content() {
     window.close();
 }
 
-/// The `CARenderer` root claim is scoped to the frame it encodes: two
-/// cached `ViewCapture`s bound to nested views run child→parent claim
-/// cycles, and after each the views report the same superview, sibling
-/// order, superlayer, frame, and hidden flag as before — and they keep
-/// answering them after both cached renderers are released on a later
-/// main-queue turn. This is the nested-claim shape the production
-/// ownership fix exists for.
+/// The native raster pass reads the live layer tree without claiming it:
+/// two cached `ViewCapture`s bound to nested views run child→parent
+/// capture cycles, and after each the views report the same superview,
+/// sibling order, superlayer, frame, and hidden flag as before — and
+/// they keep answering them after both cached raster frames are released
+/// on a later main-queue turn. This is the nested-capture shape the
+/// containment contract exists for.
 #[allow(clippy::too_many_lines)] // The nested fixture plus the containment contract it checks.
-fn a_capture_claim_restores_containment_and_survives_release() {
+fn a_capture_preserves_containment_and_survives_release() {
     use std::rc::Rc;
 
     use cocoa_ui::capture::ViewCapture;
@@ -582,18 +696,18 @@ fn a_capture_claim_restores_containment_and_survives_release() {
     let child_frame = child.frame();
 
     let target = crate::harness::capture_target();
-    let content_capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    let content_capture = Rc::new(ViewCapture::new(mtm, content.clone()));
     content_capture.set_on_redraw(|| {});
-    let child_capture = Rc::new(ViewCapture::new(mtm, child.clone(), |_| None));
+    let child_capture = Rc::new(ViewCapture::new(mtm, child.clone()));
     child_capture.set_on_redraw(|| {});
 
-    // Everything the claim owes the tree: superview and ordered
-    // siblings, the model layer's own superlayer, geometry, and the
-    // full transform — checked after every cycle and again after both
-    // cached renderers are released.
+    // Everything the tree must keep through a capture: superview and
+    // ordered siblings, the model layer's own superlayer, geometry, and
+    // the full transform — checked after every cycle and again after
+    // both cached raster frames are released.
     let check = || {
         let restored_parent = cocoa_ui::view::superview(&content)
-            .expect("the claim left the view detached from its parent");
+            .expect("the capture left the view detached from its parent");
         assert!(std::ptr::eq(
             &raw const *restored_parent,
             &raw const *parent
@@ -609,7 +723,7 @@ fn a_capture_claim_restores_containment_and_survives_release() {
             &raw const *sibling
         ));
         let child_parent =
-            cocoa_ui::view::superview(&child).expect("the nested claim left the child detached");
+            cocoa_ui::view::superview(&child).expect("the nested capture left the child detached");
         assert!(std::ptr::eq(&raw const *child_parent, &raw const *content));
         let content_order = content.subviews();
         assert_eq!(content_order.count(), 2);
@@ -631,12 +745,12 @@ fn a_capture_claim_restores_containment_and_survives_release() {
         assert_eq!(child.frame(), child_frame);
         assert!(
             (content.frameRotation() - 30.0).abs() < 1e-6,
-            "the claim must preserve the view's rotation"
+            "the capture must preserve the view's rotation"
         );
         let actual_transform = content.layer().expect("a wanted layer exists").transform();
         assert!(
             actual_transform.equal_to_transform(layer_transform),
-            "the claim must preserve the layer's full transform: {actual_transform:?} vs {layer_transform:?}"
+            "the capture must preserve the layer's full transform: {actual_transform:?} vs {layer_transform:?}"
         );
         assert!(
             content
@@ -653,26 +767,26 @@ fn a_capture_claim_restores_containment_and_survives_release() {
         assert!(!content.isHidden());
     };
 
-    // Three nested cycles: child claim first, then the enclosing content
-    // claim — each against the same cached renderers, each proven by
-    // its own completed, successful fence.
+    // Three nested cycles: child capture first, then the enclosing
+    // content capture — each against the same cached raster frames, each
+    // proven by its own completed, successful fence.
     for _cycle in 0..3 {
         let (flag, complete) = crate::harness::fence_flag();
-        child_capture.capture(&target, complete);
+        child_capture.capture(&target, 0, complete);
         crate::harness::await_fence(&flag, "child");
         let (flag, complete) = crate::harness::fence_flag();
-        content_capture.capture(&target, complete);
+        content_capture.capture(&target, 0, complete);
         crate::harness::await_fence(&flag, "content");
         check();
     }
 
-    // A layer claimed out of a window's render context encodes an empty
+    // A tree outside a window's render context may rasterize an empty
     // frame on a host without an app compositor, so pixel fidelity is
     // proven by the detached arm below; this arm proves the capture
     // completed and the whole containment contract survived it.
 
-    // Releasing the cached renderers must not invalidate the layers
-    // they claimed: on the next real main-queue turn both trees answer,
+    // Releasing the cached raster frames must not invalidate the layers
+    // they drew: on the next real main-queue turn both trees answer,
     // still attached, and tear down normally.
     content_capture.shutdown();
     child_capture.shutdown();
@@ -687,9 +801,9 @@ fn a_capture_claim_restores_containment_and_survives_release() {
     window.close();
 }
 
-/// Capturing a view with no superview is supported — the claim restores
-/// nothing, the frame still renders real content, and teardown after
-/// the cached renderer's release stays clean.
+/// Capturing a view with no superview is supported — no containment is
+/// disturbed, the frame still renders real content, and teardown after
+/// the cached raster frame's release stays clean.
 fn a_detached_capture_renders_and_teardown_stays_clean() {
     use std::rc::Rc;
 
@@ -722,8 +836,8 @@ fn a_detached_capture_renders_and_teardown_stays_clean() {
 
     // A parentless view gets no window update cycle, so a brief window
     // residency rasterizes the label's text into its backing layer
-    // first — the renderer composites `layer.contents`, which only a
-    // real display pass fills — before the claim detaches it again.
+    // first — the capture composites `layer.contents`, which only a
+    // real display pass fills — before the view detaches again.
     {
         let window = Window::new(
             mtm,
@@ -744,10 +858,10 @@ fn a_detached_capture_renders_and_teardown_stays_clean() {
     assert!(cocoa_ui::view::superview(&content).is_none());
 
     let target = crate::harness::capture_target();
-    let capture = Rc::new(ViewCapture::new(mtm, content.clone(), |_| None));
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone()));
     capture.set_on_redraw(|| {});
     let (flag, complete) = crate::harness::fence_flag();
-    capture.capture(&target, complete);
+    capture.capture(&target, 0, complete);
     assert!(
         cocoa_ui::view::superview(&content).is_none(),
         "a detached capture must not invent a parent"
@@ -768,5 +882,118 @@ fn a_detached_capture_renders_and_teardown_stays_clean() {
     drop(capture);
     crate::harness::pump_main_turn();
     let _layer = content.layer(); // crashes on an invalidated layer
+    label.removeFromSuperview();
+}
+
+/// A normally-hidden subtree — the shape a filter-owned source actually
+/// has — must still rasterize: the capture un-hides the root inside the
+/// single transaction, reads the revealed tree, and re-hides before the
+/// sole commit, so the flag never leaves `true` and the pixels still
+/// land.
+fn a_hidden_capture_renders_without_revealing() {
+    use std::rc::Rc;
+
+    use cocoa_ui::capture::ViewCapture;
+    use cocoa_ui::objc2_app_kit::{NSColor, NSView};
+    use cocoa_ui::objc2_foundation::{NSPoint, NSRect, NSSize};
+
+    let mtm = marker();
+    let content = NSView::new(mtm);
+    content.setFrame(NSRect::new(
+        NSPoint::new(0.0, 0.0),
+        NSSize::new(200.0, 200.0),
+    ));
+    content.setWantsLayer(true);
+    content
+        .layer()
+        .expect("a wanted layer exists")
+        .setBackgroundColor(Some(&NSColor::orangeColor().CGColor()));
+    let label = Label::new(mtm);
+    label.setTextColor(Some(&NSColor::whiteColor()));
+    label.set_text("hidden");
+    label.setWantsLayer(true);
+    label.setFrame(NSRect::new(
+        NSPoint::new(4.0, 60.0),
+        NSSize::new(150.0, 24.0),
+    ));
+    content.addSubview(&label);
+
+    // A contrasting band so the readback can see the label's frame,
+    // not just its glyphs.
+    label
+        .layer()
+        .expect("a wanted layer exists")
+        .setBackgroundColor(Some(&NSColor::systemYellowColor().CGColor()));
+
+    // Same backing-fill trick as the detached arm: a brief window
+    // residency rasterizes the label into its layer contents first.
+    {
+        let window = Window::new(
+            mtm,
+            Rect::new(0.0, 0.0, 200.0, 200.0),
+            WindowStyle::all() - WindowStyle::FULL_SCREEN,
+        );
+        let host = NSView::new(mtm);
+        host.setFrameSize(NSSize::new(200.0, 200.0));
+        host.setWantsLayer(true);
+        window.native().setContentView(Some(&host));
+        host.addSubview(&content);
+        window.native().orderFrontRegardless();
+        crate::harness::pump_main_turn();
+        content.removeFromSuperview();
+        window.close();
+    }
+
+    // A pending layout the pass must absorb: the root already resized,
+    // so the label's autoresizing only applies when layout runs inside
+    // the transaction — a wider label frame afterwards proves the
+    // collected geometry and the draw both saw the post-layout tree.
+    label.setAutoresizingMask(cocoa_ui::objc2_app_kit::NSAutoresizingMaskOptions::ViewWidthSizable);
+    content.setFrameSize(NSSize::new(300.0, 200.0));
+    content.setNeedsLayout(true);
+
+    // The hidden filter-owned-root case: hidden before the capture ever
+    // runs.
+    content.setHidden(true);
+
+    let target = crate::harness::capture_target();
+    let capture = Rc::new(ViewCapture::new(mtm, content.clone()));
+    capture.set_on_redraw(|| {});
+    let (flag, complete) = crate::harness::fence_flag();
+    capture.capture(&target, 0, complete);
+    // The reveal lived and died inside one transaction: the flag is
+    // already restored when `capture` returns — nothing was committed
+    // while the tree was un-hidden.
+    assert!(
+        content.isHidden(),
+        "a hidden root must be re-hidden before the capture commits"
+    );
+    crate::harness::await_fence(&flag, "hidden");
+    assert!(
+        content.isHidden(),
+        "the flag must stay set after the frame settles"
+    );
+    // The autoresized label widens only when the pending layout runs:
+    // the right margin 200 - 4 - 150 = 46 is preserved, so the
+    // post-layout width is 300 - 4 - 46 = 250.
+    assert!(
+        (label.frame().size.width - 250.0).abs() < 1.0,
+        "the pending layout must have run inside the capture: {:?}",
+        label.frame()
+    );
+
+    let texels = crate::harness::readback(&target);
+    assert!(
+        crate::harness::count_pixels(&texels, [0, 110, 220, 255], [60, 200, 255, 255]) > 5_000,
+        "a hidden root must still rasterize its own color"
+    );
+    assert!(
+        crate::harness::count_pixels(&texels, [0, 180, 180, 255], [120, 255, 255, 255]) > 1_000,
+        "the raster must come from the post-layout tree: the label's widened band"
+    );
+
+    capture.shutdown();
+    drop(capture);
+    crate::harness::pump_main_turn();
     label.removeFromSuperview();
 }

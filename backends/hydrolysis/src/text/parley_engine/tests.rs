@@ -1,0 +1,325 @@
+//! Engine tests: the moved shaping, truncation, family and glyph-bounds
+//! suites, each running against the parley engine directly.
+
+use parley::fontique::{Blob, Collection, CollectionOptions};
+
+use super::*;
+use crate::renderer::tests::test_environment;
+use crate::text::{TextService, resolve_text_layout_input};
+use waterui_core::Environment;
+use waterui_text::styled::StyledStr;
+
+fn test_input(env: &Environment, text: &'static str) -> ResolvedTextLayoutInput {
+    resolve_text_layout_input(&StyledStr::plain(text), HorizontalAlignment::Leading, env)
+}
+
+#[test]
+fn declared_noto_sans_draws_missing_latin_marks_without_replacing_roboto() {
+    let roboto: Arc<[u8]> = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fonts/Roboto-Web-Variable.ttf"),
+    )
+    .expect("the test-fonts setup generates the real web Roboto face")
+    .into();
+    let noto = fonts::installed_font_bytes("Noto Sans");
+    assert!(
+        skrifa::FontRef::from_index(&noto, 0)
+            .expect("Noto Sans parses")
+            .charmap()
+            .map('\u{0350}')
+            .is_some(),
+        "the fallback face must really cover U+0350"
+    );
+    assert!(
+        skrifa::FontRef::from_index(&roboto, 0)
+            .expect("web Roboto parses")
+            .charmap()
+            .map('\u{0350}')
+            .is_none(),
+        "the primary web face must really need fallback for U+0350"
+    );
+    let mut font_cx = parley::FontContext {
+        collection: Collection::new(CollectionOptions {
+            shared: false,
+            system_fonts: false,
+        }),
+        source_cache: parley::fontique::SourceCache::default(),
+    };
+    let mut families = fonts::ResourceFontFamilies::default();
+    for (name, data) in [("Roboto", &roboto), ("Noto Sans", &noto)] {
+        let registered = font_cx
+            .collection
+            .register_fonts(Blob::new(Arc::new(data.to_vec())), None);
+        assert!(!registered.is_empty());
+        families.classify(name, &registered);
+    }
+    families.install(&mut font_cx.collection);
+    let engine = ParleyEngine::new(font_cx, FontFamilyResolution::Strict);
+    let env = test_environment();
+    let plain = engine.shape(&test_input(&env, "Z"), None);
+    let run = plain
+        .0
+        .layout
+        .get(0)
+        .expect("Latin line")
+        .runs()
+        .next()
+        .expect("Latin run");
+    assert!(
+        run.font().data.as_ref() == roboto.as_ref(),
+        "plain Latin must retain the primary Roboto face"
+    );
+
+    let combined = engine.shape(&test_input(&env, "Z\u{0350}"), None);
+    let line = combined.0.layout.get(0).expect("combining-mark line");
+    assert!(
+        line.runs()
+            .any(|run| run.font().data.as_ref() == noto.as_ref())
+    );
+    for run in line.runs() {
+        for cluster in run.clusters() {
+            assert!(cluster.glyphs().all(|glyph| glyph.id != 0));
+        }
+    }
+}
+
+#[test]
+fn recorded_glyph_positions_preserve_parley_mark_offsets_and_fragment_shift() {
+    let roboto: Arc<[u8]> = std::fs::read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("test-fonts/Roboto-Regular.ttf"),
+    )
+    .expect("the test-fonts setup generates the pinned Roboto Regular face")
+    .into();
+    let mut font_cx = parley::FontContext {
+        collection: parley::fontique::Collection::new(parley::fontique::CollectionOptions {
+            shared: false,
+            system_fonts: false,
+        }),
+        source_cache: parley::fontique::SourceCache::default(),
+    };
+    let registered = font_cx
+        .collection
+        .register_fonts(parley::fontique::Blob::new(Arc::new(roboto.to_vec())), None);
+    assert!(!registered.is_empty());
+    let mut families = fonts::ResourceFontFamilies::default();
+    families.classify("Roboto", &registered);
+    families.install(&mut font_cx.collection);
+    let engine = ParleyEngine::new(font_cx, FontFamilyResolution::Strict);
+    let env = test_environment();
+    let layout = engine.shape(&test_input(&env, "Z\u{0350}"), None);
+    let line = layout.0.layout.get(0).expect("combining-mark line");
+    assert!(
+        line.items().any(|item| {
+            if let parley::PositionedLayoutItem::GlyphRun(run) = item {
+                run.glyphs().any(|glyph| glyph.y.abs() > 0.0)
+            } else {
+                false
+            }
+        }),
+        "the real fixture must exercise a nonzero vertical shaping offset"
+    );
+
+    for x_shift in [0.0, 13.0] {
+        let expected: Vec<_> = line
+            .items()
+            .filter_map(|item| match item {
+                parley::PositionedLayoutItem::GlyphRun(run) => Some(run),
+                parley::PositionedLayoutItem::InlineBox(_) => None,
+            })
+            .flat_map(|run| {
+                run.positioned_glyphs()
+                    .map(|glyph| (glyph.id, (glyph.x + x_shift).to_bits(), glyph.y.to_bits()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        let mut scene = Recording::new();
+        let mut counters = FrameWorkCounters::default();
+        encode_text_layout(&mut scene, &mut counters, &layout, None, x_shift);
+        let recorded: Vec<_> = scene
+            .glyph_runs()
+            .flat_map(|(_, glyphs)| glyphs)
+            .map(|glyph| (glyph.id, glyph.x.to_bits(), glyph.y.to_bits()))
+            .collect();
+        assert_eq!(recorded, expected, "fragment shift {x_shift}");
+    }
+}
+
+#[test]
+fn explicit_family_list_is_preserved_for_parley_css_parsing() {
+    let family = font_family(Some("Roboto, Noto Sans CJK SC, sans-serif"));
+
+    assert_eq!(
+        family,
+        parley::FontFamily::Source("Roboto, Noto Sans CJK SC, sans-serif".into())
+    );
+}
+
+#[test]
+fn missing_family_uses_sans_serif_generic() {
+    assert_eq!(
+        font_family(None),
+        parley::FontFamily::from(parley::style::GenericFamily::SansSerif)
+    );
+}
+
+#[test]
+fn logical_text_alignment_follows_environment_direction() {
+    assert_eq!(
+        parley_alignment(HorizontalAlignment::Leading, false),
+        parley::Alignment::Left
+    );
+    assert_eq!(
+        parley_alignment(HorizontalAlignment::Leading, true),
+        parley::Alignment::Right
+    );
+    assert_eq!(
+        parley_alignment(HorizontalAlignment::Trailing, true),
+        parley::Alignment::Left
+    );
+}
+
+/// The logically-last cluster's character on a line — where the marker
+/// sits after tail truncation.
+fn last_cluster_char(line: &parley::Line<'_, [u8; 4]>) -> Option<char> {
+    let mut tail = None;
+    for run in line.runs() {
+        for cluster in run.clusters() {
+            tail = Some(cluster.source_char());
+        }
+    }
+    tail
+}
+
+#[test]
+fn a_truncated_line_ends_in_an_ellipsis_inside_its_bound() {
+    let env = test_environment();
+    let service = TextService::new(ParleyEngine::system(FontFamilyResolution::Strict));
+    let input = test_input(
+        &env,
+        "a preview long enough that a single line cannot hold it",
+    );
+
+    let layout = service.shape_limited(&input, Some(60.0), Some(1));
+
+    assert_eq!(
+        layout.0.layout.len(),
+        1,
+        "a one-line limit lays out one line"
+    );
+    let line = layout.0.layout.get(0).expect("one line");
+    assert!(
+        line.metrics().advance <= 60.0,
+        "the truncated line stays inside its bound"
+    );
+    assert!(
+        line.metrics().advance > 45.0,
+        "the cut fills the bound to glyph granularity"
+    );
+    assert_eq!(
+        last_cluster_char(&line),
+        Some(TAIL_ELLIPSIS),
+        "the drawn line ends in an ellipsis"
+    );
+}
+
+#[test]
+fn a_multiline_limit_carries_the_ellipsis_on_the_last_line() {
+    let env = test_environment();
+    let service = TextService::new(ParleyEngine::system(FontFamilyResolution::Strict));
+    let input = test_input(
+        &env,
+        "a preview long enough that it wraps well past the two lines it may show",
+    );
+
+    let layout = service.shape_limited(&input, Some(80.0), Some(2));
+
+    assert_eq!(
+        layout.0.layout.len(),
+        2,
+        "the truncated text keeps its allowed lines"
+    );
+    let last = layout.0.layout.get(1).expect("last line");
+    assert!(last.metrics().advance <= 80.0);
+    assert_eq!(last_cluster_char(&last), Some(TAIL_ELLIPSIS));
+    let first = layout.0.layout.get(0).expect("first line");
+    assert_ne!(
+        last_cluster_char(&first),
+        Some(TAIL_ELLIPSIS),
+        "only the last line carries the marker"
+    );
+}
+
+#[test]
+fn a_text_that_fits_its_limit_is_not_truncated() {
+    let env = test_environment();
+    let service = TextService::new(ParleyEngine::system(FontFamilyResolution::Strict));
+    let input = test_input(&env, "short");
+
+    let layout = service.shape_limited(&input, Some(200.0), Some(1));
+
+    let line = layout.0.layout.get(0).expect("one line");
+    assert_eq!(last_cluster_char(&line), Some('t'));
+}
+
+/// `GlyphMetrics::bounds` must agree with drawing the outline through
+/// `ControlBoundsPen` — the ink-extent measure substitutes the former (the
+/// `glyf` header bounds) for the latter, so they must report the same extents
+/// on a TrueType face with real overhang.
+#[test]
+fn glyph_bounds_fast_path_agrees_with_drawn_outline() {
+    use skrifa::instance::{LocationRef, Size};
+    use skrifa::outline::{DrawSettings, pen::ControlBoundsPen};
+    use skrifa::{FontRef, GlyphId, MetadataProvider};
+
+    // The installed Pacifico face, found through the font collection by
+    // family name — the same lookup the strict family-resolution gate makes.
+    let mut font_cx = parley::FontContext::new();
+    let family = font_cx.collection.family_by_name("Pacifico").expect(
+        "font family `Pacifico` is not installed; install the test fonts with \
+         `uv run backends/hydrolysis/test-fonts/install.py`",
+    );
+    let face = family
+        .fonts()
+        .first()
+        .expect("the installed Pacifico family carries a face");
+    let index = face.index();
+    let blob = face
+        .load(Some(&mut font_cx.source_cache))
+        .expect("the installed Pacifico face loads");
+    let font = FontRef::from_index(blob.data(), index).expect("installed Pacifico face parses");
+    // Both paths read the same font-unit extents; at a scaled size the header
+    // path rounds through FreeType's 16.16 fixed-point scale while the pen
+    // scales in float, so allow one font unit of rounding in pixels.
+    let location = LocationRef::default();
+    for size in [Size::unscaled(), Size::new(16.0)] {
+        let slack = size.ppem().map_or(1e-3, |ppem| {
+            ppem / f32::from(font.metrics(size, location).units_per_em) + 1e-3
+        });
+        let metrics = font.glyph_metrics(size, location);
+        let outlines = font.outline_glyphs();
+        let glyph_count = font.metrics(size, location).glyph_count;
+        for glyph_id in 0..glyph_count {
+            let glyph = GlyphId::new(u32::from(glyph_id));
+            let header = metrics.bounds(glyph);
+            let drawn = outlines.get(glyph).and_then(|outline| {
+                let mut pen = ControlBoundsPen::new();
+                outline
+                    .draw(DrawSettings::unhinted(size, location), &mut pen)
+                    .ok()?;
+                pen.bounding_box()
+            });
+            let (Some(header), Some(drawn)) = (header, drawn) else {
+                // A glyph with no drawn outline reports no ink either way.
+                continue;
+            };
+            assert!(
+                (header.x_min - drawn.x_min).abs() <= slack
+                    && (header.x_max - drawn.x_max).abs() <= slack,
+                "glyph {glyph_id} @ {size:?}: header x {}..={} vs drawn {}..={}",
+                header.x_min,
+                header.x_max,
+                drawn.x_min,
+                drawn.x_max
+            );
+        }
+    }
+}

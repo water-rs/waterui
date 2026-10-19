@@ -93,16 +93,16 @@ pub use aux_image::{FilterImage, LutImage};
 pub use effect::{
     Effect, EffectContext, EffectFrameClock, EffectFrameTiming, EffectInput, EffectOutput,
     EffectRedrawCallback, EffectRenderError, EffectRenderResult, EffectSetupError,
-    EffectSetupResult, ShapeTextures,
+    EffectSetupResult, RetainedMemory, ShapeTextures,
 };
 #[cfg(feature = "gpu")]
 pub use executor::Executor;
 pub use filtrate_core::{
     AnimatedCallback, AnimatedTarget, AnimationTrack, AuxData, AuxFormat, AuxImage, AuxSource,
     Chain, ColorFilter, ColorStage, CpuFilter, CpuFilterError, CpuImage, CpuKernel, Filter,
-    FilterExt, FilterParam, Footprint, ImageVisitor, Interpolator, OperatingSpace, ParamArray,
-    ParamSource, Placed, ShapeInput, SignalVisitor, SpatialFilter, SpatialStage, StageCollector,
-    WatchGuard, WorkingSpace, kind,
+    FilterExt, FilterLink, FilterParam, Footprint, ImageVisitor, Interpolator, LinkVisitor,
+    OperatingSpace, ParamArray, ParamSource, Placed, ShapeInput, SignalVisitor, SpatialFilter,
+    SpatialStage, StageCollector, WatchGuard, WorkingSpace, kind, space,
 };
 
 #[cfg(feature = "gpu")]

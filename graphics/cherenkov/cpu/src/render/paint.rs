@@ -2,74 +2,30 @@
 //! sampled at the pixel centre mapped by the item's inverse transform into
 //! content space, then premultiplied.
 
+use std::mem::MaybeUninit;
+
 use cherenkov::kurbo::Affine;
 use cherenkov::{ColorStop, Extend, Interpolation, Paint};
 use rustc_hash::FxHashMap;
 
 use cherenkov::RenderError;
+use fearless_simd::Simd;
+use filtrate_core::space::{
+    P3_TO_SRGB, SRGB_TO_P3, from_srgb, srgb_decode, srgb_encode, to_srgb, transform,
+};
 
 use crate::names;
 
-/// Linear Display P3 to linear sRGB, for `SrgbEncoded` gradient stops.
-const P3_TO_SRGB: [[f32; 3]; 3] = [
-    [1.224_940_1, -0.224_940_4, 0.0],
-    [-0.042_056_9, 1.042_057_1, 0.0],
-    [-0.019_637_6, -0.078_636_1, 1.098_273_5],
-];
-
-/// Linear sRGB to linear Display P3.
-const SRGB_TO_P3: [[f32; 3]; 3] = [
-    [0.822_461_96, 0.177_538_04, 0.0],
-    [0.033_194_2, 0.966_805_8, 0.0],
-    [0.017_082_632, 0.072_397_44, 0.910_519_96],
-];
-
-fn mat3(m: &[[f32; 3]; 3], v: [f32; 3]) -> [f32; 3] {
-    [
-        m[0][0].mul_add(v[0], m[0][1].mul_add(v[1], m[0][2] * v[2])),
-        m[1][0].mul_add(v[0], m[1][1].mul_add(v[1], m[1][2] * v[2])),
-        m[2][0].mul_add(v[0], m[2][1].mul_add(v[1], m[2][2] * v[2])),
-    ]
-}
-
-/// sRGB-encodes one channel, preserving sign.
-fn srgb_encode(x: f32) -> f32 {
-    let e = if x.abs() <= 0.003_130_8 {
-        x.abs() * 12.92
-    } else {
-        1.055f32.mul_add(x.abs().powf(1.0 / 2.4), -0.055)
-    };
-    e.copysign(x)
-}
-
-/// sRGB-decodes one channel, preserving sign.
-fn srgb_decode(x: f32) -> f32 {
-    let d = if x.abs() <= 0.04045 {
-        x.abs() / 12.92
-    } else {
-        ((x.abs() + 0.055) / 1.055).powf(2.4)
-    };
-    d.copysign(x)
-}
-
-/// Convert a premultiplied pixel between linear P3 and encoded sRGB.
+/// Convert a premultiplied pixel between linear P3 and encoded sRGB —
+/// filtrate-core's `to_srgb`/`from_srgb` conversion on a single pixel.
 pub(super) fn convert_pixel(pixel: [f32; 4], encode: bool) -> [f32; 4] {
-    let alpha = pixel[3];
-    if alpha == 0.0 {
-        return [0.0; 4];
-    }
-    let straight = [pixel[0] / alpha, pixel[1] / alpha, pixel[2] / alpha];
-    let converted = if encode {
-        mat3(&P3_TO_SRGB, straight).map(srgb_encode)
+    let mut pixel = [pixel];
+    if encode {
+        to_srgb(&mut pixel);
     } else {
-        mat3(&SRGB_TO_P3, straight.map(srgb_decode))
-    };
-    [
-        converted[0] * alpha,
-        converted[1] * alpha,
-        converted[2] * alpha,
-        alpha,
-    ]
+        from_srgb(&mut pixel);
+    }
+    pixel[0]
 }
 
 /// A gradient stop in interpolation-space straight-alpha components.
@@ -148,6 +104,9 @@ pub enum PaintData {
         centres: [f32; 4],
         /// Radii: `r0, r1`.
         radii: [f32; 2],
+        /// The circles are identical: the parameter is `-∞` inside `r0` and
+        /// `+∞` outside.
+        identical: bool,
         /// Sorted stops.
         stops: std::sync::Arc<[Stop]>,
         /// The continuation mode.
@@ -172,6 +131,11 @@ pub const fn affine_f32(t: Affine) -> [f32; 6] {
 }
 
 /// Applies `[a, b, c, d, e, f]` to `(x, y)`.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 const fn apply(m: [f32; 6], x: f32, y: f32) -> (f32, f32) {
     (
         m[0].mul_add(x, m[2].mul_add(y, m[4])),
@@ -195,13 +159,8 @@ fn stops(stops: &[ColorStop], interpolation: Interpolation) -> std::sync::Arc<[S
         .map(|s| {
             let [r, g, b, a] = s.color.components;
             let color = if interpolation == Interpolation::SrgbEncoded {
-                let lin = mat3(&P3_TO_SRGB, [r, g, b]);
-                [
-                    srgb_encode(lin[0]),
-                    srgb_encode(lin[1]),
-                    srgb_encode(lin[2]),
-                    a,
-                ]
+                let [r, g, b] = transform(&P3_TO_SRGB, [r, g, b]).map(srgb_encode);
+                [r, g, b, a]
             } else {
                 [r, g, b, a]
             };
@@ -222,6 +181,11 @@ fn stops(stops: &[ColorStop], interpolation: Interpolation) -> std::sync::Arc<[S
     clippy::cast_precision_loss,
     reason = "u/v/w/h/x/y are the natural names; texel coordinates are clamped before indexing"
 )]
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn sample_image(
     img: &super::image::CpuImage,
     u: f32,
@@ -263,6 +227,13 @@ fn sample_image(
 
 /// Lowers a `Paint` into [`PaintData`]. `inv` maps device space into the
 /// content space the gradient parameters live in.
+///
+/// # Errors
+/// [`RenderError::Render`] on invalid paint parameters,
+/// [`RenderError::Image`] on a non-invertible image transform or an
+/// unregistered image, [`RenderError::IdenticalRadialCircles`] when an
+/// identical-circles radial repeats or reflects, and
+/// [`RenderError::Unsupported`] for a shader paint.
 #[expect(
     clippy::many_single_char_names,
     reason = "r/g/b/a are the channel names"
@@ -318,19 +289,26 @@ pub fn paint_data(
             extend: g.extend,
             interpolation: g.interpolation,
         },
-        Paint::Radial(g) => PaintData::Radial {
-            inv: affine_f32(inv),
-            centres: [
-                f32_f64(g.start_center.x),
-                f32_f64(g.start_center.y),
-                f32_f64(g.end_center.x),
-                f32_f64(g.end_center.y),
-            ],
-            radii: [f32_f64(g.start_radius), f32_f64(g.end_radius)],
-            stops: stops(&g.stops, g.interpolation),
-            extend: g.extend,
-            interpolation: g.interpolation,
-        },
+        Paint::Radial(g) => {
+            let identical = g.has_identical_circles();
+            if identical && matches!(g.extend, Extend::Repeat | Extend::Reflect) {
+                return Err(RenderError::IdenticalRadialCircles(g.extend));
+            }
+            PaintData::Radial {
+                inv: affine_f32(inv),
+                centres: [
+                    f32_f64(g.start_center.x),
+                    f32_f64(g.start_center.y),
+                    f32_f64(g.end_center.x),
+                    f32_f64(g.end_center.y),
+                ],
+                radii: [f32_f64(g.start_radius), f32_f64(g.end_radius)],
+                identical,
+                stops: stops(&g.stops, g.interpolation),
+                extend: g.extend,
+                interpolation: g.interpolation,
+            }
+        }
         _ => return extra_paint(paint, inv, images),
     })
 }
@@ -407,6 +385,11 @@ fn extra_paint(
 }
 
 /// Applies `extend` to `t`; `None` outside `[0, 1]` is transparent.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn extend_t(t: f32, extend: Extend) -> Option<f32> {
     match extend {
         Extend::Pad => Some(t.clamp(0.0, 1.0)),
@@ -427,10 +410,7 @@ fn extend_t(t: f32, extend: Extend) -> Option<f32> {
 fn to_premul(c: [f32; 4], interpolation: Interpolation) -> [f32; 4] {
     let [r, g, b, a] = c;
     let [pr, pg, pb] = if interpolation == Interpolation::SrgbEncoded {
-        mat3(
-            &SRGB_TO_P3,
-            [srgb_decode(r), srgb_decode(g), srgb_decode(b)],
-        )
+        transform(&SRGB_TO_P3, [r, g, b].map(srgb_decode))
     } else {
         [r, g, b]
     };
@@ -438,6 +418,11 @@ fn to_premul(c: [f32; 4], interpolation: Interpolation) -> [f32; 4] {
 }
 
 /// Evaluates `stops` at `t`, returning premultiplied linear P3.
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
 fn eval_stops(stops: &[Stop], t: f32, interpolation: Interpolation) -> [f32; 4] {
     let Some(first) = stops.first() else {
         return [0.0; 4];
@@ -472,24 +457,36 @@ fn eval_stops(stops: &[Stop], t: f32, interpolation: Interpolation) -> [f32; 4] 
 }
 
 /// `t` along the two-point radial gradient for point `(px, py)` in content
-/// space; the larger real root, `NaN` when there is none.
+/// space: the largest root whose radius `r0 + t·dr` is non-negative, `NaN`
+/// when there is none. Identical circles give `-∞` on and inside the circle
+/// and `+∞` outside, as the oracle's `radial_t` does.
 #[allow(clippy::many_single_char_names)] // quadratic notation mirrors the spec
-fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2]) -> f32 {
+#[expect(
+    clippy::inline_always,
+    reason = "compiled under the dispatched CPU level so mul_add is one instruction"
+)]
+#[inline(always)]
+fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2], identical: bool) -> f32 {
     let (px, py) = (px - centres[0], py - centres[1]);
-    let (dcx, dcy) = (centres[2] - centres[0], centres[3] - centres[1]);
     let (r0, dr) = (radii[0], radii[1] - radii[0]);
+    if identical {
+        return if px.hypot(py) <= r0 {
+            f32::NEG_INFINITY
+        } else {
+            f32::INFINITY
+        };
+    }
+    let (dcx, dcy) = (centres[2] - centres[0], centres[3] - centres[1]);
+    let radius_ok = |t: f32| t.mul_add(dr, r0) >= 0.0;
     let a = dr.mul_add(-dr, dcy.mul_add(dcy, dcx * dcx));
     let b = -2.0 * r0.mul_add(dr, dcy.mul_add(py, dcx * px));
     let c = r0.mul_add(-r0, py.mul_add(py, px * px));
     if a.abs() < 1e-12 {
         if b.abs() < 1e-12 {
-            return if r0.abs() < 1e-12 {
-                0.0
-            } else {
-                (px.hypot(py) - r0) / r0.abs()
-            };
+            return f32::NAN;
         }
-        return -c / b;
+        let t = -c / b;
+        return if radius_ok(t) { t } else { f32::NAN };
     }
     let disc = (4.0 * a).mul_add(-c, b * b);
     if disc < 0.0 {
@@ -497,10 +494,21 @@ fn radial_t(px: f32, py: f32, centres: [f32; 4], radii: [f32; 2]) -> f32 {
     }
     let sq = disc.sqrt();
     let (r1, r2) = ((-b + sq) / (2.0 * a), (-b - sq) / (2.0 * a));
-    r1.max(r2)
+    let (hi, lo) = (r1.max(r2), r1.min(r2));
+    if radius_ok(hi) {
+        hi
+    } else if radius_ok(lo) {
+        lo
+    } else {
+        f32::NAN
+    }
 }
 
 impl PaintData {
+    /// An image paint over `image` sampled through `transform`
+    /// (image-space to device), `Pad` extend and linear sampling — the
+    /// bitmap present path.
+    #[must_use]
     pub fn bitmap(image: std::sync::Arc<super::image::CpuImage>, transform: Affine) -> Self {
         let mapping = transform.inverse();
         Self::Image(Box::new(ImagePaintData {
@@ -514,6 +522,7 @@ impl PaintData {
     }
 
     /// Apply sampled device placement without resolving or copying gradient stops.
+    #[must_use]
     pub fn transformed(&self, transform: Affine) -> Self {
         let mut paint = self.clone();
         match &mut paint {
@@ -528,21 +537,54 @@ impl PaintData {
         paint
     }
 
-    /// Evaluates the paint at device-space pixel centre `(dx, dy)`,
-    /// returning premultiplied linear Display P3.
+    /// Evaluates the paint at a device-space pixel centre in premultiplied linear P3.
+    #[cfg(test)]
+    #[must_use]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    pub fn eval(&self, dx: f32, dy: f32) -> [f32; 4] {
+        self.evaluate(PixelCenter { dx, dy })
+    }
+
+    // Select the paint formula once, before the output iterates over pixel centres.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn evaluate<O: PaintOutput>(&self, output: O) -> O::Output {
+        if matches!(self, Self::Transformed(..)) {
+            let mut leaf = self;
+            while let Self::Transformed(inner, _) = leaf {
+                leaf = inner;
+            }
+            leaf.evaluate_leaf(TransformedOutput {
+                output,
+                paint: self,
+            })
+        } else {
+            self.evaluate_leaf(output)
+        }
+    }
+
     #[expect(
         clippy::cast_precision_loss,
         reason = "image dimensions are bounded by memory budget"
     )]
-    pub fn eval(&self, dx: f32, dy: f32) -> [f32; 4] {
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn evaluate_leaf<O: PaintOutput>(&self, output: O) -> O::Output {
         match self {
-            Self::Transformed(inner, inverse) => {
-                let (x, y) = apply(affine_f32(*inverse), dx, dy);
-                inner.eval(x, y)
-            }
-            Self::Solid(c) => *c,
-            Self::Mesh(mesh) => mesh.eval(dx, dy),
-            Self::Image(image) => {
+            Self::Transformed(..) => unreachable!("evaluate resolves the transform chain"),
+            Self::Solid(c) => output.solid(*c),
+            Self::Mesh(mesh) => output.sample(|dx, dy| mesh.eval(dx, dy)),
+            Self::Image(image) => output.sample(|dx, dy| {
                 let (qx, qy) = apply(image.inv, dx, dy);
                 let (iw, ih) = (image.image.width as f32, image.image.height as f32);
                 let Some(u) = extend_t(qx / iw, image.extend_x).map(|t| t * iw) else {
@@ -552,7 +594,7 @@ impl PaintData {
                     return [0.0; 4];
                 };
                 sample_image(&image.image, u, v, image.sampling)
-            }
+            }),
             Self::Sweep {
                 inv,
                 center,
@@ -561,12 +603,17 @@ impl PaintData {
                 stops,
                 extend,
                 interpolation,
-            } => {
+            } => output.sample(|dx, dy| {
                 let (px, py) = apply(*inv, dx, dy);
                 let raw = (py - center[1]).atan2(px - center[0]) - *start;
-                let t = raw.rem_euclid(std::f32::consts::TAU) / *span;
+                // Lowering normalizes start to [0, TAU]; atan2 is in [-PI, PI].
+                // At most two additions wrap the angle without a per-pixel fmod.
+                let turn = std::f32::consts::TAU;
+                let raw = if raw < -turn { raw + turn } else { raw };
+                let angle = if raw < 0.0 { raw + turn } else { raw };
+                let t = angle / *span;
                 extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-            }
+            }),
 
             Self::Linear {
                 inv,
@@ -574,7 +621,7 @@ impl PaintData {
                 stops,
                 extend,
                 interpolation,
-            } => {
+            } => output.sample(|dx, dy| {
                 let (px, py) = apply(*inv, dx, dy);
                 let (sx, sy, ex, ey) = (*end_points).into();
                 let (ddx, ddy) = (ex - sx, ey - sy);
@@ -585,21 +632,329 @@ impl PaintData {
                     (py - sy).mul_add(ddy, (px - sx) * ddx) / len2
                 };
                 extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-            }
+            }),
             Self::Radial {
                 inv,
                 centres,
                 radii,
+                identical,
                 stops,
                 extend,
                 interpolation,
-            } => {
+            } => output.sample(|dx, dy| {
                 let (px, py) = apply(*inv, dx, dy);
-                let t = radial_t(px, py, *centres, *radii);
-                if t.is_finite() {
-                    extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
-                } else {
+                let t = radial_t(px, py, *centres, *radii, *identical);
+                if t.is_nan() {
                     [0.0; 4]
+                } else {
+                    extend_t(t, *extend).map_or([0.0; 4], |t| eval_stops(stops, t, *interpolation))
+                }
+            }),
+        }
+    }
+
+    /// Evaluates pixel centres into `out`, bit for bit like [`Self::eval`].
+    /// Every element is initialized. Solid spans use four-pixel native stores;
+    /// other paints select their scalar formula once for the whole span.
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    pub fn eval_span<'a, S: Simd>(
+        &self,
+        simd: S,
+        x0: usize,
+        py: usize,
+        out: &'a mut [MaybeUninit<[f32; 4]>],
+    ) -> &'a mut [[f32; 4]] {
+        self.evaluate(PixelSpan { simd, x0, py, out })
+    }
+}
+
+// The output owns iteration and initialization; paint formulas are shared by
+// scalar sampling and span sampling without a per-pixel enum dispatch.
+trait PaintOutput: Sized {
+    type Output;
+
+    fn sample(self, evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output;
+    fn solid(self, color: [f32; 4]) -> Self::Output;
+}
+
+/// Applies each mapping separately, preserving the scalar evaluator's f32
+/// rounding at every link. The terminal paint formula is already selected.
+struct TransformedOutput<'a, O> {
+    output: O,
+    paint: &'a PaintData,
+}
+
+impl<O: PaintOutput> PaintOutput for TransformedOutput<'_, O> {
+    type Output = O::Output;
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sample(self, mut evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
+        self.output.sample(|mut x, mut y| {
+            let mut paint = self.paint;
+            while let PaintData::Transformed(inner, inverse) = paint {
+                (x, y) = apply(affine_f32(*inverse), x, y);
+                paint = inner;
+            }
+            evaluate(x, y)
+        })
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn solid(self, color: [f32; 4]) -> Self::Output {
+        self.output.solid(color)
+    }
+}
+
+#[cfg(test)]
+struct PixelCenter {
+    dx: f32,
+    dy: f32,
+}
+
+#[cfg(test)]
+impl PaintOutput for PixelCenter {
+    type Output = [f32; 4];
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sample(self, mut evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
+        evaluate(self.dx, self.dy)
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn solid(self, color: [f32; 4]) -> Self::Output {
+        color
+    }
+}
+
+struct PixelSpan<'a, S> {
+    simd: S,
+    x0: usize,
+    py: usize,
+    out: &'a mut [MaybeUninit<[f32; 4]>],
+}
+
+impl<'a, S: Simd> PaintOutput for PixelSpan<'a, S> {
+    type Output = &'a mut [[f32; 4]];
+
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel indices and band offsets are far below 2^24"
+    )]
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn sample(self, mut evaluate: impl FnMut(f32, f32) -> [f32; 4]) -> Self::Output {
+        for (i, pixel) in self.out.iter_mut().enumerate() {
+            pixel.write(evaluate((self.x0 + i) as f32 + 0.5, self.py as f32 + 0.5));
+        }
+        // SAFETY: every element was written by the loop above.
+        unsafe { self.out.assume_init_mut() }
+    }
+
+    #[expect(
+        clippy::inline_always,
+        reason = "compiled under the dispatched CPU level"
+    )]
+    #[inline(always)]
+    fn solid(self, c: [f32; 4]) -> Self::Output {
+        let Self { simd, out, .. } = self;
+        let planes = simd.combine_f32x8(
+            simd.combine_f32x4(simd.splat_f32x4(c[0]), simd.splat_f32x4(c[1])),
+            simd.combine_f32x4(simd.splat_f32x4(c[2]), simd.splat_f32x4(c[3])),
+        );
+        let mut block = [0.0f32; 16];
+        simd.store_interleaved_128_f32x16(planes, &mut block);
+        let count = out.len();
+        let mut pos = 0;
+        while pos + 4 <= count {
+            // SAFETY: `out[pos..pos + 4]` is four contiguous
+            // `MaybeUninit<[f32; 4]>` — 16 floats — and `block`
+            // holds those 16 initialised floats.
+            unsafe {
+                std::ptr::copy_nonoverlapping(
+                    block.as_ptr(),
+                    out[pos..].as_mut_ptr().cast::<f32>(),
+                    16,
+                );
+            }
+            pos += 4;
+        }
+        for px in &mut out[pos..] {
+            px.write(c);
+        }
+        // SAFETY: the four-pixel stores and scalar tail initialized every element.
+        unsafe { out.assume_init_mut() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::mem::MaybeUninit;
+    use std::sync::Arc;
+
+    use cherenkov::kurbo::Affine;
+    use cherenkov::{
+        ColorStop, Extend, ImageColorSpace, ImageFormat, ImageId, ImagePattern, ImageUpload,
+        Interpolation, LinearGradient, Paint, RadialGradient, Sampling, SweepGradient,
+        TransformedPaint, WorkingColor,
+    };
+
+    use super::PaintData;
+    use crate::testing::kernels;
+
+    const IMAGE: ImageId = ImageId::new(1);
+
+    fn stops() -> Vec<ColorStop> {
+        [
+            (0.0, [0.9, 0.1, 0.2, 1.0]),
+            (0.35, [0.1, 0.8, 0.3, 1.0]),
+            (0.7, [0.2, 0.3, 0.9, 0.8]),
+            (1.0, [0.05, 0.05, 0.4, 1.0]),
+        ]
+        .into_iter()
+        .map(|(offset, color)| ColorStop {
+            offset,
+            color: WorkingColor::new(color),
+        })
+        .collect()
+    }
+
+    fn linear() -> LinearGradient {
+        let mut gradient = LinearGradient::new((0.0, 0.0), (1024.0, 0.0));
+        gradient.stops = stops();
+        gradient
+    }
+
+    /// A deterministic 64×64 `Rgba8` upload.
+    fn upload() -> ImageUpload {
+        let mut data = Vec::with_capacity(64 * 64 * 4);
+        for y in 0..64u8 {
+            for x in 0..64u8 {
+                data.extend_from_slice(&[x * 4, y * 4, (x + y) * 2, 255]);
+            }
+        }
+        ImageUpload {
+            width: 64,
+            height: 64,
+            data: data.into(),
+            color_space: ImageColorSpace::LinearP3,
+            premultiplied: false,
+            format: ImageFormat::Rgba8,
+        }
+    }
+
+    /// Every paint kind the span table covers, lowered through the real
+    /// `paint_data`/`CpuImage::decode` path a bench uses.
+    fn each_kind() -> Vec<PaintData> {
+        let images = [(IMAGE.raw(), Arc::new(kernels::image(&upload()).unwrap()))];
+        let lower =
+            |paint: &Paint| kernels::paint(paint, Affine::IDENTITY, images.clone()).unwrap();
+        let radial = RadialGradient {
+            start_center: (512.0, 256.0).into(),
+            start_radius: 32.0,
+            end_center: (640.0, 256.0).into(),
+            end_radius: 400.0,
+            stops: stops(),
+            extend: Extend::Pad,
+            interpolation: Interpolation::Working,
+        };
+        let mut identical = radial.clone();
+        identical.end_center = identical.start_center;
+        identical.end_radius = identical.start_radius;
+        let mut sweep = SweepGradient::new((512.0, 256.0), 0.0, std::f64::consts::TAU);
+        sweep.stops = stops();
+        let pattern = |sampling| {
+            Paint::Image(ImagePattern {
+                image: IMAGE,
+                transform: Affine::scale(1024.0 / 64.0),
+                extend_x: Extend::Pad,
+                extend_y: Extend::Pad,
+                sampling,
+            })
+        };
+        vec![
+            lower(&Paint::Solid(WorkingColor::new([0.2, 0.5, 0.9, 1.0]))),
+            lower(&Paint::Solid(WorkingColor::new([0.2, 0.5, 0.9, 0.6]))),
+            lower(&Paint::Linear(linear())),
+            lower(&Paint::Radial(radial)),
+            lower(&Paint::Radial(identical)),
+            lower(&Paint::Sweep(sweep)),
+            lower(&pattern(Sampling::Nearest)),
+            lower(&pattern(Sampling::Linear)),
+            lower(&Paint::Transformed(TransformedPaint::new(
+                Paint::Linear(linear()),
+                Affine::translate((20.0, 5.0)) * Affine::rotate(0.3),
+            ))),
+            lower(&Paint::Transformed(TransformedPaint::new(
+                Paint::Transformed(TransformedPaint::new(
+                    Paint::Linear(linear()),
+                    Affine::scale_non_uniform(1.03, 0.97) * Affine::rotate(0.17),
+                )),
+                Affine::translate((20.0, 5.0)) * Affine::rotate(0.3),
+            ))),
+        ]
+    }
+
+    /// `eval_span` is per-pixel `eval`, bit for bit, over every run of
+    /// length 0–67 starting at offsets 0–7, under the detected level and
+    /// the scalar fallback.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "pixel indices and band offsets are far below 2^24"
+    )]
+    #[test]
+    fn eval_span_matches_scalar_eval_bit_for_bit() {
+        fn scalar_reference(paint: &PaintData, x: f32, y: f32) -> [f32; 4] {
+            if let PaintData::Transformed(inner, inverse) = paint {
+                let (x, y) = super::apply(super::affine_f32(*inverse), x, y);
+                scalar_reference(inner, x, y)
+            } else {
+                paint.eval(x, y)
+            }
+        }
+
+        fn check<S: fearless_simd::Simd>(simd: S, paint: &PaintData, x0: usize, len: usize) {
+            let py = 13usize;
+            let mut span = vec![MaybeUninit::uninit(); len];
+            let span = paint.eval_span(simd, x0, py, &mut span);
+            for (i, px) in span.iter().enumerate() {
+                assert_eq!(
+                    px.map(f32::to_bits),
+                    scalar_reference(paint, (x0 + i) as f32 + 0.5, py as f32 + 0.5)
+                        .map(f32::to_bits),
+                    "paint {paint:?}, run x0={x0} len={len}, pixel {i}"
+                );
+            }
+        }
+        for paint in each_kind() {
+            for x0 in 0..=7usize {
+                for len in 0..=67usize {
+                    fearless_simd::dispatch!(crate::Level::new(), simd => check(
+                        simd, &paint, x0, len
+                    ));
+                    check(fearless_simd::Fallback::new(), &paint, x0, len);
                 }
             }
         }

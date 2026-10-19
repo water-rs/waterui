@@ -3,7 +3,6 @@ use crate::renderer::{
     HydroNativeView, HydroState, estimate_layout_intrinsic, measure_layout_dimensions,
     measure_transient_view_with_proposal, normalize_layout_view,
 };
-use nami::Signal;
 use std::rc::Rc;
 use waterui::views::Views;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize};
@@ -32,7 +31,7 @@ impl HydroNativeView for Native<FixedContainer> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         let (layout, children) = view.as_inner().as_parts();
         estimate_layout_intrinsic(layout, children.iter(), state, env, theme)
@@ -42,7 +41,7 @@ impl HydroNativeView for Native<FixedContainer> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> waterui_core::layout::ViewDimensions {
         let (layout, children) = view.as_inner().as_parts();
@@ -67,7 +66,7 @@ fn lazy_stack_sample_size(
     state: &mut HydroState,
     view: &Native<LazyContainer>,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
     main: Option<f32>,
     cross: Option<f32>,
 ) -> LayoutSize {
@@ -120,7 +119,7 @@ fn lazy_stack_sample_size(
     };
     match axis {
         LazyStackAxisConfig::Vertical { spacing, .. } => {
-            let gaps = f64::from(spacing.snapshot()) * (count - 1.0).max(0.0);
+            let gaps = f64::from(state.measure_signal(&spacing)) * (count - 1.0).max(0.0);
             let floor =
                 min_sample.map_or(0.0, |min| f64::mul_add(f64::from(min.height), count, gaps));
             let width = f64::from(sample.width);
@@ -131,7 +130,7 @@ fn lazy_stack_sample_size(
             )
         }
         LazyStackAxisConfig::Horizontal { spacing, .. } => {
-            let gaps = f64::from(spacing.snapshot()) * (count - 1.0).max(0.0);
+            let gaps = f64::from(state.measure_signal(&spacing)) * (count - 1.0).max(0.0);
             let floor =
                 min_sample.map_or(0.0, |min| f64::mul_add(f64::from(min.width), count, gaps));
             let width = cap(f64::mul_add(f64::from(sample.width), count, gaps), floor);
@@ -149,7 +148,7 @@ impl HydroNativeView for Native<LazyContainer> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         lazy_stack_sample_size(state, view, env, theme, None, None)
     }
@@ -158,7 +157,7 @@ impl HydroNativeView for Native<LazyContainer> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
         proposal: ProposalSize,
     ) -> waterui_core::layout::ViewDimensions {
         let (layout, children) = view.as_inner().as_parts();

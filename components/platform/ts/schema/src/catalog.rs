@@ -28,6 +28,7 @@ use crate::tree::{StructSchema, TypeSchema};
 /// The whole vocabulary: every component JSX may name, and every modifier
 /// attribute that may be written on one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct CatalogSchema {
     /// The components, in the order the catalog declares them.
     pub components: &'static [ComponentSchema],
@@ -35,9 +36,24 @@ pub struct CatalogSchema {
     pub modifiers: &'static [ModifierSchema],
 }
 
+impl CatalogSchema {
+    /// A catalog of `components` and `modifiers`, in declaration order.
+    #[must_use]
+    pub const fn new(
+        components: &'static [ComponentSchema],
+        modifiers: &'static [ModifierSchema],
+    ) -> Self {
+        Self {
+            components,
+            modifiers,
+        }
+    }
+}
+
 /// One component: its tag name, its configuration attributes, and what its
 /// children are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ComponentSchema {
     /// The JSX tag name — `"VStack"`, `"Toggle"`.
     pub name: &'static str,
@@ -55,8 +71,33 @@ pub struct ComponentSchema {
     pub children: ChildrenSlot,
 }
 
+impl ComponentSchema {
+    /// The component `name`, described by `summary`, configured by the props
+    /// struct `attributes`, whose JSX children are `children`.
+    #[must_use]
+    pub const fn new(
+        name: &'static str,
+        summary: &'static str,
+        attributes: StructSchema,
+        children: ChildrenSlot,
+    ) -> Self {
+        Self {
+            name,
+            summary,
+            attributes,
+            children,
+        }
+    }
+}
+
 /// One modifier attribute and the shape its value takes.
+///
+/// The `.d.ts` generator opens every modifier's doc comment with
+/// [`MODIFIER_ORDER_SENTENCE`] followed by [`summary`](Self::summary): the
+/// ordering rule is stated where writing the attributes in the wrong order
+/// happens, and this entry stays the modifier's own sentence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ModifierSchema {
     /// The attribute name — `"padding"`, `"background"`.
     pub name: &'static str,
@@ -66,8 +107,36 @@ pub struct ModifierSchema {
     pub value: &'static TypeSchema,
 }
 
+impl ModifierSchema {
+    /// The modifier attribute `name`, described by `summary`, accepting
+    /// `value`.
+    #[must_use]
+    pub const fn new(
+        name: &'static str,
+        summary: &'static str,
+        value: &'static TypeSchema,
+    ) -> Self {
+        Self {
+            name,
+            summary,
+            value,
+        }
+    }
+}
+
+/// The sentence every modifier attribute's generated doc comment opens with.
+///
+/// Modifier order is the one JSX rule an author cannot infer from the
+/// vocabulary, so the `.d.ts` generator prepends this verbatim to each
+/// [`ModifierSchema::summary`]. It is data rather than prose beside the data:
+/// the generator copies it, so it lives in the one table every generated
+/// surface is built from instead of being repeated inside each entry's
+/// summary.
+pub const MODIFIER_ORDER_SENTENCE: &str = "Modifier attributes apply in written order, left to right; reordering them changes the result.";
+
 /// What a component's JSX children are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum ChildrenSlot {
     /// The component takes no children; passing any is an error.
     None,
@@ -195,6 +264,7 @@ pub const fn encode_catalog<const N: usize>(catalog: &CatalogSchema) -> [u8; N] 
 
 /// An owned [`CatalogSchema`], recovered from an artifact.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Catalog {
     /// The components, in catalog order.
     pub components: Vec<Component>,
@@ -204,6 +274,7 @@ pub struct Catalog {
 
 /// An owned [`ComponentSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Component {
     /// The JSX tag name.
     pub name: String,
@@ -217,6 +288,7 @@ pub struct Component {
 
 /// An owned [`ModifierSchema`].
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Modifier {
     /// The attribute name.
     pub name: String,
@@ -304,12 +376,14 @@ pub fn decode_catalog(payload: &[u8]) -> Result<Catalog, DecodeError> {
             expected: FORMAT_VERSION,
         });
     }
-    if payload.get(reader.pos) != Some(&kind::CATALOG) {
+    // Read rather than peeked: a payload that ends after the version byte is
+    // truncated, not a payload of another kind.
+    let found = reader.byte()?;
+    if found != kind::CATALOG {
         return Err(DecodeError::NotACatalog {
-            found: payload_kind(payload.get(reader.pos).copied()),
+            found: payload_kind(found),
         });
     }
-    reader.pos += 1;
 
     let count = reader.length()?;
     if count == 0 {

@@ -6,7 +6,8 @@ description: Build cross-platform native apps with the WaterUI Rust framework. U
 # Building apps with WaterUI
 
 WaterUI is a Rust UI framework that renders to real native widgets (UIKit/AppKit,
-Android View, GTK4) or to its own GPU renderer, from one view tree. It is
+GTK4) or to its own GPU renderer — Hydrolysis, which is also the Android
+backend — from one view tree. It is
 **fine-grained reactive**: a value change updates exactly the widget that reads it,
 without rebuilding the surrounding tree.
 
@@ -132,6 +133,8 @@ Async is the same shape: `.action_async(|State(x): State<Binding<Str>>| async mo
 
 `ForEach`/`List` diff by `Identifiable` id, so inserting one row touches one row.
 `watch` over a `Vec` rebuilds everything and can escalate to a full-window rebuild.
+The list's mutators take `&mut self`; a clone shares the same list, so a handler mutates
+its own clone (`mut state: Editor`).
 
 ```rust
 use waterui::Identifiable;                             // the derive is NOT in the prelude
@@ -141,7 +144,7 @@ use waterui::reactive::collection::List as ReactiveList;
 #[derive(Clone, Identifiable)]
 struct Row { #[id] id: u64, title: Str }
 
-let rows = ReactiveList::from(seed_rows);              // bulk-seed; .push/.insert/.remove diff by id
+let rows = ReactiveList::from(seed_rows);              // bulk-seed; .push/.insert/.remove (&mut self) diff by id
 
 Lazy::for_each(rows.clone(), |row| text(row.title))        // reactive sequence in a stack
 List::for_each(rows.clone(), |row| ListItem::new(...))     // platform list: lazy, editable
@@ -368,6 +371,7 @@ clearer than a long `when` chain.
 .a11y_label(..) / .a11y_value(..) / .a11y_id("settings.wifi") / .a11y_role(..)
 .on_appear(..) / .on_change(&signal, ..) / .on_tap(..) / .gesture(g, handler) / .context_menu(items)
 .cursor(style) / .ignore_safe_area(EdgeSet::ALL) / .floating()
+.ignore_safe_area(SafeAreaRegions::KEYBOARD.on(EdgeSet::BOTTOM))   // regions × edges
 ```
 
 Visual modifiers take signals — pass bindings straight in; the filter row works on *any*
@@ -445,7 +449,7 @@ web, graphics, and data rows live in [references/media.md](references/media.md).
 | Collections | `List` `ListItem` `ForEach` `SignalCollection` `ScrollController` |
 | Navigation | `Tabs` `Tab` `NavigationStack` `NavigationLink` `NavigationSplitView` `Window` |
 | Forms | `#[form]` `form()` `DatePicker` `Calendar` `ColorPicker` `FilePicker` |
-| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` |
+| Overlays | `Snackbar` `SnackbarManager` `FullScreenOverlayManager` `Card` `suspense` `.anchored_overlay` `AnchoredOverlay` `.dialog` `Dialog` `DialogAction` |
 | Media | `Photo` `Image` `VideoPlayer` `PlaybackSession` `MediaPicker` |
 | Data | `Chart` (12 kinds) `Map` |
 | Graphics | `Canvas` `Barcode::qr()` `Svg` `shader!` `ParticleSystem` `GpuContentView` `ExternalFrameView` icon sets |
@@ -466,6 +470,11 @@ the real accessibility tree with taps and assertions — it is simultaneously an
 interaction test and an accessibility check, which is why a component that cannot be
 tested this way is a bug rather than a gap. Details in
 [references/testing.md](references/testing.md).
+
+Backend selection uses `[platforms.<platform>] backend = "..."` in `Water.toml`;
+`--backend` may confirm, but not contradict, that declaration. Without either,
+the platform default applies. See [platforms and backends](references/project.md#platforms-and-backends),
+including the Hydrolysis requirement for Linux previews.
 
 ## Driving the app from an agent
 
@@ -511,6 +520,66 @@ surface — state-filtered selectors, element-anchored pointer input, `settle: f
 `preview` renders a `#[preview]` function or an `expr` expression (e.g. `text("hi")`) and
 returns the PNG image content directly — use it to check one component without driving the
 whole app.
+
+## TypeScript views
+
+A view can be authored in TypeScript — JSX over the same component catalog — and mounted
+from Rust with `tsx!`, which returns an ordinary `View` that slots anywhere a view goes.
+The application crate needs `waterui`'s opt-in `ts` feature. The authoring guide is
+[docs/jsx.md](../../docs/jsx.md); the rules that differ from ordinary Rust views:
+
+- The path is relative to the Rust file that mounts the module, and the module id the
+  bundle publishes is that file's path relative to the crate root, extension kept —
+  `tsx!("./promo.tsx", …)` in `src/lib.rs` mounts `"src/promo.tsx"`. The macro stats the
+  file at compile time but never parses it; the `water` CLI bundles the modules the
+  binary mounts.
+- Props are a struct literal naming a `#[derive(TsProps)]` type; the Rust struct and the
+  TypeScript interface are checked against each other by contract hash, so a bundle from
+  another build is refused rather than mis-mounted. `String` ⇄ `string`,
+  `Binding<T>` ⇄ `Signal<T>`, `Box<dyn Fn()>` ⇄ `() => void`, and
+  `#[ts(rename = "onDismiss")]` maps a snake_case field to its camelCase prop. A module
+  that takes no props is `tsx!("./about.tsx")`, typed against `NoProps`.
+
+```rust
+use waterui::ts::schema::TsProps;
+use waterui::tsx;
+use waterui::Binding;
+
+#[derive(TsProps)]
+struct PromoProps {
+    headline: String,
+    unread: Binding<u32>,
+    #[ts(rename = "onDismiss")]
+    on_dismiss: Box<dyn Fn()>,
+}
+```
+
+```rust
+let view = tsx!(
+    "./promo.tsx",
+    PromoProps {
+        headline: String::from("Welcome back"),
+        unread,
+        on_dismiss: Box::new(|| {}),
+    }
+);
+```
+
+- **Attribute order is semantic.** `<Text padding={16} background={…}>` is
+  `text(…).padding_with(16.0).background(…)` — the same attributes in another order are
+  another view, and a modifier attribute may never arrive through a spread.
+- Component tags import from `"waterui"` and resolve against the catalog
+  (`<VStack>` `<HStack>` `<Text>` `<Button>` `<Toggle>` `<Slider>` `<List>` `<Tabs>` …),
+  with `<Show>` `<For by>` `<Suspense>` `<Box>` for control flow and `createSignal`,
+  `createMemo`, `createContext`/`useContext`, `useTheme`, `useLocale` from the same
+  module. `<Text>` children localize through the same `TranslationCatalog` as `text(…)`.
+- Tests are ordinary `#[waterui::test]`s over the mounted tree, run through `water test`:
+  it builds the bundle and hands its path to the test host in `WATERUI_TS_BUNDLE`, and
+  `water preview` does the same for a `#[preview]`. Under bare `cargo nextest run`
+  nothing sets it, so a `tsx!` mount fails naming the variable and `water test`.
+- The engine differs by platform: JavaScriptCore on iOS, macOS, tvOS and visionOS;
+  QuickJS-NG on Android, Linux and Windows; **unsupported on watchOS** — the platform
+  has no JavaScriptCore and embedding QuickJS-NG there is not supported.
 
 ## Gotchas worth memorizing
 

@@ -1,3 +1,8 @@
+# Generated test fixtures are produced by nextest setup scripts (#2386), so
+# a local run and a CI leg share one path: each generator below is pinned,
+# hash-verified, and a cheap no-op once its output exists and verifies.
+experimental = ["setup-scripts"]
+
 # Local runs keep nextest's defaults.
 [profile.default]
 # The AppKit/UIKit-touching native tests share process-wide framework state;
@@ -79,7 +84,7 @@ slow-timeout = { period = "120s", terminate-after = 15 }
 # test hides flakiness rather than fixing it — a red hydrolysis leg is the
 # honest state until the device race is fixed (#1441 review).
 [[profile.ci.overrides]]
-filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example)'
+filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-layout) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example)'
 retries = { backoff = "fixed", count = 2, delay = "1s" }
 
 # The CLI's tests shell out to cargo and git — `cargo metadata`, `git clone`,
@@ -91,6 +96,22 @@ retries = { backoff = "fixed", count = 2, delay = "1s" }
 [[profile.ci.overrides]]
 filter = 'package(waterui-cli)'
 retries = { backoff = "fixed", count = 2, delay = "1s" }
+
+# The large-path gates of water-rs/waterui#2546 are legitimately slow: each
+# renders the eight large-path corpus scenes — up to 10k flattened segments
+# over a 1024x768 surface — twice over, and `large_paths` also computes the
+# oracle's f64 reference for every one of them. Locally, in a debug build on
+# a Metal device, each takes about a minute; on CI's software rasterizer, in
+# an unoptimized build, several. The ceiling is raised rather than the
+# coverage cut, as for the benches above: these are the gates the GPU
+# coverage route (water-rs/waterui#2543) has to pass.
+[[profile.default.overrides]]
+filter = 'test(route_diff) or test(large_paths_match_the_oracle)'
+slow-timeout = { period = "300s", terminate-after = 6 }
+
+[[profile.ci.overrides]]
+filter = 'test(route_diff) or test(large_paths_match_the_oracle)'
+slow-timeout = { period = "300s", terminate-after = 6 }
 
 # How many wgpu devices may exist at once on the Windows runner.
 #
@@ -173,5 +194,101 @@ test-group = 'metal-shader-compile'
 
 [[profile.ci.overrides]]
 platform = 'cfg(target_os = "windows")'
-filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-ffi) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example) or package(hydrolysis)'
+filter = 'package(waterui) or package(waterui-browser-cef) or package(waterui-browser-wpe) or package(waterui-controls) or package(waterui-form) or package(waterui-graphics) or package(waterui-icon) or package(waterui-icons-lucide) or package(waterui-icons-material-icon) or package(waterui-inspector-app) or package(waterui-layout) or package(waterui-map) or package(waterui-mcp) or package(waterui-media) or package(waterui-navigation) or package(waterui-shape) or package(waterui-testing) or package(waterui-text) or package(waterui-webview) or package(gallery-example) or package(list-example) or package(reply-example) or package(stress-example) or package(typography-rtl-example) or package(hydrolysis)'
 test-group = 'gpu-device'
+
+# How many `native_app` cases may run at once on the iOS Simulator.
+#
+# A `native_app` harness runs its cases inside a launched `UIApplication`:
+# the `nextest-ios-sim.sh` target runner installs the binary as an `.app`
+# and `simctl launch`es it, one case per launch. A simulator keeps one
+# installed copy of a bundle identifier and shows one application in the
+# foreground, so two launches at once would replace or terminate each other.
+# The group declares that serialization to nextest, which then keeps its
+# other slots for the bare `simctl spawn` binaries; the runner's own lock is
+# only the guard for `cargo test` or two separate runs sharing one device.
+[test-groups.ios-sim-app]
+max-threads = 1
+
+[[profile.default.overrides]]
+platform = 'cfg(target_os = "ios")'
+filter = 'binary(native_app)'
+test-group = 'ios-sim-app'
+
+[[profile.ci.overrides]]
+platform = 'cfg(target_os = "ios")'
+filter = 'binary(native_app)'
+test-group = 'ios-sim-app'
+
+# The pinned, hash-verified generators, one per uncommitted asset a suite
+# needs. `uv run` reads each script's inline metadata the same way CI does.
+[scripts.setup.test-fonts]
+command = ["uv", "run", "backends/hydrolysis/test-fonts/install.py"]
+
+[scripts.setup.media-live-photo-motion]
+command = [
+    "uv",
+    "run",
+    "components/multimedia/media/tests/fixtures/generate-live-photo-motion.py",
+    "components/multimedia/media/tests/fixtures/live-photo-motion.mp4",
+]
+
+[scripts.setup.cli-roboto]
+command = ["uv", "run", "cli/tests/fixtures/fonts/generate.py"]
+
+# Which tests each generator serves. A run that reaches none of a rule's
+# packages runs no generator. Every profile, `ci` included, applies the
+# default profile's script rules, so they are written once.
+#
+# `test-fonts` serves the packages whose test binaries link a font
+# consumer — `waterui-testing`, whose styled suites resolve the installed
+# families through system font discovery, or `hydrolysis`, whose own test
+# targets render the same families under `testing::TestStyle` through the
+# dev-dependency the crate carries on itself. That set is a fact of the
+# package graph, and `.github/tools/affected` (`affected nextest-fixtures`,
+# run by the affected-scope job) fails CI naming every package this filter
+# is missing or carries without cause. `rdeps(waterui-testing)` cannot
+# replace the list: it follows dev-dependency edges at every hop, while
+# cargo links a package's dev-dependencies into its own tests only.
+#
+# `media-live-photo-motion` generates the clip waterui-media's live-photo
+# suites read. `cli-roboto` serves the waterui-cli platform test that copies
+# the fixture into a generated project — a path membership, not a dependency
+# edge.
+[[profile.default.scripts]]
+filter = '''
+    package(gallery-example)
+ or package(hydrolysis)
+ or package(hydrolysis-android-test-app)
+ or package(list-example)
+ or package(reply-example)
+ or package(skill_snippets)
+ or package(stress-example)
+ or package(typography-rtl-example)
+ or package(waterui)
+ or package(waterui-controls)
+ or package(waterui-form)
+ or package(waterui-graphics)
+ or package(waterui-icon)
+ or package(waterui-icons-lucide)
+ or package(waterui-icons-material-icon)
+ or package(waterui-inspector-app)
+ or package(waterui-layout)
+ or package(waterui-macros)
+ or package(waterui-mcp)
+ or package(waterui-media)
+ or package(waterui-navigation)
+ or package(waterui-testing)
+ or package(waterui-text)
+ or package(waterui-ts)
+ or package(waterui-webview)
+'''
+setup = 'test-fonts'
+
+[[profile.default.scripts]]
+filter = 'package(waterui-media)'
+setup = 'media-live-photo-motion'
+
+[[profile.default.scripts]]
+filter = 'package(waterui-cli)'
+setup = 'cli-roboto'

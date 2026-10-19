@@ -26,22 +26,19 @@ determinator tool on it, then writes `GITHUB_OUTPUT` keys:
 - `msrv` — `true` when the diff can move the toolchain floor: a
   `rust-version` key, any Cargo.toml dependency section (including
   `target.<cfg>.dependencies`), or Cargo.lock.
-- `test-assets` — `true` when a package whose `--all-targets` build
-  compiles a generated asset (`hydrolysis/testing`'s `TEST_FONTS`
-  `include_bytes!`s, or the cli's generated `Roboto-Regular.ttf` fixture)
-  is in scope, or the whole workspace is. The set is the tool's
-  `test_asset_consumers` — the dev-dependency closure plus `waterui-cli`
-  itself — so a crate that merely dev-depends on `waterui-testing`,
-  `waterui-controls` say, still gets the fonts before its check.
 - `scene-assets` — `true` when a package whose `--all-targets` compile
   `include_bytes!`s a generated Cherenkov scene font is in scope, or the
   whole workspace is. That is a fixed owner set, not a dev-dependency
-  closure: only `cherenkov-oracle`'s glyph tests and `cherenkov-gpu`'s
-  bitmap/browser test targets embed `scenes/fonts/*`, and test-only code
-  never compiles for a dependent — so `SCENE_ASSET_OWNERS` names them
-  directly. Runtime readers (`cherenkov-cpu`'s tests, `cherenkov-bench`'s
-  corpus) are not in it: the gate never runs tests, and every `full` job
-  generates the tree unconditionally.
+  closure: `cherenkov-oracle`'s glyph tests, `cherenkov-gpu`'s
+  bitmap/browser test targets, and `cherenkov-cpu`'s bitmap unit tests
+  `include_bytes!` `scenes/fonts/*`. Test-only code never compiles for a
+  dependent, so `SCENE_ASSET_OWNERS` names them directly. `cherenkov-cpu`'s
+  integration tests and `cherenkov-bench` read the corpus at run time and
+  are not in the set: the gate never runs tests. Jobs that execute those
+  tests generate the corpus themselves.
+- `apple-legs` — JSON list of test.yml's `macos` matrix entries: the Apple
+  lint targets with an Apple-gated crate in scope (`apple_gated.py`),
+  `[]` when there is none, so no macOS runner starts to find nothing.
 
 Usage:
 
@@ -60,6 +57,7 @@ import subprocess
 import sys
 import tomllib
 
+from apple_gated import legs as apple_legs
 from rust_semantic_diff import changed_entries, git, semantic_differs, source_at
 
 # Cargo.toml tables whose content can move the dependency graph or the
@@ -80,7 +78,7 @@ DEPENDENCY_TABLES = (
 # `scenes/fonts/*` subsets). The gate's `scene-assets` output is this set
 # intersected with the scoped package names: test-only code never
 # compiles for a dependent, so no dev-dependency closure is involved.
-SCENE_ASSET_OWNERS = {"cherenkov-oracle", "cherenkov-gpu"}
+SCENE_ASSET_OWNERS = {"cherenkov-oracle", "cherenkov-gpu", "cherenkov-cpu"}
 
 
 def is_prose(path):
@@ -184,7 +182,7 @@ def main():
         "package-args": "",
         "comment-only": "false",
         "msrv": "true",
-        "test-assets": "true",
+        "apple-legs": json.dumps(apple_legs("workspace"), separators=(",", ":")),
     }
     try:
         base = git("merge-base", args.base, args.head).strip()
@@ -220,29 +218,26 @@ def main():
         )
 
         # The tool always runs: its `owners` map is the only path→crate
-        # mapper (the comment-only lane reads it), and
-        # `test_asset_consumers` drives `test-assets` in both lanes.
+        # mapper (the comment-only lane reads it).
         report = json.loads(
             subprocess.check_output(
                 [args.tool, "--base", base, "--head", args.head], text=True
             )
         ) if entries else None
 
-        consumers = set((report or {}).get("test_asset_consumers", []))
-
-        def assets_for(names):
-            return "true" if consumers & set(names) else "false"
-
         def scene_assets_for(names):
             return "true" if SCENE_ASSET_OWNERS & set(names) else "false"
+
+        def apple_legs_for(scope):
+            return json.dumps(apple_legs(scope), separators=(",", ":"))
 
         if not entries:
             outputs.update(
                 {
                     "packages": "",
                     "msrv": "false",
-                    "test-assets": "false",
                     "scene-assets": "false",
+                    "apple-legs": "[]",
                 }
             )
         elif report["workspace"]:
@@ -252,8 +247,8 @@ def main():
                 {
                     "packages": "workspace",
                     "msrv": "true" if msrv else "false",
-                    "test-assets": "true",
                     "scene-assets": "true",
+                    "apple-legs": apple_legs_for("workspace"),
                 }
             )
         elif comment_only:
@@ -270,8 +265,8 @@ def main():
                     "package-args": " ".join(f"-p {name}" for name in owners),
                     "comment-only": "true",
                     "msrv": "true" if msrv else "false",
-                    "test-assets": assets_for(owners),
                     "scene-assets": scene_assets_for(owners),
+                    "apple-legs": apple_legs_for(" ".join(owners)),
                 }
             )
         else:
@@ -281,8 +276,8 @@ def main():
                     "packages": " ".join(affected),
                     "package-args": " ".join(f"-p {name}" for name in affected),
                     "msrv": "true" if msrv else "false",
-                    "test-assets": assets_for(affected),
                     "scene-assets": scene_assets_for(affected),
+                    "apple-legs": apple_legs_for(" ".join(affected)),
                 }
             )
     except Exception as error:  # widen on any failure — never scope on a guess

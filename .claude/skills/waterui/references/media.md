@@ -28,6 +28,7 @@ Photo::new("https://waterui.dev/logo.png")   // impl IntoComputed<Url>; Url: Fro
     .on_event(|event| match event {          // inherent on Photo — attach it BEFORE filters,
         PhotoEvent::Loaded => (),            // which wrap the view in a Filtered<..> type
         PhotoEvent::Error(_msg) => (),
+        _ => (),                             // the event enum is #[non_exhaustive]
     })
     .blur(radius.clone())
     .saturation(sat.clone())
@@ -103,6 +104,7 @@ WebView::open("https://waterui.dev")
         WebViewEvent::Loaded => (),
         WebViewEvent::Redirect { from: _, to: _ } => (),
         WebViewEvent::Error(_) => (),
+        _ => (),                                        // the event enum is #[non_exhaustive]
     })
 ```
 
@@ -141,13 +143,17 @@ struct PageApi { address: Binding<Str>, greetings: Binding<u32> }
 impl PageApi {
     // async fn  ->  page calls `await waterui.invoke("greet", {name})`
     async fn greet(&self, name: String) -> Json<Greeting> { Json(Greeting::for_name(name)) }
-    // fn returning a signal  ->  mirrored state: `waterui.state.address`, `waterui.watch("address", cb)`
+    // fn returning a signal  ->  mirrored state: after `await waterui.ready`, `waterui.state.address`, `waterui.watch("address", cb)`
     fn address(&self) -> Binding<Str> { self.address.clone() }        // Binding: JS writes flow back
     fn greetings(&self) -> Computed<u32> { self.greetings.clone().computed() }   // read-only mirror
 }
 
 WebView::open(url).serve(PageApi { address, greetings })
 ```
+
+A page receives mirrored values with the reply to its own first request, never in the
+script injected into it: `waterui.ready` resolves once they have arrived, and reading or
+assigning `waterui.state.<key>` before that throws. Await it before the first read.
 
 A typed `Json<T>` payload requires `T: Serialize`/`Deserialize`, so the app needs `serde`
 (with the `derive` feature) as a direct dependency.
@@ -201,6 +207,30 @@ and lives on the render thread once installed — it must NOT hold `Binding`s or
 state; instead read reactive state in a `.on_frame` hook (UI thread, once per frame) and post
 plain values to the content through shared `Arc<Mutex<..>>` state. `waterui::graphics` re-exports
 `bytemuck`. Verify GPU components with offscreen rendering, never by reasoning about the code.
+
+`.effect(..)` post-processes a view's rendered output with a fragment shader the app writes —
+the hook for CRT, scanline, or distortion passes over existing content (a terminal's custom
+shader is the canonical case). The WGSL module defines `@fragment fn main(in: VertexOutput)`;
+the prelude supplies `VertexOutput` (`position`, `uv`), `input_texture`/`input_sampler`,
+`uniforms` (`resolution`, `input_resolution`, `time`, `time_delta`, `frame`, `params`), and
+`effect_param(i)`:
+
+```rust
+use waterui::graphics::ShaderEffect;
+
+let crt = ShaderEffect::new(include_str!("crt.wgsl"))?; // invalid WGSL is an Err, never a blank view
+terminal()
+    .effect(crt.clone())            // a clone shares the validated module; constant params carry
+    .param(strength.clone())        // a signal — the shader reads it as effect_param(0u)
+    .animated(focused.clone())      // a bool signal — a frame after every frame while true
+```
+
+`ShaderEffect::new` parses and validates the module on the CPU, so a shader read from a config
+file is a `Result` handled where it is read. Parameters index in call order — a constant
+`.param(0.35)` on the effect counts too, and watched parameters appended by `.param(signal)`
+follow it — at most `SHADER_EFFECT_MAX_PARAMS` (16). `.animated()` on the effect itself is the
+constant form; the view-level `.animated(signal)` drives the flag reactively. `.effect(..)`
+needs the `gpu` feature and a backend that runs GPU effects.
 
 Frames that already live in GPU memory (a decoder's `CVPixelBuffer`, an `AHardwareBuffer`, a
 dmabuf) are not drawn with `GpuContent`: implement `ExternalFrameSource` and wrap it in

@@ -55,7 +55,7 @@ async fn run_build_cache(shell: &Shell, args: BuildCacheArgs) -> Result<()> {
     }
 
     if args.shared_target {
-        match water_dir::remove_shared_target_dir().await? {
+        match water_dir::remove_shared_target_dir(&waterui_cli::toolchain::Host::current()).await? {
             Some(bytes) => success!(
                 shell,
                 "Removed the shared Cargo target directory ({} reclaimed)",
@@ -72,7 +72,12 @@ async fn run_build_cache(shell: &Shell, args: BuildCacheArgs) -> Result<()> {
         project_path.display()
     );
 
-    match water_dir::cleanup_stale_build_caches_for_project(&project_path).await? {
+    match water_dir::cleanup_stale_build_caches_for_project(
+        &waterui_cli::toolchain::Host::current(),
+        &project_path,
+    )
+    .await?
+    {
         BuildCacheGcOutcome::Ran(summary) => {
             success!(
                 shell,
@@ -95,7 +100,9 @@ async fn run_build_cache(shell: &Shell, args: BuildCacheArgs) -> Result<()> {
 async fn report_build_cache_usage(shell: &Shell, project_path: &std::path::Path) -> Result<()> {
     header!(shell, "Managed build cache usage");
 
-    let report = water_dir::survey_build_cache_usage(project_path).await?;
+    let report =
+        water_dir::survey_build_cache_usage(&waterui_cli::toolchain::Host::current(), project_path)
+            .await?;
     if report.entries.is_empty() {
         note!(shell, "The managed build cache is empty");
         return Ok(());

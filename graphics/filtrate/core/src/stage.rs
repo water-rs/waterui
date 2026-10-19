@@ -17,6 +17,7 @@
 //! in declaration order, by the stage's [`ParamSource`]s.
 
 use crate::OperatingSpace;
+use crate::filter::Filter;
 
 /// Where one member of a snippet's `Params` struct takes its value from.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -143,4 +144,59 @@ pub trait StageCollector {
 
     /// Records a spatial stage.
     fn spatial(&mut self, stage: Placed<SpatialStage>);
+}
+
+/// One link of a filter chain, as a backend sees it: the concrete filter,
+/// erased so it can be downcast, and the offsets that place its parameter
+/// and image indices in the flattened chain.
+#[derive(Clone, Copy)]
+pub struct FilterLink<'a> {
+    filter: &'a dyn core::any::Any,
+    /// The index of this link's first value in the chain's flattened params.
+    pub param_base: usize,
+    /// The index of this link's first image in the chain's flattened images.
+    pub image_base: usize,
+}
+
+impl<'a> FilterLink<'a> {
+    /// A link at offset zero: the filter's own parameters and images.
+    #[must_use]
+    pub const fn new<F: Filter>(filter: &'a F) -> Self {
+        Self {
+            filter,
+            param_base: 0,
+            image_base: 0,
+        }
+    }
+
+    /// The same link, shifted by further offsets.
+    #[must_use]
+    pub const fn shifted(self, params: usize, images: usize) -> Self {
+        Self {
+            filter: self.filter,
+            param_base: self.param_base + params,
+            image_base: self.image_base + images,
+        }
+    }
+
+    /// The link as `&F` when this link is a filter of that type.
+    #[must_use]
+    pub fn downcast_ref<F: Filter>(&self) -> Option<&'a F> {
+        self.filter.downcast_ref()
+    }
+}
+
+impl core::fmt::Debug for FilterLink<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FilterLink")
+            .field("param_base", &self.param_base)
+            .field("image_base", &self.image_base)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Sink for the links reported by [`Filter::visit_links`](crate::Filter::visit_links).
+pub trait LinkVisitor {
+    /// Records one link of the chain, in application order.
+    fn link(&mut self, link: FilterLink<'_>);
 }

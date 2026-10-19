@@ -8,6 +8,7 @@ use waterui_text::{IntoText, font::Title};
 
 /// Visual style for a [`Card`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CardStyle {
     /// Use the card style provided by the installed theme.
     #[default]
@@ -22,6 +23,10 @@ pub enum CardStyle {
 
 /// Theme tokens used by the Rust-side [`Card`] composer.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
 pub struct CardTheme {
     /// Default card style.
     pub default_style: CardStyle,
@@ -39,6 +44,10 @@ pub struct CardTheme {
 
 /// Per-style card tokens.
 #[derive(Debug, Clone)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "style-contract token table: every style package supplies each token, so a new token must fail their build rather than silently fall back to a default"
+)]
 pub struct CardStyleTokens {
     /// Container fill color.
     pub container_color: Color,

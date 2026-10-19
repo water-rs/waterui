@@ -1,10 +1,11 @@
 //! A per-view frame clock.
 //!
 //! [`FrameClock`] drives a redraw tick for one view: while the view's window
-//! has a screen it runs on a `CADisplayLink` at that display's maximum rate;
-//! when the window loses its screen — or on devices where a display link
-//! cannot run — it degrades to re-arming itself off the main run loop, so a
-//! GPU surface keeps ticking through screen changes and off-screen windows.
+//! has a screen it runs on a `CADisplayLink` at that display's maximum rate.
+//! A window with no screen disarms the link — the view is not on any display,
+//! so there is no native frame cadence to tick against — while leaving the
+//! clock's request active so a later attachment re-arms it. A windowless view
+//! stops the clock entirely.
 //!
 //! # Safety
 //!
@@ -26,11 +27,14 @@ use objc2_quartz_core::{CADisplayLink, CAFrameRateRange};
 
 use crate::PlatformView;
 use crate::callback::guarded;
-use crate::main_queue::enqueue_local;
 
 /// The ivars of a [`ClockTarget`].
 struct ClockTargetIvars {
     on_frame: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The ticking link's `targetTimestamp` while the frame callback runs
+    /// — the exact presentation timestamp the current callback is
+    /// producing, shared with the owning [`FrameClock`].
+    current_target: Rc<Cell<Option<f64>>>,
 }
 
 define_class!(
@@ -52,20 +56,36 @@ define_class!(
         // `CADisplayLink` posts; it fires only on the run loop the link was
         // added to, which is the main one.
         #[unsafe(method(tick:))]
-        fn tick(&self, _link: &CADisplayLink) {
+        fn tick(&self, link: &CADisplayLink) {
             let handler = self.ivars().on_frame.borrow().clone();
             if let Some(handler) = handler {
+                // The exact frame this tick is producing, readable through
+                // `FrameClock::current_target_timestamp` for the callback's
+                // duration — never an approximation from another clock. The
+                // cell is cloned out before the callback runs: a callback
+                // that stops the clock drops `state.target` — possibly this
+                // object's last strong ref — so `self` is not touched after.
+                let current_target = self.ivars().current_target.clone();
+                current_target.set(Some(link.targetTimestamp()));
                 guarded("display link frame", move || handler());
+                current_target.set(None);
             }
         }
     }
 );
 
 impl ClockTarget {
-    /// A target that posts its frame callback to `on_frame`.
-    fn new(mtm: MainThreadMarker, on_frame: Rc<dyn Fn()>) -> Retained<Self> {
+    /// A target that posts its frame callback to `on_frame`, recording the
+    /// ticking link's target timestamp into `current_target` for the
+    /// callback's duration.
+    fn new(
+        mtm: MainThreadMarker,
+        on_frame: Rc<dyn Fn()>,
+        current_target: Rc<Cell<Option<f64>>>,
+    ) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ClockTargetIvars {
             on_frame: RefCell::new(Some(on_frame)),
+            current_target,
         });
         // SAFETY: `init` is `NSObject`'s designated initializer.
         let this: Retained<Self> = unsafe { msg_send![super(this), init] };
@@ -73,27 +93,16 @@ impl ClockTarget {
     }
 }
 
-/// Which clock the driver currently runs.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Clock {
-    /// A `CADisplayLink` on the window's screen.
-    DisplayLink,
-    /// A run-loop re-arm: no screen is driving the view.
-    RunLoop,
-}
-
-/// The per-screen display link and its target.
+/// The armed display link and its target.
 struct State {
-    /// Which clock is armed.
-    clock: Option<Clock>,
-    /// The display link, when `clock == DisplayLink`.
+    /// The display link driving the clock; `None` while nothing is armed.
     link: Option<Retained<CADisplayLink>>,
     /// The selector target, retained for the link's lifetime.
     target: Option<Retained<ClockTarget>>,
 }
 
 /// A redraw clock for one view: ticks at the window screen's maximum refresh
-/// rate, degrading to a run-loop re-arm when no screen drives the view.
+/// rate while the window is on a screen, and stays disarmed otherwise.
 ///
 /// All methods are main-thread only. The closure `on_frame` is invoked once
 /// per tick, on the main thread.
@@ -101,6 +110,9 @@ pub struct FrameClock {
     mtm: MainThreadMarker,
     on_frame: Rc<dyn Fn()>,
     active: Cell<bool>,
+    /// The exact `targetTimestamp` of the tick whose callback is running,
+    /// `None` between ticks — the clock's own record of the current frame.
+    current_target: Rc<Cell<Option<f64>>>,
     state: RefCell<State>,
 }
 
@@ -108,7 +120,7 @@ impl fmt::Debug for FrameClock {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FrameClock")
             .field("active", &self.active.get())
-            .field("clock", &self.state.borrow().clock)
+            .field("armed", &self.state.borrow().link.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -121,8 +133,8 @@ impl FrameClock {
             mtm,
             on_frame: Rc::new(on_frame),
             active: Cell::new(false),
+            current_target: Rc::new(Cell::new(None)),
             state: RefCell::new(State {
-                clock: None,
                 link: None,
                 target: None,
             }),
@@ -131,24 +143,34 @@ impl FrameClock {
 
     /// (Re)starts the clock against `view`'s current window and screen.
     ///
-    /// A window with no screen starts the run-loop clock; a windowless view
-    /// stops the clock entirely.
+    /// A windowless view stops the clock; a window with no screen leaves the
+    /// clock disarmed until a later [`FrameClock::reselect`] finds one.
     pub fn start(&self, view: &PlatformView) {
         self.active.set(true);
         self.reselect(view);
     }
 
-    /// Stops the clock: the display link invalidates, the run-loop re-arm
-    /// stops rescheduling itself.
+    /// Stops the clock: the display link invalidates.
     pub fn stop(&self) {
         self.active.set(false);
         self.disarm();
     }
 
-    /// Whether the clock is armed.
+    /// Whether a display link is armed.
     #[must_use]
     pub fn is_running(&self) -> bool {
-        self.state.borrow().clock.is_some()
+        self.state.borrow().link.is_some()
+    }
+
+    /// The `CACurrentMediaTime` target timestamp of the tick whose frame
+    /// callback is currently running — `Some` only for that callback's
+    /// duration, `None` anywhere else. This is the exact presentation time
+    /// the current frame targets; there is deliberately no approximate
+    /// now/window accessor, so callers outside the callback must use the
+    /// shared presentation anchor's own capture time instead.
+    #[must_use]
+    pub fn current_target_timestamp(&self) -> Option<f64> {
+        self.current_target.get()
     }
 
     /// Re-picks the clock for `view`'s current attachment.
@@ -163,7 +185,9 @@ impl FrameClock {
         };
         let screen = window_screen(&window);
         let Some(screen) = screen else {
-            self.arm_run_loop();
+            // No display drives the view: disarm, but keep the request
+            // active so re-attaching to a screen re-arms the link.
+            self.disarm();
             return;
         };
         let link = self.make_link(&window, &screen);
@@ -173,7 +197,6 @@ impl FrameClock {
                 previous.invalidate();
             }
             state.link = Some(link);
-            state.clock = Some(Clock::DisplayLink);
         }
     }
 
@@ -183,7 +206,7 @@ impl FrameClock {
         window: &PlatformWindow,
         screen: &PlatformScreen,
     ) -> Retained<CADisplayLink> {
-        let target = ClockTarget::new(self.mtm, self.on_frame.clone());
+        let target = ClockTarget::new(self.mtm, self.on_frame.clone(), self.current_target.clone());
         // SAFETY: `displayLinkWithTarget:selector:` retains the pair until
         // the link invalidates; the ivars own the target.
         let link: Retained<CADisplayLink> = unsafe {
@@ -209,45 +232,12 @@ impl FrameClock {
         link
     }
 
-    /// Arms the run-loop clock: one async hop per tick, re-armed while it
-    /// still owns the clock.
-    fn arm_run_loop(&self) {
-        {
-            let mut state = self.state.borrow_mut();
-            if let Some(link) = state.link.take() {
-                link.invalidate();
-            }
-            state.clock = Some(Clock::RunLoop);
-        }
-        self.schedule_wake();
-    }
-
-    /// One wake of the run-loop clock.
-    fn schedule_wake(&self) {
-        let on_frame = self.on_frame.clone();
-        let mtm = self.mtm;
-        let state = std::ptr::from_ref::<Self>(self);
-        enqueue_local(mtm, move |_| {
-            // The clock's owner keeps it alive; the hop runs only while the
-            // run-loop clock is still the armed one.
-            // SAFETY: the hop is dropped with the main queue when the owner
-            // stops owning the clock — the view stops the clock before it
-            // releases it, so `state` stays valid for any scheduled hop.
-            let clock = unsafe { &*state };
-            if clock.state.borrow().clock == Some(Clock::RunLoop) {
-                (on_frame)();
-                clock.schedule_wake();
-            }
-        });
-    }
-
-    /// Drops whatever clock is armed.
+    /// Drops whatever link is armed.
     fn disarm(&self) {
         let mut state = self.state.borrow_mut();
         if let Some(link) = state.link.take() {
             link.invalidate();
         }
-        state.clock = None;
         state.target = None;
     }
 }

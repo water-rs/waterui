@@ -220,6 +220,11 @@ impl State<'_> {
                     }));
                     i += 1;
                 }
+                Command::Text { .. } => {
+                    return Err(CaptureError::Unsupported(
+                        "a text layout the target drew itself; scenes carry glyph runs",
+                    ));
+                }
                 Command::Picture { picture, transform } => {
                     let list = picture.display_list();
                     let body = self.items(
@@ -265,6 +270,7 @@ impl State<'_> {
                             opacity: f64::from(group.opacity),
                             blend: blend(group.blend),
                             blend_space: blend_space(group.blend_space),
+                            filter: None,
                         }));
                     } else if group.blend_space == EngineBlendSpace::Linear {
                         // A group carrying layers cannot sit in `GroupItem`;

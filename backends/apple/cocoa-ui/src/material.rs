@@ -57,11 +57,21 @@ const fn material(level: MaterialLevel) -> NSVisualEffectMaterial {
     }
 }
 
+/// Whether `level` blends what lies behind the window — the desktop —
+/// rather than the window's own content. A window whose background is such a
+/// level must be non-opaque for the desktop to show through.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub const fn blends_behind_window(level: MaterialLevel) -> bool {
+    matches!(level, MaterialLevel::UltraThin | MaterialLevel::Thin)
+}
+
 #[cfg(target_os = "macos")]
 const fn blending_mode(level: MaterialLevel) -> NSVisualEffectBlendingMode {
-    match level {
-        MaterialLevel::UltraThin | MaterialLevel::Thin => NSVisualEffectBlendingMode::BehindWindow,
-        _ => NSVisualEffectBlendingMode::WithinWindow,
+    if blends_behind_window(level) {
+        NSVisualEffectBlendingMode::BehindWindow
+    } else {
+        NSVisualEffectBlendingMode::WithinWindow
     }
 }
 

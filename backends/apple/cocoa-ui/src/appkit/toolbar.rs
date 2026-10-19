@@ -36,11 +36,11 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::sel;
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
-    NSImage, NSLayoutAttribute, NSLayoutConstraint, NSSearchToolbarItem, NSSplitViewController,
-    NSSplitViewItem, NSSplitViewItemBehavior, NSTitlebarAccessoryViewController, NSToolbar,
-    NSToolbarDelegate, NSToolbarDisplayMode, NSToolbarItem, NSToolbarItemIdentifier,
-    NSTrackingSeparatorToolbarItem, NSView, NSWindow, NSWindowStyleMask, NSWindowTitleVisibility,
-    NSWindowToolbarStyle,
+    NSControlSize, NSFont, NSImage, NSLayoutAttribute, NSLayoutConstraint, NSSearchToolbarItem,
+    NSSplitViewController, NSSplitViewItem, NSSplitViewItemBehavior,
+    NSTitlebarAccessoryViewController, NSToolbar, NSToolbarDelegate, NSToolbarDisplayMode,
+    NSToolbarItem, NSToolbarItemIdentifier, NSTrackingSeparatorToolbarItem, NSView, NSWindow,
+    NSWindowStyleMask, NSWindowTitleVisibility, NSWindowToolbarStyle,
 };
 use objc2_core_foundation::CGRect;
 use objc2_foundation::{
@@ -172,11 +172,32 @@ const SEARCH_ITEM_WIDTH: f64 = 325.0;
 /// The search accessory row's height, measured off the platform's window.
 const SEARCH_ROW_HEIGHT: f64 = 38.0;
 
+/// The field's height inside the accessory row, measured off the
+/// platform's window.
+const SEARCH_FIELD_HEIGHT: f64 = 28.0;
+
+/// The field's share of the window's width inside the accessory row —
+/// 328 pt at a 800 pt window — measured off the platform's window.
+const SEARCH_FIELD_WIDTH_FRACTION: f64 = 0.41;
+
+/// The field's font size inside the accessory row: the field the
+/// platform's `.searchable` places in the same row draws the 11 pt
+/// system font, measured off its window.
+const SEARCH_ROW_FONT_SIZE: f64 = 11.0;
+
 thread_local! {
     /// The live coordinators, keyed by the window pointer.
     static COORDINATORS: RefCell<HashMap<usize, Weak<WindowToolbar>>> =
         RefCell::new(HashMap::new());
 }
+
+/// The prefix of every window's toolbar identifier; the window's key
+/// completes it. `AppKit` synchronises item insertion and removal across
+/// every toolbar that shares an identifier, so a shared identifier would
+/// make one window's chrome rebuild insert its items into every other
+/// window's toolbar — and ask those windows' delegates for items they do
+/// not offer. Each window's chrome is its own, so each toolbar is too.
+const TOOLBAR_IDENTIFIER_PREFIX: &str = "dev.cocoaui.window.";
 
 fn window_key(window: &NSWindow) -> usize {
     std::ptr::from_ref(window) as usize
@@ -373,7 +394,7 @@ impl WindowToolbar {
             })),
             toolbar: NSToolbar::initWithIdentifier(
                 mtm.alloc(),
-                &NSString::from_str("dev.cocoaui.window"),
+                &NSString::from_str(&format!("{TOOLBAR_IDENTIFIER_PREFIX}{key:x}")),
             ),
             content_owner: RefCell::new(None),
             content: RefCell::new(ToolbarContent::default()),
@@ -677,9 +698,11 @@ impl WindowToolbar {
     /// Keeps the search accessory row in step with the offered content.
     ///
     /// The row is a titlebar accessory pinned to the bottom of the titlebar,
-    /// 38 pt tall with the field centred at 41 % of the window's width. Only
-    /// a *different* search replaces the row; rebuilding for the same one
-    /// leaves it alone so typing never loses focus.
+    /// 38 pt tall with the field centred at 41 % of the window's width and
+    /// drawn in the 11 pt system font — the metrics the platform's
+    /// `.searchable` presents. Only a *different* search replaces the row;
+    /// rebuilding for the same one leaves it alone so typing never loses
+    /// focus.
     fn update_search_accessory(&self) {
         let source = if self.search_is_toolbar_item() {
             None
@@ -723,6 +746,12 @@ impl WindowToolbar {
             self.charge_search_row_height(0.0);
             return;
         };
+        // The one field moves between the two search presentations: the
+        // accessory row carries the platform's `.searchable` metrics —
+        // the 11 pt system font — while the `NSSearchToolbarItem` keeps
+        // `AppKit`'s toolbar-field metrics, so each presentation site sets
+        // the font it needs (the `SEARCH_IDENTIFIER` arm restores it).
+        field.setFont(Some(&NSFont::systemFontOfSize(SEARCH_ROW_FONT_SIZE)));
         let mtm = MainThreadMarker::from(self);
         let accessory = NSTitlebarAccessoryViewController::new(mtm);
         accessory.setLayoutAttribute(NSLayoutAttribute::Bottom);
@@ -738,10 +767,13 @@ impl WindowToolbar {
             field
                 .centerYAnchor()
                 .constraintEqualToAnchor(&container.centerYAnchor()),
+            field.widthAnchor().constraintEqualToAnchor_multiplier(
+                &container.widthAnchor(),
+                SEARCH_FIELD_WIDTH_FRACTION,
+            ),
             field
-                .widthAnchor()
-                .constraintEqualToAnchor_multiplier(&container.widthAnchor(), 0.41),
-            field.heightAnchor().constraintEqualToConstant(28.0),
+                .heightAnchor()
+                .constraintEqualToConstant(SEARCH_FIELD_HEIGHT),
             container
                 .heightAnchor()
                 .constraintEqualToConstant(SEARCH_ROW_HEIGHT),
@@ -912,6 +944,13 @@ impl WindowToolbar {
                     .map(|search| search.field.clone())?;
                 let item = NSSearchToolbarItem::initWithItemIdentifier(mtm.alloc(), &identifier);
                 item.setPreferredWidthForSearchField(SEARCH_ITEM_WIDTH);
+                // The same field may arrive from the accessory row, which
+                // put the row's 11 pt font on it; the toolbar item keeps
+                // `AppKit`'s own toolbar-field metrics, so the regular
+                // control-size system font goes back on before the handoff.
+                field.setFont(Some(&NSFont::systemFontOfSize(
+                    NSFont::systemFontSizeForControlSize(NSControlSize::Regular),
+                )));
                 item.setSearchField(&field);
                 Some(item.into_super())
             }
@@ -959,31 +998,33 @@ impl WindowToolbar {
         item
     }
 
-    /// Wraps a view in a toolbar item at the size its owner measured.
+    /// Wraps a view in a toolbar item.
     ///
-    /// The toolbar measures an item through the constraint system, so the
-    /// size is stated as constraints rather than through the item's
-    /// long-deprecated size bounds.
+    /// `size` pins the item with constraints. `None` leaves the view's
+    /// intrinsic size in charge: the tab control's intrinsic width changes
+    /// once it joins the unified toolbar, and a width taken before that
+    /// insertion would freeze the free control's size.
     fn hosting_item(
         &self,
         identifier: &NSToolbarItemIdentifier,
         view: &Retained<NSView>,
         size: Option<Size>,
     ) -> Retained<NSToolbarItem> {
-        let size = size.unwrap_or_else(|| view.fittingSize().into());
         view.removeFromSuperview();
-        view.setFrame(CGRect::new(
-            objc2_core_foundation::CGPoint::ZERO,
-            size.into(),
-        ));
         view.setTranslatesAutoresizingMaskIntoConstraints(false);
-        let constraints: Vec<Retained<NSLayoutConstraint>> = vec![
-            view.widthAnchor().constraintEqualToConstant(size.width),
-            view.heightAnchor().constraintEqualToConstant(size.height),
-        ];
-        NSLayoutConstraint::activateConstraints(&NSArray::from_slice(
-            &constraints.iter().map(Retained::as_ref).collect::<Vec<_>>(),
-        ));
+        if let Some(size) = size {
+            view.setFrame(CGRect::new(
+                objc2_core_foundation::CGPoint::ZERO,
+                size.into(),
+            ));
+            let constraints: Vec<Retained<NSLayoutConstraint>> = vec![
+                view.widthAnchor().constraintEqualToConstant(size.width),
+                view.heightAnchor().constraintEqualToConstant(size.height),
+            ];
+            NSLayoutConstraint::activateConstraints(&NSArray::from_slice(
+                &constraints.iter().map(Retained::as_ref).collect::<Vec<_>>(),
+            ));
+        }
         let item =
             NSToolbarItem::initWithItemIdentifier(MainThreadMarker::from(self).alloc(), identifier);
         item.setView(Some(&**view));

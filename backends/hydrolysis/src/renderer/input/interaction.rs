@@ -2,16 +2,19 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::animation::AnimationKey;
+use crate::theme::{InteractionMotion, MAX_PRESS_WAVES, WidgetInteractionState};
 use nami::Signal as _;
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
-use waterui_backend_core::widget::{InteractionMotion, MAX_PRESS_WAVES, WidgetInteractionState};
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 
 const INTERACTION_FOCUS_KEY: usize = 0;
 const INTERACTION_STATE_LAYER_KEY: usize = 1;
+/// Scalar key of the physical-press morph progress
+/// (`WidgetInteractionState::press_progress`).
+const INTERACTION_PRESS_PROGRESS_KEY: usize = 2;
 /// First animation key of the per-wave pairs; each press wave claims two
 /// consecutive keys (opacity, grow progress).
-const INTERACTION_WAVE_KEYS_BASE: usize = 2;
+const INTERACTION_WAVE_KEYS_BASE: usize = 3;
 const INTERACTION_KEYS_PER_WAVE: usize = 2;
 /// Renderer-local animation keys claimed by one semantic interaction identity.
 const INTERACTION_KEYS_PER_IDENTITY: usize =
@@ -70,6 +73,9 @@ impl InteractionKey {
 struct WidgetInteractionEntry {
     hovering: bool,
     handles: Option<Rc<InteractionLayerHandles>>,
+    /// The retained node that bound this key — the cell a state change
+    /// marks so only the owning widget re-records.
+    owner: std::rc::Weak<crate::renderer::mount::NodeCell>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -159,10 +165,58 @@ impl InteractionEngine {
         self.reported.get(key).copied().unwrap_or_default()
     }
 
-    pub(crate) fn bind_hover(&mut self, key: &InteractionKey) -> (HoverSlot, bool) {
+    pub(crate) fn bind_hover(
+        &mut self,
+        key: &InteractionKey,
+        owner: &std::rc::Rc<crate::renderer::mount::NodeCell>,
+    ) -> (HoverSlot, bool) {
         self.active.insert(key.clone());
-        let hovering = self.states.entry(key.clone()).or_default().hovering;
+        let entry = self.states.entry(key.clone()).or_default();
+        entry.owner = std::rc::Rc::downgrade(owner);
+        let hovering = entry.hovering;
         (HoverSlot { key: key.clone() }, hovering)
+    }
+
+    /// Marks the owners of `keys` — the keys a `HoverSync` or press-clear
+    /// actually changed, never every active key. A dead owner (its node
+    /// dropped) is skipped; the root cell stays out of this so
+    /// window-global state does not wake the whole tree.
+    pub(crate) fn mark_owners<'a>(
+        &self,
+        keys: impl IntoIterator<Item = &'a InteractionKey>,
+        bits: crate::renderer::mount::Dirty,
+    ) {
+        for key in keys {
+            if let Some(owner) = self.states.get(key).and_then(|entry| entry.owner.upgrade()) {
+                owner.mark(bits);
+            }
+        }
+    }
+
+    /// Marks the owners a press clear changed: chrome-dependent presses
+    /// LAYOUT (their chrome samples interaction state), the rest PAINT.
+    pub(crate) fn mark_press_clear(&self, clear: &PressClear) {
+        self.mark_owners(&clear.chrome_keys, crate::renderer::mount::Dirty::LAYOUT);
+        self.mark_owners(&clear.paint_keys, crate::renderer::mount::Dirty::PAINT);
+    }
+
+    /// Marks the owners a hover sync changed: handler/chrome keys LAYOUT,
+    /// repaint-only keys PAINT.
+    pub(crate) fn mark_hover_sync(&self, sync: &super::hit_test::HoverSync) {
+        self.mark_owners(&sync.chrome_keys, crate::renderer::mount::Dirty::LAYOUT);
+        self.mark_owners(&sync.paint_keys, crate::renderer::mount::Dirty::PAINT);
+    }
+
+    /// The registering cell of `key`, for dispatch-side mark attribution.
+    pub(crate) fn owner_of(
+        &self,
+        key: &InteractionKey,
+    ) -> Option<std::rc::Weak<crate::renderer::mount::NodeCell>> {
+        self.states.get(key).map(|entry| entry.owner.clone())
+    }
+
+    pub(crate) fn key_active(&self, key: &InteractionKey) -> bool {
+        self.states.contains_key(key)
     }
 
     pub(crate) fn set_hovering(&mut self, slot: &HoverSlot, hovering: bool) {
@@ -183,13 +237,19 @@ impl InteractionEngine {
         clippy::needless_pass_by_ref_mut,
         reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
     )]
-    pub(crate) fn begin_press(&mut self, slot: &PressSlot, origin: kurbo::Point, now: Instant) {
+    pub(crate) fn begin_press(
+        &mut self,
+        slot: &PressSlot,
+        origin: kurbo::Point,
+        local_origin: Option<kurbo::Point>,
+        now: Instant,
+    ) {
         if let Some(handles) = self
             .states
             .get(&slot.key)
             .and_then(|state| state.handles.as_ref())
         {
-            handles.begin_press(origin, now);
+            handles.begin_press(origin, local_origin, now);
         }
     }
 
@@ -199,21 +259,46 @@ impl InteractionEngine {
     )]
     pub(crate) fn clear_all_presses(&mut self, now: Instant) -> PressClear {
         let mut clear = PressClear::default();
-        for state in self.states.values() {
+        for (key, state) in &self.states {
             if let Some(handles) = &state.handles
                 && handles.release(now)
             {
-                clear.visual_changed = true;
-                clear.chrome_changed |= handles.chrome_state_dependent();
+                match handles.repaint() {
+                    Some(bits) if bits == crate::renderer::mount::Dirty::LAYOUT => {
+                        clear.visual_changed = true;
+                        clear.chrome_changed = true;
+                        clear.chrome_keys.push(key.clone());
+                    }
+                    Some(_) => {
+                        clear.visual_changed = true;
+                        clear.paint_keys.push(key.clone());
+                    }
+                    // Engine-realized chrome: live operands only.
+                    None => {}
+                }
             }
         }
         clear
     }
 
     pub(crate) fn handles_for(&self, slot: &PressSlot) -> Option<Rc<InteractionLayerHandles>> {
+        self.handles_for_key(&slot.key)
+    }
+
+    /// Every bound control's live chrome.
+    #[cfg(test)]
+    pub(crate) fn live_chromes(&self) -> Vec<Rc<crate::renderer::chrome::LiveChrome>> {
         self.states
-            .get(&slot.key)
-            .and_then(|state| state.handles.clone())
+            .values()
+            .filter_map(|state| state.handles.as_ref()?.live_chrome())
+            .collect()
+    }
+
+    pub(crate) fn handles_for_key(
+        &self,
+        key: &InteractionKey,
+    ) -> Option<Rc<InteractionLayerHandles>> {
+        self.states.get(key).and_then(|state| state.handles.clone())
     }
 
     #[expect(
@@ -231,6 +316,7 @@ impl InteractionEngine {
         motion: &InteractionMotion,
         animation_controller: &mut AnimationController,
         now: Instant,
+        owner: &std::rc::Rc<crate::renderer::mount::NodeCell>,
     ) -> (
         WidgetInteractionState,
         PressSlot,
@@ -238,6 +324,7 @@ impl InteractionEngine {
     ) {
         self.active.insert(key.clone());
         let interaction_state = self.states.entry(key.clone()).or_default();
+        interaction_state.owner = std::rc::Rc::downgrade(owner);
         let press_slot = PressSlot {
             key: key.clone(),
             modal: false,
@@ -290,6 +377,23 @@ impl InteractionEngine {
             state_layer_animation(hover_target, motion),
             now,
         );
+        // Physical-press morph progress targets the physical press state —
+        // the same source the `PRESSED` flag resolves below: the previous
+        // handles' `pressing()`, which the new handles inherit through
+        // `copy_interaction_state_from`. Between rebuilds the handles apply
+        // the same target at the pointer event itself (see
+        // `InteractionLayerHandles::begin_press`/`release`), so the morph
+        // starts at the event, not one frame later.
+        let pressed = !input.disabled && previous.as_ref().is_some_and(|prev| prev.pressing());
+        let press_progress = animation_controller.bind_scalar_target(
+            AnimationKey::renderer_local_scalar_with_discriminator(
+                key.owner.address(),
+                key.animation_discriminator(INTERACTION_PRESS_PROGRESS_KEY),
+            ),
+            if pressed { 1.0 } else { 0.0 },
+            motion.press_shape.clone(),
+            now,
+        );
         let waves = core::array::from_fn(|index| {
             let wave_key_base = INTERACTION_WAVE_KEYS_BASE + INTERACTION_KEYS_PER_WAVE * index;
             let wave_visual = previous.as_ref().is_some_and(|prev| {
@@ -335,6 +439,7 @@ impl InteractionEngine {
 
         let handles = Rc::new(InteractionLayerHandles::new(
             hover_alpha.clone(),
+            press_progress.clone(),
             waves,
             motion.clone(),
         ));
@@ -367,6 +472,11 @@ impl InteractionEngine {
             state: flags,
             focus_progress: focus_alpha.sample(now),
             state_layer_opacity: hover_alpha.sample(now),
+            press_progress: if input.disabled {
+                0.0
+            } else {
+                press_progress.sample(now)
+            },
             press_waves: handles.sample_waves(now),
         };
         (state, press_slot, handles)
@@ -383,11 +493,15 @@ pub struct PressSlot {
 
 /// Outcome of releasing all active presses: `visual_changed` replays state
 /// layers, `chrome_changed` means a pressed widget's chrome samples
-/// interaction state and must re-render.
-#[derive(Debug, Default, Clone, Copy)]
+/// interaction state and must re-render. The key lists attribute the
+/// change: `chrome_keys` take LAYOUT, `paint_keys` PAINT — marking touches
+/// only the owners whose press actually released.
+#[derive(Debug, Default)]
 pub struct PressClear {
     pub visual_changed: bool,
     pub(crate) chrome_changed: bool,
+    pub(crate) chrome_keys: Vec<InteractionKey>,
+    pub(crate) paint_keys: Vec<InteractionKey>,
 }
 
 #[derive(Debug, Clone)]
@@ -425,12 +539,12 @@ mod tests {
     use super::{InteractionEngine, InteractionKey, WidgetInteractionInput};
     use crate::animation::{AnimationController, AnimationKey};
     use crate::renderer::{InteractionLayerHandles, WaveLayer};
+    use crate::theme::InteractionMotion;
     use crate::time::Instant;
     use core::time::Duration;
     use std::rc::Rc;
     use waterui::animation::Animation;
     use waterui::interaction::InteractionState;
-    use waterui_backend_core::widget::InteractionMotion;
 
     fn motion() -> InteractionMotion {
         InteractionMotion {
@@ -445,6 +559,7 @@ mod tests {
             press_fade_in: Animation::linear(Duration::from_millis(15)),
             press_fade_out: Animation::linear(Duration::from_millis(120)),
             press_grow: Animation::linear(Duration::from_millis(225)),
+            press_shape: Animation::linear(Duration::from_millis(15)),
             minimum_press_duration: Duration::from_millis(75),
             touch_delay: Duration::from_millis(0),
         }
@@ -454,16 +569,17 @@ mod tests {
         let mut controller = AnimationController::default();
         let mut bind = |key: usize| {
             controller.bind_scalar_target(
-                AnimationKey::renderer_local_scalar(key),
+                AnimationKey::renderer_local_scalar_with_discriminator(0, key),
                 0.0,
                 Animation::linear(Duration::ZERO),
                 now,
             )
         };
         let hover_alpha = bind(0);
+        let press_progress = bind(9);
         let waves =
             core::array::from_fn(|index| WaveLayer::new(bind(1 + index * 2), bind(2 + index * 2)));
-        InteractionLayerHandles::new(hover_alpha, waves, motion())
+        InteractionLayerHandles::new(hover_alpha, press_progress, waves, motion())
     }
 
     #[test]
@@ -476,6 +592,7 @@ mod tests {
         let owner = Rc::new(());
         let key = InteractionKey::for_rc(&owner, 0);
 
+        let cell_owner = crate::renderer::mount::NodeCore::detached().cell;
         let bind =
             |engine: &mut InteractionEngine, controller: &mut AnimationController, now: Instant| {
                 engine.begin_rebuild_frame();
@@ -491,6 +608,7 @@ mod tests {
                     &motion,
                     controller,
                     now,
+                    &cell_owner,
                 );
                 controller.finish_rebuild_frame_with_inactive_slot_retention(false);
                 engine.finish_rebuild_frame();
@@ -498,7 +616,7 @@ mod tests {
             };
 
         let (_, slot, _) = bind(&mut engine, &mut controller, started);
-        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), started);
+        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), None, started);
 
         // Release after the grow completed (test grow: 225ms linear); the
         // minimum press duration (75ms) has elapsed, so the release applies
@@ -540,6 +658,7 @@ mod tests {
         let owner = Rc::new(());
         let key = InteractionKey::for_rc(&owner, 0);
 
+        let cell_owner = crate::renderer::mount::NodeCore::detached().cell;
         let bind =
             |engine: &mut InteractionEngine, controller: &mut AnimationController, now: Instant| {
                 engine.begin_rebuild_frame();
@@ -555,6 +674,7 @@ mod tests {
                     &motion,
                     controller,
                     now,
+                    &cell_owner,
                 );
                 controller.finish_rebuild_frame_with_inactive_slot_retention(false);
                 engine.finish_rebuild_frame();
@@ -562,7 +682,7 @@ mod tests {
             };
 
         let (_, slot, _) = bind(&mut engine, &mut controller, started);
-        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), started);
+        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), None, started);
 
         // Quick tap: released long before the grow (225ms) finishes.
         engine.clear_all_presses(started + Duration::from_millis(40));
@@ -570,7 +690,7 @@ mod tests {
         // Re-press at a different point while the first wave is mid-flight.
         let repressed = started + Duration::from_millis(100);
         let (_, slot, _) = bind(&mut engine, &mut controller, repressed);
-        engine.begin_press(&slot, kurbo::Point::new(80.0, 30.0), repressed);
+        engine.begin_press(&slot, kurbo::Point::new(80.0, 30.0), None, repressed);
 
         // Both waves are visible: the released first wave keeps its own grow
         // progress and origin while the fresh wave starts over from zero.
@@ -621,6 +741,7 @@ mod tests {
         let owner = Rc::new(());
         let key = InteractionKey::for_rc(&owner, 0);
 
+        let cell_owner = crate::renderer::mount::NodeCore::detached().cell;
         let bind = |engine: &mut InteractionEngine,
                     controller: &mut AnimationController,
                     now: Instant,
@@ -639,6 +760,7 @@ mod tests {
                 &motion,
                 controller,
                 now,
+                &cell_owner,
             );
             controller.finish_rebuild_frame_with_inactive_slot_retention(false);
             engine.finish_rebuild_frame();
@@ -648,7 +770,7 @@ mod tests {
         // Hovered and mid-press, then the widget becomes disabled: the
         // sampled state comes to rest immediately and carries the flag.
         let (_, slot, _) = bind(&mut engine, &mut controller, started, true, false);
-        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), started);
+        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), None, started);
 
         let disabled_at = started + Duration::from_millis(50);
         let (state, _, _) = bind(&mut engine, &mut controller, disabled_at, true, true);
@@ -683,7 +805,7 @@ mod tests {
     fn released_press_stays_visually_pressed_until_minimum_duration() {
         let started = Instant::now();
         let handles = handles(started);
-        handles.begin_press(kurbo::Point::new(4.0, 5.0), started);
+        handles.begin_press(kurbo::Point::new(4.0, 5.0), None, started);
         assert!(handles.release(started + Duration::from_millis(10)));
 
         assert!(handles.visually_pressed(started + Duration::from_millis(20)));

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use cef::{AcceleratedPaintInfo, ColorType, PaintElementType, Rect};
 use waterui_graphics::gpu::GpuContentView;
-use wgpu_external_frame::io_surface::IoSurfaceFrame;
+use wgpu_external_frame::io_surface::{PackedFormat, PackedIoSurfaceFrame};
 
 use super::presenter::{GpuHandles, OwnedFrameMailbox, copy_source_texture};
 use super::{CefGpuContent, CefUiBridge};
@@ -21,7 +21,7 @@ use crate::{AcceleratedFrameSink, CefPageHandle, CefPopupRect};
 
 struct CefIoSurface {
     /// The retained surface, at the allocated extent it must be imported as.
-    surface: IoSurfaceFrame,
+    surface: PackedIoSurfaceFrame,
     /// The part of it that actually holds the page.
     ///
     /// Chromium may allocate the shared image with alignment padding, so this
@@ -50,16 +50,17 @@ impl CefIoSurface {
         let pointer = NonNull::new(frame.shared_texture_io_surface)
             .expect("CEF accelerated paint returned a null IOSurface");
         let format = if frame.format == ColorType::BGRA_8888 {
-            wgpu::TextureFormat::Bgra8Unorm
+            PackedFormat::Bgra8
         } else if frame.format == ColorType::RGBA_8888 {
-            wgpu::TextureFormat::Rgba8Unorm
+            PackedFormat::Rgba8
         } else {
             panic!("CEF returned unsupported macOS accelerated color format")
         };
-        // SAFETY: the caller contract makes `pointer` a live `IOSurface` of the
-        // coded size and format read out of the same paint info; retaining it
-        // here is what keeps it valid after CEF reclaims the frame.
-        let surface = unsafe { IoSurfaceFrame::retain(pointer, width, height, format) };
+        // SAFETY: the caller contract makes `pointer` a live `IOSurface`;
+        // retaining it here is what keeps it valid after CEF reclaims the
+        // frame. The frame reads the allocated extent from the surface itself,
+        // which is the `coded_size` CEF reported for it.
+        let surface = unsafe { PackedIoSurfaceFrame::retain(pointer, format) };
         Self {
             surface,
             visible_width,
@@ -104,7 +105,7 @@ impl AcceleratedFrameSink for MacFrameSink {
                 height: surface.visible_height,
                 depth_or_array_layers: 1,
             },
-            surface.surface.format(),
+            surface.surface.format().texture_format(),
         );
         self.mailbox.publish(element, owned);
     }

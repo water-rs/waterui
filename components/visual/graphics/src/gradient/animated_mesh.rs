@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::fmt;
 
-use cherenkov::WorkingColor;
+use crate::draw::WorkingColor;
 use nami::{Computed, SignalExt};
 use waterui_core::layout::StretchAxis;
 use waterui_core::reactive::signal::IntoComputed;
@@ -23,6 +23,7 @@ const UNIFORM_LEN: usize = 4 + ANIMATED_MESH_PALETTE_LEN * 3;
 
 /// Configuration for an [`AnimatedMeshGradient`].
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
 pub struct AnimatedMeshGradientConfig {
     /// Animation speed multiplier on the engine's clock; `0.0` holds the
     /// gradient still and lets the engine idle.

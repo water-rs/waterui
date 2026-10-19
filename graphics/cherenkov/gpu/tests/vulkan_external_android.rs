@@ -182,46 +182,37 @@ fn make_ahb_nv12(
         )
     };
     assert_eq!(rc, 0, "AHB lockPlanes");
-    // SAFETY: `lockPlanes` filled `planes`; each entry's `data`/`rowStride`/
-    // `pixelStride` names live mapped memory until `unlock`, and every
-    // write stays inside the plane's stride and dimensions.
-    unsafe {
-        let luma_plane = planes.planes[0];
-        let luma_base = luma_plane.data.cast::<u8>();
-        for row in 0..height as usize {
-            luma_base
-                .add(row * luma_plane.rowStride as usize)
-                .write_bytes(luma, width as usize);
-        }
-        if planes.planeCount >= 3 {
-            // Separate U/V planes: fill both.
-            let cb = planes.planes[1];
-            let cr = planes.planes[2];
-            for row in 0..(height as usize) / 2 {
-                cb.data
-                    .cast::<u8>()
-                    .add(row * cb.rowStride as usize)
-                    .write_bytes(chroma.0, (width as usize) / 2);
-                cr.data
-                    .cast::<u8>()
-                    .add(row * cr.rowStride as usize)
-                    .write_bytes(chroma.1, (width as usize) / 2);
-            }
-        } else {
-            // Interleaved UV: pairs of (U, V).
-            let uv = planes.planes[1];
-            let uv_base = uv.data.cast::<u8>();
-            for row in 0..(height as usize) / 2 {
-                for col in 0..(width as usize) / 2 {
-                    *uv_base.add(row * uv.rowStride as usize + col * uv.pixelStride as usize) =
-                        chroma.0;
-                    *uv_base.add(row * uv.rowStride as usize + col * uv.pixelStride as usize + 1) =
-                        chroma.1;
+    // A YCbCr 4:2:0 buffer always locks as three planes, Y, Cb and Cr;
+    // a semi-planar buffer reports Cb and Cr interleaved, as two planes
+    // one byte apart with a pixel stride of 2. Every sample is written at
+    // its plane's pixel stride, so planar and semi-planar layouts fill
+    // alike.
+    assert_eq!(planes.planeCount, 3, "YCbCr 4:2:0 lock plane count");
+    eprintln!(
+        "NV12 lock: pixel strides {:?}, row strides {:?}",
+        planes.planes.map(|p| p.pixelStride),
+        planes.planes.map(|p| p.rowStride),
+    );
+    let fill = |plane: ndk_sys::AHardwareBuffer_Plane, value: u8, w: usize, h: usize| {
+        let base = plane.data.cast::<u8>();
+        for row in 0..h {
+            for col in 0..w {
+                // SAFETY: `lockPlanes` mapped `plane` until `unlock`, and
+                // (`row`, `col`) stays inside the plane's dimensions at
+                // its own row and pixel strides.
+                unsafe {
+                    *base.add(row * plane.rowStride as usize + col * plane.pixelStride as usize) =
+                        value;
                 }
             }
         }
-        ndk_sys::AHardwareBuffer_unlock(buffer, std::ptr::null_mut());
-    }
+    };
+    let (w, h) = (width as usize, height as usize);
+    fill(planes.planes[0], luma, w, h);
+    fill(planes.planes[1], chroma.0, w / 2, h / 2);
+    fill(planes.planes[2], chroma.1, w / 2, h / 2);
+    // SAFETY: `buffer` is locked above and unlocked exactly once.
+    unsafe { ndk_sys::AHardwareBuffer_unlock(buffer, std::ptr::null_mut()) };
     buffer
 }
 
@@ -526,7 +517,7 @@ fn read_pixels(
     output: &wgpu::Texture,
 ) -> Result<Vec<[f32; 4]>, Box<dyn std::error::Error>> {
     let (target, destinations) = TextureTarget::new((16, 16));
-    let destination = engine.surface(target)?;
+    let destination = engine.surface(target, || {})?;
     let destination_texture = destinations.try_recv()?;
     let delivery = cherenkov_gpu::interop::shader_delivery(wgpu::Backend::Vulkan, &shared.device)?;
     let mut presenter = Presenter::new(&shared.device, delivery);
@@ -602,7 +593,7 @@ fn ahb_rgb_import_decodes_known_pixels() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let output = textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
@@ -654,7 +645,7 @@ fn ahb_yuv_external_format_decodes_neutral() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let output = textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
@@ -711,7 +702,7 @@ fn scene(shared: SharedDevice) -> (Engine<Gpu>, Surface<Gpu>, Layer) {
     })
     .expect("engine");
     let (target, _) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let layer = surface.layer();
     surface.update(|tx| {
         tx[surface.root()].push(&layer);
@@ -836,7 +827,7 @@ fn two_layers_replace_retire_and_release_fence() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     textures.try_recv().expect("output texture");
     let (a, b) = (surface.layer(), surface.layer());
     // Two attachments of one generation deduplicate the acquisition.
@@ -854,18 +845,37 @@ fn two_layers_replace_retire_and_release_fence() {
         assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
     }
     assert_eq!(frame.generation.lease_count(), 2);
-    // Replace one attachment, then drop the other — the last retire
-    // submits the release and exports the fence.
-    surface.update(|tx| {
-        tx[surface.root()].remove(&a);
-    });
-    drop(a);
+    // An attachment is a producer's current frame, not a layer: removing
+    // a layer leaves the frame with its producer, which shows it again on
+    // the next binding. Replace one producer's frame, then retire the
+    // other producer — the last retire submits the release and exports
+    // the fence.
+    let replacement = device
+        .import(FrameSource::Ahb(Box::new(vulkan::Ahb {
+            buffer: make_ahb_rgb(16, 16, [0xa0, 0x30, 0x30, 0xff]).cast(),
+            sync: None,
+            release: None,
+            color: FrameColor::SRGB,
+            alpha: RgbAlpha::Opaque,
+            hdr: HdrMetadata::default(),
+        })))
+        .expect("replacement AHB import");
+    sa.submit(ExternalFrame::native(replacement).expect("replacement"));
     assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    assert_eq!(frame.generation.lease_count(), 1);
+    assert!(
+        matches!(frame.release_fd(), Err(vulkan::NativeError::Unready)),
+        "a frame a producer still holds exports no release fence"
+    );
+    // The layer's binding holds the producer's last handle: the render
+    // that drops it retires the producer and drains that retirement into
+    // the release submission before it returns.
     surface.update(|tx| {
         tx[surface.root()].remove(&b);
     });
-    drop(b);
+    drop((b, pb, sb));
     assert!(matches!(engine.render(FrameTime::now()), Ok(Next::Idle)));
+    assert_eq!(frame.generation.lease_count(), 0);
     let fd = frame.release_fd().expect("release fence after submission");
     // The fence signals once the release submission executes; a sync-file
     // fd becomes readable at signal — `poll` is the producer's wait, never
@@ -901,7 +911,7 @@ fn native_op_survives_engine_buffer_and_atlas_regrowth() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let output = textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
@@ -1013,7 +1023,7 @@ fn next_generation_after_release() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let output = textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
@@ -1094,7 +1104,7 @@ fn cancellation_and_teardown() {
     })
     .expect("engine");
     let (target, _) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     let layer = surface.layer();
     let (video, sink) = engine.frame_producer();
     sink.submit(ExternalFrame::native(frame).expect("external"));
@@ -1133,7 +1143,7 @@ fn report_counts_and_timings() {
     })
     .expect("engine");
     let (target, textures) = TextureTarget::new((16, 16));
-    let surface = engine.surface(target).expect("surface");
+    let surface = engine.surface(target, || {}).expect("surface");
     textures.try_recv().expect("output texture");
     let layer = surface.layer();
     let imported = frame.imported_bytes();

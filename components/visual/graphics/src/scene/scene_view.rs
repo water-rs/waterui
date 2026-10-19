@@ -3,7 +3,7 @@ use alloc::rc::Rc;
 use alloc::string::String;
 use core::fmt;
 
-use cherenkov::Recorder;
+use crate::draw::Recorder;
 use nami::Signal;
 use nami::watcher::BoxWatcherGuard;
 
@@ -15,6 +15,10 @@ use crate::scene::resources::RecordingResources;
 
 /// Environment marker: render `SceneView` directly in the backend scene.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "field-less environment marker inserted by name"
+)]
 pub struct SceneViewMergeToParent;
 
 /// Callback used by scene content to request another frame.
@@ -42,7 +46,7 @@ pub trait SceneContent: 'static {
     /// through `resources` whatever engine resource the drawing uses.
     ///
     /// The recorder is the engine's live recording target: constant operands
-    /// freeze into the [`Content`](cherenkov::Content) it finishes, and
+    /// freeze into the [`Content`](crate::draw::Content) it finishes, and
     /// `nami` signals handed to it stay bound, so a colour or transform the
     /// content draws from a signal animates without another call here.
     ///
@@ -66,9 +70,12 @@ pub trait SceneContent: 'static {
     /// Registering returns a [`Registered`] handle, which content keeps for
     /// as long as it goes on drawing the resource; asking again for a source
     /// it still holds returns the same registration without a new upload.
-    /// A new registration is a round trip to the render thread and blocks
-    /// this call — and so the host's frame — until the engine has the
-    /// resource; see the blocking contract on
+    /// A new registration is validated on the calling thread and queued on
+    /// the target — an image beyond
+    /// [`RecordingResources::image_limits`](crate::resources::RecordingResources::image_limits)
+    /// fails right there with `ResourceError::TooLarge`, and one that does
+    /// not fit the image budget beside the images already registered with
+    /// `ResourceError::OverBudget`; see the contract on
     /// [`SceneResources`](crate::resources::SceneResources#blocking).
     /// The id to record comes from [`RecordingResources::name`], which holds
     /// the registration for this recording. It is the only way to get an id
@@ -223,7 +230,7 @@ pub trait SceneContent: 'static {
     /// Backends place the input-method candidate window against it, so
     /// content that accepts composed text reports its caret. `None` — the
     /// default — means there is no caret to place the panel against.
-    fn ime_caret(&self) -> Option<cherenkov::kurbo::Rect> {
+    fn ime_caret(&self) -> Option<crate::draw::kurbo::Rect> {
         None
     }
 }
@@ -294,9 +301,12 @@ fn scale_across(named: f32, natural_along: f32, natural_across: f32) -> f32 {
 ///
 /// Content with no size of its own takes whatever it is offered, exactly as it
 /// always has. Content that *is* a size is content-sized and claims no leftover
-/// space: an icon in a row must not eat the row, and a container that wants it
-/// bigger says so with a frame, which [`resolve_scene_proposal`] then honours.
-/// This is the rule `waterui-image` already measures its own surfaces by.
+/// space: an icon in a row must not eat the row. [`resolve_scene_proposal`]
+/// honours finite proposals for the scene itself; `waterui-image` adds its own
+/// non-resizable layout, which answers the natural size to an unspecified
+/// proposal and only scales down under smaller finite proposals, preserving
+/// the aspect ratio. It never scales up and remains `StretchAxis::None`.
+/// A `.resizable()` image instead fills the proposal per its `content_mode`.
 #[must_use]
 pub const fn scene_stretch_axis(intrinsic: Option<Size>) -> StretchAxis {
     if intrinsic.is_some() {
@@ -399,7 +409,7 @@ impl View for SceneView {
 
 #[cfg(test)]
 mod tests {
-    use cherenkov::{Draw, kurbo::Shape};
+    use crate::draw::{Draw, kurbo::Shape};
 
     use super::{
         NativeView, ProposalSize, Recorder, RecordingResources, SceneContent, SceneView, Size,
@@ -422,9 +432,9 @@ mod tests {
             height: f32,
         ) -> bool {
             recorder.fill(
-                cherenkov::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
+                crate::draw::kurbo::Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
                     .to_path(0.1),
-                cherenkov::WorkingColor::BLACK,
+                crate::draw::WorkingColor::BLACK,
             );
             false
         }

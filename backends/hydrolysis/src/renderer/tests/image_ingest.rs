@@ -13,12 +13,13 @@
 use std::cell::RefCell;
 use std::sync::Arc;
 
-use cherenkov::{Draw, ImagePattern, Paint, Rgba8, Sampling};
 use kurbo::Rect;
 use peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 use waterui::{AnyView, View};
 use waterui_core::handler::AnyViewBuilder;
-use waterui_graphics::cherenkov::Recorder;
+use waterui_graphics::Rgba8;
+use waterui_graphics::draw::Recorder;
+use waterui_graphics::draw::{Draw, ImagePattern, Paint, Sampling};
 use waterui_graphics::{RecordingResources, SceneContent, SceneInvalidator, SceneView};
 
 use super::{MinimalTestTheme, test_environment};
@@ -86,7 +87,7 @@ struct ImagePane {
 }
 
 /// A retained `Registered` image handle, `None` until the pane registers.
-type ImageHandle = Option<waterui_graphics::Registered<cherenkov::Image<cherenkov::Rgba8>>>;
+type ImageHandle = Option<waterui_graphics::Registered<waterui_graphics::draw::ImageId>>;
 
 impl SceneContent for ImagePane {
     fn build_scene(
@@ -122,7 +123,7 @@ fn scene_view_rejects_malformed_image_at_image_upload() {
         draw: |recorder, resources, _| {
             let image = resources
                 .image(
-                    cherenkov::ImageData::<Rgba8>::new(10, 10, malformed_blob())
+                    waterui_graphics::ImageData::<Rgba8>::new(10, 10, malformed_blob())
                         .expect("hydrolysis scene ingest must name malformed Rgba8 data"),
                 )
                 .expect("hydrolysis scene ingest: image registration failed");
@@ -143,7 +144,7 @@ fn scene_view_rejects_malformed_image_inside_a_fill_paint() {
         draw: |recorder, resources, _| {
             let image = resources
                 .image(
-                    cherenkov::ImageData::<Rgba8>::new(10, 10, malformed_blob())
+                    waterui_graphics::ImageData::<Rgba8>::new(10, 10, malformed_blob())
                         .expect("hydrolysis scene ingest must name malformed Rgba8 data"),
                 )
                 .expect("hydrolysis scene ingest: image registration failed");
@@ -152,8 +153,8 @@ fn scene_view_rejects_malformed_image_inside_a_fill_paint() {
                 Paint::Image(ImagePattern {
                     image: resources.name(&image),
                     transform: kurbo::Affine::IDENTITY,
-                    extend_x: cherenkov::Extend::Pad,
-                    extend_y: cherenkov::Extend::Pad,
+                    extend_x: waterui_graphics::draw::Extend::Pad,
+                    extend_y: waterui_graphics::draw::Extend::Pad,
                     sampling: Sampling::Linear,
                 }),
             );
@@ -173,7 +174,7 @@ fn scene_view_accepts_a_well_formed_image() {
                 *image = Some(
                     resources
                         .image(
-                            cherenkov::ImageData::<Rgba8>::new(
+                            waterui_graphics::ImageData::<Rgba8>::new(
                                 10,
                                 10,
                                 Arc::<[u8]>::from(vec![0u8; 400]),

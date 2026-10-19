@@ -3,11 +3,16 @@
 //!
 //! [`Engine::render`]: crate::Engine::render
 
+use cherenkov_record::RefreshRange;
+
 use crate::Instant;
-use std::ops::RangeInclusive;
 
 /// The presentation timestamp handed to [`Engine::render`](crate::Engine::render).
-#[derive(Clone, Copy, Debug)]
+///
+/// Two timestamps are equal when they name the same instant — a host that
+/// batches one engine frame per production target timestamp deduplicates on
+/// this, not on an approximation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FrameTime(pub Instant);
 
 impl FrameTime {
@@ -23,9 +28,6 @@ impl FrameTime {
         Self(Instant::now())
     }
 }
-
-/// An inclusive refresh-rate range in hertz.
-pub type RefreshRange = RangeInclusive<u32>;
 
 /// The refresh range a surface requests when its host does not set one: up
 /// to 120 Hz, the performance target on current high-refresh displays.
@@ -119,6 +121,16 @@ pub struct Phases {
     /// Blocking waits on the GPU: for an upload staging slot still in
     /// flight, and the final drain of the queue.
     pub wait_seconds: f64,
+    /// Glyph resolution after lowering: rasterizing the glyph masks the
+    /// lowered items read that no cache holds, and filling their slots.
+    /// Zero on a backend that does not time it apart from
+    /// `lower_seconds`.
+    pub glyph_seconds: f64,
+    /// The CPU raster pass: shading the lowered items into the target,
+    /// the store into its output format, and the local images (with their
+    /// mip chains) of projective layers. Zero on a GPU backend, whose
+    /// shading is GPU time.
+    pub shade_seconds: f64,
 }
 
 /// Measurements of the last [`Engine::render`](crate::Engine::render).
@@ -169,6 +181,10 @@ pub struct Readback {
 }
 
 /// The storage format of an [`Offscreen`] target.
+///
+/// A backend renders into exactly the requested format, or fails surface
+/// creation with [`SurfaceError::UnsupportedFormat`](crate::SurfaceError::UnsupportedFormat)
+/// when the device cannot.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum OffscreenFormat {
     /// Linear `Rgba16Float`.

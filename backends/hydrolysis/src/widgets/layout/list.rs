@@ -11,9 +11,9 @@ use crate::renderer::{
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, VisibleSubviewCache, WidgetRenderContext,
     list_row_height_for_content, local_interaction_state, materialize_list_item,
-    measure_list_intrinsic, measure_transient_view_intrinsic, transformed_rect,
+    measure_list_intrinsic, measure_transient_view_intrinsic,
 };
-use crate::scroll::ScrollHandle;
+use crate::scroll::{ScrollHandle, ScrollRun, ScrollRunOutcome};
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, NodeId as AccessibilityNodeId,
@@ -23,12 +23,14 @@ use accesskit::{
 use waterui::accessibility::{AccessibilityHidden, AccessibilityStateSignal};
 use waterui::component::list::{ListConfig, ListItem, ListSelection, Move};
 use waterui::gesture::{DragEvent, DragGesture, Gesture, GesturePhase};
+use waterui_backend_core::scroll::animated_row_scroll_approach;
+use waterui_core::animation::Animation;
 use waterui_core::handler::{BoxedAction, boxed_action};
-use waterui_core::id::{Id as RawId, SelfId};
+use waterui_core::id::Id as RawId;
 use waterui_core::interaction::Selected;
 use waterui_core::layout::{ProposalSize, Size as LayoutSize, ViewDimensions};
 use waterui_core::views::{AnyViewsSnapshot, ViewSnapshot, Views};
-use waterui_core::{Environment, Native};
+use waterui_core::{AnyView, Environment, Native};
 use waterui_layout::scroll::Axis as ScrollAxis;
 use waterui_text::Text;
 
@@ -39,17 +41,48 @@ use nami::watcher::BoxWatcherGuard;
 use nami::{Computed, Signal, SignalExt as _};
 use waterui::theme::color;
 use waterui_core::resolve::Resolvable as _;
-use waterui_graphics::cherenkov::Draw as _;
+use waterui_graphics::draw::Draw as _;
 
 /// The stable per-row id used to key the retained content sub-view cache, matching
 /// the id `ListConfig::contents` (a `SharedAnyViews<ListItem>`) yields per index.
-pub type ListItemId = SelfId<RawId>;
+pub type ListItemId = RawId;
 
 #[derive(Clone, Copy)]
 struct ListViewportAnchor {
     id: ListItemId,
     index: usize,
     offset_within_row: f64,
+    /// The offset the moment this anchor was recorded — or, once a
+    /// membership change resolved it, its offset under the new membership.
+    /// The next frame's glide/fling tick moves the offset before the
+    /// membership shift applies, so the shift must translate from this
+    /// recording — not the live offset — to keep the tick's motion.
+    recorded_offset: f64,
+}
+
+/// A pending programmatic scroll to a row: the request's generation, row
+/// index and animation, and how far applying it has progressed. The first
+/// apply arms the animation; later applies only refine its target, so a
+/// re-issue refines the destination instead of restarting the clock.
+#[derive(Clone)]
+struct PendingScroll {
+    generation: i32,
+    index: usize,
+    animation: Option<Animation>,
+    state: PendingScrollState,
+}
+
+/// How far a [`PendingScroll`] has progressed against the scroll handle.
+#[derive(Clone)]
+enum PendingScrollState {
+    /// No run has been armed for this request yet.
+    Unarmed,
+    /// The request armed `run`; [`ScrollHandle::scroll_run_outcome`] answers
+    /// whether it still drives the offset, landed, or was interrupted —
+    /// asking the handle instead of guessing from the offset is what keeps
+    /// a membership re-anchor or a clamped landing from looking like the
+    /// user scrolled.
+    Armed { run: ScrollRun },
 }
 
 /// Fraction of the row's width a swipe must cross to dismiss on release.
@@ -69,13 +102,6 @@ const SWIPE_SETTLE_EPSILON: f64 = 0.5;
 /// Elevation handed to the theme while a row is lifted for reordering. Material
 /// raises a dragged list item to level 3.
 const REORDER_LIFT_ELEVATION: f64 = 3.0;
-
-/// Rows a programmatic jump animates over. A target further away than this is
-/// closed instantly first and only the last stretch is animated, so the glide
-/// stays legible and cannot drag the list through a whole dataset. This is
-/// Compose's `NumberOfItemsToTeleport`, the same bound `animateScrollToItem`
-/// applies.
-const ROWS_BEFORE_JUMP_TELEPORT: usize = 100;
 
 /// Distance the pointer must travel before a row drag is recognized, matching
 /// Android's `ViewConfiguration` touch slop. Without it a row could not be
@@ -275,16 +301,19 @@ pub struct ListRenderState {
     replaced_row_ids: Rc<RefCell<std::collections::HashSet<ListItemId>>>,
     /// Last programmatic scroll generation applied to this semantic list.
     applied_scroll_generation: Cell<i32>,
-    /// A requested index stays pending until its measured row intersects the
+    /// A requested row stays pending until its measured extent intersects the
     /// concrete viewport. This is required when estimated and measured row
     /// heights differ, especially for a jump to the final row.
-    pending_scroll: Cell<Option<(i32, usize)>>,
+    pending_scroll: RefCell<Option<PendingScroll>>,
     /// Stable top-row identity and intra-row offset from the previous frame.
     /// Membership changes use this anchor so delete/move operations do not
     /// visibly jump the viewport.
     viewport_anchor: Cell<Option<ListViewportAnchor>>,
-    /// Concrete offset resolved from `viewport_anchor` after an extent reset.
-    pending_membership_offset: Cell<Option<f64>>,
+    /// The anchor's target offset under the new membership plus the offset
+    /// it was recorded at: `(rebased, recorded)` — the pure translation
+    /// `bind_scroll` hands `rebind` is `rebased - recorded`, regardless of
+    /// how far this frame's tick already moved the offset.
+    pending_membership_offset: Cell<Option<(f64, f64)>>,
     /// A backend move action keeps the viewport's index fixed for the next
     /// membership reconcile so the moved row visibly changes position.
     preserve_anchor_index_once: Cell<bool>,
@@ -316,6 +345,18 @@ pub struct ListRenderState {
     /// read this one membership — never the live collection while an older
     /// event is still being reconciled.
     rows_snapshot: Rc<RefCell<AnyViewsSnapshot<ListItem>>>,
+    /// The rows' structural transitions (layout-spec.md §4.5): a row's
+    /// declaration is claimed when its content is built, an inserted row
+    /// animates in, and a removed row on screen stays as a ghost holding its
+    /// slot. The extent index runs over display positions — rows and ghosts.
+    transitions: crate::renderer::LazyTransitions<ListItem>,
+    /// The list widget's cell: the owner a transition's blur host marks.
+    owner: std::rc::Weak<crate::renderer::NodeCell>,
+    /// §7.1's scroll-surface bookkeeping: the extension and clearance
+    /// bounds layout computed once (the scroll handle is rebound with
+    /// them inside [`Self::bind_scroll`]), plus the focused-field state
+    /// the flush drives.
+    pub(crate) surface: std::rc::Rc<crate::renderer::ScrollSurfaceArea>,
     /// Collection membership watcher.
     _guard: BoxWatcherGuard,
 }
@@ -349,7 +390,7 @@ struct RowSectionChrome {
 }
 
 impl RowSectionChrome {
-    const fn header_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+    const fn header_height(&self, metrics: &crate::theme::ListMetrics) -> f64 {
         if self.header.is_some() {
             metrics.section_header_height
         } else {
@@ -357,7 +398,7 @@ impl RowSectionChrome {
         }
     }
 
-    const fn footer_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+    const fn footer_height(&self, metrics: &crate::theme::ListMetrics) -> f64 {
         if self.footer.is_some() {
             metrics.section_footer_height
         } else {
@@ -365,7 +406,7 @@ impl RowSectionChrome {
         }
     }
 
-    fn total_height(&self, metrics: &waterui_backend_core::widget::ListMetrics) -> f64 {
+    fn total_height(&self, metrics: &crate::theme::ListMetrics) -> f64 {
         self.header_height(metrics) + self.footer_height(metrics)
     }
 }
@@ -373,6 +414,7 @@ impl RowSectionChrome {
 impl ListRenderState {
     pub(crate) fn from_config(
         config: ListConfig,
+        env: &Environment,
         renderer: &crate::renderer::SemanticCore,
     ) -> Self {
         let rows_dirty = Rc::new(Cell::new(true));
@@ -381,7 +423,22 @@ impl ListRenderState {
         let replaced_for_watch = Rc::clone(&replaced_row_ids);
         let rows_snapshot = Rc::new(RefCell::new(config.contents.snapshot()));
         let snapshot_for_watch = Rc::clone(&rows_snapshot);
-        let signals = renderer.frame_signals();
+        // Membership changes mark the owning widget's cell — the node whose
+        // read built this state, or the window root when built unowned.
+        let cell = Rc::downgrade(
+            &renderer
+                .reader_cell()
+                .unwrap_or_else(|| Rc::clone(renderer.root_cell())),
+        );
+        let owner = std::rc::Weak::clone(&cell);
+        // The membership flag the transitions consume is the rows' own dirty
+        // flag: `prepare_rows` applies each change exactly once.
+        let transitions = crate::renderer::LazyTransitions::new(
+            env,
+            rows_snapshot.borrow().clone(),
+            Rc::clone(&rows_dirty),
+        );
+
         let guard = config.contents.watch(.., move |ctx, change| {
             rows_dirty_for_watch.set(true);
             // Each event hands over an immutable snapshot of the exact row set
@@ -390,11 +447,13 @@ impl ListRenderState {
             let event_snapshot = ctx.into_value();
             crate::renderer::collect_replaced_ids(
                 &event_snapshot,
-                &change,
+                change,
                 &mut replaced_for_watch.borrow_mut(),
             );
             *snapshot_for_watch.borrow_mut() = event_snapshot;
-            signals.request_refresh();
+            if let Some(cell) = cell.upgrade() {
+                cell.mark(crate::renderer::Dirty::STRUCTURE);
+            }
         });
         let row_selection = ListRowSelection::new(&config.selection, Rc::clone(&rows_snapshot));
         Self {
@@ -408,7 +467,7 @@ impl ListRenderState {
             rows_dirty,
             replaced_row_ids,
             applied_scroll_generation: Cell::new(0),
-            pending_scroll: Cell::new(None),
+            pending_scroll: RefCell::new(None),
             viewport_anchor: Cell::new(None),
             pending_membership_offset: Cell::new(None),
             preserve_anchor_index_once: Cell::new(false),
@@ -419,6 +478,9 @@ impl ListRenderState {
             sections: RefCell::new(Vec::new()),
             sections_resolved_for: Cell::new(None),
             rows_snapshot,
+            transitions,
+            owner,
+            surface: std::rc::Rc::default(),
             _guard: guard,
         }
     }
@@ -541,14 +603,51 @@ impl ListRenderState {
         let replaced = core::mem::take(&mut *self.replaced_row_ids.borrow_mut());
         if !replaced.is_empty() {
             self.item_cache.borrow_mut().invalidate_ids(&replaced);
+            self.transitions.retain_rows(|id| !replaced.contains(id));
         }
     }
 
-    fn prepare_rows(&self, len: usize, estimate: f64) {
+    /// Resets the extent index over the display order — rows and removal
+    /// ghosts — seeding each ghost's frozen slot.
+    fn reset_extents(&self, len: usize, estimate: f64) {
+        self.transitions.reset_extents(
+            &mut self.extent_index.borrow_mut(),
+            len,
+            estimate,
+            0.0,
+            |size| f64::from(size.height),
+        );
+    }
+
+    /// Advances every row insertion and removal ghost to the frame instant;
+    /// a ghost that finished releases its slot. Requests frames while
+    /// anything is in flight. Both the draw and the rendered accessibility
+    /// emit call it before they prepare rows, whichever runs first in a
+    /// frame: a second call at the same instant advances nothing.
+    fn advance_transitions(&self, renderer: &crate::renderer::SemanticCore) {
+        let (_, animating) = self.transitions.advance(renderer.frame_instant());
+        if animating {
+            renderer.context_mark_layout();
+        }
+    }
+
+    /// Applies the membership change the watcher reported, when there is
+    /// one — realized rows that left with a removal declaration become
+    /// ghosts holding their slots — and re-bases the extent index on it.
+    fn prepare_rows(&self, len: usize, estimate: f64, now: crate::time::Instant) {
         let dirty = self.rows_dirty.replace(false);
         self.consume_replaced_rows();
-        if dirty || !self.extent_index.borrow().matches(len, estimate, 0.0) {
-            self.extent_index.borrow_mut().reset(len, estimate, 0.0);
+        if dirty {
+            let snapshot = self.rows_snapshot.borrow().clone();
+            let _ = self.transitions.apply_membership(
+                &snapshot,
+                &mut self.item_cache.borrow_mut(),
+                now,
+            );
+        }
+        let display = self.transitions.display_len(len);
+        if dirty || !self.extent_index.borrow().matches(display, estimate, 0.0) {
+            self.reset_extents(len, estimate);
             self.sections_resolved_for.set(None);
             let preserve_anchor_index = self.preserve_anchor_index_once.replace(false);
             let membership_offset = self.viewport_anchor.get().and_then(|anchor| {
@@ -568,15 +667,30 @@ impl ListRenderState {
                         .find(|index| snapshot.get_id(*index) == Some(anchor.id))
                         .unwrap_or_else(|| anchor.index.min(len - 1))
                 };
-                Some(
-                    self.extent_index.borrow().offset_of(index)
-                        + anchor.offset_within_row.min(estimate),
-                )
+                let rebased = self
+                    .extent_index
+                    .borrow()
+                    .offset_of(self.transitions.row_display(index))
+                    + anchor.offset_within_row.min(estimate);
+                // Written back in the new coordinates: `prepare_rows` runs
+                // twice a frame — the semantic pass, then the render pass —
+                // and a collection update between them must translate by its
+                // own change only, not this one again.
+                self.viewport_anchor.set(Some(ListViewportAnchor {
+                    index,
+                    recorded_offset: rebased,
+                    ..anchor
+                }));
+                Some((rebased, anchor.recorded_offset))
             });
             self.pending_membership_offset.set(membership_offset);
         }
     }
 
+    /// §7.1's scroll-surface rule: [`ScrollSurfaceArea::extended`] grows the
+    /// viewport and content by the extension layout computed, so the
+    /// scrollable range keeps the resting edges on the avoided boundary
+    /// while scrolling paints through the band.
     #[expect(
         clippy::option_if_let_else,
         reason = "the if-let/else mirrors the control flow more clearly than the combinator chain here"
@@ -587,22 +701,36 @@ impl ListRenderState {
         viewport_height: f64,
         content_height: f64,
     ) -> ScrollHandle {
+        let (viewport, content) = self.surface.extended(
+            kurbo::Size::new(viewport_width, viewport_height),
+            kurbo::Size::new(viewport_width, content_height),
+        );
+        // The membership anchor always applies — `prepare_rows`' extent
+        // reset discarded measured heights, so skipping it leaves the offset
+        // in the old coordinates and the viewport jumps. It is a pure
+        // translation inside the rebind, ahead of the new extents' clamp, and
+        // claims nothing, so a live run or fling keeps driving through it.
+        let shift = self
+            .pending_membership_offset
+            .take()
+            .map_or(0.0, |(rebased, recorded)| rebased - recorded);
         let mut scroll = self.scroll.borrow_mut();
         if let Some(handle) = scroll.as_mut() {
             handle.rebind(
                 ScrollAxis::Vertical,
-                viewport_width,
-                viewport_height,
-                viewport_width,
-                content_height,
+                viewport.width,
+                viewport.height,
+                content.width,
+                content.height,
+                (0.0, shift),
             )
         } else {
             let handle = ScrollHandle::new(
                 ScrollAxis::Vertical,
-                viewport_width,
-                viewport_height,
-                viewport_width,
-                content_height,
+                viewport.width,
+                viewport.height,
+                content.width,
+                content.height,
                 None,
             );
             *scroll = Some(handle.clone());
@@ -611,98 +739,153 @@ impl ListRenderState {
     }
 
     /// Applies the pending scroll request, if there is one. `animate` selects
-    /// between the rendered glide and the semantic jump: nothing ticks the
+    /// between the rendered animation and the semantic jump: nothing ticks the
     /// list's smooth scroll on the semantic runtime, so a request there lands
     /// in place instead.
+    ///
+    /// Returns whether this application moved the offset — a jump, an
+    /// approach jump, or a landing correction. Arming or refining a run moves
+    /// nothing: the run's own ticks carry the offset from here, as
+    /// continuation work rather than a change still to be applied.
+    #[must_use]
     fn apply_scroll_request(
         &self,
         renderer: &mut crate::renderer::SemanticCore,
         handle: &ScrollHandle,
         row_count: usize,
         animate: bool,
-    ) {
+    ) -> bool {
         let Some(controller) = &self.config.scroll_controller else {
-            return;
+            return false;
         };
         let generation = renderer.read_signal(&controller.generation());
         if generation != self.applied_scroll_generation.get()
             && self
                 .pending_scroll
-                .get()
-                .is_none_or(|(pending_generation, _)| pending_generation != generation)
+                .borrow()
+                .as_ref()
+                .is_none_or(|pending| pending.generation != generation)
         {
-            let index = renderer.read_signal(&controller.target());
-            self.pending_scroll.set(Some((generation, index)));
+            let request = renderer.read_signal(&controller.request());
+            *self.pending_scroll.borrow_mut() = Some(PendingScroll {
+                generation,
+                index: request.target,
+                animation: request.animation,
+                state: PendingScrollState::Unarmed,
+            });
         }
-        let Some((pending_generation, index)) = self.pending_scroll.get() else {
-            return;
+        let Some(pending) = self.pending_scroll.borrow().clone() else {
+            return false;
         };
-        if index >= row_count {
+        if pending.index >= row_count {
             // A scroll request names a row the contents may not have yet: a
             // list materializing mid-flush can be shorter than its pending
             // target, and a signal-driven collection can shrink below it. The
             // request stays pending until the collection reaches the index;
             // a newer generation supersedes it.
-            return;
+            return false;
         }
-        // Ease toward the row rather than teleporting. Re-issuing the target
-        // every frame is what keeps a virtualized jump accurate: rows measured
-        // while the glide passes over them move `offset_of(index)`, so the
-        // destination is refined until the animation actually settles.
-        let offset = self.extent_index.borrow().offset_of(index);
-        if animate {
-            let metrics = handle.metrics();
-            let current = self
-                .extent_index
-                .borrow()
-                .visible_window(metrics.offset_y, metrics.offset_y + metrics.viewport_height)
-                .start;
-            if index.abs_diff(current) > ROWS_BEFORE_JUMP_TELEPORT {
-                // Animating the whole way across a 100k-row dataset would drag the
-                // list through every viewport between here and there, and read as a
-                // blur regardless. Compose solves this the same way: its
-                // `animateScrollToItem` snaps to within `NumberOfItemsToTeleport`
-                // items of the target and animates only that final stretch.
-                let approach_index = if index > current {
-                    index - ROWS_BEFORE_JUMP_TELEPORT
-                } else {
-                    index + ROWS_BEFORE_JUMP_TELEPORT
-                };
-                let approach = self.extent_index.borrow().offset_of(approach_index);
-                let _ = handle.scroll_to(0.0, approach);
+        // Re-issuing the target every frame is what keeps a virtualized
+        // request accurate: rows measured while the list moves past them move
+        // `offset_of(index)`, so the destination is refined until it actually
+        // lands.
+        let pending_position = self.transitions.row_display(pending.index);
+        let offset = self.extent_index.borrow().offset_of(pending_position);
+        let moved = match pending.animation.clone() {
+            Some(animation) if animate => match pending.state {
+                PendingScrollState::Armed { run } => match handle.scroll_run_outcome(&run) {
+                    ScrollRunOutcome::Running => {
+                        // Already gliding: refine the destination without
+                        // restarting the run's clock. Only the run this
+                        // request armed answers — a different owner's
+                        // animation on the same surface is never steered.
+                        let _ = handle.retarget_animated_scroll(&run, 0.0, offset);
+                        false
+                    }
+                    ScrollRunOutcome::Landed => {
+                        // The motion is over; settling the final position
+                        // as rows re-measure is a correction, so it jumps
+                        // rather than arming a second full-duration run.
+                        handle.scroll_to(0.0, offset)
+                    }
+                    ScrollRunOutcome::Interrupted => {
+                        // Something else claimed the offset — user input,
+                        // a jump, or another owner's run (keyboard
+                        // clearance). The request is spent; consuming its
+                        // generation keeps the supersede rule uniform.
+                        self.applied_scroll_generation.set(pending.generation);
+                        self.pending_scroll.take();
+                        return false;
+                    }
+                },
+                PendingScrollState::Unarmed => {
+                    let metrics = handle.metrics();
+                    let current = self.transitions.row_at(
+                        self.extent_index
+                            .borrow()
+                            .visible_window(
+                                metrics.offset_y,
+                                metrics.offset_y + metrics.viewport_height,
+                            )
+                            .start,
+                    );
+                    // Animating the whole way across a large dataset would
+                    // drag the list through every viewport between here and
+                    // there, and read as a blur regardless: jump to within
+                    // the approach bound of the target and animate only that
+                    // final stretch.
+                    let approached = animated_row_scroll_approach(current, pending.index)
+                        .is_some_and(|approach_index| {
+                            let approach = self
+                                .extent_index
+                                .borrow()
+                                .offset_of(self.transitions.row_display(approach_index));
+                            handle.scroll_to(0.0, approach)
+                        });
+                    // Arming starts the run's clock at the frame instant —
+                    // the very next tick already shows motion, and keeps
+                    // requesting frames until the run lands. The handle is
+                    // bound live this frame, and the pending request being
+                    // applied is the one still stored — both hold.
+                    let run = handle
+                        .scroll_to_animated(0.0, offset, animation, renderer.frame_instant())
+                        .expect(
+                            "the list binds a live scroll handle before arming a request on it",
+                        );
+                    self.pending_scroll
+                        .borrow_mut()
+                        .as_mut()
+                        .expect("the pending request being applied is still stored")
+                        .state = PendingScrollState::Armed { run };
+                    approached
+                }
+            },
+            _ => {
+                // `None` (a jump) or the semantic runtime, whose pump never
+                // registers the list's handle in its scroll targets — either
+                // way the request lands in place. Re-issuing while pending
+                // keeps it self-correcting as rows measure.
+                handle.scroll_to(0.0, offset)
             }
-            // The pump ticks smooth scrolls before rendering and the present already
-            // wakes the loop, so arming here is enough — the next tick advances the
-            // glide and keeps requesting frames until it settles.
-            let _ = handle.scroll_to_animated(0.0, offset);
-        } else {
-            // The semantic runtime's pump never registers the list's handle in
-            // its scroll targets, so a glide armed here would never tick; the
-            // request lands in place.
-            let _ = handle.scroll_to(0.0, offset);
-        }
+        };
         let extent_index = self.extent_index.borrow();
-        let Some(extent) = extent_index.measured(index) else {
-            return;
+        let Some(extent) = extent_index.measured(pending_position) else {
+            return moved;
         };
         let metrics = handle.metrics();
-        let row_start = extent_index.offset_of(index);
+        let row_start = extent_index.offset_of(pending_position);
         let row_end = row_start + extent;
-        let viewport_end = metrics.offset_y + metrics.viewport_height;
+        // The surface's safe-area extension covers rows a `scroll_to` was
+        // asked to reveal, so the visibility check ends before the bands it
+        // reaches under rather than at the grown viewport's bottom.
+        let viewport_end =
+            metrics.offset_y + metrics.viewport_height - self.surface.extension().vertical();
         let row_visible = row_end > metrics.offset_y && row_start < viewport_end;
         if row_visible && !handle.is_smooth_scrolling() {
-            self.applied_scroll_generation.set(pending_generation);
-            self.pending_scroll.set(None);
+            self.applied_scroll_generation.set(pending.generation);
+            self.pending_scroll.take();
         }
-    }
-
-    fn apply_membership_anchor(&self, handle: &ScrollHandle) {
-        if let Some(offset) = self.pending_membership_offset.take() {
-            // Re-anchoring after a delete or move keeps the viewport where the
-            // user left it; that is a correction, not a journey, so it lands
-            // immediately rather than gliding.
-            let _ = handle.scroll_to(0.0, offset);
-        }
+        moved
     }
 
     fn record_viewport_anchor(&self, metrics: crate::scroll::ScrollMetrics, row_count: usize) {
@@ -710,19 +893,26 @@ impl ListRenderState {
             .extent_index
             .borrow()
             .visible_window(metrics.offset_y, metrics.offset_y + metrics.viewport_height);
-        if window.start >= row_count {
+        // A removal ghost at the top anchors on the row it sits before.
+        let index = self.transitions.row_at(window.start);
+        if index >= row_count {
             self.viewport_anchor.set(None);
             return;
         }
         let id = self
             .rows_snapshot
             .borrow()
-            .get_id(window.start)
-            .unwrap_or_else(|| panic!("hydrolysis List item {} has no stable id", window.start));
+            .get_id(index)
+            .unwrap_or_else(|| panic!("hydrolysis List item {index} has no stable id"));
+        let row_start = self
+            .extent_index
+            .borrow()
+            .offset_of(self.transitions.row_display(index));
         self.viewport_anchor.set(Some(ListViewportAnchor {
             id,
-            index: window.start,
-            offset_within_row: (metrics.offset_y - window.leading_offset).max(0.0),
+            index,
+            offset_within_row: (metrics.offset_y - row_start).max(0.0),
+            recorded_offset: metrics.offset_y,
         }));
     }
 }
@@ -732,7 +922,7 @@ impl HydroNativeView for Native<ListConfig> {
         state: &mut HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_list_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -759,7 +949,7 @@ const A11Y_KEY_MOVE_DOWN: i64 = 5;
 
 #[cfg(feature = "accessibility")]
 fn row_a11y_key_base(row_id: ListItemId) -> i64 {
-    i64::from(i32::from(*row_id)) * A11Y_KEYS_PER_ROW
+    i64::from(i32::from(row_id)) * A11Y_KEYS_PER_ROW
 }
 
 /// Registers one section header or footer as its own accessibility node.
@@ -793,10 +983,10 @@ fn register_section_chrome_node(
     );
     node.set_label(styled.to_string());
     match ctx {
-        Some(ctx) => renderer.register_accessibility_child_node_with_key(
+        Some(_ctx) => renderer.register_accessibility_child_node_with_key(
             semantic_key,
             node,
-            transformed_rect(ctx.hit_transform, bounds),
+            bounds,
             env,
             None,
         ),
@@ -807,6 +997,101 @@ fn register_section_chrome_node(
             None,
         ),
     }
+}
+
+/// Whether the row's content sits under `.disabled` — read from the
+/// environment the content's own presses resolve against, the same
+/// [`waterui_core::interaction::Disabled`] scope every control's input gate
+/// consults. A disabled row is inert the way a disabled `Button` cannot be
+/// pressed: the list registers no selection press for it and its `ListItem`
+/// node advertises no `Click` (water-rs/waterui#2244).
+fn list_row_disabled(
+    content: &AnyView,
+    env: &Environment,
+    renderer: &mut crate::renderer::SemanticCore,
+) -> bool {
+    let (_, content_env) = crate::renderer::flatten_environment_metadata_ref(content, env);
+    renderer.read_signal(&crate::widgets::util::widget_disabled(&content_env))
+}
+
+/// The logical size of a frame-space rect.
+const fn kurbo_logical_size(rect: kurbo::Rect) -> LayoutSize {
+    LayoutSize::new(
+        crate::num_cast::f64_as_f32(rect.width()),
+        crate::num_cast::f64_as_f32(rect.height()),
+    )
+}
+
+/// Paints removal ghost `index` in its frozen slot, whose top rests at
+/// `resting_y`: the list's row background across the slot, then the row's
+/// content under its removal transition. Paint only — a ghost left the
+/// semantic tree, takes no input and draws no row controls
+/// (layout-spec.md §4.5).
+fn draw_list_ghost(
+    ctx: &mut WidgetRenderContext<'_>,
+    state: &Rc<RefCell<ListRenderState>>,
+    env: &Environment,
+    index: usize,
+    resting_y: f64,
+) {
+    let state_ref = state.borrow();
+    let mut ghost = state_ref.transitions.ghost(index);
+    let placement = ghost.placement;
+    let viewport = ctx.bounds;
+    let slot = kurbo::Rect::new(
+        viewport.x0,
+        resting_y,
+        viewport.x1,
+        resting_y + placement.slot.height(),
+    );
+    {
+        let theme = ctx.theme();
+        ctx.draw_context(|draw| {
+            theme.draw_list_row_background(&mut *draw, slot, false);
+        });
+    }
+    let content = placement.content + slot.origin().to_vec2();
+    let size = kurbo_logical_size(content);
+    let owner = state_ref
+        .owner
+        .upgrade()
+        .expect("hydrolysis List: a flushing list's cell is alive");
+    let direction = state_ref.transitions.direction;
+    let crate::renderer::LazyGhost { ghost, runtime, .. } = &mut *ghost;
+    let paint = crate::renderer::TransitionPaint::sample(
+        &ghost.transition,
+        size,
+        direction,
+        false,
+        runtime,
+        &owner,
+    );
+    let delta = kurbo::Affine::translate((content.x0, content.y0));
+    let child_ctx = ctx.render_context().child(
+        delta,
+        kurbo::Rect::from_origin_size(kurbo::Point::ZERO, content.size()),
+    );
+    let realization = &mut ghost.realization;
+    ctx.renderer_mut()
+        .with_suppressed_accessibility(|renderer| {
+            crate::renderer::flush_transitioned(
+                renderer,
+                child_ctx,
+                delta,
+                &paint,
+                |renderer, inner| {
+                    realization.place_in_ctx(
+                        renderer,
+                        inner,
+                        env,
+                        placement.proposal,
+                        size,
+                        None,
+                        kurbo::Affine::IDENTITY,
+                    );
+                },
+            );
+        });
 }
 
 /// Emits a list's accessibility tree from its node-owned retained state.
@@ -824,7 +1109,7 @@ fn register_section_chrome_node(
 pub fn list_accessibility(
     renderer: &mut crate::renderer::SemanticCore,
     ctx: Option<RenderContext>,
-    theme: Option<&Rc<dyn crate::engine::WidgetTheme>>,
+    theme: Option<&Rc<dyn crate::theme::WidgetTheme>>,
     state: &Rc<RefCell<ListRenderState>>,
     env: &Environment,
 ) {
@@ -846,15 +1131,15 @@ pub fn list_accessibility(
         // A 0 floor still needs a positive seed estimate — measured extents
         // replace it row by row anyway.
         let row_estimate = row_floor.max(1.0);
-        state.prepare_rows(row_count, row_estimate);
+        // The transition clocks advance before the extents re-base on what
+        // remains.
+        state.advance_transitions(renderer);
+        state.prepare_rows(row_count, row_estimate, renderer.frame_instant());
         // The chrome decides how tall each row's slot is, so it has to be
         // resolved before extents are measured here — exactly as the draw pass
         // does.
         if state.resolve_sections(row_count, env) {
-            state
-                .extent_index
-                .borrow_mut()
-                .reset(row_count, row_estimate, 0.0);
+            state.reset_extents(row_count, row_estimate);
         }
     } else {
         // The semantic path keeps section chrome current but measures rows in
@@ -863,9 +1148,10 @@ pub fn list_accessibility(
         // emit reads the same retained rows.
         state.consume_replaced_rows();
         let _ = state.resolve_sections(row_count, env);
+        let display = state.transitions.display_len(row_count);
         let mut extent_index = state.extent_index.borrow_mut();
-        if !extent_index.matches(row_count, 1.0, 0.0) {
-            extent_index.reset(row_count, 1.0, 0.0);
+        if !extent_index.matches(display, 1.0, 0.0) {
+            extent_index.reset(display, 1.0, 0.0);
         }
     }
     let is_rendered = ctx.is_some();
@@ -878,16 +1164,18 @@ pub fn list_accessibility(
         .total_extent()
         .max(viewport.height());
     let handle = state.bind_scroll(viewport.width(), viewport.height(), content_height);
-    state.apply_membership_anchor(&handle);
-    state.apply_scroll_request(renderer, &handle, row_count, is_rendered);
+    // Applied ahead of the emit below, so a move it makes is in this frame's
+    // tree already.
+    let _ = state.apply_scroll_request(renderer, &handle, row_count, is_rendered);
     #[cfg(feature = "accessibility")]
     {
         let metrics = handle.metrics();
         let (emit_range, leading_offset) = if is_rendered {
+            let span = state.surface.visible_span(&metrics, ScrollAxis::Vertical);
             let window = state
                 .extent_index
                 .borrow()
-                .visible_window(metrics.offset_y, metrics.offset_y + viewport.height());
+                .visible_window(span.start, span.end);
             (window.start..window.end, window.leading_offset)
         } else {
             (0..row_count, 0.0)
@@ -919,15 +1207,33 @@ pub fn list_accessibility(
             // evicts the ones no row touched this pass.
             state.item_cache.borrow_mut().begin_frame();
         }
+        // The surface's §7.1 extension — the bounds rows may paint into —
+        // while `viewport` stays the laid-out frame the row math is anchored
+        // on.
+        let surface_viewport = crate::renderer::grow_rect(viewport, state.surface.extension());
         let mut y = viewport.y0 - metrics.offset_y + leading_offset;
-        for index in emit_range {
+        for position in emit_range {
+            // The rendered window runs over display positions: a removal
+            // ghost holds its slot but left the semantic tree.
+            let index = if is_rendered {
+                match state.transitions.slot_at(position) {
+                    crate::renderer::LazySlot::Row(index) => index,
+                    crate::renderer::LazySlot::Ghost(ghost) => {
+                        y += f64::from(state.transitions.ghost(ghost).size().height);
+                        continue;
+                    }
+                }
+            } else {
+                position
+            };
+            let position = state.transitions.row_display(index);
             let row_env = env.clone();
             let item = materialize_list_item(&rows_snapshot, index, &row_env);
             let chrome = state.section_chrome(index);
             // Semantic rows have no layout extent — the slot is only measured
             // when the rendered path needs it to place the row.
             let slot_height = if is_rendered {
-                let cached_extent = state.extent_index.borrow().measured(index);
+                let cached_extent = state.extent_index.borrow().measured(position);
                 if let Some(extent) = cached_extent {
                     extent
                 } else {
@@ -947,7 +1253,10 @@ pub fn list_accessibility(
                         list.min_row_height,
                         list_metrics,
                     ) + chrome.total_height(&list_metrics);
-                    state.extent_index.borrow_mut().set_measured(index, extent);
+                    state
+                        .extent_index
+                        .borrow_mut()
+                        .set_measured(position, extent);
                     extent
                 }
             } else {
@@ -955,7 +1264,9 @@ pub fn list_accessibility(
             };
             let slot_rect = kurbo::Rect::new(viewport.x0, y, viewport.x1, y + slot_height);
             y += slot_height;
-            if is_rendered && (slot_rect.y1 <= viewport.y0 || slot_rect.y0 >= viewport.y1) {
+            if is_rendered
+                && (slot_rect.y1 <= surface_viewport.y0 || slot_rect.y0 >= surface_viewport.y1)
+            {
                 continue;
             }
             let header_height = list_metrics.map_or(0.0, |m| chrome.header_height(&m));
@@ -1001,6 +1312,11 @@ pub fn list_accessibility(
             let mut item = item;
             let (content, row_a11y_env) = hoist_accessibility_metadata(item.content, &row_env);
             item.content = content;
+            // The row's gate is the `Disabled` scope its content resolves
+            // under — the same env the content's presses read — so a
+            // `.disabled` row keeps its label and reports disabled but is
+            // inert to selection.
+            let row_disabled = list_row_disabled(&item.content, &row_a11y_env, renderer);
             // A hidden row vanishes whole — node and content — matching the
             // naming container's treatment of `accessibilityHidden`.
             let row_hidden = row_a11y_env
@@ -1034,19 +1350,33 @@ pub fn list_accessibility(
                 // domain, and `Click` resolves the activation a pointer click
                 // on the row's centre would run — Enter/Space fire it.
                 row_node.add_action(AccessibilityAction::ScrollIntoView);
-                row_node.add_action(AccessibilityAction::Click);
+                // A disabled row reports disabled, advertises no `Click`, and
+                // its `ListRow` target carries no selection to write — a
+                // dispatched `Click` resolves only the row content's own
+                // activations.
+                if row_disabled {
+                    row_node.set_disabled();
+                } else {
+                    row_node.add_action(AccessibilityAction::Click);
+                }
                 let row_target = Some(AccessibilityActionTarget::ListRow {
                     index,
+                    position,
                     handle: handle.clone(),
                     extents: Rc::clone(&state.extent_index),
+                    extension: state.surface.extension(),
                     id: row_id,
-                    selection: state.row_selection.clone(),
+                    selection: if row_disabled {
+                        None
+                    } else {
+                        state.row_selection.clone()
+                    },
                 });
                 match ctx {
-                    Some(ctx) => renderer.register_accessibility_child_node_with_key(
+                    Some(_ctx) => renderer.register_accessibility_child_node_with_key(
                         key_base + A11Y_KEY_ROW,
                         row_node,
-                        transformed_rect(ctx.hit_transform, row_rect),
+                        row_rect,
                         &row_a11y_env,
                         row_target,
                     ),
@@ -1066,7 +1396,7 @@ pub fn list_accessibility(
                 // resolves the row node through to parent its content under.
                 // Each press slot links to the node that control emits below,
                 // so a pointer press lands keyboard focus on it.
-                let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(*row_id))
+                let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(row_id))
                     as usize)
                     .checked_mul(5)
                     .expect("hydrolysis List interaction identity overflow");
@@ -1108,6 +1438,10 @@ pub fn list_accessibility(
                     {
                         let mut cache = state.item_cache.borrow_mut();
                         let subview = cache.entry(row_id, move || content);
+                        // The row owns the transition its content root
+                        // declares; claim it before anything walks the row.
+                        subview.ensure_built(renderer, &subtree_env);
+                        state.transitions.track(row_id, subview, renderer);
                         subview.emit_accessibility(renderer, &subtree_env);
                     }
                     renderer.pop_accessibility_parent();
@@ -1230,7 +1564,9 @@ pub fn list_accessibility(
             }
         }
         if ctx.is_none() {
-            state.item_cache.borrow_mut().end_frame();
+            let mut cache = state.item_cache.borrow_mut();
+            cache.end_frame();
+            state.transitions.retain_rows(|id| cache.get(id).is_some());
         }
         let _ = renderer.register_accessibility_leaf(
             ctx,
@@ -1282,14 +1618,11 @@ fn register_edit_control_node(
     node.add_action(AccessibilityAction::Click);
     let target = Some(AccessibilityActionTarget::Activate { action });
     match ctx {
-        Some(ctx) => renderer.register_accessibility_child_node_with_key(
+        Some(_ctx) => renderer.register_accessibility_child_node_with_key(
             semantic_key,
             node,
-            transformed_rect(
-                ctx.hit_transform,
-                bounds.expect(
-                    "hydrolysis list edit-control node: the rendered walk always has list metrics",
-                ),
+            bounds.expect(
+                "hydrolysis list edit-control node: the rendered walk always has list metrics",
             ),
             env,
             target,
@@ -1309,7 +1642,7 @@ pub fn measure_list_node(
     proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let intrinsic = measure_list_intrinsic(list, state, env, theme);
     ViewDimensions::new(LayoutSize::new(
@@ -1381,18 +1714,23 @@ pub fn render_list_parts(
     // A 0 floor still needs a positive seed estimate — measured extents
     // replace it row by row anyway.
     let row_estimate = row_floor.max(1.0);
-    state.borrow().prepare_rows(row_count, row_estimate);
+    let frame_instant = ctx.renderer_mut().frame_instant();
+    state.borrow().advance_transitions(ctx.renderer_mut());
+    state
+        .borrow()
+        .prepare_rows(row_count, row_estimate, frame_instant);
     if state.borrow().resolve_sections(row_count, env) {
         // Row extents measured before the chrome was known are short by its
         // height, so drop them rather than drawing rows into a stale slot.
-        state
-            .borrow()
-            .extent_index
-            .borrow_mut()
-            .reset(row_count, row_estimate, 0.0);
+        state.borrow().reset_extents(row_count, row_estimate);
     }
 
     let viewport = ctx.bounds;
+    // §7.1's scroll surface: the clip, the wheel target and the visible
+    // window all run on the frame grown by the extension layout computed —
+    // the surface paints through the bands it touched. The row math stays
+    // anchored on the laid-out frame.
+    let surface_viewport = crate::renderer::grow_rect(viewport, state.borrow().surface.extension());
     let content_height = state
         .borrow()
         .extent_index
@@ -1402,31 +1740,83 @@ pub fn render_list_parts(
     let handle = state
         .borrow()
         .bind_scroll(viewport.width(), viewport.height(), content_height);
-    state.borrow().apply_membership_anchor(&handle);
-    state
+    // Applied ahead of the rows' recording, so a move it makes is in this
+    // frame's recording already.
+    let _ = state
         .borrow()
         .apply_scroll_request(ctx.renderer_mut(), &handle, row_count, true);
+    // The keyboard-moving clearance runs before the rows paint: while the
+    // host's keyboard animation is in flight the offset follows it frame by
+    // frame, so this flush paints the field already clear.
+    state
+        .borrow()
+        .surface
+        .begin_flush(ctx.renderer_mut(), &handle);
     let mut metrics = handle.metrics();
-    let needs_viewport_clip = metrics.max_y > 0.0;
     // Register before the rows flush: scroll-target dispatch walks the frame's
     // targets newest-first, so a scroll region inside a row wins the delta
     // until it hits its own edge, where it falls through to the list.
-    let hit_transform = ctx.hit_transform;
     crate::widgets::scroll::register_scroll_wheel_target(
         ctx.renderer_mut(),
-        hit_transform,
-        viewport,
+        surface_viewport,
         &handle,
     );
-    if needs_viewport_clip {
-        ctx.push_layer_rect(1.0, viewport);
+
+    let span = state
+        .borrow()
+        .surface
+        .visible_span(&metrics, ScrollAxis::Vertical);
+    let span_horizontal = state
+        .borrow()
+        .surface
+        .visible_span(&metrics, ScrollAxis::Horizontal);
+    // The rows scroll as the widget's inner layer `ScrollOffset`, exactly as a
+    // `scroll` node's content does (decision 1): they paint and place at their
+    // resting positions in content space and the inner layer shifts them, so a
+    // scroll frame writes the one scroll-offset property instead of re-placing
+    // every visible row. The viewport placement carries the same offset so the
+    // rows' hit regions and emitted bounds follow it without a re-record.
+    let offset = kurbo::Vec2::new(metrics.offset_x, metrics.offset_y);
+    {
+        let renderer = ctx.renderer_mut();
+        renderer.push_placement_scope(
+            crate::renderer::mount::ScopeDelta::RECORD_SPACE,
+            Some(surface_viewport),
+        );
+        let viewport_placement = renderer.current_placement();
+        viewport_placement.set_content_offset(-offset);
+        let stretch = renderer.scroll_stretch(&handle);
+        renderer.program().begin_inner(
+            surface_viewport,
+            offset,
+            stretch,
+            std::rc::Rc::clone(&viewport_placement),
+        );
+        // The visible window resolves in content space while the rows record
+        // at `viewport.origin + content`: the content's local transform is the
+        // frame's origin — the relation `ScrollNode` publishes through
+        // `content_ctx.local` — so the lazy window maps content coordinates
+        // through it before the scroll shift.
+        let world = renderer.record_world(kurbo::Affine::translate(kurbo::Vec2::new(
+            viewport.x0,
+            viewport.y0,
+        )));
+        renderer.push_lazy_viewport(crate::renderer::LazyViewport {
+            bounds: kurbo::Rect::new(
+                span_horizontal.start,
+                span.start,
+                span_horizontal.end,
+                span.end,
+            ),
+            transform: world * kurbo::Affine::translate(-offset),
+        });
     }
 
     let window = state
         .borrow()
         .extent_index
         .borrow()
-        .visible_window(metrics.offset_y, metrics.offset_y + viewport.height());
+        .visible_window(span.start, span.end);
     // The delete/move handlers (`Option<Box<dyn Fn>>`) stay owned by the retained
     // config; per-row tap targets invoke them through the shared cell so they are
     // reused every flush instead of being consumed.
@@ -1437,7 +1827,7 @@ pub fn render_list_parts(
     // frames coming while it is still travelling.
     let now = ctx.renderer_mut().frame_instant();
     if state.borrow().advance_swipe_settle(now) {
-        ctx.renderer_mut().request_refresh();
+        ctx.renderer_mut().context_mark_layout();
     }
     // One hit-test group for every row gesture in this list, so a swipe on one
     // row and a reorder drag on another can never both claim the same pointer.
@@ -1450,7 +1840,10 @@ pub fn render_list_parts(
     // it travels past, so draw order can no longer be the order the vertical
     // cursor advances in.
     let mut rows = Vec::with_capacity(window.end.saturating_sub(window.start));
-    let mut y = viewport.y0 - metrics.offset_y + window.leading_offset;
+    // Rows live in content space: `leading_offset` is the window's resting
+    // position under the viewport's top edge, and the inner layer's scroll
+    // offset shifts the whole band on screen.
+    let mut y = viewport.y0 + window.leading_offset;
     // A row's extent is derived from its content's measured size every frame —
     // the same transient measure `list_content_rect` consumes below — so a row
     // whose content re-measures differently is re-measured here and only here:
@@ -1459,10 +1852,25 @@ pub fn render_list_parts(
     let mut extents_changed = false;
     let theme = ctx.theme();
     let min_row_height = state.borrow().config.min_row_height;
-    let mut index = window.start;
+    // Removal ghosts in the window, with the content-space top of each slot.
+    let mut ghosts = Vec::new();
+    let mut position = window.start;
     let mut end = window.end;
     loop {
-        while index < end {
+        while position < end {
+            // The window runs over display positions: a removal ghost holds
+            // its frozen slot between the rows (layout-spec.md §4.5).
+            let slot = state.borrow().transitions.slot_at(position);
+            let index = match slot {
+                crate::renderer::LazySlot::Row(index) => index,
+                crate::renderer::LazySlot::Ghost(ghost) => {
+                    let height = f64::from(state.borrow().transitions.ghost(ghost).size().height);
+                    ghosts.push((ghost, y));
+                    y += height;
+                    position += 1;
+                    continue;
+                }
+            };
             // A list row is its own chrome: a button inside one is a row, not a
             // filled container floating on a screen. Buttons that picked a style
             // explicitly keep it.
@@ -1488,23 +1896,27 @@ pub fn render_list_parts(
                 let state_ref = state.borrow();
                 let mut extent_index = state_ref.extent_index.borrow_mut();
                 extents_changed |= extent_index
-                    .measured(index)
+                    .measured(position)
                     .is_none_or(|old| old.to_bits() != row_height.to_bits());
-                extent_index.set_measured(index, row_height);
+                extent_index.set_measured(position, row_height);
             }
             rows.push((index, row_id, item, y, row_height, content_size));
             y += row_height;
-            index += 1;
+            position += 1;
         }
         // A re-measured row can pull the window's end either way: shrinkage
         // reveals rows the stale extents hid, and those rows must be resolved
         // into this frame's stack rather than leaving the viewport's tail
         // unpainted until the next refresh.
+        let span = state
+            .borrow()
+            .surface
+            .visible_span(&metrics, ScrollAxis::Vertical);
         let refreshed_end = state
             .borrow()
             .extent_index
             .borrow()
-            .visible_window(metrics.offset_y, metrics.offset_y + viewport.height())
+            .visible_window(span.start, span.end)
             .end;
         if refreshed_end <= end {
             break;
@@ -1517,7 +1929,7 @@ pub fn render_list_parts(
         // indicators — was resolved against the stale values, so pull one
         // more frame rather than leaving them stale until an unrelated
         // refresh happens to arrive.
-        ctx.renderer_mut().request_refresh();
+        ctx.renderer_mut().context_mark_layout();
     }
     let lifted_id = state.borrow().reorder.get().map(|reorder| reorder.id);
     if let Some(lifted_id) = lifted_id
@@ -1535,6 +1947,11 @@ pub fn render_list_parts(
         .semantics_scopes
         .borrow_mut()
         .retain(|id, _| visible_ids.contains(id));
+
+    // Ghosts paint first, beneath the live rows.
+    for (ghost, resting_y) in ghosts {
+        draw_list_ghost(ctx, state, env, ghost, resting_y);
+    }
 
     for (index, row_id, item, resting_y, row_height, content_size) in rows {
         let row_env = env.clone();
@@ -1587,7 +2004,7 @@ pub fn render_list_parts(
         // press slots, 2 the delete control's, 3 the row's own selection
         // press, 4 the row's anchor — the key `list_accessibility` links the
         // row node to and this pass resolves it through below.
-        let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(*row_id)) as usize)
+        let row_interaction_base = (crate::num_cast::i32_as_u32(i32::from(row_id)) as usize)
             .checked_mul(5)
             .expect("hydrolysis List interaction identity overflow");
         let chrome = state.borrow().section_chrome(index);
@@ -1601,7 +2018,9 @@ pub fn render_list_parts(
             viewport.x1,
             resting_y + reorder_dy + row_height,
         );
-        if slot_rect.y1 <= viewport.y0 || slot_rect.y0 >= viewport.y1 {
+        // `slot_rect` rides in the frame's space (`viewport.origin + content`);
+        // shift the content-space span into the same space for the cull.
+        if slot_rect.y1 <= span.start + viewport.y0 || slot_rect.y0 >= span.end + viewport.y0 {
             continue;
         }
         let header_height = chrome.header_height(&list_metrics);
@@ -1727,8 +2146,20 @@ pub fn render_list_parts(
         // claims the press, the row's own handler coexists with it
         // (water-rs/hydrolysis#175).
         let mut content = Some(item.content);
-        if let Some(selection) = state.borrow().row_selection.clone() {
-            let hit_bounds = transformed_rect(ctx.hit_transform, row_rect);
+        // The selection press honours the `Disabled` scope the row's content
+        // resolves under — the same gate the content's own presses read — so
+        // a `.disabled` row stays inert to pointer input.
+        let row_disabled = list_row_disabled(
+            content
+                .as_ref()
+                .expect("hydrolysis list row content missing"),
+            &row_env,
+            ctx.renderer_mut(),
+        );
+        if let Some(selection) = state.borrow().row_selection.clone()
+            && !row_disabled
+        {
+            let hit_bounds = row_rect;
             let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 3);
             let (_, press_slot, _) = ctx
                 .renderer_mut()
@@ -1789,7 +2220,7 @@ pub fn render_list_parts(
                 &row_env,
             );
             let up_interaction = controls.reorder_up.map(|rect| {
-                let hit_bounds = transformed_rect(ctx.hit_transform, rect);
+                let hit_bounds = rect;
                 let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base);
                 let (interaction, slot, _) = ctx
                     .renderer_mut()
@@ -1797,7 +2228,7 @@ pub fn render_list_parts(
                 (rect, hit_bounds, interaction, slot)
             });
             let down_interaction = controls.reorder_down.map(|rect| {
-                let hit_bounds = transformed_rect(ctx.hit_transform, rect);
+                let hit_bounds = rect;
                 let key = crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 1);
                 let (interaction, slot, _) = ctx
                     .renderer_mut()
@@ -1810,7 +2241,10 @@ pub fn render_list_parts(
                     .map(|(rect, _, interaction_state, _)| {
                         (
                             *rect,
-                            local_interaction_state(*interaction_state, ctx.hit_transform),
+                            local_interaction_state(
+                                *interaction_state,
+                                ctx.renderer_mut().current_hit_transform(),
+                            ),
                         )
                     });
                 let down_state =
@@ -1819,7 +2253,10 @@ pub fn render_list_parts(
                         .map(|(rect, _, interaction_state, _)| {
                             (
                                 *rect,
-                                local_interaction_state(*interaction_state, ctx.hit_transform),
+                                local_interaction_state(
+                                    *interaction_state,
+                                    ctx.renderer_mut().current_hit_transform(),
+                                ),
                             )
                         });
                 let theme = ctx.theme();
@@ -1858,15 +2295,17 @@ pub fn render_list_parts(
         }
 
         if let Some(delete_rect) = controls.delete {
-            let delete_hit_bounds = transformed_rect(ctx.hit_transform, delete_rect);
+            let delete_hit_bounds = delete_rect;
             let delete_key =
                 crate::renderer::InteractionKey::for_rc(state, row_interaction_base + 2);
             let (delete_interaction, delete_press_slot, _) = ctx
                 .renderer_mut()
                 .bind_interaction_target(delete_key, delete_hit_bounds, &row_env);
             {
-                let delete_interaction =
-                    local_interaction_state(delete_interaction, ctx.hit_transform);
+                let delete_interaction = local_interaction_state(
+                    delete_interaction,
+                    ctx.renderer_mut().current_hit_transform(),
+                );
                 let theme = ctx.theme();
                 ctx.draw_context(|draw| {
                     theme.draw_list_delete_control(&mut *draw, delete_rect);
@@ -1925,13 +2364,69 @@ pub fn render_list_parts(
                         .take()
                         .expect("hydrolysis list row sub-view missing")
                 });
-                subview.flush_in_rect(
-                    ctx.renderer_mut(),
-                    render_ctx,
-                    &subtree_env,
-                    bounded_proposal(content_rect),
-                    content_rect,
+                // The row owns the transition its content root declares.
+                subview.ensure_built(ctx.renderer_mut(), &subtree_env);
+                state_ref
+                    .transitions
+                    .track(row_id, subview, ctx.renderer_mut());
+                let proposal = bounded_proposal(content_rect);
+                state_ref.transitions.place(
+                    row_id,
+                    crate::renderer::RowPlacement {
+                        slot: slot_rect,
+                        content: content_rect - slot_rect.origin().to_vec2(),
+                        proposal,
+                    },
                 );
+                let row = state_ref.transitions.row(row_id);
+                match &row.insertion {
+                    Some(insertion) => {
+                        let owner = state_ref
+                            .owner
+                            .upgrade()
+                            .expect("hydrolysis List: a flushing list's cell is alive");
+                        let paint = crate::renderer::TransitionPaint::sample(
+                            &insertion.state,
+                            kurbo_logical_size(content_rect),
+                            state_ref.transitions.direction,
+                            true,
+                            &insertion.runtime,
+                            &owner,
+                        );
+                        let delta = kurbo::Affine::translate((content_rect.x0, content_rect.y0));
+                        let child_ctx = render_ctx.child(
+                            delta,
+                            kurbo::Rect::from_origin_size(kurbo::Point::ZERO, content_rect.size()),
+                        );
+                        crate::renderer::flush_transitioned(
+                            ctx.renderer_mut(),
+                            child_ctx,
+                            delta,
+                            &paint,
+                            |renderer, inner| {
+                                subview.place_in_ctx(
+                                    renderer,
+                                    inner,
+                                    &subtree_env,
+                                    proposal,
+                                    kurbo_logical_size(content_rect),
+                                    None,
+                                    kurbo::Affine::IDENTITY,
+                                );
+                            },
+                        );
+                    }
+                    // A list row is scroll content: it lays out with no
+                    // §7.1 context (its surface owns the edges).
+                    None => subview.place(
+                        ctx.renderer_mut(),
+                        render_ctx,
+                        &subtree_env,
+                        proposal,
+                        content_rect,
+                        None,
+                    ),
+                }
             }
             #[cfg(feature = "accessibility")]
             if row_parented {
@@ -1958,8 +2453,16 @@ pub fn render_list_parts(
             });
         }
     }
-    // Evict content sub-views for rows no longer in the visible window.
-    state.borrow().item_cache.borrow_mut().end_frame();
+    // Evict content sub-views for rows no longer in the visible window, with
+    // their transition state.
+    {
+        let state_ref = state.borrow();
+        let mut cache = state_ref.item_cache.borrow_mut();
+        cache.end_frame();
+        state_ref
+            .transitions
+            .retain_rows(|id| cache.get(id).is_some());
+    }
     // Retained gesture recognizers follow the same virtualization rule: a row
     // that scrolled out has no in-flight gesture worth remembering, and keeping
     // one per row would defeat the point of a 100k-row lazy list.
@@ -1972,8 +2475,9 @@ pub fn render_list_parts(
     if state
         .borrow()
         .pending_scroll
-        .get()
-        .is_some_and(|(_, index)| index < row_count)
+        .borrow()
+        .as_ref()
+        .is_some_and(|pending| pending.index < row_count)
     {
         let content_height = state
             .borrow()
@@ -1985,19 +2489,46 @@ pub fn render_list_parts(
             state
                 .borrow()
                 .bind_scroll(viewport.width(), viewport.height(), content_height);
-        state
-            .borrow()
-            .apply_scroll_request(ctx.renderer_mut(), &rebound, row_count, true);
+        let moved =
+            state
+                .borrow()
+                .apply_scroll_request(ctx.renderer_mut(), &rebound, row_count, true);
         metrics = rebound.metrics();
-        ctx.renderer_mut().frame_signals().request_refresh();
+        // The rows above recorded, and the semantic pass emitted, the offset
+        // this application started from: a request that moved it leaves both
+        // stale, so it pulls one more frame. A run it merely refined moves
+        // nothing here — its ticks carry the offset as continuation work, and
+        // marking every frame of the glide would read the whole flight as an
+        // unapplied change.
+        if moved {
+            ctx.renderer_mut().context_mark_layout();
+        }
     }
     state.borrow().record_viewport_anchor(metrics, row_count);
 
-    if needs_viewport_clip {
-        ctx.pop_layer();
+    {
+        let renderer = ctx.renderer_mut();
+        renderer.pop_lazy_viewport("hydrolysis list");
+        renderer.program().end_inner();
+        renderer.pop_placement_scope();
     }
 
-    draw_scroll_indicators(ctx, env, viewport, metrics, ScrollAxis::Vertical, &handle);
+    // The focused-field clearance runs after recording, over the retained
+    // input targets (§7.1).
+    state
+        .borrow()
+        .surface
+        .register_clearance(ctx.renderer_mut(), &handle);
+
+    draw_scroll_indicators(
+        ctx,
+        env,
+        viewport,
+        metrics,
+        ScrollAxis::Vertical,
+        &handle,
+        state.borrow().surface.extension(),
+    );
 }
 
 /// Ensures row `row_id` has a retained gesture binding and refreshes it with
@@ -2034,7 +2565,7 @@ fn register_row_gesture(
     slot: RowGestureSlot,
     build: impl FnOnce() -> (Gesture, BoxedAction<()>),
 ) {
-    let hit_bounds = transformed_rect(ctx.hit_transform, bounds);
+    let hit_bounds = bounds;
     let retained = {
         let state_ref = state.borrow();
         let gestures = state_ref.row_gestures.borrow();
@@ -2046,12 +2577,9 @@ fn register_row_gesture(
         return;
     }
     let (gesture, action) = build();
-    let Some(target) = ctx
+    let target = ctx
         .renderer_mut()
-        .register_gesture_target(hit_bounds, group, gesture, action)
-    else {
-        return;
-    };
+        .register_gesture_target(hit_bounds, group, gesture, action);
     let state_ref = state.borrow();
     let mut gestures = state_ref.row_gestures.borrow_mut();
     let row = gestures.entry(row_id).or_insert_with(RowGestures::empty);
@@ -2073,7 +2601,7 @@ struct RowEditControls {
 }
 
 fn row_edit_controls(
-    metrics: &waterui_backend_core::widget::ListMetrics,
+    metrics: &crate::theme::ListMetrics,
     row_rect: kurbo::Rect,
     slot_height: f64,
     index: usize,
@@ -2409,7 +2937,7 @@ fn section_chrome_text(label: Text, is_header: bool) -> Text {
 
 fn list_content_rect(
     row_rect: kurbo::Rect,
-    metrics: waterui_backend_core::widget::ListMetrics,
+    metrics: crate::theme::ListMetrics,
     insets: Option<&waterui_layout::padding::EdgeInsets>,
     content_size: waterui_core::layout::Size,
     env: &Environment,

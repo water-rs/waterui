@@ -39,6 +39,7 @@ fn waterui_crate_path() -> syn::Result<TokenStream2> {
 mod javascript;
 mod js_api;
 mod ts;
+mod tsx;
 
 /// Exposes an `impl` block to the page.
 ///
@@ -684,10 +685,29 @@ fn derive_project_struct(
     }
     let (impl_generics_with_static, _, _) = generics_with_static.split_for_impl();
 
+    // The projection mirrors its source field for field, so it is exactly as
+    // visible and as exhaustive as the struct it projects.
+    let visibility = &input.vis;
+    let exhaustiveness = if input
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("non_exhaustive"))
+    {
+        quote! { #[non_exhaustive] }
+    } else {
+        quote! {
+            #[allow(
+                clippy::exhaustive_structs,
+                reason = "a projection has exactly its source struct's fields"
+            )]
+        }
+    };
+
     let expanded = quote! {
         /// Projected version of #struct_name with each field wrapped in a Binding.
         #[derive(Debug)]
-        pub struct #projected_struct_name #ty_generics #where_clause {
+        #exhaustiveness
+        #visibility struct #projected_struct_name #ty_generics #where_clause {
             #(#projected_fields,)*
         }
 
@@ -826,7 +846,7 @@ fn derive_project_unit_struct(input: &DeriveInput, waterui: &TokenStream2) -> To
 ///
 /// For example, `card` in `my-crate` becomes `waterui_preview_my_crate_card`.
 ///
-/// This symbol can be loaded by the preview support app to render the view.
+/// This symbol is what a generated preview binary resolves to render the view.
 ///
 /// # Symbol Naming
 ///
@@ -940,12 +960,10 @@ pub fn preview(args: TokenStream, input: TokenStream) -> TokenStream {
     // at compile time using CARGO_PKG_NAME
     let expanded = quote! {
         #(#fn_attrs)*
-        // `dev` is the scaffold's development-linkage feature (the generated
-        // backend enables `<app>/dev` on `water run`/`preview`/`build`); a
-        // crate without it has no preview host, so without the export the
-        // function is dead code there.
-        #[allow(unexpected_cfgs)]
-        #[cfg_attr(not(feature = "dev"), allow(dead_code))]
+        // The preview export is gated on `debug_assertions` (the gate the
+        // `waterui_meta_*` records use); a release build has no preview host,
+        // so without the export the function is dead code there.
+        #[cfg_attr(not(debug_assertions), allow(dead_code))]
         #fn_vis #fn_sig #fn_block
 
         // Generate C export symbol for preview
@@ -1637,15 +1655,14 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
     }
     builder = quote! { #builder.perf_config(__waterui_bench_config) };
 
-    let budget_fields = bench_args.budgets.iter().map(|(name, value)| {
-        let field = syn::Ident::new(name, Span::call_site());
-        value.as_ref().map_or_else(
-            || quote! { #field: ::core::option::Option::None },
-            |expr| quote! { #field: ::core::option::Option::Some(#expr) },
-        )
+    let budget_setters = bench_args.budgets.iter().filter_map(|(name, value)| {
+        let setter = syn::Ident::new(&format!("with_{name}"), Span::call_site());
+        value
+            .as_ref()
+            .map(|expr| quote! { .#setter(::core::option::Option::Some(#expr)) })
     });
     let budgets = quote! {
-        #testing_path::bench::BenchBudgets { #(#budget_fields),* }
+        #testing_path::bench::BenchBudgets::default() #(#budget_setters)*
     };
 
     let run_closure = bench_args.view.as_ref().map_or_else(
@@ -1697,7 +1714,22 @@ pub fn bench(args: TokenStream, input: TokenStream) -> TokenStream {
 ///
 /// Use it for the types nested inside a props struct; the root props struct
 /// derives [`macro@TsProps`], which also emits the artifact metadata.
-#[proc_macro_derive(TsType)]
+///
+/// When the TypeScript runtime is reachable — the expansion resolves through
+/// `waterui` or `waterui-ts` — the derive also emits the `IntoJs` and `FromJs`
+/// conversions that carry a value of the type across the seam, because a
+/// nested data type travels both ways: out as a props field, back in as a
+/// callback argument. A type that carries a value which only travels
+/// outwards — a callback, which the bridge registers rather than reads —
+/// declares `#[ts(one_way)]` and gets `IntoJs` alone. A crate that depends on
+/// `waterui-ts-schema` alone gets the schema and nothing else.
+///
+/// A field whose TypeScript property is spelled differently from its Rust name
+/// says so with `#[ts(rename = "onTap")]`. The rename travels through the
+/// schema and both conversions at once, so a JSX attribute in the case
+/// TypeScript writes — `onTap`, `minLength`, `a11yLabel` — still comes from
+/// one declaration in one place.
+#[proc_macro_derive(TsType, attributes(ts))]
 pub fn derive_ts_type(input: TokenStream) -> TokenStream {
     ts::derive_ts_type(input)
 }
@@ -1718,7 +1750,80 @@ pub fn derive_ts_type(input: TokenStream) -> TokenStream {
 ///
 /// The record name carries the type name alone, so one binary may hold only
 /// one props type of a given name.
-#[proc_macro_derive(TsProps)]
+///
+/// When the TypeScript runtime is reachable the derive also emits `IntoJs`,
+/// and only `IntoJs`: props are handed to a module, and nothing reads a props
+/// struct back out of JavaScript — requiring it to be readable would rule out
+/// the callbacks and views props exist to carry.
+#[proc_macro_derive(TsProps, attributes(ts))]
 pub fn derive_ts_props(input: TokenStream) -> TokenStream {
     ts::derive_ts_props(input)
+}
+
+/// Mounts a TypeScript view module as a `WaterUI` view.
+///
+/// ```text
+/// use waterui::{View, tsx};
+///
+/// #[derive(waterui::TsProps)]
+/// struct PromoProps {
+///     headline: String,
+///     unread: waterui::Binding<u32>,
+/// }
+///
+/// fn promo(unread: waterui::Binding<u32>) -> impl View {
+///     tsx!("./promo.tsx", PromoProps { headline: "Welcome".into(), unread })
+/// }
+/// ```
+///
+/// The example is not compiled as a doctest: a doctest has no source file
+/// inside the crate, and the path below is resolved relative to the file the
+/// macro is written in.
+///
+/// # The module path and the module id
+///
+/// The path is written relative to the Rust file that mounts the module, so a
+/// `.tsx` beside its view code is `"./promo.tsx"`. The **module id** — the key
+/// the bundle publishes that module under, and what a mount failure names — is
+/// that file's path relative to the crate's `CARGO_MANIFEST_DIR`, with forward
+/// slashes and the extension kept: `src/views/promo.tsx`. The crate directory
+/// is the root the CLI's bundler resolves modules against, so a module outside
+/// it, an absolute path, or a file that does not exist is a compile error
+/// naming the path.
+///
+/// "The file that mounts the module" is the file the path literal is written
+/// in, as it is for `include_str!`: a `macro_rules!` that expands to a `tsx!`
+/// with a literal of its own resolves that literal beside the file defining
+/// the `macro_rules!`, not beside its caller. A wrapper macro that takes the
+/// path from its caller passes the caller's literal through and resolves it
+/// beside the caller.
+///
+/// # Props
+///
+/// The props argument is a struct literal, which is what names the props type
+/// at the mount site: `tsx!("./promo.tsx", PromoProps { … })` expands to
+/// `Mount::new::<PromoProps>("src/views/promo.tsx", PromoProps { … })`. A
+/// value prepared elsewhere goes in with struct update syntax,
+/// `PromoProps { ..props }`. A module that takes no props is written
+/// `tsx!("./promo.tsx")` and is typed against `waterui::ts::NoProps`, the empty
+/// contract — still a contract the bundle declares a hash for, rather than a
+/// special case that skips the check.
+///
+/// The props type must derive [`macro@TsProps`]; a type that does not is a
+/// compile error naming it.
+///
+/// # What reaches the CLI
+///
+/// The expansion emits a `#[cfg(debug_assertions)] #[used] static` named
+/// `waterui_meta_tsx_<id>` carrying the module id, the props struct's name and
+/// its contract hash, so the `water` CLI learns from the compiled artifact
+/// which modules the binary mounts and which schema each one must be typed
+/// against. The expansion is a pure read: the macro stats the file to check it
+/// exists and never opens it. Whether the module has a default export is the
+/// bundler's question, because the bundler has already resolved the module
+/// graph; a module the bundle does not carry is a typed error at mount naming
+/// the id and the ids the bundle does have.
+#[proc_macro]
+pub fn tsx(input: TokenStream) -> TokenStream {
+    tsx::tsx(input)
 }

@@ -2,7 +2,16 @@
 //! scene rebuild/refresh/render phases, and input-event dispatch.
 
 use super::*;
-use crate::platform::GpuSurfaceWindow;
+use crate::platform::{GpuSurfaceWindow, PresentationSurface as _};
+use crate::renderer::material::{Blending, WithinWindowLevel};
+#[cfg(any(target_os = "android", test))]
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use waterui::theme::color::Background;
+use waterui::window::ResolvedWindowBackground;
+use waterui_graphics::{Color, color::WorkingColor};
 
 /// The work scheduled for the next pump of a window.
 ///
@@ -63,6 +72,20 @@ pub(super) struct RuntimeWindow<P: PlatformWindow> {
         Option<waterui_core::layout::Size>,
         Option<waterui_core::layout::Size>,
     )>,
+    /// Subscriptions on every reactive input of the window declaration,
+    /// installed once by `new` through `subscribe_window_declaration_signals`
+    /// and held for the window's lifetime: `title`, `frame`, `state`,
+    /// `level`, `attention`, `style`, `background`, and `resize_increments`,
+    /// `min_size` and `max_size` when present. A write while the pump is
+    /// parked requests a refresh through the renderer's frame signals, so
+    /// the next pump applies it.
+    ///
+    /// Declared last so the guards drop after `renderer` — the subscriptions
+    /// outlive every frame-scoped watch the core holds, the same tail
+    /// position the frame-level `lifecycle` teardown takes inside a flush
+    /// (water-rs/waterui#1213). Never read again — the `Retain`s exist only
+    /// to keep the subscriptions alive.
+    _declaration_watches: Vec<Retain>,
 }
 
 // `RuntimeWindow` is generic over the host-services contract; the GPU
@@ -76,9 +99,16 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
         mut renderer: HydrolysisRenderer,
         render_diagnostics_config: RenderDiagnosticsConfig,
     ) -> Self {
+        // The window's host wake, installed before any subscription can
+        // record a request: from here on, a `Binding::set` outside a frame
+        // — an executor drain, a platform-view callback, an accessibility
+        // action — fires it on the none→some edge and schedules the frame
+        // the request needs, by construction.
+        renderer.install_host_wake(platform.frame_wake());
         if let Some(handle) = platform.gpu_surface_redraw_handle() {
             renderer.set_host_redraw_handle(handle);
         }
+        let declaration_watches = subscribe_window_declaration_signals(&window, &renderer);
         Self {
             window,
             platform,
@@ -90,6 +120,7 @@ impl<P: GpuSurfaceWindow> RuntimeWindow<P> {
             render_diagnostics: RenderDiagnostics::new(render_diagnostics_config),
             refresh_rate_hz: None,
             applied_size_limits: None,
+            _declaration_watches: declaration_watches,
         }
     }
 }
@@ -170,6 +201,122 @@ impl<P: PlatformWindow> RuntimeWindow<P> {
     }
 }
 
+/// Android's frame transaction and the gate shared with its installed wake.
+/// Requests made during a transaction join its continuation; occluded requests
+/// wait for the restore frame. Winit and web retain their own scheduling rules.
+#[cfg(any(target_os = "android", test))]
+#[derive(Debug, Default)]
+pub(super) struct FrameTransaction {
+    open: Cell<bool>,
+    /// Written only on the UI thread; atomic because the cross-thread wake's
+    /// post carries a share of it onto the UI thread's queue.
+    wake_gate: Arc<AtomicBool>,
+}
+
+#[cfg(any(target_os = "android", test))]
+impl FrameTransaction {
+    /// Wraps the host's frame post in the gate: the returned wake posts only
+    /// while no transaction is open and the window is not occluded.
+    pub(super) fn frame_wake(&self, post: Rc<dyn Fn()>) -> Rc<dyn Fn()> {
+        let gate = Arc::clone(&self.wake_gate);
+        Rc::new(move || {
+            if gate.load(Ordering::Relaxed) {
+                post();
+            }
+        })
+    }
+
+    /// [`Self::frame_wake`] for a wake a thread-safe handle queues onto the
+    /// UI thread: the returned post may cross threads, but it must run on
+    /// the UI thread, where it reads the gate as it stands when it runs — a
+    /// post that lands inside a transaction joins its continuation instead
+    /// of posting into the frame already running.
+    pub(super) fn ui_thread_wake(
+        &self,
+        post: impl Fn() + Send + Sync + 'static,
+    ) -> impl Fn() + Send + Sync + 'static {
+        let gate = Arc::clone(&self.wake_gate);
+        move || {
+            if gate.load(Ordering::Relaxed) {
+                post();
+            }
+        }
+    }
+
+    /// Re-derives the gate from the host's occlusion report; an open
+    /// transaction keeps it closed.
+    pub(super) fn sync_occlusion(&self, occluded: bool) {
+        self.wake_gate
+            .store(!self.open.get() && !occluded, Ordering::Relaxed);
+    }
+
+    /// Opens the transaction: requests raised until [`Self::finish`] post no
+    /// wake and count toward its continuation instead.
+    pub(super) fn begin(&self) {
+        self.open.set(true);
+        self.wake_gate.store(false, Ordering::Relaxed);
+    }
+
+    /// Whether a request raised now may post to the host's scheduler —
+    /// `false` while a transaction is open (the request joins its
+    /// continuation instead) and while the window is occluded (it stays
+    /// armed for the restore frame).
+    #[cfg_attr(
+        not(target_os = "android"),
+        allow(dead_code, reason = "read by the Android host's request_redraw")
+    )]
+    pub(super) fn may_post(&self) -> bool {
+        self.wake_gate.load(Ordering::Relaxed)
+    }
+
+    /// Whether this transaction renders: armed work, a host redraw request
+    /// latched before the render, or a redraw-only engine request (a caret
+    /// blink). Every one is demand the render itself serves, so the request
+    /// flags are consumed here at the render boundary — a request that
+    /// survived into the transaction's close would count work this frame
+    /// already did toward its continuation (water-rs/waterui#2325). A window
+    /// that cannot present consumes nothing — its requests stay armed for
+    /// the restore frame.
+    pub(super) fn take_render_request<P: PlatformWindow>(
+        runtime: &mut RuntimeWindow<P>,
+        surface_attached: bool,
+        take_redraw_pending: impl FnOnce(&P) -> bool,
+    ) -> bool {
+        if !surface_attached || runtime.is_hidden() {
+            return false;
+        }
+        let redraw_pending = take_redraw_pending(&runtime.platform);
+        let redraw_requested = runtime.renderer.take_redraw_request();
+        redraw_pending || runtime.mode.is_pending() || redraw_requested
+    }
+
+    /// Closes the transaction, reopens the gate unless occluded, and returns
+    /// whether another frame is owed.
+    pub(super) fn finish(&self, occluded: bool, demand: FrameDemand) -> bool {
+        let next = wants_next_frame(occluded, demand);
+        self.open.set(false);
+        self.sync_occlusion(occluded);
+        next
+    }
+}
+
+/// Work still pending when Android closes its frame transaction.
+#[cfg(any(target_os = "android", test))]
+#[derive(Clone, Copy)]
+pub(super) struct FrameDemand {
+    pub(super) mode: FrameMode,
+    pub(super) redraw_pending: bool,
+    pub(super) signals_pending: bool,
+}
+
+/// A request raised after the pump drained the flags fired no wake while the
+/// transaction was open, so it must count toward continuation. Hidden work waits
+/// for the restore frame instead.
+#[cfg(any(target_os = "android", test))]
+const fn wants_next_frame(hidden: bool, demand: FrameDemand) -> bool {
+    !hidden && (demand.mode.is_pending() || demand.redraw_pending || demand.signals_pending)
+}
+
 /// Whether a frame transaction may report the pump's "first frame presented;
 /// ui idle" readiness line: it has presented at least once, and this wake
 /// leaves it idle — but never while hidden. A wake that arrives on a parked
@@ -185,8 +332,9 @@ pub(super) const fn reports_ui_idle(
 }
 
 /// Applies the window's effective inner-size limits to the platform window:
-/// the explicit `Window::min_size`/`max_size` signals when set (read through
-/// the renderer so a change schedules a frame). The minimum defaults to the
+/// the explicit `Window::min_size`/`max_size` signals when set (read by
+/// snapshot — the declaration's lifetime subscriptions on the window are
+/// what schedule the frame a change needs). The minimum defaults to the
 /// content's measured minimum; the maximum stays unbounded unless the app
 /// pins one — content never contributes one, since content that does not
 /// stretch on an axis is laid out inside a larger offer per the layout spec
@@ -205,13 +353,13 @@ pub(super) fn apply_window_size_limits<P: PlatformWindow>(
     let explicit_min = runtime
         .window
         .min_size
-        .clone()
-        .map(|signal| validated_min_size(runtime.renderer.read_signal(&signal)));
+        .as_ref()
+        .map(|signal| validated_min_size(signal.snapshot()));
     let explicit_max = runtime
         .window
         .max_size
-        .clone()
-        .map(|signal| validated_max_size(runtime.renderer.read_signal(&signal)));
+        .as_ref()
+        .map(|signal| validated_max_size(signal.snapshot()));
     let min = match explicit_min {
         Some(min) => Some(min),
         None => runtime.renderer.measure_content_minimum(env),
@@ -220,25 +368,52 @@ pub(super) fn apply_window_size_limits<P: PlatformWindow>(
     // A limit apply never moves the window onto the content's size — installing
     // or re-installing limits only constrains the sizes it can take. The size
     // the user settled on survives a re-measure: the window is clamped into
-    // the new limits only when the applied limits themselves changed, and only
-    // on the axes that fell outside them. The first apply installs limits on
-    // the geometry the window was created with, untouched.
+    // the new limits only on the axes whose applied limits themselves changed
+    // and that fall outside them. The first apply installs limits on the
+    // geometry the window was created with, untouched — with nothing applied
+    // before, no axis has changed yet.
     let limits = (min, max);
-    let limits_changed = runtime
-        .applied_size_limits
-        .is_some_and(|applied| applied != limits);
-    runtime.applied_size_limits = Some(limits);
+    let moved = axes_whose_limits_changed(runtime.applied_size_limits.replace(limits), limits);
     runtime.platform.set_size_limits(min, max);
-    if limits_changed {
+    if moved != (false, false) {
         let frame = crate::platform::validated_window_frame(runtime.window.frame.snapshot());
-        let clamped = clamp_window_size(*frame.size(), min, max);
-        if clamped != *frame.size() {
+        let size = *frame.size();
+        let clamped = clamp_window_size(size, min, max, moved);
+        if clamped != size {
             runtime
                 .window
                 .frame
                 .set(waterui_core::layout::Rect::new(frame.origin(), clamped));
         }
     }
+}
+
+/// The axes whose applied limits differ between `previous` and `next` — the
+/// only axes a re-apply may clamp, so a width-only move never snaps the
+/// height. `None` means the first apply: limits install on the created
+/// geometry untouched, so a launch frame below the content minimum keeps its
+/// size until that axis's own limit changes, exactly as a re-apply with
+/// unchanged limits leaves it.
+pub(super) fn axes_whose_limits_changed(
+    previous: Option<(
+        Option<waterui_core::layout::Size>,
+        Option<waterui_core::layout::Size>,
+    )>,
+    next: (
+        Option<waterui_core::layout::Size>,
+        Option<waterui_core::layout::Size>,
+    ),
+) -> (bool, bool) {
+    let Some((previous_min, previous_max)) = previous else {
+        return (false, false);
+    };
+    let (min, max) = next;
+    (
+        previous_min.map(|size| size.width) != min.map(|size| size.width)
+            || previous_max.map(|size| size.width) != max.map(|size| size.width),
+        previous_min.map(|size| size.height) != min.map(|size| size.height)
+            || previous_max.map(|size| size.height) != max.map(|size| size.height),
+    )
 }
 
 /// Asserts an app-pinned `Window::min_size` is finite on both axes — a NaN
@@ -266,17 +441,30 @@ fn validated_max_size(size: waterui_core::layout::Size) -> waterui_core::layout:
     size
 }
 
-/// Clamps a window size into the new limits, axis by axis. A size already
-/// inside the limits passes through untouched — a re-measure keeps the size
-/// the user set — and only an out-of-bounds axis moves, to the nearer bound.
+/// Clamps a window size into the new limits, axis by axis — but only on
+/// `moved`, the axes whose applied limits changed: an axis whose limits did
+/// not move keeps its size even outside them, so a launch geometry below
+/// the content minimum stays the user's until that axis's own limit moves.
+/// A size inside the limits passes through untouched — a re-measure keeps
+/// the size the user set — and an out-of-bounds axis moves to the nearer
+/// bound.
 pub(super) fn clamp_window_size(
     size: waterui_core::layout::Size,
     min: Option<waterui_core::layout::Size>,
     max: Option<waterui_core::layout::Size>,
+    moved: (bool, bool),
 ) -> waterui_core::layout::Size {
     waterui_core::layout::Size::new(
-        clamp_axis(size.width, min.map(|s| s.width), max.map(|s| s.width)),
-        clamp_axis(size.height, min.map(|s| s.height), max.map(|s| s.height)),
+        if moved.0 {
+            clamp_axis(size.width, min.map(|s| s.width), max.map(|s| s.width))
+        } else {
+            size.width
+        },
+        if moved.1 {
+            clamp_axis(size.height, min.map(|s| s.height), max.map(|s| s.height))
+        } else {
+            size.height
+        },
     )
 }
 
@@ -306,14 +494,20 @@ pub(super) const fn schedule_animation_update<P: PlatformWindow>(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// A captured headless frame: raw pixels plus dimensions.
+/// A captured headless frame: raw pixels, the alpha convention the
+/// producing surface reports, plus dimensions.
+#[non_exhaustive]
 pub struct HeadlessSnapshot {
     /// Snapshot width in pixels.
     pub width: u32,
     /// Snapshot height in pixels.
     pub height: u32,
-    /// Raw RGBA8 pixel data, `width * height * 4` bytes, top-left origin.
+    /// Raw RGBA8 pixel data, `width * height * 4` bytes, top-left origin,
+    /// in the alpha convention [`Self::output_alpha`] reports.
     pub rgba8: Vec<u8>,
+    /// The alpha convention the producing surface presented with — the
+    /// convention `rgba8` reads, not a comment's claim about it.
+    pub output_alpha: cherenkov_gpu::interop::OutputAlpha,
 }
 
 #[derive(Debug)]
@@ -328,6 +522,7 @@ pub(super) struct RenderWindowResult {
 
 /// Phase timing for one Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FramePhases {
     /// Time spent draining local executor work before input dispatch.
     pub executor_before: Duration,
@@ -355,6 +550,7 @@ pub struct FramePhases {
 
 /// Counter snapshot for one Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrameCounters {
     /// Number of rebuild loop iterations in this frame.
     pub rebuild_iterations: u32,
@@ -395,6 +591,7 @@ pub struct FrameCounters {
 
 /// Detailed profile for one Hydrolysis frame.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FrameProfile {
     /// Total wall-clock duration for the frame pump.
     pub total: Duration,
@@ -421,9 +618,6 @@ pub(super) fn schedule_redraw_or_refresh<P: PlatformWindow>(
     if !changed {
         return;
     }
-    // A pending renderer-side rebuild request is subsumed by the refresh;
-    // consume it so it does not schedule a stale extra frame later.
-    let _ = runtime.renderer.take_rebuild_request();
     runtime.request_refresh();
     runtime.request_redraw();
     runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -442,32 +636,110 @@ pub(super) fn create_bounds(width: u32, height: u32, scale_factor: f64) -> kurbo
     )
 }
 
+/// How the presentation path realizes a window's resolved background: whether
+/// the window is transparent, the colour the surface clears to, and the
+/// within-window material the root is mounted over.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct SurfaceBackground(ResolvedWindowBackground);
+
+impl SurfaceBackground {
+    /// `window`'s background as it resolves now.
+    pub(super) fn of(window: &Window, env: &Environment) -> Self {
+        Self(window.resolved_background(env).snapshot())
+    }
+
+    /// Whether the window must be transparent: a colour with alpha, or a
+    /// behind-window material, whatever its tint — the level's blending
+    /// alone decides, so no colour scheme is consulted.
+    pub(super) fn transparent(self) -> bool {
+        match self.0 {
+            ResolvedWindowBackground::Color(color) => color.components[3] < 1.0,
+            ResolvedWindowBackground::Material(material) => {
+                matches!(Blending::of(material), Blending::BehindWindow(_))
+            }
+        }
+    }
+
+    /// Whether the window asks the compositor to blur what lies behind it:
+    /// exactly a behind-window material — false for every colour and every
+    /// within-window level.
+    pub(super) const fn blurs_behind(self) -> bool {
+        match self.0 {
+            ResolvedWindowBackground::Color(_) => false,
+            ResolvedWindowBackground::Material(material) => {
+                matches!(Blending::of(material), Blending::BehindWindow(_))
+            }
+        }
+    }
+
+    /// The within-window material the window's root is mounted over.
+    pub(super) const fn backdrop(self) -> Option<WithinWindowLevel> {
+        match self.0 {
+            ResolvedWindowBackground::Material(material) => match Blending::of(material) {
+                Blending::WithinWindow(level) => Some(level),
+                Blending::BehindWindow(_) => None,
+            },
+            ResolvedWindowBackground::Color(_) => None,
+        }
+    }
+
+    /// The colour the surface clears to, straight alpha in encoded sRGB.
+    ///
+    /// - A colour is the clear colour; `Opaque` resolved it to the theme
+    ///   background.
+    /// - A within-window material keeps the surface opaque, cleared to the
+    ///   theme background, which the material's backdrop treatment covers.
+    /// - A behind-window material clears the transparent surface to the
+    ///   level's [`Tint`](crate::renderer::material::Tint) in `env`'s colour
+    ///   scheme under the content: clearing to the tint is compositing it
+    ///   source-over onto a cleared-transparent surface, which leaves it
+    ///   unchanged. The compositor then blends the window over the desktop
+    ///   it blurs.
+    pub(super) fn clear(self, env: &Environment) -> peniko::Color {
+        let srgb = |color: WorkingColor| {
+            let srgb = waterui_graphics::color::working::to_srgb(color);
+            peniko::Color::new([srgb.red, srgb.green, srgb.blue, color.components[3]])
+        };
+        match self.0 {
+            ResolvedWindowBackground::Color(color) => srgb(color),
+            ResolvedWindowBackground::Material(material) => match Blending::of(material) {
+                Blending::WithinWindow(_) => srgb(Color::new(Background).resolve(env).snapshot()),
+                Blending::BehindWindow(level) => level
+                    .tint(waterui::theme::current_color_scheme(env).snapshot())
+                    .srgb(),
+            },
+        }
+    }
+}
+
 /// Realizes the window's reactive background for the frame about to be
-/// painted: resolves it, hands the platform whether the window must be
+/// flushed and painted: hands the platform whether the window must be
 /// transparent — the composite alpha mode and the native window's
-/// transparency follow a switch between opaque and translucent — and returns
-/// the clear colour. This is the one place the background reaches the
+/// transparency follow a switch between opaque and translucent — hands the
+/// renderer the within-window material the root mounts over, and returns the
+/// clear colour. This is the one place the background reaches the
 /// presentation path.
 pub(super) fn apply_window_background<P: GpuSurfaceWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) -> peniko::Color {
-    let resolved = runtime.window.resolved_background(env).snapshot();
-    runtime
-        .platform
-        .set_transparent(resolved.components[3] < 1.0);
-    let srgb = waterui_graphics::color::working::to_srgb(resolved);
-    peniko::Color::new([srgb.red, srgb.green, srgb.blue, resolved.components[3]])
+    let background = SurfaceBackground::of(&runtime.window, env);
+    runtime.platform.set_transparent(background.transparent());
+    runtime.platform.set_blur_behind(background.blurs_behind());
+    runtime.renderer.set_window_backdrop(background.backdrop());
+    background.clear(env)
 }
 
 #[cfg(hydrolysis_winit)]
 pub fn window_requires_transparency(window: &Window, env: &Environment) -> bool {
-    window.resolved_background(env).snapshot().components[3] < 1.0
+    SurfaceBackground::of(window, env).transparent()
 }
 
 crate::engine::cfg_async_fn! {
     /// Runs one frame and reports whether it was presented to the surface — an
-    /// idle frame, or one whose surface had to be reconfigured, is not.
+    /// idle frame, or one whose surface had to be reconfigured, is not. The
+    /// frame renders through the window's presentation kind
+    /// ([`GpuSurfaceFrame`]).
     ///
     /// Async on wasm32, where the engine render inside awaits the browser device.
     pub(super) fn render_window<P: GpuSurfaceWindow>(
@@ -483,11 +755,19 @@ crate::engine::cfg_async_fn! {
         return false;
     }
 
-    let result = crate::engine::engine_await!(render_window_with_capture(
+    let result = crate::engine::engine_await!(render_window_pumped(
         runtime,
         env,
         FrameReader::Display,
-        drain_local_tasks
+        drain_local_tasks,
+        #[cfg(not(target_arch = "wasm32"))]
+        GpuSurfaceFrame::render_frame,
+        #[cfg(target_arch = "wasm32")]
+        async |surface: &mut P::Presentation, renderer, clear_color, display_scale| {
+            surface
+                .render_frame(renderer, clear_color, display_scale)
+                .await
+        },
     ));
     // The rebuild flag and the snapshot belong to the headless harness; a live
     // window only asks whether the frame reached its surface.
@@ -576,6 +856,9 @@ fn build_window_scene<P: PlatformWindow>(
     phases.build_content += build_content_started_at.elapsed();
     let _ = drain_local_tasks();
     let scene_dispatch_started_at = Instant::now();
+    // The capture records the presentation hosts too — an open text
+    // context menu or `.context_menu` presentation builds and places its
+    // sub-views there, under its host cell.
     runtime.renderer.capture_window_tree(
         content,
         env,
@@ -583,14 +866,6 @@ fn build_window_scene<P: PlatformWindow>(
         root_transform,
         kurbo::Affine::IDENTITY,
     );
-    runtime
-        .renderer
-        .render_active_text_context_menu_overlay(env, root_transform);
-    // The same for an open `.context_menu` presentation — this one-time build
-    // path is where its sub-views are first built and placed.
-    runtime
-        .renderer
-        .render_context_menu_presentation(root_transform);
     phases.scene_dispatch += scene_dispatch_started_at.elapsed();
     let scene_finish_started_at = Instant::now();
     runtime.renderer.finish_rebuild_frame();
@@ -622,8 +897,12 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
     let animations_active = runtime.renderer.advance_animations();
     schedule_animation_update(runtime, animations_active);
 
-    let renderer_requested_rebuild = runtime.renderer.take_rebuild_request();
-    if renderer_requested_rebuild {
+    // Producer wakes posted since the last frame mark their owners; the
+    // marks that brought this pump here then decide the work.
+    runtime.renderer.drain_producer_wakes();
+    // Structural marks raised since the last flush land on the root cell
+    // through the owner chain and still arm the full refresh.
+    if runtime.renderer.has_structure_marks() {
         runtime.request_refresh();
     }
 
@@ -649,13 +928,13 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
             if let Some((x, y)) = runtime.pointer_position
                 && runtime.renderer.sync_pointer_hover_state(x, y, env)
             {
-                if runtime.renderer.take_rebuild_request() {
+                if runtime.renderer.has_structure_marks() {
                     refresh_after_build = true;
                 } else {
                     runtime.renderer.request_redraw();
                 }
             }
-            if runtime.renderer.take_rebuild_request() {
+            if runtime.renderer.has_structure_marks() {
                 refresh_after_build = true;
             }
             if refresh_after_build {
@@ -667,8 +946,15 @@ pub(super) fn pump_window_scene<P: GpuSurfaceWindow>(
             runtime.clear_frame_mode();
         }
     }
-    if runtime.renderer.take_next_frame_rebuild_request() {
-        // An effect needs another frame.
+    // Every presented frame reports its platform-view set — an Idle pump
+    // re-presenting the retained layers included: the host publishes once
+    // per encoded frame, and a frame whose `current` is empty reads as
+    // "no views". The record is idempotent, so the build and refresh arms
+    // running their own frame-end step cost nothing here.
+    runtime.renderer.registries();
+    runtime.renderer.record_platform_views();
+    if runtime.renderer.has_structure_marks() {
+        // A structural mark raised mid-flush — an effect needs another frame.
         runtime.request_refresh();
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -693,28 +979,17 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     runtime: &mut RuntimeWindow<P>,
     env: &Environment,
 ) -> bool {
-    // `frame`, `state`, `level`, `attention`, `resize_increments` and
-    // `style` drive `apply_properties` below: keep them subscribed so an
-    // app write to any of these bindings schedules a pump instead of
-    // needing an unrelated event to wake the loop.
-    let _ = runtime.renderer.read_signal(&runtime.window.frame);
-    let _ = runtime.renderer.read_signal(&runtime.window.state);
-    let _ = runtime.renderer.read_signal(&runtime.window.level);
-    let _ = runtime.renderer.read_signal(&runtime.window.attention);
-    if let Some(increments) = runtime.window.resize_increments.as_ref() {
-        let _ = runtime.renderer.read_signal(increments);
-    }
-    let _ = runtime.renderer.read_signal(&runtime.window.style);
-    // A replaced background repaints with a new clear colour and may switch
-    // the surface between opaque and translucent.
-    let _ = runtime.renderer.read_signal(&runtime.window.background);
+    // The declaration's reactive inputs — `title`, `frame`, `state`,
+    // `level`, `attention`, `style`, `background`, and `resize_increments`,
+    // `min_size`/`max_size` when present — are subscribed once on the
+    // `RuntimeWindow` for its lifetime; the pump only consumes the values.
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
         .renderer
         .set_accessibility_root_label(runtime.window.title.snapshot().as_str());
 
-    if runtime.renderer.take_rebuild_request() {
+    if runtime.renderer.has_structure_marks() {
         runtime.request_refresh();
     }
     let work_pending = runtime.mode.is_pending()
@@ -748,14 +1023,7 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
 
     let rebuilt = pump_window_scene(runtime, env, &mut || false).built;
     apply_window_size_limits(runtime, env);
-    runtime
-        .platform
-        .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position {
-        runtime
-            .platform
-            .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
-    }
+    sync_platform_input(runtime);
     if runtime.renderer.take_redraw_request() {
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -763,68 +1031,146 @@ pub(super) fn pump_window_semantics<P: GpuSurfaceWindow>(
     rebuilt
 }
 
-struct SurfaceRenderResult {
+pub struct SurfaceRenderResult {
     acquire: Duration,
     render: Duration,
     present: Duration,
     snapshot: Option<HeadlessSnapshot>,
 }
 
+/// How a window's presentation kind renders one frame and gets it to the
+/// display. Host-acquired surfaces ([`SurfaceProvider`]) acquire, copy the
+/// engine output in and present; the macOS winit window's and the browser
+/// page's engine targets present inside `Engine::render`, so they have no
+/// acquire, copy or present to call.
+///
+/// [`SurfaceProvider`]: crate::platform::SurfaceProvider
+pub trait GpuSurfaceFrame {
+    /// Renders and presents one frame into the surface, reporting the
+    /// stage durations.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>;
+
+    /// [`GpuSurfaceFrame::render_frame`], async on wasm32 where the browser
+    /// device renders inside an await.
+    #[cfg(target_arch = "wasm32")]
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> impl Future<Output = Result<SurfaceRenderResult, crate::platform::SurfaceError>>;
+}
+
+/// Every host-acquired surface renders through [`render_host_acquired_frame`];
+/// a live window reads no snapshot.
+impl<S: crate::platform::SurfaceProvider> GpuSurfaceFrame for S {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+        render_host_acquired_frame(renderer, self, clear_color, display_scale, false)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    async fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+        render_host_acquired_frame(renderer, self, clear_color, display_scale, false).await
+    }
+}
+
 crate::engine::cfg_async_fn! {
-    fn render_to_surface {
+    /// The host-acquired frame: the engine renders the scene into its
+    /// retained texture, then the frame is acquired, the engine output
+    /// copied in, and the frame presented. `capture_snapshot` asks for a
+    /// GPU readback of the acquired frame — headless targets only; a live
+    /// window passes `false`.
+    ///
+    /// Async on wasm32, where the engine render inside awaits the browser
+    /// device.
+    pub fn render_host_acquired_frame {
         renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::SurfaceProvider,
         clear_color: peniko::Color,
         display_scale: f64,
         capture_snapshot: bool,
-        render: impl FnOnce(&mut HydrolysisRenderer, crate::renderer::FrameRenderTarget<'_>, bool),
     } {
         renderer: &mut HydrolysisRenderer,
         surface: &mut dyn crate::platform::SurfaceProvider,
         clear_color: peniko::Color,
         display_scale: f64,
         capture_snapshot: bool,
-        render: impl AsyncFnOnce(
-            &mut HydrolysisRenderer,
-            crate::renderer::FrameRenderTarget<'_>,
-            bool,
-        ),
     } -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+    // Restore a lost device generation before any handle is read: the
+    // recovered device, its fresh context id and the reconfigured
+    // swapchain are what the frame below renders on. An unrecoverable
+    // device panics inside, naming the recorded losses.
+    surface.ensure_live();
     let (width, height) = surface.size();
     let format = surface.format();
-    let premultiply_alpha = surface.premultiply_alpha();
+    let output_alpha = surface.output_alpha();
     let context = surface.device_loss().gpu_context();
-    let acquire_started_at = Instant::now();
-    let frame = acquire_surface_frame(surface)?;
-    let acquire = acquire_started_at.elapsed();
+    // The engine renders into its own retained output before the swapchain
+    // image is acquired: the render awaits the GPU device on wasm32, and a
+    // browser expires a canvas texture when the task that acquired it ends,
+    // so the image must be acquired, filled and presented without an await
+    // in between.
     let render_started_at = Instant::now();
-    crate::engine::engine_await!(render(
-        renderer,
+    let engine_frame = crate::engine::engine_await!(renderer.render_texture_frame(
         crate::renderer::FrameRenderTarget {
             adapter: surface.adapter(),
             device: surface.device(),
             queue: surface.queue(),
             device_loss: surface.device_loss().clone(),
             gpu_context_id: context.context_id,
-            shared_device: context.shared_device,
+            shared_device: context.shared_device.clone(),
             display_scale,
-            headroom: surface.display_headroom(),
-            persistent: true,
-            texture: Some(frame.texture()),
-            format,
             width,
             height,
             base_color: crate::renderer::working_color(clear_color),
         },
-        premultiply_alpha,
-    ));
-    let render = render_started_at.elapsed();
+        format,
+        surface.display_headroom(),
+    ))
+    .unwrap_or_else(|error| {
+        panic!("hydrolysis renderer: engine render failed: {error:#}")
+    });
+    let engine_render = render_started_at.elapsed();
+    let acquire_started_at = Instant::now();
+    let frame = acquire_surface_frame(surface)?;
+    let acquire = acquire_started_at.elapsed();
+    let copy_started_at = Instant::now();
+    renderer.present_engine_frame(
+        engine_frame,
+        surface.device(),
+        surface.queue(),
+        frame.texture(),
+        surface.output_color(),
+        output_alpha,
+    );
+    let render = engine_render + copy_started_at.elapsed();
     #[cfg(feature = "frame-profile")]
     {
         // The timestamp resolve blocks until the frame's submits finish — the
         // headless frame's "present wait", kept separate from the CPU submit
         // time `render` measures.
-        renderer.finish_gpu_frame_profile(surface.device(), surface.queue());
+        renderer.finish_gpu_frame_profile(context.context_id, surface.device(), surface.queue());
     }
     #[cfg(not(target_arch = "wasm32"))]
     let snapshot = {
@@ -835,13 +1181,14 @@ crate::engine::cfg_async_fn! {
             HeadlessSnapshot {
                 width,
                 height,
-                rgba8: readback_texture_rgba8(
-                    surface.device(),
-                    surface.queue(),
-                    frame.texture(),
-                    width,
-                    height,
-                ),
+                rgba8: readback_surface_texture_rgba8(&*surface, frame.texture(), width, height)
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "hydrolysis headless snapshot readback failed: {:#}",
+                            waterui_core::Error::from(error)
+                        )
+                    }),
+                output_alpha,
             }
         });
         #[cfg(feature = "frame-profile")]
@@ -861,6 +1208,10 @@ crate::engine::cfg_async_fn! {
     let present_started_at = Instant::now();
     surface.present(frame);
     let present = present_started_at.elapsed();
+    // The submitted frame credits this device generation as productive —
+    // the recovery budget clears its loss streak once the queue reports
+    // the submission done.
+    surface.device_loss().note_frame_presented();
     Ok(SurfaceRenderResult {
         acquire,
         render,
@@ -870,7 +1221,83 @@ crate::engine::cfg_async_fn! {
     }
 }
 
-/// Who reads the pixels of a frame `render_window_with_capture` renders.
+/// The macOS winit window's frame: `Engine::render` is the whole
+/// presentation — the engine acquires the drawable and presents inside it,
+/// so there is no host acquire, copy or present. `acquire` and `present`
+/// report zero because no such calls run; the drawable wait and the layer
+/// presents are inside `render`. No snapshot can be asked of this kind: the
+/// capture path is bound on [`SurfaceProvider`], which it does not
+/// implement.
+///
+/// [`SurfaceProvider`]: crate::platform::SurfaceProvider
+#[cfg(all(target_os = "macos", hydrolysis_winit))]
+impl GpuSurfaceFrame for crate::platform::WinitSurface {
+    fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+        let render_started_at = Instant::now();
+        // Restore a lost device generation before the render target is
+        // built: the engine window is rebuilt on the new context id.
+        self.ensure_live();
+        let (target, engine_target) =
+            self.render_targets(display_scale, crate::renderer::working_color(clear_color));
+        renderer
+            .render_window_frame(&target, engine_target)
+            .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+        self.device_loss().note_frame_presented();
+        Ok(SurfaceRenderResult {
+            acquire: Duration::ZERO,
+            render: render_started_at.elapsed(),
+            present: Duration::ZERO,
+            snapshot: None,
+        })
+    }
+}
+
+/// The browser page's frame: `Engine::render` is the whole presentation —
+/// the engine presents its canvases and places the page's hosted elements
+/// inside it, so there is no host acquire, copy or present, and `acquire`
+/// and `present` report zero. No snapshot can be asked of this kind: a
+/// browser surface is never read back.
+#[cfg(all(target_arch = "wasm32", feature = "web"))]
+impl GpuSurfaceFrame for crate::platform::BrowserSurface {
+    #[allow(
+        clippy::future_not_send,
+        reason = "wasm32 is single-threaded; the engine's Rc handles never cross a thread"
+    )]
+    async fn render_frame(
+        &mut self,
+        renderer: &mut HydrolysisRenderer,
+        clear_color: peniko::Color,
+        display_scale: f64,
+    ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError> {
+        let render_started_at = Instant::now();
+        // Restore a lost device generation before the render target is
+        // built; a still-dead one reports the surface lost so the pump
+        // reschedules and the next frame retries under the loss budget.
+        if !self.ensure_live().await {
+            return Err(crate::platform::SurfaceError::Lost);
+        }
+        let (target, root, window_slot) =
+            self.render_targets(display_scale, crate::renderer::working_color(clear_color));
+        renderer
+            .render_dom_frame(&target, root, window_slot)
+            .await
+            .unwrap_or_else(|error| panic!("hydrolysis renderer: engine render failed: {error:#}"));
+        self.device_loss().note_frame_presented();
+        Ok(SurfaceRenderResult {
+            acquire: Duration::ZERO,
+            render: render_started_at.elapsed(),
+            present: Duration::ZERO,
+            snapshot: None,
+        })
+    }
+}
+
+/// Who reads the pixels of a frame the window pump renders.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(
     target_arch = "wasm32",
@@ -906,31 +1333,73 @@ impl FrameReader {
     const fn captures(self) -> bool {
         matches!(self, Self::Snapshot)
     }
+}
 
-    const fn rasterizes(self) -> bool {
-        !matches!(self, Self::Nobody)
-    }
+/// Runs one frame of a host-acquired window for `reader`: a
+/// [`FrameReader::Snapshot`] reads the acquired frame back. Bound on
+/// [`SurfaceProvider`](crate::platform::SurfaceProvider), because only an
+/// acquired frame can be read back — an engine-presented window has none,
+/// so a snapshot of one does not compile.
+#[cfg(not(target_arch = "wasm32"))]
+pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
+    runtime: &mut RuntimeWindow<P>,
+    env: &Environment,
+    reader: FrameReader,
+    drain_local_tasks: &mut dyn FnMut() -> bool,
+) -> RenderWindowResult
+where
+    P::Presentation: crate::platform::SurfaceProvider,
+{
+    render_window_pumped(
+        runtime,
+        env,
+        reader,
+        drain_local_tasks,
+        |surface: &mut P::Presentation, renderer, clear_color, display_scale| {
+            render_host_acquired_frame(
+                renderer,
+                surface,
+                clear_color,
+                display_scale,
+                reader.captures(),
+            )
+        },
+    )
 }
 
 crate::engine::cfg_async_fn! {
-    // the capture variant renders, encodes and delivers in one pass; the sequence is the feature
-    #[allow(clippy::too_many_lines)]
+    /// The frame pump [`render_window`] and [`render_window_with_capture`]
+    /// share: `render_frame` renders the frame through the window's surface,
+    /// and `reader` says who reads its pixels.
+    ///
     /// Async on wasm32, where the surface render inside awaits the browser
     /// device.
-    pub(super) fn render_window_with_capture<P: GpuSurfaceWindow>(
+    // the pump renders, encodes and delivers in one pass; the sequence is the feature
+    #[allow(clippy::too_many_lines)]
+    fn render_window_pumped<P: GpuSurfaceWindow> {
         runtime: &mut RuntimeWindow<P>,
         env: &Environment,
         reader: FrameReader,
         drain_local_tasks: &mut dyn FnMut() -> bool,
-    ) -> RenderWindowResult {
+        render_frame: impl FnOnce(
+            &mut P::Presentation,
+            &mut HydrolysisRenderer,
+            peniko::Color,
+            f64,
+        ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>,
+    } {
+        runtime: &mut RuntimeWindow<P>,
+        env: &Environment,
+        reader: FrameReader,
+        drain_local_tasks: &mut dyn FnMut() -> bool,
+        render_frame: impl AsyncFnOnce(
+            &mut P::Presentation,
+            &mut HydrolysisRenderer,
+            peniko::Color,
+            f64,
+        ) -> Result<SurfaceRenderResult, crate::platform::SurfaceError>,
+    } -> RenderWindowResult {
     let capture_snapshot = reader.captures();
-    let _ = runtime.renderer.read_signal(&runtime.window.frame);
-    let _ = runtime.renderer.read_signal(&runtime.window.state);
-    let _ = runtime.renderer.read_signal(&runtime.window.level);
-    let _ = runtime.renderer.read_signal(&runtime.window.attention);
-    if let Some(increments) = runtime.window.resize_increments.as_ref() {
-        let _ = runtime.renderer.read_signal(increments);
-    }
     runtime.platform.apply_properties(&runtime.window);
     #[cfg(hydrolysis_winit)]
     runtime
@@ -952,152 +1421,23 @@ crate::engine::cfg_async_fn! {
     {
         let diagnostics_enabled = runtime.render_diagnostics.enabled();
         let frame_started_at = diagnostics_enabled.then(Instant::now);
+        // The background applies before the pump: the flush mounts the
+        // root over a within-window material backdrop.
+        let clear_color = apply_window_background(runtime, env);
         let pump_outcome = pump_window_scene(runtime, env, drain_local_tasks);
         let rebuild_phases = pump_outcome.phases;
         rebuilt |= pump_outcome.built;
         apply_window_size_limits(runtime, env);
-        let clear_color = apply_window_background(runtime, env);
 
-        let root_transform = kurbo::Affine::scale(runtime.platform.scale_factor());
-        #[cfg(hydrolysis_macos_system_webview)]
-        let (width, height) = runtime.platform.content_size();
-        runtime
-            .renderer
-            .prepare_transient_text_input_overlay(env, root_transform);
-
-        #[cfg(hydrolysis_macos_system_webview)]
-        let mut hybrid_composition = runtime.renderer.take_hybrid_composition();
-
-        #[cfg(hydrolysis_macos_system_webview)]
-        let render_result = if let Some(composition) = hybrid_composition.as_mut() {
-            assert!(
-                !capture_snapshot,
-                "Hydrolysis cannot capture native WKWebView pixels through GPU readback"
-            );
-            let platform = (&mut runtime.platform as &mut dyn std::any::Any)
-                .downcast_mut::<crate::platform::WinitWindow>()
-                .expect("Hydrolysis native WebView composition requires a winit window");
-            platform.sync_hybrid_composition(&composition.native_views, width, height);
-
-            let segment_count = composition.segments.len();
-            let mut totals = SurfaceRenderResult {
-                acquire: Duration::ZERO,
-                render: Duration::ZERO,
-                present: Duration::ZERO,
-                snapshot: None,
-            };
-            let mut result = Ok(());
-            let scale_factor = platform.scale_factor();
-            for (index, segment) in composition.segments.iter_mut().enumerate() {
-                let transient_scene = (index + 1 == segment_count)
-                    .then(|| composition.transient_scene.take())
-                    .flatten();
-                let surface = if index == 0 {
-                    platform.surface()
-                } else {
-                    platform.hybrid_overlay_surface(index - 1)
-                };
-                let segment_clear_color = if index == 0 {
-                    clear_color
-                } else {
-                    peniko::Color::TRANSPARENT
-                };
-                match render_to_surface(
-                    &mut runtime.renderer,
-                    surface,
-                    segment_clear_color,
-                    scale_factor,
-                    false,
-                    |renderer, target, premultiply_alpha| {
-                        renderer.render_hybrid_segment_to_surface(
-                            segment,
-                            transient_scene,
-                            target,
-                            premultiply_alpha,
-                        );
-                    },
-                ) {
-                    Ok(rendered) => {
-                        totals.acquire += rendered.acquire;
-                        totals.render += rendered.render;
-                        totals.present += rendered.present;
-                    }
-                    Err(error) => {
-                        result = Err(error);
-                        break;
-                    }
-                }
-            }
-            composition.transient_scene.take();
-            result.map(|()| totals)
-        } else {
-            if let Some(platform) = (&mut runtime.platform as &mut dyn std::any::Any)
-                .downcast_mut::<crate::platform::WinitWindow>()
-            {
-                platform.clear_hybrid_composition();
-            }
-            let scale_factor = runtime.platform.scale_factor();
-            crate::engine::engine_await!(render_to_surface(
-                &mut runtime.renderer,
-                runtime.platform.surface(),
-                clear_color,
-                scale_factor,
-                capture_snapshot,
-                #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target, premultiply_alpha| {
-                    renderer.render_scene_to_surface_with_alpha_mode(
-                        target,
-                        premultiply_alpha,
-                        reader.rasterizes(),
-                    );
-                },
-                #[cfg(target_arch = "wasm32")]
-                async |renderer, target, premultiply_alpha| {
-                    renderer
-                        .render_scene_to_surface_with_alpha_mode(
-                            target,
-                            premultiply_alpha,
-                            reader.rasterizes(),
-                        )
-                        .await;
-                },
-            ))
-        };
-
-        #[cfg(not(hydrolysis_macos_system_webview))]
         let render_result = {
             let scale_factor = runtime.platform.scale_factor();
-            crate::engine::engine_await!(render_to_surface(
-                &mut runtime.renderer,
+            crate::engine::engine_await!(render_frame(
                 runtime.platform.surface(),
+                &mut runtime.renderer,
                 clear_color,
                 scale_factor,
-                capture_snapshot,
-                #[cfg(not(target_arch = "wasm32"))]
-                |renderer, target, premultiply_alpha| {
-                    renderer.render_scene_to_surface_with_alpha_mode(
-                        target,
-                        premultiply_alpha,
-                        reader.rasterizes(),
-                    );
-                },
-                #[cfg(target_arch = "wasm32")]
-                async |renderer, target, premultiply_alpha| {
-                    renderer
-                        .render_scene_to_surface_with_alpha_mode(
-                            target,
-                            premultiply_alpha,
-                            reader.rasterizes(),
-                        )
-                        .await;
-                },
             ))
         };
-
-        #[cfg(hydrolysis_macos_system_webview)]
-        if let Some(composition) = hybrid_composition.take() {
-            runtime.renderer.restore_hybrid_composition(composition);
-        }
 
         let rendered = match render_result {
             Ok(rendered) => rendered,
@@ -1112,8 +1452,7 @@ crate::engine::cfg_async_fn! {
                 runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
                 let (measurement_cache_hits, measurement_cache_misses) =
                     runtime.renderer.measurement_cache_stats();
-                let layer_stats = runtime.renderer.render_layer_stats();
-                let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
+                let mount_stats = runtime.renderer.mount_stats();
                 let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
                     runtime.renderer.applied_filter_stats();
                 return RenderWindowResult {
@@ -1133,18 +1472,18 @@ crate::engine::cfg_async_fn! {
                             rebuild_iterations: u32::from(pump_outcome.built),
                             measurement_cache_hits,
                             measurement_cache_misses,
-                            scene_layers: layer_stats.composited_scene,
-                            scene_segment_layers: layer_stats.scene_segments,
-                            gpu_content_layers: layer_stats.gpu_content,
-                            filtered_layers: layer_stats.filtered_subtrees,
-                            clip_layers,
-                            max_clip_depth,
+                            scene_layers: mount_stats.scene_layers,
+                            scene_segment_layers: mount_stats.scene_segments,
+                            gpu_content_layers: mount_stats.gpu_content,
+                            filtered_layers: mount_stats.filtered,
+                            clip_layers: mount_stats.clip_layers,
+                            max_clip_depth: mount_stats.max_clip_depth,
                             applied_filter_count,
                             applied_filter_capture_us,
                             applied_filter_effect_us,
                             rendered: false,
                             captured_snapshot: false,
-                            frame_work: runtime.renderer.frame_work_counters(),
+                            frame_work: runtime.renderer.take_frame_work_counters(),
                         },
                         ..FrameProfile::default()
                     },
@@ -1154,6 +1493,14 @@ crate::engine::cfg_async_fn! {
                 panic!("hydrolysis surface acquisition failed validation")
             }
         };
+        if P::SAMPLES_TOP_EDGE {
+            let (width, _) = runtime.platform.content_size();
+            let width = f64::from(width) / runtime.platform.scale_factor();
+            let color = runtime
+                .renderer
+                .top_edge_color(width, crate::renderer::working_color(clear_color));
+            runtime.platform.set_top_edge_color(color);
+        }
         let acquire_duration = rendered.acquire;
         let render_duration = rendered.render;
         let present_duration = rendered.present;
@@ -1164,8 +1511,7 @@ crate::engine::cfg_async_fn! {
         }
         let (measurement_cache_hits, measurement_cache_misses) =
             runtime.renderer.measurement_cache_stats();
-        let layer_stats = runtime.renderer.render_layer_stats();
-        let (clip_layers, max_clip_depth) = runtime.renderer.clip_layer_stats();
+        let mount_stats = runtime.renderer.mount_stats();
         let (applied_filter_count, applied_filter_capture_us, applied_filter_effect_us) =
             runtime.renderer.applied_filter_stats();
         profile = FrameProfile {
@@ -1183,18 +1529,18 @@ crate::engine::cfg_async_fn! {
                 rebuild_iterations: u32::from(pump_outcome.built),
                 measurement_cache_hits,
                 measurement_cache_misses,
-                scene_layers: layer_stats.composited_scene,
-                scene_segment_layers: layer_stats.scene_segments,
-                gpu_content_layers: layer_stats.gpu_content,
-                filtered_layers: layer_stats.filtered_subtrees,
-                clip_layers,
-                max_clip_depth,
+                scene_layers: mount_stats.scene_layers,
+                scene_segment_layers: mount_stats.scene_segments,
+                gpu_content_layers: mount_stats.gpu_content,
+                filtered_layers: mount_stats.filtered,
+                clip_layers: mount_stats.clip_layers,
+                max_clip_depth: mount_stats.max_clip_depth,
                 applied_filter_count,
                 applied_filter_capture_us,
                 applied_filter_effect_us,
                 rendered: true,
                 captured_snapshot: capture_snapshot,
-                frame_work: runtime.renderer.frame_work_counters(),
+                frame_work: runtime.renderer.take_frame_work_counters(),
             },
             ..FrameProfile::default()
         };
@@ -1213,28 +1559,21 @@ crate::engine::cfg_async_fn! {
                     present: present_duration,
                     total: elapsed_or_zero(frame_started_at),
                     rebuild_iterations: u32::from(pump_outcome.built),
-                    filtered_layers: layer_stats.filtered_subtrees,
+                    filtered_layers: mount_stats.filtered,
                     rebuilt: pump_outcome.built,
                 },
             );
         }
     }
 
-    runtime
-        .platform
-        .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position {
-        runtime
-            .platform
-            .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
-    }
+    sync_platform_input(runtime);
     if runtime.renderer.take_redraw_request() {
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
     // The engine's own scheduling answer: an in-flight animation asks for its
-    // next frame through `Next::At` (its `RedrawCallback` already woke the
-    // host too — the request is idempotent).
+    // next frame through `Next::At` (the surface's wake may already have woken
+    // the host too — the request is idempotent).
     if matches!(
         runtime.renderer.take_engine_next(),
         Some(cherenkov::Next::At { .. })
@@ -1259,9 +1598,9 @@ crate::engine::cfg_async_fn! {
     RenderWindowResult {
         rebuilt,
         snapshot,
+        profile,
         #[cfg(feature = "frame-profile")]
         stages,
-        profile,
     }
     }
 }
@@ -1315,7 +1654,7 @@ fn refresh_pending_input_geometry<P: GpuSurfaceWindow>(
     // only lags behind an *unapplied* content change — a pending reactive
     // patch or structural rebuild.
     let geometry_pending =
-        runtime.renderer.has_patch_request() || runtime.renderer.has_rebuild_request();
+        runtime.renderer.has_patch_request() || runtime.renderer.has_structure_marks();
     if !geometry_pending || !runtime.renderer.has_render_tree() {
         return;
     }
@@ -1365,6 +1704,12 @@ where
     F: Fn(&RuntimeWindow<P>, &Environment) -> Environment,
 {
     let mut should_close = runtime.window.state.snapshot() == waterui::window::WindowState::Closed;
+    // The platform's touch-gesture parameters ride the event drain: a host
+    // update (metrics, configuration) reaches the gesture before the
+    // events it applies to.
+    runtime
+        .renderer
+        .set_touch_scroll_config(runtime.platform.touch_scroll_config());
     let events = runtime.platform.drain_events();
     // Platform IMEs mark their own keystrokes by what they emit: ownership
     // follows the event order inside the batch (see `ime_owned_events`), so
@@ -1380,6 +1725,21 @@ where
     // flag set at the press is read by the very next `TextInput` event.
     let mut suppress_key_text = false;
     for (event, ime_owned) in events.into_iter().zip(ime_owned) {
+        // Hosted content holding platform focus receives its own key and
+        // IME delivery; none of it reaches Hydrolysis's dispatch.
+        if runtime.renderer.sync_hosted_focus()
+            && matches!(
+                event,
+                InputEvent::Key { .. }
+                    | InputEvent::TextInput { .. }
+                    | InputEvent::KeyText { .. }
+                    | InputEvent::ImePreedit { .. }
+                    | InputEvent::ImeCommit { .. }
+                    | InputEvent::ImeDisabled
+            )
+        {
+            continue;
+        }
         let key_consumed = suppress_key_text;
         suppress_key_text = false;
         // The preflight re-registers every hit target at the geometry a
@@ -1401,11 +1761,21 @@ where
         }
         match event {
             InputEvent::CloseRequested => {
-                runtime
-                    .window
-                    .state
-                    .set(waterui::window::WindowState::Closed);
-                should_close = true;
+                // The one close path every request takes — the title-bar
+                // button, which X11 and Wayland keep enabled whatever
+                // `closable` says, a window-manager close and a `WM_CLOSE`
+                // sent straight to a Windows window: a non-closable window
+                // ignores them all.
+                if runtime.window.closable {
+                    // Files through the close-request machine: an
+                    // `on_close_request` handler answers it on the local
+                    // executor — `Close` writes `Closed` then and the watch
+                    // on `state` wakes the loop for the reap — while a
+                    // handlerless request closes synchronously as before.
+                    runtime.window.request_close(env);
+                    should_close =
+                        runtime.window.state.snapshot() == waterui::window::WindowState::Closed;
+                }
             }
             InputEvent::Moved { x, y } => {
                 let frame =
@@ -1620,12 +1990,8 @@ where
                     false
                 } else {
                     let key_env = input_env(runtime, env);
-                    let press = KeyPress {
-                        key: logical_key.clone(),
-                        code: physical_code,
-                        modifiers: modifiers.into(),
-                        repeat,
-                    };
+                    let press =
+                        KeyPress::new(logical_key.clone(), physical_code, modifiers.into(), repeat);
                     let outcome = if runtime.renderer.handle_embedded_key(&KeyDelivery {
                         pressed: true,
                         logical: &logical_key,
@@ -1785,6 +2151,20 @@ where
                 let changed = runtime.renderer.handle_file_hover_cancelled(&event_env);
                 schedule_redraw_or_refresh(runtime, changed);
             }
+            InputEvent::BackNavigation(navigation) => {
+                let event_env = input_env(runtime, env);
+                let changed = runtime
+                    .renderer
+                    .handle_back_navigation(navigation, &event_env);
+                tracing::trace!(
+                    target: "waterui::hydrolysis::input",
+                    event = "back_navigation",
+                    ?navigation,
+                    changed,
+                    "runner dispatched input event"
+                );
+                schedule_redraw_or_refresh(runtime, changed);
+            }
         }
     }
     {
@@ -1801,15 +2181,30 @@ where
         }
         schedule_redraw_or_refresh(runtime, changed);
     }
+    sync_platform_input(runtime);
+    should_close
+}
+
+/// Settles focus ownership between Hydrolysis and hosted content, then pushes
+/// the focused text input's state to the platform IME.
+fn sync_platform_focus<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
+    runtime.renderer.sync_hosted_focus();
     runtime
         .platform
         .sync_text_input_state(runtime.renderer.focused_text_input_state());
-    if let Some((x, y)) = runtime.pointer_position {
+}
+
+/// [`sync_platform_focus`], then the cursor under the pointer — left to the
+/// hosted view wherever uncovered hosted content is under it.
+fn sync_platform_input<P: PlatformWindow>(runtime: &mut RuntimeWindow<P>) {
+    sync_platform_focus(runtime);
+    if let Some((x, y)) = runtime.pointer_position
+        && !runtime.renderer.hosted_owns_cursor(x, y)
+    {
         runtime
             .platform
             .set_cursor_style(runtime.renderer.cursor_style_at(x, y));
     }
-    should_close
 }
 
 pub(super) fn advance_runtime<P: PlatformWindow>(
@@ -1834,9 +2229,7 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
             runtime.render_diagnostics.set_refresh_rate(hz);
         }
     }
-    runtime
-        .platform
-        .sync_text_input_state(runtime.renderer.focused_text_input_state());
+    sync_platform_focus(runtime);
     // A gesture tick can mount a popup window — an armed context-menu hold
     // fires here — and the popup anchors in absolute coordinates through
     // `HydrolysisWindowOrigin`, the same extension pointer dispatch gets.
@@ -1852,18 +2245,25 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         tracing::debug!("wake cause: smooth scroll still gliding");
         runtime.request_refresh();
     }
+    // A touch fling decelerates the same way — offsets advance per frame
+    // until the spline settles or a touch down has stopped it.
+    if runtime.renderer.tick_touch_scroll(now) {
+        tracing::debug!("wake cause: touch fling still gliding");
+        runtime.request_refresh();
+    }
     let animations_active = runtime.renderer.advance_animations();
     if animations_active {
         tracing::debug!("wake cause: animations active");
     }
     schedule_animation_update(runtime, animations_active);
-    // A pending fine-grained reactive patch composites through the window-refresh path,
-    // which re-dispatches only the dirty Dynamic nodes. If there is no retained window
-    // frame yet (or a structural rebuild is already pending), fall back to a rebuild.
+    // Producer wakes posted since the last frame mark their owners; the
+    // marks that brought this pump here then decide the work.
+    runtime.renderer.drain_producer_wakes();
+    // Marks raised since the last flush — reactive updates, structural
+    // patches, widget signals — land on the root cell; any mark still arms
+    // the full refresh.
     if runtime.renderer.take_patch_request() {
-        tracing::debug!("wake cause: reactive patch request");
-        // The refresh re-flushes the retained tree, which applies the pending
-        // Dynamic patch to only the affected subtree and relays out if it changed size.
+        tracing::debug!("wake cause: dirty mark");
         runtime.request_refresh();
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
@@ -1874,8 +2274,8 @@ pub(super) fn advance_runtime<P: PlatformWindow>(
         runtime.request_redraw();
         runtime.renderer.frame_work_counters_mut().host_wakeups += 1;
     }
-    if runtime.renderer.take_rebuild_request() {
-        tracing::debug!("wake cause: rebuild request");
+    if runtime.renderer.has_structure_marks() {
+        tracing::debug!("wake cause: structural mark");
         runtime.request_refresh();
     }
     let next_deadline = runtime.renderer.next_gesture_deadline();

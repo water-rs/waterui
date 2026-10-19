@@ -29,7 +29,7 @@ use crate::{
         winget::{WingetInstallError, ensure_package_installed},
     },
     utils::{CommandError, command},
-    water_dir::{HomeDirError, water_home_dir_in},
+    water_dir::{HomeDirError, water_home_dir},
 };
 
 /// Errors from Android SDK/NDK inspection and installation pipelines.
@@ -205,18 +205,34 @@ pub enum AndroidToolchainError {
 
 /// Android SDK toolchain component.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct AndroidSdk;
 
 /// Android Platform-Tools (`adb`) toolchain component.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct AndroidPlatformTools;
 
 /// Android SDK platform packages (`platforms/android-*`) used for compilation.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct AndroidSdkPlatforms;
 
 /// Android SDK build-tools packages (`build-tools;*`) used for D8/Kotlin dexing.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct AndroidBuildTools;
 
 /// Rust targets required for Android cross-compilation.
@@ -251,15 +267,45 @@ impl Default for AndroidRustTargets {
 
 /// An Android NDK toolchain component.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct AndroidNdk;
 
 /// Java toolchain component for Android development.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct Java;
 
 /// Kotlin toolchain component for Android development.
 #[derive(Debug, Clone, Default)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a unit toolchain marker with no fields to add"
+)]
 pub struct Kotlin;
+
+/// A `kotlinc` whose `-version` probe reported a compatible version.
+///
+/// [`Kotlin::resolve`] is its only constructor, and every probe launches a
+/// JVM, so one invocation resolves it once and hands it to every consumer
+/// instead of probing again.
+#[derive(Debug, Clone)]
+pub struct KotlinToolchain {
+    compiler: PathBuf,
+}
+
+impl KotlinToolchain {
+    /// The `kotlinc` executable the probe verified.
+    #[must_use]
+    pub fn compiler(&self) -> &Path {
+        &self.compiler
+    }
+}
 
 const ANDROID_LINUX_X86_64_HOST_TOOLS_COMPAT_PACKAGES: &[&str] =
     &["libc6:amd64", "libstdc++6:amd64", "zlib1g:amd64"];
@@ -997,14 +1043,14 @@ async fn run_sdkmanager_output_with_java(
         use std::process::Stdio;
 
         cmd.stdin(Stdio::piped());
-        let mut child = command(&mut cmd).spawn()?;
+        let mut child = command(&mut cmd, host.std_output()).spawn()?;
         if let Some(mut stdin) = child.stdin.take() {
             stdin.write_all(stdin_payload.as_bytes()).await?;
             stdin.flush().await?;
         }
         child.output().await.map_err(AndroidToolchainError::from)
     } else {
-        command(&mut cmd)
+        command(&mut cmd, host.std_output())
             .output()
             .await
             .map_err(AndroidToolchainError::from)
@@ -1133,7 +1179,7 @@ fn kotlin_executable_from_home(home: &Path) -> Option<PathBuf> {
 }
 
 fn managed_kotlin_home(host: &Host, version: &str) -> Result<PathBuf, AndroidToolchainError> {
-    Ok(water_home_dir_in(host)?
+    Ok(water_home_dir(host)?
         .join("toolchains/kotlin")
         .join(version))
 }
@@ -1310,8 +1356,8 @@ const fn required_kotlin_version() -> &'static str {
 }
 
 async fn required_ndk_package_id(host: &Host) -> Result<String, AndroidToolchainError> {
-    // The NDK the runtime's Gradle `ndkVersion` demands is embedded in the
-    // binary — an installed CLI has no source checkout to read it from.
+    // The NDK Android builds compile against is embedded in the binary — an
+    // installed CLI has no source checkout to read it from.
     let package_id = format!("ndk;{}", ndk_version::ANDROID_NDK_VERSION);
     let available_packages = list_sdk_package_ids(host).await?;
     if available_packages
@@ -2185,12 +2231,13 @@ async fn verify_ndk_host_toolchain_executable(
 
     // Unique scratch source for the compile probe; the `NamedTempFile`
     // deletes itself on drop, including on the early-error paths below.
-    let probe_file = smol::unblock(|| -> std::io::Result<tempfile::NamedTempFile> {
+    let temp_root = host.temp_dir();
+    let probe_file = smol::unblock(move || -> std::io::Result<tempfile::NamedTempFile> {
         use std::io::Write as _;
         let mut file = tempfile::Builder::new()
             .prefix("waterui-android-ndk-probe-")
             .suffix(".c")
-            .tempfile()?;
+            .tempfile_in(temp_root)?;
         file.write_all(b"int main(void) { return 0; }\n")?;
         file.flush()?;
         Ok(file)
@@ -2564,8 +2611,12 @@ fn map_winget_error_for_java(error: WingetInstallError) -> FailToInstallJava {
 }
 
 impl Kotlin {
-    /// Detect the path to the kotlinc compiler on `host`.
-    pub async fn detect_path(host: &Host) -> Option<PathBuf> {
+    /// Resolve the Kotlin toolchain on `host`: the first `kotlinc` candidate
+    /// whose `-version` probe reports a version satisfying the required one.
+    ///
+    /// This is the only place the compiler's version is probed — consumers
+    /// take the resolved [`KotlinToolchain`] rather than probing again.
+    pub async fn resolve(host: &Host) -> Option<KotlinToolchain> {
         let required_version = required_kotlin_version();
         let mut candidates = Vec::new();
 
@@ -2632,11 +2683,31 @@ impl Kotlin {
                 continue;
             };
             if kotlin_version_is_compatible(&installed_version, required_version) {
-                return Some(candidate);
+                return Some(KotlinToolchain {
+                    compiler: candidate,
+                });
             }
         }
 
         None
+    }
+
+    /// [`Toolchain::check`] for `Kotlin`, handing back the toolchain it
+    /// resolved so the build that follows consumes it.
+    ///
+    /// # Errors
+    /// Returns the errors [`Toolchain::check`] reports for `Kotlin`.
+    pub async fn verify(
+        host: &Host,
+    ) -> Result<KotlinToolchain, ToolchainError<KotlinInstallation>> {
+        let toolchain = Self::resolve(host)
+            .await
+            .ok_or_else(|| ToolchainError::fixable(KotlinInstallation))?;
+        // Only unix carries an execute bit, so elsewhere finding the file is
+        // the whole check.
+        #[cfg(unix)]
+        Self::reject_non_executable(toolchain.compiler.clone()).await?;
+        Ok(toolchain)
     }
 }
 
@@ -2657,22 +2728,7 @@ impl Toolchain for Kotlin {
     type Installation = KotlinInstallation;
 
     async fn check(&self, host: &Host) -> Result<(), ToolchainError<Self::Installation>> {
-        let kotlinc_path = Self::detect_path(host)
-            .await
-            .ok_or_else(|| ToolchainError::fixable(KotlinInstallation))?;
-        // Only unix carries an execute bit, so elsewhere finding the file is
-        // the whole check. Both arms are tail expressions rather than an early
-        // `return` under one `cfg`, which would leave the other arm as dead
-        // code on the platform that does compile it.
-        #[cfg(unix)]
-        {
-            Self::reject_non_executable(kotlinc_path).await
-        }
-        #[cfg(not(unix))]
-        {
-            drop(kotlinc_path);
-            Ok(())
-        }
+        Self::verify(host).await.map(|_| ())
     }
 }
 
@@ -2719,7 +2775,7 @@ impl Installation for KotlinInstallation {
         install_managed_kotlin_compiler(host, required_version)
             .await
             .map_err(FailToInstallKotlin::InstallFailed)?;
-        if Kotlin::detect_path(host).await.is_some() {
+        if Kotlin::resolve(host).await.is_some() {
             Ok(())
         } else {
             Err(FailToInstallKotlin::StillMissing)

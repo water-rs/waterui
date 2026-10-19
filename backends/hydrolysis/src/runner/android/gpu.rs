@@ -10,8 +10,8 @@
 //!
 //! Configuration is explicit, per the plan of record: FIFO present mode with a
 //! maximum frame latency of two, and a high-refresh request routed through
-//! `ANativeWindow_setFrameRate` (API 30+, resolved at run time) while
-//! interaction or animation keeps the scheduler awake. Zero-sized surfaces are never configured — the
+//! `ANativeWindow_setFrameRate` while interaction or animation keeps the
+//! scheduler awake. Zero-sized surfaces are never configured — the
 //! attachment waits parked until the band reports a real size.
 //!
 //! Every failure here is an explicit error, never a silent redraw black hole:
@@ -25,8 +25,8 @@ use ndk::native_window::NativeWindow;
 use raw_window_handle::{AndroidDisplayHandle, DisplayHandle, HasDisplayHandle, RawDisplayHandle};
 
 use crate::platform::{
-    SurfaceError, SurfaceFrame, SurfaceProvider, acquire_surface_texture,
-    select_hydrolysis_surface_format,
+    PresentationSurface, SurfaceError, SurfaceFrame, SurfaceProvider, acquire_surface_texture,
+    negotiate_host_output,
 };
 
 /// The Android display's raw handle: the platform has one implicit default
@@ -84,18 +84,16 @@ async fn request_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, Gpu
 }
 
 struct AndroidGpuContextInner {
-    instance: wgpu::Instance,
-    /// Identity of this device creation chain for the engine pool.
-    context_id: u64,
-    adapter: wgpu::Adapter,
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    device_loss: crate::platform::DeviceLoss,
+    /// The live device generation and its loss budget; a lost device is
+    /// recreated on the same instance (water-rs/waterui#2742).
+    gpu: crate::platform::RecoverableGpu,
 }
 
 impl Drop for AndroidGpuContextInner {
     fn drop(&mut self) {
-        crate::platform::drain_device_before_teardown(&self.device);
+        crate::platform::drain_device_before_teardown(
+            &self.gpu.generation().gpu_context().shared_device.device,
+        );
     }
 }
 
@@ -116,83 +114,99 @@ impl AndroidGpuContext {
         pollster::block_on(Self::request_async())
     }
 
-    async fn request_async() -> Result<Self, GpuError> {
-        // The engine's shaders require these capabilities — its compute
-        // pipeline uses f16-in-f32 builtins unconditionally, and the pipeline is
-        // compute. The default pick may lack them (software Vulkan drivers
-        // like llvmpipe drop shaderFloat16), so walk every Vulkan adapter and
-        // choose the first that can paint; a device with none is an explicit
-        // error, never a painter fallback.
-        const PAINTER_FLAGS: wgpu::DownlevelFlags =
-            wgpu::DownlevelFlags::COMPUTE_SHADERS.union(wgpu::DownlevelFlags::SHADER_F16_IN_F32);
+    /// The first painter-capable Vulkan adapter on `instance`.
+    async fn pick_adapter(instance: &wgpu::Instance) -> Result<wgpu::Adapter, GpuError> {
+        // The engine's shaders require f16 arithmetic — its raster pipeline
+        // uses f16-in-f32 builtins unconditionally. The default pick may lack
+        // it (software Vulkan drivers like llvmpipe drop shaderFloat16), so
+        // walk every Vulkan adapter and choose the first that can paint; a
+        // device with none is an explicit error, never a painter fallback.
+        const PAINTER_FLAGS: wgpu::DownlevelFlags = wgpu::DownlevelFlags::SHADER_F16_IN_F32;
         let flags_of = |adapter: &wgpu::Adapter| adapter.get_downlevel_capabilities().flags;
         let capable = |adapter: &wgpu::Adapter| flags_of(adapter).contains(PAINTER_FLAGS);
-        // A Vulkan-only instance: no other GPU API is ever instantiated, and
-        // `create_surface` therefore only ever builds the Vulkan surface that
-        // claims the `ANativeWindow`'s single producer connection.
-        let instance = new_instance(wgpu::Backends::VULKAN);
-        let preferred = request_adapter(&instance).await?;
-        let adapter = if capable(&preferred) {
-            preferred
-        } else {
-            let chosen = instance
-                .enumerate_adapters(wgpu::Backends::VULKAN)
-                .await
-                .into_iter()
-                .find(capable);
-            if let Some(candidate) = chosen {
-                candidate
-            } else {
-                let info = preferred.get_info();
-                let missing = PAINTER_FLAGS.difference(flags_of(&preferred));
-                return Err(GpuError::new(format!(
-                    "hydrolysis android: no Vulkan adapter meets the \
-                         painter's requirements — '{}' ({:?}) lacks \
-                         {missing:?} and no alternate Vulkan adapter qualifies",
-                    info.name, info.backend
-                )));
-            }
-        };
-        crate::platform::ensure_compute_capable_adapter(
-            &adapter,
-            "hydrolysis android surface",
-            "failed to find compute-capable wgpu adapter",
-        );
+        let preferred = request_adapter(instance).await?;
+        if capable(&preferred) {
+            return Ok(preferred);
+        }
+        instance
+            .enumerate_adapters(wgpu::Backends::VULKAN)
+            .await
+            .into_iter()
+            .find(capable)
+            .map_or_else(
+                || {
+                    let info = preferred.get_info();
+                    let missing = PAINTER_FLAGS.difference(flags_of(&preferred));
+                    Err(GpuError::new(format!(
+                        "hydrolysis android: no Vulkan adapter meets the \
+                             painter's requirements — '{}' ({:?}) lacks \
+                             {missing:?} and no alternate Vulkan adapter qualifies",
+                        info.name, info.backend
+                    )))
+                },
+                Ok,
+            )
+    }
+
+    /// Opens a device generation on `instance`: adapter pick, engine
+    /// device request and loss observation. A lost device's recreation
+    /// re-runs it on the lost generation's own instance, so the surfaces
+    /// the chain holds stay valid (water-rs/waterui#2742).
+    async fn open_generation(
+        instance: &wgpu::Instance,
+    ) -> Result<crate::platform::DeviceLoss, GpuError> {
+        let adapter = Self::pick_adapter(instance).await?;
         let required_limits = crate::platform::required_device_limits(&adapter);
         let required_features = crate::platform::required_media_features(adapter.features())
             | (adapter.features()
                 & (wgpu::Features::PIPELINE_CACHE | wgpu::Features::PASSTHROUGH_SHADERS));
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor {
+        // The device is opened through the engine's creation path, not
+        // `request_device`: the capabilities Cherenkov composes with —
+        // external-frame and YCbCr import (cherenkov#166), and the
+        // dynamic-rendering local read and rasterization-order
+        // attachment access that keep an epoch's intermediates in tile
+        // memory (waterui#2191) — are chosen when `vkCreateDevice` runs
+        // and cannot be turned on afterwards. A device this host opened
+        // itself would make the engine materialize every intermediate
+        // through memory for the life of the process.
+        let (device, queue) = crate::platform::open_engine_device(
+            &adapter,
+            &wgpu::DeviceDescriptor {
                 label: Some("hydrolysis-android-device"),
                 required_features,
                 required_limits,
                 memory_hints: wgpu::MemoryHints::Performance,
                 experimental_features: wgpu::ExperimentalFeatures::default(),
                 trace: wgpu::Trace::default(),
-            })
-            .await
-            .map_err(|error| {
-                GpuError::new(format!(
-                    "hydrolysis android: failed to request wgpu device: {error}"
-                ))
-            })?;
+            },
+        )
+        .await
+        .map_err(|error| {
+            GpuError::new(format!(
+                "hydrolysis android: failed to open the engine's wgpu device: {error}"
+            ))
+        })?;
         let context_id = crate::platform::next_gpu_context_id();
-        let shared_device = cherenkov_gpu::interop::SharedDevice {
-            instance: instance.clone(),
-            adapter: adapter.clone(),
-            device: device.clone(),
-            queue: queue.clone(),
-        };
-        let device_loss = crate::platform::DeviceLoss::observe(shared_device, context_id);
-        Ok(Self {
-            inner: Arc::new(AndroidGpuContextInner {
-                instance,
-                context_id,
+        Ok(crate::platform::DeviceLoss::observe(
+            cherenkov_gpu::interop::SharedDevice {
+                instance: instance.clone(),
                 adapter,
                 device,
                 queue,
-                device_loss,
+            },
+            context_id,
+        ))
+    }
+
+    async fn request_async() -> Result<Self, GpuError> {
+        // A Vulkan-only instance: no other GPU API is ever instantiated, and
+        // `create_surface` therefore only ever builds the Vulkan surface that
+        // claims the `ANativeWindow`'s single producer connection.
+        let instance = new_instance(wgpu::Backends::VULKAN);
+        let generation = Self::open_generation(&instance).await?;
+        Ok(Self {
+            inner: Arc::new(AndroidGpuContextInner {
+                gpu: crate::platform::RecoverableGpu::new(generation),
             }),
         })
     }
@@ -209,6 +223,10 @@ impl AndroidGpuContext {
 /// pointing at a released window.
 pub struct AndroidSurface {
     gpu: AndroidGpuContext,
+    /// The device generation this attachment renders on — a clone of the
+    /// context's live generation, adopted in `ensure_live`
+    /// (water-rs/waterui#2742).
+    handles: crate::platform::DeviceLoss,
     /// The generation the Kotlin host assigned this attachment; a stale
     /// `surfaceDestroyed` from an older `SurfaceHolder` callback is ignored.
     generation: u64,
@@ -216,31 +234,47 @@ pub struct AndroidSurface {
     /// This side's own lease on the current native window, used for
     /// `ANativeWindow_setFrameRate`; the lease wgpu holds inside `surface`
     /// dies with it.
-    native_window: Option<NativeWindow>,
+    native_window: Option<WindowLease>,
     config: Option<wgpu::SurfaceConfiguration>,
+    /// The negotiated output the swapchain was configured by — the
+    /// engine's `select_output` result, reported headroom included
+    /// (#2445).
+    selection: Option<cherenkov_gpu::interop::OutputSelection>,
     /// The Kotlin `SurfaceHolder`'s reported geometry, independent of the
     /// wgpu configuration — valid while between surface generations too.
     width: u32,
     height: u32,
-    /// `ANativeWindow_setFrameRate`, present on API 30 and later.
-    frame_rate: Option<FrameRateApi>,
-    /// The high-refresh request currently held, so a no-change demand does
-    /// not re-call the platform.
-    frame_rate_request: Option<f32>,
+    /// The scheduler's high-refresh demand: `true` while the pump runs or a
+    /// touch is held. It belongs to the session, not the window: `detach`
+    /// leaves it in place (the request dies with the old lease anyway) and
+    /// `attach` writes it onto the new one at that window's peak rate.
+    high_refresh: bool,
+}
+
+/// One attachment's native window together with the highest refresh rate
+/// its display offers at the current resolution — the rate a high-refresh
+/// demand asks for. The rate travels with the window because it is the
+/// window's display that bounds it.
+struct WindowLease {
+    window: NativeWindow,
+    /// Positive and finite; the JNI boundary rejects anything else.
+    peak_refresh_hz: f32,
 }
 
 impl AndroidSurface {
-    pub fn new(gpu: AndroidGpuContext, sdk_int: i32) -> Self {
+    pub fn new(gpu: AndroidGpuContext) -> Self {
+        let handles = gpu.inner.gpu.generation();
         Self {
             gpu,
+            handles,
             generation: 0,
             surface: None,
             native_window: None,
             config: None,
+            selection: None,
             width: 0,
             height: 0,
-            frame_rate: FrameRateApi::resolve(sdk_int),
-            frame_rate_request: None,
+            high_refresh: false,
         }
     }
 
@@ -254,11 +288,13 @@ impl AndroidSurface {
     /// attachment first.
     ///
     /// `native_window` is the owned lease obtained from the Kotlin `Surface`
-    /// (`ANativeWindow_fromSurface` acquires the reference it returns).
-    /// Errors leave the attachment detached.
+    /// (`ANativeWindow_fromSurface` acquires the reference it returns), and
+    /// `peak_refresh_hz` the highest rate its display offers at the current
+    /// resolution. Errors leave the attachment detached.
     pub(crate) fn attach(
         &mut self,
         native_window: NativeWindow,
+        peak_refresh_hz: f32,
         width: u32,
         height: u32,
         generation: u64,
@@ -267,7 +303,16 @@ impl AndroidSurface {
         self.width = width;
         self.height = height;
         self.generation = generation;
-        self.native_window = Some(native_window);
+        self.native_window = Some(WindowLease {
+            window: native_window,
+            peak_refresh_hz,
+        });
+        // The frame-rate request is a property of the window, so the demand
+        // the scheduler held across the re-attach goes onto the new lease.
+        if let Err(error) = self.apply_frame_rate() {
+            self.detach();
+            return Err(error);
+        }
         if width == 0 || height == 0 {
             // Zero-sized bands never reach `surface.configure` — the
             // attachment stays parked until a real size arrives.
@@ -277,7 +322,7 @@ impl AndroidSurface {
     }
 
     fn configure(&mut self, width: u32, height: u32) -> Result<(), GpuError> {
-        let Some(window) = self.native_window.as_ref() else {
+        let Some(WindowLease { window, .. }) = self.native_window.as_ref() else {
             return Err(GpuError::new(
                 "hydrolysis android: configure without a native window".to_owned(),
             ));
@@ -287,8 +332,9 @@ impl AndroidSurface {
         // surface owns for its whole lifetime — it is released inside the
         // surface's drop, before this attachment's own lease can go away.
         let surface = self
-            .gpu
-            .inner
+            .handles
+            .gpu_context()
+            .shared_device
             .instance
             .create_surface(wgpu::SurfaceTarget::from_window_without_display(unsafe {
                 NativeWindow::clone_from_ptr(window.ptr())
@@ -298,43 +344,41 @@ impl AndroidSurface {
                     "hydrolysis android: surface creation failed: {error}"
                 ))
             })?;
-        let caps = surface.get_capabilities(&self.gpu.inner.adapter);
-        if caps.formats.is_empty() {
-            return Err(GpuError::new(
-                "hydrolysis android: surface reports no formats".to_owned(),
-            ));
-        }
-        let format = select_hydrolysis_surface_format(&caps);
+        // The (format, colour space) pair, present mode and alpha mode
+        // come from the one negotiation every Hydrolysis host uses (#2445).
+        let selection = negotiate_host_output(
+            &surface,
+            &self.handles.gpu_context().shared_device.adapter,
+            false,
+        )
+        .map_err(|error| GpuError::new(format!("hydrolysis android: {error}")))?;
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format,
-            color_space: wgpu::SurfaceColorSpace::Auto,
+            format: selection.format,
+            color_space: selection.color_space,
             width: width.max(1),
             height: height.max(1),
-            // FIFO vsync-paced presentation with the plan's swapchain depth.
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode: selection.present_mode,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps
-                .alpha_modes
-                .iter()
-                .copied()
-                .find(|mode| *mode == wgpu::CompositeAlphaMode::Opaque)
-                .unwrap_or(wgpu::CompositeAlphaMode::Auto),
+            alpha_mode: selection.alpha_mode,
             view_formats: vec![],
         };
-        surface.configure(&self.gpu.inner.device, &config);
+        surface.configure(&self.handles.gpu_context().shared_device.device, &config);
         self.config = Some(config);
+        self.selection = Some(selection);
         self.surface = Some(surface);
         Ok(())
     }
 
     /// Releases the current attachment: the wgpu surface (and the window
-    /// lease it holds) dies first, this side's lease second.
+    /// lease it holds) dies first, this side's lease second. The
+    /// frame-rate demand survives — it is the scheduler's state, not the
+    /// window's — so a re-attached surface gets it back.
     pub(crate) fn detach(&mut self) {
         self.config = None;
+        self.selection = None;
         self.surface = None;
         self.native_window = None;
-        self.frame_rate_request = None;
     }
 
     /// The band's geometry changed: resize bookkeeping plus a reconfigure.
@@ -353,6 +397,7 @@ impl AndroidSurface {
         self.height = height;
         if width == 0 || height == 0 {
             self.config = None;
+            self.selection = None;
             self.surface = None;
             return Ok(());
         }
@@ -363,9 +408,41 @@ impl AndroidSurface {
         if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
             config.width = width;
             config.height = height;
-            surface.configure(&self.gpu.inner.device, config);
+            surface.configure(&self.handles.gpu_context().shared_device.device, config);
         }
         Ok(())
+    }
+
+    /// Adopts the context's live device generation — rebuilding it when
+    /// the adopted one was lost — and puts the attached swapchain on the
+    /// new device's output contract (water-rs/waterui#2742). The
+    /// `wgpu::Surface` belongs to the instance, which recreation keeps;
+    /// the native window lease is untouched.
+    fn ensure_live(&mut self) {
+        let gpu = self.gpu.clone();
+        let generation = gpu.inner.gpu.ensure_live(|instance| {
+            pollster::block_on(AndroidGpuContext::open_generation(instance))
+                .map_err(|error| error.0)
+        });
+        if generation.gpu_context().context_id == self.handles.gpu_context().context_id {
+            return;
+        }
+        self.handles = generation;
+        let shared = &self.handles.gpu_context().shared_device;
+        if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
+            // A recreated adapter re-runs the output negotiation — the
+            // old device's pick is not assumed on the new one; a surface
+            // the new adapter cannot drive fails as explicitly as it
+            // does at attach.
+            let selection = negotiate_host_output(surface, &shared.adapter, false)
+                .unwrap_or_else(|error| panic!("hydrolysis android: {error}"));
+            config.format = selection.format;
+            config.color_space = selection.color_space;
+            config.present_mode = selection.present_mode;
+            config.alpha_mode = selection.alpha_mode;
+            surface.configure(&shared.device, config);
+            self.selection = Some(selection);
+        }
     }
 
     /// If `generation` names the live attachment, releases it. A stale
@@ -379,67 +456,42 @@ impl AndroidSurface {
         true
     }
 
-    /// Requests high refresh while the scheduler reports active interaction
-    /// or animation, and releases the request when it goes idle. No-op below
-    /// API 30 and when the request is already what the window holds.
-    pub(crate) fn set_high_refresh_demand(&mut self, demand: Option<f32>) {
-        let Some(api) = self.frame_rate.as_ref() else {
-            return;
-        };
-        if self.frame_rate_request == demand {
-            return;
+    /// Requests the attached window's peak refresh rate while the scheduler
+    /// reports active interaction or animation, and releases the request
+    /// when it goes idle. The demand is held, not just applied: a no-change
+    /// call does not re-call the platform, and a demand held while no window
+    /// is attached is written by the next [`Self::attach`].
+    pub(crate) fn set_high_refresh_demand(&mut self, active: bool) -> Result<(), GpuError> {
+        if self.high_refresh == active {
+            return Ok(());
         }
-        let Some(window) = self.native_window.as_ref() else {
-            return;
-        };
-        if api.set(window, demand.unwrap_or(0.0)) {
-            self.frame_rate_request = demand;
-        }
-    }
-}
-
-/// `ANativeWindow_setFrameRate`'s signature in `<android/native_window.h>`.
-type SetFrameRate = unsafe extern "C" fn(*mut ndk_sys::ANativeWindow, f32, i8) -> i32;
-
-/// `ANativeWindow_setFrameRate`, resolved from `libnativewindow.so` at run
-/// time. The function is API 30 while the framework's floor is API 26, so it
-/// cannot be a link-time reference: the app library would then fail to load
-/// on every device whose loader does not find the symbol.
-struct FrameRateApi {
-    set_frame_rate: SetFrameRate,
-    /// Keeps `set_frame_rate` mapped.
-    _library: libloading::Library,
-}
-
-impl FrameRateApi {
-    /// The API on API 30 and later, `None` below it.
-    fn resolve(sdk_int: i32) -> Option<Self> {
-        if sdk_int < 30 {
-            return None;
-        }
-        // SAFETY: `libnativewindow.so` is a public NDK system library that
-        // every Android process already maps.
-        let library = unsafe { libloading::Library::new("libnativewindow.so") }
-            .expect("libnativewindow.so is a public NDK library");
-        // SAFETY: `SetFrameRate` is the function's declared signature.
-        let set_frame_rate =
-            *unsafe { library.get::<SetFrameRate>(b"ANativeWindow_setFrameRate\0") }
-                .expect("API 30 and later export ANativeWindow_setFrameRate");
-        Some(Self {
-            set_frame_rate,
-            _library: library,
-        })
+        self.high_refresh = active;
+        self.apply_frame_rate()
     }
 
-    /// Requests `rate` on `window`, `0.0` releasing the request; whether the
-    /// platform accepted it.
-    fn set(&self, window: &NativeWindow, rate: f32) -> bool {
-        let compatibility = i8::try_from(
-            ndk_sys::ANativeWindow_FrameRateCompatibility::ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT.0,
-        )
-        .expect("frame-rate compatibility values fit the i8 parameter");
-        // SAFETY: `window` is a live `ANativeWindow` lease.
-        unsafe { (self.set_frame_rate)(window.ptr().as_ptr(), rate, compatibility) == 0 }
+    /// Writes the held demand onto the live native window. Between
+    /// attachments there is nothing to write to — [`Self::attach`] applies
+    /// it there. An idle demand writes a rate of 0, which clears the request
+    /// and returns the surface to the system's choice.
+    fn apply_frame_rate(&self) -> Result<(), GpuError> {
+        let Some(lease) = self.native_window.as_ref() else {
+            return Ok(());
+        };
+        let rate = if self.high_refresh {
+            lease.peak_refresh_hz
+        } else {
+            0.0
+        };
+        // `ANativeWindow_setFrameRate` is API 30. The framework floor is API
+        // 31, so the symbol is a direct link, not a run-time lookup.
+        lease
+            .window
+            .set_frame_rate(rate, ndk::native_window::FrameRateCompatibility::Default)
+            .map_err(|error| {
+                GpuError::new(format!(
+                    "hydrolysis android: ANativeWindow_setFrameRate({rate}) failed: {error}"
+                ))
+            })
     }
 }
 
@@ -449,29 +501,53 @@ impl Drop for AndroidSurface {
     }
 }
 
-impl SurfaceProvider for AndroidSurface {
+impl PresentationSurface for AndroidSurface {
     fn adapter(&self) -> &wgpu::Adapter {
-        &self.gpu.inner.adapter
+        &self.handles.gpu_context().shared_device.adapter
     }
 
     fn device(&self) -> &wgpu::Device {
-        &self.gpu.inner.device
+        &self.handles.gpu_context().shared_device.device
     }
 
     fn queue(&self) -> &wgpu::Queue {
-        &self.gpu.inner.queue
+        &self.handles.gpu_context().shared_device.queue
     }
 
     fn device_loss(&self) -> &crate::platform::DeviceLoss {
-        &self.gpu.inner.device_loss
+        &self.handles
     }
 
+    fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.ensure_live();
+        self.width = width;
+        self.height = height;
+        if width == 0 || height == 0 {
+            return;
+        }
+        if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
+            config.width = width;
+            config.height = height;
+            surface.configure(&self.handles.gpu_context().shared_device.device, config);
+        }
+    }
+
+    fn ensure_live(&mut self) {
+        Self::ensure_live(self);
+    }
+}
+
+impl SurfaceProvider for AndroidSurface {
     fn acquire(&mut self) -> Result<SurfaceFrame, SurfaceError> {
-        if self.gpu.inner.device_loss.is_lost() {
-            // Device loss is unrecoverable for this attachment — report it as
-            // the explicit error the plan asks for rather than silently
-            // failing every acquisition.
-            return Err(SurfaceError::Validation);
+        if self.handles.is_lost() {
+            // A dead generation a failed recreation left in place: report
+            // lost so the pump reschedules and the next frame retries the
+            // recovery under its budget (water-rs/waterui#2742).
+            return Err(SurfaceError::Lost);
         }
         let Some(surface) = self.surface.as_ref() else {
             // Between generations there is nothing to acquire against: the
@@ -493,46 +569,31 @@ impl SurfaceProvider for AndroidSurface {
         self.queue().present(output);
     }
 
-    fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
     fn format(&self) -> wgpu::TextureFormat {
         self.config
             .as_ref()
             .map_or(wgpu::TextureFormat::Rgba8Unorm, |config| config.format)
     }
 
-    fn gpu_context_id(&self) -> u64 {
-        self.gpu.inner.context_id
-    }
-
-    fn shared_device(&self) -> cherenkov_gpu::interop::SharedDevice {
-        let inner = &*self.gpu.inner;
-        cherenkov_gpu::interop::SharedDevice {
-            instance: inner.instance.clone(),
-            adapter: inner.adapter.clone(),
-            device: inner.device.clone(),
-            queue: inner.queue.clone(),
-        }
-    }
-
-    fn resize(&mut self, width: u32, height: u32) {
-        self.width = width;
-        self.height = height;
-        if width == 0 || height == 0 {
-            return;
-        }
-        if let (Some(surface), Some(config)) = (self.surface.as_ref(), self.config.as_mut()) {
-            config.width = width;
-            config.height = height;
-            surface.configure(&self.gpu.inner.device, config);
-        }
-    }
-
-    fn premultiply_alpha(&self) -> bool {
-        self.config
+    fn output_alpha(&self) -> cherenkov_gpu::interop::OutputAlpha {
+        self.selection
             .as_ref()
-            .is_some_and(|config| config.alpha_mode == wgpu::CompositeAlphaMode::PreMultiplied)
+            .map_or(cherenkov_gpu::interop::OutputAlpha::Straight, |selection| {
+                cherenkov_gpu::interop::surface_output_alpha(selection.alpha_mode)
+            })
+    }
+
+    fn display_headroom(&self) -> f32 {
+        self.selection
+            .as_ref()
+            .and_then(|selection| selection.reported_headroom)
+            .unwrap_or(1.0)
+    }
+
+    fn output_color(&self) -> cherenkov_gpu::interop::OutputColor {
+        self.selection.as_ref().map_or_else(
+            || crate::engine::format_output_color(self.format()),
+            cherenkov_gpu::interop::OutputSelection::output_color,
+        )
     }
 }

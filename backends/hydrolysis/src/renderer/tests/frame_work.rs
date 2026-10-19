@@ -8,8 +8,8 @@
 //! instrument the frame model is measured against — a fixture's whole-frame
 //! values (`semantic builds`, `recorded view contents`, `font and image
 //! registrations`, `gpu submissions`, `host wakeups`) are what a steady
-//! frame drives to zero, while the fine-grained counters (`live operand
-//! updates`, `layer creations`, `layer removals`) carry the nonzero signal.
+//! frame drives to zero, while the fine-grained counters (`layer
+//! creations`, `layer removals`) carry the nonzero signal.
 //!
 //! The fixtures deliberately assert *which* counter families moved rather
 //! than exact counts: exact numbers are baseline data, and an exact
@@ -26,7 +26,7 @@
 //! * popup opening → `popup_opening_counts` (accessibility)
 //! * scrolling → `scrolling_counts`
 //! * GPU content under clips/effects → `gpu_content_under_clips_and_effects`
-//! * native-view interleaving → documented only: `record_native_view_layer`
+//! * native-view interleaving → documented only: the `WebView` record
 //!   exists solely under `hydrolysis_macos_system_webview` (winit + macOS +
 //!   webview-system) and the `WKWebView` bridge requires a real window — no
 //!   headless harness can mount it.
@@ -44,7 +44,7 @@ use waterui_controls::button::button;
 use waterui_controls::menu::CommandExt as _;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::id::SelfId;
-use waterui_graphics::cherenkov::{Draw, Recorder};
+use waterui_graphics::draw::{Draw, Recorder};
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent};
 use waterui_layout::frame::Frame;
@@ -130,26 +130,31 @@ fn runtime_with(view: impl View) -> HeadlessRuntime {
     )
 }
 
-/// The frame-work values a fixture reads back. Transient presentations
-/// (popup windows, drawn context menus) install no retained engine layers:
-/// every retained-engine field stays zero on their frames.
+/// The frame-work values a fixture reads back. A popup window is a
+/// separate window: the presenting window's retained-engine fields stay
+/// zero on its frames.
 fn assert_engine_counters_zero(counters: &FrameCounters) {
     let m = counters.frame_work;
-    assert_eq!(m.live_operand_updates, 0, "no live operands update");
     assert_eq!(m.layer_creations, 0, "no retained engine layers mount");
     assert_eq!(m.layer_removals, 0, "no retained engine layers unmount");
 }
 
+/// A drawn context menu presents through the window's retained
+/// context-menu host: its opening frame mounts the menu's layers.
+fn assert_presentation_mounts(counters: &FrameCounters) {
+    let m = counters.frame_work;
+    assert!(
+        m.layer_creations >= 1,
+        "the context-menu host mounts the menu's layers"
+    );
+}
+
 /// The retained-engine counters a fixture whose content mounts as retained
 /// scene layers reads back: the engine mounts its layers on the presented
-/// frame (`layer_creations >= 1`), while a fixture with no reactive input
-/// and no unmount sees no live-operand updates and no removals.
+/// frame (`layer_creations >= 1`), while a fixture with no unmount sees no
+/// removals.
 fn assert_retained_engine_counters(counters: &FrameCounters) {
     let m = counters.frame_work;
-    assert_eq!(
-        m.live_operand_updates, 0,
-        "nothing reactive runs in this fixture"
-    );
     assert!(
         m.layer_creations >= 1,
         "the retained engine mounts the fixture's layers"
@@ -190,7 +195,7 @@ fn nested_clip_blend_opacity_counts() {
 /// alive on the pane: releasing it unregisters the image under a recording
 /// that still names it.
 struct ImagePane {
-    image: Option<waterui_graphics::Registered<cherenkov::Image<cherenkov::Rgba8>>>,
+    image: Option<waterui_graphics::Registered<waterui_graphics::draw::ImageId>>,
 }
 
 impl SceneContent for ImagePane {
@@ -201,8 +206,8 @@ impl SceneContent for ImagePane {
         _width: f32,
         _height: f32,
     ) -> bool {
-        use cherenkov::{Extend, ImagePattern, Paint, Sampling};
         use kurbo::Affine;
+        use waterui_graphics::draw::{Extend, ImagePattern, Paint, Sampling};
 
         if self.image.is_none() {
             self.image = Some(
@@ -249,13 +254,13 @@ impl SceneContent for ImagePane {
 
 /// An opaque red image — semitransparent fixtures read back white over the
 /// window's white clear, so the probe must be opaque to be detectable.
-fn solid_image() -> cherenkov::ImageData<cherenkov::Rgba8> {
+fn solid_image() -> waterui_graphics::ImageData<waterui_graphics::Rgba8> {
     let mut data = vec![0xFFu8; 16 * 16 * 4];
     for px in data.as_chunks_mut::<4>().0 {
         px[1] = 0x00;
         px[2] = 0x00;
     }
-    cherenkov::ImageData::new(16, 16, std::sync::Arc::<[u8]>::from(data))
+    waterui_graphics::ImageData::new(16, 16, std::sync::Arc::<[u8]>::from(data))
         .expect("a well-formed Rgba8 image")
         .premultiplied()
 }
@@ -306,9 +311,9 @@ fn glyph_only_scene_counts() {
 
 /// One text run each on the three colour/vector font technologies the
 /// boundary must keep working: a variable face (wght axis set by `.weight`),
-/// a `COLRv0` colour face, and a colour-bitmap emoji face. They run on the
-/// native font loader because the deterministic collection pins generic
-/// families; named-family resolution is what the fixture needs.
+/// a `COLRv0` colour face, and a colour-bitmap emoji face. The named faces
+/// must be installed on the host — the runtime resolves families strictly, so
+/// a missing one fails naming it instead of substituting another face.
 #[test]
 #[cfg(not(target_arch = "wasm32"))]
 fn variable_colr_bitmap_fonts_count() {
@@ -320,7 +325,7 @@ fn variable_colr_bitmap_fonts_count() {
                 .family("Test Variable ABC")
                 .weight(FontWeight::Black),
         ),
-        text("COLR").font(Font::new(Body).family("Bungee Color Regular")),
+        text("COLR").font(Font::new(Body).family("Bungee Color")),
         text("\u{1f600}\u{1f680}").font(Font::new(Body)),
     )))));
     let builder = AnyViewBuilder::<AnyView>::new(move || {
@@ -328,7 +333,7 @@ fn variable_colr_bitmap_fonts_count() {
             .take()
             .expect("the fixture view is built once")
     });
-    let mut runtime = HeadlessRuntime::new_for_tests_native_fonts(
+    let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
         WINDOW,
@@ -470,7 +475,7 @@ fn context_menu_holes_render() {
         m.structural_patches + m.semantic_builds > 0,
         "mounting the menu mutates the retained tree"
     );
-    assert_engine_counters_zero(&result.profile.counters);
+    assert_presentation_mounts(&result.profile.counters);
 }
 
 /// Popup opening: a mounted popup is a second window the pump's merged a11y
@@ -609,28 +614,36 @@ fn gpu_content_under_clips_and_effects() {
     let mut runtime = runtime_with(view);
     let mut frames = Frames::new();
 
-    // The surface's async setup needs a few executor drains before it renders.
+    // The surface's async setup needs a few executor drains before it
+    // renders. Each pump's counters are its own, so the layer mount is
+    // asserted on the frame that actually mounted the GPU content layer —
+    // the first whose mount stats list one.
+    let mut mount_frame = None;
     for _ in 0..12 {
-        if renders.load(core::sync::atomic::Ordering::Relaxed) > 0 {
+        if renders.load(core::sync::atomic::Ordering::Relaxed) > 0 && mount_frame.is_some() {
             break;
         }
         let at = frames.at();
-        let _ = runtime.pump_at(false, at);
+        let result = runtime.pump_at(false, at);
+        if mount_frame.is_none() && result.profile.counters.gpu_content_layers >= 1 {
+            mount_frame = Some(result.profile.counters);
+        }
     }
     assert!(
         renders.load(core::sync::atomic::Ordering::Relaxed) > 0,
         "the GPU surface must have drawn"
     );
+    assert_retained_engine_counters(
+        &mount_frame.expect("the GPU content layer must have mounted on some frame"),
+    );
 
     let (counters, _snapshot) = frames.render(&mut runtime);
     let m = counters.frame_work;
-    assert!(
-        counters.gpu_content_layers >= 1,
-        "a GPU surface under a clip composites as a GPU content layer"
-    );
     assert!(m.gpu_submissions > 0, "the probe's submit is counted");
-    assert!(m.recorded_view_contents > 0);
-    assert_retained_engine_counters(&counters);
+    assert_eq!(
+        m.recorded_view_contents, 0,
+        "the settled frame re-presents the probe's own output; it records nothing"
+    );
 }
 
 /// The determinism clause: two capturing pumps of the same view at the same

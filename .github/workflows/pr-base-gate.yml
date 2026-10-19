@@ -4,6 +4,11 @@ on:
   pull_request:
     branches: [main]
     types: [opened, reopened, synchronize, edited]
+  # A release pull request is opened by release-plz with the workflow
+  # token, which triggers no `pull_request` run, so the release job
+  # dispatches this gate on the release branch instead. Its check run lands
+  # on the branch head, which is what the required check reads.
+  workflow_dispatch:
 
 permissions:
   checks: read
@@ -24,6 +29,7 @@ jobs:
       # it does not drag everything `dev` has accumulated, breaking changes
       # included, over the version boundary.
       - name: main only accepts merges from dev, a release-plz branch or a hotfix
+        if: github.event_name == 'pull_request'
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -51,6 +57,7 @@ jobs:
       # empty result after the discovery window fails instead of passing
       # vacuously before the other workflows have registered their checks.
       - name: wait for every other check on this PR to go green
+        if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -115,3 +122,19 @@ jobs:
             echo "waiting on ${pending} check(s)..."
             sleep 30
           done
+
+      # A release pull request only bumps versions and the changelog of a tree
+      # that already passed CI on its way from dev, so it needs no CI of its
+      # own: the dispatched gate passes on the source branch alone.
+      - name: a dispatched gate only passes a release-plz branch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          case "${REF_NAME}" in
+            release-plz-*) echo "'${REF_NAME}' is a release-plz release branch." ;;
+            *)
+              echo "::error::The gate is dispatched only for release-plz release branches ('release-plz-*'), not '${REF_NAME}'."
+              exit 1
+              ;;
+          esac

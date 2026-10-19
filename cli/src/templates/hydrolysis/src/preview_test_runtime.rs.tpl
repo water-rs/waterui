@@ -3,16 +3,17 @@
 use std::io::Write as _;
 
 use crate::preview_test;
-use waterui_preview_protocol::hydrolysis::{
-    PREVIEW_RUN_CONFIG_ENV, PreviewRunConfig, PreviewRunMode,
-};
+use waterui_preview_protocol::run::{PreviewRunConfig, PreviewRunMode};
 use waterui_testing::ui;
 
 pub(crate) fn run() {
-    let config = crate::run_config::load_run_config::<PreviewRunConfig>(
-        PREVIEW_RUN_CONFIG_ENV,
-        "preview test",
-    );
+    // `app(env)` runs inside `app_environment` below; the subscriber must be
+    // installed first or events the application emits while building its
+    // `App` are dropped (water-rs/waterui#2513).
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    hydrolysis::init_tracing();
+    let config = PreviewRunConfig::load_from_env()
+        .unwrap_or_else(|error| panic!("hydrolysis preview test: {error}"));
     match config.mode {
         PreviewRunMode::Semantic => run_semantic(config.width, config.height),
         PreviewRunMode::Image { .. } | PreviewRunMode::Scenario { .. } => panic!(
@@ -27,8 +28,11 @@ fn run_semantic(width: f32, height: f32) {
     // the styled mount applies the preview style's tokens exactly as `main`'s
     // `hydrolysis::run` style does — component bodies that read Material
     // tokens resolve them.
+    let mut env = preview_test::app_environment();
+    // The CLI staged the graph's declared fonts into the resource directory.
+    env.insert(hydrolysis::DeclaredFonts::default());
     let mut app = ui()
-        .environment(preview_test::app_environment())
+        .environment(env)
         .theme(preview_test::preview_style())
         .viewport(dimension_to_u32(width), dimension_to_u32(height))
         .mount(preview_test::load_preview_view);

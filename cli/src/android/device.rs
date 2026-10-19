@@ -3,146 +3,77 @@ use smol::channel::{Receiver, Sender};
 use smol::io::AsyncWriteExt;
 use smol::spawn;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-use tracing::{debug, error};
+use tracing::debug;
 
 use std::ffi::{OsStr, OsString};
 use std::path::Path;
-use std::process::{ExitStatus, Output, Stdio};
+use std::process::Stdio;
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::{
-    android::adb::Adb,
+    android::adb::{Adb, run_bounded_adb_command, run_bounded_adb_output},
     android::platform::AndroidAbi,
     android::toolchain::AndroidSdk,
     device::{
-        ApplicationExit, Artifact, Device, DeviceEvent, FailToRun, LogLevel, RunOptions, Running,
+        ApplicationExit, Artifact, Crash, CrashCause, Device, DeviceEvent, FailToRun, LogLevel,
+        PanicInfo, RunOptions, Running, STOPPED_EXIT_DEADLINE, StopRequest, report_monitor_error,
     },
     toolchain::Host,
-    utils::{CommandError, parse_whitespace_separated_u32s},
+    utils::parse_whitespace_separated_u32s,
 };
-
-/// Panic information extracted from logcat.
-#[derive(Debug, Clone)]
-struct PanicInfo {
-    payload: String,
-    location: Option<String>,
-}
 
 #[derive(Debug, Clone)]
 enum AndroidRuntimeEvent {
     Panic(PanicInfo),
     NativeCrash(String),
-    ActivityFinished,
 }
 
 const ADB_DEVICE_COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
-const ANDROID_ACTIVITY_FINISHED_MARKER: &str = "WATERUI_ACTIVITY_FINISHED";
 
-/// An `adb` device command could not be spawned, timed out, or exited unsuccessfully.
-#[derive(Debug, thiserror::Error)]
-enum AdbCommandError {
-    /// The `adb` process could not be spawned.
-    #[error(transparent)]
-    Spawn(#[from] CommandError),
-    /// The command did not finish within the bound.
-    #[error("{operation} timed out after {seconds} seconds")]
-    Timeout {
-        /// Human-readable name of the operation.
-        operation: String,
-        /// The bound that elapsed.
-        seconds: u64,
-    },
-    /// The command exited with a non-zero status.
-    #[error("{operation} failed with status {status}{details}")]
-    Failed {
-        /// Human-readable name of the operation.
-        operation: String,
-        /// The process exit status.
-        status: ExitStatus,
-        /// Formatted stdout/stderr tail.
-        details: String,
-    },
-}
+/// The `am` extra carrying a launch-environment handoff's id — the only
+/// launch-environment datum allowed in argv, an opaque routing key.
+const ANDROID_ENVIRONMENT_ID_EXTRA: &str = "waterui.launch.environment";
 
-async fn run_bounded_adb_output<A, S>(
-    host: &Host,
-    adb: &Adb,
-    args: A,
-    operation: &str,
-) -> Result<Output, AdbCommandError>
-where
-    A: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let args = args
-        .into_iter()
-        .map(|argument| argument.as_ref().to_os_string())
-        .collect::<Vec<_>>();
-    let operation = operation.to_owned();
-    let command = Box::pin(async move {
-        host.output(adb.path(), &args)
-            .await
-            .map_err(AdbCommandError::from)
-    });
-    let timeout = Box::pin(async move {
-        smol::Timer::after(ADB_DEVICE_COMMAND_TIMEOUT).await;
-        Err(AdbCommandError::Timeout {
-            operation,
-            seconds: ADB_DEVICE_COMMAND_TIMEOUT.as_secs(),
-        })
-    });
+/// The launch-intent extra carrying the `--logs` level to a Hydrolysis
+/// Android app — `HydrolysisActivity` reads it straight off the intent and
+/// hands it to the native logging setup, so it never becomes an
+/// environment variable.
+const ANDROID_LOG_LEVEL_EXTRA: &str = "waterui.log.level";
 
-    match futures_util::future::select(command, timeout).await {
-        futures_util::future::Either::Left((result, _))
-        | futures_util::future::Either::Right((result, _)) => result,
-    }
-}
-
-async fn run_bounded_adb_command<A, S>(
-    host: &Host,
-    adb: &Adb,
-    args: A,
-    operation: &str,
-) -> Result<String, AdbCommandError>
-where
-    A: IntoIterator<Item = S>,
-    S: AsRef<OsStr>,
-{
-    let output = run_bounded_adb_output(host, adb, args, operation).await?;
-    if output.status.success() {
-        return Ok(String::from_utf8_lossy(&output.stdout).to_string());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let details = if !stderr.is_empty() {
-        format!("\nstderr:\n{stderr}")
-    } else if !stdout.is_empty() {
-        format!("\nstdout:\n{stdout}")
-    } else {
-        String::new()
-    };
-    Err(AdbCommandError::Failed {
-        operation: operation.to_owned(),
-        status: output.status,
-        details,
-    })
-}
-
-/// Represents an Android device (physical or emulator).
+/// An Android device (physical or emulator) that `adb` reported online.
+///
+/// Every value comes from an `adb devices` scan that listed the device in
+/// the `device` state — a connected device, or an emulator whose boot the
+/// launch waited out — so it needs no launch of its own.
 #[derive(Debug)]
 pub struct AndroidDevice {
     identifier: String,
     /// Primary ABI of the device (e.g., "arm64-v8a", "`x86_64`")
     abi: AndroidAbi,
+    /// The client whose server reported this device — every later command
+    /// addressed to it reuses that running server instead of starting one.
+    adb: Adb,
 }
 
 impl AndroidDevice {
-    /// Create a new Android device with the given identifier and ABI.
+    /// Create a new Android device with the given identifier and ABI, reached
+    /// through `adb`. Crate-private: [`Self::scan_with_adb`] is the only
+    /// caller, so a value can only ever come from a scan that saw the
+    /// device online.
     #[must_use]
-    pub const fn new(identifier: String, abi: AndroidAbi) -> Self {
-        Self { identifier, abi }
+    pub(crate) const fn new(identifier: String, abi: AndroidAbi, adb: Adb) -> Self {
+        Self {
+            identifier,
+            abi,
+            adb,
+        }
+    }
+
+    /// The `adb` client this device is reached through.
+    #[must_use]
+    pub const fn adb(&self) -> &Adb {
+        &self.adb
     }
 
     /// Get the device identifier.
@@ -163,11 +94,11 @@ impl Device for AndroidDevice {
         &self.identifier
     }
 
-    async fn launch(&self, host: &Host) -> eyre::Result<()> {
-        let adb = Adb::locate(host).await?;
-        host.run(adb.path(), ["-s", &self.identifier, "wait-for-device"])
-            .await?;
-        Ok(())
+    /// The scan that produced this device already saw it online, so there
+    /// is nothing to wait for: a device that dropped off since fails the
+    /// first command addressed to it, naming that command.
+    fn launch(&self, _host: &Host) -> impl Future<Output = eyre::Result<()>> + Send {
+        std::future::ready(Ok(()))
     }
 
     async fn run(
@@ -176,7 +107,7 @@ impl Device for AndroidDevice {
         artifact: Artifact,
         options: RunOptions,
     ) -> Result<Running, FailToRun> {
-        run_on_android(host, &self.identifier, artifact, options).await
+        run_on_android(host, &self.adb, &self.identifier, artifact, options).await
     }
 
     async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
@@ -192,10 +123,15 @@ impl AndroidDevice {
     /// Returns an error when `adb devices` fails or a device's ABI cannot be
     /// read.
     pub async fn scan_with_adb(host: &Host, adb: &Adb) -> eyre::Result<Vec<Self>> {
-        let output =
-            run_bounded_adb_command(host, adb, ["devices", "-l"], "listing Android devices")
-                .await
-                .map_err(|e| eyre!("Failed to list devices: {e}"))?;
+        let output = run_bounded_adb_command(
+            host,
+            adb,
+            ["devices", "-l"],
+            "listing Android devices",
+            ADB_DEVICE_COMMAND_TIMEOUT,
+        )
+        .await
+        .map_err(|e| eyre!("Failed to list devices: {e}"))?;
 
         let mut devices = Vec::new();
 
@@ -210,6 +146,7 @@ impl AndroidDevice {
                     adb,
                     ["-s", &identifier, "shell", "getprop", "ro.product.cpu.abi"],
                     "querying Android device ABI",
+                    ADB_DEVICE_COMMAND_TIMEOUT,
                 )
                 .await
                 .map_err(|e| eyre!("Failed to get device ABI: {e}"))?;
@@ -218,11 +155,225 @@ impl AndroidDevice {
                     .parse::<AndroidAbi>()
                     .map_err(|e| eyre!("Unsupported device ABI: {e}"))?;
 
-                devices.push(Self::new(identifier, abi));
+                devices.push(Self::new(identifier, abi, adb.clone()));
             }
         }
 
         Ok(devices)
+    }
+}
+
+/// The Android target a command runs on when the user names none: a
+/// connected device, or an AVD to boot.
+#[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal launches each Android target kind variant by variant"
+)]
+pub enum AndroidTarget {
+    /// A device `adb` already reports as connected.
+    Device(AndroidDevice),
+    /// An AVD that [`Device::launch`] boots.
+    Emulator(AndroidEmulator),
+}
+
+impl AndroidTarget {
+    /// The id `--device` and the last-used record name this target by: a
+    /// connected device's adb serial, or an AVD name.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        match self {
+            Self::Device(device) => device.identifier(),
+            Self::Emulator(emulator) => emulator.avd_name(),
+        }
+    }
+
+    /// Every target `adb` and the AVD list offer, in the order a picker
+    /// shows them: connected devices first, then bootable AVDs.
+    ///
+    /// # Errors
+    /// Returns an error when `adb` or the emulator cannot be queried, a
+    /// device's ABI cannot be read, or an AVD's configuration cannot be
+    /// opened.
+    async fn candidates(host: &Host) -> eyre::Result<Vec<AndroidCandidate>> {
+        let (devices, emulators) =
+            futures_util::try_join!(AndroidDevice::scan(host), AndroidEmulator::scan(host))?;
+        Ok(devices
+            .into_iter()
+            .map(|device| AndroidCandidate {
+                label: format!("{} (connected)", device.identifier()),
+                id: device.identifier().to_owned(),
+                target: Self::Device(device),
+            })
+            .chain(emulators.into_iter().map(|emulator| AndroidCandidate {
+                label: format!("{} (emulator)", emulator.avd_name()),
+                id: emulator.avd_name().to_owned(),
+                target: Self::Emulator(emulator),
+            }))
+            .collect())
+    }
+
+    /// Decide the Android target a command runs on.
+    ///
+    /// `device_id` — a `--device` value — selects the connected device
+    /// whose serial it equals or the AVD it names, and a miss is an error
+    /// naming it. Otherwise `remembered`, the caller's last-used id, wins
+    /// when it still names a candidate; a stale one is dropped (the
+    /// outcome's `stale` reports it for a warning) and the count decides:
+    /// one candidate is taken, several come back
+    /// [`AndroidDecision::Ambiguous`] for an interactive picker or
+    /// [`AndroidSelection::ambiguous_error`] to resolve.
+    ///
+    /// # Errors
+    /// Returns an error when `adb` or the emulator cannot be queried, a
+    /// device ABI or an AVD config cannot be read, `device_id` names
+    /// nothing found, or no device or AVD exists at all.
+    pub async fn select(
+        host: &Host,
+        device_id: Option<&str>,
+        remembered: Option<&str>,
+    ) -> eyre::Result<AndroidSelection> {
+        let mut candidates = Self::candidates(host).await?;
+
+        if let Some(query) = device_id {
+            let target = candidates
+                .into_iter()
+                .find(|candidate| candidate.id == query)
+                .ok_or_else(|| eyre!("Device not found: {query}"))?
+                .into_target();
+            return Ok(AndroidSelection {
+                stale: None,
+                decision: AndroidDecision::Resolved(target),
+            });
+        }
+
+        let stale = if let Some(id) = remembered {
+            if let Some(index) = candidates.iter().position(|candidate| candidate.id == id) {
+                let target = candidates.swap_remove(index).into_target();
+                return Ok(AndroidSelection {
+                    stale: None,
+                    decision: AndroidDecision::Resolved(target),
+                });
+            }
+            Some(id.to_owned())
+        } else {
+            None
+        };
+
+        let decision = match candidates.len() {
+            0 => eyre::bail!(
+                "No Android devices connected and no emulators available. \
+                 Create an emulator with Android Studio or `avdmanager`, or connect a device."
+            ),
+            1 => AndroidDecision::Resolved(candidates.swap_remove(0).into_target()),
+            _ => AndroidDecision::Ambiguous(candidates),
+        };
+        Ok(AndroidSelection { stale, decision })
+    }
+
+    /// Decide the target and finish it for a caller that cannot ask.
+    ///
+    /// `memory_key` is the `last_used_device` slot the caller keeps its
+    /// choice under — see [`crate::water_dir::device_memory_key`]; `None`
+    /// for a selection that keeps no memory. Its value is the `remembered`
+    /// of [`Self::select`], a stale one drops with a `tracing::warn`, and
+    /// an explicit id or a resolution repairing it is recorded back. An
+    /// [`AndroidDecision::Ambiguous`] decision fails with
+    /// [`AndroidSelection::ambiguous_error`].
+    ///
+    /// # Errors
+    /// As [`Self::select`], plus the ambiguous-decision error.
+    pub async fn resolve(
+        host: &Host,
+        device_id: Option<&str>,
+        memory_key: Option<&str>,
+    ) -> eyre::Result<Self> {
+        let remembered = match memory_key {
+            Some(key) => crate::water_dir::last_used_device(host, key).await,
+            None => None,
+        };
+        let selection = Self::select(host, device_id, remembered.as_deref()).await?;
+        if let Some(stale) = &selection.stale {
+            tracing::warn!("the last-used Android device \"{stale}\" is not available");
+        }
+        let target = match selection.decision {
+            AndroidDecision::Resolved(target) => target,
+            AndroidDecision::Ambiguous(candidates) => {
+                return Err(AndroidSelection::ambiguous_error(&candidates));
+            }
+        };
+        if let Some(key) = memory_key
+            && (selection.stale.is_some() || device_id.is_some())
+        {
+            crate::water_dir::record_last_used_device(host, key, target.id()).await;
+        }
+        Ok(target)
+    }
+
+    /// Bring the target up and answer the device it is: a connected device
+    /// itself, or the one the emulator booted as.
+    ///
+    /// # Errors
+    /// Returns an error when the emulator cannot be booted.
+    pub async fn launch(&self, host: &Host) -> eyre::Result<&AndroidDevice> {
+        match self {
+            Self::Device(device) => {
+                device.launch(host).await?;
+                Ok(device)
+            }
+            Self::Emulator(emulator) => emulator.boot(host).await,
+        }
+    }
+}
+
+impl Device for AndroidTarget {
+    fn name(&self) -> &str {
+        match self {
+            Self::Device(device) => device.name(),
+            Self::Emulator(emulator) => emulator.name(),
+        }
+    }
+
+    async fn launch(&self, host: &Host) -> eyre::Result<()> {
+        Self::launch(self, host).await.map(|_| ())
+    }
+
+    async fn run(
+        &self,
+        host: &Host,
+        artifact: Artifact,
+        options: RunOptions,
+    ) -> Result<Running, FailToRun> {
+        match self {
+            Self::Device(device) => device.run(host, artifact, options).await,
+            Self::Emulator(emulator) => emulator.run(host, artifact, options).await,
+        }
+    }
+
+    async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
+        let devices = AndroidDevice::scan(host).await?;
+        let emulators = AndroidEmulator::scan(host).await?;
+        Ok(devices
+            .into_iter()
+            .map(Self::Device)
+            .chain(emulators.into_iter().map(Self::Emulator))
+            .collect())
+    }
+
+    fn device_udid(&self) -> Option<&str> {
+        match self {
+            Self::Device(device) => device.device_udid(),
+            Self::Emulator(emulator) => emulator.device_udid(),
+        }
+    }
+}
+
+impl AndroidAbiProvider for AndroidTarget {
+    fn android_abi(&self) -> AndroidAbi {
+        match self {
+            Self::Device(device) => device.android_abi(),
+            Self::Emulator(emulator) => emulator.android_abi(),
+        }
     }
 }
 
@@ -244,6 +395,76 @@ impl AndroidAbiProvider for AndroidEmulator {
     }
 }
 
+/// One entry in an Android target choice: a connected device, or an AVD
+/// [`Device::launch`] boots.
+#[derive(Debug)]
+pub struct AndroidCandidate {
+    /// The id `--device` names and the last-used record persists.
+    id: String,
+    /// The line a picker or an error listing shows.
+    label: String,
+    target: AndroidTarget,
+}
+
+impl AndroidCandidate {
+    /// The id `--device` names: the adb serial or the AVD name.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The label a picker or an error listing shows.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    /// Consume the candidate into the target it runs on.
+    #[must_use]
+    pub fn into_target(self) -> AndroidTarget {
+        self.target
+    }
+}
+
+/// What [`AndroidTarget::select`] decided for a command.
+#[derive(Debug)]
+#[non_exhaustive]
+pub struct AndroidSelection {
+    /// A `remembered` id that named no candidate — it was dropped before
+    /// the decision, and is reported for the caller to warn about; the
+    /// choice that follows repairs the record.
+    pub stale: Option<String>,
+    /// The decision itself.
+    pub decision: AndroidDecision,
+}
+
+impl AndroidSelection {
+    /// The error a caller that cannot ask resolves an `Ambiguous`
+    /// decision with: every candidate it could not pick among.
+    pub fn ambiguous_error(candidates: &[AndroidCandidate]) -> eyre::Report {
+        crate::device::ambiguous_device_error(
+            candidates
+                .iter()
+                .map(|candidate| (candidate.label(), candidate.id())),
+        )
+    }
+}
+
+/// The decision an [`AndroidSelection`] carries.
+#[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal acts on each device decision variant by variant"
+)]
+pub enum AndroidDecision {
+    /// One target — an explicit `--device`, a still-present remembered
+    /// device, or the single candidate.
+    Resolved(AndroidTarget),
+    /// Several candidates survive: an interactive picker, or
+    /// [`AndroidSelection::ambiguous_error`] where nothing can ask.
+    Ambiguous(Vec<AndroidCandidate>),
+}
+
 /// Shared implementation for running an app on any Android device.
 ///
 /// This handles:
@@ -255,13 +476,16 @@ impl AndroidAbiProvider for AndroidEmulator {
 /// - Streaming logs
 async fn run_on_android(
     host: &Host,
+    adb: &Adb,
     device_id: &str,
     artifact: Artifact,
     options: RunOptions,
 ) -> Result<Running, FailToRun> {
-    let adb = Adb::locate(host)
+    // The device was found before the build; a server that died while the
+    // build ran is restarted here, detached, before any command needs it.
+    adb.start_server(host)
         .await
-        .map_err(|error| FailToRun::Run(error.into()))?;
+        .map_err(|error| FailToRun::Launch(eyre!(error)))?;
     let env_vars = options
         .env_vars()
         .map(|(key, value)| (key.to_string(), value.to_string()))
@@ -274,57 +498,35 @@ async fn run_on_android(
         crate::web::dev_url_port(env_vars.iter().map(|(k, v)| (k.as_str(), v.as_str())))
             .map_err(|error| FailToRun::Launch(eyre!("Invalid dev-server handoff: {error}")))?
     {
-        reverse_dev_server_port(host, &adb, device_id, port).await?;
+        reverse_dev_server_port(host, adb, device_id, port).await?;
     }
 
-    // The preview support app listens on the device's loopback; `adb forward`
-    // maps each candidate host port onto it so the CLI can reach the server.
-    for port in options.forward_tcp_ports() {
-        forward_device_port(host, &adb, device_id, *port).await?;
-    }
-
-    install_android_artifact(host, &adb, device_id, artifact.path()).await?;
-    launch_android_app(
+    install_android_artifact(host, adb, device_id, artifact.path()).await?;
+    let pid = launch_android_app_with_environment(
         host,
-        &adb,
-        build_android_start_args(device_id, &artifact, &env_vars),
+        adb,
+        device_id,
+        &artifact,
+        &env_vars,
+        options.log_level(),
     )
     .await?;
 
-    // Wait for the process to start and get its PID
-    let pid = wait_for_app_pid(host, &adb, device_id, artifact.bundle_id()).await?;
+    let (mut running, sender, control) = Running::new();
 
-    let host_for_kill = host.clone();
-    let adb_for_kill = adb.clone();
-    let device_id_for_kill = device_id.to_string();
-    let bundle_id_for_kill = artifact.bundle_id().to_string();
-
-    let (mut running, sender) = Running::new(move || {
-        spawn_android_force_stop(
-            &host_for_kill,
-            adb_for_kill,
-            device_id_for_kill,
-            bundle_id_for_kill,
-        );
-    });
-    if !options.forward_tcp_ports().is_empty() {
-        running.retain(RemoveForwardsOnDrop {
-            host: host.clone(),
-            adb: adb.clone(),
-            device_id: device_id.to_string(),
-            ports: options.forward_tcp_ports().to_vec(),
-        });
-    }
-
-    spawn_android_runtime_tasks(AndroidRuntimeTaskContext {
+    let logcat = spawn_android_runtime_tasks(AndroidRuntimeTaskContext {
         host,
-        adb: &adb,
+        adb,
         device_id,
         bundle_id: artifact.bundle_id(),
         pid,
         log_level: options.log_level(),
         sender,
+        control,
     });
+    if let Some(logcat) = logcat {
+        running.retain(logcat);
+    }
 
     Ok(running)
 }
@@ -356,18 +558,140 @@ async fn install_android_artifact(
     )))
 }
 
-/// The environment the app process starts with, delivered as `waterui.env.*`
-/// intent extras; the generated `MainActivity` applies each of them with
-/// `Os.setenv` before loading the native library.
-fn build_android_start_args(
+/// The staged handoff this launch owns: written by the CLI, claimed by the
+/// app. `id` is the only launch-environment datum `am` may carry; `uri` is
+/// where the payload lives inside the app's provider, kept so a rollback
+/// addresses exactly what the write produced.
+struct StagedLaunchEnvironment {
+    id: uuid::Uuid,
+    uri: url::Url,
+}
+
+/// The URI `id` lives at inside the app's launch-environment provider:
+/// `content://<package>.waterui.launch-environment/<id>` — authority and id
+/// only, never a value.
+fn launch_environment_uri(bundle_id: &str, id: &uuid::Uuid) -> eyre::Result<url::Url> {
+    let authority = format!("{bundle_id}.waterui.launch-environment");
+    let mut uri = url::Url::parse(&format!("content://{authority}/"))
+        .map_err(|_| eyre::eyre!("the launch-environment authority is not a valid URI"))?;
+    uri.path_segments_mut()
+        .map_err(|()| eyre::eyre!("the launch-environment URI cannot take a path"))?
+        .push(&id.to_string());
+    Ok(uri)
+}
+
+/// Hand the launch environment to the app's private provider: the whole
+/// `RunOptions` map serialized deterministically and fed to
+/// `content write` over the device shell's stdin — the only channel where
+/// the payload never enters an argv or a process table. Returns the
+/// handoff this launch owns — or `None` when the environment is empty and
+/// no handoff is needed. Every fallible step that needs no device runs
+/// before the write, so a failed plan leaves nothing behind.
+async fn stage_launch_environment(
+    host: &Host,
+    adb: &Adb,
+    device_id: &str,
+    bundle_id: &str,
+    env_vars: &[(String, String)],
+) -> Result<Option<StagedLaunchEnvironment>, FailToRun> {
+    if env_vars.is_empty() {
+        return Ok(None);
+    }
+    let payload = serde_json::to_string(
+        &env_vars
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeMap<_, _>>(),
+    )
+    .map_err(|error| {
+        FailToRun::Launch(eyre!("the launch environment is not serialisable: {error}"))
+    })?;
+    let id = uuid::Uuid::new_v4();
+    let uri = launch_environment_uri(bundle_id, &id).map_err(FailToRun::Launch)?;
+    adb.content_write(
+        host,
+        device_id,
+        &uri,
+        payload.as_bytes(),
+        ADB_DEVICE_COMMAND_TIMEOUT,
+    )
+    .await
+    .map_err(|error| {
+        FailToRun::Launch(eyre!("could not deliver the launch environment: {error}"))
+    })?;
+    Ok(Some(StagedLaunchEnvironment { id, uri }))
+}
+
+/// The whole post-install launch operation: stage the handoff, start `am`,
+/// and wait for the app's pid. Any failure after the write — argument
+/// preparation, `am` exit, pid lookup — rolls back exactly the staged id's
+/// payload; a failed write deletes nothing, because a denied exclusive
+/// create was never this launch's slot.
+async fn launch_android_app_with_environment(
+    host: &Host,
+    adb: &Adb,
     device_id: &str,
     artifact: &Artifact,
     env_vars: &[(String, String)],
-) -> Vec<String> {
-    let mut start_args = vec![
-        "-s".to_string(),
-        device_id.to_string(),
-        "shell".to_string(),
+    log_level: Option<LogLevel>,
+) -> Result<u32, FailToRun> {
+    let staged =
+        stage_launch_environment(host, adb, device_id, artifact.bundle_id(), env_vars).await?;
+    let result = async {
+        let start_args = build_android_start_args(
+            device_id,
+            artifact,
+            staged.as_ref().map(|staged| &staged.id),
+            log_level,
+        )?;
+        launch_android_app(host, adb, start_args).await?;
+        wait_for_app_pid(host, adb, device_id, artifact.bundle_id()).await
+    }
+    .await;
+    let Err(error) = result else {
+        return result;
+    };
+    if let Some(staged) = &staged
+        && let Err(cleanup) = delete_launch_environment(host, adb, device_id, staged).await
+    {
+        return Err(FailToRun::Launch(eyre!(
+            "{error}; rolling back the launch-environment handoff also failed: {cleanup}"
+        )));
+    }
+    Err(error)
+}
+
+/// Roll back exactly this launch's staged handoff — the provider removes
+/// the id's payload and leaves its directory as a tombstone, so the slot
+/// can never be reallocated by a later launch.
+async fn delete_launch_environment(
+    host: &Host,
+    adb: &Adb,
+    device_id: &str,
+    staged: &StagedLaunchEnvironment,
+) -> Result<(), FailToRun> {
+    adb.content_delete(host, device_id, &staged.uri, ADB_DEVICE_COMMAND_TIMEOUT)
+        .await
+        .map_err(|error| {
+            FailToRun::Launch(eyre!(
+                "could not remove the launch-environment handoff: {error}"
+            ))
+        })?;
+    Ok(())
+}
+
+/// The `am start` argv: activity name plus non-secret extras only — the
+/// launch-environment handoff's `id` and the `--logs` level
+/// (`waterui.log.level`), which a Hydrolysis host reads straight from the
+/// intent. Environment values never appear here: they travel the private
+/// handoff [`stage_launch_environment`] writes to the app's provider.
+fn build_android_start_args(
+    device_id: &str,
+    artifact: &Artifact,
+    environment_id: Option<&uuid::Uuid>,
+    log_level: Option<LogLevel>,
+) -> Result<Vec<String>, FailToRun> {
+    let mut words = vec![
         "am".to_string(),
         "start".to_string(),
         "-S".to_string(),
@@ -375,101 +699,35 @@ fn build_android_start_args(
         format!("{}/.MainActivity", artifact.bundle_id()),
     ];
 
-    for (key, value) in env_vars {
-        start_args.push("--es".to_string());
-        start_args.push(format!("waterui.env.{key}"));
-        start_args.push(value.clone());
+    if let Some(id) = environment_id {
+        words.push("--es".to_string());
+        words.push(ANDROID_ENVIRONMENT_ID_EXTRA.to_string());
+        words.push(id.to_string());
     }
 
-    start_args
-}
-
-/// `adb -s <device> forward tcp:<port> tcp:<port>` maps a host loopback port
-/// onto the device's loopback, where a preview support app listens.
-async fn forward_device_port(
-    host: &Host,
-    adb: &Adb,
-    device_id: &str,
-    port: u16,
-) -> Result<(), FailToRun> {
-    // A previous session may have left a mapping behind; `adb forward` refuses
-    // to rebind a taken host port, so clear it first. Removing a mapping that
-    // does not exist is a reported error, which is expected and ignored.
-    let _ = host
-        .command(adb.path())
-        .args([
-            "-s",
-            device_id,
-            "forward",
-            "--remove",
-            &format!("tcp:{port}"),
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .await;
-
-    let output = host
-        .command(adb.path())
-        .args([
-            "-s",
-            device_id,
-            "forward",
-            &format!("tcp:{port}"),
-            &format!("tcp:{port}"),
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .await
-        .map_err(|error| FailToRun::Launch(eyre!("Failed to run `adb forward`: {error}")))?;
-
-    if output.status.success() {
-        return Ok(());
+    if let Some(level) = log_level {
+        words.push("--es".to_string());
+        words.push(ANDROID_LOG_LEVEL_EXTRA.to_string());
+        words.push(level.to_tracing_level().to_string());
     }
 
-    Err(FailToRun::Launch(eyre!(
-        "`adb forward tcp:{port} tcp:{port}` failed:\n{}\n{}",
-        String::from_utf8_lossy(&output.stdout).trim(),
-        String::from_utf8_lossy(&output.stderr).trim(),
-    )))
-}
+    // `adb shell` flattens its arguments into a single command line that the
+    // device's `/system/bin/sh` re-parses; quoting each word keeps every one
+    // of them intact as exactly one `am` argument no matter what the value
+    // contains — a space would otherwise split the value and make `am` stop
+    // reading options at the resulting bare word.
+    let command = shlex::try_join(words.iter().map(String::as_str)).map_err(|_| {
+        FailToRun::Launch(eyre!(
+            "an environment variable for the Android app contains a NUL byte"
+        ))
+    })?;
 
-/// Removes the `adb forward` mappings a run created when it is dropped.
-struct RemoveForwardsOnDrop {
-    host: Host,
-    adb: Adb,
-    device_id: String,
-    ports: Vec<u16>,
-}
-
-impl Drop for RemoveForwardsOnDrop {
-    fn drop(&mut self) {
-        let host = self.host.clone();
-        let adb = self.adb.clone();
-        let device_id = self.device_id.clone();
-        let ports = self.ports.clone();
-        let spawn_result = std::thread::Builder::new()
-            .name("waterui-android-forward-remove".to_string())
-            .spawn(move || {
-                for port in ports {
-                    let _ = host
-                        .std_command(adb.path())
-                        .args([
-                            "-s",
-                            &device_id,
-                            "forward",
-                            "--remove",
-                            &format!("tcp:{port}"),
-                        ])
-                        .output();
-                }
-            });
-
-        if let Err(error) = spawn_result {
-            error!("Failed to spawn adb forward cleanup thread: {error}");
-        }
-    }
+    Ok(vec![
+        "-s".to_string(),
+        device_id.to_string(),
+        "shell".to_string(),
+        command,
+    ])
 }
 
 /// `adb -s <device> reverse tcp:<port> tcp:<port>` before the app launches,
@@ -525,36 +783,6 @@ async fn launch_android_app(
     )))
 }
 
-fn spawn_android_force_stop(host: &Host, adb: Adb, device_id: String, bundle_id: String) {
-    let host = host.clone();
-    let spawn_result = std::thread::Builder::new()
-        .name("waterui-android-force-stop".to_string())
-        .spawn(move || {
-            let result = host
-                .std_command(adb.path())
-                .args(["-s", &device_id, "shell", "am", "force-stop", &bundle_id])
-                .output();
-
-            match result {
-                Ok(output) => {
-                    tracing::debug!(
-                        "Force-stop command executed: status={}, stdout={}, stderr={}",
-                        output.status,
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    );
-                }
-                Err(error) => {
-                    error!("Failed to stop app {}: {}", bundle_id, error);
-                }
-            }
-        });
-
-    if let Err(error) = spawn_result {
-        error!("Failed to spawn force-stop worker thread: {error}");
-    }
-}
-
 struct AndroidRuntimeTaskContext<'a> {
     host: &'a Host,
     adb: &'a Adb,
@@ -563,9 +791,12 @@ struct AndroidRuntimeTaskContext<'a> {
     pid: u32,
     log_level: Option<LogLevel>,
     sender: Sender<DeviceEvent>,
+    control: Receiver<StopRequest>,
 }
 
-fn spawn_android_runtime_tasks(context: AndroidRuntimeTaskContext<'_>) {
+fn spawn_android_runtime_tasks(
+    context: AndroidRuntimeTaskContext<'_>,
+) -> Option<smol::process::Child> {
     let AndroidRuntimeTaskContext {
         host,
         adb,
@@ -574,6 +805,7 @@ fn spawn_android_runtime_tasks(context: AndroidRuntimeTaskContext<'_>) {
         pid,
         log_level,
         sender,
+        control,
     } = context;
     let sender_for_monitor = sender.clone();
     let sender_for_runtime_event = sender.clone();
@@ -591,47 +823,35 @@ fn spawn_android_runtime_tasks(context: AndroidRuntimeTaskContext<'_>) {
             &bundle_id_for_monitor,
             pid,
             sender_for_monitor,
+            control,
         )
         .await;
     })
     .detach();
 
-    let runtime_event_rx =
+    let (runtime_event_rx, logcat) =
         start_android_log_stream(host, adb, device_id, pid, log_level, sender_for_logs);
     spawn(async move {
         if let Ok(event) = runtime_event_rx.recv().await {
             match event {
                 AndroidRuntimeEvent::Panic(info) => {
                     let _ = sender_for_runtime_event
-                        .send(DeviceEvent::Crashed(format_android_panic(&info)))
+                        .send(DeviceEvent::Crashed(Crash::new(CrashCause::Panic(info))))
                         .await;
                 }
                 AndroidRuntimeEvent::NativeCrash(log) => {
                     let _ = sender_for_runtime_event
-                        .send(DeviceEvent::Crashed(format!(
-                            "Android process crashed.\n\n=== Crash Log ===\n{log}"
-                        )))
-                        .await;
-                }
-                AndroidRuntimeEvent::ActivityFinished => {
-                    let _ = sender_for_runtime_event
-                        .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
+                        .send(DeviceEvent::Crashed(Crash::new(CrashCause::Native(
+                            format!("Android process crashed.\n\n=== Crash Log ===\n{log}"),
+                        ))))
                         .await;
                 }
             }
         }
     })
     .detach();
-}
 
-fn format_android_panic(info: &PanicInfo) -> String {
-    let mut msg = format!("Panic: {}", info.payload);
-    if let Some(location) = &info.location {
-        msg.push('\n');
-        msg.push_str("  at ");
-        msg.push_str(location);
-    }
-    msg
+    logcat
 }
 
 /// Wait for an app to start and return its PID.
@@ -648,6 +868,7 @@ async fn wait_for_app_pid(
             adb,
             ["-s", device_id, "shell", "pidof", bundle_id],
             "querying the launched Android process",
+            ADB_DEVICE_COMMAND_TIMEOUT,
         )
         .await
             && let Some(pid) = parse_whitespace_separated_u32s(&output).into_iter().next()
@@ -657,28 +878,7 @@ async fn wait_for_app_pid(
     }
 
     // App likely crashed on startup - fetch logcat for crash info
-    let crash_info = match run_bounded_adb_command(
-        host,
-        adb,
-        [
-            "-s",
-            device_id,
-            "logcat",
-            "-d",
-            "-t",
-            "100",
-            "-s",
-            "AndroidRuntime:E",
-            "DEBUG:*",
-            "WaterUI:*",
-        ],
-        "collecting Android startup crash logs",
-    )
-    .await
-    {
-        Ok(output) => output,
-        Err(err) => format!("(failed to collect logcat crash info: {err})"),
-    };
+    let crash_info = crate::android::adb::recent_crash_log(host, adb, device_id, None).await;
 
     let mut error_msg = format!("App {bundle_id} crashed on startup (process not found).\n\n");
 
@@ -708,6 +908,7 @@ pub async fn emulator_avd_name_with_adb(
         adb,
         ["-s", emulator_id, "emu", "avd", "name"],
         "querying the Android emulator name",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
     let name = output.lines().next().unwrap_or_default().trim();
@@ -758,6 +959,7 @@ async fn adb_emulator_states(host: &Host, adb: &Adb) -> eyre::Result<String> {
         adb,
         ["devices", "-l"],
         "querying Android emulator state",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
     let states: Vec<String> = output
@@ -781,6 +983,7 @@ async fn adb_emulator_boot_completed(host: &Host, adb: &Adb, emulator_id: &str) 
         adb,
         ["-s", emulator_id, "shell", "getprop", "sys.boot_completed"],
         "querying Android emulator boot completion",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await
     .is_ok_and(|value| value.trim() == "1")
@@ -799,6 +1002,7 @@ async fn adb_device_is_ready(host: &Host, adb: &Adb, device_id: &str) -> eyre::R
         adb,
         ["devices", "-l"],
         "querying Android device readiness",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
     Ok(adb_reports_device_ready(&output, device_id))
@@ -833,6 +1037,7 @@ async fn adb_package_manager_ready(host: &Host, adb: &Adb, emulator_id: &str) ->
         adb,
         ["-s", emulator_id, "shell", "pm", "path", "android"],
         "querying Android package manager readiness",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await
     .is_ok_and(|output| {
@@ -850,10 +1055,27 @@ async fn monitor_android_process(
     bundle_id: &str,
     pid: u32,
     sender: smol::channel::Sender<DeviceEvent>,
+    control: Receiver<StopRequest>,
 ) {
-    // Check process status periodically
+    let mut control = Some(control);
+    let mut stop_deadline = None;
     loop {
-        smol::Timer::after(std::time::Duration::from_secs(1)).await;
+        if wait_for_android_stop_request(&mut control).await.is_some() {
+            stop_deadline.get_or_insert_with(|| Instant::now() + STOPPED_EXIT_DEADLINE);
+            force_stop_android_app(&host, &adb, device_id, bundle_id, &sender).await;
+        }
+        if stop_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            report_monitor_error(
+                &sender,
+                format!(
+                    "The Android app did not exit within {STOPPED_EXIT_DEADLINE:?} of the stop request"
+                ),
+            );
+            let _ = sender
+                .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
+                .await;
+            break;
+        }
 
         // Check if process is still running using pidof
         // Note: We use pidof instead of kill -0 because kill -0 returns "Operation not permitted"
@@ -884,62 +1106,130 @@ async fn monitor_android_process(
         let still_running = pids.contains(&pid);
 
         if !still_running {
-            // Try to fetch logs for this PID (best signal for distinguishing crash vs normal exit).
-            let pid_arg = format!("--pid={pid}");
-            let pid_log_args = vec![
-                "-s".to_string(),
-                device_id.to_string(),
-                "logcat".to_string(),
-                "-v".to_string(),
-                "threadtime".to_string(),
-                "-d".to_string(),
-                "-t".to_string(),
-                "200".to_string(),
-                pid_arg,
-                "*:V".to_string(),
-            ];
-            let pid_log = run_bounded_adb_output(
-                &host,
-                &adb,
-                pid_log_args
-                    .iter()
-                    .map(|s| std::ffi::OsStr::new(s.as_str())),
-                "collecting Android process exit logs",
-            )
-            .await
-            .map_or_else(
-                |err| {
-                    debug!("Failed to fetch PID-filtered logcat: {err}");
-                    String::new()
-                },
-                |output| {
-                    if output.status.success() {
-                        String::from_utf8_lossy(&output.stdout).to_string()
-                    } else {
-                        debug!("PID-filtered logcat exited with status {}", output.status);
-                        String::new()
-                    }
-                },
-            );
-
-            if android_log_looks_like_crash(&pid_log, bundle_id, pid) {
-                let crash_log = pid_log;
-
-                let error_msg = if crash_log.trim().is_empty() {
-                    format!("Process {bundle_id} crashed.")
-                } else {
-                    format!("Process {bundle_id} crashed.\n\n=== Crash Log ===\n{crash_log}")
-                };
-
-                let _ = sender.send(DeviceEvent::Crashed(error_msg)).await;
-            } else {
-                let _ = sender
-                    .send(DeviceEvent::Exited(ApplicationExit::user_closed()))
-                    .await;
-            }
+            report_android_process_exit(&host, &adb, device_id, bundle_id, pid, &sender).await;
             break;
         }
     }
+}
+
+async fn wait_for_android_stop_request(
+    control: &mut Option<Receiver<StopRequest>>,
+) -> Option<StopRequest> {
+    use futures_util::future::{Either, select};
+
+    let delay = std::pin::pin!(smol::Timer::after(Duration::from_secs(1)));
+    let result = if let Some(control_receiver) = control.as_ref() {
+        let request = std::pin::pin!(control_receiver.recv());
+        match select(delay, request).await {
+            Either::Left(_) => None,
+            Either::Right((result, _)) => Some(result),
+        }
+    } else {
+        delay.await;
+        None
+    };
+    match result {
+        Some(Ok(request)) => Some(request),
+        Some(Err(_)) => {
+            *control = None;
+            None
+        }
+        None => None,
+    }
+}
+
+async fn force_stop_android_app(
+    host: &Host,
+    adb: &Adb,
+    device_id: &str,
+    bundle_id: &str,
+    sender: &Sender<DeviceEvent>,
+) {
+    let args = [
+        OsStr::new("-s"),
+        OsStr::new(device_id),
+        OsStr::new("shell"),
+        OsStr::new("am"),
+        OsStr::new("force-stop"),
+        OsStr::new(bundle_id),
+    ];
+    match run_bounded_adb_output(
+        host,
+        adb,
+        args,
+        "stopping the Android application",
+        ADB_DEVICE_COMMAND_TIMEOUT,
+    )
+    .await
+    {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => report_monitor_error(
+            sender,
+            format!(
+                "Android force-stop failed with status {}: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ),
+        ),
+        Err(error) => report_monitor_error(sender, format!("Android force-stop failed: {error}")),
+    }
+}
+
+async fn report_android_process_exit(
+    host: &Host,
+    adb: &Adb,
+    device_id: &str,
+    bundle_id: &str,
+    pid: u32,
+    sender: &smol::channel::Sender<DeviceEvent>,
+) {
+    let pid_arg = format!("--pid={pid}");
+    let pid_log_args = [
+        OsStr::new("-s"),
+        OsStr::new(device_id),
+        OsStr::new("logcat"),
+        OsStr::new("-v"),
+        OsStr::new("threadtime"),
+        OsStr::new("-d"),
+        OsStr::new("-t"),
+        OsStr::new("200"),
+        OsStr::new(&pid_arg),
+        OsStr::new("*:V"),
+    ];
+    let pid_log = run_bounded_adb_output(
+        host,
+        adb,
+        pid_log_args,
+        "collecting Android process exit logs",
+        ADB_DEVICE_COMMAND_TIMEOUT,
+    )
+    .await
+    .map_or_else(
+        |error| {
+            debug!("Failed to fetch PID-filtered logcat: {error}");
+            String::new()
+        },
+        |output| {
+            if output.status.success() {
+                String::from_utf8_lossy(&output.stdout).to_string()
+            } else {
+                debug!("PID-filtered logcat exited with status {}", output.status);
+                String::new()
+            }
+        },
+    );
+
+    let event = if android_log_looks_like_crash(&pid_log, bundle_id, pid) {
+        let error_msg = if pid_log.trim().is_empty() {
+            format!("Process {bundle_id} crashed.")
+        } else {
+            format!("Process {bundle_id} crashed.\n\n=== Crash Log ===\n{pid_log}")
+        };
+        DeviceEvent::Crashed(Crash::new(CrashCause::Native(error_msg)))
+    } else {
+        DeviceEvent::Exited(ApplicationExit::user_closed())
+    };
+    let _ = sender.send(event).await;
 }
 
 async fn query_android_process_pids(
@@ -953,6 +1243,7 @@ async fn query_android_process_pids(
         adb,
         ["-s", device_id, "shell", "pidof", bundle_id].map(OsStr::new),
         "querying Android process state",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1027,8 +1318,18 @@ fn contains_tombstone_backtrace_marker(line: &str) -> bool {
 
 /// Start log streaming from an Android process using logcat.
 ///
-/// Always streams at minimum info level to capture lifecycle completion and panics.
-/// Returns a receiver that fires when the Activity finishes or the runtime crashes.
+/// Always streams at minimum info level to capture panics: the Hydrolysis
+/// panic hook writes its payload at info through `__android_log_write`, so a
+/// stricter display level must not narrow the internal stream below it.
+/// Returns the receiver that fires when the runtime crashes, alongside the
+/// `logcat` child itself.
+///
+/// The child is spawned with `kill_on_drop` and the reader task only holds its
+/// stdout, so whoever owns the returned handle owns the process's lifetime —
+/// the caller retains it in the [`Running`] so `logcat --pid` dies when the
+/// run does, on every exit path. `logcat` does not exit on its own when the
+/// app process it filters on dies; a child the detached reader task owned
+/// would be re-parented to launchd and outlive `water run`.
 fn start_android_log_stream(
     host: &Host,
     adb: &Adb,
@@ -1036,15 +1337,16 @@ fn start_android_log_stream(
     pid: u32,
     log_level: Option<LogLevel>,
     sender: Sender<DeviceEvent>,
-) -> Receiver<AndroidRuntimeEvent> {
+) -> (Receiver<AndroidRuntimeEvent>, Option<smol::process::Child>) {
     use futures_util::StreamExt;
     use futures_util::io::{AsyncBufReadExt, BufReader};
 
     // Bounded channel with capacity 1 acts as a oneshot for the first terminal event.
     let (runtime_event_tx, runtime_event_rx) = smol::channel::bounded::<AndroidRuntimeEvent>(1);
 
-    // Lifecycle completion is logged at info, so the internal stream must include info even
-    // when terminal log display is disabled or configured for a stricter level.
+    // The Hydrolysis panic hook writes at info through `__android_log_write`,
+    // so the internal stream must include info even when terminal log display
+    // is disabled or configured for a stricter level.
     let priority = match log_level {
         Some(LogLevel::Debug) => 'D',
         Some(LogLevel::Verbose) => 'V',
@@ -1053,23 +1355,27 @@ fn start_android_log_stream(
 
     // Build logcat command with PID filter and minimum priority
     let pid_arg = format!("--pid={pid}");
+    #[cfg(unix)]
+    let mut cmd = host.command_in_own_process_group(adb.path());
+    #[cfg(not(unix))]
     let mut cmd = host.command(adb.path());
     cmd.args(["-s", device_id, "logcat", "-v", "threadtime"])
         .arg(pid_arg)
         .arg(format!("*:{priority}"))
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("Failed to spawn logcat: {e}");
-            return runtime_event_rx;
+            return (runtime_event_rx, None);
         }
     };
 
     let Some(stdout) = child.stdout.take() else {
-        return runtime_event_rx;
+        return (runtime_event_rx, None);
     };
 
     let reader = BufReader::new(stdout);
@@ -1102,13 +1408,10 @@ fn start_android_log_stream(
                 }
             }
         }
-
-        // Clean up child process
-        let _ = child.kill();
     })
     .detach();
 
-    runtime_event_rx
+    (runtime_event_rx, Some(child))
 }
 
 fn android_runtime_event_from_log_line(line: &str) -> Option<AndroidRuntimeEvent> {
@@ -1119,9 +1422,6 @@ fn android_runtime_event_from_log_line(line: &str) -> Option<AndroidRuntimeEvent
     }
     if android_log_line_looks_like_crash(line) {
         return Some(AndroidRuntimeEvent::NativeCrash(line.to_string()));
-    }
-    if line.contains(ANDROID_ACTIVITY_FINISHED_MARKER) {
-        return Some(AndroidRuntimeEvent::ActivityFinished);
     }
     None
 }
@@ -1293,14 +1593,19 @@ impl AndroidEmulator {
     pub const fn expected_abi(&self) -> AndroidAbi {
         self.expected_abi
     }
-}
 
-impl Device for AndroidEmulator {
-    fn name(&self) -> &str {
-        &self.avd_name
-    }
-
-    async fn launch(&self, host: &Host) -> eyre::Result<()> {
+    /// Boot the AVD — or wait for the instance already running it — until
+    /// it is fully ready, and answer the device it came up as. A booted
+    /// emulator answers that device again without asking adb.
+    ///
+    /// # Errors
+    /// Returns an error when the emulator is missing, exits before it is
+    /// ready, reports a different ABI than its config, or is not ready
+    /// within five minutes.
+    pub async fn boot(&self, host: &Host) -> eyre::Result<&AndroidDevice> {
+        if let Some(device) = self.device.get() {
+            return Ok(device);
+        }
         let emulator_path = AndroidSdk::emulator_path(host)
             .ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
         let adb = Adb::locate(host).await?;
@@ -1403,14 +1708,21 @@ impl Device for AndroidEmulator {
                     continue;
                 }
 
-                self.device
-                    .set(device)
-                    .map_err(|_| eyre::eyre!("Emulator device already initialized"))?;
-                return Ok(());
+                return Ok(self.device.get_or_init(|| device));
             }
 
             smol::Timer::after(std::time::Duration::from_secs(2)).await;
         }
+    }
+}
+
+impl Device for AndroidEmulator {
+    fn name(&self) -> &str {
+        &self.avd_name
+    }
+
+    async fn launch(&self, host: &Host) -> eyre::Result<()> {
+        self.boot(host).await.map(|_| ())
     }
 
     async fn run(
@@ -1425,13 +1737,16 @@ impl Device for AndroidEmulator {
                 self.avd_name
             ))
         })?;
-        run_on_android(host, device.identifier(), artifact, options).await
+        run_on_android(host, device.adb(), device.identifier(), artifact, options).await
     }
 
     async fn scan(host: &Host) -> eyre::Result<Vec<Self>> {
-        // List available AVDs using avdmanager or emulator -list-avds
-        let emulator_path = AndroidSdk::emulator_path(host)
-            .ok_or_else(|| eyre::eyre!("Android emulator not found"))?;
+        // An emulator-capable host may simply have none installed — that
+        // is an empty inventory, not a failure; explicit AVD operations
+        // still require the tool.
+        let Some(emulator_path) = AndroidSdk::emulator_path(host) else {
+            return Ok(Vec::new());
+        };
 
         let output = host
             .output(&emulator_path, ["-list-avds"])
@@ -1494,6 +1809,7 @@ pub async fn screenshot(host: &Host, device_id: &str, output: &Path) -> eyre::Re
         &adb,
         ["-s", device_id, "exec-out", "screencap", "-p"],
         "capturing the Android device screen",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1533,6 +1849,7 @@ pub async fn tap(host: &Host, device_id: &str, x: u32, y: u32) -> eyre::Result<(
             &y.to_string(),
         ],
         "performing an Android tap",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1579,7 +1896,14 @@ pub async fn swipe(
         args.push(d);
     }
 
-    run_bounded_adb_command(host, &adb, args, "performing an Android swipe").await?;
+    run_bounded_adb_command(
+        host,
+        &adb,
+        args,
+        "performing an Android swipe",
+        ADB_DEVICE_COMMAND_TIMEOUT,
+    )
+    .await?;
 
     Ok(())
 }
@@ -1614,6 +1938,7 @@ pub async fn text(host: &Host, device_id: &str, input: &str) -> eyre::Result<()>
         &adb,
         ["-s", device_id, "shell", "input", "text", &escaped],
         "entering text on an Android device",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1635,6 +1960,7 @@ pub async fn screenshot_bytes(host: &Host, device_id: &str) -> eyre::Result<Vec<
         &adb,
         ["-s", device_id, "exec-out", "screencap", "-p"],
         "capturing the Android device screen",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1663,6 +1989,7 @@ pub async fn describe(host: &Host, device_id: &str) -> eyre::Result<String> {
         &adb,
         ["-s", device_id, "shell", "uiautomator", "dump", dump_path],
         "dumping the Android accessibility hierarchy",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1672,6 +1999,7 @@ pub async fn describe(host: &Host, device_id: &str) -> eyre::Result<String> {
         &adb,
         ["-s", device_id, "shell", "cat", dump_path],
         "reading the Android accessibility hierarchy",
+        ADB_DEVICE_COMMAND_TIMEOUT,
     )
     .await?;
 
@@ -1780,13 +2108,45 @@ fn xml_to_ui_json(xml: &str) -> eyre::Result<String> {
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
+    use std::path::PathBuf;
 
     use super::{
-        AndroidRuntimeEvent, adb_reports_device_ready, android_log_looks_like_crash,
-        android_runtime_event_from_log_line, command_targets_avd, log_level_allows,
-        log_mentions_pid,
+        ANDROID_LOG_LEVEL_EXTRA, AndroidRuntimeEvent, adb_reports_device_ready,
+        android_log_looks_like_crash, android_runtime_event_from_log_line,
+        build_android_start_args, command_targets_avd, log_level_allows, log_mentions_pid,
     };
-    use crate::device::LogLevel;
+    use crate::device::{Artifact, LogLevel};
+    #[cfg(unix)]
+    use crate::toolchain::testing::TestMachine;
+
+    /// The `am` words ride in `start_args[3]` as a single quoted command line;
+    /// splitting it back yields the argv `am` sees on the device.
+    fn device_words(start_args: &[String]) -> Vec<String> {
+        shlex::split(&start_args[3]).expect("quoted command re-splits")
+    }
+
+    #[test]
+    fn android_start_args_carry_log_level_extra() {
+        let artifact = Artifact::new("com.example.app", PathBuf::from("/tmp/app.apk"));
+        let start_args =
+            build_android_start_args("emulator-5554", &artifact, None, Some(LogLevel::Debug))
+                .expect("start args build");
+        let words = device_words(&start_args);
+        let position = words
+            .iter()
+            .position(|word| word == ANDROID_LOG_LEVEL_EXTRA)
+            .expect("log level extra missing");
+        assert_eq!(words[position - 1], "--es");
+        assert_eq!(words[position + 1], "debug");
+
+        let start_args = build_android_start_args("emulator-5554", &artifact, None, None)
+            .expect("start args build");
+        assert!(
+            !device_words(&start_args)
+                .iter()
+                .any(|word| word == ANDROID_LOG_LEVEL_EXTRA)
+        );
+    }
 
     #[test]
     fn detects_pid_mentions_in_threadtime_lines() {
@@ -1835,11 +2195,15 @@ mod tests {
     }
 
     #[test]
-    fn detects_activity_completion_marker() {
+    fn an_activity_finishing_is_not_a_terminal_event() {
+        // water-rs/waterui#2289: `WATERUI_ACTIVITY_FINISHED` reports the
+        // activity's end, not the process's — `am start --activity-clear-task`
+        // and a launcher relaunch after Back recreate the activity in the live
+        // process, so only the pidof monitor may end the run.
         let event = android_runtime_event_from_log_line(
             "07-26 20:00:00.000 28184 28184 I WaterUI.MainActivity: WATERUI_ACTIVITY_FINISHED",
         );
-        assert!(matches!(event, Some(AndroidRuntimeEvent::ActivityFinished)));
+        assert!(event.is_none());
     }
 
     #[test]
@@ -1889,5 +2253,773 @@ mod tests {
         let output = "List of devices attached\nemulator-5554 offline transport_id:1\n";
 
         assert!(!adb_reports_device_ready(output, "emulator-5554"));
+    }
+
+    #[test]
+    fn android_start_args_quote_every_word_for_the_device_shell() {
+        // `adb shell` joins its arguments into one command line the device's
+        // `/system/bin/sh` parses again; values with spaces, quotes or
+        // metacharacters must each come back out as exactly one word.
+        let artifact = Artifact::new("dev.waterui.app", PathBuf::from("/tmp/app.apk"));
+
+        let id = uuid::Uuid::new_v4();
+        let start_args = build_android_start_args("100.76.86.48:5555", &artifact, Some(&id), None)
+            .expect("start args build");
+
+        // The device shell receives one command word after `shell`; what it
+        // re-splits that into is the contract, not the quoting style.
+        assert_eq!(start_args[..3], ["-s", "100.76.86.48:5555", "shell"]);
+        assert_eq!(start_args.len(), 4);
+
+        let words = device_words(&start_args);
+        assert_eq!(
+            words,
+            vec![
+                "am",
+                "start",
+                "-S",
+                "-n",
+                "dev.waterui.app/.MainActivity",
+                "--es",
+                "waterui.launch.environment",
+                id.to_string().as_str(),
+            ]
+        );
+    }
+
+    /// `content`/`am`/`pidof` shims inside the fake device — script bodies
+    /// live in `testdata/` so the strings stay shell, not format text.
+    #[cfg(unix)]
+    fn install_device_shims(bin: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        std::fs::create_dir_all(bin).expect("shim dir");
+        for (name, body) in [
+            ("content", include_str!("testdata/fake_content.sh")),
+            ("am", include_str!("testdata/fake_am.sh")),
+            ("pidof", include_str!("testdata/fake_pidof.sh")),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(&path, body).expect(name);
+            let mut permissions = std::fs::metadata(&path).expect(name).permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&path, permissions).expect("chmod");
+        }
+    }
+
+    /// A fake `adb` plus a staged `content`/`am`/`pidof` device:
+    /// `(machine, host, adb)` for the handoff tests.
+    #[cfg(unix)]
+    fn handoff_machine(
+        vars: &[(std::ffi::OsString, std::ffi::OsString)],
+    ) -> (
+        crate::toolchain::testing::TestMachine,
+        crate::toolchain::Host,
+        super::Adb,
+    ) {
+        use std::ffi::OsString;
+
+        let machine = crate::toolchain::testing::TestMachine::new();
+        machine.install("adb");
+        let shims = machine.root().join("device-shims");
+        install_device_shims(&shims);
+        let mut declared = vec![
+            (
+                OsString::from("WATERUI_FAKE_ADB_LOG"),
+                machine.root().join("adb.log").into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_DEVICES"),
+                OsString::from("emulator-5554 device product:sdk"),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_DEVICE_TMP"),
+                machine.root().join("device").into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_DEVICE_PATH"),
+                shims.into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_CONTENT_LOG"),
+                machine.root().join("content.log").into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_CONTENT_STDIN"),
+                machine.root().join("content-stdin").into_os_string(),
+            ),
+            (
+                OsString::from("WATERUI_AM_LOG"),
+                machine.root().join("am.log").into_os_string(),
+            ),
+        ];
+        declared.extend(vars.iter().cloned());
+        let host = machine.host(declared);
+        let adb = smol::block_on(super::Adb::locate(&host)).expect("fake adb locates");
+        (machine, host, adb)
+    }
+
+    /// The argv every fake tool logged, or empty when the tool never ran.
+    #[cfg(unix)]
+    fn recorded_calls(machine: &crate::toolchain::testing::TestMachine, name: &str) -> String {
+        std::fs::read_to_string(machine.root().join(name)).unwrap_or_default()
+    }
+
+    #[cfg(unix)]
+    fn artifact() -> Artifact {
+        Artifact::new("com.example.app", PathBuf::from("/tmp/app.apk"))
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_environment_travels_stdin_and_only_its_id_enters_argv() {
+        let (machine, host, adb) = handoff_machine(&[]);
+        let env = vec![
+            (
+                String::from("WATERUI_DUMMY_KEY"),
+                String::from("dummy-secret-value"),
+            ),
+            (String::from("SPACED"), String::from("a  b\nc")),
+            (String::from("QUOTED"), String::from("say \"hi\" $HOME")),
+            (String::from("EQUALS"), String::from("x=y")),
+            (String::from("NONASCII"), String::from("日本語")),
+            (String::from("EMPTY"), String::new()),
+        ];
+
+        let pid = smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect("the whole launch succeeds");
+        assert_eq!(pid, 4242);
+
+        // Every secret-bearing value must be absent from every argv the
+        // host or the device ever saw.
+        let adb_log = recorded_calls(&machine, "adb.log");
+        let content_log = recorded_calls(&machine, "content.log");
+        let am_log = recorded_calls(&machine, "am.log");
+        for (_, value) in &env {
+            if value.is_empty() {
+                continue;
+            }
+            assert!(!adb_log.contains(value.as_str()), "adb argv: {value}");
+            assert!(
+                !content_log.contains(value.as_str()),
+                "content argv: {value}"
+            );
+            assert!(!am_log.contains(value.as_str()), "am argv: {value}");
+        }
+        assert!(adb_log.contains("content write --uri"), "{adb_log}");
+        assert!(am_log.contains("waterui.launch.environment"), "{am_log}");
+        assert!(!am_log.contains("waterui.env."), "{am_log}");
+
+        // The payload arrives on stdin as the exact deterministic JSON map.
+        let stdin = std::fs::read_to_string(machine.root().join("content-stdin"))
+            .expect("the payload lands on stdin");
+        let decoded: std::collections::BTreeMap<String, String> =
+            serde_json::from_str(&stdin).expect("the handoff is one JSON object");
+        assert_eq!(decoded, env.iter().cloned().collect());
+
+        // The `am` extra carries a canonical UUID, nothing else.
+        let am_id = am_log
+            .split("waterui.launch.environment ")
+            .nth(1)
+            .and_then(|tail| tail.split_whitespace().next())
+            .expect("the id extra is present");
+        assert!(uuid::Uuid::parse_str(am_id).is_ok(), "{am_id}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_write_never_runs_am_and_deletes_nothing() {
+        let (machine, host, adb) = handoff_machine(&[(
+            std::ffi::OsString::from("WATERUI_FAKE_CONTENT_STATUS"),
+            std::ffi::OsString::from("1"),
+        )]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("a denied write fails the launch");
+        assert!(
+            recorded_calls(&machine, "am.log").is_empty(),
+            "a failed write must not launch"
+        );
+        assert!(
+            !recorded_calls(&machine, "content.log").contains("delete"),
+            "a failed write owns nothing to delete"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_hung_write_times_out_without_am() {
+        let (machine, host, adb) = handoff_machine(&[(
+            std::ffi::OsString::from("WATERUI_FAKE_CONTENT_HANG"),
+            std::ffi::OsString::from("60"),
+        )]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("a wedged write is a bounded failure");
+        assert!(
+            recorded_calls(&machine, "am.log").is_empty(),
+            "a timed-out write must not launch"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_launch_rolls_back_only_its_own_handoff() {
+        let (machine, host, adb) = handoff_machine(&[(
+            std::ffi::OsString::from("WATERUI_FAKE_AM_STATUS"),
+            std::ffi::OsString::from("1"),
+        )]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("the staged app fails to start");
+
+        let content_log = recorded_calls(&machine, "content.log");
+        let write_uri = content_log
+            .split("write --uri ")
+            .nth(1)
+            .and_then(|tail| tail.split_whitespace().next())
+            .expect("the write URI was logged");
+        assert!(
+            content_log.contains(&format!("delete --uri {write_uri}")),
+            "the rollback removes exactly this launch's URI: {content_log}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_pid_lookup_rolls_back_the_handoff() {
+        let (machine, host, adb) = handoff_machine(&[(
+            std::ffi::OsString::from("WATERUI_FAKE_PIDOF_FAIL"),
+            std::ffi::OsString::from("1"),
+        )]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("a silent process fails the launch");
+        assert!(
+            recorded_calls(&machine, "content.log").contains("delete --uri"),
+            "a pid failure still rolls back this launch's slot"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_failed_rollback_is_reported_with_the_launch_error() {
+        let (_machine, host, adb) = handoff_machine(&[
+            (
+                std::ffi::OsString::from("WATERUI_FAKE_AM_STATUS"),
+                std::ffi::OsString::from("1"),
+            ),
+            (
+                std::ffi::OsString::from("WATERUI_FAKE_CONTENT_DELETE_STATUS"),
+                std::ffi::OsString::from("1"),
+            ),
+        ]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        let error = smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("both failures surface");
+        let message = error.to_string();
+        assert!(
+            message.contains("Failed to launch app"),
+            "the launch failure is preserved: {message}"
+        );
+        assert!(
+            message.contains("could not remove the launch-environment handoff"),
+            "the cleanup failure is reported alongside: {message}"
+        );
+    }
+
+    /// The SDK verdict is stderr, not the exit code: `content write` can
+    /// exit zero while reporting a provider error. That must fail the
+    /// launch exactly like a nonzero status — no `am`, no delete — and
+    /// the SDK's own text (which can echo the payload) stays out of ours.
+    #[test]
+    #[cfg(unix)]
+    fn a_zero_exit_stderr_write_still_fails_without_am() {
+        let (machine, host, adb) = handoff_machine(&[(
+            std::ffi::OsString::from("WATERUI_FAKE_CONTENT_STDERR"),
+            std::ffi::OsString::from("Error while accessing provider: s3ntinel-write-failure"),
+        )]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        let error = smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("a stderr-reported failure is a failure");
+        let message = error.to_string();
+        assert!(
+            message.contains("could not deliver the launch environment"),
+            "{message}"
+        );
+        assert!(
+            !message.contains("s3ntinel-write-failure"),
+            "the SDK's error text must never echo into ours: {message}"
+        );
+        assert!(
+            recorded_calls(&machine, "am.log").is_empty(),
+            "a reported write failure must not launch"
+        );
+        assert!(
+            !recorded_calls(&machine, "content.log").contains("delete"),
+            "a write that did not succeed owns nothing to delete"
+        );
+    }
+
+    /// The rollback delete obeys the same contract: a zero exit with an
+    /// error on stderr is a cleanup failure, reported alongside the
+    /// launch failure — still without echoing the SDK's own text.
+    #[test]
+    #[cfg(unix)]
+    fn a_zero_exit_stderr_delete_still_reports_cleanup_failure() {
+        let (_machine, host, adb) = handoff_machine(&[
+            (
+                std::ffi::OsString::from("WATERUI_FAKE_AM_STATUS"),
+                std::ffi::OsString::from("1"),
+            ),
+            (
+                std::ffi::OsString::from("WATERUI_FAKE_CONTENT_DELETE_STDERR"),
+                std::ffi::OsString::from("Error while accessing provider: s3ntinel-cleanup"),
+            ),
+        ]);
+        let env = vec![(String::from("KEY"), String::from("value"))];
+        let error = smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &env,
+            None,
+        ))
+        .expect_err("both failures surface");
+        let message = error.to_string();
+        assert!(
+            message.contains("Failed to launch app"),
+            "the launch failure is preserved: {message}"
+        );
+        assert!(
+            message.contains("could not remove the launch-environment handoff"),
+            "the cleanup failure is reported alongside: {message}"
+        );
+        assert!(
+            !message.contains("s3ntinel-cleanup"),
+            "the SDK's error text must never echo into ours: {message}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_empty_environment_stages_no_handoff() {
+        let (machine, host, adb) = handoff_machine(&[]);
+        let pid = smol::block_on(super::launch_android_app_with_environment(
+            &host,
+            &adb,
+            "emulator-5554",
+            &artifact(),
+            &[],
+            None,
+        ))
+        .expect("an empty environment launches fine");
+        assert_eq!(pid, 4242);
+        assert!(
+            recorded_calls(&machine, "content.log").is_empty(),
+            "no provider call happens for an empty map"
+        );
+    }
+
+    /// A scratch machine with a staged SDK carrying the fake `adb` and
+    /// `emulator`, and the host that sees it.
+    #[cfg(unix)]
+    fn android_machine(
+        vars: &[(&str, &str)],
+    ) -> (
+        crate::toolchain::testing::TestMachine,
+        crate::toolchain::Host,
+    ) {
+        let machine = crate::toolchain::testing::TestMachine::new();
+        let sdk = machine.install_android_sdk();
+        machine.install_adb();
+        machine.install_android_emulator();
+        let mut declared = vec![(OsString::from("ANDROID_SDK_ROOT"), sdk.into_os_string())];
+        declared.extend(
+            vars.iter()
+                .map(|(key, value)| (OsString::from(key), OsString::from(value))),
+        );
+        let host = machine.host(declared);
+        (machine, host)
+    }
+
+    /// Two connected devices and no `--device`: the non-interactive
+    /// resolution fails naming every candidate.
+    #[test]
+    #[cfg(unix)]
+    fn several_devices_without_a_name_fail_listing_every_candidate() {
+        let (_machine, host) = android_machine(&[
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman model:Pixel_9_Pro\n\
+                 emulator-5554 device product:sdk_phone64_arm64 model:sdk_gphone64_arm64",
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+
+        let error = smol::block_on(super::AndroidTarget::resolve(&host, None, None))
+            .expect_err("several devices need a choice");
+        let message = error.to_string();
+        assert!(message.contains("--device"), "{message}");
+        assert!(message.contains("R5CX1234"), "{message}");
+        assert!(message.contains("emulator-5554"), "{message}");
+    }
+
+    /// A host carrying adb only on `PATH` — no SDK, no emulator — still
+    /// resolves an explicit connected serial.
+    #[test]
+    #[cfg(unix)]
+    fn a_serial_resolves_without_an_sdk_or_emulator() {
+        let machine = TestMachine::new();
+        machine.install("adb");
+        let host = machine.host([
+            (
+                OsString::from("WATERUI_FAKE_ADB_DEVICES"),
+                OsString::from("pixel-9-pro:5555 device product:caiman"),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_GETPROP"),
+                OsString::from("arm64-v8a"),
+            ),
+        ]);
+
+        let target = smol::block_on(super::AndroidTarget::resolve(
+            &host,
+            Some("pixel-9-pro:5555"),
+            None,
+        ))
+        .expect("the serial resolves");
+        assert_eq!(target.id(), "pixel-9-pro:5555");
+
+        // And with no name given, the single candidate resolves itself.
+        let target = smol::block_on(super::AndroidTarget::resolve(&host, None, None))
+            .expect("the only candidate resolves");
+        assert_eq!(target.id(), "pixel-9-pro:5555");
+    }
+
+    /// The emulator inventory is optional: no `emulator` binary means no
+    /// AVDs, not an error — a connected device still resolves.
+    #[test]
+    #[cfg(unix)]
+    fn a_missing_emulator_is_an_empty_inventory_not_an_error() {
+        let machine = TestMachine::new();
+        let sdk = machine.install_android_sdk();
+        machine.install_adb();
+        // Deliberately no install_android_emulator().
+        let host = machine.host([
+            (OsString::from("ANDROID_SDK_ROOT"), sdk.into_os_string()),
+            (
+                OsString::from("WATERUI_FAKE_ADB_DEVICES"),
+                OsString::from("pixel-9-pro:5555 device product:caiman"),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_GETPROP"),
+                OsString::from("arm64-v8a"),
+            ),
+        ]);
+
+        let target = smol::block_on(super::AndroidTarget::resolve(&host, None, None))
+            .expect("the connected device resolves");
+        assert_eq!(target.id(), "pixel-9-pro:5555");
+    }
+
+    /// An installed emulator that cannot list AVDs is still an error —
+    /// the inventory being optional never silently drops a broken tool.
+    #[test]
+    #[cfg(unix)]
+    fn a_broken_emulator_list_stays_an_error() {
+        let machine = TestMachine::new();
+        let sdk = machine.install_android_sdk();
+        machine.install_adb();
+        machine.install_android_emulator();
+        let host = machine.host([
+            (OsString::from("ANDROID_SDK_ROOT"), sdk.into_os_string()),
+            (
+                OsString::from("WATERUI_FAKE_ADB_DEVICES"),
+                OsString::from("pixel-9-pro:5555 device product:caiman"),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_ADB_GETPROP"),
+                OsString::from("arm64-v8a"),
+            ),
+            (
+                OsString::from("WATERUI_FAKE_EMULATOR_STATUS"),
+                OsString::from("3"),
+            ),
+        ]);
+
+        let error = smol::block_on(super::AndroidTarget::resolve(&host, None, None))
+            .expect_err("a failing -list-avds propagates");
+        let message = format!("{error:#}");
+        assert!(message.contains("Failed to list AVDs"), "{message}");
+    }
+
+    /// `--device` selects the connected device it names, whichever order
+    /// `adb devices` listed them in.
+    #[test]
+    #[cfg(unix)]
+    fn a_named_device_resolves_to_that_serial() {
+        let (_machine, host) = android_machine(&[
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman\n\
+                 emulator-5554 device product:sdk_phone64_arm64",
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+
+        let target = smol::block_on(super::AndroidTarget::resolve(
+            &host,
+            Some("emulator-5554"),
+            None,
+        ))
+        .expect("the named device resolves");
+        assert_eq!(target.id(), "emulator-5554");
+        assert!(
+            matches!(target, super::AndroidTarget::Device(_)),
+            "{target:?}"
+        );
+    }
+
+    /// A `--device` value naming no connected serial and no AVD fails
+    /// naming what was asked for.
+    #[test]
+    #[cfg(unix)]
+    fn an_unknown_device_id_fails_naming_it() {
+        let (_machine, host) = android_machine(&[
+            ("WATERUI_FAKE_ADB_DEVICES", "R5CX1234 device product:caiman"),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+
+        let error = smol::block_on(super::AndroidTarget::resolve(
+            &host,
+            Some("not-a-device"),
+            None,
+        ))
+        .expect_err("an unknown id fails");
+        assert!(error.to_string().contains("not-a-device"), "{error}");
+    }
+
+    /// `--device` naming an AVD selects the emulator it boots, not the
+    /// connected device.
+    #[test]
+    #[cfg(unix)]
+    fn a_named_avd_resolves_to_the_emulator() {
+        let (machine, host) = android_machine(&[
+            ("WATERUI_FAKE_ADB_DEVICES", "R5CX1234 device product:caiman"),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+            ("WATERUI_FAKE_EMULATOR_AVDS", "Medium_Phone_API_37"),
+        ]);
+        machine.file(
+            "home/.android/avd/Medium_Phone_API_37.avd/config.ini",
+            "abi.type=arm64-v8a\n",
+        );
+
+        let target = smol::block_on(super::AndroidTarget::resolve(
+            &host,
+            Some("Medium_Phone_API_37"),
+            None,
+        ))
+        .expect("the named AVD resolves");
+        let super::AndroidTarget::Emulator(emulator) = &target else {
+            panic!("expected the AVD, got {target:?}");
+        };
+        assert_eq!(emulator.avd_name(), "Medium_Phone_API_37");
+    }
+
+    /// One candidate needs no choosing: a connected device resolves
+    /// directly, and so does a lone AVD.
+    #[test]
+    #[cfg(unix)]
+    fn a_single_candidate_resolves_without_a_choice() {
+        let (_machine, host) = android_machine(&[
+            ("WATERUI_FAKE_ADB_DEVICES", "R5CX1234 device product:caiman"),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+        let selection = smol::block_on(super::AndroidTarget::select(&host, None, None))
+            .expect("a single candidate resolves");
+        let super::AndroidDecision::Resolved(target) = selection.decision else {
+            panic!("a single candidate resolves without a choice: {selection:?}");
+        };
+        assert_eq!(target.id(), "R5CX1234");
+
+        let (machine, host) =
+            android_machine(&[("WATERUI_FAKE_EMULATOR_AVDS", "Medium_Phone_API_37")]);
+        machine.file(
+            "home/.android/avd/Medium_Phone_API_37.avd/config.ini",
+            "abi.type=arm64-v8a\n",
+        );
+        let target = smol::block_on(super::AndroidTarget::resolve(&host, None, None))
+            .expect("the lone AVD resolves");
+        let super::AndroidTarget::Emulator(emulator) = &target else {
+            panic!("expected the AVD, got {target:?}");
+        };
+        assert_eq!(emulator.avd_name(), "Medium_Phone_API_37");
+        assert_eq!(
+            super::AndroidAbiProvider::android_abi(&target),
+            crate::android::platform::AndroidAbi::Arm64V8a
+        );
+    }
+
+    /// The remembered device resolves without a choice, however many
+    /// candidates the scan found.
+    #[test]
+    #[cfg(unix)]
+    fn the_remembered_device_resolves_without_a_choice() {
+        let (_machine, host) = android_machine(&[
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman\n\
+                 emulator-5554 device product:sdk_phone64_arm64",
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+
+        let selection = smol::block_on(super::AndroidTarget::select(
+            &host,
+            None,
+            Some("emulator-5554"),
+        ))
+        .expect("the remembered device resolves");
+        assert_eq!(selection.stale, None);
+        let super::AndroidDecision::Resolved(target) = selection.decision else {
+            panic!("the remembered device wins without a choice: {selection:?}");
+        };
+        assert_eq!(target.id(), "emulator-5554");
+    }
+
+    /// A remembered id no device or AVD carries anymore is dropped as
+    /// stale, and the remaining candidates still need a choice.
+    #[test]
+    #[cfg(unix)]
+    fn a_stale_remembered_device_falls_back_to_a_choice() {
+        let (_machine, host) = android_machine(&[
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman\n\
+                 emulator-5554 device product:sdk_phone64_arm64",
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a"),
+        ]);
+
+        let selection = smol::block_on(super::AndroidTarget::select(
+            &host,
+            None,
+            Some("gone-serial"),
+        ))
+        .expect("a stale memory still resolves");
+        assert_eq!(selection.stale.as_deref(), Some("gone-serial"));
+        let super::AndroidDecision::Ambiguous(candidates) = selection.decision else {
+            panic!("a stale memory leaves the candidates to pick: {selection:?}");
+        };
+        assert_eq!(candidates.len(), 2);
+    }
+
+    /// A connected device carries the client its scan located, and the scan
+    /// already saw it online: launching it issues no adb command at all, so
+    /// the scan's `start-server` is the only server start and nothing waits
+    /// for the device.
+    #[test]
+    #[cfg(unix)]
+    fn launching_a_scanned_device_starts_no_second_server() {
+        // The argv log lives in the scratch root, known only once the
+        // machine exists, so the host is declared after it.
+        let (machine, _) = android_machine(&[]);
+        let log = machine.root().join("adb-argv.log");
+        let sdk = machine.root().join("sdk");
+        let host = machine.host([
+            ("ANDROID_SDK_ROOT", sdk.as_os_str()),
+            (
+                "WATERUI_FAKE_ADB_DEVICES",
+                "R5CX1234 device product:caiman model:Pixel_9_Pro".as_ref(),
+            ),
+            ("WATERUI_FAKE_ADB_GETPROP", "arm64-v8a".as_ref()),
+            ("WATERUI_FAKE_ADB_LOG", log.as_os_str()),
+        ]);
+
+        smol::block_on(async {
+            let target = super::AndroidTarget::resolve(&host, None, None)
+                .await
+                .expect("a target is available");
+            crate::device::Device::launch(&target, &host)
+                .await
+                .expect("the device is online");
+        });
+
+        let argv = std::fs::read_to_string(&log).expect("read the argv log");
+        let lines: Vec<&str> = argv.lines().collect();
+        assert_eq!(
+            lines,
+            [
+                "start-server",
+                "devices -l",
+                "-s R5CX1234 shell getprop ro.product.cpu.abi",
+            ],
+            "{argv}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn without_a_device_or_an_avd_there_is_no_target() {
+        let (_machine, host) = android_machine(&[]);
+
+        let error = smol::block_on(super::AndroidTarget::select(&host, None, None))
+            .expect_err("nothing to run on");
+        assert_eq!(
+            error.to_string(),
+            "No Android devices connected and no emulators available. \
+             Create an emulator with Android Studio or `avdmanager`, or connect a device."
+        );
     }
 }

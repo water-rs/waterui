@@ -17,7 +17,7 @@ fn live_stroke_changes_match_cold_coverage_without_relowering_static_content() {
         ))
         .expect("registered font");
     let surface = engine
-        .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF16))
+        .surface(Offscreen::new((96, 72), OffscreenFormat::LinearF16), || {})
         .expect("surface");
     let mut run = GlyphRun {
         font: font.id(),

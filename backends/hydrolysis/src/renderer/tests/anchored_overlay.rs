@@ -21,8 +21,8 @@ use waterui::metadata::anchored_overlay::{
     AnchorEdge, AnchoredOverlay, Clamp, Dismissal, EdgeAlignment,
 };
 use waterui_controls::button::button;
-use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
+use waterui_core::{AnyView, View as _};
 use waterui_graphics::Color;
 use waterui_layout::frame::Frame;
 use waterui_layout::stack::vstack;
@@ -115,7 +115,7 @@ fn a_mid_window_anchor_places_the_overlay_below_it_centered() {
         AnyView::new(vstack((
             ().size(0.0, 100.0),
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(&open, overlay_content())
+                AnchoredOverlay::new(&open, overlay_content)
                     .edge(AnchorEdge::Bottom)
                     .alignment(EdgeAlignment::Center)
                     .gap(GAP)
@@ -151,7 +151,7 @@ fn an_overlay_too_tall_for_the_top_edge_flips_below() {
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_content())
+            AnchoredOverlay::new(&open, overlay_content)
                 .edge(AnchorEdge::Top)
                 .alignment(EdgeAlignment::Center)
                 .gap(GAP)
@@ -183,7 +183,7 @@ fn a_trailing_edge_overlay_clamps_inside_the_window_margin() {
                 .width(crate::num_cast::u32_as_f32(WINDOW.0))
                 .height(20.0)
                 .anchored_overlay(
-                    AnchoredOverlay::new(&open, overlay_content())
+                    AnchoredOverlay::new(&open, overlay_content)
                         .edge(AnchorEdge::Trailing)
                         .alignment(EdgeAlignment::Center)
                         .gap(GAP)
@@ -217,7 +217,7 @@ fn an_outside_press_writes_false_and_still_reaches_its_target() {
         AnyView::new(vstack((
             ().size(0.0, 100.0),
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(&open, overlay_content())
+                AnchoredOverlay::new(&open, overlay_content)
                     .edge(AnchorEdge::Bottom)
                     .gap(GAP),
             ),
@@ -270,7 +270,7 @@ fn a_manual_overlay_ignores_outside_presses() {
         AnyView::new(vstack((
             ().size(0.0, 100.0),
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(&open, overlay_content())
+                AnchoredOverlay::new(&open, overlay_content)
                     .edge(AnchorEdge::Bottom)
                     .gap(GAP)
                     .dismissal(Dismissal::Manual),
@@ -320,7 +320,7 @@ fn a_window_resize_replaces_the_overlay() {
                 .width(crate::num_cast::u32_as_f32(WINDOW.0))
                 .height(20.0)
                 .anchored_overlay(
-                    AnchoredOverlay::new(&open, overlay_content())
+                    AnchoredOverlay::new(&open, overlay_content)
                         .edge(AnchorEdge::Trailing)
                         .alignment(EdgeAlignment::Center)
                         .gap(GAP)
@@ -363,13 +363,12 @@ fn a_long_overlay_wraps_inside_the_window() {
         AnyView::new(vstack((
             ().size(0.0, 60.0),
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(
-                    &open,
+                AnchoredOverlay::new(&open, move || {
                     AnyView::new(text(
                         "A long line of overlay text that cannot fit on a \
                          single line inside a narrow window.",
-                    )),
-                )
+                    ))
+                })
                 .edge(AnchorEdge::Bottom)
                 .alignment(EdgeAlignment::Center)
                 .gap(GAP)
@@ -409,8 +408,8 @@ fn a_closing_overlays_exit_animation_plays_to_completion() {
         let open = open_for_view.clone();
         let scale = scale_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(
-                &open,
+            AnchoredOverlay::new(&open, move || {
+                let scale = scale.clone();
                 AnyView::new(
                     Frame::new(
                         text("tip").scale(
@@ -422,8 +421,8 @@ fn a_closing_overlays_exit_animation_plays_to_completion() {
                     )
                     .width(OVERLAY.0)
                     .height(OVERLAY.1),
-                ),
-            )
+                )
+            })
             .edge(AnchorEdge::Bottom)
             .gap(GAP),
         ),)))
@@ -478,7 +477,7 @@ fn an_overlay_with_no_exit_animation_is_gone_on_the_dismissal_frame() {
     let view = AnyViewBuilder::<AnyView>::new(move || {
         let open = open_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_content())
+            AnchoredOverlay::new(&open, overlay_content)
                 .edge(AnchorEdge::Bottom)
                 .gap(GAP),
         ),)))
@@ -513,8 +512,8 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
         let open = open_for_view.clone();
         let scale = scale_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(
-                &open,
+            AnchoredOverlay::new(&open, move || {
+                let scale = scale.clone();
                 AnyView::new(
                     Frame::new(
                         Color::srgb(30, 120, 220).scale(
@@ -526,8 +525,8 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
                     )
                     .width(OVERLAY.0)
                     .height(OVERLAY.1),
-                ),
-            )
+                )
+            })
             .edge(AnchorEdge::Bottom)
             .gap(GAP),
         ),)))
@@ -546,8 +545,8 @@ fn the_exiting_overlay_draws_its_animation_mid_flight() {
     let snapshot = result
         .snapshot
         .expect("a mid-exit frame must be capturable");
-    let path = waterui_testing::TestArtifacts::new("hydrolysis")
-        .snapshot_path("anchored_overlay_exit", "mid-flight");
+    let path =
+        crate::testing::artifact_snapshot_path("hydrolysis", "anchored_overlay_exit", "mid-flight");
     std::fs::create_dir_all(path.parent().expect("the case directory"))
         .expect("the capture directory must be creatable");
     image::RgbaImage::from_raw(snapshot.width, snapshot.height, snapshot.rgba8)
@@ -581,8 +580,9 @@ fn input_during_the_exit_reaches_the_content_underneath() {
         let under = under_for_view.clone();
         AnyView::new(vstack((
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(
-                    &open,
+                AnchoredOverlay::new(&open, move || {
+                    let inner = inner.clone();
+                    let scale = scale.clone();
                     AnyView::new(
                         button("in")
                             .action(move || {
@@ -594,8 +594,8 @@ fn input_during_the_exit_reaches_the_content_underneath() {
                                     .with(Animation::linear(Duration::from_millis(1_000))),
                                 scale.with(Animation::linear(Duration::from_millis(1_000))),
                             ),
-                    ),
-                )
+                    )
+                })
                 .edge(AnchorEdge::Bottom)
                 .gap(GAP),
             ),
@@ -661,10 +661,12 @@ fn input_during_the_exit_reaches_the_content_underneath() {
     );
 }
 
-/// `is_presented` back to `true` mid-exit keeps the same overlay presented —
-/// the exit is cancelled, not restarted.
+/// `is_presented` back to `true` mid-exit presents a new, independent
+/// instance (layout-spec.md §4.5): the dismissed presentation keeps drawing
+/// its exit beside it, inert, until its own animations finish, then leaves —
+/// the new one is presented at the same placed frame throughout.
 #[test]
-fn re_presenting_mid_exit_keeps_the_overlay_presented() {
+fn re_presenting_mid_exit_enters_a_new_instance_beside_the_exit() {
     let open = Binding::container(true);
     let open_for_view = open.clone();
     let scale = Binding::f32(1.0);
@@ -673,8 +675,8 @@ fn re_presenting_mid_exit_keeps_the_overlay_presented() {
         let open = open_for_view.clone();
         let scale = scale_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(
-                &open,
+            AnchoredOverlay::new(&open, move || {
+                let scale = scale.clone();
                 AnyView::new(
                     Frame::new(
                         text("tip").scale(
@@ -686,8 +688,8 @@ fn re_presenting_mid_exit_keeps_the_overlay_presented() {
                     )
                     .width(OVERLAY.0)
                     .height(OVERLAY.1),
-                ),
-            )
+                )
+            })
             .edge(AnchorEdge::Bottom)
             .gap(GAP),
         ),)))
@@ -705,12 +707,119 @@ fn re_presenting_mid_exit_keeps_the_overlay_presented() {
     open.set(true);
     scale.set(1.0);
     let _ = runtime.pump_at(false, start + Duration::from_millis(300));
-    pump_until_settled(&mut runtime);
-
-    let after = presented_frame(&runtime);
     assert_eq!(
-        before, after,
-        "the re-presented overlay keeps the same subtree at the same frame"
+        runtime.anchored_overlay_frames().as_slice(),
+        &[before, before],
+        "mid-exit the dismissed presentation still draws beside the new one"
+    );
+
+    // The exiting instance's scale animation finishes ~1300ms in; it leaves
+    // and the new presentation stays.
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_400));
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_416));
+    assert_eq!(
+        runtime.anchored_overlay_frames().as_slice(),
+        &[before],
+        "once the exit finishes only the new presentation remains, at the same frame"
+    );
+}
+
+/// An overlay body declaring `.transition(opacity)` (layout-spec.md §4.5):
+/// presenting runs the insertion, the dismissal removes the content from the
+/// accessibility tree on that frame while the presentation keeps drawing in
+/// its placed frame under the removal clock, and the clock's completion — not
+/// a content animation — ends the exit. A re-present while it runs enters a
+/// new instance beside the leaving one.
+#[test]
+fn an_overlay_body_transition_runs_on_present_and_dismiss() {
+    let open = Binding::container(false);
+    let open_for_view = open.clone();
+    let view = AnyViewBuilder::<AnyView>::new(move || {
+        let open = open_for_view.clone();
+        AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
+            AnchoredOverlay::new(&open, || {
+                AnyView::new(
+                    button("inside")
+                        .action(|| {})
+                        .transition(waterui_core::transition::PropertyTransition::opacity())
+                        .animation(Animation::linear(Duration::from_millis(1_000))),
+                )
+            })
+            .edge(AnchorEdge::Bottom)
+            .gap(GAP),
+        ),)))
+    });
+    let mut runtime = runtime(view);
+    pump_until_settled(&mut runtime);
+    let has_inside = |runtime: &mut HeadlessRuntime| {
+        runtime
+            .accessibility_tree()
+            .as_ref()
+            .and_then(|update| find_by_label(update, Role::Button, "inside"))
+            .is_some()
+    };
+
+    let start = Instant::now();
+    let _ = runtime.pump_at(false, start);
+    open.set(true);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(16));
+    let presented = presented_frame(&runtime);
+    let mid_insertion = runtime
+        .pump_at(true, start + Duration::from_millis(516))
+        .snapshot
+        .expect("a mid-insertion frame must be capturable");
+    assert!(
+        has_inside(&mut runtime),
+        "the inserted presentation is in the accessibility tree from its first frame"
+    );
+    let settled = runtime
+        .pump_at(true, start + Duration::from_millis(1_100))
+        .snapshot
+        .expect("a settled frame must be capturable");
+    assert!(
+        mid_insertion.rgba8 != settled.rgba8,
+        "halfway through the insertion the overlay is still fading in"
+    );
+
+    open.set(false);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_116));
+    assert!(
+        !has_inside(&mut runtime),
+        "the dismissed presentation leaves the accessibility tree at once"
+    );
+    assert_eq!(
+        runtime.anchored_overlay_frames().as_slice(),
+        &[presented],
+        "the leaving presentation keeps drawing in its placed frame"
+    );
+    let mid_removal = runtime
+        .pump_at(true, start + Duration::from_millis(1_616))
+        .snapshot
+        .expect("a mid-removal frame must be capturable");
+    assert!(
+        mid_removal.rgba8 != settled.rgba8,
+        "halfway through the removal the overlay is fading out"
+    );
+
+    // Re-present mid-removal: a new instance enters beside the leaving one.
+    open.set(true);
+    let _ = runtime.pump_at(false, start + Duration::from_millis(1_632));
+    assert_eq!(
+        runtime.anchored_overlay_frames().as_slice(),
+        &[presented, presented],
+        "the leaving presentation and the new one both draw"
+    );
+    assert!(
+        has_inside(&mut runtime),
+        "the new presentation is in the accessibility tree"
+    );
+
+    // The removal clock completes ~2116ms in and releases the old instance.
+    let _ = runtime.pump_at(false, start + Duration::from_millis(2_200));
+    assert_eq!(
+        runtime.anchored_overlay_frames().as_slice(),
+        &[presented],
+        "once its removal completes the old presentation is gone"
     );
 }
 
@@ -726,7 +835,7 @@ fn placed_edge_reports_the_logical_edge_after_a_flip() {
         let open = open_for_view.clone();
         let placed = placed_for_view.clone();
         AnyView::new(vstack((button("host").action(|| {}).anchored_overlay(
-            AnchoredOverlay::new(&open, overlay_content())
+            AnchoredOverlay::new(&open, overlay_content)
                 .edge(AnchorEdge::Top)
                 .alignment(EdgeAlignment::Center)
                 .gap(GAP)
@@ -755,7 +864,7 @@ fn placed_edge_reports_the_logical_edge_after_a_flip() {
         AnyView::new(vstack((
             ().size(0.0, 100.0),
             button("host").action(|| {}).anchored_overlay(
-                AnchoredOverlay::new(&open, overlay_content())
+                AnchoredOverlay::new(&open, overlay_content)
                     .edge(AnchorEdge::Leading)
                     .alignment(EdgeAlignment::Center)
                     .gap(GAP)

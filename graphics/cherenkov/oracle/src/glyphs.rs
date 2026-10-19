@@ -162,6 +162,28 @@ const fn extend(e: skrifa::color::Extend) -> Extend {
     }
 }
 
+/// `COLRv1` `PaintRadialGradient`, rendering algorithm step 1: "If c0 = c1
+/// and r0 = r1 then paint nothing and return." Font data keeps its own
+/// semantics, so such a brush never reaches the scene contract, where
+/// identical circles are a hard edge or an invalid paint; it is tested with
+/// that contract's own predicate. The COLR decoding is triplicated (oracle
+/// `glyphs.rs`, CPU and GPU `render/colr.rs`); keep the three in step.
+fn colr_paints_nothing(brush: &Brush<'_>) -> bool {
+    let Brush::RadialGradient { c0, r0, c1, r1, .. } = brush else {
+        return false;
+    };
+    RadialGradient {
+        center0: Point::new(f64::from(c0.x), f64::from(c0.y)),
+        r0: f64::from(*r0),
+        center1: Point::new(f64::from(c1.x), f64::from(c1.y)),
+        r1: f64::from(*r1),
+        stops: Vec::new(),
+        extend: Extend::Pad,
+        interpolation: ColorSpace::Srgb,
+    }
+    .has_identical_circles()
+}
+
 /// The `COLRv1` painter: keeps a transform stack (font space), a container
 /// stack for clips and composite layers, and emits [`Node`]s.
 struct ColrPainter<'a> {
@@ -373,6 +395,9 @@ impl ColorPainter for ColrPainter<'_> {
     }
 
     fn fill(&mut self, brush: Brush<'_>) {
+        if colr_paints_nothing(&brush) {
+            return;
+        }
         let paint = self.brush_paint(&brush, self.cur());
         self.emit(
             Some(self.cur() * self.fill_rect_font.clone()),
@@ -387,7 +412,7 @@ impl ColorPainter for ColrPainter<'_> {
         brush_transform: Option<skrifa::color::Transform>,
         brush: Brush<'_>,
     ) {
-        if self.err.is_some() {
+        if self.err.is_some() || colr_paints_nothing(&brush) {
             return;
         }
         let cur = self.cur();
@@ -603,9 +628,11 @@ fn node_to_item(node: Node, place: Affine, scene_rect: Rect) -> Item {
             clip: clip.map(|p| Shape::Path { path: place * p }),
             opacity: f64::from(opacity),
             blend,
+            id: None,
             backdrop: None,
             filter: None,
             backdrop_effect: None,
+            backdrop_outer: 0.0,
             scroll_offset: kurbo::Vec2::ZERO,
             projection: None,
             motion: None,
@@ -1076,9 +1103,11 @@ pub fn items_for_glyph_run(
                     clip: None,
                     opacity: 1.0,
                     blend: BlendMode::Normal,
+                    id: None,
                     backdrop: None,
                     filter: None,
                     backdrop_effect: None,
+                    backdrop_outer: 0.0,
                     scroll_offset: kurbo::Vec2::ZERO,
                     projection: None,
                     motion: None,
@@ -1143,6 +1172,10 @@ mod tests {
         env!("CARGO_MANIFEST_DIR"),
         "/../scenes/fonts/NotoColorEmojiSubset.ttf"
     ));
+    const COLR: &[u8] = include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../scenes/fonts/CherenkovColrTest.ttf"
+    ));
     static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
     fn run(font: ResourceHash, glyph: u32) -> GlyphRun {
@@ -1162,6 +1195,75 @@ mod tests {
                 space: ColorSpace::Srgb,
                 components: [1.0, 0.0, 0.0, 1.0],
             }),
+        }
+    }
+
+    #[test]
+    fn colr_radial_with_identical_circles_paints_nothing() {
+        use skrifa::color::Extend as ColrExtend;
+        let font = skrifa::FontRef::new(COLR).expect("parse font");
+        let foreground = Paint::Solid(Color {
+            space: ColorSpace::Srgb,
+            components: [0.0, 0.0, 0.0, 1.0],
+        });
+        let stops = [
+            skrifa::color::ColorStop {
+                offset: 0.0,
+                palette_index: 0xFFFF,
+                alpha: 1.0,
+            },
+            skrifa::color::ColorStop {
+                offset: 1.0,
+                palette_index: 0xFFFF,
+                alpha: 0.5,
+            },
+        ];
+        let radial = |r1: f32, extend| Brush::RadialGradient {
+            c0: skrifa::raw::types::Point::new(10.0, 10.0),
+            r0: 4.0,
+            c1: skrifa::raw::types::Point::new(10.0, 10.0),
+            r1,
+            color_stops: &stops,
+            extend,
+        };
+        let painted = |brush: Brush<'_>, glyph: bool| {
+            let mut painter = ColrPainter {
+                font: &font,
+                coords: &[],
+                palette: Vec::new(),
+                foreground: &foreground,
+                foreground_color: Color {
+                    space: ColorSpace::Srgb,
+                    components: [0.0, 0.0, 0.0, 1.0],
+                },
+                fill_rect_font: Rect::new(0.0, 0.0, 20.0, 20.0).to_path(0.1),
+                tf: vec![Affine::IDENTITY],
+                containers: Vec::new(),
+                top: Vec::new(),
+                err: None,
+            };
+            if glyph {
+                // Glyph 1 is the font's `box` outline.
+                painter.fill_glyph(GlyphId::new(1), None, brush);
+            } else {
+                painter.fill(brush);
+            }
+            assert!(painter.err.is_none(), "{:?}", painter.err);
+            painter.top.len()
+        };
+        for extend in [ColrExtend::Pad, ColrExtend::Repeat, ColrExtend::Reflect] {
+            for glyph in [false, true] {
+                assert_eq!(
+                    painted(radial(4.0, extend), glyph),
+                    0,
+                    "{extend:?}, glyph {glyph}"
+                );
+                assert_eq!(
+                    painted(radial(8.0, extend), glyph),
+                    1,
+                    "distinct circles, {extend:?}, glyph {glyph}"
+                );
+            }
         }
     }
 

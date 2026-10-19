@@ -18,16 +18,23 @@ default = ["gpu"]
 # device, so a render target that lowers filters into its own primitives builds
 # it without the GPU stack.
 effects = ["dep:filtrate", "dep:arc-swap"]
+# The Cherenkov engine itself: `Engine<B>` as the `SceneBackend`/`ShaderBackend`
+# registry, `cherenkov-cpu`'s raster path, `cherenkov-gpu`'s surfaces, and the
+# `cherenkov` re-export a host that owns its engine needs. With it off the crate
+# is the recording layer alone — `draw`, scenes, pictures, colours, gradients,
+# filters and the `SceneResources` registration contract — for a render target
+# that is not a Cherenkov backend.
+cherenkov = ["dep:cherenkov"]
 # GPU-only surfaces: user GPU content, running filters through `filtrate`'s
 # executor, arbitrary GPU effects on views, offscreen rendering through
 # `Engine<Gpu>`, and image decoding. Everything else — colours, gradients,
 # scenes, pictures and shader paints — records Cherenkov `Content` and needs no
 # device here.
 gpu = [
+    "cherenkov",
     "effects",
     "filtrate/gpu",
     "dep:cherenkov-gpu",
-    "dep:thiserror",
     "dep:wgpu",
     "dep:bytemuck",
     "dep:image",
@@ -39,22 +46,30 @@ gpu = [
 ]
 # Offscreen rendering through `Engine<Raster>`: pictures rasterised for hosts
 # whose image views take bitmaps.
-cpu = ["dep:cherenkov-cpu", "dep:thiserror", "dep:image"]
+cpu = ["cherenkov", "dep:cherenkov-cpu", "dep:image"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
 waterui-core.workspace = true
 nami.workspace = true
-cherenkov.workspace = true
+# The render-target-neutral recorder: always on — `draw`, `SceneContent`,
+# `Picture` and the `SceneResources` contract are all spelled in its types.
+cherenkov-record.workspace = true
+# The engine behind `SceneBackend`/`ShaderBackend` impls and the `cherenkov`
+# re-export; a target that is not a Cherenkov backend leaves it out.
+cherenkov = { workspace = true, optional = true }
 cherenkov-gpu = { workspace = true, optional = true }
 cherenkov-cpu = { workspace = true, optional = true }
 color.workspace = true
+# The working-space ↔ sRGB matrices and transfer, the engine's one
+# definition (`filtrate_core::space`).
+filtrate-core.workspace = true
 filtrate = { workspace = true, optional = true }
 pastey.workspace = true
 wgpu = { workspace = true, optional = true }
 bytemuck = { version = "1", optional = true, features = ["derive"] }
 keyboard-types.workspace = true
-thiserror = { workspace = true, optional = true }
+thiserror.workspace = true
 # `avif` is `image`'s AVIF *encoder* (ravif -> rav1e), not its decoder
 # (`avif-native`). `image_decode` only decodes, and its HEIF retry hands the
 # patched container to the platform decoder, so the encoder was pure weight.
@@ -70,12 +85,24 @@ event-listener = { version = "5", optional = true }
 # artifacts require (`shaderloom::required_features`).
 shaderloom = { workspace = true, optional = true, features = ["runtime"] }
 
+# `GpuContent` is `Send` because natively a frame's content renders on the
+# render thread. wasm32 without atomics has one thread, and there wgpu marks
+# its WebGPU handles `!Send` unless this feature is on; it has no effect on a
+# target with atomics. With it, content that keeps its device resources, as
+# every pipeline-owning `GpuContent` does, builds for the web.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, optional = true, features = ["fragile-send-sync-non-atomic-wasm"] }
+
 [dev-dependencies]
 # Tests record against `cherenkov::testing::Null` engines.
 cherenkov = { workspace = true, features = ["testing"] }
 pollster.workspace = true
 # The glyph-run recording test maps a character to a glyph id in a real font.
 ttf-parser = "0.25"
+# No font bytes are committed: the recording tests resolve the `Roboto` face
+# the test-fonts install script puts in the user font location (see
+# `backends/hydrolysis/test-fonts`) through system font discovery.
+fontique = "0.11"
 # The external-frame tests count the device's live textures and read back
 # `Rgba16Float` host targets.
 wgpu = { workspace = true, features = ["counters"] }

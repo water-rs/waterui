@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A debug build prepares the inspector endpoint
+     (InspectorServerConfig::for_debug_build); an Android app cannot open a
+     socket without INTERNET. Release builds carry only the permissions the
+     project declares. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+</manifest>

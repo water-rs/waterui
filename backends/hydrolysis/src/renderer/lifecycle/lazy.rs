@@ -64,11 +64,7 @@ impl LazyStackAxisConfig {
 }
 
 impl LazyTableSlot {
-    pub(crate) fn prepare_columns(
-        &mut self,
-        len: usize,
-        metrics: waterui_backend_core::widget::TableMetrics,
-    ) {
+    pub(crate) fn prepare_columns(&mut self, len: usize, metrics: crate::theme::TableMetrics) {
         self.column_widths.resize(len, metrics.min_column_width);
     }
 }
@@ -208,7 +204,7 @@ impl VirtualExtentIndex {
         self.spacing = spacing;
         let estimated_stride = estimate + spacing;
         for (index, slot) in self.fenwick.iter_mut().enumerate().take(count + 1).skip(1) {
-            *slot = estimated_stride * crate::num_cast::usize_as_f64(index & index.wrapping_neg());
+            *slot = estimated_stride * crate::num_cast::usize_as_f64(index.isolate_lowest_one());
         }
     }
 
@@ -232,7 +228,7 @@ impl VirtualExtentIndex {
         let mut tree_index = index + 1;
         while tree_index < self.fenwick.len() {
             self.fenwick[tree_index] += delta;
-            tree_index += tree_index & tree_index.wrapping_neg();
+            tree_index += tree_index.isolate_lowest_one();
         }
     }
 
@@ -368,7 +364,7 @@ pub fn resolve_table_visible_rows(
     offset_y: f64,
     viewport_height: f64,
     max_rows: usize,
-    metrics: waterui_backend_core::widget::TableMetrics,
+    metrics: crate::theme::TableMetrics,
 ) -> VisibleIndexWindow {
     let data_start = (offset_y - metrics.header_height).max(0.0);
     let data_end = (offset_y + viewport_height - metrics.header_height).max(0.0);
@@ -384,7 +380,7 @@ pub fn resolve_table_visible_rows(
 
 pub fn table_metrics_from_slot(
     slot: &LazyTableSlot,
-    metrics: waterui_backend_core::widget::TableMetrics,
+    metrics: crate::theme::TableMetrics,
 ) -> MeasuredTableMetrics {
     MeasuredTableMetrics {
         column_widths: slot.column_widths.clone(),
@@ -414,7 +410,7 @@ mod tests {
 
         assert_eq!(window.start, 90_000);
         assert_eq!(window.end, 90_010);
-        assert_eq!(window.leading_offset, 90_000.0 * 52.0);
+        approx::assert_relative_eq!(window.leading_offset, 90_000.0 * 52.0);
         assert!(index.measured(89_999).is_none());
     }
 
@@ -425,13 +421,13 @@ mod tests {
         index.set_measured(0, 20.0);
         index.set_measured(2, 5.0);
 
-        assert_eq!(index.total_extent(), 51.0);
-        assert_eq!(index.offset_of(1), 22.0);
-        assert_eq!(index.offset_of(3), 41.0);
+        approx::assert_relative_eq!(index.total_extent(), 51.0);
+        approx::assert_relative_eq!(index.offset_of(1), 22.0);
+        approx::assert_relative_eq!(index.offset_of(3), 41.0);
         let window = index.visible_window(22.0, 41.0);
         assert_eq!(window.start, 1);
         assert_eq!(window.end, 3);
-        assert_eq!(window.leading_offset, 22.0);
+        approx::assert_relative_eq!(window.leading_offset, 22.0);
     }
 
     #[test]
@@ -443,7 +439,7 @@ mod tests {
 
         assert_eq!(window.start, 0);
         assert_eq!(window.end, 0);
-        assert_eq!(index.total_extent(), 0.0);
+        approx::assert_relative_eq!(index.total_extent(), 0.0);
     }
 
     #[test]

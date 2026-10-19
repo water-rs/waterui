@@ -9,11 +9,13 @@ use std::sync::Arc;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use cherenkov::kurbo::{Affine, BezPath, PathEl, Point, Rect};
+use cherenkov::lowering::rounded_box::{BoxForm, RoundedBox, box_form};
 use cherenkov::{BlendMode, FillRule, FrameId, GlyphRun, GlyphStyle, ShapeData};
 
 use cherenkov::{LayerId, RenderError, SurfaceId, SurfaceTree};
 
 use super::filter::{Erased, Registry};
+use super::geometry::{Frame, GeometryCache, Resolved, same_linear};
 use super::prepared::Op;
 use crate::names;
 use crate::render::paint::PaintData;
@@ -35,6 +37,22 @@ pub struct IRect {
     pub y1: i32,
 }
 
+/// A draw's device-space bounding box within its raster target
+/// (x ∈ `[x0, x1)`, y ∈ `[y0, y1)`). A target is at most `MAX_SURFACE`
+/// (16384) texels on a side, so `u16` holds every edge, and the compact box
+/// leaves room in [`Item::Draw`] for its offset without growing [`Item`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawBox {
+    /// Left edge.
+    pub x0: u16,
+    /// Top edge.
+    pub y0: u16,
+    /// Right edge.
+    pub x1: u16,
+    /// Bottom edge.
+    pub y1: u16,
+}
+
 /// A rasterized clip: an integer rect fast path or a full-surface
 /// coverage mask.
 #[derive(Debug, PartialEq)]
@@ -54,16 +72,24 @@ pub type ClipRef = Arc<ClipMask>;
 pub enum Item {
     /// A filled, flattened polygon.
     Draw {
-        /// Directed edges in device space.
+        /// Directed edges in the draw's translation-normalized frame
+        /// ([`Frame`]): device space is the frame moved by `offset`.
         edges: Arc<[Edge]>,
-        /// Device-space bounding box of the edges.
-        bbox: IRect,
+        /// The device position of the frame's origin, added to every edge
+        /// coordinate.
+        offset: [f32; 2],
+        /// Device-space bounding box of the placed edges.
+        bbox: DrawBox,
         /// The fill rule.
         rule: FillRule,
         /// The paint evaluator.
         paint: PaintData,
         /// The clip in force.
         clip: Option<ClipRef>,
+        /// Whether the winding sweep produced or confirmed `edges`: only
+        /// such geometry is offered to the lowering that replaces dropped
+        /// content.
+        swept: bool,
     },
     /// A Gaussian-blurred, axis-aligned rounded box.
     Shadow {
@@ -105,9 +131,10 @@ pub enum Item {
     },
     /// Start a fresh transparent scratch layer. The level stores
     /// premultiplied pixels in `space`: the isolate's declared
-    /// `blend_space` when it composites semantically, or the enclosing
-    /// level's space when it is clip-only — a transparent level shares
-    /// the space it merges back into.
+    /// `blend_space` when it composites in isolation — semantically
+    /// isolated or translucent — or the enclosing level's space when it
+    /// is pass-through: a pass-through level shares the space it merges
+    /// back into.
     PushIsolate {
         /// The level's storage space.
         space: cherenkov::BlendSpace,
@@ -144,9 +171,10 @@ pub enum Item {
         clip: Option<ClipRef>,
     },
     /// Capture the rows a backdrop group's members can sample: flatten
-    /// the trailing `flatten` clip-only isolation levels over the nearest
-    /// semantic level's contents and run the group's chain on the copy.
-    /// Boxed: a capture is rare and large — it must not grow `Item`.
+    /// the trailing `flatten` looked-through isolation levels —
+    /// pass-through and translucent alike — over the nearest semantic
+    /// level's contents and run the group's chain on the copy. Boxed: a
+    /// capture is rare and large — it must not grow `Item`.
     Capture(Box<CaptureItem>),
     /// Composite a projective layer's local image, projected into this
     /// raster through the anisotropic filter. Boxed: rare and large.
@@ -162,7 +190,61 @@ pub enum Item {
         clip: Option<ClipRef>,
         /// What the sample becomes once composited.
         effect: SampleEffect,
+        /// The union field the member folds into, when the group has one
+        /// (or the member draws an `outer` band on its own).
+        union: Option<UnionSample>,
+        /// The space the sample blends onto the canvas in: the group's
+        /// member blend space.
+        space: cherenkov::BlendSpace,
     },
+}
+
+/// A member clip as the SDF reads evaluate it: its centred rounded box
+/// and the device → box-local affine that maps a sample point into it —
+/// the GPU's `clip_inv` and `Shape` pair.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxClip {
+    /// Device → box-local affine in kurbo coefficient order
+    /// `(a, b, c, d, e, f)`: `x′ = a·x + c·y + e`,
+    /// `y′ = b·x + d·y + f`.
+    pub inv: [f32; 6],
+    /// The centred box.
+    pub shape: RoundedBox,
+}
+
+impl BoxClip {
+    /// The box `shape` placed by the clip-local `extra` under the
+    /// clip's `transform`.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the engines evaluate SDF fields in f32"
+    )]
+    fn new(extra: Affine, shape: RoundedBox, transform: Affine) -> Self {
+        Self {
+            inv: (transform * extra).inverse().as_coeffs().map(|v| v as f32),
+            shape,
+        }
+    }
+}
+
+/// The union-field data a member's sample composites against: every
+/// member's clip box in paint order, the smoothing distance,
+/// this member's index and its `outer` extent.
+#[derive(Clone, Debug)]
+pub struct UnionSample {
+    /// Each member's clip box, in paint order. A lone `outer`-band
+    /// member of a non-union group is its own one-member list with
+    /// `k == 0`.
+    pub members: Arc<[BoxClip]>,
+    /// The group's smoothing distance `k`; `0` folds to the member's
+    /// own distance.
+    pub k: f32,
+    /// This member's index in `members`.
+    pub ord: u32,
+    /// The member's `outer` extent: the composite's coverage is the
+    /// antialiased ownership weight times the coverage of
+    /// `field < outer`.
+    pub outer: f32,
 }
 
 /// A projected composite's payload, boxed inside [`Item::Project`].
@@ -182,20 +264,31 @@ pub struct ProjectItem {
 pub struct CaptureItem {
     /// The group's renderer key (`BackdropId::raw()`).
     pub group: u64,
-    /// The capture rect in device pixels (`union ⊕ apron`, clamped to
-    /// the surface).
+    /// The capture scale `s`: `region` lies on the capture grid, whose
+    /// texel `i` covers the device interval `[i/s, (i+1)/s)`.
+    pub scale: cherenkov::CaptureScale,
+    /// The pyramid's level count: levels `1..n` reduce the filtered
+    /// level 0 by exact 2×2 boxes.
+    pub levels: u32,
+    /// The capture rect in capture texels (`union ⊕ apron` on the grid,
+    /// clamped to the grid's extent).
     pub region: IRect,
     /// The members' union rows, clamped to the surface.
     pub union: IRect,
-    /// The apron rows the chain reads past the sampled rows.
+    /// The apron rows, in capture texels, the chain reads past the
+    /// sampled rows.
     pub apron: usize,
     /// Extra rows around each band the capture covers: the deepest
-    /// enclosing filter-scope apron over the group's members.
+    /// enclosing filter-scope apron plus effect sampling reach over the
+    /// group's members.
     pub reach: usize,
+    /// Whether members displace their capture reads.
+    pub displaced: bool,
     /// The prepared chain, when the group is filtered.
     pub filter: Option<FrameFilter>,
-    /// Clip-only isolation levels on the stack flattened over the
-    /// nearest semantic level.
+    /// Looked-through isolation levels on the stack flattened over the
+    /// nearest semantic level: pass-through and `opacity < 1` levels
+    /// alike, composited as though each were at full opacity.
     pub flatten: usize,
 }
 
@@ -208,17 +301,15 @@ pub enum SampleEffect {
     /// A 3×4 premultiplied colour matrix (filtrate `ColorMatrix`
     /// layout): `dot(row, c)` per channel, alpha passes through.
     Color([f32; 12]),
-    /// An effect reading the member clip's signed distance, carried as
-    /// the clip flattened to device-space edges.
+    /// An effect reading the member clip's signed distance.
     Sdf(SdfEffect),
 }
 
 /// An SDF-reading member effect and the clip boundary it reads.
 #[derive(Clone, Debug)]
 pub struct SdfEffect {
-    /// The member clip flattened to device-space edges (implicit-close
-    /// applied; only non-`Path` shapes reach this).
-    pub edges: Arc<[Edge]>,
+    /// The member clip the distance and normal are read from.
+    pub clip: Arc<BoxClip>,
     /// Which effect the distance and normal feed.
     pub kind: SdfKind,
 }
@@ -243,6 +334,17 @@ pub enum SdfKind {
         color: [f32; 4],
         /// Highlight gain.
         gain: f32,
+    },
+    /// The trilinear `backdrop_sample_level` at
+    /// `interior + (edge − interior)·t` with
+    /// `t = clamp(1 + d / depth, 0, 1)`.
+    Level {
+        /// Fade depth inside the edge, device pixels.
+        depth: f32,
+        /// Pyramid level at the clip's edge (`t = 1`).
+        edge: f32,
+        /// Pyramid level deep inside the clip (`t = 0`).
+        interior: f32,
     },
 }
 
@@ -304,6 +406,10 @@ pub struct GlyphReq {
     pub slot: crate::render::glyph::GlyphSlot,
 }
 
+/// The union group's member cap: the per-pixel fold keeps every member's
+/// distance and gradient in registers, matching the GPU shader's arrays.
+const UNION_MAX_MEMBERS: usize = cherenkov::BackdropUnion::MAX_MEMBERS as usize;
+
 /// The plan for one backdrop group: the capture point (its first member
 /// in paint order), the capture rect and every member's device bounds for
 /// its sampling composite.
@@ -314,29 +420,204 @@ struct BackdropPlan {
     union: Rect,
     /// The union's device rows, clamped to the surface.
     union_rows: (usize, usize),
-    /// The capture rect in device pixels.
+    /// The group's capture spec (scale and level count).
+    spec: cherenkov::BackdropSpec,
+    /// The capture rect in capture texels.
     region: IRect,
-    /// The chain's apron in rows around the sampled rows.
+    /// The chain's apron in texel rows around the sampled rows.
     apron: usize,
-    /// Extra rows around each band the capture must cover.
+    /// The device rows the capture's window reaches past the sampled
+    /// rows: `apron` for a 1:1 capture, the texel window mapped back to
+    /// device rows otherwise.
+    device_apron: usize,
+    /// Extra rows around each band the capture must cover: the deepest
+    /// member scope apron plus effect reach over the members.
     reach: usize,
     /// The prepared chain, when the group is filtered.
     filter: Option<FrameFilter>,
     /// Each member layer's plan entry, keyed by layer.
     members: FxHashMap<LayerId, Member>,
+    /// The members' layers in paint order: the union fold and the
+    /// ownership tie-break are index-stable.
+    order: Vec<LayerId>,
+    /// The group's union smoothing distance; `0` when the group has no
+    /// union field.
+    union_k: f32,
+    /// Every member's clip box in `order`, when the group unions.
+    union_members: Arc<[BoxClip]>,
     /// The innermost filter scope the capture item lands in.
     scope: Option<LayerId>,
 }
 
+impl BackdropPlan {
+    /// A fresh plan for the group `first` joins: the member's bounds
+    /// seed the footprint union, the member's scope seeds the capture
+    /// scope, and every tracking map starts empty.
+    fn new(
+        first: LayerId,
+        member: Rect,
+        spec: cherenkov::BackdropSpec,
+        filter: Option<FrameFilter>,
+        scope: Option<LayerId>,
+    ) -> Self {
+        Self {
+            first,
+            union: member,
+            union_rows: (0, 0),
+            spec,
+            region: IRect {
+                x0: 0,
+                y0: 0,
+                x1: 0,
+                y1: 0,
+            },
+            apron: 0,
+            device_apron: 0,
+            reach: 0,
+            filter,
+            members: FxHashMap::default(),
+            order: Vec::new(),
+            union_k: 0.0,
+            union_members: Arc::from([]),
+            scope,
+        }
+    }
+
+    /// Places the capture on a `width × h` surface: the union's rows, and
+    /// the union on the capture grid inflated by the chain `footprint`'s
+    /// apron in texels — plus one texel for the bilinear taps of a reduced
+    /// capture, and on a levelled group every deeper level's read
+    /// footprint inflated by the apron — clamped to the grid's extent and
+    /// rounded out to whole texels.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "footprints are non-negative and bounded by the surface height"
+    )]
+    fn place(&mut self, footprint: filtrate_core::Footprint, (width, h): (usize, usize)) {
+        let (uw, uh) = (self.union.width(), self.union.height());
+        let y0 = self.union.y0.floor().max(0.0) as usize;
+        let y1 = (self.union.y1.ceil().min(h as f64) as usize).max(y0);
+        self.union_rows = (y0, y1.min(h));
+        if uw.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+            || uh.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
+        {
+            return;
+        }
+        // The footprint resolves against the capture's size in texels.
+        let s = f64::from(self.spec.scale().get());
+        let levels = self.spec.levels().get();
+        let a = (f64::from(footprint.extent).mul_add(uw.max(uh) * s, f64::from(footprint.pixels))
+            / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
+        .ceil();
+        // A reduced capture is sampled bilinearly at `p · s`: an edge
+        // pixel's second tap lies one texel past the union on the grid, so
+        // the region covers that texel too.
+        let taps = if self.spec.scale().is_full() {
+            0.0
+        } else {
+            1.0
+        };
+        // The capture grid's extent in texels: `⌈len · s⌉`.
+        let (gw, gh) = ((width as f64 * s).ceil(), (h as f64 * s).ceil());
+        let (mut x0, mut y0, mut x1, mut y1) = (
+            self.union.x0.mul_add(s, -a - taps).floor().max(0.0),
+            self.union.y0.mul_add(s, -a - taps).floor().max(0.0),
+            self.union.x1.mul_add(s, a + taps).ceil().min(gw),
+            self.union.y1.mul_add(s, a + taps).ceil().min(gh),
+        );
+        // Levels 1..n: a bilinear read at level `k` taps level-k texels
+        // `floor(q·s/2^k − 0.5)` through `+1`, and level-k texel `t`
+        // reduces capture texels `[2^k·t, 2^k·(t+1))`. Each level's read
+        // footprint is inflated by the chain's apron so every filtered
+        // texel it reduces is computed from uncut chain input: a member's
+        // result never depends on the other members.
+        for k in 1..levels {
+            let div = f64::from(1u32 << k);
+            x0 = x0
+                .min((self.union.x0 * s / div - 0.5).floor().mul_add(div, -a))
+                .max(0.0);
+            y0 = y0
+                .min((self.union.y0 * s / div - 0.5).floor().mul_add(div, -a))
+                .max(0.0);
+            x1 = x1
+                .max(((self.union.x1 * s / div - 0.5).floor() + 2.0).mul_add(div, a))
+                .min(gw);
+            y1 = y1
+                .max(((self.union.y1 * s / div - 0.5).floor() + 2.0).mul_add(div, a))
+                .min(gh);
+        }
+        // The region's origin sits on the deepest level's grid so level
+        // `k` texel `(i, j)` covers capture texels `[2^k·i, 2^k·(i+1))`;
+        // its far edge stays grid-clipped.
+        let grid = f64::from(1u32 << (levels - 1));
+        x0 = (x0 / grid).floor() * grid;
+        y0 = (y0 / grid).floor() * grid;
+        x1 = ((x1 / grid).ceil() * grid).min(gw);
+        y1 = ((y1 / grid).ceil() * grid).min(gh);
+        let region = IRect {
+            x0: x0 as i32,
+            y0: y0 as i32,
+            x1: x1 as i32,
+            y1: y1 as i32,
+        };
+        self.apron = a.min(gh) as usize;
+        self.device_apron = if self.spec.scale().is_full() && levels == 1 {
+            self.apron
+        } else {
+            // The texel window reaches `apron` texels past the kept
+            // texels, which reach the sampled rows' bilinear taps plus a
+            // margin and, on a levelled capture, the deepest level's
+            // parent rows (see `raster::capture_rows`). All within
+            // `(apron + margin + 2 + extra) / s` device rows of them.
+            //
+            // `extra` is 1.5 blocks: a deepest-level texel is a block of
+            // `B = 2^(n−1)` capture texels. A sample at capture row `p`
+            // sits at level row `p / B − 0.5`, so its bilinear taps are
+            // level rows `i = ⌊p / B − 0.5⌋` and `i + 1`, whose parent
+            // rows span `[i·B, (i + 2)·B)`. With `i ≥ p / B − 1.5` and
+            // `i + 2 ≤ p / B + 1.5`, that is within `1.5·B` capture rows
+            // of `p` on either side: the block plus the half-block the
+            // taps sit further out.
+            let extra = if levels > 1 {
+                let block = 1usize << (levels - 1);
+                block + block.div_ceil(2)
+            } else {
+                0
+            };
+            (((self.apron + super::raster::SAMPLE_MARGIN + 2 + extra) as f64 / s).ceil() as usize)
+                .min(h)
+        };
+        if region.x0 < region.x1 && region.y0 < region.y1 {
+            self.region = region;
+        }
+    }
+}
+
 /// One backdrop member's plan entry.
 struct Member {
-    /// The member's device-space clip bounds, inflated by the effect's
-    /// sampling reach.
+    /// The member's device-space clip bounds.
     bounds: Rect,
+    /// The member's draw bounds: `bounds` further inflated by the
+    /// union's `r(n)` and `outer` plus 1.5px of antialiasing, so bridge
+    /// pixels between members are captured and painted.
+    draw: Rect,
+    /// The member's effect sampling reach — it inflates the capture
+    /// footprint, never the draw bounds.
+    reach: f64,
+    /// The member's own clip's analytic box, when the group unions its
+    /// members or the member draws an `outer` band.
+    field: Option<BoxClip>,
+    /// The member's `outer` extent.
+    outer: f32,
+    /// The member's index in the group's paint order.
+    ord: u32,
     /// The innermost enclosing filter scope.
     scope: Option<LayerId>,
-    /// The member's resolved per-member effect.
-    effect: SampleEffect,
+    /// The member's resolved per-member effect; `None` when its clip
+    /// has no area and the member samples nothing.
+    effect: Option<SampleEffect>,
 }
 
 /// The lowering walk state for one surface frame.
@@ -353,6 +634,7 @@ pub struct Lowering<'a, 'b> {
     fonts: &'b mut FxHashMap<u64, super::font::Font>,
     bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
     bitmap_cache: &'b mut super::bitmap::BitmapCache,
+    geometry: &'b mut GeometryCache,
     width: usize,
     height: usize,
     transform: Affine,
@@ -360,9 +642,9 @@ pub struct Lowering<'a, 'b> {
     /// content then snaps its translation to the ¼-pixel grid.
     animating: bool,
     clip: Option<ClipRef>,
-    /// Whether each open isolation level is clip-only (`true` when its
-    /// opacity is 1 and its blend is `Normal` in the linear space), in
-    /// emission order.
+    /// Whether each open isolation level is looked through by a backdrop
+    /// capture (`true` when its blend is `Normal` in the linear space —
+    /// pass-through and translucent levels alike), in emission order.
     iso_kinds: Vec<bool>,
     /// The storage space of each open isolation level, in emission
     /// order, parallel to [`Lowering::iso_kinds`].
@@ -373,6 +655,9 @@ pub struct Lowering<'a, 'b> {
     /// footprint, by layer: a scope that directly contains captures grows
     /// to cover their `apron + reach`.
     scope_aprons: FxHashMap<LayerId, usize>,
+    anchor_scratch: &'a mut AnchorScratch,
+    /// The planning walk's paint-order counter.
+    plan_order: usize,
     /// Source commands resolved this frame.
     pub commands_lowered: u32,
     /// Content layers composed this frame.
@@ -383,6 +668,45 @@ pub struct Lowering<'a, 'b> {
     local: Option<(LayerId, Affine)>,
     /// Projective layers' images placed in this raster, by layer.
     projected: FxHashMap<LayerId, crate::render::projective::Placed>,
+    /// The host CPU's SIMD level the coverage passes dispatch under.
+    level: fearless_simd::Level,
+    /// The renderer's worker pool: the coverage masks and convolutions
+    /// below install their parallel work on it, never the global pool.
+    pool: &'a rayon::ThreadPool,
+}
+
+/// Reusable state for anchor planning and capture emission, owned by the
+/// surface and lent to each lowering so its capacity carries across
+/// frames.
+#[derive(Default)]
+pub(super) struct AnchorScratch {
+    /// The layers the surface's groups anchor at.
+    refs: FxHashSet<LayerId>,
+    /// Each anchor's compositing canvas (its innermost semantic level),
+    /// paint-order index and innermost filter scope.
+    pos: FxHashMap<LayerId, (Option<LayerId>, usize, Option<LayerId>)>,
+    /// Each anchored group's members as `(group, canvas, paint order)`,
+    /// pushed in paint order.
+    members: Vec<(u64, Option<LayerId>, usize)>,
+    /// `(anchor, group)` capture links, sorted for range lookup.
+    links: Vec<(LayerId, u64)>,
+}
+
+impl AnchorScratch {
+    fn clear(&mut self) {
+        self.refs.clear();
+        self.pos.clear();
+        self.members.clear();
+        self.links.clear();
+    }
+
+    pub(super) fn heap_bytes(&self) -> u64 {
+        (self.refs.capacity() * size_of::<LayerId>()
+            + self.pos.capacity()
+                * size_of::<(LayerId, (Option<LayerId>, usize, Option<LayerId>))>()
+            + self.members.capacity() * size_of::<(u64, Option<LayerId>, usize)>()
+            + self.links.capacity() * size_of::<(LayerId, u64)>()) as u64
+    }
 }
 
 /// The largest singular value of `t`'s linear part — the worst-case factor
@@ -401,13 +725,13 @@ fn sigma_max(t: Affine) -> f64 {
 
 /// Resolves a member's engine effect into a [`SampleEffect`], also
 /// returning its sampling reach (the member's bounds grow by it).
-/// `Path`/`Line` clips give SDF effects no analytic boundary — the same
-/// `backdrop-effect-sdf-path` error as the GPU slice; a `Shader` effect
-/// is a GPU-only capability on this backend.
+/// `clip` is the member clip's box; a path clip has none and gives SDF
+/// effects no analytic boundary — the same `backdrop-effect-sdf-path`
+/// error as the GPU slice. A `Shader` effect is a GPU-only capability on
+/// this backend.
 fn member_effect(
     effect: Option<&cherenkov::BackdropEffect>,
-    clip: &ShapeData,
-    transform: Affine,
+    clip: Option<BoxClip>,
 ) -> Result<(SampleEffect, f64), RenderError> {
     let Some(effect) = effect else {
         return Ok((SampleEffect::None, 0.0));
@@ -453,32 +777,30 @@ fn member_effect(
                 gain: r.gain,
             }
         }
+        cherenkov::BackdropEffect::Level(r) => SdfKind::Level {
+            depth: r.depth(),
+            edge: r.edge(),
+            interior: r.interior(),
+        },
         cherenkov::BackdropEffect::Shader(_) => {
             return Err(RenderError::Unsupported(names::BACKDROP_SHADER));
         }
     };
-    let sm = sigma_max(transform).max(1e-12);
-    let (path, _) = match clip {
-        ShapeData::Rect(_)
-        | ShapeData::RoundedRect(_)
-        | ShapeData::Continuous(_)
-        | ShapeData::Circle(_)
-        | ShapeData::Ellipse(_) => shape_outline(clip, FLATTEN_TOL / sm),
-        _ => None,
-    }
-    .ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
-    let edges: Arc<[Edge]> = boundary_edges(transform * path, FLATTEN_TOL).into();
+    let clip = clip.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))?;
     Ok((
-        SampleEffect::Sdf(SdfEffect { edges, kind }),
+        SampleEffect::Sdf(SdfEffect {
+            clip: Arc::new(clip),
+            kind,
+        }),
         f64::from(effect.reach()),
     ))
 }
 
-/// The path's flattened boundary edges, implicit-close applied.
-/// Horizontal edges are kept: the SDF reader measures to the real
-/// boundary.
+/// Flattens `path` (already in device space) into directed edges for
+/// coverage rasterization, implicit-close applied: horizontal edges
+/// carry no area and drop out.
 #[expect(clippy::cast_possible_truncation, reason = "geometry is f32")]
-fn boundary_edges(path: BezPath, tol: f64) -> Vec<Edge> {
+fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
     let mut edges = Vec::new();
     let mut cur = Point::ZERO;
     let mut start = Point::ZERO;
@@ -518,43 +840,78 @@ fn boundary_edges(path: BezPath, tol: f64) -> Vec<Edge> {
         }
     });
     close(&mut edges, cur, start);
-    edges
-}
-
-/// Flattens `path` (already in device space) into directed edges for
-/// coverage rasterization: horizontal edges carry no area and drop out.
-fn flatten_edges(path: BezPath, tol: f64) -> Vec<Edge> {
-    let mut edges = boundary_edges(path, tol);
     #[expect(clippy::float_cmp, reason = "horizontal edges carry no area")]
     edges.retain(|e| e.y0 != e.y1);
     edges
 }
 
-/// Resolves overlapping windings: `Some` swaps in boundary edges whose
-/// winding is 0 or 1 everywhere, drawn under `NonZero`. `None` keeps the
-/// original edges and rule untouched.
+/// Resolves overlapping windings: edges whose winding can overlap are
+/// replaced by boundary edges whose winding is 0 or 1 everywhere, drawn
+/// under `NonZero`; otherwise the edges and rule are returned untouched.
 pub fn resolve_edges(edges: Vec<Edge>, rule: FillRule) -> (Vec<Edge>, FillRule) {
-    let segments: Vec<(f32, f32, f32, f32)> =
-        edges.iter().map(|e| (e.x0, e.y0, e.x1, e.y1)).collect();
-    cherenkov::lowering::resolve_winding(&segments, rule).map_or((edges, rule), |resolved| {
-        (
-            resolved
-                .into_iter()
-                .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
-                .collect(),
-            FillRule::NonZero,
-        )
-    })
+    cherenkov::lowering::resolve_winding(&edges, rule)
+        .into_resolved()
+        .map_or((edges, rule), |resolved| {
+            (
+                resolved
+                    .into_iter()
+                    .map(|(x0, y0, x1, y1)| Edge { x0, y0, x1, y1 })
+                    .collect(),
+                FillRule::NonZero,
+            )
+        })
 }
 
-/// The bounding box of `edges` as an integer rect intersected with the
-/// surface.
+/// Offers a draw's swept geometry before its realization is dropped: a fill
+/// or a stroke realized as one swept draw.
+fn offer(geometry: &mut GeometryCache, op: &Op, data: &DeviceData<Vec<Item>>) {
+    let (local, shape, stroke) = match op {
+        Op::Fill { local, shape, .. } => (local, shape, None),
+        Op::Stroke {
+            local,
+            shape,
+            stroke,
+            ..
+        } => (local, shape, Some(stroke)),
+        _ => return,
+    };
+    if let [
+        Item::Draw {
+            edges,
+            rule,
+            swept: true,
+            ..
+        },
+    ] = data.output.as_slice()
+    {
+        geometry.offer(shape, stroke, data.transform * *local, edges, *rule);
+    }
+}
+
+/// Offers the swept geometry of every current realization of `content`,
+/// which is about to be dropped, to the next lowering.
+pub fn harvest(geometry: &mut GeometryCache, content: &ContentData) {
+    let Some((ops, _)) = content.current() else {
+        return;
+    };
+    for (op, realization) in ops.iter().zip(content.realizations()) {
+        if realization.valid
+            && let Some(Emission::Draw(data)) = &realization.data
+        {
+            offer(geometry, op, data);
+        }
+    }
+}
+
+/// The bounding box of `edges` placed at `offset`, intersected with the
+/// `w` × `h` target.
 #[expect(
     clippy::cast_possible_truncation,
-    clippy::cast_possible_wrap,
-    reason = "edge coordinates fit i32 on a real surface"
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    reason = "clamped to the target, whose sides fit u16 and f32 exactly"
 )]
-fn bbox_of(edges: &[Edge], w: usize, h: usize) -> IRect {
+fn bbox_of(edges: &[Edge], [ox, oy]: [f32; 2], w: usize, h: usize) -> DrawBox {
     let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
     for e in edges {
         x0 = x0.min(e.x0.min(e.x1));
@@ -562,11 +919,15 @@ fn bbox_of(edges: &[Edge], w: usize, h: usize) -> IRect {
         x1 = x1.max(e.x0.max(e.x1));
         y1 = y1.max(e.y0.max(e.y1));
     }
-    IRect {
-        x0: (x0.floor() as i32).max(0).min(w as i32),
-        y0: (y0.floor() as i32).max(0).min(h as i32),
-        x1: (x1.ceil() as i32).max(0).min(w as i32),
-        y1: (y1.ceil() as i32).max(0).min(h as i32),
+    // Rounded addition is monotonic, so placing the extrema bounds every
+    // placed coordinate `e + offset`.
+    let (x0, y0, x1, y1) = (x0 + ox, y0 + oy, x1 + ox, y1 + oy);
+    let (w, h) = (w as f32, h as f32);
+    DrawBox {
+        x0: x0.floor().clamp(0.0, w) as u16,
+        y0: y0.floor().clamp(0.0, h) as u16,
+        x1: x1.ceil().clamp(0.0, w) as u16,
+        y1: y1.ceil().clamp(0.0, h) as u16,
     }
 }
 
@@ -635,16 +996,24 @@ fn integer_edges(r: Rect) -> Option<IRect> {
 }
 
 impl<'a, 'b> Lowering<'a, 'b> {
-    /// Starts a lowering into `items` for a `w` × `h` surface.
+    /// Starts a lowering for a `w` × `h` surface using its output and anchor buffers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one lowering's inputs travel together"
+    )]
     pub fn new(
-        items: &'a mut Vec<Item>,
+        buffers: (&'a mut Vec<Item>, &'a mut AnchorScratch),
         size: (u32, u32),
         filters: Option<&'a mut Registry>,
         frame: FrameId,
         fonts: &'b mut FxHashMap<u64, super::font::Font>,
         bitmap_fonts: &'b FxHashMap<u64, Arc<super::bitmap::BitmapFont>>,
-        bitmap_cache: &'b mut super::bitmap::BitmapCache,
+        (bitmap_cache, geometry): (&'b mut super::bitmap::BitmapCache, &'b mut GeometryCache),
+        level: fearless_simd::Level,
+        pool: &'a rayon::ThreadPool,
     ) -> Self {
+        let (items, anchor_scratch) = buffers;
+        anchor_scratch.clear();
         Self {
             items,
             filters,
@@ -656,6 +1025,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
             fonts,
             bitmap_fonts,
             bitmap_cache,
+            geometry,
             width: size.0 as usize,
             height: size.1 as usize,
             transform: Affine::IDENTITY,
@@ -665,10 +1035,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
             iso_spaces: Vec::new(),
             backdrops: FxHashMap::default(),
             scope_aprons: FxHashMap::default(),
+            anchor_scratch,
+            plan_order: 0,
             commands_lowered: 0,
             layers_composed: 0,
             local: None,
             projected: FxHashMap::default(),
+            level,
+            pool,
         }
     }
 
@@ -767,11 +1141,19 @@ impl<'a, 'b> Lowering<'a, 'b> {
         surface: SurfaceId,
         parent: Affine,
         scopes: &mut Vec<LayerId>,
+        canvas: Option<LayerId>,
     ) -> Result<(), RenderError> {
         let node = tree.layer(id);
         if self.projects(id, tree) {
             // Its members plan in its own local lowering.
             return Ok(());
+        }
+        self.plan_order += 1;
+        let order = self.plan_order;
+        if !self.anchor_scratch.refs.is_empty() && self.anchor_scratch.refs.contains(&id) {
+            self.anchor_scratch
+                .pos
+                .insert(id, (canvas, order, scopes.last().copied()));
         }
         let (transform, children) = self.placement(id, node, parent);
         if let Some(sample) = &node.backdrop {
@@ -795,40 +1177,33 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 .clip
                 .as_ref()
                 .ok_or(RenderError::Unsupported(names::BACKDROP_UNCLIPPED))?;
-            let member = clip_device_bounds(transform, clip);
-            let (effect, reach) = member_effect(sample.effect(), clip, transform)?;
-            let member = member.inflate(reach, reach);
-            let plan = self.backdrops.entry(g).or_insert_with(|| BackdropPlan {
-                first: id,
-                union: member,
-                union_rows: (0, 0),
-                region: IRect {
-                    x0: 0,
-                    y0: 0,
-                    x1: 0,
-                    y1: 0,
-                },
-                apron: 0,
-                reach: 0,
-                filter: prepared.filter.clone(),
-                members: FxHashMap::default(),
-                scope: scopes.last().copied(),
-            });
-            plan.union = plan.union.union(member);
-            plan.members.insert(
+            self.plan_member(
                 id,
-                Member {
-                    bounds: member,
-                    scope: scopes.last().copied(),
-                    effect,
-                },
-            );
+                sample,
+                clip,
+                transform,
+                prepared,
+                scopes.last().copied(),
+            )?;
+            if prepared.spec.anchor_layer().is_some() {
+                self.anchor_scratch.members.push((g, canvas, order));
+            }
         }
+        // A semantically isolating layer — filtered or blended — is its
+        // children's compositing canvas; other layers share their
+        // parent's.
+        let canvas = if node.filter.is_some() || node.blend != BlendMode::Normal {
+            Some(id)
+        } else {
+            canvas
+        };
         if node.filter.is_some() {
             scopes.push(id);
         }
         for child in &node.children {
-            self.plan_layer(*child, tree, groups, filters, surface, children, scopes)?;
+            self.plan_layer(
+                *child, tree, groups, filters, surface, children, scopes, canvas,
+            )?;
         }
         if node.filter.is_some() {
             scopes.pop();
@@ -836,17 +1211,98 @@ impl<'a, 'b> Lowering<'a, 'b> {
         Ok(())
     }
 
+    /// Plans layer `id`'s backdrop sample of group `prepared`: the member's
+    /// device clip bounds, its effect and, when the group unions its
+    /// members or the member draws an `outer` band, the clip's box its
+    /// field reads. `scope` is the innermost enclosing filtered layer.
+    ///
+    /// A clip without area — a line, or a circle or ellipse with a zero
+    /// radius — draws nothing, so the member keeps its place in the
+    /// group's paint order but samples nothing, as on the GPU; a union or
+    /// `outer` member needs its clip's box as its field and rejects it.
+    /// A path clip has no box: only a member that reads no distance may
+    /// use one.
+    fn plan_member(
+        &mut self,
+        id: LayerId,
+        sample: &cherenkov::BackdropSample,
+        clip: &ShapeData,
+        transform: Affine,
+        prepared: &super::filter::PreparedBackdrop,
+        scope: Option<LayerId>,
+    ) -> Result<(), RenderError> {
+        let g = sample.group().raw();
+        let outer = sample.outer_extent().get();
+        let spec = prepared.spec;
+        let field_member = spec.union_field().is_some() || outer > 0.0;
+        let (field, effect, reach) = match box_form(clip) {
+            BoxForm::Empty if field_member => {
+                return Err(RenderError::Unsupported(
+                    names::BACKDROP_UNION_DEGENERATE_MEMBER,
+                ));
+            }
+            // The member still orders the group — the capture lands at
+            // the first member in paint order — but samples nothing.
+            BoxForm::Empty => (
+                None,
+                None,
+                sample.effect().map_or(0.0, |e| f64::from(e.reach())),
+            ),
+            form => {
+                let clip_box = match form {
+                    BoxForm::Box { extra, shape } => Some(BoxClip::new(extra, shape, transform)),
+                    _ => None,
+                };
+                let field = field_member
+                    .then(|| {
+                        clip_box.ok_or(RenderError::Unsupported(names::BACKDROP_EFFECT_SDF_PATH))
+                    })
+                    .transpose()?;
+                let (effect, reach) = member_effect(sample.effect(), clip_box)?;
+                (field, Some(effect), reach)
+            }
+        };
+        let member = clip_device_bounds(transform, clip);
+        let plan = self
+            .backdrops
+            .entry(g)
+            .or_insert_with(|| BackdropPlan::new(id, member, spec, prepared.filter.clone(), scope));
+        // The capture footprint inflates the clip bounds by the
+        // effect's reach — the union pad lands in `plan_union`.
+        plan.union = plan.union.union(member.inflate(reach, reach));
+        let ord =
+            u32::try_from(plan.order.len()).expect("a group's members never exceed MAX_MEMBERS");
+        plan.order.push(id);
+        plan.members.insert(
+            id,
+            Member {
+                bounds: member,
+                draw: member,
+                reach,
+                field,
+                outer,
+                ord,
+                scope,
+                effect,
+            },
+        );
+        Ok(())
+    }
+
     /// Plans every backdrop group: a paint-order walk collecting each
     /// member's device-space clip bounds, then the capture region — the
-    /// union inflated by the chain footprint's apron, intersected with
-    /// the surface and rounded outward to integer pixels.
+    /// union on the capture grid inflated by the chain footprint's apron
+    /// in texels, intersected with the grid's extent and rounded outward
+    /// to whole texels.
     ///
     /// A member inside a filter scope samples rows within that scope's
-    /// window (`band ± apron`); each group's `reach` is the deepest such
-    /// apron over its members, and a scope directly containing a capture
-    /// grows its apron to `apron + reach` so the capture's window fits.
-    /// Both bounds are monotone in each other and capped at the surface
-    /// height, so the fixed point is found by iteration.
+    /// window (`band ± apron`), and every member's samples reach its
+    /// effect's `reach` past the sampled pixel; each group's `reach` is
+    /// the deepest `apron + effect reach` over its members, and a scope
+    /// directly containing a capture grows its apron to `apron + reach`
+    /// so the capture's window fits. Both bounds are monotone in each
+    /// other and capped at the surface height, so the fixed point is
+    /// found by iteration.
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -860,47 +1316,44 @@ impl<'a, 'b> Lowering<'a, 'b> {
         filters: &mut Registry,
     ) -> Result<(), RenderError> {
         let mut groups = FxHashMap::default();
+        self.anchor_scratch.clear();
+        self.anchor_scratch
+            .refs
+            .extend(filters.backdrop_anchors(surface));
+        self.backdrops.clear();
+        self.scope_aprons.clear();
+        self.plan_order = 0;
+        let start = self.start(tree);
         self.plan_layer(
-            self.start(tree),
+            start,
             tree,
             &mut groups,
             filters,
             surface,
             Affine::IDENTITY,
             &mut Vec::new(),
+            None,
         )?;
         if self.backdrops.is_empty() {
             return Ok(());
         }
         let h = self.height;
+        // Union fields: inflate every member's draw bounds by `r(n) +
+        // outer` plus 1.5px of antialiasing so bridge pixels between
+        // members and the `outer` band are captured and drawn, then
+        // recompute the capture's union from the inflated bounds. The
+        // member clip boxes, in paint order, become the fold's operands.
+        for plan in self.backdrops.values_mut() {
+            Self::plan_union(plan)?;
+        }
         for (gid, plan) in &mut self.backdrops {
             let footprint = groups[gid].footprint;
             if footprint.extent.partial_cmp(&0.5) != Some(std::cmp::Ordering::Less) {
                 return Err(RenderError::Unsupported(names::BACKDROP_FOOTPRINT));
             }
-            let (uw, uh) = (plan.union.width(), plan.union.height());
-            let y0 = plan.union.y0.floor().max(0.0) as usize;
-            let y1 = (plan.union.y1.ceil().min(h as f64) as usize).max(y0);
-            plan.union_rows = (y0, y1.min(h));
-            if uw.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
-                || uh.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater)
-            {
-                continue;
-            }
-            let a = (f64::from(footprint.extent).mul_add(uw.max(uh), f64::from(footprint.pixels))
-                / 2.0f64.mul_add(-f64::from(footprint.extent), 1.0))
-            .ceil();
-            let region = IRect {
-                x0: (plan.union.x0 - a).floor().max(0.0) as i32,
-                y0: (plan.union.y0 - a).floor().max(0.0) as i32,
-                x1: (plan.union.x1 + a).ceil().min(self.width as f64) as i32,
-                y1: (plan.union.y1 + a).ceil().min(h as f64) as i32,
-            };
-            plan.apron = a.min(h as f64) as usize;
-            if region.x0 < region.x1 && region.y0 < region.y1 {
-                plan.region = region;
-            }
+            plan.place(footprint, (self.width, h));
         }
+        self.plan_anchors(tree)?;
         // The apron a scope needs around each band — its own filter's
         // footprint, or `capture apron + reach` for scopes a capture
         // lands directly in.
@@ -936,14 +1389,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 let reach = plan
                     .members
                     .values()
-                    .filter_map(|m| m.scope.map(|s| aprons[&s]))
+                    .map(|m| m.scope.map_or(0, |s| aprons[&s]) + m.reach.ceil() as usize)
                     .fold(0, usize::max);
                 changed |= reach != plan.reach;
                 plan.reach = reach;
             }
             for plan in self.backdrops.values() {
                 if let Some(scope) = plan.scope {
-                    let needed = (plan.apron + plan.reach).min(h);
+                    let needed = (plan.device_apron + plan.reach).min(h);
                     let apron = aprons.get_mut(&scope).expect("capture scope registered");
                     if *apron < needed {
                         *apron = needed;
@@ -959,9 +1412,150 @@ impl<'a, 'b> Lowering<'a, 'b> {
         Ok(())
     }
 
-    /// Emits the member's `Sample` item, covering `member ∩ region` under
-    /// the clip in force.
-    fn emit_backdrop_sample(&mut self, gid: u64, member: LayerId) {
+    /// Validates every anchored group's member range and sets its capture
+    /// scope to the anchor's. A member can be any layer painting after the
+    /// anchor in the anchor's compositing canvas; anchored groups never
+    /// fall back to a capture at the member.
+    fn plan_anchors(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
+        let result = self.plan_anchors_inner(tree);
+        if result.is_err() {
+            self.anchor_scratch.links.clear();
+        }
+        result
+    }
+
+    fn plan_anchors_inner(&mut self, tree: &SurfaceTree) -> Result<(), RenderError> {
+        let scratch = &mut *self.anchor_scratch;
+        // Groups in ascending id, each group's members in paint order:
+        // paint-order indices are unique, so the unstable sort is exact.
+        scratch
+            .members
+            .sort_unstable_by_key(|&(gid, _, order)| (gid, order));
+        let mut start = 0;
+        while let Some(&(gid, _, _)) = scratch.members.get(start) {
+            let end = start + scratch.members[start..].partition_point(|m| m.0 == gid);
+            let members = &scratch.members[start..end];
+            start = end;
+            let (anchor, anchor_scope) = {
+                let anchor = self.backdrops[&gid]
+                    .spec
+                    .anchor_layer()
+                    .expect("only anchored groups record members");
+                if anchor == tree.root() {
+                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_AT_ROOT));
+                }
+                if tree.projective_pose(anchor).is_some() {
+                    return Err(RenderError::Unsupported(names::BACKDROP_ANCHOR_PROJECTIVE));
+                }
+                let Some(&(anchor_canvas, anchor_order, anchor_scope)) = scratch.pos.get(&anchor)
+                else {
+                    // The anchor is outside this walk: inside another
+                    // projective image its members here are outside its
+                    // canvas; an `id` nothing carries names nothing.
+                    return Err(RenderError::Unsupported(
+                        if tree.layers().any(|(id, _)| id.raw() == anchor.raw()) {
+                            names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                        } else {
+                            names::BACKDROP_UNKNOWN_ANCHOR
+                        },
+                    ));
+                };
+                for &(_, canvas, order) in members {
+                    if canvas == anchor_canvas && order > anchor_order {
+                        continue;
+                    }
+                    return Err(RenderError::Unsupported(if canvas == anchor_canvas {
+                        names::BACKDROP_MEMBER_BEFORE_ANCHOR
+                    } else {
+                        names::BACKDROP_MEMBER_OUTSIDE_ANCHOR_CANVAS
+                    }));
+                }
+                (anchor, anchor_scope)
+            };
+            let plan = self.backdrops.get_mut(&gid).expect("planned above");
+            // The capture lands at the anchor — its scope is the
+            // anchor's, not the first member's.
+            plan.scope = anchor_scope;
+            scratch.links.push((anchor, gid));
+        }
+        scratch
+            .links
+            .sort_unstable_by_key(|&(anchor, gid)| (anchor.raw(), gid));
+        Ok(())
+    }
+
+    /// Inflates a backdrop plan's members for the union field: draw bounds
+    /// grow by `r(n) + outer` plus 1.5px of antialiasing so bridge pixels
+    /// between members and the `outer` band are captured and drawn, and the
+    /// capture's union recomputes from the inflated bounds. The member
+    /// clip boxes, in paint order, become the fold's operands.
+    fn plan_union(plan: &mut BackdropPlan) -> Result<(), RenderError> {
+        let union_spec = plan.spec.union_field();
+        let needs_field = union_spec.is_some() || plan.members.values().any(|m| m.outer > 0.0);
+        if !needs_field {
+            return Ok(());
+        }
+        let n = plan.order.len();
+        if union_spec.is_some() && n > UNION_MAX_MEMBERS {
+            return Err(RenderError::Unsupported(names::BACKDROP_UNION_MEMBERS));
+        }
+        let k = union_spec.map_or(0.0, |u| f64::from(u.get()));
+        let r = union_spec.map_or(0.0, |u| u.inflation(n));
+        let mut union = Rect::new(
+            f64::INFINITY,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::NEG_INFINITY,
+        );
+        // Member clip boxes are fold operands, so they are collected only
+        // when the group has a union — a non-union member's outer band
+        // runs against its own field at raster time and no other
+        // member's box exists.
+        let mut members = Vec::new();
+        if union_spec.is_some() {
+            members.reserve_exact(n);
+        }
+        for &id in &plan.order {
+            let member = plan
+                .members
+                .get_mut(&id)
+                .expect("order lists planned members");
+            let pad = if union_spec.is_some() || member.outer > 0.0 {
+                r + f64::from(member.outer) + 1.5
+            } else {
+                // No field: the member is not inflated at all.
+                0.0
+            };
+            member.draw = member.bounds.inflate(pad, pad);
+            // The capture footprint carries the effect's reach too;
+            // the draw bounds do not.
+            union = union.union(
+                member
+                    .bounds
+                    .inflate(member.reach + pad, member.reach + pad),
+            );
+            if union_spec.is_some() {
+                members.push(member.field.expect("union members carry clip boxes"));
+            }
+        }
+        plan.union = union;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "smoothing distances fit in f32"
+        )]
+        if k > 0.0 {
+            plan.union_k = k as f32;
+            plan.union_members = members.into();
+        }
+        Ok(())
+    }
+
+    /// Emits the member's `Sample` item, covering the member's draw
+    /// bounds ∩ region, at full strength — the member's own scope
+    /// attenuates it at composite. A union member's item carries the
+    /// group's shared field and the ancestors-only clip (`ancestors`);
+    /// a non-union member's carries the clip in force, unchanged.
+    fn emit_backdrop_sample(&mut self, gid: u64, member: LayerId, ancestors: Option<&ClipRef>) {
         let Some(plan) = self.backdrops.get(&gid) else {
             return;
         };
@@ -971,12 +1565,17 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let Some(entry) = plan.members.get(&member) else {
             return;
         };
-        let (bounds, effect) = (entry.bounds, entry.effect.clone());
+        let Some(effect) = entry.effect.clone() else {
+            return;
+        };
+        let bounds = entry.draw;
+        // The device rect the region's texels cover.
+        let s = f64::from(plan.spec.scale().get());
         let region = Rect::new(
-            f64::from(plan.region.x0),
-            f64::from(plan.region.y0),
-            f64::from(plan.region.x1),
-            f64::from(plan.region.y1),
+            f64::from(plan.region.x0) / s,
+            f64::from(plan.region.y0) / s,
+            f64::from(plan.region.x1) / s,
+            f64::from(plan.region.y1) / s,
         );
         let bounds = bounds.intersect(region);
         if bounds.width() <= 0.0 || bounds.height() <= 0.0 {
@@ -993,11 +1592,40 @@ impl<'a, 'b> Lowering<'a, 'b> {
             x1: (bounds.x1.ceil() as i32).clamp(0, self.width as i32),
             y1: (bounds.y1.ceil() as i32).clamp(0, self.height as i32),
         };
+        // The union-fold data and clip the item carries: a union member
+        // composites under the ancestors-only clip against the shared
+        // field; a lone `outer` member gets its own one-member field;
+        // anything else composes under the clip in force, as today.
+        let (clip, union) = if plan.union_k > 0.0 {
+            (
+                ancestors.cloned(),
+                Some(UnionSample {
+                    members: plan.union_members.clone(),
+                    k: plan.union_k,
+                    ord: entry.ord,
+                    outer: entry.outer,
+                }),
+            )
+        } else if entry.outer > 0.0 {
+            (
+                ancestors.cloned(),
+                Some(UnionSample {
+                    members: Arc::from([entry.field.expect("outer members carry clip boxes")]),
+                    k: 0.0,
+                    ord: 0,
+                    outer: entry.outer,
+                }),
+            )
+        } else {
+            (self.clip.clone(), None)
+        };
         self.items.push(Item::Sample {
             group: gid,
             bounds,
-            clip: self.clip.clone(),
+            clip,
             effect,
+            union,
+            space: plan.spec.member_blend_space(),
         });
     }
 
@@ -1050,7 +1678,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         let (path, rule) = shape_outline(shape, tol_u)?;
         let edges = flatten_edges(self.transform * path, FLATTEN_TOL);
         let (edges, rule) = resolve_edges(edges, rule);
-        let mut mask = coverage_mask(&edges, rule, w, h);
+        let mut mask = self.pool.install(|| coverage_mask(&edges, rule, w, h));
         if let Some(current) = &self.clip {
             for (i, m) in mask.iter_mut().enumerate() {
                 let (px, py) = (i % w, i / w);
@@ -1089,15 +1717,17 @@ impl<'a, 'b> Lowering<'a, 'b> {
         body: impl FnOnce(&mut Self) -> Result<(), RenderError>,
     ) -> Result<(), RenderError> {
         let saved = std::mem::replace(&mut self.clip, inner_clip);
-        // A non-linear-space isolate changes pixels even when fully
-        // transparent and normally blended: it is semantic, never
-        // clip-only.
-        let clip_only = opacity >= 1.0
-            && blend.0 == BlendMode::Normal
-            && blend.1 == cherenkov::BlendSpace::Linear;
-        // Members composite in the declared space; a clip-only level
-        // shares the space it merges back into.
-        let space = if clip_only {
+        // A backdrop capture looks through a level exactly when it is
+        // `Normal`-blended in the linear space: pass-through and
+        // `opacity < 1` levels alike. A non-linear-space isolate changes
+        // pixels even when fully transparent and normally blended: it
+        // stays semantic.
+        let looked_through =
+            blend.0 == BlendMode::Normal && blend.1 == cherenkov::BlendSpace::Linear;
+        // A level that composites in isolation — semantic or translucent —
+        // keeps its declared space for members to composite in; a
+        // pass-through level shares the space it merges back into.
+        let space = if opacity >= 1.0 && looked_through {
             self.iso_spaces
                 .last()
                 .copied()
@@ -1105,7 +1735,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
         } else {
             blend.1
         };
-        self.iso_kinds.push(clip_only);
+        self.iso_kinds.push(looked_through);
         self.iso_spaces.push(space);
         self.items.push(Item::PushIsolate { space });
         let result = body(self);
@@ -1223,51 +1853,102 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.transform = cherenkov::snap_animating(self.transform);
             content_space = cherenkov::snap_animating(content_space);
         }
+        // An anchor's groups capture beneath it, before its own content
+        // and children.
+        self.emit_anchor_captures(id);
         if let Some(gid) = backdrop {
             self.emit_capture(gid, id);
         }
         let outer = self.clip.clone();
+        // A filtered member composites as a whole — its sample and its
+        // filtered content — with the member's opacity and blend. When
+        // neither is a no-op an outer member scope composites at
+        // (opacity, blend) under `composite_clip` below; the sample draws
+        // into it at full strength under the member clip, outside the
+        // filter, beside a nested filter scope at opacity 1, `Normal`
+        // blend over the items.
+        let member_scope = backdrop
+            .zip(node.filter)
+            .filter(|_| opacity < 1.0 || blend != BlendMode::Normal);
         let result = self.with_clip(node.clip.as_ref(), |s| {
             s.transform = content_space;
-            if let Some(gid) = backdrop {
-                s.emit_backdrop_sample(gid, id);
-            }
-            if let Some(filter) = node.filter {
-                let clip = s.clip.clone();
-                s.filter_isolate(
-                    filter,
-                    opacity,
-                    (blend, cherenkov::BlendSpace::Linear),
-                    clip,
-                    |s| s.layer_items(id, node, tree, caches),
-                    Some(id),
-                )
-            } else if opacity < 1.0
-                || blend != BlendMode::Normal
-                // The root already renders into the surface target, and a
-                // local root into its image.
-                || (id != s.start(tree) && node.blends_within())
-            {
-                // The composite's clip: for destructive operators the
-                // operator applies over the layer's effective clip, so the
-                // combined clip is the bound; for every other mode a
-                // transparent source leaves the destination unchanged, so
-                // the clip in force before the layer's own clip suffices —
-                // the layer clip's coverage is already on the content.
-                let composite_clip = if crate::render::blend::is_destructive(blend) {
-                    s.clip.clone()
-                } else {
-                    outer.clone()
-                };
-                s.isolate(
+            // The composite's clip: for destructive operators the
+            // operator applies over the layer's effective clip, so the
+            // combined clip is the bound; for every other mode a
+            // transparent source leaves the destination unchanged, so
+            // the clip in force before the layer's own clip suffices —
+            // the layer clip's coverage is already on the content.
+            let composite_clip = if crate::render::blend::is_destructive(blend) {
+                s.clip.clone()
+            } else {
+                outer.clone()
+            };
+            match member_scope {
+                Some((gid, filter)) => s.isolate(
                     opacity,
                     (blend, cherenkov::BlendSpace::Linear),
                     s.clip.clone(),
                     composite_clip,
-                    |s| s.layer_items(id, node, tree, caches),
-                )
-            } else {
-                s.layer_items(id, node, tree, caches)
+                    |s| {
+                        s.emit_backdrop_sample(gid, id, outer.as_ref());
+                        let clip = s.clip.clone();
+                        s.filter_isolate(
+                            filter,
+                            1.0,
+                            (BlendMode::Normal, cherenkov::BlendSpace::Linear),
+                            clip,
+                            |s| s.layer_items(id, node, tree, caches),
+                            Some(id),
+                        )
+                    },
+                ),
+                None => {
+                    if let Some(filter) = node.filter {
+                        // Opaque `Normal`-blended member (or no member at all):
+                        // the sample lands in the enclosing plane before the
+                        // isolation — the filter never covers it.
+                        if let Some(gid) = backdrop {
+                            s.emit_backdrop_sample(gid, id, outer.as_ref());
+                        }
+                        let clip = s.clip.clone();
+                        s.filter_isolate(
+                            filter,
+                            opacity,
+                            (blend, cherenkov::BlendSpace::Linear),
+                            clip,
+                            |s| s.layer_items(id, node, tree, caches),
+                            Some(id),
+                        )
+                    } else if opacity < 1.0
+                        || blend != BlendMode::Normal
+                        // The root already renders into the surface target, and a
+                        // local root into its image.
+                        || (id != s.start(tree) && node.blends_within())
+                    {
+                        // An unfiltered member's sample is its plane's
+                        // bottom-most content: the level's opacity and blend
+                        // apply to it exactly as to the member's items, once.
+                        s.isolate(
+                            opacity,
+                            (blend, cherenkov::BlendSpace::Linear),
+                            s.clip.clone(),
+                            composite_clip,
+                            |s| {
+                                if let Some(gid) = backdrop {
+                                    s.emit_backdrop_sample(gid, id, outer.as_ref());
+                                }
+                                s.layer_items(id, node, tree, caches)
+                            },
+                        )
+                    } else {
+                        if let Some(gid) = backdrop {
+                            // Nothing isolates: the member's content plane is
+                            // the enclosing one.
+                            s.emit_backdrop_sample(gid, id, outer.as_ref());
+                        }
+                        s.layer_items(id, node, tree, caches)
+                    }
+                }
             }
         });
         self.transform = saved;
@@ -1275,11 +1956,37 @@ impl<'a, 'b> Lowering<'a, 'b> {
         result
     }
 
-    /// Emits group `gid`'s capture when `id` is its first member in paint
-    /// order and its region is non-empty.
+    /// Emits every group's capture anchored at `id`, in group id order.
+    fn emit_anchor_captures(&mut self, id: LayerId) {
+        let start = self
+            .anchor_scratch
+            .links
+            .partition_point(|&(anchor, _)| anchor.raw() < id.raw());
+        let end = start
+            + self.anchor_scratch.links[start..]
+                .partition_point(|&(anchor, _)| anchor.raw() == id.raw());
+        for i in start..end {
+            let gid = self.anchor_scratch.links[i].1;
+            self.push_capture(gid);
+        }
+    }
+
+    /// Emits group `gid`'s capture when `id` is its capture point — its
+    /// first member for an unanchored group — and its region is
+    /// non-empty.
     fn emit_capture(&mut self, gid: u64, id: LayerId) {
+        if self
+            .backdrops
+            .get(&gid)
+            .is_some_and(|plan| plan.spec.anchor_layer().is_none() && plan.first == id)
+        {
+            self.push_capture(gid);
+        }
+    }
+
+    /// Pushes group `gid`'s capture item at the current position.
+    fn push_capture(&mut self, gid: u64) {
         if let Some(plan) = self.backdrops.get(&gid)
-            && plan.first == id
             && plan.region.x0 < plan.region.x1
             && plan.region.y0 < plan.region.y1
         {
@@ -1287,10 +1994,14 @@ impl<'a, 'b> Lowering<'a, 'b> {
             let union_rows = plan.union_rows;
             let apron = plan.apron;
             let reach = plan.reach;
+            let spec = plan.spec;
             let filter = plan.filter.clone();
+            let displaced = plan.members.values().any(|member| member.reach > 0.0);
             let flatten = self.iso_kinds.iter().rev().take_while(|&&k| k).count();
             self.items.push(Item::Capture(Box::new(CaptureItem {
                 group: gid,
+                scale: spec.scale(),
+                levels: spec.levels().get(),
                 region,
                 union: IRect {
                     x0: 0,
@@ -1315,6 +2026,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 },
                 apron,
                 reach,
+                displaced,
                 filter,
                 flatten,
             })));
@@ -1500,7 +2212,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         clip
     }
 
-    /// Reuse coverage until either its source command or device placement changes.
+    /// Reuse coverage until either its source command or device placement
+    /// changes. A fill or stroke whose new placement keeps the linear part
+    /// — a translation, a new clip or surface size — keeps its frame
+    /// geometry and is only placed again.
     fn leaf(&mut self, op: &Op, cache: &mut Realization<Emission>) -> Result<bool, RenderError> {
         if cache.valid
             && let Some(Emission::Draw(data)) = &cache.data
@@ -1509,26 +2224,48 @@ impl<'a, 'b> Lowering<'a, 'b> {
             self.items.extend_from_slice(&data.output);
             return Ok(false);
         }
-        let mut items = match cache.data.take() {
-            Some(Emission::Draw(data)) => data.output,
-            None => Vec::new(),
+        let (mut items, carried) = match cache.data.take() {
+            Some(Emission::Draw(data)) => {
+                let carried = match data.output.as_slice() {
+                    [
+                        Item::Draw {
+                            edges, rule, swept, ..
+                        },
+                    ] if cache.valid
+                        && matches!(op, Op::Fill { .. } | Op::Stroke { .. })
+                        && same_linear(data.transform, self.transform) =>
+                    {
+                        Some(Resolved {
+                            edges: edges.clone(),
+                            rule: *rule,
+                            swept: *swept,
+                        })
+                    }
+                    _ => None,
+                };
+                (data.output, carried)
+            }
+            None => (Vec::new(), None),
             Some(Emission::Clip(_)) => unreachable!("structural changes replace the cache layout"),
         };
         items.clear();
+        let mut anchor_scratch = AnchorScratch::default();
         let mut compose = Lowering::new(
-            &mut items,
+            (&mut items, &mut anchor_scratch),
             (0, 0),
             None,
             FrameId::new(0),
             &mut *self.fonts,
             self.bitmap_fonts,
-            &mut *self.bitmap_cache,
+            (&mut *self.bitmap_cache, &mut *self.geometry),
+            self.level,
+            self.pool,
         );
         compose.width = self.width;
         compose.height = self.height;
         compose.transform = self.transform;
         compose.clip = self.clip.clone();
-        compose.realize(op)?;
+        compose.realize(op, carried)?;
         self.glyphs.append(&mut compose.glyphs);
         self.glyphs_rasterized += compose.glyphs_rasterized;
         self.items.extend_from_slice(&items);
@@ -1537,7 +2274,10 @@ impl<'a, 'b> Lowering<'a, 'b> {
         Ok(true)
     }
 
-    fn realize(&mut self, op: &Op) -> Result<(), RenderError> {
+    /// Realizes `op` under the current placement. `carried` is the frame
+    /// geometry of a fill's or stroke's previous realization under the
+    /// same linear part, placed instead of flattening again.
+    fn realize(&mut self, op: &Op, carried: Option<Resolved>) -> Result<(), RenderError> {
         match op {
             Op::Fill {
                 local,
@@ -1545,7 +2285,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 paint,
             } => {
                 self.transform *= *local;
-                self.fill(shape, paint);
+                self.fill(shape, paint, carried);
                 Ok(())
             }
             Op::Stroke {
@@ -1555,7 +2295,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 paint,
             } => {
                 self.transform *= *local;
-                self.stroke(shape, stroke, paint);
+                self.stroke(shape, stroke, paint, carried);
                 Ok(())
             }
             Op::Shadow {
@@ -1584,65 +2324,87 @@ impl<'a, 'b> Lowering<'a, 'b> {
         }
     }
 
-    /// `Fill`: a flattened polygon of edges in device space.
-    fn fill(&mut self, shape: &ShapeData, paint: &PaintData) {
-        let sm = sigma_max(self.transform).max(1e-12);
-        let tol_u = FLATTEN_TOL / sm;
-        let Some((path, rule)) = shape_outline(shape, tol_u) else {
+    /// `Fill`: a flattened polygon of edges in the shape's frame, placed in
+    /// device space. `carried` replaces flattening and resolving.
+    fn fill(&mut self, shape: &ShapeData, paint: &PaintData, carried: Option<Resolved>) {
+        let transform = self.transform;
+        let frame = Frame::new(shape, None, transform);
+        let resolved = carried.or_else(|| {
+            self.geometry.resolve(shape, None, transform, || {
+                let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+                let (path, rule) = shape_outline(shape, tol_u)?;
+                Some((
+                    flatten_edges(frame.map(frame.anchored(path)), FLATTEN_TOL),
+                    rule,
+                ))
+            })
+        });
+        self.place(&frame, resolved, paint, true);
+    }
+
+    /// `Stroke`: `kurbo::stroke` the content-space path, map it into the
+    /// shape's frame, flatten and fill non-zero — dashes included, like
+    /// the oracle. `carried` replaces stroking, flattening and resolving.
+    fn stroke(
+        &mut self,
+        shape: &ShapeData,
+        stroke: &kurbo::Stroke,
+        paint: &PaintData,
+        carried: Option<Resolved>,
+    ) {
+        let transform = self.transform;
+        let frame = Frame::new(shape, Some(stroke), transform);
+        let resolved = carried.or_else(|| {
+            self.geometry.resolve(shape, Some(stroke), transform, || {
+                let tol_u = FLATTEN_TOL / sigma_max(transform).max(1e-12);
+                let path = match shape {
+                    ShapeData::Line(l) => {
+                        let mut p = BezPath::new();
+                        p.move_to(l.p0);
+                        p.line_to(l.p1);
+                        p
+                    }
+                    shape => shape_outline(shape, tol_u)?.0,
+                };
+                let outline = kurbo::stroke(
+                    frame.anchored(path),
+                    stroke,
+                    &kurbo::StrokeOpts::default(),
+                    tol_u,
+                );
+                Some((
+                    flatten_edges(frame.map(outline), FLATTEN_TOL),
+                    FillRule::NonZero,
+                ))
+            })
+        });
+        self.place(&frame, resolved, paint, false);
+    }
+
+    /// Places `resolved` frame geometry under the current transform as a
+    /// draw. With `cull`, a draw whose box misses the surface emits
+    /// nothing.
+    fn place(&mut self, frame: &Frame, resolved: Option<Resolved>, paint: &PaintData, cull: bool) {
+        let Some(Resolved { edges, rule, swept }) = resolved else {
             return;
         };
-        let edges = flatten_edges(self.transform * path, FLATTEN_TOL);
-        let (edges, rule) = resolve_edges(edges, rule);
         if edges.is_empty() {
             return;
         }
         let paint = paint.transformed(self.transform.inverse());
-        let bbox = bbox_of(&edges, self.width, self.height);
-        if bbox.x0 >= bbox.x1 || bbox.y0 >= bbox.y1 {
+        let offset = frame.offset;
+        let bbox = bbox_of(&edges, offset, self.width, self.height);
+        if cull && (bbox.x0 >= bbox.x1 || bbox.y0 >= bbox.y1) {
             return;
         }
         self.items.push(Item::Draw {
-            edges: edges.into(),
+            edges,
+            offset,
             bbox,
             rule,
             paint,
             clip: self.clip.clone(),
-        });
-    }
-
-    /// `Stroke`: `kurbo::stroke` the content-space path, transform,
-    /// flatten and fill non-zero — dashes included, like the oracle.
-    fn stroke(&mut self, shape: &ShapeData, stroke: &kurbo::Stroke, paint: &PaintData) {
-        let sm = sigma_max(self.transform).max(1e-12);
-        let tol_u = FLATTEN_TOL / sm;
-        let path = match shape {
-            ShapeData::Line(l) => {
-                let mut p = BezPath::new();
-                p.move_to(l.p0);
-                p.line_to(l.p1);
-                p
-            }
-            shape => {
-                let Some((path, _)) = shape_outline(shape, tol_u) else {
-                    return;
-                };
-                path
-            }
-        };
-        let outline = kurbo::stroke(path, stroke, &kurbo::StrokeOpts::default(), tol_u);
-        let edges = flatten_edges(self.transform * outline, FLATTEN_TOL);
-        let (edges, _) = resolve_edges(edges, FillRule::NonZero);
-        if edges.is_empty() {
-            return;
-        }
-        let paint = paint.transformed(self.transform.inverse());
-        let bbox = bbox_of(&edges, self.width, self.height);
-        self.items.push(Item::Draw {
-            edges: edges.into(),
-            bbox,
-            rule: FillRule::NonZero,
-            paint,
-            clip: self.clip.clone(),
+            swept,
         });
     }
 
@@ -1800,7 +2562,7 @@ impl<'a, 'b> Lowering<'a, 'b> {
                 rect.height() / f64::from(bitmap.image.height),
             );
         let paint = PaintData::bitmap(Arc::clone(&bitmap.image), image_transform);
-        self.fill(&ShapeData::Rect(rect), &paint);
+        self.fill(&ShapeData::Rect(rect), &paint, None);
         Ok(())
     }
 
@@ -1879,26 +2641,185 @@ pub fn silhouette_bytes(content: &ContentData) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::boundary_edges;
-    use cherenkov::kurbo::{RoundedRect, Shape as _};
+    use super::{AnchorScratch, Emission, Item, Lowering, Op, Realization};
+    use crate::render::bitmap::BitmapCache;
+    use crate::render::geometry::GeometryCache;
+    use crate::render::paint::PaintData;
+    use cherenkov::kurbo::{self, Affine, BezPath, Vec2};
+    use cherenkov::{FillRule, FrameId, LayerId, ShapeData};
+    use rustc_hash::FxHashMap;
+    use std::sync::Arc;
 
-    /// SDF edges keep horizontal segments: coverage drops them as
-    /// area-free, but distance effects measure to the real boundary.
-    #[test]
-    fn boundary_edges_include_horizontals() {
-        let path = RoundedRect::new(0.0, 0.0, 100.0, 80.0, 12.0).to_path(0.02);
-        let edges = boundary_edges(path, 0.02);
-        let horizontal = edges
+    /// A thick zigzag stroke at `at`: its outline overlaps itself at the
+    /// joins, so the winding sweep resolves it.
+    fn zigzag(at: Vec2) -> Op {
+        let mut path = BezPath::new();
+        path.move_to((6.0, 50.0));
+        path.line_to((30.0, 10.0));
+        path.line_to((34.0, 58.0));
+        path.line_to((58.0, 12.0));
+        path.apply_affine(Affine::translate(at));
+        Op::Stroke {
+            local: Affine::IDENTITY,
+            shape: ShapeData::Path {
+                elements: path.into_elements().into(),
+                rule: FillRule::NonZero,
+            },
+            stroke: kurbo::Stroke::new(9.0),
+            paint: PaintData::Solid([0.0, 0.0, 1.0, 1.0]),
+        }
+    }
+
+    /// `edges` as exact words.
+    fn bits(edges: &[super::Edge]) -> Vec<[u32; 4]> {
+        edges
             .iter()
-            .filter(|e| e.y0.to_bits() == e.y1.to_bits())
-            .count();
-        assert!(
-            horizontal >= 2,
-            "top and bottom edges kept, got {horizontal}"
+            .map(|e| [e.x0, e.y0, e.x1, e.y1].map(f32::to_bits))
+            .collect()
+    }
+
+    /// The single draw `op` realizes into `cache` under `transform` on a
+    /// 64 × 64 target: its frame edges, offset, box and whether it was
+    /// swept.
+    fn realize(
+        op: &Op,
+        transform: Affine,
+        cache: &mut Realization<Emission>,
+    ) -> (Arc<[super::Edge]>, [f32; 2], super::DrawBox, bool) {
+        let (mut items, mut scratch) = (Vec::new(), AnchorScratch::default());
+        let (mut fonts, bitmap_fonts) = (FxHashMap::default(), FxHashMap::default());
+        let (mut bitmaps, mut geometry) = (BitmapCache::new(0), GeometryCache::default());
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(1)
+            .build()
+            .expect("lowering test pool");
+        let mut lowering = Lowering::new(
+            (&mut items, &mut scratch),
+            (64, 64),
+            None,
+            FrameId::new(0),
+            &mut fonts,
+            &bitmap_fonts,
+            (&mut bitmaps, &mut geometry),
+            crate::Level::new(),
+            &pool,
         );
+        lowering.transform = transform;
+        lowering.leaf(op, cache).expect("realize");
+        let Some(Emission::Draw(data)) = &cache.data else {
+            unreachable!("a stroke realizes a draw");
+        };
+        let [
+            Item::Draw {
+                edges,
+                offset,
+                bbox,
+                swept,
+                ..
+            },
+        ] = data.output.as_slice()
+        else {
+            unreachable!("the zigzag is one draw");
+        };
+        (edges.clone(), *offset, *bbox, *swept)
+    }
+
+    /// The sweep's absolute epsilon and coordinate-scaled error bound see
+    /// frame coordinates, so the same path resolves to the same geometry
+    /// wherever it sits: at a small offset and around 2^20, translated
+    /// back, the resolved draws are identical.
+    #[test]
+    fn resolved_geometry_does_not_depend_on_where_the_path_sits() {
+        let place = |at: Vec2| {
+            let (edges, offset, _, swept) =
+                realize(&zigzag(at), Affine::IDENTITY, &mut Realization::default());
+            assert!(swept, "the zigzag overlaps at its joins");
+            let back = edges
+                .iter()
+                .map(|e| {
+                    [(e.x0, offset[0], at.x), (e.y0, offset[1], at.y)]
+                        .map(|(v, o, a)| (f64::from(v) + f64::from(o) - a).to_bits())
+                })
+                .collect::<Vec<_>>();
+            (edges, back)
+        };
+        let (near, near_back) = place(Vec2::new(3.25, 7.5));
+        let far_at = Vec2::new(f64::from(1u32 << 20) + 3.25, f64::from(1u32 << 20) + 7.5);
+        let (far, far_back) = place(far_at);
+        assert_eq!(
+            bits(&near),
+            bits(&far),
+            "frame geometry moved with the path"
+        );
+        assert_eq!(near_back, far_back, "translated back, the draws differ");
+    }
+
+    /// A placement that differs only by a translation keeps the
+    /// realization's resolved geometry and places it like a fresh
+    /// realization would; a change of scale resolves again.
+    #[test]
+    fn a_translated_placement_reuses_its_resolved_geometry() {
+        let op = zigzag(Vec2::ZERO);
+        let mut cache = Realization::default();
+        let (first, ..) = realize(&op, Affine::translate((1.25, -3.5)), &mut cache);
+        let moved = Affine::translate((-7.75, 4.0));
+        let (reused, offset, bbox, swept) = realize(&op, moved, &mut cache);
         assert!(
-            edges.iter().any(|e| (e.x0 - 100.0).abs() < 1e-4),
-            "right edge kept"
+            Arc::ptr_eq(&first, &reused),
+            "a translation flattened and resolved the path again"
+        );
+        let fresh = realize(&op, moved, &mut Realization::default());
+        assert_eq!(
+            bits(&fresh.0),
+            bits(&reused),
+            "a fresh realization resolves differently"
+        );
+        assert_eq!((fresh.1, fresh.2, fresh.3), (offset, bbox, swept));
+
+        let (scaled, ..) = realize(&op, Affine::scale(1.5), &mut cache);
+        assert!(
+            !Arc::ptr_eq(&first, &scaled),
+            "a new linear part reused geometry flattened at another scale"
+        );
+    }
+
+    #[test]
+    fn anchor_scratch_clear_retains_capacity_and_drops_old_links() {
+        let mut scratch = AnchorScratch::default();
+        assert_eq!(scratch.heap_bytes(), 0);
+        let first = LayerId::new(1);
+        scratch.refs.insert(first);
+        scratch.pos.insert(first, (None, 1, None));
+        scratch.members.push((7, None, 2));
+        scratch.links.push((first, 7));
+        let capacity = (
+            scratch.refs.capacity(),
+            scratch.pos.capacity(),
+            scratch.members.capacity(),
+            scratch.links.capacity(),
+        );
+        assert!(scratch.heap_bytes() > 0);
+
+        scratch.clear();
+        assert!(scratch.refs.is_empty());
+        assert!(scratch.pos.is_empty());
+        assert_eq!(scratch.members, [] as [(u64, Option<LayerId>, usize); 0]);
+        assert_eq!(scratch.links, [] as [(cherenkov::LayerId, u64); 0]);
+
+        let next = LayerId::new(2);
+        scratch.refs.insert(next);
+        scratch.pos.insert(next, (None, 2, None));
+        scratch.members.push((8, None, 3));
+        scratch.links.push((next, 8));
+        assert_eq!(scratch.links, [(next, 8)]);
+        assert_eq!(
+            (
+                scratch.refs.capacity(),
+                scratch.pos.capacity(),
+                scratch.members.capacity(),
+                scratch.links.capacity(),
+            ),
+            capacity
         );
     }
 }

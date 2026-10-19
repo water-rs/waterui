@@ -30,7 +30,7 @@ use waterui_controls::text_field::field;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Binding, Str};
 use waterui_form::secure::{Secure, secure};
-use waterui_graphics::cherenkov::Recorder;
+use waterui_graphics::draw::Recorder;
 use waterui_graphics::gpu::{Context as GpuContext, Frame as GpuFrame};
 use waterui_graphics::input::{Code, Key, NamedKey, SurfaceInputEvent};
 use waterui_graphics::{GpuContent, GpuContentView, RecordingResources, SceneContent, SceneView};

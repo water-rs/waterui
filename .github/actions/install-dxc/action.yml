@@ -5,6 +5,14 @@ description: >
   `dxc --version` — the check the call sites used to spell out as a second
   step. Pinned by commit so a bump is one edit, not five.
 
+inputs:
+  cache:
+    description: >-
+      Whether the installed binary is restored from and saved to an Actions
+      cache. "false" for e2e lanes, which keep no Actions cache.
+    required: false
+    default: "true"
+
 runs:
   using: composite
   steps:
@@ -14,6 +22,7 @@ runs:
     # download and the action entirely.
     - uses: actions/cache@v4
       id: cache
+      if: inputs.cache == 'true'
       with:
         path: dxc
         key: install-tool-v1-${{ runner.os }}-${{ runner.arch }}-dxc@v1.8.2505.1

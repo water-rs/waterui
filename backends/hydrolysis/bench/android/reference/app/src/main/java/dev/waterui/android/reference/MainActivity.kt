@@ -1,6 +1,5 @@
 package dev.waterui.android.reference
 
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -54,7 +53,7 @@ class MainActivity : ComponentActivity() {
             // reproducible parity baseline.
             val dark = isSystemInDarkTheme()
             val scheme =
-                if (!disableDynamic && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (!disableDynamic) {
                     if (dark) dynamicDarkColorScheme(this) else dynamicLightColorScheme(this)
                 } else {
                     if (dark) darkColorScheme() else lightColorScheme()

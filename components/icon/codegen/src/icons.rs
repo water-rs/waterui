@@ -15,6 +15,10 @@ use askama::Template;
 /// optional `IconGlyph` re-export, and the per-icon definitions.
 #[derive(Debug, Template)]
 #[template(path = "icon_module.rs.txt", escape = "none")]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "askama template input built by every icon build script: each field feeds the shared template, so a new field must fail their build rather than default silently"
+)]
 pub struct IconModule {
     /// Leading comment lines, each emitted verbatim as `// <line>`.
     pub banner: Vec<String>,
@@ -29,6 +33,10 @@ pub struct IconModule {
 
 /// The `FONT_FAMILY` constant emitted for webfont-capable icon sets.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "askama template input built by every icon build script: each field feeds the shared template, so a new field must fail their build rather than default silently"
+)]
 pub struct FontFamily {
     /// Doc-comment text placed above the constant.
     pub doc: String,
@@ -40,6 +48,10 @@ pub struct FontFamily {
 
 /// A single icon: an optional webfont glyph and an optional SVG section.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "askama template input built by every icon build script: each field feeds the shared template, so a new field must fail their build rather than default silently"
+)]
 pub struct IconEntry {
     /// Original (kebab-case) icon name, used in doc comments.
     pub source_name: String,
@@ -51,6 +63,10 @@ pub struct IconEntry {
 
 /// A webfont glyph constant (`pub const NAME: IconGlyph = ...`).
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "askama template input built by every icon build script: each field feeds the shared template, so a new field must fail their build rather than default silently"
+)]
 pub struct GlyphConst {
     /// Constant identifier (already disambiguated against path constants).
     pub const_name: String,
@@ -63,6 +79,10 @@ pub struct GlyphConst {
 /// The SVG-backed part of an icon: path constant, optional viewbox constant,
 /// and the `Svg` constructor function.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "askama template input built by every icon build script: each field feeds the shared template, so a new field must fail their build rather than default silently"
+)]
 pub struct SvgConst {
     /// Path constant identifier, e.g. `AB_TESTING_PATH`.
     pub path_const: String,
@@ -78,6 +98,10 @@ pub struct SvgConst {
 
 /// A `pub const NAME_VIEWBOX: (f32, f32) = (w, h);` constant.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "askama template input built by every icon build script: each field feeds the shared template, so a new field must fail their build rather than default silently"
+)]
 pub struct ViewboxConst {
     /// Constant identifier, e.g. `STAR_VIEWBOX`.
     pub const_name: String,

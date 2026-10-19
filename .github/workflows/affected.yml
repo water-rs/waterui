@@ -8,16 +8,19 @@ name: Affected scope
 # outside-package path no rule names selects everything; uncertainty
 # always widens the gate instead of narrowing it.
 #
-# Callers pass the comparison base — a pull request's base sha or a push's
-# `before` sha. Empty means "no diff": the whole workspace is in scope.
+# Callers pass the comparison base — a pull request's base branch as
+# fetched by the full checkout (`origin/<base>`), or a push's `before` sha.
+# The diff runs from its merge-base with `HEAD`. Empty means "no diff": the
+# whole workspace is in scope.
 
 on:
   workflow_call:
     inputs:
       base:
         description: >
-          Revision the diff is measured from (PR base sha, push `before`
-          sha). Empty selects the whole workspace.
+          Revision the diff is measured from, through its merge-base with
+          HEAD (`origin/<base branch>` for a pull request, the push's
+          `before` sha). Empty selects the whole workspace.
         type: string
         required: false
         default: ""
@@ -38,19 +41,18 @@ on:
           `true` when the diff can move the toolchain floor — a
           rust-version key, a dependency section, or Cargo.lock.
         value: ${{ jobs.scope.outputs.msrv }}
-      test-assets:
-        description: >
-          `true` when a package whose test targets compile generated
-          assets — hydrolysis's fonts/fixture or waterui-cli's generated
-          font — is in scope.
-        value: ${{ jobs.scope.outputs.test-assets }}
       scene-assets:
         description: >
-          `true` when cherenkov-oracle or cherenkov-gpu is in scope — the
-          packages whose `--all-targets` compile `include_bytes!`s the
-          generated Cherenkov scene fonts — so the scene tree must exist
-          before the check.
+          `true` when cherenkov-oracle, cherenkov-gpu, or cherenkov-cpu is
+          in scope — the packages whose `--all-targets` compile
+          `include_bytes!`s the generated Cherenkov scene fonts — so the
+          fonts must exist before the check.
         value: ${{ jobs.scope.outputs.scene-assets }}
+      apple-legs:
+        description: >
+          JSON list of test.yml's `macos` matrix entries — the Apple lint
+          targets with an Apple-gated crate in scope — or `[]`.
+        value: ${{ jobs.scope.outputs.apple-legs }}
 
 jobs:
   scope:
@@ -62,8 +64,8 @@ jobs:
       package-args: ${{ steps.compute.outputs.package-args }}
       comment-only: ${{ steps.compute.outputs.comment-only }}
       msrv: ${{ steps.compute.outputs.msrv }}
-      test-assets: ${{ steps.compute.outputs.test-assets }}
       scene-assets: ${{ steps.compute.outputs.scene-assets }}
+      apple-legs: ${{ steps.compute.outputs.apple-legs }}
     steps:
       - uses: actions/checkout@v4
         # The diff and the base revision's package graph both need the
@@ -94,6 +96,11 @@ jobs:
       - name: Build the determinator tool
         if: steps.affected-tool.outputs.cache-hit != 'true'
         run: cargo build --locked --release --manifest-path .github/tools/affected/Cargo.toml
+      # The `test-fonts` nextest setup script names the packages it serves
+      # (.config/nextest.toml); the set is a fact of the package graph, so
+      # the rule fails here, naming each package, as soon as it drifts.
+      - name: Check the nextest fixture rules against the package graph
+        run: .github/tools/affected/target/release/affected nextest-fixtures
       - uses: astral-sh/setup-uv@v6
       - name: Compute the affected set
         id: compute
@@ -106,8 +113,8 @@ jobs:
               echo "package-args="
               echo "comment-only=false"
               echo "msrv=true"
-              echo "test-assets=true"
               echo "scene-assets=true"
+              echo "apple-legs=$(python3 .github/scripts/apple_gated.py --legs workspace)"
             } >> "$GITHUB_OUTPUT"
           else
             uv run .github/scripts/affected.py --base "${{ inputs.base }}"

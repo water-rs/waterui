@@ -13,7 +13,7 @@
 
 use serde::Serialize;
 
-use crate::platform::{InputEvent, KeyCode, KeyState, Modifiers, PlatformWindow};
+use crate::platform::{InputEvent, KeyState, Modifiers, PlatformWindow};
 use crate::runner::editing::{AnchorInfo, EditingSession, EditingState, EditorContextAction};
 
 use super::host::AndroidSession;
@@ -61,16 +61,16 @@ impl Default for ImeBridge {
 
 impl ImeBridge {
     /// `sendKeyEvent` — a hardware/IME key press the `InputConnection` routed,
-    /// already decoded by Kotlin to a W3C key name.
+    /// already decoded by Kotlin to a W3C key value.
     pub fn key_event(
         platform: &mut super::host::AndroidHostWindow,
-        key: String,
+        key: &str,
         pressed: bool,
         modifiers: Modifiers,
     ) {
-        let code = KeyCode::Named(key);
+        let (code, logical_key) = crate::runner::editing::hardware_key(key);
         platform.push_event(InputEvent::Key {
-            logical_key: code.to_w3c_key(),
+            logical_key,
             key: code,
             physical_code: keyboard_types::Code::Unidentified,
             repeat: false,
@@ -225,6 +225,41 @@ impl AndroidSession {
         self.runtime.request_refresh();
         self.runtime.platform.request_redraw();
         self.editing_sync();
+    }
+
+    /// Pull the platform-view focus answer once per frame. `on_frame`
+    /// calls this first, before `render_window`'s consumers — the
+    /// `sync_text_input_state` hold gate and this sync both read this
+    /// frame's answer, not the previous one's. The Kotlin registry
+    /// schedules the frame itself on a container focus change — posting a
+    /// Choreographer callback is all its hook does — so the pull can
+    /// never re-enter the session the way the pushed listener did inside
+    /// `requestFocus`/`removeView` while it was borrowed.
+    pub(crate) fn platform_view_focus_sync(&mut self) {
+        // Apps without platform views pay nothing: while the published
+        // table is empty and nothing holds focus, skip the JNI round trip.
+        if self.platform_views.table().borrow().placements().is_empty()
+            && !self.runtime.platform.platform_view_focus.is_holding()
+        {
+            return;
+        }
+        let inside = self.runtime.platform.bridge.platform_view_focus_inside();
+        // Only the flip edge acts. A platform-view child taking UI focus —
+        // tapping a field inside the system WebView — owns the IME now:
+        // clear the renderer's stale `WaterUI` text-input claim so the
+        // state never reports a Hydrolysis field focused while the page
+        // holds focus. Only the edge clears: a claim set during the hold
+        // is the user's hand-off tap on a Hydrolysis field and must
+        // survive to the show. Either edge refreshes and redraws — a
+        // released claim has to reach the frame too, not only the gain.
+        if !self.runtime.platform.platform_view_focus.set(inside) {
+            return;
+        }
+        if self.runtime.platform.platform_view_focus.is_holding() {
+            let _ = self.runtime.renderer.clear_ui_focus();
+        }
+        self.runtime.request_refresh();
+        self.runtime.platform.request_redraw();
     }
 
     /// Reconcile the mirror with the renderer's authoritative snapshot and

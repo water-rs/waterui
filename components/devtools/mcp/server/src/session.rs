@@ -587,12 +587,9 @@ impl<'a> Session<'a> {
                     Ok(point) => point,
                     Err(result) => return result,
                 };
-                let steps = args
-                    .steps
-                    .map_or_else(DragOptions::default, |steps| DragOptions {
-                        steps,
-                        ..DragOptions::default()
-                    });
+                let steps = args.steps.map_or_else(DragOptions::default, |steps| {
+                    DragOptions::default().with_steps(steps)
+                });
                 self.app.queue_drag_from_to_with(x, y, to_x, to_y, steps);
             }
             PointerKind::Scroll => {
@@ -903,13 +900,7 @@ mod tests {
     fn drop_files_at_a_point_delivers_every_path() {
         let (mut session, received) = drop_files_session();
         let result = run_command(&mut session, |reply| Command::DropFiles {
-            args: DropFilesArgs {
-                paths: dropped_paths(),
-                x: 180.0,
-                y: 120.0,
-                node: None,
-                settle: None,
-            },
+            args: DropFilesArgs::new(dropped_paths(), 180.0, 120.0),
             reply,
         });
         assert!(!result.is_error(), "{:?}", result.error_message());
@@ -921,13 +912,9 @@ mod tests {
         let (mut session, received) = drop_files_session();
         let node = node_id_of(&snapshot_text(&mut session), "Drop files here");
         let result = run_command(&mut session, |reply| Command::DropFiles {
-            args: DropFilesArgs {
-                paths: dropped_paths(),
-                x: 0.5,
-                y: 0.5,
-                node: Some(node),
-                settle: Some(true),
-            },
+            args: DropFilesArgs::new(dropped_paths(), 0.5, 0.5)
+                .with_node(node)
+                .with_settle(true),
             reply,
         });
         assert!(!result.is_error(), "{:?}", result.error_message());
@@ -938,13 +925,7 @@ mod tests {
     fn drop_files_rejects_an_empty_path_list() {
         let (mut session, _) = drop_files_session();
         let result = run_command(&mut session, |reply| Command::DropFiles {
-            args: DropFilesArgs {
-                paths: Vec::new(),
-                x: 10.0,
-                y: 10.0,
-                node: None,
-                settle: None,
-            },
+            args: DropFilesArgs::new(Vec::new(), 10.0, 10.0),
             reply,
         });
         assert!(result.is_error());

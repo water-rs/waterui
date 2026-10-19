@@ -2,8 +2,9 @@
 use crate::renderer::AccessibilityActionTarget;
 use crate::renderer::{
     HydroNativeView, HydroState, RenderContext, WidgetRenderContext, local_interaction_state,
-    measure_label_intrinsic, transformed_rect,
+    measure_label_intrinsic,
 };
+use crate::theme::StepperEnd;
 #[cfg(feature = "accessibility")]
 use accesskit::{
     Action as AccessibilityAction, Node as AccessibilityNode, Role as AccessibilityNodeRole,
@@ -11,7 +12,6 @@ use accesskit::{
 use nami::Signal;
 use std::cell::RefCell;
 use std::rc::Rc;
-use waterui_backend_core::widget::StepperEnd;
 use waterui_controls::stepper::StepperConfig;
 use waterui_core::layout::Size as LayoutSize;
 use waterui_core::layout::{ProposalSize, ViewDimensions};
@@ -45,6 +45,13 @@ impl StepperRenderState {
     ) {
         self.label_view.ensure_built(renderer, env);
     }
+
+    /// Consume the label sub-view's layout-dirty marks: its measured size
+    /// feeds the stepper's, so an enclosing retained sub-view must see them
+    /// (water-rs/waterui#1957).
+    pub(crate) fn take_layout_dirty(&mut self) -> bool {
+        self.label_view.take_layout_dirty_if_built()
+    }
 }
 
 impl HydroNativeView for Native<StepperConfig> {
@@ -52,7 +59,7 @@ impl HydroNativeView for Native<StepperConfig> {
         state: &mut crate::renderer::HydroState,
         view: &Self,
         env: &Environment,
-        theme: &Rc<dyn crate::engine::WidgetTheme>,
+        theme: &Rc<dyn crate::theme::WidgetTheme>,
     ) -> LayoutSize {
         measure_stepper_intrinsic(view.as_inner(), state, env, theme)
     }
@@ -137,7 +144,7 @@ pub fn measure_stepper_node(
     _proposal: ProposalSize,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> ViewDimensions {
     let metrics = theme.stepper_metrics();
     let label_size = render_state.label_view.measure_built(state, env, theme);
@@ -228,21 +235,27 @@ pub fn render_stepper_parts(
     if label_bounds.width() > 0.0 {
         // A disabled control dims its label to the theme's disabled-content
         // alpha (Material: on-surface at 38% for default-colored labels).
-        ctx.with_clip_rect_scope_if(
+        ctx.with_scope_if(
             disabled,
+            crate::renderer::mount::ScopeKey {
+                role: "label-dim",
+                item: 0,
+            },
             theme.disabled_content_alpha(),
             label_bounds,
             |ctx| {
                 let render_ctx = ctx.render_context();
+                let label_area = ctx.safe_area_for(label_bounds);
                 let label_view = &mut state.label_view;
                 ctx.renderer_mut()
                     .with_suppressed_accessibility(|renderer| {
-                        label_view.flush_in_rect(
+                        label_view.place(
                             renderer,
                             render_ctx,
                             env,
                             ProposalSize::UNSPECIFIED,
                             label_bounds,
+                            label_area,
                         );
                     });
             },
@@ -261,9 +274,9 @@ pub fn render_stepper_parts(
         controls_bounds.x1,
         controls_bounds.y1,
     );
-    let hit_transform = ctx.hit_transform;
-    let minus_hit_bounds = transformed_rect(hit_transform, minus_bounds);
-    let plus_hit_bounds = transformed_rect(hit_transform, plus_bounds);
+    let hit_transform = ctx.renderer_mut().current_hit_transform();
+    let minus_hit_bounds = minus_bounds;
+    let plus_hit_bounds = plus_bounds;
     let (minus_interaction, minus_press_slot, _) = ctx
         .renderer_mut()
         .bind_control_interaction_target(minus_interaction_key, minus_hit_bounds, env, disabled);
@@ -272,8 +285,12 @@ pub fn render_stepper_parts(
         .bind_control_interaction_target(plus_interaction_key, plus_hit_bounds, env, disabled);
     let minus_interaction = local_interaction_state(minus_interaction, hit_transform);
     let plus_interaction = local_interaction_state(plus_interaction, hit_transform);
-    ctx.with_clip_rect_scope_if(
+    ctx.with_scope_if(
         disabled,
+        crate::renderer::mount::ScopeKey {
+            role: "controls-dim",
+            item: 0,
+        },
         theme.disabled_content_alpha(),
         controls_bounds,
         |ctx| {
@@ -357,7 +374,7 @@ pub fn measure_stepper_intrinsic(
     stepper: &StepperConfig,
     state: &mut HydroState,
     env: &Environment,
-    theme: &Rc<dyn crate::engine::WidgetTheme>,
+    theme: &Rc<dyn crate::theme::WidgetTheme>,
 ) -> LayoutSize {
     let metrics = theme.stepper_metrics();
     let label_size = measure_label_intrinsic(&stepper.label, state, env, theme);
@@ -403,7 +420,7 @@ pub fn emit_stepper_accessibility(
 /// own height on the buttons' centre line — see [`label_beside_control_bounds`].
 fn stepper_control_and_label_bounds(
     bounds: kurbo::Rect,
-    metrics: waterui_backend_core::widget::StepperMetrics,
+    metrics: crate::theme::StepperMetrics,
     label_height: f64,
 ) -> (kurbo::Rect, kurbo::Rect) {
     let button_size = bounds
@@ -431,8 +448,8 @@ fn stepper_control_and_label_bounds(
 #[cfg(test)]
 mod tests {
     use super::stepper_control_and_label_bounds;
+    use crate::theme::StepperMetrics;
     use kurbo::Rect;
-    use waterui_backend_core::widget::StepperMetrics;
 
     #[test]
     fn label_shares_the_controls_centre_line() {
@@ -441,6 +458,6 @@ mod tests {
             stepper_control_and_label_bounds(Rect::new(16.0, 20.0, 320.0, 60.0), metrics, 16.0);
         assert_eq!(controls, Rect::new(248.0, 24.0, 320.0, 56.0));
         assert_eq!(label, Rect::new(16.0, 32.0, 240.0, 48.0));
-        assert_eq!(label.center().y, controls.center().y);
+        approx::assert_relative_eq!(label.center().y, controls.center().y);
     }
 }

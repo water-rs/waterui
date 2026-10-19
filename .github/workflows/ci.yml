@@ -34,9 +34,18 @@ on:
     # edited covers retargeting the pull request between dev and main.
     types: [opened, reopened, synchronize, edited]
 
+# A pull request cancels its superseded run. A `main` push queues instead:
+# its lint job is the cache writer for that ref, and a writer cancelled
+# mid-sweep or mid-save leaves no archive for the runs after it (#2338).
+# The group still drops a queued run that a newer push supersedes.
+# Metadata edits have their own run-specific group and skip all jobs, so they
+# cannot cancel source validation. Their distinct check names also prevent a
+# skipped check from replacing a pending or failed source verdict (#2655).
+# GitHub leaves skipped ordinary job names as literal expressions; those
+# literals are also distinct from every required source check name.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && format('metadata-{0}', github.run_id) || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -70,13 +79,15 @@ env:
 jobs:
   # Which checks this change can reach. `code` is any changed file that is
   # not prose or repository metadata, so a docs-only change runs the typo
-  # check and nothing else; `ffi` is the C ABI and the root manifest whose
-  # metadata names its Android floor; `deps` is what the audit, license and
-  # unused-dependency checks read. A workflow change runs the whole gate, because a
+  # check and nothing else; `deps` is what the audit, license and
+  # unused-dependency checks read; `android` is the CLI's Android paths and
+  # the Hydrolysis Android host, the only changes that can break the
+  # create/build/package cycle the `android-package` job runs. A workflow
+  # change runs the whole gate, because a
   # filter cannot see what a workflow edit reaches.
   #
   # Two filter steps, because dorny/paths-filter applies one quantifier to
-  # every filter it evaluates: `ffi`/`deps`/`workflows` match any pattern,
+  # every filter it evaluates: `deps`/`workflows` match any pattern,
   # while `code` matches a file outside every prose pattern. The second
   # step combines negated patterns with `predicate-quantifier: every`. For a
   # `pull_request` event the action reads the changed files from the API; a
@@ -84,18 +95,17 @@ jobs:
   # the pushed ref, and is ignored for pull requests), which needs the history
   # the checkout below fetches.
   changes:
-    name: Changes
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Changes
     # The compile-check gate does not run on dev pushes (dev.yml owns that
     # signal); every job below either needs this one or skips itself.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    if: (github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
       code: ${{ steps.prose.outputs.code == 'true' || steps.filter.outputs.workflows == 'true' }}
-      ffi: ${{ steps.filter.outputs.ffi == 'true' || steps.filter.outputs.workflows == 'true' }}
       deps: ${{ steps.filter.outputs.deps == 'true' || steps.filter.outputs.workflows == 'true' }}
       scripts: ${{ steps.filter.outputs.scripts == 'true' || steps.filter.outputs.workflows == 'true' }}
-      android-backend: ${{ steps.filter.outputs.android-backend == 'true' || steps.filter.outputs.workflows == 'true' }}
+      android: ${{ steps.filter.outputs.android == 'true' || steps.filter.outputs.workflows == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'push'
@@ -106,31 +116,22 @@ jobs:
         with:
           base: ${{ github.ref_name }}
           filters: |
-            ffi:
-              - "ffi/**"
-              - "Cargo.toml"
-            # The backend crate and every path that can reach its compile:
-            # itself, the in-repo crates it and the `waterui` facade depend
-            # on (`src/`, `core/`, `backends/core/`, `components/`, `utils/`,
-            # `macros/`), and the manifests + lockfile its git dependencies
-            # (jni, nami, native-executor, waterkit, cherenkov) resolve
-            # through.
-            android-backend:
-              - "backends/android/**"
-              - "src/**"
-              - "core/**"
-              - "backends/core/**"
-              - "components/**"
-              - "utils/**"
-              - "macros/**"
-              - "**/Cargo.toml"
-              - "Cargo.lock"
             deps:
               - "**/Cargo.toml"
               - "**/Cargo.lock"
               - "deny.toml"
             scripts:
               - ".github/scripts/**"
+              - "Cargo.toml"
+            android:
+              - "cli/src/android/**"
+              - "cli/src/hydrolysis/android.rs"
+              - "cli/src/templates/*android*/**"
+              - "cli/src/toolchain/**"
+              - "cli/src/toolchain_checks.rs"
+              - "cli/Cargo.toml"
+              - "backends/hydrolysis/android/**"
+              # `[package.metadata.waterui]`'s Android keys drive the scaffold.
               - "Cargo.toml"
             workflows:
               - ".github/workflows/**"
@@ -156,16 +157,24 @@ jobs:
   # move the toolchain floor — a `rust-version`, dependency-section or
   # Cargo.lock change — because a source edit cannot raise it and the
   # signal repeats in the nightly sweep instead.
+  #
+  # A pull request is measured against its base branch, not the event's
+  # `pull_request.base.sha`: the checkout is the test merge commit of the
+  # head into the base branch's current tip, while the event's base sha can
+  # sit commits behind it, and the diff from there pulled every
+  # intervening merge — other pull requests' lockfile changes included —
+  # into this pull request's scope (#2338). The merge-base of the base
+  # branch and the merge commit is the tip the head was merged into.
   scope:
-    name: Affected scope
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Affected scope
+    if: (github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main'
     uses: ./.github/workflows/affected.yml
     with:
-      base: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+      base: ${{ github.event_name == 'pull_request' && format('origin/{0}', github.base_ref) || github.event.before }}
 
   typos:
-    name: Typos
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Typos
+    if: (github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -182,16 +191,27 @@ jobs:
   # The release scripts derive the certified `framework.json` from the root
   # manifest; their tests pin that derivation to the tree, so they run whenever
   # the scripts or the manifest change.
+  # Required ordinary jobs must be scheduled on source events: GitHub does
+  # not evaluate the name of a skipped ordinary job. Apply scope to their
+  # steps so out-of-scope source changes still report the required context;
+  # metadata events skip the entire job without reporting that context.
   scripts:
-    name: Release scripts
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Release scripts
     needs: changes
-    if: needs.changes.outputs.scripts == 'true'
+    if: always() && ((github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Require successful scope discovery
+        env:
+          CHANGES: ${{ needs.changes.result }}
+        run: test "$CHANGES" = success
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.scripts == 'true'
       - uses: astral-sh/setup-uv@v6
+        if: needs.changes.outputs.scripts == 'true'
       - name: Manifest derivation tests
+        if: needs.changes.outputs.scripts == 'true'
         run: >
           uv run --with pytest --with 'tree-sitter==0.26.0'
           --with 'tree-sitter-rust==0.24.2' pytest .github/scripts
@@ -202,29 +222,38 @@ jobs:
   # They share nothing that isolates them from each other, so one job running
   # them sequentially pays that fixed cost once instead of three times.
   hygiene:
-    name: Hygiene
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Hygiene
     needs: changes
-    if: needs.changes.outputs.deps == 'true'
+    if: always() && ((github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      - name: Require successful scope discovery
+        env:
+          CHANGES: ${{ needs.changes.result }}
+        run: test "$CHANGES" = success
       - uses: actions/checkout@v4
+        if: needs.changes.outputs.deps == 'true'
       # Restore-only: this job and Features share `ci-ubuntu`, and two jobs
       # saving the same key race for the reservation, so one of them always
       # loses and uploads nothing. Features owns the write because it builds
       # the larger graph.
       - uses: ./.github/actions/setup-rust
+        if: needs.changes.outputs.deps == 'true'
         with:
           cache: "false"
       # Reads the shared `cargo-sources` archive owned by this OS's single
       # writer job; read-only lanes never save, so they cannot evict caches.
       - name: Restore Cargo sources
+        if: needs.changes.outputs.deps == 'true'
         uses: ./.github/actions/cargo-sources
       # Only the license check below needs a native dependency (nasm, for a
       # build script) and it never runs a GUI/audio/video stack, so this job
       # does not need the full setup-linux-deps package list.
       - uses: ./.github/actions/refresh-apt-index
+        if: needs.changes.outputs.deps == 'true'
       - run: sudo apt-get -o Acquire::Retries=10 install -y nasm
+        if: needs.changes.outputs.deps == 'true'
       # The audit and deny checks run against the COMMITTED Cargo.lock — the
       # dependency set the workspace actually builds. A `cargo generate-lockfile`
       # step used to precede them; it silently re-resolved everything to the
@@ -237,22 +266,28 @@ jobs:
       # cargo-audit from a fresh resolution on every run, which put a broken,
       # newly published dependency of the *tool* on our critical path (#316).
       - uses: ./.github/actions/install-tool
+        if: needs.changes.outputs.deps == 'true'
         with:
           tool: cargo-audit@0.22.2
           path: ~/.cargo/bin/cargo-audit*
       - name: Security audit
+        if: needs.changes.outputs.deps == 'true'
         run: cargo audit
       - uses: ./.github/actions/install-tool
+        if: needs.changes.outputs.deps == 'true'
         with:
           tool: cargo-deny@0.20.2
           path: ~/.cargo/bin/cargo-deny*
       - name: License and ban check
+        if: needs.changes.outputs.deps == 'true'
         run: cargo deny check licenses bans
       - uses: ./.github/actions/install-tool
+        if: needs.changes.outputs.deps == 'true'
         with:
           tool: cargo-machete@0.9.2
           path: ~/.cargo/bin/cargo-machete*
       - name: Unused dependencies
+        if: needs.changes.outputs.deps == 'true'
         run: |
           cargo machete --with-metadata
 
@@ -266,7 +301,7 @@ jobs:
   # `wgpu/dx12`, which forwards to it. The check blocks an invalid lockfile;
   # it does not alter Cargo's resolution.
   windows-dx12:
-    name: Windows DX12 deps
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Windows DX12 deps
     needs: changes
     if: needs.changes.outputs.deps == 'true'
     runs-on: ubuntu-latest
@@ -291,9 +326,9 @@ jobs:
   # boundary, there it sweeps the whole workspace nightly — the signal
   # moves, it does not disappear.
   msrv:
-    name: MSRV
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}MSRV
     needs: [changes, scope]
-    if: needs.scope.outputs.msrv == 'true'
+    if: always() && ((github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # An ordinary job, not a workflow_call: `MSRV` is a required status
@@ -301,83 +336,82 @@ jobs:
     # required context never fires. The shared steps live in the
     # `.github/actions/msrv` composite.
     steps:
+      - name: Require successful scope discovery
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          SCOPE: ${{ needs.scope.result }}
+        run: test "$CHANGES" = success && test "$SCOPE" = success
       - uses: actions/checkout@v4
+        if: needs.scope.outputs.msrv == 'true'
       - uses: ./.github/actions/msrv
+        if: needs.scope.outputs.msrv == 'true'
 
-  android-ffi:
-    name: Android FFI
+  # Packaging is the only signal that drives the CLI's Android path end to
+  # end on a clean machine (#2290): `water create` scaffolds against this
+  # checkout, `water build` compiles the workspace for
+  # `aarch64-linux-android`, and `water package` builds the Hydrolysis
+  # Gradle host into an APK — a defect in that path passes every other leg
+  # and only surfaces on a device. The gate pays for it only when the CLI's
+  # Android paths or the Hydrolysis Android host change; the nightly
+  # `cli-e2e` legs run the same cycle unconditionally.
+  android-package:
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Android package
     needs: changes
-    if: needs.changes.outputs.ffi == 'true'
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    # `waterui-ffi` selects its ABI with mutually exclusive features, and
-    # `ffi/src/lib.rs` turns "both" into a `compile_error!`. Every other leg
-    # therefore builds the `c-api` half, and nothing at all compiled
-    # `ffi/src/jni/` or the `cfg(target_os = "android")` bodies it reaches — a
-    # compile error there used to arrive on a device rather than in CI.
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-      # Its own key: this is the only leg that compiles the dependency graph
-      # for an Android target, so it shares no artifacts with the others and
-      # storing it under theirs would evict a tarball nothing else can use.
+      # Its own cache story: the job builds the workspace for
+      # `aarch64-linux-android` and compiles the CLI for the host, so
+      # sharing the lint jobs' keys would only evict their tarballs.
       - uses: ./.github/actions/setup-rust
         with:
           targets: aarch64-linux-android
-          components: clippy
           cache: "false"
       # Reads the shared `cargo-sources` archive owned by this OS's single
       # writer job; read-only lanes never save, so they cannot evict caches.
       - name: Restore Cargo sources
         uses: ./.github/actions/cargo-sources
-      # `--all-targets` reaches the crate's dev-dependency graph, part of which
-      # is built for the host: without this the Linux-only `cros-libva` build
-      # script fails on the missing `libva-dev`, long before anything Android
-      # is compiled.
-      - uses: ./.github/actions/setup-linux-deps
-      # The version the action installs is the one the CLI's toolchain check
-      # installs and `water build` uses; keeping CI on it means CI compiles
-      # against the same sysroot a developer's Android build does.
-      - uses: ./.github/actions/setup-android-ndk
-      - name: Clippy (aarch64-linux-android)
-        run: cargo clippy --profile ci-check -p waterui-ffi --no-default-features --features std,android-jni,gpu --target aarch64-linux-android --all-targets -- -D warnings
-
-  # The native Android backend crate (#1429). `waterui-android` lives on the
-  # Android target the same way `waterui-ffi` does — nothing else in the
-  # gate type-checks it for real, so a compile error there would only
-  # surface on a device. It runs under the two feature sets the crate
-  # ships, when the diff can reach it: the crate itself or any crate it
-  # builds on (see the `android-backend` filter above).
-  android-backend:
-    name: Android backend
-    needs: changes
-    if: needs.changes.outputs.android-backend == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-rust
+      # The scaffold declares its JDK toolchain in
+      # `[package.metadata.waterui-scaffold] android-jdk-version`; Gradle
+      # picks it up through JAVA_HOME.
+      - uses: actions/setup-java@v4
         with:
-          targets: aarch64-linux-android
-          components: clippy
-          cache: "false"
-      # Reads the shared `cargo-sources` archive owned by this OS's single
-      # writer job; read-only lanes never save, so they cannot evict caches.
-      - name: Restore Cargo sources
-        uses: ./.github/actions/cargo-sources
-      - uses: ./.github/actions/setup-linux-deps
-      # Same NDK prologue the Android FFI leg runs — this leg's graph also
-      # reaches cherenkov-gpu's spirv-opt and waterkit's kotlinc.
+          distribution: temurin
+          java-version: "21"
       - uses: ./.github/actions/setup-android-ndk
-        with:
-          spirv-tools: "true"
-          kotlin: "true"
-      - name: Clippy (aarch64-linux-android, all features)
-        run: cargo clippy --profile ci-check -p waterui-android --target aarch64-linux-android --all-features --locked -- -D warnings
-      - name: Clippy (aarch64-linux-android, no default features)
-        run: cargo clippy --profile ci-check -p waterui-android --target aarch64-linux-android --no-default-features --locked -- -D warnings
+      # `sdkmanager` is the tool doctor's own remedy text names.
+      - uses: ./.github/actions/install-android-platform
+      # The CLI links libudev (serialport) on the host.
+      - uses: ./.github/actions/setup-linux-deps
+      # The binary under test needs no release optimisation: the ci-check
+      # profile skips the release profile's fat LTO and single codegen unit.
+      - name: Install the CLI under test
+        run: cargo install --locked --profile ci-check --path cli --root /tmp/water-cli
+      - name: Create, build and package a Hydrolysis Android app
+        run: |
+          set -euo pipefail
+          export PATH="/tmp/water-cli/bin:$PATH"
+          mkdir -p e2e-logs
+          water create e2eapp --waterui-path "$GITHUB_WORKSPACE" 2>&1 | tee e2e-logs/create.log
+          cd e2eapp
+          # Inside a project doctor scopes the Android group in, so `--fix`
+          # provisions what the toolchain check wants (the Android SDK and
+          # NDK, the Rust targets) exactly as on a developer machine.
+          water doctor --fix 2>&1 | tee ../e2e-logs/doctor-fix.log
+          if grep -q 'Failed to install' ../e2e-logs/doctor-fix.log; then
+            echo "::error::doctor --fix reported failed installs"
+            exit 1
+          fi
+          water build --platform android --yes 2>&1 | tee ../e2e-logs/build.log
+          water package --platform android --arch arm64 --debug --yes 2>&1 | tee ../e2e-logs/package-debug.log
+          water package --platform android --arch arm64 --release --unsigned --yes 2>&1 | tee ../e2e-logs/package-release.log
+          grep -q 'Packaged at' ../e2e-logs/package-debug.log
+          grep -q 'Packaged at' ../e2e-logs/package-release.log
 
   test:
-    name: Test
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Test
     needs: [changes, scope]
     if: needs.changes.outputs.code == 'true'
     uses: ./.github/workflows/test.yml
@@ -391,8 +425,8 @@ jobs:
       affected: ${{ needs.scope.outputs.packages }}
       package-args: ${{ needs.scope.outputs.package-args }}
       comment-only: ${{ needs.scope.outputs.comment-only == 'true' }}
-      test-assets: ${{ needs.scope.outputs.test-assets == 'true' }}
       scene-assets: ${{ needs.scope.outputs.scene-assets == 'true' }}
+      apple-legs: ${{ needs.scope.outputs.apple-legs }}
 
   # The one required check for the Test workflow. A pull request that changes
   # no code skips the `test` call above, and a skipped reusable-workflow call
@@ -401,9 +435,9 @@ jobs:
   # passes when `test` succeeded or was skipped by the path filter, and fails
   # on anything else, including a failed `changes` job.
   test-result:
-    name: Test result
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Test result
     needs: [changes, scope, test, windows-dx12]
-    if: always() && (github.event_name == 'pull_request' || github.ref == 'refs/heads/main')
+    if: always() && ((github.event_name == 'pull_request' && (github.event.action != 'edited' || github.event.changes.base)) || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -454,8 +488,8 @@ jobs:
   # into `dev`, which this check never blocks, so it cannot deadlock its own
   # repair; what it blocks is publishing a `dev` the nightly has not passed.
   nightly-healthy:
-    name: Nightly healthy
-    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    name: ${{ github.event_name == 'pull_request' && github.event.action == 'edited' && !github.event.changes.base && 'Metadata ' || '' }}Nightly healthy
+    if: github.event_name == 'pull_request' && github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -536,4 +570,3 @@ jobs:
           fi
 
           echo "nightly line healthy: ${tag} certifies ${certified}, and the latest nightly run is certified"
-

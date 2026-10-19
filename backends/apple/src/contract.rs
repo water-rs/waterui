@@ -26,7 +26,7 @@ use cocoa_ui::appkit::HostView;
 use cocoa_ui::uikit::HostView;
 use waterui::reactive::Signal;
 use waterui::reactive::watcher::Context;
-use waterui_backend_core::{AnyView, Environment};
+use waterui_backend_core::{AnyView, Environment, View};
 use waterui_core::layout::SubView;
 
 use cocoa_ui::Retained;
@@ -81,10 +81,14 @@ impl KeepAlive {
 /// A rendered component: its platform view, its layout face, and what keeps
 /// its reactivity alive.
 ///
-/// Drop order is fixed by field order: watchers and children stop first, the
-/// layout face next, the platform view last. Dropping a leaf does not detach
-/// its view from a superview; mount it through [`NativeLeaf::mount`] for
-/// that.
+/// Dropping a leaf first clears the handler slots of a leaf view that is a
+/// `HostView`, which releases the state those handlers capture. The
+/// keepalive drops next, in reverse order of keeping: a component whose own
+/// view holds handler slots keeps a `cocoa_ui::HandlerTeardown` guard there,
+/// which clears those slots at its position in that order. The layout face
+/// drops after the keepalive and the platform view last (field order).
+/// Dropping a leaf does not detach its view from a superview; mount it
+/// through [`NativeLeaf::mount`] for that.
 pub struct NativeLeaf {
     keepalive: KeepAlive,
     layout: Rc<dyn SubView>,
@@ -132,7 +136,7 @@ impl NativeLeaf {
     /// The leaf's measure handle itself — a caller that measures the
     /// leaf apart from `HostView`'s intrinsic forwarding (the iOS
     /// context-menu panel is one) clones this and queries it directly.
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_os = "ios", feature = "context_menu"))]
     #[must_use]
     pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
         Rc::clone(&self.layout)
@@ -144,18 +148,14 @@ impl NativeLeaf {
     /// content size and the constraint system collapses it to zero.
     fn install_intrinsic_measure(view: &PlatformView, layout: &Rc<dyn SubView>) {
         if let Some(host) = view.downcast_ref::<HostView>() {
-            // The view must not keep the leaf alive: a strong layout here
-            // closes a HostView → handler → SubView → leaf-state → HostView
-            // cycle (water-rs/waterui#1567). The leaf retains the layout
-            // for its mounted lifetime — the context-menu panel clones it
-            // through `layout_handle` — so the handler upgrades only for
-            // the measure call, and `detach` clears it before the leaf
-            // can be released.
-            let layout = Rc::downgrade(layout);
-            host.set_measure_handler(move |_host, proposal| {
-                let layout = layout.upgrade().expect("measure handler outlived its leaf");
-                measure_layout(&layout, proposal)
-            });
+            // The handler may hold the layout face strongly: `detach`
+            // clears it when the leaf moves, and the leaf's `Drop` clears
+            // every handler slot, which breaks the HostView → handler →
+            // SubView → leaf-state → HostView cycle (water-rs/waterui#1567).
+            // The context-menu panel clones the layout through
+            // `layout_handle` for its own measure.
+            let layout = Rc::clone(layout);
+            host.set_measure_handler(move |_host, proposal| measure_layout(&layout, proposal));
         }
     }
 
@@ -205,10 +205,11 @@ impl NativeLeaf {
         )
     )]
     fn detach(&mut self) {
-        // The intrinsic-measure handler borrows this leaf's layout weakly;
-        // clear it at the ownership boundary so a platform view that briefly
-        // outlives the leaf falls back to its own intrinsic size instead of
-        // querying dead layout.
+        // The inverse of `mount`, and nothing more: a detached leaf may be
+        // mounted again (the iOS context-menu panel moves its preview and
+        // accessory in and out on every presentation), so the handlers its
+        // component installed at render time stay. Only the intrinsic
+        // measure `mount` installed goes, and `mount` installs it again.
         if let Some(host) = self.view.downcast_ref::<HostView>() {
             host.clear_measure_handler();
         }
@@ -222,6 +223,24 @@ impl NativeLeaf {
         #[cfg(target_os = "ios")]
         for controller in controllers.iter().rev() {
             cocoa_ui::uikit::view_controller::remove_from_parent(controller);
+        }
+    }
+}
+
+impl Drop for NativeLeaf {
+    /// The leaf's release boundary: when the leaf view is a `HostView`, its
+    /// handler slots clear here (the teardown water-rs/waterui#1860 added), so
+    /// the state those handlers capture is released with the leaf whichever
+    /// owner lets go of it — a `Mounted`, a window's keepalive, a navigation
+    /// page — and a callback the platform delivers to a view that outlives
+    /// the leaf finds `None`. Other handler-holding views clear through the
+    /// `cocoa_ui::HandlerTeardown` guard their component keeps in
+    /// `keepalive`, which drops after this and before the layout face and the
+    /// view. The view stays where it is: removing it from its superview is
+    /// the owner's job, as [`Mounted`] does.
+    fn drop(&mut self) {
+        if let Some(host) = self.view.downcast_ref::<HostView>() {
+            host.clear_handlers();
         }
     }
 }
@@ -251,7 +270,7 @@ fn measure_layout(
 
 /// A leaf's own measure as a retained `MeasureProposal` callback — the
 /// panel's per-slot measure, alive independently of the leaf's owner.
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", feature = "context_menu"))]
 pub(crate) fn measure_callback(
     layout: Rc<dyn SubView>,
 ) -> Rc<dyn Fn(cocoa_ui::geometry::MeasureProposal) -> cocoa_ui::geometry::Size> {
@@ -282,7 +301,7 @@ impl Mounted {
     /// # Panics
     ///
     /// When called on a `Mounted` that is already unmounting.
-    #[cfg(target_os = "ios")]
+    #[cfg(all(target_os = "ios", feature = "context_menu"))]
     #[must_use]
     pub(crate) fn layout_handle(&self) -> Rc<dyn SubView> {
         self.0.as_ref().expect("a live Mounted").layout_handle()
@@ -466,6 +485,46 @@ impl Renderer {
     #[must_use]
     pub fn try_render(&self, view: impl Into<AnyView>) -> Option<NativeLeaf> {
         self.dispatcher.render(view.into(), &self.env, self.mtm)
+    }
+
+    /// Renders `view` and answers the environment its leaf resolved
+    /// under: the scope of the *leading* `Metadata<Environment>` chain —
+    /// the environment layers at the root of `view` and the composite
+    /// bodies that produce them — and nothing below the first
+    /// handler-claimed view, so a scope a descendant installs (a
+    /// `.disabled` child inside the content) never leaks into the
+    /// answer. `body()` runs once per expansion, the same single pass
+    /// [`Renderer::render`] makes, and the peeled view renders under the
+    /// scope its outermost environment layers resolved to — each
+    /// `Metadata<Environment>` replaces the environment for its subtree,
+    /// matching `with_env`.
+    #[must_use]
+    pub fn render_resolved(&self, view: impl Into<AnyView>) -> (NativeLeaf, Environment) {
+        let mut env = self.env.clone();
+        let mut view = view.into();
+        loop {
+            match view.downcast::<waterui_core::Metadata<Environment>>() {
+                Ok(metadata) => {
+                    let waterui_core::Metadata { content, value } = *metadata;
+                    env = value;
+                    view = content;
+                }
+                Err(back) => {
+                    view = back;
+                    if self.dispatcher.claims(&view) {
+                        break;
+                    }
+                    view = AnyView::new(view.body(&env));
+                }
+            }
+        }
+        let leaf = Self {
+            env: env.clone(),
+            dispatcher: self.dispatcher.clone(),
+            mtm: self.mtm,
+        }
+        .render(view);
+        (leaf, env)
     }
 
     /// The captured environment and dispatcher as a context.

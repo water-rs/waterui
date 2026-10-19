@@ -1,7 +1,7 @@
 use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
-use cherenkov::WorkingColor;
+use crate::draw::WorkingColor;
 
 use super::{Srgb, linear_to_srgb, oklch_to_linear_srgb, working};
 
@@ -10,6 +10,10 @@ use super::{Srgb, linear_to_srgb, oklch_to_linear_srgb, working};
 /// Lightness is expressed in the range 0.0 to 1.0, chroma controls the color
 /// intensity, and hue is measured in degrees.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "an OKLCH color: lightness, chroma and hue are the whole value"
+)]
 pub struct Oklch {
     /// Perceptual lightness component (0.0 to 1.0).
     pub lightness: f32,

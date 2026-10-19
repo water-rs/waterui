@@ -7,7 +7,7 @@ GPU and engine rendering primitives for WaterUI applications.
 `waterui-graphics` hosts the rendering contracts a WaterUI backend consumes:
 
 - **GpuContentView** - a view driven by a `GpuContent` producer drawing raw wgpu frames
-- **SceneView** - a view whose `SceneContent` records vector scenes into `cherenkov::Recorder`
+- **SceneView** - a view whose `SceneContent` records vector scenes into `waterui_graphics::draw::Recorder`
 - **ShaderPaintView** - a view painted by a WGSL fragment shader
 - **Gradients** - `Gradient` (linear, radial, angular, mesh), the signal-driven `MeshGradient`, and the GPU-animated `AnimatedMeshGradient` and `FlowingGradient`
 - **OffscreenRenderer** - headless rendering of either kind of content to `OffscreenImage`
@@ -75,18 +75,18 @@ Per-view hooks also exist for input (`on_input`), the IME caret
 
 ### SceneView - Vector Scenes
 
-`SceneContent` records a vector scene into a `cherenkov::Recorder` each frame;
+`SceneContent` records a vector scene into a `waterui_graphics::draw::Recorder` each frame;
 the engine resources it names come from `RecordingResources`:
 
 ```rust
-use waterui::graphics::{RecordingResources, SceneContent, SceneView, cherenkov};
+use waterui::graphics::{RecordingResources, SceneContent, SceneView, draw};
 
 struct Graph;
 
 impl SceneContent for Graph {
     fn build_scene(
         &mut self,
-        recorder: &mut cherenkov::Recorder,
+        recorder: &mut draw::Recorder,
         resources: &mut RecordingResources<'_>,
         width: f32,
         height: f32,

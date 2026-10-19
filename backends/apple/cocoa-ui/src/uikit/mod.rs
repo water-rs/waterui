@@ -30,11 +30,14 @@
 //! );
 //! ```
 
+pub mod alert;
 mod appearance;
 mod application;
 mod badge;
 pub mod button;
 mod calendar_view;
+#[cfg(target_abi = "macabi")]
+pub mod catalyst;
 mod color_view;
 pub mod color_well;
 mod context_menu;
@@ -42,6 +45,9 @@ mod date_picker;
 pub mod drag_drop;
 pub mod gesture;
 mod menu_panel;
+#[cfg(feature = "native-test")]
+#[doc(hidden)]
+pub mod native_test;
 pub use color_well::ColorWell;
 pub use context_menu::{
     ContextMenu, ContextMenuConfiguration, ContextMenuHandlers, preview_controller,
@@ -52,6 +58,8 @@ pub mod colors;
 mod host_view;
 pub mod image;
 pub mod input_view;
+mod key_commands;
+pub mod keyboard;
 mod menu;
 mod navigation;
 pub use pointer::PointerInteraction;
@@ -59,15 +67,18 @@ mod search_bar;
 mod split;
 pub mod surface_view;
 mod tabs;
+mod trait_change;
 pub mod view_controller;
 mod window;
 
+#[cfg(feature = "dialog")]
+pub use alert::AlertController;
 pub use appearance::{ColorSchemeObservation, current_scheme};
 pub use application::{
     ApplicationHandlers, MenuBuilder, WindowScene, request_main_menu_rebuild, run,
 };
 pub use badge::BadgeView;
-pub use button::Button;
+pub use button::{Button, CocoaUiButton};
 pub use calendar_view::CalendarView;
 pub use color_view::ColorView;
 pub use colors::UiColor;
@@ -76,6 +87,7 @@ pub use gesture::GestureAttachment;
 pub use host_view::{HitTest, HostView, window_root};
 pub use image::ImageView;
 pub mod label;
+pub use key_commands::KeyCommands;
 pub use menu::{Menu, MenuAction, MenuButton, MenuElement};
 mod picker;
 mod pointer;
@@ -94,7 +106,7 @@ pub use menu::{elements, menu, menu_with_identifier};
 pub use navigation::{
     BarButton, LargeTitle, NavBar, NavContentController, NavPage, NavSearch, NavigationController,
     SearchBarPlacement, SearchUpdater, bar_item, bar_item_accessibility_label, first_button,
-    first_control, image_bar_item,
+    first_control, image_bar_item, mirror_enabled, title_bar_item,
 };
 pub use search_bar::SearchBar;
 pub use split::{ColumnWidth, SplitColumnController, SplitController};
@@ -105,4 +117,5 @@ pub use table::{SectionKind, TableCell, TableHeaderFooterView, TableSource, Tabl
 pub use tabs::{TabContentController, TabSpec, TabsController};
 pub use text_field::{SecureField, TextField};
 pub use view_controller::ViewController;
+pub(crate) use window::shared_application;
 pub use window::{Window, application_is_active, main_screen_scale, window_of};

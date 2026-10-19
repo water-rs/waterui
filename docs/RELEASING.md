@@ -8,18 +8,14 @@ packages with `publish = false` are excluded.
 ## Before merging the release pull request
 
 1. Verify `dev` and `main` share history and GitHub can compare them normally.
-2. Confirm `android-backend-revision` in the root manifest's
-   `[package.metadata.waterui]` names a published backend revision; the Apple
-   backend is in-tree at `backends/apple` and rides the framework commit
-   (`apple-backend-path`), so there is no Apple pin to confirm.
-3. Run the workspace CI matrix and the declared Rust 1.95 MSRV check.
-4. Package every publishable crate in the workspace.
-5. Rehearse registry publication in dependency order, then install the
+2. Run the workspace CI matrix and the declared Rust 1.95 MSRV check.
+3. Package every publishable crate in the workspace.
+4. Rehearse registry publication in dependency order, then install the
    newest published `waterui-cli` that satisfies the workspace's
    `minimum-cli-version` and run `water create` followed by `water build`.
-6. Build and smoke-test both WPE runtime architectures from their packaged ZIP
+5. Build and smoke-test both WPE runtime architectures from their packaged ZIP
    files.
-7. Review [the 0.3 migration guide](MIGRATION_0.3.md) and every changelog entry.
+6. Review [the 0.3 migration guide](MIGRATION_0.3.md) and every changelog entry.
 
 ## Release
 
@@ -50,6 +46,31 @@ and the Homebrew formula are produced by this workflow's `cli-dist` and
 `cli/v*` tag. If publication stops after some crate versions are immutable on
 crates.io, fix forward with new versions; do not delete tags or attempt to
 overwrite published versions.
+
+## First publish of a crate name
+
+Trusted publishing cannot mint the first version of a crate: a name that does
+not exist on crates.io has no settings page on which to register a trusted
+publisher. The release job's publish-set guard fails the run before any upload
+when the managed set contains an unclaimed name, so a partially published
+cohort cannot happen.
+
+For a release that carries new names — `cherenkov`, `cherenkov-record`,
+`cherenkov-gpu`, `cherenkov-cpu`, `waterui-meta`, and the `waterui-ts` family
+are the current set — claim each name from a maintainer machine ahead of the
+release:
+
+1. Publish an empty placeholder crate under the name at 0.0.0 — a scratch
+   `cargo new --lib <name>` with `version = "0.0.0"`, a description and the
+   license fields, published with the `cargo login` already on that machine —
+   which registers the name on crates.io without shipping real content.
+2. Configure trusted publishing for it on crates.io
+   (`https://crates.io/crates/<name>/settings`, repository `water-rs/waterui`,
+   workflow `release.yml`).
+
+Once the name exists on the index, the publish-set guard passes and every
+release of the crate goes through trusted publishing like the rest of the
+workspace.
 
 ## Published-channel verification
 

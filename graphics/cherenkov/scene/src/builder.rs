@@ -1,6 +1,6 @@
 use crate::{
-    BackdropFilter, BackdropGroup, BlendMode, Color, Draw, FillRule, GlyphRun, Group, Item, Layer,
-    LayerFilter, Motion, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
+    BackdropGroup, BlendMode, Color, Draw, FillRule, GlyphRun, Group, Item, Layer, LayerFilter,
+    Motion, Paint, ResourceHash, Sampling, Scene, Shape, StrokeStyle,
 };
 use kurbo::{Affine, Rect, Vec2};
 
@@ -46,12 +46,12 @@ impl SceneBuilder {
         self
     }
 
-    /// Declare a backdrop group `id` with `filters`; layers sample it via
-    /// [`LayerBuilder::backdrop`].
-    pub fn backdrop_group(&mut self, id: u32, filters: Vec<BackdropFilter>) -> &mut Self {
-        self.scene
-            .backdrop_groups
-            .push(BackdropGroup { id, filters });
+    /// Declare a backdrop group from its description — `id`, capture
+    /// `scale`, `filters`, pyramid `levels`, and optionally an `anchor`
+    /// layer id and a `union` field ([`BackdropGroup::new`] covers the
+    /// plain form); layers sample it via [`LayerBuilder::backdrop`].
+    pub fn backdrop_group(&mut self, group: BackdropGroup) -> &mut Self {
+        self.scene.backdrop_groups.push(group);
         self
     }
 
@@ -92,6 +92,7 @@ impl SceneBuilder {
         fn blend(blend: BlendMode);
         fn backdrop(group: u32);
         fn backdrop_effect(effect: crate::BackdropEffectSpec);
+        fn backdrop_outer(px: f64);
         fn fill(shape: Shape, paint: Paint);
         fn fill_rule(shape: Shape, rule: FillRule, paint: Paint);
         fn stroke(shape: Shape, stroke: StrokeStyle, paint: Paint);
@@ -154,6 +155,13 @@ impl LayerBuilder<'_> {
         self
     }
 
+    /// Set the member's outer extent in device pixels
+    /// ([`crate::Layer::backdrop_outer`]).
+    pub const fn backdrop_outer(&mut self, px: f64) -> &mut Self {
+        self.layer.backdrop_outer = px;
+        self
+    }
+
     /// Set the scroll offset: content and children draw translated by
     /// `-offset` inside the layer's clip.
     pub const fn scroll_offset(&mut self, offset: Vec2) -> &mut Self {
@@ -185,6 +193,13 @@ impl LayerBuilder<'_> {
     // `Option<Motion>` drops.
     pub fn motion(&mut self, motion: Motion) -> &mut Self {
         self.layer.motion = Some(motion);
+        self
+    }
+
+    /// Give the layer the `id` a [`crate::BackdropGroup::anchor`] can
+    /// name: the group's capture is taken beneath this layer.
+    pub const fn id(&mut self, id: std::num::NonZeroU32) -> &mut Self {
+        self.layer.id = Some(id);
         self
     }
 

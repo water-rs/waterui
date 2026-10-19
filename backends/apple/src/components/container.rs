@@ -20,8 +20,7 @@ use cocoa_ui::scroll::{
     ScrollObservation, enclosing_scroll_view, observe_scroll_viewport, scroll_viewport,
 };
 use cocoa_ui::{Rect, Retained, view};
-use waterui::animation::Animation;
-use waterui::id::{Id as RawId, SelfId};
+use waterui::id::Id as RawId;
 use waterui::layout::container::LazyContainer;
 use waterui::layout::stack::{Axis, LazyStackAxis, lazy_stack_axis};
 use waterui::reactive::Signal;
@@ -45,36 +44,7 @@ use cocoa_ui::appkit::{HitTest, HostView};
 use cocoa_ui::uikit::{HitTest, HostView};
 
 /// A child's identity: the collection id `AnyViews` answers for an index.
-type ItemId = SelfId<RawId>;
-
-/// `withPlatformAnimation`: the watcher metadata's `Animation` mapped to a
-/// kit timing — `Default` parses to the 0.25s bezier the FFI spells it as.
-fn with_platform_animation(metadata: &Metadata, body: impl FnOnce() + 'static) {
-    let timing = match metadata.try_get::<Animation>() {
-        None => return body(),
-        Some(Animation::Default) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: 0.25,
-            control_points: [0.42, 0.0, 0.58, 1.0],
-        },
-        Some(Animation::Bezier {
-            duration,
-            x1,
-            y1,
-            x2,
-            y2,
-        }) => cocoa_ui::core_animation::Timing::Bezier {
-            duration: duration.as_secs_f64(),
-            control_points: [x1, y1, x2, y2],
-        },
-        Some(Animation::Spring { stiffness, damping }) => {
-            cocoa_ui::core_animation::Timing::Spring {
-                stiffness: f64::from(stiffness),
-                damping: f64::from(damping),
-            }
-        }
-    };
-    cocoa_ui::core_animation::animate_with(timing, body);
-}
+type ItemId = RawId;
 
 /// `resolveVisibleWindow`'s answer: the first index inside the range, one
 /// past the last, and the offset the first starts at.
@@ -512,7 +482,7 @@ fn deliver_children(state: &Rc<RefCell<ContainerState>>, pending: &Rc<RefCell<Pe
         let Some((snapshot, ids, metadata)) = pending.borrow_mut().take() else {
             break;
         };
-        with_platform_animation(&metadata, {
+        crate::animation::with_platform_animation(&metadata, {
             let state = Rc::clone(state);
             move || {
                 let mut borrowed = state.borrow_mut();
@@ -909,13 +879,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // The scroll-surface search descends through this container's
         // children, in stacking order.
         host.set_scroll_surface_handler({
-            // Optional query callback: weak state, natural empty answer
-            // once the leaf's owner is gone (WaterUI #1575).
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_host| {
-                let Some(state) = state.upgrade() else {
-                    return Vec::new();
-                };
                 let state = state.borrow();
                 state
                     .order
@@ -926,14 +891,9 @@ pub fn install(dispatcher: &mut Dispatcher) {
         });
         let pending = Rc::new(RefCell::new(PendingChildren::default()));
         host.set_measure_handler({
-            // Weak state — the handler must not own the leaf (#1575). A
-            // live mounted leaf always owns it, so the upgrade is explicit.
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             let pending = Rc::clone(&pending);
             move |_host, proposal| {
-                let state = state
-                    .upgrade()
-                    .expect("container measure outlived its leaf");
                 let measured = measure(&state, &pending, to_proposal(proposal));
                 cocoa_ui::Size::new(
                     f64::from(measured.size.width),
@@ -942,27 +902,19 @@ pub fn install(dispatcher: &mut Dispatcher) {
             }
         });
         host.set_layout_handler({
-            // Lifecycle callback — the platform view may legitimately
-            // outlive its leaf through a native retain or a queued layout
-            // pass, so a dead owner no-ops (WaterUI #1575).
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             let pending = Rc::clone(&pending);
             move |_host| {
-                if let Some(state) = state.upgrade() {
-                    perform_layout(&state, &pending);
-                }
+                perform_layout(&state, &pending);
             }
         });
         // Moving superviews can change the enclosing scroll view.
         host.set_superview_handler({
-            // Lifecycle callback: no-op once the owner is gone.
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |_host| {
-                if let Some(state) = state.upgrade() {
-                    let mut borrowed = state.borrow_mut();
-                    teardown_scroll_observation(&mut borrowed);
-                    install_scroll_observation(&mut borrowed);
-                }
+                let mut borrowed = state.borrow_mut();
+                teardown_scroll_observation(&mut borrowed);
+                install_scroll_observation(&mut borrowed);
             }
         });
 
@@ -982,31 +934,27 @@ pub fn install(dispatcher: &mut Dispatcher) {
         // event only records into `pending` while a transaction is
         // active; otherwise it delivers immediately, so an emission
         // inside a child's own materialization can never collide with
-        // the borrow that materialization holds. The subscription itself
-        // runs inside a transaction — `watch` emits synchronously at
-        // subscribe while `state.borrow()` is held, and recording lets
-        // that first emission deliver once the borrow releases.
-        let watcher = with_children_tx(&state, &pending, || {
-            state.borrow().contents.watch(.., {
-                let state = Rc::clone(&state);
-                let pending = Rc::clone(&pending);
-                move |ctx, _change| {
-                    let snapshot = ctx.value().clone();
-                    let metadata = ctx.metadata().clone();
-                    let ids: Vec<ItemId> = snapshot
-                        .range()
-                        .filter_map(|index| snapshot.get_id(index))
-                        .collect();
-                    let in_transaction = {
-                        let mut pending = pending.borrow_mut();
-                        pending.record(snapshot, ids, metadata);
-                        pending.depth > 0
-                    };
-                    if !in_transaction {
-                        deliver_children(&state, &pending);
-                    }
+        // the borrow that materialization holds. Subscribing delivers
+        // nothing: the initial population below reads the snapshot.
+        let watcher = state.borrow().contents.watch(.., {
+            let state = Rc::clone(&state);
+            let pending = Rc::clone(&pending);
+            move |ctx, _change| {
+                let snapshot = ctx.value().clone();
+                let metadata = ctx.metadata().clone();
+                let ids: Vec<ItemId> = snapshot
+                    .range()
+                    .filter_map(|index| snapshot.get_id(index))
+                    .collect();
+                let in_transaction = {
+                    let mut pending = pending.borrow_mut();
+                    pending.record(snapshot, ids, metadata);
+                    pending.depth > 0
+                };
+                if !in_transaction {
+                    deliver_children(&state, &pending);
                 }
-            })
+            }
         });
 
         // The layout's own invalidation signal — `wuiLayout.setOwner` +

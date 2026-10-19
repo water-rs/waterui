@@ -217,7 +217,10 @@ pub fn resolve_placement_monitor(
         .focused_window
         .and_then(NativeWindow::current_monitor)
         .and_then(|current| monitor_index(&specs, &current));
+    #[cfg(hydrolysis_desktop_queries)]
     let pointer = pointer_position(context, &specs);
+    #[cfg(not(hydrolysis_desktop_queries))]
+    let pointer = None;
     // The pointer answer's coordinate space differs per platform: macOS
     // `NSEvent.mouseLocation` is in Cocoa logical points, while X11
     // `QueryPointer` and Win32 `GetCursorPos` answer physical pixels.
@@ -266,6 +269,7 @@ const fn event_loop_is_wayland(_event_loop: &ActiveEventLoop) -> bool {
 /// Wayland has no global pointer query: the "pointer monitor" is the monitor
 /// of the runner's window that last had pointer focus — its frame centre is
 /// returned so containment lands on it.
+#[cfg(hydrolysis_desktop_queries)]
 fn pointer_position(context: &PlacementContext<'_>, specs: &[MonitorSpec]) -> Option<(f64, f64)> {
     #[cfg(target_os = "macos")]
     {
@@ -292,21 +296,19 @@ fn pointer_position(context: &PlacementContext<'_>, specs: &[MonitorSpec]) -> Op
                 })
         })
     }
-    #[cfg(not(any(
-        target_os = "macos",
-        target_os = "windows",
-        hydrolysis_wayland_platform
-    )))]
-    {
-        let _ = (context, specs);
-        None
-    }
 }
 
 /// Assembles the public [`Monitor`] for a resolved spec: the logical frame,
 /// the platform's work area as `visible_frame`, the scale factor, and the
 /// platform's display name.
 fn assemble_monitor(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Monitor {
+    #[cfg(hydrolysis_desktop_queries)]
+    let visible_frame = platform_visible_frame(event_loop, spec);
+    #[cfg(not(hydrolysis_desktop_queries))]
+    let visible_frame: Option<FrameSpec> = {
+        let _ = event_loop;
+        None
+    };
     let (x, y, width, height) = spec.logical_frame();
     let frame = Rect::new(
         Point::new(
@@ -318,30 +320,28 @@ fn assemble_monitor(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Monitor
             crate::num_cast::f64_as_f32(height),
         ),
     );
-    Monitor {
+    Monitor::new(
         frame,
-        visible_frame: platform_visible_frame(event_loop, spec).map_or(
-            frame,
-            |(vx, vy, vw, vh)| {
-                Rect::new(
-                    Point::new(
-                        crate::num_cast::f64_as_f32(vx),
-                        crate::num_cast::f64_as_f32(vy),
-                    ),
-                    Size::new(
-                        crate::num_cast::f64_as_f32(vw),
-                        crate::num_cast::f64_as_f32(vh),
-                    ),
-                )
-            },
-        ),
-        scale_factor: spec.handle.scale_factor(),
-        name: spec.handle.name().map(Str::from),
-    }
+        visible_frame.map_or(frame, |(vx, vy, vw, vh)| {
+            Rect::new(
+                Point::new(
+                    crate::num_cast::f64_as_f32(vx),
+                    crate::num_cast::f64_as_f32(vy),
+                ),
+                Size::new(
+                    crate::num_cast::f64_as_f32(vw),
+                    crate::num_cast::f64_as_f32(vh),
+                ),
+            )
+        }),
+        spec.handle.scale_factor(),
+        spec.handle.name().map(Str::from),
+    )
 }
 
 /// The monitor's work area in logical points, or `None` where the platform
 /// reports none (then `visible_frame` equals `frame`).
+#[cfg(hydrolysis_desktop_queries)]
 fn platform_visible_frame(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> Option<FrameSpec> {
     #[cfg(target_os = "macos")]
     {
@@ -357,15 +357,6 @@ fn platform_visible_frame(event_loop: &ActiveEventLoop, spec: &MonitorSpec) -> O
     {
         // `_NET_WORKAREA` is X11-only; Wayland has no work-area protocol.
         x11_visible_frame(event_loop, spec)
-    }
-    #[cfg(not(any(
-        target_os = "macos",
-        target_os = "windows",
-        hydrolysis_wayland_platform
-    )))]
-    {
-        let _ = (event_loop, spec);
-        None
     }
 }
 
@@ -636,7 +627,9 @@ fn windows_pointer_position() -> Option<(f64, f64)> {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
     let mut point = POINT { x: 0, y: 0 };
-    (unsafe { GetCursorPos(&mut point) } != 0).then(|| (f64::from(point.x), f64::from(point.y)))
+    // SAFETY: `point` is a valid, writable `POINT` for the duration of the
+    // call, which is all `lpPoint` requires.
+    (unsafe { GetCursorPos(&raw mut point) } != 0).then(|| (f64::from(point.x), f64::from(point.y)))
 }
 
 /// The monitor's work area from `GetMonitorInfoW.rcWork` (physical pixels,
@@ -661,9 +654,13 @@ fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
         _rect: *mut RECT,
         data: LPARAM,
     ) -> BOOL {
+        // SAFETY: `data` is the `&mut Lookup` the enclosing call handed
+        // `EnumDisplayMonitors`, which runs this callback synchronously on
+        // the calling thread before it returns — the pointer is valid and
+        // no other reference to `lookup` exists for the call.
         let lookup = unsafe { &mut *(data as *mut Lookup) };
         let mut info = MONITORINFO {
-            cbSize: size_of::<MONITORINFO>() as u32,
+            cbSize: u32::try_from(size_of::<MONITORINFO>()).expect("MONITORINFO's size fits u32"),
             rcMonitor: RECT {
                 left: 0,
                 top: 0,
@@ -678,7 +675,9 @@ fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
             },
             dwFlags: 0,
         };
-        if unsafe { GetMonitorInfoW(monitor, &mut info) } == 0 {
+        // SAFETY: `info` is a valid, writable `MONITORINFO` with `cbSize`
+        // set, which is what the call requires.
+        if unsafe { GetMonitorInfoW(monitor, &raw mut info) } == 0 {
             return TRUE;
         }
         if monitor == lookup.hmonitor {
@@ -693,12 +692,16 @@ fn windows_visible_frame(spec: &MonitorSpec) -> Option<FrameSpec> {
         hmonitor: spec.handle.hmonitor(),
         work_area: None,
     };
+    // SAFETY: `EnumDisplayMonitors` runs `find_monitor` synchronously on
+    // this thread before it returns, so `lookup` outlives every callback
+    // and the `&mut` the callback dereferences stays unique; a null HDC
+    // and null clip rect enumerate every monitor's full frame.
     unsafe {
         EnumDisplayMonitors(
             0,
             std::ptr::null(),
             Some(find_monitor),
-            (&mut lookup) as *mut _ as LPARAM,
+            &raw mut lookup as LPARAM,
         );
     }
     let work = lookup.work_area?;
@@ -771,6 +774,7 @@ fn macos_order_front(native_window: &NativeWindow) {
 ///   plain `NSWindow` is noted in the delivery.
 /// * Windows `Never`: `WS_EX_NOACTIVATE` on the HWND, so clicks do not
 ///   activate the window.
+#[cfg(hydrolysis_desktop_queries)]
 pub fn apply_activation(
     event_loop: &ActiveEventLoop,
     native_window: &NativeWindow,
@@ -789,12 +793,6 @@ pub fn apply_activation(
             if activation == Activation::Never {
                 apply_x11_input_hint(event_loop, native_window);
             }
-            #[cfg(not(any(
-                target_os = "macos",
-                target_os = "windows",
-                hydrolysis_wayland_platform
-            )))]
-            let _ = (event_loop, native_window, activation);
         }
     }
 }
@@ -876,12 +874,16 @@ fn apply_windows_noactivate(native_window: &NativeWindow, never: bool) {
         return;
     };
     let hwnd = win32.hwnd.get() as windows_sys::Win32::Foundation::HWND;
+    let flag = isize::try_from(WS_EX_NOACTIVATE).expect("WS_EX_NOACTIVATE's bit fits isize");
+    // SAFETY: `hwnd` is the window's live Win32 handle for as long as the
+    // `NativeWindow` lives; the calls only read and rewrite its
+    // extended-style word.
     unsafe {
         let mut extended = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         if never {
-            extended |= WS_EX_NOACTIVATE as isize;
+            extended |= flag;
         } else {
-            extended &= !(WS_EX_NOACTIVATE as isize);
+            extended &= !flag;
         }
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, extended);
     }

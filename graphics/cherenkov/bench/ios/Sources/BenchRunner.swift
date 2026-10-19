@@ -36,6 +36,10 @@ struct BenchRunner {
     /// Receives progress on the main thread.
     let delegate: BenchRunnerDelegate?
 
+    private struct OutputError: Error {
+        let message: String
+    }
+
     init(delegate: BenchRunnerDelegate? = nil) {
         self.delegate = delegate
     }
@@ -65,7 +69,7 @@ struct BenchRunner {
         // host wrote, and a missing file must not invent one.
         guard let benchArgs = Self.loadBenchArgs(from: argsURL) else {
             if case let .failure(message) = Self.resetOut(outDir) {
-                report { $0.benchRunner(self, didFailWithError: message) }
+                report { $0.benchRunner(self, didFailWithError: message.message) }
                 return 1
             }
             _ = Self.writeDone(["error": "bench-args.json missing or invalid"], to: outDir)
@@ -102,7 +106,7 @@ struct BenchRunner {
         // `out` holds this launch's results only: a `done.json` left by an
         // earlier launch would read as this one having finished.
         if case let .failure(message) = Self.resetOut(outDir) {
-            report { $0.benchRunner(self, didFailWithError: message) }
+            report { $0.benchRunner(self, didFailWithError: message.message) }
             return 1
         }
         // An iOS app launches with cwd `/`; the bench's relative
@@ -203,7 +207,7 @@ struct BenchRunner {
 
     /// Empties `Documents/out` so a previous launch's `done.json` cannot
     /// be read as this one.
-    static func resetOut(_ outDir: URL) -> Result<Void, String> {
+    private static func resetOut(_ outDir: URL) -> Result<Void, OutputError> {
         do {
             if FileManager.default.fileExists(atPath: outDir.path) {
                 try FileManager.default.removeItem(at: outDir)
@@ -213,7 +217,7 @@ struct BenchRunner {
         } catch {
             let message = "cannot reset \(outDir.path): \(error.localizedDescription)"
             logger.error("\(message, privacy: .public)")
-            return .failure(message)
+            return .failure(OutputError(message: message))
         }
     }
 

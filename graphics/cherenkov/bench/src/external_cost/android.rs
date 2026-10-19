@@ -105,7 +105,7 @@ fn with_planes<R>(
     let rc = unsafe {
         ndk_sys::AHardwareBuffer_lockPlanes(
             buffer,
-            u64::from(usage),
+            usage,
             -1,
             std::ptr::null_mut(),
             &raw mut planes,
@@ -136,7 +136,7 @@ fn with_planes<R>(
 /// # Safety
 /// `plane.data` is a live locked plane, `row * rowStride + len` stays
 /// inside it, and `len <= rowStride`.
-unsafe fn plane_row<'a>(
+const unsafe fn plane_row<'a>(
     plane: &ndk_sys::AHardwareBuffer_Plane,
     row: usize,
     len: usize,
@@ -153,7 +153,7 @@ unsafe fn plane_row<'a>(
 
 /// # Safety
 /// Same as [`plane_row`], and the caller is the only writer of that row.
-unsafe fn plane_row_mut<'a>(
+const unsafe fn plane_row_mut<'a>(
     plane: &ndk_sys::AHardwareBuffer_Plane,
     row: usize,
     len: usize,

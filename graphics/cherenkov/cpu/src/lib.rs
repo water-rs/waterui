@@ -31,7 +31,7 @@
 //! use cherenkov_cpu::{Raster, RasterConfig};
 //!
 //! let engine = Engine::<Raster>::new(RasterConfig::default())?;
-//! let surface = engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16))?;
+//! let surface = engine.surface(Offscreen::new((64, 64), OffscreenFormat::LinearF16), || {})?;
 //! surface.update(|tx| {
 //!     tx[surface.root()].content(
 //!         surface.record(|c| c.fill(Rect::new(0., 0., 64., 64.), WorkingColor::WHITE)),
@@ -39,42 +39,27 @@
 //! });
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
+#![expect(
+    clippy::exhaustive_enums,
+    clippy::exhaustive_structs,
+    reason = "publish = false: no semver surface until #2687 makes the crate publishable"
+)]
 
 mod names;
 mod render;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
+mod topology;
 
 use cherenkov::{Backend, EngineError, Offscreen, OffscreenFormat};
-use std::sync::Arc;
-
-/// Wakes the host to schedule a frame.
-#[derive(Clone)]
-pub struct RedrawCallback(Arc<dyn Fn() + Send + Sync>);
-
-impl RedrawCallback {
-    /// Creates a callback that wakes the host.
-    #[must_use]
-    pub fn new(callback: impl Fn() + Send + Sync + 'static) -> Self {
-        Self(Arc::new(callback))
-    }
-
-    /// Wakes an idle host for asynchronous filter parameter changes.
-    pub fn wake(&self) {
-        (self.0)();
-    }
-}
-
-impl std::fmt::Debug for RedrawCallback {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RedrawCallback").finish_non_exhaustive()
-    }
-}
 
 /// CPU worker information for provenance.
 #[derive(Clone, Debug)]
 pub struct RasterInfo {
     /// Number of rayon worker threads.
     pub threads: usize,
-    /// The composite kernel in use (`"scalar"` in this slice).
+    /// The CPU SIMD level the span kernels dispatch to (`"neon"`,
+    /// `"avx2"`, `"sse4.2"`, `"simd128"`, `"fallback"`).
     pub simd: &'static str,
     /// Host CPU model name, best effort.
     pub cpu: Option<String>,
@@ -83,11 +68,13 @@ pub struct RasterInfo {
 /// Configuration for the CPU raster engine.
 #[derive(Clone, Debug, Default)]
 pub struct RasterConfig {
-    /// Worker thread count for the banded rasterizer. `None` uses the
-    /// rayon default (one thread per logical core).
+    /// Positive worker count for the banded rasterizer. An explicit count
+    /// takes precedence over `RAYON_NUM_THREADS`, which must also be positive.
+    /// Otherwise Apple uses the highest-performance physical core class;
+    /// Android uses the highest-capacity class in the current CPU affinity;
+    /// other native platforms use their available parallelism. Automatic
+    /// discovery is unsupported on WebAssembly.
     pub threads: Option<usize>,
-    /// Wakes an idle host for asynchronous filter parameter changes.
-    pub redraw: Option<RedrawCallback>,
     /// Memory budgets; only `budget.cpu` is used for resident images and cached glyph masks.
     /// Surface framebuffers and in-flight frame data are not evictable caches.
     pub budget: cherenkov::Budget,
@@ -177,6 +164,7 @@ pub enum BandPixels<'a> {
     F16(&'a [[half::f16; 4]]),
 }
 
+pub use fearless_simd::Level;
 pub use render::present::{present_linear_p3, present_srgb8};
 
 /// The CPU raster backend: renders the shared front end's layer trees
@@ -185,6 +173,7 @@ pub use render::present::{present_linear_p3, present_srgb8};
 pub struct Raster;
 
 impl cherenkov::ProjectiveLayers for Raster {}
+impl cherenkov::BackdropSampling for Raster {}
 impl cherenkov::Uploads<cherenkov::Rgba8> for Raster {}
 impl cherenkov::Uploads<cherenkov::Rgba16F> for Raster {}
 
@@ -208,8 +197,9 @@ impl cherenkov::Backdrop for Raster {
         renderer: &mut Self::Renderer,
         surface: cherenkov::SurfaceId,
         id: cherenkov::BackdropId,
+        spec: cherenkov::BackdropSpec,
     ) {
-        renderer.filters.add_backdrop_group(surface, id);
+        renderer.filters.add_backdrop_group(surface, id, spec);
     }
 
     fn remove_backdrop_group(
@@ -235,11 +225,17 @@ where
         surface: cherenkov::SurfaceId,
         id: cherenkov::BackdropId,
         filter: F,
+        spec: cherenkov::BackdropSpec,
     ) {
         renderer
             .filters
-            .add_filtered_backdrop_group(surface, id, filter);
+            .add_filtered_backdrop_group(surface, id, filter, spec);
     }
+}
+
+impl cherenkov::Target for Raster {
+    type Queue = cherenkov::EngineQueue<Self>;
+    type Install = cherenkov::InstallOp<Self>;
 }
 
 impl Backend for Raster {
@@ -250,7 +246,7 @@ impl Backend for Raster {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn init(config: RasterConfig) -> Result<(Self::Renderer, Self::Info), EngineError> {
-        render::init(config)
+        render::init(&config)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -260,7 +256,7 @@ impl Backend for Raster {
         let mut config = Some(config);
         core::future::poll_fn(move |_| {
             core::task::Poll::Ready(render::init(
-                config.take().expect("init future is only polled once"),
+                &config.take().expect("init future is only polled once"),
             ))
         })
     }

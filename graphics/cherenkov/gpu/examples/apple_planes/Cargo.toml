@@ -28,12 +28,10 @@ nursery = { level = "warn", priority = -1 }
 [lints]
 workspace = true
 
-# Same pins as the repo root: `nami-core`'s `kurbo` feature is unreleased
-# (water-rs/nami#27), and the wgpu fork carries the v30 Metal colour-space
-# fix (gfx-rs/wgpu#10175) that surface negotiation on Apple needs.
+# Same pins as the repo root: the wgpu fork carries the v30 Metal
+# colour-space fix (gfx-rs/wgpu#10175) that surface negotiation on Apple
+# needs.
 [patch.crates-io]
-nami = { git = "https://github.com/water-rs/nami", rev = "6908aac816de14ee5aff23bfffd7d2b109d08fea" }
-nami-core = { git = "https://github.com/water-rs/nami", rev = "6908aac816de14ee5aff23bfffd7d2b109d08fea" }
 naga = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 naga-types = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }
 wgpu = { git = "https://github.com/water-rs/wgpu", rev = "4b35d8bc968f6968b3cbae65b6e2e2ee132aa038" }

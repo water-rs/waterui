@@ -41,8 +41,8 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: read
-      # Retires superseded generations of only this job's cache family
-      # (cargo-sources-Windows-*) on its own ref, then saves the replacement.
+      # Saves the replacement, then retires the superseded generations of
+      # only this job's cache family (cargo-sources-Windows-*) on its own ref.
       actions: write
     # Windows is the slowest platform and needs additional headroom for cold
     # hosted-runner builds while remaining a hard gate.
@@ -56,7 +56,7 @@ jobs:
       # this is the only Windows lane that resolves the full feature graph
       # (the `--features all`/`--all-features` passes below pull optional-
       # dependency sources the lint lane's default-features clippy never
-      # downloads), so this job owns `cargo-sources-Windows` (retire+save
+      # downloads), so this job owns `cargo-sources-Windows` (save+retire
       # at the bottom). The Windows target archive no longer competes for
       # the budget (#458). Tests still run in every supported shape below.
       # waterui-cli's `artifact_symbols` tests build a wasm32 rlib
@@ -75,15 +75,18 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # nextest compiles hydrolysis's test targets, which `include_bytes!`
-      # the generated fonts — the repository stores none of them.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # nextest's fixture setup scripts run the pinned generators through
+      # `uv run` (`.config/nextest.toml`) — the styled test targets resolve
+      # the installed test-font families through system font discovery.
+      - uses: astral-sh/setup-uv@v6
       # Same for the Cherenkov test targets the workspace pass below
       # compiles and runs: their fonts and corpus scenes are generated,
-      # not committed.
+      # not committed. The all-features pass also runs the bench tests
+      # that read scenes/perf.
       - name: Generate Cherenkov scene assets
         uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: full
       # Four crates cannot be tested here, for reasons that are not bugs:
       #
       # waterui-dylib is the dynamic-link anchor — a Rust `dylib` on purpose, so
@@ -108,13 +111,11 @@ jobs:
       #
       # Of the six, `chromium-example` cannot link here (one level below its
       # backend's missing `cef_sandbox`), so it stays out. `stress-example`
-      # runs red here until the Cherenkov pin picks up the upload-staging
-      # timeout fix — that is the honest state of the leg.
+      # exercises the steady-redraw stress bench on this runner's adapter:
+      # the upload-staging timeout it used to hit is fixed in-tree in
+      # `graphics/cherenkov`, so the leg is expected to run green.
       #
-      # One full-workspace pass under default features. A workspace-wide
-      # `--all-features` pass is structurally impossible — `waterui-ffi`
-      # enforces "exactly one ABI" with a `compile_error!` (ffi/src/lib.rs), so
-      # enabling `c-api` and `android-jni` together can never build.
+      # One full-workspace pass under default features.
       - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci
       - name: Test (examples that carry tests)
         run: cargo nextest run --locked --profile ci -p gallery-example -p list-example -p reply-example -p stress-example -p typography-rtl-example
@@ -129,23 +130,35 @@ jobs:
           path: test-artifacts/
           if-no-files-found: ignore
           retention-days: 14
-      # Same ordering as the other source writers: retire superseded
-      # generations of this job's own family on this exact ref first, then
-      # save — so the save itself cannot evict a live, unrelated cache.
-      - name: Retire superseded cache generations
+      # Same order as the other cache writers (#2670): sweep the other
+      # purposes' superseded entries, save the replacement once the
+      # headroom check proves it fits next to everything live, and only
+      # then retire the generation it supersedes — so a restorable
+      # `cargo-sources-Windows` exists at every moment.
+      - name: Sweep superseded cache generations
         if: ${{ github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main' }}
         uses: ./.github/actions/retire-cargo-caches
         with:
-          families: cargo-sources-${{ runner.os }}-
           primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}
           sweep: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Save Cargo sources
+        id: save-sources
         if: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.cargo-sources.outputs.cache-hit != 'true' }}
         uses: ./.github/actions/cargo-sources
         with:
           operation: save
           primary-key: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+          limit-bytes: ${{ vars.ACTIONS_CACHE_LIMIT_BYTES }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      # A save the headroom check skipped (no room) keeps the old generation.
+      - name: Retire superseded cache generations
+        if: ${{ (github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/main') && steps.save-sources.outputs.saved != 'false' }}
+        uses: ./.github/actions/retire-cargo-caches
+        with:
+          families: cargo-sources-${{ runner.os }}-
+          primary-keys: ${{ steps.cargo-sources.outputs.cache-primary-key }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
   # Every crate's own optional features, in its own job so the test tarball
   # above holds one feature variant of the dependency graph instead of two
@@ -160,9 +173,11 @@ jobs:
   # of the workspace runs under `--all-features` with the root and the dylib
   # excluded, plus the same four exclusions the Linux `all-features` job in
   # test.yml carries for crates whose feature sets are mutually exclusive by
-  # construction (#276), and `skill_snippets`, whose `dev` feature would turn
-  # `dynamic_linking` back on and whose `compile-gate-tests` transcriptions
-  # must never run (see the Linux job). The two excluded crates with
+  # construction (#276), `filtrate` — whose `webgl` feature is a deliberate
+  # `compile_error!` off wasm32 (the wasm job lints it where it is legal) —
+  # and `skill_snippets`, whose `dev` feature would turn `dynamic_linking`
+  # back on and whose `compile-gate-tests` transcriptions must never run
+  # (see the Linux job). The two excluded crates with
   # platform-specific code in their feature shapes run afterwards in the
   # shapes they have.
   all-features:
@@ -186,10 +201,10 @@ jobs:
         with:
           tool: cargo-nextest@0.9.145
           path: ~/.cargo/bin/cargo-nextest*
-      # The all-features pass compiles hydrolysis's test targets too; their
-      # font table is generated, not committed.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # The all-features pass runs the styled test targets too; nextest's
+      # fixture setup scripts install their fonts through `uv run`
+      # (`.config/nextest.toml`).
+      - uses: astral-sh/setup-uv@v6
       - name: Test (root crate, every feature but dynamic_linking)
         run: cargo nextest run --locked --features all --profile ci
       # The `trybuild_*` binaries each drive a cold fixture build that is
@@ -204,9 +219,9 @@ jobs:
             --exclude waterui-dylib `
             --exclude '*-example' `
             --exclude waterui-core `
-            --exclude waterui-ffi `
             --exclude waterui-browser-cef `
             --exclude skill_snippets `
+            --exclude filtrate `
             -E 'not binary(/^trybuild_/)'
       - name: Test (waterui-core, every stable feature)
         run: cargo nextest run --locked -p waterui-core --features std,serde --profile ci
@@ -242,10 +257,14 @@ jobs:
       - uses: ./.github/actions/spirv-tools-windows
       - name: Install DirectX Shader Compiler
         uses: ./.github/actions/install-dxc
-      # `--all-targets` clippy compiles hydrolysis's `#[cfg(test)]` modules,
-      # which `include_bytes!` fonts the repository does not store.
-      - name: Generate Hydrolysis test assets
-        uses: ./.github/actions/generate-test-assets
+      # cherenkov-oracle, cherenkov-gpu, and cherenkov-cpu compile
+      # `include_bytes!` of fonts only `scenes/tools/generate.py` writes;
+      # `--all-targets` compiles them, so the fonts must exist first.
+      # Corpus and perf are read at run time — this job never runs tests.
+      - name: Generate Cherenkov scene assets
+        uses: ./.github/actions/generate-scene-assets
+        with:
+          mode: fonts
       # Compile the CEF backend without its binary distribution (see the test
       # job for why it cannot be linked here). Clippy, not check (#1441): the
       # pass used to re-check a graph the workspace lint already covers while

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{BackdropEffectSpec, BlendMode, BlendSpace, Draw, Paint, ResourceHash, Shape};
-use kurbo::{Affine, Rect, Vec2};
+use kurbo::{Affine, Rect, Size, Vec2};
 
 /// One item in a layer's ordered item list: a child layer, a group of draws
 /// or a draw command.
@@ -53,6 +53,11 @@ pub struct Group {
     /// composites sRGB-encoded values.
     #[serde(default)]
     pub blend_space: BlendSpace,
+    /// A filter applied to the group's isolated content before `opacity`
+    /// and `blend`. It works in the working space whatever `blend_space`
+    /// the members composite in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<Box<LayerFilter>>,
 }
 
 impl Group {
@@ -81,6 +86,10 @@ pub struct Layer {
     /// The blend mode used when compositing onto the parent.
     #[serde(default)]
     pub blend: BlendMode,
+    /// An optional identifier a [`crate::BackdropGroup::anchor`] names:
+    /// the group's capture is taken beneath the layer carrying it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<std::num::NonZeroU32>,
     /// The id of the [`crate::BackdropGroup`] this layer samples, if any.
     /// A member layer must have a `clip`; the group's capture runs through
     /// the group's filters and is drawn as the bottom-most content inside
@@ -96,6 +105,13 @@ pub struct Layer {
     /// `None` is the plain bilinear sample.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backdrop_effect: Option<BackdropEffectSpec>,
+    /// How far the member's own field extends its backdrop composite past
+    /// the clip edge, in device pixels: the composite covers where the
+    /// field is below `backdrop_outer` — a band `backdrop_outer` wide
+    /// beyond the clip, antialiased from the field. `0` (the default)
+    /// keeps the clip's coverage. Only meaningful with `backdrop`.
+    #[serde(default, skip_serializing_if = "f64_is_zero")]
+    pub backdrop_outer: f64,
     /// The layer's scroll offset: content and children are translated by
     /// `-scroll_offset` inside the layer's clip; `transform` is untouched.
     /// Zero (the default) draws them untranslated.
@@ -225,6 +241,23 @@ pub enum LayerFilter {
     BoxBlur {
         /// Radius in pixels, rounded.
         radius: f64,
+    },
+    /// Android's edge-weighted overscroll stretch (filtrate's
+    /// `OverscrollStretch`): HWUI's stretch shader
+    /// (`libs/hwui/effects/StretchEffect.cpp`, `stretchShader`), run in a
+    /// frame. Inside the frame each pixel takes the bilinear sample at its
+    /// position remapped per axis by `computeOverscroll`, kept half a pixel
+    /// inside the frame along each of its axes (HWUI's clamped snapshot
+    /// sampler); outside it the pixel is unchanged.
+    OverscrollStretch {
+        /// The frame's own space, `[0, size.width] × [0, size.height]`, to
+        /// surface pixels. Invertible.
+        frame: Affine,
+        /// The frame's extent in its own space.
+        size: Size,
+        /// HWUI's stretch direction per axis: positive pulls the left or
+        /// top edge, negative the right or bottom one.
+        stretch: Vec2,
     },
     /// Blends each pixel's unpremultiplied colour with the sampled straight
     /// texel, mixes by `amount`, and re-premultiplies with the unchanged alpha.
@@ -408,9 +441,11 @@ impl Default for Layer {
             clip: None,
             opacity: 1.0,
             blend: BlendMode::Normal,
+            id: None,
             backdrop: None,
             filter: None,
             backdrop_effect: None,
+            backdrop_outer: 0.0,
             scroll_offset: Vec2::ZERO,
             projection: None,
             motion: None,

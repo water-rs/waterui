@@ -423,8 +423,10 @@ define_class!(
                 };
                 self.emit(SurfaceEvent::Scroll {
                     position,
-                    delta_x: event.scrollingDeltaX(),
-                    delta_y: event.scrollingDeltaY(),
+                    // NSEvent deltas are positive for content moving right/down;
+                    // SurfaceEvent uses W3C's opposite sign.
+                    delta_x: -event.scrollingDeltaX(),
+                    delta_y: -event.scrollingDeltaY(),
                     unit: if precise { ScrollUnit::Pixel } else { ScrollUnit::Line },
                     finished,
                 });

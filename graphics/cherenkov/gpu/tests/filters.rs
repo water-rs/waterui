@@ -44,6 +44,12 @@ impl Effect for CopyEffect {
         );
         Ok(true)
     }
+
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
+    }
+
+    fn trim(&mut self) {}
 }
 
 split_test! {
@@ -53,7 +59,7 @@ fn filtered_group_isolates_blended_descendant_inside_pass_through_group()
     let identity = engine.filter(filtrate::filters::ColorMatrix([
         1.0_f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
     ]));
-    let surface = wait!(engine.surface(Offscreen::new((8, 40), OffscreenFormat::LinearF32)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 40), OffscreenFormat::LinearF32), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
@@ -105,7 +111,7 @@ fn filtered_group_contains_direct_blended_descendant() -> Result<(), Box<dyn std
     let identity = engine.filter(filtrate::filters::ColorMatrix([
         1.0_f32, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
     ]));
-    let surface = wait!(engine.surface(Offscreen::new((8, 40), OffscreenFormat::LinearF32)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 40), OffscreenFormat::LinearF32), || {}))?;
     surface.update(|tx| {
         tx[surface.root()].content(surface.record(|r| {
             r.fill(
@@ -149,14 +155,14 @@ split_test! {
 fn engine_executes_composed_filters_and_effects_after_resize()
 -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((32, 32), OffscreenFormat::LinearF16), || {}))?;
     let layer = surface.layer();
     let (send, receive) = mpsc::channel();
     let effect = engine.effect(EffectBox::from(CopyEffect(send)));
     let invert = engine.filter(filtrate::filters::Invert);
     surface.update(|tx| {
-        tx[surface.root()].push(&layer).filter(&effect);
-        tx[&layer].filter(&invert).content(surface.record(|r| {
+        tx[surface.root()].push(&layer).filter(effect.id());
+        tx[&layer].filter(invert.id()).content(surface.record(|r| {
             r.fill(
                 Rect::new(0.0, 0.0, 32.0, 32.0),
                 WorkingColor::new([0.25, 0.5, 0.75, 1.0]),
@@ -246,6 +252,12 @@ impl Effect for ObservedEffect {
         );
         Ok(false)
     }
+
+    fn retained_memory(&self) -> filtrate::RetainedMemory {
+        filtrate::RetainedMemory::default()
+    }
+
+    fn trim(&mut self) {}
 }
 
 split_test! {
@@ -256,13 +268,13 @@ fn filter_wakes_coalesce_and_stop_after_detach() -> Result<(), Box<dyn std::erro
     };
     let wakes = Arc::new(AtomicUsize::new(0));
     let wake = Arc::clone(&wakes);
-    let engine = wait!(Engine::<Gpu>::new(GpuConfig {
-        redraw: Some(cherenkov_gpu::interop::RedrawCallback::new(move || {
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(
+        Offscreen::new((8, 8), OffscreenFormat::LinearF16),
+        move || {
             wake.fetch_add(1, Ordering::Relaxed);
-        })),
-        ..GpuConfig::default()
-    }))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+        }
+    ))?;
     let (callbacks, receive) = mpsc::channel();
     let (timings, frames) = mpsc::channel();
     let effect = engine.effect(EffectBox::from(ObservedEffect {
@@ -272,7 +284,7 @@ fn filter_wakes_coalesce_and_stop_after_detach() -> Result<(), Box<dyn std::erro
         fail_setup: false,
     }));
     surface.update(|tx| {
-        tx[surface.root()].filter(&effect).content(
+        tx[surface.root()].filter(effect.id()).content(
             surface.record(|r| r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), WorkingColor::WHITE)),
         );
     });
@@ -302,11 +314,12 @@ fn filter_wakes_coalesce_and_stop_after_detach() -> Result<(), Box<dyn std::erro
     assert_eq!(wakes.load(Ordering::Relaxed), before);
     assert_eq!(wait!(engine.render(FrameTime::now()))?, Next::Idle);
     surface.update(|tx| {
-        tx[surface.root()].filter(&effect);
+        tx[surface.root()].filter(effect.id());
     });
     wait!(engine.render(FrameTime::now()))?;
     drop(surface);
     assert_eq!(wait!(engine.render(FrameTime::now()))?, Next::Idle);
+    let before = wakes.load(Ordering::Relaxed);
     callback();
     assert_eq!(
         wakes.load(Ordering::Relaxed),
@@ -327,7 +340,7 @@ fn filter_setup_failure_keeps_render_thread_alive() -> Result<(), Box<dyn std::e
         timestamps: true,
         ..GpuConfig::default()
     }))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let (callbacks, _receive) = mpsc::channel();
     let (timings, _frames) = mpsc::channel();
     let effect = engine.effect(EffectBox::from(ObservedEffect {
@@ -337,7 +350,7 @@ fn filter_setup_failure_keeps_render_thread_alive() -> Result<(), Box<dyn std::e
         fail_setup: true,
     }));
     surface.update(|tx| {
-        tx[surface.root()].filter(&effect).content(
+        tx[surface.root()].filter(effect.id()).content(
             surface.record(|r| r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), WorkingColor::WHITE)),
         );
     });
@@ -360,7 +373,7 @@ fn filter_setup_failure_keeps_render_thread_alive() -> Result<(), Box<dyn std::e
 split_test! {
 fn shared_effect_consumes_one_delta_per_presentation() -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let (callbacks, _receive) = mpsc::channel();
     let (timings, frames) = mpsc::channel();
     let effect = engine.effect(EffectBox::from(ObservedEffect {
@@ -374,7 +387,7 @@ fn shared_effect_consumes_one_delta_per_presentation() -> Result<(), Box<dyn std
     surface.update(|tx| {
         tx[surface.root()].push(&first).push(&second);
         for layer in [&first, &second] {
-            tx[layer].filter(&effect).content(
+            tx[layer].filter(effect.id()).content(
                 surface.record(|r| r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), WorkingColor::WHITE)),
             );
         }
@@ -394,10 +407,79 @@ fn shared_effect_consumes_one_delta_per_presentation() -> Result<(), Box<dyn std
 }
 
 split_test! {
+/// `filter_images` counts the textures a chain uploads itself (#2766): a
+/// CPU auxiliary image's bytes join `gpu` while the filter is registered
+/// and leave with it.
+fn layer_filter_reports_its_uploaded_image() -> Result<(), Box<dyn std::error::Error>> {
+    // A 16×16 Rgba8 auxiliary image — 1024 bytes the executor uploads at
+    // setup and retains for the chain's life.
+    const IMAGE_BYTES: u64 = 16 * 16 * 4;
+    let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
+    let layer = surface.layer();
+    surface.update(|tx| {
+        tx[surface.root()].push(&layer);
+        tx[&layer].content(
+            surface.record(|r| r.fill(Rect::new(0.0, 0.0, 8.0, 8.0), WorkingColor::WHITE)),
+        );
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    // Both ends are measured trimmed, so the renderer's grow-only caches
+    // (a filtered layer's isolated target among them) cannot tell them apart.
+    engine.trim(cherenkov::Pressure::Critical);
+    let before = wait!(engine.memory());
+    assert_eq!(before.filter_images, cherenkov::Bytes(0));
+    // A filter that uploads nothing gives what a filtered layer costs
+    // apart from its chain's own targets and images: the layer's isolated
+    // target is part of `gpu` whatever the filter.
+    let invert = engine.filter(filtrate::filters::Invert);
+    surface.update(|tx| {
+        tx[&layer].filter(invert.id());
+    });
+    wait!(engine.render(FrameTime::now()))?;
+    let plain = wait!(engine.memory());
+    assert_eq!(plain.filter_images, cherenkov::Bytes(0));
+    let blend = engine.filter(filtrate::filters::BlendWithImage {
+        image: filtrate::FilterImage::from_rgba8(16, 16, vec![128; 16 * 16 * 4]),
+        amount: 0.5,
+        mode: filtrate::filters::BlendMode::Normal,
+    });
+    surface.update(|tx| {
+        tx[&layer].filter(blend.id());
+    });
+    drop(invert);
+    wait!(engine.render(FrameTime::now()))?;
+    let memory = wait!(engine.memory());
+    assert_eq!(memory.filter_images, cherenkov::Bytes(IMAGE_BYTES));
+    // The upload joins `gpu` exactly once: with each side's chain targets
+    // and images taken out, the two filtered layers cost the same.
+    let rest = |m: &cherenkov::MemoryUsage| m.gpu.0 - m.filter_targets.0 - m.filter_images.0;
+    assert_eq!(
+        rest(&memory),
+        rest(&plain),
+        "the uploaded image's bytes join `gpu` once, with the chain's targets"
+    );
+    // The upload leaves with the chain: detaching and dropping the
+    // filter returns `gpu` to its baseline.
+    surface.update(|tx| {
+        tx[&layer].clear_filter();
+    });
+    drop(blend);
+    wait!(engine.render(FrameTime::now()))?;
+    engine.trim(cherenkov::Pressure::Critical);
+    let after = wait!(engine.memory());
+    assert_eq!(after.filter_images, cherenkov::Bytes(0));
+    assert_eq!(after.filter_targets, cherenkov::Bytes(0));
+    assert_eq!(after.gpu, before.gpu);
+    Ok(())
+}
+}
+
+split_test! {
 fn recorded_filter_groups_survive_opacity_speculation_and_live_patches()
 -> Result<(), Box<dyn std::error::Error>> {
     let engine = wait!(Engine::<Gpu>::new(GpuConfig::default()))?;
-    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16)))?;
+    let surface = wait!(engine.surface(Offscreen::new((8, 8), OffscreenFormat::LinearF16), || {}))?;
     let invert = engine.filter(filtrate::filters::Invert);
     let color = nami::binding(WorkingColor::new([0.25, 0.5, 0.75, 1.0]));
     surface.update(|tx| {

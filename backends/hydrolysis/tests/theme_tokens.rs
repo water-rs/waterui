@@ -8,17 +8,66 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use hydrolysis::{HeadlessRuntime, SemanticRuntime};
-use hydrolysis_m3::{Material3, MaterialColorScheme};
+use hydrolysis::testing::TestStyle;
+use hydrolysis::{FontFamilyResolution, HeadlessRuntime, SemanticRuntime};
 use waterui::app::App;
 use waterui::color::WorkingColor;
 use waterui::graphics::color::Srgb;
 use waterui::reactive::binding;
 use waterui::theme::color::{Background, Foreground};
-use waterui::theme::{ColorScheme, Theme, installed_color_scheme, installed_color_signal};
-use waterui::{Computed, Signal};
+use waterui::theme::{
+    ColorScheme, Theme, install_color_signal, installed_color_scheme, installed_color_signal,
+};
+use waterui::{Computed, Signal, SignalExt as _};
 use waterui_core::handler::AnyViewBuilder;
 use waterui_core::{AnyView, Environment, View};
+
+/// The probe style's projected background under a Light scheme — a colour no
+/// framework default produces, so a resolved match proves the style's tokens
+/// landed and saw the scheme.
+fn probe_light_background() -> WorkingColor {
+    Srgb::from_u32(0xEA_EF_F5).resolve()
+}
+
+/// The probe style's projected background under a Dark scheme.
+fn probe_dark_background() -> WorkingColor {
+    Srgb::from_u32(0x14_1B_24).resolve()
+}
+
+/// The probe style's projected foreground, likewise scheme-keyed.
+fn probe_light_foreground() -> WorkingColor {
+    Srgb::from_u32(0x22_2B_36).resolve()
+}
+
+/// The probe style's projected dark-scheme foreground.
+fn probe_dark_foreground() -> WorkingColor {
+    Srgb::from_u32(0xE4_E9_F0).resolve()
+}
+
+/// A minimal style whose `install_tokens` projects the environment's
+/// resolved colour scheme into `Background`/`Foreground` — the same seam a
+/// style package's dynamic-colour installer uses, expressed locally so the
+/// token-ordering contract is tested without a style package.
+fn probe_style() -> TestStyle {
+    TestStyle::with_token_installer(|env| {
+        let scheme = installed_color_scheme(env)
+            .expect("the framework default scheme installs ahead of style tokens");
+        let background = scheme
+            .map(|scheme| match scheme {
+                ColorScheme::Dark => probe_dark_background(),
+                ColorScheme::Light => probe_light_background(),
+            })
+            .computed();
+        install_color_signal::<Background>(env, background);
+        let foreground = scheme
+            .map(|scheme| match scheme {
+                ColorScheme::Dark => probe_dark_foreground(),
+                ColorScheme::Light => probe_light_foreground(),
+            })
+            .computed();
+        install_color_signal::<Foreground>(env, foreground);
+    })
+}
 
 /// What a [`TokenProbe`] read out of the environment it was built under.
 #[derive(Default)]
@@ -74,7 +123,7 @@ fn headless_probe(
 fn semantic_probe(env: Environment) -> Rc<RefCell<CapturedTokens>> {
     let (probe, captured) = token_probe();
     let content = AnyViewBuilder::new(move || AnyView::new(probe.clone()));
-    let mut runtime = SemanticRuntime::new_for_tests(env, content, 64, 64);
+    let mut runtime = SemanticRuntime::new(env, content, 64, 64, FontFamilyResolution::Strict);
     let _ = runtime.pump();
     captured
 }
@@ -86,13 +135,14 @@ fn assert_resolved_eq(actual: WorkingColor, expected: WorkingColor, message: &st
 }
 
 /// The application's `Theme` outranks both the framework defaults and the
-/// style's tokens: `Material3`'s dynamic colours must bind the application's
-/// installed scheme, so the resolved tokens are the dark Material baseline.
+/// style's tokens: the probe style's dynamic colours must bind the
+/// application's installed scheme, so the resolved tokens are the dark
+/// projections.
 #[test]
 fn application_theme_wins_over_framework_defaults() {
     let mut app_env = Environment::new();
     app_env.install(Theme::new().color_scheme(ColorScheme::Dark));
-    let (_runtime, captured) = headless_probe(app_environment(app_env), Material3::defaults());
+    let (_runtime, captured) = headless_probe(app_environment(app_env), probe_style());
     let captured = captured.borrow();
 
     assert_eq!(
@@ -106,8 +156,8 @@ fn application_theme_wins_over_framework_defaults() {
             .as_ref()
             .expect("a `Background` token must be installed")
             .snapshot(),
-        MaterialColorScheme::baseline_dark().background.working(),
-        "`Background` must resolve to the dark Material colour",
+        probe_dark_background(),
+        "`Background` must resolve to the probe's dark colour",
     );
 }
 
@@ -150,7 +200,7 @@ fn reactive_color_scheme_rethemes_resolved_tokens() {
     let scheme = binding(ColorScheme::Light);
     let mut app_env = Environment::new();
     app_env.install(Theme::new().color_scheme(scheme.clone()));
-    let (mut runtime, captured) = headless_probe(app_environment(app_env), Material3::defaults());
+    let (mut runtime, captured) = headless_probe(app_environment(app_env), probe_style());
 
     {
         let captured = captured.borrow();
@@ -165,8 +215,8 @@ fn reactive_color_scheme_rethemes_resolved_tokens() {
                 .as_ref()
                 .expect("a `Background` token must be installed")
                 .snapshot(),
-            MaterialColorScheme::baseline_light().background.working(),
-            "`Background` must start at the light Material colour",
+            probe_light_background(),
+            "`Background` must start at the probe's light colour",
         );
     }
 
@@ -185,7 +235,7 @@ fn reactive_color_scheme_rethemes_resolved_tokens() {
             .as_ref()
             .expect("a `Background` token must be installed")
             .snapshot(),
-        MaterialColorScheme::baseline_dark().background.working(),
-        "`Background` must follow the binding to the dark Material colour",
+        probe_dark_background(),
+        "`Background` must follow the binding to the probe's dark colour",
     );
 }

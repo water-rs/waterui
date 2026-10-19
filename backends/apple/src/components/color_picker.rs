@@ -358,11 +358,8 @@ pub fn install(dispatcher: &mut Dispatcher) {
         }));
 
         host.set_layout_handler({
-            let state = Rc::downgrade(&state);
+            let state = Rc::clone(&state);
             move |view| {
-                let Some(state) = state.upgrade() else {
-                    return;
-                };
                 layout_children(view, &state.borrow());
             }
         });

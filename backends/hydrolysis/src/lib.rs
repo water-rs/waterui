@@ -1,11 +1,14 @@
 //! Hydrolysis backend.
 
+mod animation;
 mod engine;
 // Bare wasm reaches none of the env-driven window/console paths that call
 // these helpers.
 #[cfg_attr(all(target_arch = "wasm32", not(feature = "web")), allow(dead_code))]
 mod env;
 mod gpu_view;
+#[cfg(hydrolysis_hosted)]
+mod hosted;
 mod localization;
 mod num_cast;
 #[cfg(hydrolysis_pipeline_cache)]
@@ -17,14 +20,16 @@ mod renderer;
 mod runner;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+mod text;
 pub mod theme;
 mod view_renderer;
 mod widgets;
 
 // Interaction/runtime layer shared with other self-drawn backends.
-pub(crate) use waterui_backend_core::{animation, gesture, scroll, time};
+pub(crate) use waterui_backend_core::{gesture, scroll, time};
 
-pub use engine::{IconOnlyButtonLabel, WidgetTheme};
+#[cfg(hydrolysis_hosted)]
+pub use hosted::{HostedContent, HostedObject, HostedOcclusion, HostedView};
 use std::time::Duration;
 use waterui_core::Environment;
 
@@ -35,20 +40,22 @@ use waterui_core::Environment;
 /// paths, the first frame).
 pub const TARGET_FRAME_INTERVAL: Duration = Duration::from_nanos(8_333_333);
 
-/// A presentation style for the rendered Hydrolysis runtime.
+/// A presentation style for the rendered Hydrolysis runtime: the type a style
+/// package implements, and what `run(app, env, style)` accepts.
 ///
 /// A `Style` is the runtime's widget theme plus the package's token set:
 /// the runtime assembles the environment's theme tokens with framework
 /// defaults beneath [`Self::install_tokens`] beneath the application's own
 /// environment (`crate::theme::install_theme_tokens`), and finally owns the
-/// style itself and hands `&dyn WidgetTheme` to the layout and encode
-/// contexts.
+/// style itself and hands `&dyn` [`WidgetTheme`](theme::WidgetTheme) to the
+/// layout and encode contexts. The [`theme`] module documents the whole
+/// contract a style package targets.
 ///
 /// The semantic runtime (`SemanticRuntime`) takes no `Style`: widget
 /// structure, roles, labels, values, states and actions never depend on one.
 /// A theme read during view build or patch is a compile error by
 /// construction — build and patch contexts cannot reach a theme.
-pub trait Style: WidgetTheme + 'static {
+pub trait Style: theme::WidgetTheme + 'static {
     /// Installs the style package's colour, font and other environment
     /// tokens. The environment already carries the application's entries
     /// layered over the framework defaults, so an installed value can be
@@ -56,6 +63,10 @@ pub trait Style: WidgetTheme + 'static {
     /// application's own entries still win in the assembled environment.
     fn install_tokens(&self, env: &mut Environment);
 }
+/// The alpha convention a [`HeadlessSnapshot`]'s pixels read — what the
+/// producing surface presented with.
+#[cfg(not(target_arch = "wasm32"))]
+pub use cherenkov_gpu::interop::OutputAlpha;
 /// The W3C UI Events key vocabulary this backend speaks, re-exported so hosts
 /// that synthesize key events use the same version of it.
 pub use keyboard_types;
@@ -64,30 +75,36 @@ pub use platform::BrowserWindow;
 #[cfg(hydrolysis_winit)]
 pub use platform::WinitWindow;
 pub use platform::{
-    GpuSurfaceWindow, InputEvent, KeyCode, KeyState, Modifiers, OffscreenGpuContext,
-    OffscreenSceneSurface, OffscreenSurface, OffscreenWindow, PlatformWindow, PointerButton,
-    PointerKind, SurfaceError, SurfaceFrame, SurfaceProvider, TextInputPurpose, TextInputState,
-    TouchPhase, WindowSafeArea,
+    BackEdge, BackNavigation, DeviceLoss, EdgeBounce, EdgeStretch, ExponentialDecay,
+    FlingDeceleration, InputEvent, KeyCode, KeyState, Modifiers, OffscreenGpuContext,
+    OffscreenSceneSurface, OffscreenSurface, OffscreenWindow, Overscroll, PlatformWindow,
+    PointerButton, PointerKind, ReleaseReturn, RubberBand, ScrollPhysics, ScrollPlatform,
+    SplineDeceleration, SpringBack, SurfaceError, SurfaceFrame, TextInputPurpose, TextInputState,
+    TouchPhase, TouchScrollConfig, WindowKeyboardArea, WindowSafeArea,
 };
-pub use platform_view::{PlatformView, PlatformViewPlacement, PlatformViewSink};
+pub use platform_view::{
+    PlatformView, PlatformViewPlacement, PlatformViewSink, PlatformViewSource,
+};
+pub use readback::{ReadbackError, readback_texture_rgba8};
 #[cfg(feature = "accessibility")]
-pub use renderer::accessibility::AccessibilityActivationPointError;
+pub use renderer::accessibility::{AccessibilityActivationPointError, AccessibilityContentTypes};
 #[cfg(feature = "frame-profile")]
 pub use renderer::{FrameStageTimes, GpuIdentity};
 pub use renderer::{HydroState, HydrolysisRenderTarget, HydrolysisRenderer, RenderContext};
 #[cfg(target_os = "android")]
 pub use runner::android;
-// `runner::run` exists on every non-Android shape except bare wasm without
-// `web`: wasm32 reaches no windowing model until the browser runner is
-// compiled in.
-#[cfg(all(
-    not(target_os = "android"),
-    any(not(target_arch = "wasm32"), feature = "web")
-))]
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub use runner::init_tracing;
+#[cfg(hydrolysis_run)]
 pub use runner::run;
 pub use runner::{FrameCounters, FramePhases, FrameProfile, SemanticPumpResult, SemanticRuntime};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{HeadlessPumpResult, HeadlessRuntime, HeadlessSnapshot};
+#[cfg(not(target_arch = "wasm32"))]
+pub use text::fonts::native_collection;
+pub use text::{DeclaredFonts, FontFamilyResolution};
 pub use view_renderer::HydrolysisViewRenderer;
 #[cfg(hydrolysis_macos_system_webview)]
 pub use widgets::platform::webview::MacSystemWebViewController;
+#[cfg(hydrolysis_web_system_webview)]
+pub use widgets::platform::webview::WebSystemWebViewController;

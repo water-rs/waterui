@@ -5,8 +5,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::fmt;
 
-use cherenkov::kurbo::Rect;
-use cherenkov::{Draw as _, Paint, Recorder, WorkingColor};
+use crate::draw::kurbo::Rect;
+use crate::draw::{Draw as _, Paint, Recorder, WorkingColor};
 use nami::map::map;
 use nami::{Computed, Signal, SignalExt};
 use waterui_core::layout::StretchAxis;
@@ -195,10 +195,10 @@ impl SceneContent for MeshContent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cherenkov::MeshColorInterpolation;
+    use crate::draw::MeshColorInterpolation;
     use nami::Binding;
 
-    fn mesh(paint: &Computed<Paint>) -> cherenkov::MeshGradient {
+    fn mesh(paint: &Computed<Paint>) -> crate::draw::MeshGradient {
         let Paint::Mesh(mesh) = paint.snapshot() else {
             panic!("a mesh gradient records a mesh paint");
         };
@@ -243,7 +243,7 @@ mod tests {
                 .iter()
                 .all(|color| *color == WorkingColor::WHITE)
         );
-        assert_eq!(mesh.points()[3], cherenkov::kurbo::Point::new(0.5, 0.5));
+        assert_eq!(mesh.points()[3], crate::draw::kurbo::Point::new(0.5, 0.5));
         assert_eq!(mesh.interpolation_mode(), MeshColorInterpolation::Linear);
     }
 

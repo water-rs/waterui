@@ -81,12 +81,15 @@ define_class!(
                 // SAFETY: see the module safety note.
                 let _: () = unsafe { msg_send![super(self), setFrameSize: size] };
                 // A new width changes the wrapped height: invalidate the
-                // intrinsic size once per width.
+                // intrinsic size once per width. `labelWithString:` runs
+                // `setFrameSize:` during its own initialization — before
+                // any `set_ivars` could have run — so the ivar storage is
+                // read without the initialized check.
                 let width = self.bounds().size.width;
-                if width > 0.0
-                    && self.raw_ivars().reported_width.replace(width).to_bits()
-                        != width.to_bits()
-                {
+                // SAFETY: the storage is `set_ivars`-written, marked, or
+                // still zero-filled, all valid `LabelIvars` states.
+                let ivars = unsafe { crate::defined_class::raw_ivars(self) };
+                if width > 0.0 && ivars.reported_width.replace(width).to_bits() != width.to_bits() {
                     self.invalidate_layout();
                 }
             });
@@ -133,7 +136,7 @@ impl Label {
         // SAFETY: invoked on the subclass itself, `labelWithString:`
         // allocates through `self`, so the result is a `Label`.
         let this: Retained<Self> = unsafe { msg_send![Self::class(), labelWithString: &*title] };
-        this.mark_ivars_initialized();
+        crate::defined_class::mark_ivars_initialized(&*this);
         this.setEditable(false);
         this.setSelectable(false);
         this.setBordered(false);
@@ -245,53 +248,6 @@ impl Label {
             self.ivars().line_limit.get(),
             self.display_scale(),
         )
-    }
-
-    /// The `LabelIvars` storage read without the debug initialized-ivars
-    /// check: `labelWithString:` triggers `setFrameSize:` during its own
-    /// initialization — before any `set_ivars` could have run — so this
-    /// override cannot go through `ivars()`.
-    fn raw_ivars(&self) -> &LabelIvars {
-        static OFFSET: std::sync::OnceLock<isize> = std::sync::OnceLock::new();
-        let offset = *OFFSET.get_or_init(|| {
-            Self::class()
-                .instance_variable(c"ivars")
-                .expect("objc2 stores DefinedClass ivars under the `ivars` ivar")
-                .offset()
-        });
-        // SAFETY: `ivars` is the storage `#[ivars = LabelIvars]` registers,
-        // so the offset points at a correctly aligned `LabelIvars`; freshly
-        // allocated objects have it zero-filled, which is a valid
-        // `LabelIvars` state (None / zeroed cells).
-        #[expect(clippy::cast_ptr_alignment)]
-        unsafe {
-            &*std::ptr::from_ref::<Self>(self)
-                .cast::<u8>()
-                .offset(offset)
-                .cast::<LabelIvars>()
-        }
-    }
-
-    /// `labelWithString:` allocs through `self` but never runs
-    /// `set_ivars`, so `objc2`'s drop flag reads `Allocated` — which both
-    /// debug `ivars()` checks and ivar destruction gate on. The zero-filled
-    /// storage already equals the initial `LabelIvars` state, so mark it
-    /// initialized the way `initialize_ivars` would have.
-    fn mark_ivars_initialized(&self) {
-        let cls = Self::class();
-        let Some(ivar) = cls.instance_variable(c"drop_flag") else {
-            return;
-        };
-        // SAFETY: `drop_flag` is `objc2`'s ivar-state marker; `0x0f` is its
-        // `InitializedIvars` value. The ivars hold valid zeroed state, so
-        // this only records what is already true.
-        unsafe {
-            std::ptr::from_ref::<Self>(self)
-                .cast::<u8>()
-                .cast_mut()
-                .offset(ivar.offset())
-                .write(0x0f);
-        }
     }
 
     /// Device pixels per point where the label is drawn — its window's

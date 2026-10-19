@@ -1,7 +1,7 @@
 use nami::{Signal, impl_constant};
 use waterui_core::{Environment, resolve::Resolvable};
 
-use cherenkov::{DisplayP3, WorkingColor};
+use crate::draw::{DisplayP3, WorkingColor};
 
 use super::{Srgb, linear_to_srgb, p3_to_linear_srgb, srgb_to_linear};
 
@@ -10,6 +10,10 @@ use super::{Srgb, linear_to_srgb, p3_to_linear_srgb, srgb_to_linear};
 /// P3 is a wider color gamut than sRGB, commonly used in modern displays.
 /// Component values are in the range 0.0 to 1.0.
 #[derive(Debug, Clone, Copy)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a Display P3 color: its three channels are the whole value"
+)]
 pub struct P3 {
     /// Red component (0.0 to 1.0)
     pub red: f32,
@@ -55,7 +59,7 @@ impl P3 {
     /// The working colour of this Display P3 colour, fully opaque.
     #[must_use]
     pub fn resolve(&self) -> WorkingColor {
-        cherenkov::Color::<DisplayP3>::new([self.red, self.green, self.blue, 1.0]).into()
+        crate::draw::Color::<DisplayP3>::new([self.red, self.green, self.blue, 1.0]).into()
     }
 }
 

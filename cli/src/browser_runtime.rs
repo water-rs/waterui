@@ -5,7 +5,6 @@ use std::path::{Path, PathBuf};
 
 use eyre::{Context as _, bail};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest as _, Sha256};
 use smol::fs;
 use walkdir::WalkDir;
 use zenwave::{Client as _, Method};
@@ -139,12 +138,14 @@ struct SpdxPackage<'a> {
 /// `profile_directory` is the Cargo profile directory containing the executable.
 /// `executable_directory` is the final directory from which the application runs.
 pub async fn stage(
+    host: &crate::toolchain::Host,
     plan: BrowserRuntimePlan,
     platform: TargetPlatform,
     profile_directory: &Path,
     executable_directory: &Path,
 ) -> eyre::Result<()> {
     stage_into(
+        host,
         plan,
         platform,
         profile_directory,
@@ -165,11 +166,13 @@ pub async fn stage(
 /// copied into the application bundle.
 #[cfg(target_os = "macos")]
 pub async fn stage_macos_app(
+    host: &crate::toolchain::Host,
     plan: BrowserRuntimePlan,
     profile_directory: &Path,
     contents_directory: &Path,
 ) -> eyre::Result<()> {
     stage_into(
+        host,
         plan,
         TargetPlatform::MacOS,
         profile_directory,
@@ -193,6 +196,7 @@ pub async fn remove_macos_app(contents_directory: &Path) -> eyre::Result<()> {
 }
 
 async fn stage_into(
+    host: &crate::toolchain::Host,
     plan: BrowserRuntimePlan,
     platform: TargetPlatform,
     profile_directory: &Path,
@@ -209,7 +213,7 @@ async fn stage_into(
     fs::create_dir_all(&layout.runtime_root).await?;
 
     if engines.contains(&RuntimeEngine::Wpe) {
-        stage_wpe(&configuration, platform, &layout.runtime_root).await?;
+        stage_wpe(host, &configuration, platform, &layout.runtime_root).await?;
     }
     if engines.contains(&RuntimeEngine::Cef) {
         stage_cef(&configuration, platform, profile_directory, &layout).await?;
@@ -235,6 +239,7 @@ fn engines(plan: BrowserRuntimePlan) -> BTreeSet<RuntimeEngine> {
 }
 
 async fn stage_wpe(
+    host: &crate::toolchain::Host,
     configuration: &SourceConfiguration,
     platform: TargetPlatform,
     runtime_root: &Path,
@@ -252,7 +257,7 @@ async fn stage_wpe(
         platform,
         architecture,
     )?;
-    let archive = cache_artifact(artifact).await?;
+    let archive = cache_artifact(host, artifact).await?;
     let destination = runtime_root.join(RuntimeEngine::Wpe.as_str());
     extract_verified_zip(&archive, &artifact.sha256, &destination).await?;
     validate_wpe_runtime(&destination)?;
@@ -410,8 +415,12 @@ fn select_artifact<'a>(
     }
 }
 
-async fn cache_artifact(artifact: &RuntimeArtifact) -> eyre::Result<PathBuf> {
-    let cache_root = dirs::cache_dir()
+async fn cache_artifact(
+    host: &crate::toolchain::Host,
+    artifact: &RuntimeArtifact,
+) -> eyre::Result<PathBuf> {
+    let cache_root = host
+        .cache_dir()
         .ok_or_else(|| eyre::eyre!("platform does not expose a cache directory"))?
         .join("waterui/browser-runtimes")
         .join(artifact.engine.as_str())
@@ -421,7 +430,7 @@ async fn cache_artifact(artifact: &RuntimeArtifact) -> eyre::Result<PathBuf> {
     fs::create_dir_all(&cache_root).await?;
     let archive = cache_root.join(format!("{}.zip", artifact.sha256));
     if archive.is_file()
-        && file_sha256(&archive).await? == artifact.sha256
+        && crate::utils::file_sha256(&archive).await? == artifact.sha256
         && fs::metadata(&archive).await?.len() == artifact.size
     {
         return Ok(archive);
@@ -446,7 +455,7 @@ async fn cache_artifact(artifact: &RuntimeArtifact) -> eyre::Result<PathBuf> {
             artifact.size
         );
     }
-    let checksum = file_sha256(&partial).await?;
+    let checksum = crate::utils::file_sha256(&partial).await?;
     if checksum != artifact.sha256 {
         fs::remove_file(&partial).await?;
         bail!(
@@ -459,31 +468,12 @@ async fn cache_artifact(artifact: &RuntimeArtifact) -> eyre::Result<PathBuf> {
     Ok(archive)
 }
 
-async fn file_sha256(path: &Path) -> eyre::Result<String> {
-    let path = path.to_path_buf();
-    smol::unblock(move || {
-        let mut file = File::open(path)?;
-        let mut hasher = Sha256::new();
-        let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
-        loop {
-            let read = file.read(&mut buffer)?;
-            if read == 0 {
-                break;
-            }
-            hasher.update(&buffer[..read]);
-        }
-        Ok::<_, std::io::Error>(hex::encode(hasher.finalize()))
-    })
-    .await
-    .map_err(Into::into)
-}
-
 async fn extract_verified_zip(
     archive: &Path,
     expected_sha256: &str,
     destination: &Path,
 ) -> eyre::Result<()> {
-    let actual_sha256 = file_sha256(archive).await?;
+    let actual_sha256 = crate::utils::file_sha256(archive).await?;
     if actual_sha256 != expected_sha256 {
         bail!(
             "cached browser runtime SHA-256 mismatch: expected {expected_sha256}, received {actual_sha256}"
@@ -757,11 +747,12 @@ async fn write_cef_sbom(path: &Path, version: &str, created: &str) -> eyre::Resu
 }
 
 /// The WPE runtime is built and published by the framework repository's
-/// `WPE Runtime` workflow on a `wpe-runtime-v<version>` tag, so the manifest
-/// is bound to the WPE version this CLI expects, not to the CLI release.
+/// `WPE Runtime` workflow on a `browser-wpe-runtime/v<version>` tag, so the
+/// manifest is bound to the WPE version this CLI expects, not to the CLI
+/// release.
 fn runtime_manifest_url(configuration: &SourceConfiguration) -> String {
     format!(
-        "{}/wpe-runtime-v{}/browser-runtime-manifest.json",
+        "{}/browser-wpe-runtime/v{}/browser-runtime-manifest.json",
         configuration.release_base_url, configuration.wpe_version
     )
 }
@@ -868,7 +859,7 @@ mod tests {
         assert_eq!(
             runtime_manifest_url(&configuration),
             format!(
-                "https://github.com/water-rs/waterui/releases/download/wpe-runtime-v{}/browser-runtime-manifest.json",
+                "https://github.com/water-rs/waterui/releases/download/browser-wpe-runtime/v{}/browser-runtime-manifest.json",
                 configuration.wpe_version
             )
         );

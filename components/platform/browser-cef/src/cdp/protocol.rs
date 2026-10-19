@@ -44,12 +44,12 @@ impl CdpCommand for AddBinding {
     type Response = Empty;
 }
 
-/// Enables the page domain, which [`AddScriptToEvaluateOnNewDocument`] needs.
+/// Enables the page domain, which [`AddScriptToEvaluateOnNewDocument`] and
+/// `Page.frameNavigated` need.
 ///
 /// Chromium accepts a document-start script whether or not the domain is
 /// enabled, and only *runs* the registered scripts while it is, so leaving this
-/// out installed the bridge into no document at all and reported success doing
-/// it.
+/// out ran no later script in any document and reported success doing it.
 #[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 pub struct PageEnable {}
@@ -60,7 +60,12 @@ impl CdpCommand for PageEnable {
     type Response = Empty;
 }
 
-/// Registers a script that runs before anything else in each new document.
+/// Registers a script that runs at the start of each new document, after
+/// the renderer's own context hook.
+///
+/// Chromium runs it in the default world of every frame's every document,
+/// whatever its origin, so a source registered here must decide for itself
+/// whether the document is one it may run in.
 #[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 pub struct AddScriptToEvaluateOnNewDocument<'a> {
@@ -86,8 +91,8 @@ pub struct ScriptIdentifier {
 /// [`AddScriptToEvaluateOnNewDocument`].
 ///
 /// Replacement is add-then-remove: a keyed injection has to drop the script it
-/// supersedes, or a view that re-seeds its mirrored state on every navigation
-/// accumulates one stale seed per navigation and the oldest still runs first.
+/// supersedes, or every replacement stacks another copy and the oldest still
+/// runs first.
 #[cfg(feature = "webview")]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -113,14 +118,18 @@ pub struct Evaluate<'a> {
     pub await_promise: bool,
     /// Return the value itself rather than a remote handle.
     pub return_by_value: bool,
-    /// Which execution context to evaluate in; the default context when absent.
+    /// Which execution context to evaluate in, named by its unique id; the
+    /// default context when absent.
     ///
-    /// A bridge reply has to go back to the context that made the call. Sending
-    /// every reply to the default context left a sub-frame's
-    /// `waterui.invoke(...)` promise pending forever, because the resolver it
-    /// was waiting on lives in the frame's own context.
+    /// A bridge reply has to go back to the context that made the call, and
+    /// `uniqueContextId` is how `Runtime.evaluate` names it. The numeric
+    /// `contextId` is a per-renderer handle another renderer can reuse after a
+    /// cross-process navigation, so the number alone could deliver a reply
+    /// into a different document; the unique id cannot be reused. The two are
+    /// mutually exclusive in the protocol, and this command only ever sends
+    /// the unique id.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_id: Option<i64>,
+    pub unique_context_id: Option<&'a str>,
 }
 
 #[cfg(feature = "webview")]
@@ -215,6 +224,43 @@ pub struct SetCookie<'a> {
 impl CdpCommand for SetCookie<'_> {
     const METHOD: &'static str = "Network.setCookie";
     type Response = Empty;
+}
+
+/// Reads the page's frame tree; a web view needs only its root, the main
+/// frame, whose id stays the same across every navigation of the page.
+#[cfg(feature = "webview")]
+#[derive(Debug, Serialize)]
+pub struct GetFrameTree {}
+
+#[cfg(feature = "webview")]
+impl CdpCommand for GetFrameTree {
+    const METHOD: &'static str = "Page.getFrameTree";
+    type Response = GetFrameTreeResponse;
+}
+
+/// The frame tree Chromium returned.
+#[cfg(feature = "webview")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetFrameTreeResponse {
+    /// The tree's root.
+    pub frame_tree: FrameTree,
+}
+
+/// One node of a frame tree; its children are not read.
+#[cfg(feature = "webview")]
+#[derive(Debug, Deserialize)]
+pub struct FrameTree {
+    /// The frame at this node.
+    pub frame: FrameDescription,
+}
+
+/// What a web view reads of a frame.
+#[cfg(feature = "webview")]
+#[derive(Debug, Deserialize)]
+pub struct FrameDescription {
+    /// The frame's id — the `frameId` its execution contexts report.
+    pub id: String,
 }
 
 /// Reads the cookies visible to the given URLs.
@@ -344,7 +390,7 @@ mod tests {
             expression: "1 + 1",
             await_promise: true,
             return_by_value: true,
-            context_id: None,
+            unique_context_id: None,
         };
         let json = serde_json::to_value(&evaluate).expect("serializes");
 
@@ -353,8 +399,10 @@ mod tests {
         // camelCase, because that is what the protocol uses.
         assert_eq!(json["awaitPromise"], true);
         assert_eq!(json["returnByValue"], true);
-        // The default context is expressed by omission, not by null.
+        // The default context is expressed by omission, not by null, and the
+        // reused-by-another-renderer `contextId` is never sent.
         assert!(json.get("contextId").is_none());
+        assert!(json.get("uniqueContextId").is_none());
     }
 
     #[test]

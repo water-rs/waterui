@@ -28,11 +28,6 @@ nursery = { level = "warn", priority = -1 }
 [lints]
 workspace = true
 
-# Same pin as the repo root: the `kurbo` feature is unreleased
-# (water-rs/nami#27).
-[patch.crates-io]
-nami-core = { git = "https://github.com/water-rs/nami", rev = "6908aac816de14ee5aff23bfffd7d2b109d08fea" }
-
 [dependencies]
 cherenkov = { path = "../../.." }
 cherenkov-gpu = { path = "../.." }

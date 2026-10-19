@@ -7,8 +7,11 @@
 //! pointer. Recognized gestures invoke the bound action with the event
 //! (`TapEvent`, `LongPressEvent`, `DragEvent`, `MagnificationEvent`,
 //! `RotationEvent`; composed gestures deliver the completing child's event)
-//! inserted into the environment, with locations localized to the target's
-//! bounds. All coordinates are logical pixels; timestamps come from
+//! inserted into the environment. Input arrives in window coordinates and
+//! events leave in the target's local space: each target carries the
+//! window-to-local transform of its placement, which maps event locations and
+//! centers as points and drag translations and velocities as vectors. All
+//! coordinates are logical pixels; timestamps come from
 //! [`crate::time::Instant`].
 
 use core::time::Duration;
@@ -37,14 +40,38 @@ const EXCLUSIVE_RECOGNITION_WINDOW: Duration = Duration::from_millis(50);
 
 type GestureRecognizerHandle = Rc<RefCell<GestureBinding>>;
 
-/// One registered gesture region: a hit-test rectangle bound to a recognizer
-/// state machine shared via `Rc`, so clones of a target feed the same
-/// recognizer.
+/// Where a gesture target sits in the window: the rectangle it is hit-tested
+/// against and the mapping from window space into its own local space.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "a placement is its hit rectangle and its local mapping; nothing else describes it"
+)]
+pub struct GesturePlacement {
+    /// Hit-test rectangle in window coordinates (logical pixels).
+    pub bounds: kurbo::Rect,
+    /// Maps a window point into the target's local space, whose origin is the
+    /// target's top-left corner: the inverse of the target's resolved
+    /// window transform. Recognized events are delivered through it, so a
+    /// target under a scale or rotation reads its own coordinates.
+    pub to_local: kurbo::Affine,
+}
+
+impl GesturePlacement {
+    /// A placement hit-tested against `bounds` (window coordinates) whose
+    /// events are mapped into local space by `to_local`.
+    #[must_use]
+    pub const fn new(bounds: kurbo::Rect, to_local: kurbo::Affine) -> Self {
+        Self { bounds, to_local }
+    }
+}
+
+/// One registered gesture region: a placement bound to a recognizer state
+/// machine shared via `Rc`, so clones of a target feed the same recognizer.
 #[derive(Clone)]
 pub struct GestureTarget {
-    /// Hit-test rectangle in window coordinates (logical pixels); also the
-    /// origin against which recognized event locations are localized.
-    pub bounds: kurbo::Rect,
+    /// The target's hit-test rectangle and window-to-local mapping.
+    pub placement: GesturePlacement,
     /// Nesting depth in the view tree; deeper targets win hit-test priority.
     pub depth: usize,
     /// Z-order among siblings at the same depth; higher wins hit-test
@@ -59,7 +86,7 @@ pub struct GestureTarget {
 impl core::fmt::Debug for GestureTarget {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("GestureTarget")
-            .field("bounds", &self.bounds)
+            .field("placement", &self.placement)
             .field("depth", &self.depth)
             .field("order", &self.order)
             .field("group_id", &self.group_id)
@@ -68,20 +95,20 @@ impl core::fmt::Debug for GestureTarget {
 }
 
 impl GestureTarget {
-    /// Returns a copy of this target re-registered at new bounds, depth, and
-    /// group while sharing the same recognizer state machine.
+    /// Returns a copy of this target re-registered at a new placement, depth,
+    /// and group while sharing the same recognizer state machine.
     ///
     /// Used when a retained subtree is replayed at a different placement, so
     /// in-flight recognition (e.g. a pending long press) survives the move.
     #[must_use]
-    pub fn with_bounds_depth_and_group(
+    pub fn with_placement_depth_and_group(
         &self,
-        bounds: kurbo::Rect,
+        placement: GesturePlacement,
         depth: usize,
         group_id: usize,
     ) -> Self {
         Self {
-            bounds,
+            placement,
             depth,
             order: self.order,
             group_id,
@@ -179,14 +206,14 @@ impl GestureBinding {
         }
     }
 
-    fn input(&mut self, input: GestureInput, env: &Environment, bounds: kurbo::Rect) -> bool {
+    fn input(&mut self, input: GestureInput, env: &Environment, to_local: kurbo::Affine) -> bool {
         let detection = self.detector.input(input);
         let Some(payload) = detection.recognized else {
             return false;
         };
         let mut local_env = env.clone();
         local_env.insert(self.gesture.clone());
-        match localize_gesture_payload(payload, bounds) {
+        match localize_gesture_payload(payload, to_local) {
             GesturePayload::Tap(event) => local_env.insert(event),
             GesturePayload::LongPress(event) => local_env.insert(event),
             GesturePayload::Drag(event) => local_env.insert(event),
@@ -202,11 +229,21 @@ impl GestureBinding {
     }
 }
 
-fn local_gesture_point(point: GesturePoint, bounds: kurbo::Rect) -> GesturePoint {
-    GesturePoint::new(
-        point.x - logical_coordinate(bounds.x0),
-        point.y - logical_coordinate(bounds.y0),
-    )
+/// Maps a window-space position (a location or a center) through the full
+/// window-to-local transform.
+fn local_gesture_point(point: GesturePoint, to_local: kurbo::Affine) -> GesturePoint {
+    gesture_point(to_local * window_point(point))
+}
+
+/// Maps a window-space displacement (a translation or a velocity) through the
+/// linear part of the window-to-local transform: a displacement has no
+/// position, so the transform's translation does not apply to it.
+fn local_gesture_vector(vector: GesturePoint, to_local: kurbo::Affine) -> GesturePoint {
+    gesture_point(to_local.with_translation(kurbo::Vec2::ZERO) * window_point(vector))
+}
+
+fn window_point(point: GesturePoint) -> kurbo::Point {
+    kurbo::Point::new(f64::from(point.x), f64::from(point.y))
 }
 
 fn logical_coordinate(value: f64) -> f32 {
@@ -219,26 +256,36 @@ fn gesture_point(point: kurbo::Point) -> GesturePoint {
     GesturePoint::new(logical_coordinate(point.x), logical_coordinate(point.y))
 }
 
-fn localize_gesture_payload(payload: GesturePayload, bounds: kurbo::Rect) -> GesturePayload {
+/// Moves a recognized payload from window space into the target's local
+/// space.
+///
+/// A magnification's scale and a rotation's angle stay as recognized: both
+/// are relative to the gesture's start and invariant under the translations,
+/// rotations and uniform scales a placement resolves to. A non-uniform scale
+/// or skew would distort them by direction, which the scalar deltas the
+/// platform reports cannot express, so no mapping of them would be correct.
+fn localize_gesture_payload(payload: GesturePayload, to_local: kurbo::Affine) -> GesturePayload {
     match payload {
         GesturePayload::Tap(mut event) => {
-            event.location = local_gesture_point(event.location, bounds);
+            event.location = local_gesture_point(event.location, to_local);
             GesturePayload::Tap(event)
         }
         GesturePayload::LongPress(mut event) => {
-            event.location = local_gesture_point(event.location, bounds);
+            event.location = local_gesture_point(event.location, to_local);
             GesturePayload::LongPress(event)
         }
         GesturePayload::Drag(mut event) => {
-            event.location = local_gesture_point(event.location, bounds);
+            event.location = local_gesture_point(event.location, to_local);
+            event.translation = local_gesture_vector(event.translation, to_local);
+            event.velocity = local_gesture_vector(event.velocity, to_local);
             GesturePayload::Drag(event)
         }
         GesturePayload::Magnification(mut event) => {
-            event.center = local_gesture_point(event.center, bounds);
+            event.center = local_gesture_point(event.center, to_local);
             GesturePayload::Magnification(event)
         }
         GesturePayload::Rotation(mut event) => {
-            event.center = local_gesture_point(event.center, bounds);
+            event.center = local_gesture_point(event.center, to_local);
             GesturePayload::Rotation(event)
         }
     }
@@ -247,10 +294,11 @@ fn localize_gesture_payload(payload: GesturePayload, bounds: kurbo::Rect) -> Ges
 /// Routes pointer input to the gesture targets registered during dispatch.
 ///
 /// On pointer-down (or pinch/rotation start) the engine hit-tests the
-/// registered targets, picks the topmost group under the pointer, and
-/// activates its recognizers ordered by depth, then z-order, then
-/// registration index; subsequent moves, ticks, and the final up/cancel are
-/// dispatched to that active set. The target list is rebuilt or truncated
+/// registered targets, picks the topmost group under the pointer with at
+/// least one recognizer accepting the press, and activates that group's
+/// accepting recognizers ordered by depth, then z-order, then registration
+/// index; subsequent moves, ticks, and the final up/cancel are dispatched to
+/// that active set. The target list is rebuilt or truncated
 /// around structural rebuilds while active recognizers persist across frames
 /// as long as their registrations stay live.
 #[derive(Debug, Default)]
@@ -305,15 +353,15 @@ impl GestureEngine {
     }
 
     /// Registers a fresh gesture target: builds the recognizer state machine
-    /// for `gesture` and binds it to `action` at the given hit-test bounds
-    /// (window coordinates, logical pixels) and priority coordinates.
+    /// for `gesture` and binds it to `action` at the given placement and
+    /// priority coordinates.
     ///
     /// Returns the registered target so a caller that owns retained state can
     /// keep it and re-register the same recognizer on later frames via
     /// [`Self::register_existing_target`], preserving in-flight recognition.
     pub fn register_target(
         &mut self,
-        bounds: kurbo::Rect,
+        placement: GesturePlacement,
         gesture: Gesture,
         action: BoxedAction<()>,
         depth: usize,
@@ -321,7 +369,7 @@ impl GestureEngine {
         group_id: usize,
     ) -> GestureTarget {
         self.register_target_recognizer(
-            bounds,
+            placement,
             depth,
             order,
             group_id,
@@ -331,14 +379,14 @@ impl GestureEngine {
 
     fn register_target_recognizer(
         &mut self,
-        bounds: kurbo::Rect,
+        placement: GesturePlacement,
         depth: usize,
         order: usize,
         group_id: usize,
         recognizer: GestureRecognizerHandle,
     ) -> GestureTarget {
         let target = GestureTarget {
-            bounds,
+            placement,
             depth,
             order,
             group_id,
@@ -554,7 +602,7 @@ impl GestureEngine {
             changed |= target
                 .recognizer
                 .borrow_mut()
-                .input(input, env, target.bounds);
+                .input(input, env, target.placement.to_local);
         }
         changed
     }
@@ -573,10 +621,8 @@ impl GestureEngine {
             .enumerate()
             .filter(|(_, target)| {
                 target.group_id == group_id
-                    && target.bounds.contains(point)
-                    && self.active_button.is_none_or(|button| {
-                        gesture_buttons(&target.recognizer.borrow().gesture).accepts(button)
-                    })
+                    && target.placement.bounds.contains(point)
+                    && self.accepts_active_button(target)
             })
             .collect();
         targets.sort_by(|(left_index, left), (right_index, right)| {
@@ -590,16 +636,33 @@ impl GestureEngine {
         recognizers
     }
 
+    /// The topmost hit-test group under `point` that can drive the current
+    /// sequence. A button press only considers targets whose recognizer
+    /// accepts the button, so a group that cannot use the pressed button is
+    /// transparent to it; pinch and rotation carry no button and consider
+    /// every target.
     fn top_group_id_at(&self, point: kurbo::Point) -> Option<usize> {
         self.targets
             .iter()
             .enumerate()
-            .filter(|(_, target)| target.bounds.contains(point))
+            .filter(|(_, target)| {
+                target.placement.bounds.contains(point) && self.accepts_active_button(target)
+            })
             .max_by(|(left_index, left), (right_index, right)| {
                 Self::target_priority(left, *left_index)
                     .cmp(&Self::target_priority(right, *right_index))
             })
             .map(|(_, target)| target.group_id)
+    }
+
+    /// Whether `target`'s recognizer may activate in the current sequence:
+    /// every recognizer qualifies while no button is in flight
+    /// (pinch/rotation), and a button press only reaches recognizers whose
+    /// gesture accepts it.
+    fn accepts_active_button(&self, target: &GestureTarget) -> bool {
+        self.active_button.is_none_or(|button| {
+            gesture_buttons(&target.recognizer.borrow().gesture).accepts(button)
+        })
     }
 
     fn active_recognizers_are_live(&self) -> bool {
@@ -633,7 +696,7 @@ impl GestureEngine {
     pub fn debug_targets_at(&self, point: kurbo::Point) -> Vec<(usize, usize, usize)> {
         self.targets
             .iter()
-            .filter(|target| target.bounds.contains(point))
+            .filter(|target| target.placement.bounds.contains(point))
             .map(|target| (target.depth, target.order, target.group_id))
             .collect()
     }
@@ -713,11 +776,11 @@ impl GestureDetector for TapDetector {
                 }
 
                 self.streak = 0;
-                GestureDetection::recognized(GesturePayload::Tap(TapEvent {
-                    location: gesture_point(point),
-                    count: self.required_count,
+                GestureDetection::recognized(GesturePayload::Tap(TapEvent::new(
+                    gesture_point(point),
+                    self.required_count,
                     button,
-                }))
+                )))
             }
             GestureInput::PointerCancel { .. } => {
                 self.pressed = None;
@@ -790,11 +853,11 @@ impl GestureDetector for LongPressDetector {
                 }
                 self.fired = true;
                 let duration_ms = self.duration.as_secs_f32() * 1_000.0;
-                let payload = GesturePayload::LongPress(LongPressEvent {
-                    location: gesture_point(point),
-                    duration: duration_ms,
+                let payload = GesturePayload::LongPress(LongPressEvent::new(
+                    gesture_point(point),
+                    duration_ms,
                     button,
-                });
+                ));
                 self.reset();
                 GestureDetection::recognized(payload)
             }
@@ -815,11 +878,11 @@ impl GestureDetector for LongPressDetector {
                 }
                 self.fired = true;
                 let duration_ms = self.duration.as_secs_f32() * 1_000.0;
-                GestureDetection::recognized(GesturePayload::LongPress(LongPressEvent {
-                    location: gesture_point(started_point),
-                    duration: duration_ms,
+                GestureDetection::recognized(GesturePayload::LongPress(LongPressEvent::new(
+                    gesture_point(started_point),
+                    duration_ms,
                     button,
-                }))
+                )))
             }
             _ => GestureDetection::default(),
         }
@@ -868,13 +931,13 @@ impl DragDetector {
         translation: GesturePoint,
         velocity: GesturePoint,
     ) -> GesturePayload {
-        GesturePayload::Drag(DragEvent {
+        GesturePayload::Drag(DragEvent::new(
             phase,
-            location: gesture_point(point),
+            gesture_point(point),
             translation,
             velocity,
             button,
-        })
+        ))
     }
 
     fn velocity(
@@ -1032,12 +1095,9 @@ impl GestureDetector for MagnificationDetector {
                 self.scale = self.initial_scale;
                 self.active = true;
                 self.last_at = Some(at);
-                GestureDetection::recognized(GesturePayload::Magnification(MagnificationEvent {
-                    phase: mapped_phase,
-                    center: gesture_point(center),
-                    scale: self.scale,
-                    velocity: 0.0,
-                }))
+                GestureDetection::recognized(GesturePayload::Magnification(
+                    MagnificationEvent::new(mapped_phase, gesture_point(center), self.scale, 0.0),
+                ))
             }
             TouchPhase::Moved => {
                 if !self.active {
@@ -1051,21 +1111,18 @@ impl GestureDetector for MagnificationDetector {
                     .max(f32::EPSILON);
                 self.last_at = Some(at);
                 self.scale = (self.scale * (1.0 + delta)).max(0.01);
-                GestureDetection::recognized(GesturePayload::Magnification(MagnificationEvent {
-                    phase: mapped_phase,
-                    center: gesture_point(center),
-                    scale: self.scale,
-                    velocity: delta / dt,
-                }))
+                GestureDetection::recognized(GesturePayload::Magnification(
+                    MagnificationEvent::new(
+                        mapped_phase,
+                        gesture_point(center),
+                        self.scale,
+                        delta / dt,
+                    ),
+                ))
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 let payload = GestureDetection::recognized(GesturePayload::Magnification(
-                    MagnificationEvent {
-                        phase: mapped_phase,
-                        center: gesture_point(center),
-                        scale: self.scale,
-                        velocity: 0.0,
-                    },
+                    MagnificationEvent::new(mapped_phase, gesture_point(center), self.scale, 0.0),
                 ));
                 self.reset();
                 payload
@@ -1113,12 +1170,12 @@ impl GestureDetector for RotationDetector {
                 self.active = true;
                 self.angle = 0.0;
                 self.last_at = Some(at);
-                GestureDetection::recognized(GesturePayload::Rotation(RotationEvent {
-                    phase: mapped_phase,
-                    center: gesture_point(center),
-                    angle: self.angle,
-                    velocity: 0.0,
-                }))
+                GestureDetection::recognized(GesturePayload::Rotation(RotationEvent::new(
+                    mapped_phase,
+                    gesture_point(center),
+                    self.angle,
+                    0.0,
+                )))
             }
             TouchPhase::Moved => {
                 if !self.active {
@@ -1131,25 +1188,21 @@ impl GestureDetector for RotationDetector {
                     .max(f32::EPSILON);
                 self.last_at = Some(at);
                 self.angle += delta;
-                GestureDetection::recognized(GesturePayload::Rotation(RotationEvent {
-                    phase: mapped_phase,
-                    center: gesture_point(center),
-                    angle: self.angle,
-                    velocity: delta / dt,
-                }))
+                GestureDetection::recognized(GesturePayload::Rotation(RotationEvent::new(
+                    mapped_phase,
+                    gesture_point(center),
+                    self.angle,
+                    delta / dt,
+                )))
             }
             TouchPhase::Ended | TouchPhase::Cancelled => {
                 if !self.active {
                     return GestureDetection::default();
                 }
                 self.angle += delta;
-                let detection =
-                    GestureDetection::recognized(GesturePayload::Rotation(RotationEvent {
-                        phase: mapped_phase,
-                        center: gesture_point(center),
-                        angle: self.angle,
-                        velocity: 0.0,
-                    }));
+                let detection = GestureDetection::recognized(GesturePayload::Rotation(
+                    RotationEvent::new(mapped_phase, gesture_point(center), self.angle, 0.0),
+                ));
                 self.reset();
                 detection
             }
@@ -1391,6 +1444,11 @@ fn build_gesture_detector(gesture: &Gesture) -> Box<dyn GestureDetector> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A placement at the window origin, whose local space is window space.
+    const fn identity_placement(bounds: kurbo::Rect) -> GesturePlacement {
+        GesturePlacement::new(bounds, kurbo::Affine::IDENTITY)
+    }
 
     #[test]
     fn long_press_fires_after_tick_deadline() {
@@ -1702,7 +1760,7 @@ mod tests {
         {
             let tap_hits = Rc::clone(&tap_hits);
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
                     env.get::<TapEvent>()
@@ -1717,7 +1775,7 @@ mod tests {
         {
             let drag_hits = Rc::clone(&drag_hits);
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Drag(DragGesture::new(8.0)),
                 boxed_action(move |env: Environment| {
                     env.get::<DragEvent>()
@@ -1765,7 +1823,7 @@ mod tests {
         {
             let drag_hits = Rc::clone(&drag_hits);
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Drag(DragGesture::new(0.0)),
                 boxed_action(move |env: Environment| {
                     env.get::<DragEvent>()
@@ -1780,7 +1838,7 @@ mod tests {
         {
             let magnify_hits = Rc::clone(&magnify_hits);
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Magnification(MagnificationGesture::new(1.0)),
                 boxed_action(move |env: Environment| {
                     env.get::<MagnificationEvent>()
@@ -1830,7 +1888,7 @@ mod tests {
         {
             let default_hits = Rc::clone(&default_hits);
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
                     env.get::<TapEvent>()
@@ -1846,7 +1904,7 @@ mod tests {
             let middle_hits = Rc::clone(&middle_hits);
             let middle_button = Rc::clone(&middle_button);
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
                 boxed_action(move |env: Environment| {
                     let event = env
@@ -1889,7 +1947,7 @@ mod tests {
         {
             let middle_hits = Rc::clone(&middle_hits);
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
                 boxed_action(move |env: Environment| {
                     env.get::<TapEvent>()
@@ -1928,7 +1986,7 @@ mod tests {
         {
             let hits = Rc::clone(&hits);
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
                     env.get::<TapEvent>()
@@ -1967,6 +2025,76 @@ mod tests {
     }
 
     #[test]
+    fn press_passes_through_group_that_rejects_its_button() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui::gesture::TapGesture;
+        use waterui_core::handler::boxed_action;
+
+        let mut engine = GestureEngine::default();
+        let env = Environment::new();
+        let parent_hits = Rc::new(Cell::new(0u32));
+        let child_hits = Rc::new(Cell::new(0u32));
+
+        {
+            let parent_hits = Rc::clone(&parent_hits);
+            engine.register_target(
+                identity_placement(kurbo::Rect::new(0.0, 0.0, 200.0, 40.0)),
+                Gesture::Tap(TapGesture::new()),
+                boxed_action(move |env: Environment| {
+                    env.get::<TapEvent>()
+                        .expect("tap action missing TapEvent in environment");
+                    parent_hits.set(parent_hits.get() + 1);
+                }),
+                0,
+                0,
+                1,
+            );
+        }
+        {
+            let child_hits = Rc::clone(&child_hits);
+            engine.register_target(
+                identity_placement(kurbo::Rect::new(0.0, 0.0, 120.0, 40.0)),
+                Gesture::Tap(TapGesture::new().buttons(PointerButtons::MIDDLE)),
+                boxed_action(move |env: Environment| {
+                    env.get::<TapEvent>()
+                        .expect("tap action missing TapEvent in environment");
+                    child_hits.set(child_hits.get() + 1);
+                }),
+                1,
+                0,
+                2,
+            );
+        }
+
+        let start = Instant::now();
+        let point = kurbo::Point::new(50.0, 20.0);
+
+        // The nested child is topmost but accepts only middle presses, so a
+        // primary press must fall through to the parent's group.
+        engine.handle_pointer_down(point, start, PointerButton::Primary, &env);
+        assert!(engine.handle_pointer_up(
+            point,
+            start + Duration::from_millis(16),
+            PointerButton::Primary,
+            &env
+        ));
+        assert_eq!(parent_hits.get(), 1);
+        assert_eq!(child_hits.get(), 0);
+
+        // A middle press activates the child's group normally.
+        let middle = start + Duration::from_millis(400);
+        engine.handle_pointer_down(point, middle, PointerButton::Middle, &env);
+        assert!(engine.handle_pointer_up(
+            point,
+            middle + Duration::from_millis(16),
+            PointerButton::Middle,
+            &env
+        ));
+        assert_eq!(parent_hits.get(), 1);
+        assert_eq!(child_hits.get(), 1);
+    }
+
+    #[test]
     fn drag_event_reports_the_pressing_button() {
         use std::{cell::Cell, rc::Rc};
         use waterui::gesture::DragGesture;
@@ -1980,7 +2108,7 @@ mod tests {
         {
             let last_button = Rc::clone(&last_button);
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Drag(
                     DragGesture::new(8.0).buttons(PointerButtons::PRIMARY | PointerButtons::MIDDLE),
                 ),
@@ -2035,7 +2163,7 @@ mod tests {
         let tap_target = {
             let tap_hits = Rc::clone(&tap_hits);
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(move |env: Environment| {
                     env.get::<TapEvent>()
@@ -2060,7 +2188,7 @@ mod tests {
         for _ in 0..3 {
             engine.clear_targets();
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(|_env: Environment| {}),
                 0,
@@ -2068,7 +2196,7 @@ mod tests {
                 7,
             );
             engine.register_target(
-                bounds,
+                identity_placement(bounds),
                 Gesture::Tap(TapGesture::new()),
                 boxed_action(|_env: Environment| {}),
                 0,
@@ -2087,5 +2215,90 @@ mod tests {
             &env
         ));
         assert_eq!(tap_hits.get(), 1);
+    }
+
+    #[test]
+    fn events_are_delivered_in_the_targets_local_space() {
+        use std::{cell::Cell, rc::Rc};
+        use waterui::gesture::{DragGesture, TapGesture};
+        use waterui_core::handler::boxed_action;
+
+        // A 64×64 view placed at (40, 30) and scaled 2× from its top-left:
+        // it covers window (40, 30)–(168, 158), and the window-to-local
+        // mapping is the inverse of that placement.
+        let window_transform = kurbo::Affine::translate((40.0, 30.0)) * kurbo::Affine::scale(2.0);
+        let placement = GesturePlacement::new(
+            window_transform.transform_rect_bbox(kurbo::Rect::new(0.0, 0.0, 64.0, 64.0)),
+            window_transform.inverse(),
+        );
+        let env = Environment::new();
+        let start = Instant::now();
+        let press = kurbo::Point::new(60.0, 50.0);
+
+        let mut taps = GestureEngine::default();
+        let tap = Rc::new(Cell::new(Option::<GesturePoint>::None));
+        {
+            let tap = Rc::clone(&tap);
+            taps.register_target(
+                placement,
+                Gesture::Tap(TapGesture::new()),
+                boxed_action(move |env: Environment| {
+                    let event = env.get::<TapEvent>().expect("tap action missing TapEvent");
+                    tap.set(Some(event.location));
+                }),
+                0,
+                0,
+                1,
+            );
+        }
+        taps.handle_pointer_down(press, start, PointerButton::Primary, &env);
+        assert!(taps.handle_pointer_up(
+            press,
+            start + Duration::from_millis(16),
+            PointerButton::Primary,
+            &env
+        ));
+        assert_eq!(tap.get(), Some(GesturePoint::new(10.0, 10.0)));
+
+        let mut drags = GestureEngine::default();
+        let drag = Rc::new(RefCell::new(Option::<DragEvent>::None));
+        {
+            let drag = Rc::clone(&drag);
+            drags.register_target(
+                placement,
+                Gesture::Drag(DragGesture::new(0.0)),
+                boxed_action(move |env: Environment| {
+                    let event = env
+                        .get::<DragEvent>()
+                        .expect("drag action missing DragEvent");
+                    *drag.borrow_mut() = Some(event.clone());
+                }),
+                0,
+                0,
+                1,
+            );
+        }
+        drags.handle_pointer_down(press, start, PointerButton::Primary, &env);
+        assert!(drags.handle_pointer_move(
+            kurbo::Point::new(100.0, 50.0),
+            start + Duration::from_millis(16),
+            PointerButton::Primary,
+            &env
+        ));
+        let event = drag.borrow().clone().expect("drag did not fire");
+        // The location maps as a point; the 40-point window translation and
+        // its velocity map through the linear part only, halving them.
+        assert_eq!(event.location, GesturePoint::new(30.0, 10.0));
+        assert_eq!(event.translation, GesturePoint::new(20.0, 0.0));
+        assert!(
+            (event.velocity.x - 1250.0).abs() < 1.0,
+            "{:?}",
+            event.velocity
+        );
+        assert!(
+            event.velocity.y.abs() < f32::EPSILON,
+            "{:?}",
+            event.velocity
+        );
     }
 }

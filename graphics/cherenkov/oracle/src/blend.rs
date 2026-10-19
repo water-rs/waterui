@@ -62,6 +62,32 @@ fn set_sat(c: [f64; 3], s: f64) -> [f64; 3] {
     out
 }
 
+/// Evaluate the SDR non-separable formulas in the smallest common interval
+/// containing both straight colors and SDR black/white, then restore that
+/// interval. This extends the modes to negative wide-gamut and HDR channels
+/// without clipping their luminance to SDR.
+fn nonseparable(mode: BlendMode, backdrop: [f64; 3], source: [f64; 3]) -> [f64; 3] {
+    let low = backdrop.into_iter().chain(source).fold(0.0_f64, f64::min);
+    let high = backdrop.into_iter().chain(source).fold(1.0_f64, f64::max);
+    let width = high - low;
+    let normalized_backdrop = backdrop.map(|channel| (channel - low) / width);
+    let normalized_source = source.map(|channel| (channel - low) / width);
+    let result = match mode {
+        BlendMode::Hue => set_lum(
+            set_sat(normalized_source, sat(normalized_backdrop)),
+            lum(normalized_backdrop),
+        ),
+        BlendMode::Saturation => set_lum(
+            set_sat(normalized_backdrop, sat(normalized_source)),
+            lum(normalized_backdrop),
+        ),
+        BlendMode::Color => set_lum(normalized_source, lum(normalized_backdrop)),
+        BlendMode::Luminosity => set_lum(normalized_backdrop, lum(normalized_source)),
+        _ => unreachable!("nonseparable requires a non-separable blend mode"),
+    };
+    result.map(|channel| width.mul_add(channel, low))
+}
+
 /// The blend function `B(Cb, Cs)` for one channel pair, separable modes.
 fn blend_channel(mode: BlendMode, cb: f64, cs: f64) -> f64 {
     match mode {
@@ -162,7 +188,7 @@ pub fn blend(mode: BlendMode, cb: [f64; 4], cs: [f64; 4]) -> [f64; 4] {
     if as_ == 0.0 {
         return cb;
     }
-    // Un-premultiply (clamped to [0,1]; components are finite by construction).
+    // Un-premultiply while preserving extended-range channels.
     let ub = if ab > 0.0 {
         [cb[0] / ab, cb[1] / ab, cb[2] / ab]
     } else {
@@ -170,10 +196,9 @@ pub fn blend(mode: BlendMode, cb: [f64; 4], cs: [f64; 4]) -> [f64; 4] {
     };
     let us = [cs[0] / as_, cs[1] / as_, cs[2] / as_];
     let b: [f64; 3] = match mode {
-        BlendMode::Hue => set_lum(set_sat(us, sat(ub)), lum(ub)),
-        BlendMode::Saturation => set_lum(set_sat(ub, sat(us)), lum(ub)),
-        BlendMode::Color => set_lum(us, lum(ub)),
-        BlendMode::Luminosity => set_lum(ub, lum(us)),
+        BlendMode::Hue | BlendMode::Saturation | BlendMode::Color | BlendMode::Luminosity => {
+            nonseparable(mode, ub, us)
+        }
         _ => [
             blend_channel(mode, ub[0], us[0]),
             blend_channel(mode, ub[1], us[1]),
@@ -205,6 +230,62 @@ pub fn src_over(dst: [f64; 4], src: [f64; 4]) -> [f64; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nonseparable_extended_gray_preserves_luminance_and_alpha() {
+        for mode in [
+            BlendMode::Hue,
+            BlendMode::Saturation,
+            BlendMode::Color,
+            BlendMode::Luminosity,
+        ] {
+            for (backdrop, source) in [(4.0, 2.0), (-2.0, -4.0), (4.0, 4.0), (-2.0, -2.0)] {
+                for (ab, alpha) in [(1.0_f64, 1.0_f64), (0.5, 0.25), (0.0, 1.0), (1.0, 0.0)] {
+                    let result = blend(
+                        mode,
+                        [backdrop * ab, backdrop * ab, backdrop * ab, ab],
+                        [source * alpha, source * alpha, source * alpha, alpha],
+                    );
+                    let mixed = if mode == BlendMode::Luminosity {
+                        source
+                    } else {
+                        backdrop
+                    };
+                    let expected = ((1.0 - alpha) * ab)
+                        .mul_add(backdrop, alpha * ab.mul_add(mixed, (1.0 - ab) * source));
+                    for channel in &result[..3] {
+                        assert!(
+                            (channel - expected).abs() < 1e-12,
+                            "{mode:?}: {result:?}, expected {expected}"
+                        );
+                    }
+                    assert_eq!(result[3], ab.mul_add(1.0 - alpha, alpha));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn nonseparable_sdr_keeps_original_formula() {
+        for backdrop in [[0.0; 3], [1.0; 3], [0.1, 0.7, 0.3]] {
+            for source in [[0.0; 3], [1.0; 3], [0.8, 0.2, 0.4]] {
+                for (mode, expected) in [
+                    (
+                        BlendMode::Hue,
+                        set_lum(set_sat(source, sat(backdrop)), lum(backdrop)),
+                    ),
+                    (
+                        BlendMode::Saturation,
+                        set_lum(set_sat(backdrop, sat(source)), lum(backdrop)),
+                    ),
+                    (BlendMode::Color, set_lum(source, lum(backdrop))),
+                    (BlendMode::Luminosity, set_lum(backdrop, lum(source))),
+                ] {
+                    assert_eq!(nonseparable(mode, backdrop, source), expected);
+                }
+            }
+        }
+    }
 
     #[test]
     fn plus_lighter_saturates_alpha_but_not_colour() {

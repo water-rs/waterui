@@ -186,6 +186,14 @@ pub struct LinearGradient {
 
 /// A two-point ("focal") radial gradient: the interpolated circle moves from
 /// `(center0, r0)` at `t = 0` to `(center1, r1)` at `t = 1`.
+///
+/// The parameter at a point is the largest `t` whose interpolated circle
+/// passes through it with a non-negative radius `r0 + t·(r1 - r0)`; a point
+/// with no such `t` is transparent. With `r0 > r1` the gradient runs inward.
+/// Identical circles (`|center1 - center0|² < 1e-12` and `|r1 - r0| < 1e-12`)
+/// are the limit `t = -∞` on and inside the circle and `t = +∞` outside: a
+/// hard edge under [`Extend::Pad`], transparent under [`Extend::None`], and
+/// an invalid paint under [`Extend::Repeat`] and [`Extend::Reflect`].
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RadialGradient {
     /// Centre of the start circle.
@@ -202,6 +210,20 @@ pub struct RadialGradient {
     pub extend: Extend,
     /// The space stops are interpolated in.
     pub interpolation: ColorSpace,
+}
+
+impl RadialGradient {
+    /// Whether the start and end circles are identical: `dc·dc < 1e-12` and
+    /// `|dr| < 1e-12`. Such a gradient is a hard edge at `r0` and has no
+    /// repeat or reflect form.
+    #[must_use]
+    pub fn has_identical_circles(&self) -> bool {
+        let (dcx, dcy) = (
+            self.center1.x - self.center0.x,
+            self.center1.y - self.center0.y,
+        );
+        dcy.mul_add(dcy, dcx * dcx) < 1e-12 && (self.r1 - self.r0).abs() < 1e-12
+    }
 }
 
 /// A sweep (conical) gradient rotating around `center` from `start_angle` to
@@ -239,6 +261,35 @@ pub enum ImageColorSpace {
     LinearP3,
 }
 
+/// The block-compressed RGBA encodings accepted by image resources.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ImageCompression {
+    /// ASTC LDR, 4×4 texels per 16-byte block.
+    Astc4x4,
+    /// BC7, 4×4 texels per 16-byte block.
+    Bc7,
+    /// ETC2 RGB plus EAC alpha, 4×4 texels per 16-byte block.
+    Etc2Rgba,
+}
+
+impl ImageCompression {
+    /// Encoded byte length, or `None` when dimensions exceed the address space.
+    #[must_use]
+    pub const fn byte_len(self, width: u32, height: u32) -> Option<usize> {
+        let (block_width, block_height, block_bytes) = match self {
+            Self::Astc4x4 | Self::Bc7 | Self::Etc2Rgba => (4, 4, 16),
+        };
+        let Some(blocks) = (width as usize)
+            .div_ceil(block_width)
+            .checked_mul((height as usize).div_ceil(block_height))
+        else {
+            return None;
+        };
+        blocks.checked_mul(block_bytes)
+    }
+}
+
 /// How an image resource's bytes decode.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "encoding", rename_all = "kebab-case")]
@@ -260,6 +311,19 @@ pub enum ImageEncoding {
         height: u32,
         /// The encoded primaries.
         color_space: ImageColorSpace,
+    },
+    /// Raw 4×4 compressed blocks in row-major block order.
+    BlockCompressed {
+        /// Compression encoding.
+        format: ImageCompression,
+        /// Logical width, excluding partial-block padding.
+        width: u32,
+        /// Logical height, excluding partial-block padding.
+        height: u32,
+        /// Encoded transfer function and primaries.
+        color_space: ImageColorSpace,
+        /// RGB is multiplied by alpha in the encoded space.
+        premultiplied: bool,
     },
 }
 
@@ -293,6 +357,12 @@ impl ImageEncoding {
                 height,
                 color_space: ImageColorSpace::LinearSrgb | ImageColorSpace::LinearP3,
             } if width > 0 && height > 0 => Ok(()),
+            Self::BlockCompressed {
+                format,
+                width,
+                height,
+                ..
+            } if width > 0 && height > 0 && format.byte_len(width, height).is_some() => Ok(()),
             _ => Err(SceneError::InvalidImageEncoding(*self)),
         }
     }

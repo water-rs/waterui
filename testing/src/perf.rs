@@ -1,7 +1,7 @@
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use hydrolysis::Style;
+use hydrolysis::{PointerKind, Style};
 use waterui_core::{AnyView, View};
 
 use crate::app::{OffscreenApp, Styled, UiBuilder};
@@ -11,6 +11,7 @@ const PERF_FRAME_RATE: u32 = 120;
 
 /// Repeated offscreen render measurement configuration.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct PerfConfig {
     /// Number of unrecorded frames run before sampling.
     pub warmups: u32,
@@ -32,6 +33,7 @@ impl Default for PerfConfig {
 
 /// Aggregate render timing for one measured scenario.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
 pub struct PerfMeasurement {
     /// Scenario name supplied to [`PerfApp::measure`].
     pub name: String,
@@ -49,6 +51,7 @@ impl PerfMeasurement {
 
 /// Statistical summary of repeated Hydrolysis GPU frames.
 #[derive(Clone, Copy, Debug, Default)]
+#[non_exhaustive]
 pub struct PerfStats {
     /// Number of sampled frames.
     pub samples: usize,
@@ -348,7 +351,7 @@ impl PerfRun<'_> {
         self.app
             .app
             .runtime
-            .push_input_event(driver::pointer_move_event(x, y));
+            .push_input_event(driver::pointer_move_event(PointerKind::Mouse, x, y));
     }
 
     /// Queues a primary pointer down for the next measured frame without settling the app.
@@ -356,7 +359,7 @@ impl PerfRun<'_> {
         self.app
             .app
             .runtime
-            .push_input_event(driver::pointer_down_event(x, y));
+            .push_input_event(driver::pointer_down_event(PointerKind::Mouse, x, y));
     }
 
     /// Queues a primary pointer up for the next measured frame without settling the app.
@@ -364,7 +367,7 @@ impl PerfRun<'_> {
         self.app
             .app
             .runtime
-            .push_input_event(driver::pointer_up_event(x, y));
+            .push_input_event(driver::pointer_up_event(PointerKind::Mouse, x, y));
     }
 
     /// Queues a wheel/trackpad scroll event for the next measured frame without settling the app.

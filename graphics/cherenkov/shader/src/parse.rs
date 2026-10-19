@@ -16,6 +16,7 @@ use crate::{
 
 /// Which variant of a snippet a source is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct Variant {
     /// The precision of colour values.
     pub precision: Precision,
@@ -24,6 +25,16 @@ pub struct Variant {
 }
 
 impl Variant {
+    /// The variant of `precision` that uses subgroup operations when
+    /// `subgroups`.
+    #[must_use]
+    pub const fn new(precision: Precision, subgroups: bool) -> Self {
+        Self {
+            precision,
+            subgroups,
+        }
+    }
+
     /// The required base variant: `f32`, no subgroup operations.
     pub const BASE: Self = Self {
         precision: Precision::F32,
@@ -111,6 +122,7 @@ impl<'a> SnippetSource<'a> {
 /// may be defined by at most one registered library — and never by a
 /// snippet that shares the module.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct LibrarySource<'a> {
     /// The library's identity name.
     pub name: &'a str,
@@ -287,6 +299,7 @@ fn wgsl_function_names(wgsl: &str) -> HashSet<String> {
 
 /// How many times a spatial snippet samples its input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum SampleCount {
     /// A fixed number of samples per output pixel.
     Static(u32),

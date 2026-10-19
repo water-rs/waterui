@@ -8,7 +8,7 @@
 //! feature), whose engine-hosted GPU content gets them through its
 //! `on_input` handler, and a
 //! [`SceneContent`](crate::scene_view::SceneContent), which records into a
-//! `cherenkov::Recorder` and lets the backend decide how the scene reaches
+//! `waterui_graphics::draw::Recorder` and lets the backend decide how the scene reaches
 //! the screen.
 //! Every backend used to invent its own adapter for this, so an engine had to
 //! be ported once per backend. This module is the single vocabulary they all
@@ -31,7 +31,7 @@
 
 pub use keyboard_types::{Code, Key, Location, Modifiers, NamedKey};
 
-use cherenkov::kurbo::Point;
+use crate::draw::kurbo::Point;
 use waterui_core::Str;
 
 /// A pointer button, in the W3C UI Events button vocabulary.
@@ -40,6 +40,10 @@ use waterui_core::Str;
 /// not delivered rather than being reported as a button a view would
 /// misinterpret.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every embedded surface host maps each W3C button variant by variant; a new button must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SurfacePointerButton {
     /// The primary button — the left button on a right-handed mouse, a tap.
     Primary,
@@ -60,6 +64,10 @@ pub enum SurfacePointerButton {
 /// and want the view's own line height applied, pixels are already the
 /// distance the content should move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every embedded surface host converts each scroll unit variant by variant; a new unit must fail their build instead of falling into a wildcard arm"
+)]
 pub enum ScrollUnit {
     /// Deltas count lines of text — a discrete mouse wheel.
     Line,
@@ -76,6 +84,10 @@ pub enum ScrollUnit {
 /// Positions are logical and surface-local (see the [module
 /// docs](self)).
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "every embedded surface host forwards each input event variant by variant; a new event must fail their build instead of falling into a wildcard arm"
+)]
 pub enum SurfaceInputEvent {
     /// Keyboard focus entered (`true`) or left (`false`) this surface.
     ///
@@ -105,9 +117,13 @@ pub enum SurfaceInputEvent {
     Scroll {
         /// Where the pointer was during the gesture.
         position: Point,
-        /// Horizontal delta, positive when the content should move left.
+        /// Horizontal delta, positive when the content should move left — a
+        /// wheel turn to the right. This is the sign of the W3C
+        /// [`WheelEvent.deltaX`](https://w3c.github.io/uievents/#dom-wheelevent-deltax).
         delta_x: f64,
-        /// Vertical delta, positive when the content should move up.
+        /// Vertical delta, positive when the content should move up — a wheel
+        /// turned toward the user, scrolling down. This is the sign of the W3C
+        /// [`WheelEvent.deltaY`](https://w3c.github.io/uievents/#dom-wheelevent-deltay).
         delta_y: f64,
         /// What one unit of the deltas means.
         unit: ScrollUnit,

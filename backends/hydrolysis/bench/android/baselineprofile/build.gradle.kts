@@ -17,7 +17,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        minSdk = 28
+        minSdk = 31
         targetSdk = 37
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         missingDimensionStrategy("fixture", "suite")

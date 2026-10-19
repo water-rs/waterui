@@ -5,11 +5,16 @@
 //! definition drift that breaks generation fails here rather than at install
 //! time on a user's machine.
 
-use std::process::Command;
+use waterui_cli::toolchain::Host;
 
 #[test]
 fn completions_generate_a_script_for_each_supported_shell() {
     let home = tempfile::tempdir().expect("scratch home for the child process");
+    // Redirect the child's home so `ensure_global_config` never writes
+    // `~/.water/config.toml` on the machine running the tests.
+    let host = Host::current()
+        .with_env("HOME", home.path())
+        .with_env("USERPROFILE", home.path());
     for (shell, anchor) in [
         ("bash", "_water"),
         ("zsh", "#compdef water"),
@@ -17,12 +22,9 @@ fn completions_generate_a_script_for_each_supported_shell() {
         ("powershell", "Register-ArgumentCompleter"),
         ("elvish", "arg-completer"),
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_water"))
+        let output = host
+            .std_command(env!("CARGO_BIN_EXE_water"))
             .args(["completions", shell])
-            // Redirect the child's home so `ensure_global_config` never writes
-            // `~/.water/config.toml` on the machine running the tests.
-            .env("HOME", home.path())
-            .env("USERPROFILE", home.path())
             .env_remove("RUST_LOG")
             .output()
             .expect("spawn `water completions`");

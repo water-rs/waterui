@@ -14,11 +14,11 @@ use std::rc::Rc;
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::runtime::{ProtocolObject, Sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
-    NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
-    NSView,
+    NSAccessibilityFrameInView, NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea,
+    NSTrackingAreaOptions, NSView,
 };
 use objc2_foundation::{NSArray, NSEdgeInsets, NSObjectProtocol, NSPoint, NSRect, NSSize};
 
@@ -56,6 +56,9 @@ type MouseHandler = Rc<dyn Fn(&HostView, &NSEvent)>;
 type PointerHandler = Rc<dyn Fn(&HostView, PointerEvent) -> bool>;
 type KeyHandler = Rc<dyn Fn(&HostView, &KeyEvent) -> bool>;
 type RightMouseHandler = Rc<dyn Fn(&HostView, &NSEvent)>;
+/// The handler `accessibilityPerformPress` calls; its answer is whether
+/// the press was handled.
+type AccessibilityPressHandler = Rc<dyn Fn(&HostView) -> bool>;
 
 /// The handlers a [`HostView`] calls.
 #[derive(Default)]
@@ -71,6 +74,7 @@ pub struct HostViewIvars {
     hidden: RefCell<Option<HiddenHandler>>,
     mouse_down: RefCell<Option<MouseHandler>>,
     mouse_dragged: RefCell<Option<MouseHandler>>,
+    mouse_up: RefCell<Option<MouseHandler>>,
     drop: RefCell<Option<Rc<DropHandlers>>>,
     pointer: RefCell<Option<PointerHandler>>,
     /// Which pointer events the pointer handler wants.
@@ -82,11 +86,25 @@ pub struct HostViewIvars {
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
     key: RefCell<Option<KeyHandler>>,
     right_mouse: RefCell<Option<RightMouseHandler>>,
+    /// `accessibilityPerformPress` — installed when the mounted content is
+    /// operable through an assistive client's press action.
+    accessibility_press: RefCell<Option<AccessibilityPressHandler>>,
     /// `viewDidChangeBackingProperties` subscribers — backing-scale changes.
     backing_changed: RefCell<Option<WindowHandler>>,
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent a labelled layout container resolves
+    /// to — instead of the view's own frame (water-rs/waterui#1482).
+    reports_content_extent: Cell<bool>,
     /// Whether the view's own content is laid out against its bounds — the
     /// answer to "does this view manage its own safe area".
     manages_safe_area: std::cell::Cell<bool>,
+    /// Whether this view declares itself a fill — the color, gradient and
+    /// material leaves do — through `cocoaUiIsFill`. `AppKit` has no
+    /// keyboard region; the answer is kept for sibling parity.
+    is_fill: std::cell::Cell<bool>,
+    /// Which `BackgroundLayout` child slot this fixed-container host was
+    /// rendered as, when a `register_view` claim marked it.
+    background_slot: std::cell::Cell<Option<usize>>,
     /// Whether the Auto Layout width is tracked for intrinsic size; see
     /// [`set_intrinsic_auto_layout`](HostView::set_intrinsic_auto_layout).
     intrinsic_auto_layout: std::cell::Cell<bool>,
@@ -96,6 +114,8 @@ pub struct HostViewIvars {
     /// alpha, frame, bounds, window or superview state changes so
     /// subscribed descendants re-check presentation visibility.
     emitter: VisibilityEmitter,
+    /// The capturable surface the mounted leaf stored on this view.
+    capturable: crate::capture::CapturableSlot,
 }
 
 impl fmt::Debug for HostViewIvars {
@@ -114,19 +134,29 @@ impl fmt::Debug for HostViewIvars {
             .field("hidden", &self.hidden.borrow().is_some())
             .field("mouse_down", &self.mouse_down.borrow().is_some())
             .field("mouse_dragged", &self.mouse_dragged.borrow().is_some())
+            .field("mouse_up", &self.mouse_up.borrow().is_some())
             .field("drop", &self.drop.borrow().is_some())
             .field("backing_changed", &self.backing_changed.borrow().is_some())
             .field("last_auto_layout_width", &self.last_auto_layout_width.get())
             .field("measure", &self.measure.borrow().is_some())
             .field("manages_safe_area", &self.manages_safe_area.get())
+            .field("is_fill", &self.is_fill.get())
+            .field("background_slot", &self.background_slot.get())
             .field("intrinsic_auto_layout", &self.intrinsic_auto_layout.get())
             .field("pointer", &self.pointer.borrow().is_some())
             .field("pointer_events", &self.pointer_events.get())
             .field("pointer_inside", &self.pointer_inside.get())
             .field("tracking_area", &self.tracking_area.borrow().is_some())
             .field("key", &self.key.borrow().is_some())
+            .field("reports_content_extent", &self.reports_content_extent.get())
             .field("right_mouse", &self.right_mouse.borrow().is_some())
-            .finish_non_exhaustive()
+            .field(
+                "accessibility_press",
+                &self.accessibility_press.borrow().is_some(),
+            )
+            .field("capturable", &self.capturable.get().is_some())
+            .field("emitter", &self.emitter)
+            .finish()
     }
 }
 
@@ -228,6 +258,14 @@ define_class!(
         #[unsafe(method(cocoaUiManagesSafeArea))]
         fn manages_safe_area_override(&self) -> bool {
             self.ivars().manages_safe_area.get()
+        }
+
+        // SAFETY: see the module safety note. Exposed under a `cocoaUi`
+        // selector for the sibling backend's fill detection; it reads an
+        // ivar and performs no layout.
+        #[unsafe(method(cocoaUiIsFill))]
+        fn is_fill_override(&self) -> bool {
+            self.ivars().is_fill.get()
         }
 
         // SAFETY: see the module safety note. Exposed under a `cocoaUi`
@@ -356,6 +394,20 @@ define_class!(
                 } else {
                     // SAFETY: see the module safety note.
                     let _: () = unsafe { msg_send![super(self), mouseDragged: event] };
+                }
+            });
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up_override(&self, event: &NSEvent) {
+            guarded("HostView mouseUp:", || {
+                let handler = self.ivars().mouse_up.borrow().clone();
+                if let Some(handler) = handler {
+                    handler(self, event);
+                } else {
+                    // SAFETY: see the module safety note.
+                    let _: () = unsafe { msg_send![super(self), mouseUp: event] };
                 }
             });
         }
@@ -549,6 +601,48 @@ define_class!(
             });
         }
 
+        // SAFETY: see the module safety note. Overriding the method is what
+        // puts `AXPress` in the element's action list — `AppKit` detects the
+        // override when an assistive client asks for `AXActions`.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press_override(&self) -> bool {
+            guarded("HostView accessibilityPerformPress", || {
+                if let Some(handler) = self.ivars().accessibility_press.borrow().clone() {
+                    return handler(self);
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), accessibilityPerformPress] }
+            })
+        }
+
+        // SAFETY: see the module safety note.
+        #[unsafe(method(accessibilityFrame))]
+        fn accessibility_frame_override(&self) -> NSRect {
+            guarded("HostView accessibilityFrame", || {
+                if !self.ivars().reports_content_extent.get() {
+                    // SAFETY: see the module safety note.
+                    return unsafe { msg_send![super(self), accessibilityFrame] };
+                }
+                NSAccessibilityFrameInView(self, self.content_extent())
+            })
+        }
+
+        // SAFETY: see the module safety note. The override above puts
+        // `AXPress` on every host that is an accessibility element; the
+        // action is allowed only while a press handler is installed, so a
+        // host that is an element for another reason (a role set through
+        // accessibility metadata) advertises no press it cannot perform.
+        #[unsafe(method(isAccessibilitySelectorAllowed:))]
+        fn is_accessibility_selector_allowed_override(&self, selector: Sel) -> bool {
+            guarded("HostView isAccessibilitySelectorAllowed:", || {
+                if selector == sel!(accessibilityPerformPress) {
+                    return self.ivars().accessibility_press.borrow().is_some();
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), isAccessibilitySelectorAllowed: selector] }
+            })
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(rightMouseDown:))]
         fn right_mouse_down_override(&self, event: &NSEvent) {
@@ -581,6 +675,17 @@ impl HostView {
     /// set before. This is where subviews are given their frames.
     pub fn set_layout_handler(&self, handler: impl Fn(&Self) + 'static) {
         self.ivars().layout.replace(Some(Rc::new(handler)));
+    }
+
+    /// The capturable surface a mounted leaf stored on this view, if any.
+    #[must_use]
+    pub fn capturable(&self) -> Option<Rc<dyn crate::capture::CapturableSurface>> {
+        self.ivars().capturable.get()
+    }
+
+    /// The view's capturable slot — install once, clear on unmount.
+    pub fn capturable_slot(&self) -> &crate::capture::CapturableSlot {
+        &self.ivars().capturable
     }
 
     /// Calls `handler` with the new size every time the view's size changes,
@@ -671,16 +776,92 @@ impl HostView {
         self.ivars().right_mouse.replace(Some(Rc::new(handler)));
     }
 
+    /// Calls `handler` on `accessibilityPerformPress` — an assistive
+    /// client's press on this element — and reports its answer as whether
+    /// the press was handled, replacing any handler set before.
+    ///
+    /// Installing one is what makes the view operable: `AppKit` lists
+    /// `AXPress` in the element's actions for a class that overrides
+    /// `accessibilityPerformPress`, so the override alone puts the action
+    /// on the element and this handler decides what it does.
+    pub fn set_accessibility_press_handler(&self, handler: impl Fn(&Self) -> bool + 'static) {
+        self.ivars()
+            .accessibility_press
+            .replace(Some(Rc::new(handler)));
+    }
+
+    /// Whether `accessibilityFrame` reports the union of the direct
+    /// children's frames — the extent this container resolved its content
+    /// to — instead of the view's own frame. A labelled layout container
+    /// (`Frame`, `vstack`, …) is assigned the whole region but places its
+    /// content in the resolved box, so a label on it announces the
+    /// children's extent, not the assignment (water-rs/waterui#1482).
+    /// Computed live on every read; nothing is stored.
+    pub fn set_reports_content_extent(&self, reports: bool) {
+        self.ivars().reports_content_extent.set(reports);
+    }
+
+    /// The union of the direct, non-hidden subviews' frames — in this
+    /// view's coordinate space — or the view's own bounds when it has
+    /// none.
+    fn content_extent(&self) -> NSRect {
+        let mut extent: Option<NSRect> = None;
+        for subview in &self.subviews() {
+            if subview.isHidden() {
+                continue;
+            }
+            let frame = subview.frame();
+            extent = Some(extent.map_or(frame, |u| union(u, frame)));
+        }
+        extent.unwrap_or_else(|| self.bounds())
+    }
+
     /// Lets `handler` answer the view's intrinsic measurements,
     /// `fittingSize` and `intrinsicContentSize`, for a layout container.
     pub fn set_measure_handler(&self, handler: impl Fn(&Self, MeasureProposal) -> Size + 'static) {
         self.ivars().measure.replace(Some(Rc::new(handler)));
     }
 
-    /// Drops the installed measure handler — the leaf's detach boundary,
-    /// after which measurements fall back to `NSView`'s own intrinsic size.
+    /// Drops the installed measure handler, after which measurements fall
+    /// back to `NSView`'s own intrinsic size.
     pub fn clear_measure_handler(&self) {
         self.ivars().measure.replace(None);
+    }
+
+    /// Drops every installed handler — the release boundary of the
+    /// view's owner.
+    ///
+    /// Each `set_*_handler` slot answers `None` afterwards, so a callback
+    /// `AppKit` delivers to this view does nothing by construction rather
+    /// than reaching state the owner released, and the handlers no longer
+    /// keep that state alive: layout, resize, hit-test, backing-changed,
+    /// window, superview, measure, primary content, scroll surface,
+    /// hidden, mouse, drop, pointer, key, right-mouse and
+    /// accessibility-press. The pointer
+    /// tracking area is removed as well, since it exists only to serve the
+    /// pointer handler.
+    pub fn clear_handlers(&self) {
+        let ivars = self.ivars();
+        ivars.layout.replace(None);
+        ivars.resize.replace(None);
+        ivars.hit_test.replace(None);
+        ivars.window.replace(None);
+        ivars.superview.replace(None);
+        ivars.measure.replace(None);
+        ivars.primary_content.replace(None);
+        ivars.scroll_surface_candidates.replace(None);
+        ivars.hidden.replace(None);
+        ivars.mouse_down.replace(None);
+        ivars.mouse_dragged.replace(None);
+        self.set_drop_handlers(&[], None);
+        ivars.pointer.replace(None);
+        ivars.pointer_events.set(PointerEvents::NONE);
+        ivars.pointer_inside.set(false);
+        self.updateTrackingAreas();
+        ivars.key.replace(None);
+        ivars.right_mouse.replace(None);
+        ivars.accessibility_press.replace(None);
+        ivars.backing_changed.replace(None);
     }
 
     /// Whether the intrinsic content size reports the height the current
@@ -700,6 +881,32 @@ impl HostView {
     /// `cocoaUiManagesSafeArea` selector.
     pub fn set_manages_safe_area(&self, manages: bool) {
         self.ivars().manages_safe_area.set(manages);
+    }
+
+    /// Whether this view is a fill — the color, gradient and material
+    /// leaves mark themselves through `cocoaUiIsFill`, and the wrappers the
+    /// sibling backend considers transparent propagate the answer.
+    pub fn set_is_fill(&self, fill: bool) {
+        self.ivars().is_fill.set(fill);
+    }
+
+    /// Whether this view answers `cocoaUiIsFill` — reads the ivar directly
+    /// for a caller holding the typed view.
+    #[must_use]
+    pub fn is_fill(&self) -> bool {
+        self.ivars().is_fill.get()
+    }
+
+    /// Which `BackgroundLayout` slot this host renders — the child index
+    /// that owns the background fill, `None` on an ordinary container.
+    pub fn set_background_slot(&self, slot: Option<usize>) {
+        self.ivars().background_slot.set(slot);
+    }
+
+    /// The `BackgroundLayout` slot marked at mount, if any.
+    #[must_use]
+    pub fn background_slot(&self) -> Option<usize> {
+        self.ivars().background_slot.get()
     }
 
     /// The primary content the sibling backend's wrappers descend to — the
@@ -747,6 +954,12 @@ impl HostView {
     /// Without a handler the event goes to `NSView`'s implementation.
     pub fn set_mouse_dragged_handler(&self, handler: impl Fn(&Self, &NSEvent) + 'static) {
         self.ivars().mouse_dragged.replace(Some(Rc::new(handler)));
+    }
+
+    /// Calls `handler` on `mouseUp`, replacing any handler set before.
+    /// Without a handler the event goes to `NSView`'s implementation.
+    pub fn set_mouse_up_handler(&self, handler: impl Fn(&Self, &NSEvent) + 'static) {
+        self.ivars().mouse_up.replace(Some(Rc::new(handler)));
     }
 
     /// Makes the view a drop destination reporting to `handlers`, replacing
@@ -848,4 +1061,11 @@ impl HostView {
         } = self.safeAreaInsets();
         EdgeInsets::new(top, left, bottom, right)
     }
+}
+
+/// The smallest rect containing `a` and `b`.
+fn union(a: NSRect, b: NSRect) -> NSRect {
+    let min = NSPoint::new(a.min().x.min(b.min().x), a.min().y.min(b.min().y));
+    let max = NSPoint::new(a.max().x.max(b.max().x), a.max().y.max(b.max().y));
+    NSRect::new(min, NSSize::new(max.x - min.x, max.y - min.y))
 }

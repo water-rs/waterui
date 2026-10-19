@@ -31,7 +31,7 @@ def collect(apk: Path) -> dict:
         }
         with zipfile.ZipFile(apk) as archive:
             for info in archive.infolist():
-                name = info.name
+                name = info.filename
                 size = info.file_size
                 if name.startswith("classes") and name.endswith(".dex"):
                     groups["dex"] += size

@@ -4,6 +4,7 @@
 //! regular stack: lazy row realization, indexed jumps, deletion, and moving.
 
 use waterui::Identifiable;
+use waterui::animation::Animation;
 use waterui::app::App;
 use waterui::component::list::{List, ListDelete, ListItem, ListMove};
 use waterui::prelude::theme_color::Foreground;
@@ -14,7 +15,7 @@ use waterui::reactive::collection::List as ReactiveList;
 
 const DATASET_SIZE: usize = 100_000;
 
-#[derive(Clone, Copy, Identifiable)]
+#[derive(Clone, Copy, PartialEq, Eq, Identifiable)]
 struct Record {
     #[id]
     id: u64,
@@ -58,32 +59,35 @@ fn record_row(record: Record) -> ListItem {
     )
 }
 
-fn delete_record(ListDelete(index): ListDelete, state: DemoState) {
+fn delete_record(ListDelete(index): ListDelete, mut state: DemoState) {
     let _ = state.records.remove(index);
     *state.remaining.get_mut() -= 1;
 }
 
-fn move_record(ListMove(movement): ListMove, state: DemoState) {
+fn move_record(ListMove(movement): ListMove, mut state: DemoState) {
     let mut records = state.records.snapshot();
     let record = records.remove(movement.from());
     records.insert(movement.to(), record);
     let _ = state.records.replace(records);
 }
 
-fn jump_top(state: DemoState) {
-    state.scroll.scroll_to(0);
+fn scroll_top(state: DemoState) {
+    state.scroll.animate_to(0, Animation::default());
 }
 
-fn jump_middle(state: DemoState) {
-    state
-        .scroll
-        .scroll_to((state.remaining.snapshot() as usize) / 2);
+fn scroll_middle(state: DemoState) {
+    state.scroll.animate_to(
+        (state.remaining.snapshot() as usize) / 2,
+        Animation::default(),
+    );
 }
 
-fn jump_last(state: DemoState) {
+fn scroll_last(state: DemoState) {
     let remaining = state.remaining.snapshot();
     if remaining > 0 {
-        state.scroll.scroll_to(remaining as usize - 1);
+        state
+            .scroll
+            .animate_to(remaining as usize - 1, Animation::default());
     }
 }
 
@@ -109,9 +113,9 @@ fn content(state: DemoState) -> impl View {
             .sub_headline()
             .muted(),
             hstack((
-                button("Top").bordered().action(jump_top),
-                button("Middle").bordered().action(jump_middle),
-                button("Last").bordered().action(jump_last),
+                button("Top").bordered().action(scroll_top),
+                button("Middle").bordered().action(scroll_middle),
+                button("Last").bordered().action(scroll_last),
                 button(text!("{edit_label}"))
                     .bordered_prominent()
                     .action(toggle_editing),

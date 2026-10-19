@@ -9,11 +9,12 @@
 extern "C" {
 #endif
 
-#define WATER_WPE_ABI_VERSION 3
+#define WATER_WPE_ABI_VERSION 4
 #define WATER_WPE_MAX_PLANES 4
 
 typedef struct WaterWpeRuntime WaterWpeRuntime;
 typedef struct WaterWpePage WaterWpePage;
+typedef struct WaterWpeReply WaterWpeReply;
 
 typedef struct {
     const uint8_t *data;
@@ -43,16 +44,11 @@ typedef void (*WaterWpeEventCallback)(
     const char *second,
     double number);
 typedef void (*WaterWpeFrameCallback)(void *user_data, const WaterWpeFrame *frame);
-/* Receives one `waterui.invoke(...)` envelope exactly as the page sent it, and
- * returns the JavaScript that completes the call. The envelope format belongs to
- * `waterui_webview::bridge`; this layer only transports it.
- *
- * `origin` is the calling document's `scheme://host[:port]`, or the empty string
- * when it has none to report — an opaque origin, or a page that has not
- * committed a document yet. It is authenticated by the engine rather than taken
- * from the envelope, which page script writes. */
-typedef WaterWpeBytes (*WaterWpeMessageCallback)(
+/* Receives the calling document's authenticated origin and one bridge envelope.
+ * The callback owns `reply` and must return a result through the reply API. */
+typedef void (*WaterWpeMessageCallback)(
     void *user_data,
+    WaterWpeReply *reply,
     const char *origin,
     const char *envelope);
 typedef void (*WaterWpeResultCallback)(
@@ -103,6 +99,13 @@ void water_wpe_page_set_asset_server(
     WaterWpeAssetCallback callback,
     void *user_data,
     WaterWpeDestroyNotify destroy);
+void water_wpe_page_set_bridge_origins(WaterWpePage *page, const char *wire);
+void water_wpe_page_get_web_process_identifier(
+    WaterWpePage *page,
+    WaterWpeResultCallback callback,
+    void *user_data);
+void water_wpe_reply_return(WaterWpeReply *reply, const char *json, size_t len);
+void water_wpe_reply_free(WaterWpeReply *reply);
 void water_wpe_page_load_uri(WaterWpePage *page, const char *uri);
 void water_wpe_page_go_back(WaterWpePage *page);
 void water_wpe_page_go_forward(WaterWpePage *page);
@@ -151,9 +154,6 @@ void water_wpe_page_key(
     uint32_t keyval,
     uint32_t modifiers,
     uint32_t time_ms);
-/* Evaluates `script` and discards its result. Used to settle a page promise
- * after an asynchronous handler has finished. */
-void water_wpe_page_evaluate(WaterWpePage *page, const char *script);
 /* Installs a document script under `key`, replacing whatever script that key
  * already names. The scripts are injected into the top frame only: the bridge is
  * a capability, and embedding a document does not grant it one. */
@@ -167,15 +167,16 @@ void water_wpe_page_get_cookies(
     WaterWpePage *page,
     WaterWpeResultCallback callback,
     void *user_data);
-/* Evaluates `script` as a program and reports its result. A promise comes back
- * as a promise: this is the raw path, so nothing is awaited. */
+/* Evaluates `script` as a program and reports the string it evaluates to; a
+ * value of any other kind is reported as a failure. A promise is not awaited:
+ * this is the raw path. */
 void water_wpe_page_run_javascript(
     WaterWpePage *page,
     const char *script,
     WaterWpeResultCallback callback,
     void *user_data);
-/* Runs `body` as the body of an async function and reports the value its promise
- * resolves with. Every typed evaluation takes this path, because the shared
+/* Runs `body` as the body of an async function and reports the string its
+ * promise resolves with; a value of any other kind is reported as a failure. Every typed evaluation takes this path, because the shared
  * `__wateruiEval` wrapper is async and `webkit_web_view_evaluate_javascript`
  * would hand back the unresolved promise instead of the envelope. */
 void water_wpe_page_call_async_javascript(

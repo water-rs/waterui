@@ -2,7 +2,7 @@
 //!
 //! These are binaries cargo puts on `PATH` (an entry under
 //! `$CARGO_HOME/bin`), not rustup components: `cargo-nextest` for
-//! `water bench`, `espflash`/`ldproxy` for the ESP32 backend. The check probes
+//! `water bench`. The check probes
 //! `PATH` and the repair is the `cargo install`/`cargo binstall` command that
 //! produces the binary.
 
@@ -53,6 +53,7 @@ impl CargoHelpersInstallation {
 
 /// Errors from `cargo install`/`cargo binstall` helper installation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum FailToInstallCargoHelpers {
     /// cargo was not found.
     #[error(

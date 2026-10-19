@@ -15,7 +15,6 @@ export interface Branch {
 export interface HostEnvironment {
   theme: unknown;
   locale: unknown;
-  safeArea: unknown;
 }
 
 /** Anywhere a value can be dynamic: constant, signal, accessor, or host value. */
@@ -38,8 +37,18 @@ export interface Host {
   ): Handle;
   suspense(children: () => Branch, fallback?: () => Branch): Handle;
   environment(): HostEnvironment;
-  /** The catalog's modifier attribute names — the runtime keeps no table of its own. */
-  modifiers: ReadonlySet<string>;
+  /**
+   * Dispatches one Rust closure held in the bridge's registry. `makeCallback`
+   * wraps this one, never `globalThis.__waterui_host.invoke`: that global is
+   * writable, and the table carries the function the engine registered.
+   */
+  invoke(id: number, ...args: unknown[]): unknown;
+  /**
+   * The catalog's modifier attribute names — the runtime keeps no table of
+   * its own. A `Set` cannot cross the engine seam, so the Rust host table
+   * sends an array and `installHost` builds the set once.
+   */
+  modifiers: ReadonlySet<string> | readonly string[];
 }
 
 /** A host-side reactive value: read plus push subscription. */
@@ -60,8 +69,22 @@ export declare function isAccessor(value: unknown): boolean;
 /** Reads a reactive-or-plain value without tracking. */
 export declare function read<T>(value: MaybeReactive<T> | HostReactive<T>): T;
 
-/** Writes a signal or a writable host value; throws on read-only inputs. */
-export declare function write<T>(target: Signal<T> | HostReactive<T>, value: T): void;
+/**
+ * Writes a signal or a writable host value; throws on read-only inputs. The
+ * value is stored verbatim: a function is the value, never an updater.
+ * Answers whether the value stood — `true` when reading the target back gives
+ * exactly what was written, `false` when an effect changed it — compared with
+ * the comparator the target settles on.
+ *
+ * A value the target already holds is not written at all: data is compared
+ * structurally, and a value the native side sent as a retained handle is
+ * compared by identity, which it asks for with `identity`.
+ */
+export declare function write<T>(
+  target: Signal<T> | HostReactive<T>,
+  value: T,
+  identity?: boolean,
+): boolean;
 
 /** Runs `callback` on every settled change, with no initial call. */
 export declare function subscribe<T>(

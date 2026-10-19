@@ -4,12 +4,11 @@ plugins {
 
 android {
     namespace = "dev.waterui.hydrolysis.testapp"
-    compileSdk = 36
     ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "dev.waterui.hydrolysis.testapp"
-        minSdk = 26
+        minSdk = 31
         targetSdk = 36
         versionCode = 1
         versionName = "1.0"
@@ -21,7 +20,15 @@ android {
 
     sourceSets {
         named("main") {
-            jniLibs.srcDir("build/jniLibs")
+            jniLibs.directories.add("build/jniLibs")
+        }
+    }
+
+    buildTypes {
+        release {
+            // Minified builds exercise the host library's consumer keep
+            // rules: the @CalledFromNative members must survive R8.
+            isMinifyEnabled = true
         }
     }
 

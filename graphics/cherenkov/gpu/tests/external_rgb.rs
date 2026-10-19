@@ -104,7 +104,7 @@ fn a_bgra_plane_samples_in_rgba_order() -> Result<(), Box<dyn std::error::Error>
         Err(EngineError::Backend(_)) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-    let surface = engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))?;
+    let surface = engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})?;
     // BGRA memory order for red: B=0, G=0, R=255, A=255.
     let red = plane(
         &device,
@@ -140,7 +140,7 @@ fn a_pq_frame_carries_an_absolute_level() -> Result<(), Box<dyn std::error::Erro
         Err(EngineError::Backend(_)) => return Ok(()),
         Err(e) => return Err(e.into()),
     };
-    let surface = engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16))?;
+    let surface = engine.surface(Offscreen::new((16, 16), OffscreenFormat::LinearF16), || {})?;
     // A 0.75 ST 2084 signal decodes to ~984 nits; the working space is
     // relative to reference white (203), so ~4.8 linear.
     let mut texel = Vec::with_capacity(8);

@@ -1,17 +1,20 @@
+use super::edge_stretch::{ScrollStretch, shown_stretch};
 // glob import of the module vocabulary — the renderer internals are designed to be used wholesale
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::platform::Overscroll;
+use crate::theme::{
+    InteractionFocusBinding, InteractionMotion, ModalInteraction, WidgetInteractionState,
+};
 use nami::Signal as _;
 use std::path::PathBuf;
 use waterui::Url;
 use waterui::drag_drop::{DragPayload, Files};
 use waterui::gesture::PointerButton as WuiPointerButton;
-use waterui_backend_core::gesture::LONG_PRESS_SLOP;
-use waterui_backend_core::widget::{
-    InteractionFocusBinding, ModalInteraction, WidgetInteractionState,
-};
+use waterui_backend_core::gesture::{GesturePlacement, LONG_PRESS_SLOP};
 use waterui_core::interaction::{InteractionReport, InteractionState, Selected};
 use waterui_graphics::input::ScrollUnit;
+use waterui_layout::scroll::Axis as ScrollAxis;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct DropTargetKey {
@@ -22,6 +25,8 @@ pub struct DropTargetKey {
 #[derive(Clone)]
 pub struct DropTarget {
     pub(crate) bounds: kurbo::Rect,
+    /// The node cell that registered the target.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
     pub(crate) key: DropTargetKey,
     pub(crate) env: Environment,
     pub(crate) destination: Rc<RefCell<DropDestination>>,
@@ -96,6 +101,10 @@ pub struct GestureRegion {
 #[derive(Clone)]
 pub struct PointerTarget {
     pub bounds: kurbo::Rect,
+    /// Window space to the space of the bounds the target registered,
+    /// resolved when the target stages — where a press lands in the
+    /// widget's own space.
+    pub(crate) to_local: kurbo::Affine,
     pub(crate) captures_drag: bool,
     pub(crate) depth: usize,
     pub(crate) order: usize,
@@ -110,6 +119,9 @@ pub struct PointerTarget {
     /// occludes it. An empty chain — a press registered outside any retained
     /// node — is never an ancestor and is never claimed.
     pub(crate) owners: Vec<RetainedIdentity>,
+    /// The node cell that registered this target — dispatch marks it (not
+    /// the root) when press/drag state changes under it.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
     /// Replayable state-layer handles for the widget owning this target, so
     /// press feedback animates without a structural rebuild.
     pub(crate) interaction: Option<Rc<InteractionLayerHandles>>,
@@ -127,18 +139,25 @@ pub struct PointerTarget {
 /// cache key) and where inside the thumb the pointer grabbed it, in hit-space
 /// pixels along the scroll axis. Held on [`HitTestState`] rather than in the
 /// drag closure so a mid-drag re-registration continues seamlessly.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct ScrollbarDrag {
     pub key: usize,
     pub(crate) grab: f64,
+    /// The cell that owns the scroll slot the drag widens — attribution
+    /// for the ending mark.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
 }
 
 #[derive(Clone)]
 pub struct PendingPointerPress {
     pub slot: PressSlot,
     pub(crate) origin: kurbo::Point,
+    /// The press point in the target's registered space.
+    pub(crate) local_origin: kurbo::Point,
     pub(crate) starts_at: Instant,
-    pub(crate) chrome_state_dependent: bool,
+    /// What the press marks its owner with once it starts
+    /// ([`InteractionLayerHandles::repaint`]).
+    pub(crate) repaint: Option<Dirty>,
 }
 
 /// An armed press-and-hold on a `.context_menu` region — the context-menu
@@ -166,11 +185,18 @@ pub const CONTEXT_MENU_HOLD_DURATION: Duration = Duration::from_millis(500);
 pub struct CursorTarget {
     pub(crate) bounds: kurbo::Rect,
     pub style: CursorStyle,
+    /// The node cell that registered the target.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
 }
 
 #[derive(Clone)]
 pub struct HoverTarget {
     pub(crate) bounds: kurbo::Rect,
+    /// Maps a window hit-test point into the registration's local space —
+    /// the inverse of the region's resolved hit transform, rewritten at
+    /// materialization like `bounds`. `on_move` receives points through it,
+    /// so a handler under any transform reads its own coordinates.
+    pub(crate) to_local: kurbo::Affine,
     pub slot: HoverSlot,
     /// Replayable state-layer handles for the widget owning this target, so
     /// hover feedback animates without a structural rebuild.
@@ -178,6 +204,8 @@ pub struct HoverTarget {
     pub(crate) on_enter: Option<HoverAction>,
     pub(crate) on_move: Option<HoverMoveAction>,
     pub(crate) on_exit: Option<HoverAction>,
+    /// The node cell that registered the target.
+    pub(crate) owner: std::rc::Weak<crate::renderer::NodeCell>,
 }
 
 #[derive(Clone)]
@@ -187,6 +215,10 @@ pub struct ScrollTarget {
     /// The scroll view's offset handle, ticked per frame while a smoothed
     /// wheel scroll glides toward its target.
     pub(crate) handle: crate::scroll::ScrollHandle,
+    /// The node cell owning this target: a smoothed tick marks it `PAINT`
+    /// so the next frame re-records this scroll view's content, nothing
+    /// else's. Weak — the target and its owner drop together.
+    pub(crate) owner: Weak<crate::renderer::NodeCell>,
     /// The stacking key every target carries: a scroll region painted above
     /// an embedded surface wins the wheel through the same (order, depth)
     /// priority pointer and text targets already sort by.
@@ -209,14 +241,20 @@ pub struct ScrollTarget {
 /// inputs and other embedded browsers. Scroll and trackpad-pan targets are
 /// registered without one, so their position relative to the subview cannot be
 /// decided here.
+#[derive(Clone)]
 pub struct NativeViewOcclusion {
+    /// The hosted content's interaction key and runtime: focus requests
+    /// for the key move platform focus into it.
+    #[cfg(hydrolysis_hosted)]
+    pub(crate) hosted: (InteractionKey, Rc<crate::hosted::HostedRuntime>),
     /// The subview's rect in window hit-test space.
     pub bounds: kurbo::Rect,
     /// The hit-test order the subview was flushed at. Anything registered later
     /// paints above it.
     pub(crate) order: usize,
     /// Shared with the platform's view host. Rects are in window hit-test space.
-    pub(crate) sink: Rc<RefCell<Vec<kurbo::Rect>>>,
+    #[cfg(hydrolysis_hosted)]
+    pub(crate) sink: crate::hosted::HostedOcclusion,
 }
 
 /// Outcome of synchronizing hover targets against a pointer position.
@@ -224,16 +262,24 @@ pub struct NativeViewOcclusion {
 /// `visual_changed` means a replayable state layer's target changed (a redraw
 /// replays it); `handler_changed` means a user hover handler reported a state
 /// change (schedules a retained-tree refresh like any other action).
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default)]
 pub struct HoverSync {
     pub(crate) visual_changed: bool,
     pub handler_changed: bool,
+    /// Keys whose chrome or handlers actually changed — LAYOUT marks.
+    /// `handler_changed` is their non-emptiness plus any action flag.
+    pub(crate) chrome_keys: Vec<InteractionKey>,
+    /// Keys whose hover only repainted (replayable state layers) — PAINT
+    /// marks. Marks touch the changed owners, never every active key.
+    pub(crate) paint_keys: Vec<InteractionKey>,
 }
 
 pub type PointerAction =
     Rc<RefCell<dyn FnMut(&mut SemanticCore, kurbo::Point, &Environment) -> bool>>;
 pub type KeyboardStepAction = Rc<RefCell<dyn FnMut(bool) -> bool>>;
 pub type HoverAction = Rc<RefCell<dyn FnMut(&Environment) -> bool>>;
+/// A hover-move handler; the point is in the registration's local space
+/// (the space of the `bounds` it registered), never window space.
 pub type HoverMoveAction = Rc<RefCell<dyn FnMut(kurbo::Point, &Environment) -> bool>>;
 pub type ScrollAction = Rc<RefCell<dyn FnMut(f32, f32, bool) -> bool>>;
 
@@ -250,6 +296,11 @@ pub enum KeyboardActivation {
     /// presentation there is no pressed affordance to hold.
     Semantic,
 }
+
+/// The panic a touch press raises when the platform window reported no
+/// [`crate::platform::TouchScrollConfig`].
+const NO_TOUCH_SCROLL_CONFIG: &str =
+    "hydrolysis: a touch press arrived but the platform window reported no touch_scroll_config";
 
 // The flags track independent input facts (composition in flight, window
 // blur, an armed press); they are orthogonal bits, not states to sequence,
@@ -295,6 +346,9 @@ pub struct HitTestState {
     /// [`SemanticCore::next_gesture_deadline`].
     pub(crate) pending_context_menu_hold: Option<PendingContextMenuHold>,
     pub(crate) keyboard_focus: Option<InteractionKey>,
+    /// The cell owning `keyboard_focus`'s target, captured when focus
+    /// arrived so the move away marks it even once the target is gone.
+    pub(crate) keyboard_focus_owner: Weak<crate::renderer::NodeCell>,
     pub(crate) keyboard_focus_binding: Option<Binding<bool>>,
     pub(crate) keyboard_focus_visible: bool,
     /// The `OnKeyPress` scopes enclosing every registration this frame —
@@ -317,7 +371,17 @@ pub struct HitTestState {
     pub(crate) keyboard_activation: KeyboardActivation,
     pub(crate) modal_interaction: Option<ModalInteraction>,
     pub(crate) active_pointer_drag_target: Option<PointerAction>,
+    /// The node cell that registered `active_pointer_drag_target` —
+    /// attribution for move-time marks.
+    pub(crate) active_pointer_drag_owner: std::rc::Weak<crate::renderer::NodeCell>,
     pub(crate) active_pointer_drag_signature: Option<(usize, usize)>,
+    /// System-back targets registered this frame, in paint order. The last
+    /// entry is the frontmost stack. Cleared with the other per-frame target
+    /// lists.
+    pub(crate) back_targets: Vec<NavigationBackTarget>,
+    /// The system-back gesture in flight. Survives `reset_scene`, the same
+    /// way `active_pointer_drag_target` does.
+    pub(crate) system_back: SystemBackGesture,
     /// The in-flight scrollbar-thumb drag, if any.
     pub(crate) active_scrollbar_drag: Option<ScrollbarDrag>,
     pub(crate) cursor_targets: Vec<CursorTarget>,
@@ -339,8 +403,22 @@ pub struct HitTestState {
     /// still receives hit state through `GpuFrame::pointer`.
     pub(crate) pointer_press_origin: Option<kurbo::Point>,
     pub(crate) scroll_targets: Vec<ScrollTarget>,
-    pub(crate) hit_test_opacity: f32,
-    pub(crate) hit_test_order: usize,
+    /// The host's touch-drag scroll parameters, pushed by the runner each
+    /// input dispatch — `None` only while the host cannot have them yet,
+    /// a state a [`PointerKind::Touch`] press panics on rather than
+    /// skipping the gesture.
+    pub(crate) touch_scroll_config: Option<crate::platform::TouchScrollConfig>,
+    /// The touch-drag scroll gesture's in-flight claim, kept across frames
+    /// like `active_pointer` — driven only by `PointerKind::Touch`
+    /// sequences; mouse and pen pointers never arm it.
+    pub(crate) touch_scroll: TouchScrollGesture,
+    /// What keeps each scroll view moving after a claimed touch let go of
+    /// it — its fling and its relaxing stretch — at most one per scroll
+    /// view. Each outlives the gesture state and ends when it settles,
+    /// when a touch down inside its scroll view grabs it, or with its
+    /// scroll view; a release or a claim on one scroll view never touches
+    /// another's.
+    pub(crate) scroll_motions: Vec<ScrollMotion>,
     /// The tree order of the candidate keyboard focus last rested on —
     /// kept after that focusable went hidden or unmounted so the next Tab
     /// resumes from the nearest still-visible focusable instead of
@@ -368,11 +446,10 @@ pub struct HitTestState {
     pub(crate) gesture_occluders: Vec<(kurbo::Rect, usize)>,
     /// The clip stack of the paint layers currently open, in window hit-test
     /// space. Every entry is already intersected with the ones below it, so
-    /// the top is the effective clip. [`HydrolysisRenderer::push_layer_rect`]
-    /// pushes the same rect it clips paint to and `pop_layer` pops it, so a
+    /// the top is the effective clip. A clip scope a program opens pushes the
+    /// same rect it clips paint to and its close pops it, so a
     /// hit region flushed inside a scroll viewport can't outlive the paint
     /// clip (water-rs/hydrolysis#252).
-    pub(crate) hit_clip_stack: Vec<kurbo::Rect>,
     /// The window's logical bounds — the outermost clip every hittable point
     /// must land in. `set_window_viewport` mirrors it here each frame so the
     /// activation-point projection bounds its result the same way pointer
@@ -381,53 +458,599 @@ pub struct HitTestState {
     pub(crate) window_bounds: kurbo::Rect,
 }
 
-impl HitTestState {
-    /// Intersects `rect` — already in window hit-test space — with the clip
-    /// stack the open paint layers pushed.
-    pub(crate) fn clip_hit_bounds(&self, rect: kurbo::Rect) -> kurbo::Rect {
-        self.hit_clip_stack
-            .last()
-            .map_or(rect, |clip| rect.intersect(*clip))
+impl SemanticCore {
+    /// Drops every retained registration `cell` emitted — run when the
+    /// cell enters a new record and when `retire_subtree` sweeps a dead
+    /// subtree. Taking the cell's bucket is the whole purge: entries live
+    /// per owner, so the retire is O(its count) with no registry sweep.
+    pub(crate) fn purge_registrations(&self, cell: &Rc<crate::renderer::NodeCell>) {
+        let Some(regs) = cell.registrations.borrow_mut().take() else {
+            return;
+        };
+        for entry in &regs.scroll_targets {
+            self.retained
+                .release_scroll_owner(entry.payload.handle.cache_key(), cell);
+        }
+        self.retained.stale.set(true);
     }
 
-    /// Pushes a clip rect in window hit-test space, intersected with the
-    /// enclosing clips so the top of the stack is always the effective clip.
-    pub(crate) fn push_hit_clip(&mut self, rect: kurbo::Rect) {
-        let clip = self.clip_hit_bounds(rect);
-        self.hit_clip_stack.push(clip);
+    /// Rebuilds the flat lists consumers read from the retained
+    /// registries: every live owner's bucket contributes its entries, each
+    /// resolves its region through the placement chain it was anchored at,
+    /// and the merged paint sort assigns the `order` rank — the same
+    /// globally comparable sequence dev's per-frame registration counter
+    /// minted. Each kind passes the gate of its [`HitClasses`] on the
+    /// structural chain, keeping dev's two mechanisms distinct:
+    ///
+    /// - a *removal* — `Hittable(false)` truncated the input kinds
+    ///   (pointer targets with their occluder and scrollbar presses,
+    ///   gestures, cursor, hover, scroll, text and embedded inputs); the
+    ///   context-menu preview truncated those plus drop, context-menu and
+    ///   native-occlusion entries. A hovered target a removal drops has its
+    ///   hover cleared here, as the truncation did.
+    /// - the *alpha gate* — dev's `hit_test_opacity` (inactive pages,
+    ///   exiting overlays, entries mid-transition) withheld the input
+    ///   kinds, drop and context-menu targets and gesture occluders.
+    ///
+    /// Back targets, modal scopes and platform views pass no gate. Drop,
+    /// context-menu, occluder, occlusion and platform-view geometry resolves
+    /// through the paint chain; platform views stage into
+    /// `materialized_platform_views` for the one frame-end `record` step.
+    /// No-op while neither a registry write nor a placement write has
+    /// landed since the last materialization.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each kind materializes with the same resolve-and-rank pattern; splitting it would hide that the lists are one merged order"
+    )]
+    pub(crate) fn materialize_registries(&mut self) {
+        // Staged = resolved window-space geometry plus the paint-order key
+        // that ranks it; `order` fields on the flat records are only
+        // comparable because the materialized rank is assigned after a
+        // global sort across every kind.
+        struct Staged<T> {
+            entry_order: mount::PaintOrder,
+            payload: T,
+            window: kurbo::Rect,
+        }
+
+        // Platform-view records defer their `table.record` to the frame-end
+        // step — the staged sort keeps the one-write-per-frame contract.
+        struct StagedPlatform {
+            order: mount::PaintOrder,
+            table: Rc<RefCell<crate::platform_view::PlatformViewTable>>,
+            placement: crate::platform_view::PlatformViewPlacement,
+            frame: kurbo::Rect,
+            clip: kurbo::Rect,
+        }
+
+        let epoch = self.placement_clock.epoch();
+        let stale = self.retained.stale.replace(false);
+        if !stale && epoch == self.materialized_epoch {
+            return;
+        }
+        // A kind the structural chain admits resolves its geometry through
+        // the paint chain.
+        let paint_gate = |placement: &Placement,
+                          class: HitClasses|
+         -> Option<(kurbo::Affine, Option<kurbo::Rect>)> {
+            placement.admits(class).then(|| {
+                let (transform, clip, _) = placement.resolved_chain(false);
+                (transform, clip)
+            })
+        };
+        let now = self.frame_instant();
+        let mut cleared_hover: Vec<Weak<crate::renderer::NodeCell>> = Vec::new();
+
+        self.materialized_epoch = epoch;
+
+        let mut orders: Vec<mount::PaintOrder> = Vec::new();
+        let mut staged_pointer: Vec<Staged<PointerTarget>> = Vec::new();
+        let mut staged_gestures: Vec<Staged<mount::RegisteredGesture>> = Vec::new();
+        let mut staged_occluders: Vec<(mount::PaintOrder, kurbo::Rect)> = Vec::new();
+        let mut staged_cursor: Vec<Staged<CursorTarget>> = Vec::new();
+        let mut staged_hover: Vec<Staged<HoverTarget>> = Vec::new();
+        let mut staged_drop: Vec<Staged<DropTarget>> = Vec::new();
+        let mut staged_menus: Vec<Staged<ContextMenuTarget>> = Vec::new();
+        let mut staged_scroll: Vec<Staged<ScrollTarget>> = Vec::new();
+        let mut staged_text: Vec<Staged<TextInputTarget>> = Vec::new();
+        let mut staged_embedded: Vec<Staged<EmbeddedInputTarget>> = Vec::new();
+        let mut staged_occlusions: Vec<Staged<NativeViewOcclusion>> = Vec::new();
+        let mut staged_platform: Vec<StagedPlatform> = Vec::new();
+        let mut staged_back: Vec<Staged<crate::renderer::NavigationBackTarget>> = Vec::new();
+        let mut modal: Option<(mount::PaintOrder, crate::theme::ModalInteraction)> = None;
+
+        for cell in self.retained.owners() {
+            let mut slot = cell.registrations.borrow_mut();
+            let Some(regs) = slot.as_mut() else {
+                continue;
+            };
+
+            for entry in &regs.pointer_targets {
+                if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
+                    let mut payload = entry.payload.clone();
+                    payload.bounds = resolved.rect;
+                    payload.to_local = entry.region.placement.resolved_transform(true).inverse();
+                    orders.push(entry.order.clone());
+                    staged_pointer.push(Staged {
+                        entry_order: entry.order.clone(),
+                        payload,
+                        window: resolved.rect,
+                    });
+                }
+            }
+
+            for entry in &regs.gesture_regions {
+                if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
+                    // Events leave the engine in the region's own space,
+                    // origin at its top-left: the inverse of the hit chain,
+                    // then the region's offset within its node.
+                    let to_local = kurbo::Affine::translate(-entry.region.local.origin().to_vec2())
+                        * entry.region.placement.resolved_transform(true).inverse();
+                    let target = &entry.payload.target;
+                    orders.push(entry.order.clone());
+                    staged_gestures.push(Staged {
+                        entry_order: entry.order.clone(),
+                        payload: mount::RegisteredGesture {
+                            owner: entry.payload.owner.clone(),
+                            target: target.with_placement_depth_and_group(
+                                GesturePlacement::new(resolved.rect, to_local),
+                                target.depth,
+                                target.group_id,
+                            ),
+                            owners: entry.payload.owners.clone(),
+                        },
+                        window: resolved.rect,
+                    });
+                }
+            }
+
+            for entry in &regs.gesture_occluders {
+                if let Some((transform, clip)) =
+                    paint_gate(&entry.region.placement, HitClasses::GESTURE_OCCLUDER)
+                {
+                    let rect = crate::renderer::transformed_rect(transform, entry.region.local);
+                    let rect = clip.map_or(rect, |clip| rect.intersect(clip));
+                    orders.push(entry.order.clone());
+                    staged_occluders.push((entry.order.clone(), rect));
+                }
+            }
+
+            for entry in &regs.cursor_targets {
+                if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
+                    let mut payload = entry.payload.clone();
+                    payload.bounds = resolved.rect;
+                    orders.push(entry.order.clone());
+                    staged_cursor.push(Staged {
+                        entry_order: entry.order.clone(),
+                        payload,
+                        window: resolved.rect,
+                    });
+                }
+            }
+
+            // A hover target outliving its widget's bind is dead weight:
+            // the engine drops the slot's state at frame end, so staging
+            // an unbound slot would leave a target that can only panic on
+            // read. Entries gated out by the hit chain simply miss the
+            // flat list; a target a removal gate dropped has its hover
+            // cleared below, matching dev's truncation.
+            regs.hover_targets.retain(|entry| {
+                self.hit_test
+                    .interaction
+                    .key_active(&entry.payload.slot.key)
+            });
+            for entry in &regs.hover_targets {
+                if entry.region.placement.removes(HitClasses::INPUT) {
+                    let slot = &entry.payload.slot;
+                    let handles = entry.payload.handles.as_ref();
+                    if self.hit_test.interaction.hovering(slot)
+                        || handles.is_some_and(|handles| handles.hovering())
+                    {
+                        self.hit_test.interaction.set_hovering(slot, false);
+                        if let Some(handles) = handles {
+                            handles.set_hovering(false, now);
+                        }
+                        cleared_hover.push(entry.owner.clone());
+                    }
+                    continue;
+                }
+                if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
+                    let mut payload = entry.payload.clone();
+                    payload.bounds = resolved.rect;
+                    payload.to_local = entry.region.placement.resolved_transform(true).inverse();
+                    orders.push(entry.order.clone());
+                    staged_hover.push(Staged {
+                        entry_order: entry.order.clone(),
+                        payload,
+                        window: resolved.rect,
+                    });
+                }
+            }
+
+            for entry in &regs.drop_targets {
+                if let Some((transform, clip)) =
+                    paint_gate(&entry.region.placement, HitClasses::DROP)
+                {
+                    let mut payload = entry.payload.clone();
+                    payload.bounds =
+                        crate::renderer::transformed_rect(transform, entry.region.local);
+                    if let Some(clip) = clip {
+                        payload.bounds = payload.bounds.intersect(clip);
+                    }
+                    orders.push(entry.order.clone());
+                    let window = payload.bounds;
+
+                    staged_drop.push(Staged {
+                        entry_order: entry.order.clone(),
+                        payload,
+                        window,
+                    });
+                }
+            }
+
+            for entry in &regs.context_menu_targets {
+                if let Some((transform, clip)) =
+                    paint_gate(&entry.region.placement, HitClasses::CONTEXT_MENU)
+                {
+                    let mut payload = entry.payload.clone();
+                    payload.bounds =
+                        crate::renderer::transformed_rect(transform, entry.region.local);
+                    if let Some(clip) = clip {
+                        payload.bounds = payload.bounds.intersect(clip);
+                    }
+                    orders.push(entry.order.clone());
+                    let window = payload.bounds;
+
+                    staged_menus.push(Staged {
+                        entry_order: entry.order.clone(),
+                        payload,
+                        window,
+                    });
+                }
+            }
+
+            for entry in &regs.scroll_targets {
+                if let Some(resolved) = entry.region.placement.resolve_hit(entry.region.local) {
+                    let mut payload = entry.payload.clone();
+                    payload.bounds = resolved.rect;
+                    orders.push(entry.order.clone());
+                    staged_scroll.push(Staged {
+                        entry_order: entry.order.clone(),
+                        payload,
+                        window: resolved.rect,
+                    });
+                }
+            }
+
+            // Text inputs keep four rectangles (field, cursor area, text
+            // bounds, text clip) under the hit chain plus the clip
+            // intersect, behind the input gate.
+            for entry in &regs.text_input_targets {
+                if !entry.region.placement.admits(HitClasses::INPUT) {
+                    continue;
+                }
+                let (transform, clip, _) = entry.region.placement.resolved_chain(true);
+                let mut target = entry.payload.clone();
+                let local = entry.region.local;
+                target.bounds = crate::renderer::transformed_rect(transform, local);
+                // The laid-out frame resolves in the same window
+                // coordinates without the clip: the §7.1 clearance reads
+                // it for the field's real rectangle once `bounds` has
+                // degenerated to a clip edge.
+                target.frame = target.bounds;
+                if let Some(clip) = clip {
+                    target.bounds = target.bounds.intersect(clip);
+                }
+                target.cursor_area =
+                    crate::renderer::transformed_rect(transform, target.cursor_area);
+                target.text_bounds =
+                    crate::renderer::transformed_rect(transform, target.text_bounds);
+                target.text_clip_bounds =
+                    crate::renderer::transformed_rect(transform, target.text_clip_bounds);
+                orders.push(entry.order.clone());
+                staged_text.push(Staged {
+                    entry_order: entry.order.clone(),
+                    payload: target,
+                    window: local,
+                });
+            }
+
+            // Embedded input targets resolve to the inverse transform +
+            // hit clip.
+            for entry in &regs.embedded_input_targets {
+                if !entry.region.placement.admits(HitClasses::INPUT) {
+                    continue;
+                }
+                let (transform, clip, _) = entry.region.placement.resolved_chain(true);
+                let mut target = entry.payload.clone();
+                target.inverse_transform = transform.inverse();
+                target.hit_clip = clip;
+                orders.push(entry.order.clone());
+                staged_embedded.push(Staged {
+                    entry_order: entry.order.clone(),
+                    payload: target,
+                    window: entry.region.local,
+                });
+            }
+
+            for entry in &regs.native_view_occlusions {
+                if let Some((transform, clip)) =
+                    paint_gate(&entry.region.placement, HitClasses::NATIVE_OCCLUSION)
+                {
+                    let mut payload = entry.payload.clone();
+                    payload.bounds =
+                        crate::renderer::transformed_rect(transform, entry.region.local);
+                    if let Some(clip) = clip {
+                        payload.bounds = payload.bounds.intersect(clip);
+                    }
+                    orders.push(entry.order.clone());
+                    let window = payload.bounds;
+
+                    staged_occlusions.push(Staged {
+                        entry_order: entry.order.clone(),
+                        payload,
+                        window,
+                    });
+                }
+            }
+
+            // Platform views place exactly as dev's per-frame record did:
+            // the paint chain supplies transform and clip with no hit or
+            // alpha gate — a view under an unhittable scope still lands in
+            // its table, and `visible` follows the clip.
+            for entry in &regs.platform_view_placements {
+                let (transform, clip, _alpha) = entry.region.placement.resolved_chain(false);
+                let frame = crate::renderer::transformed_rect(transform, entry.region.local);
+                let clipped = clip.map_or(frame, |clip| frame.intersect(clip));
+                orders.push(entry.order.clone());
+                staged_platform.push(StagedPlatform {
+                    order: entry.order.clone(),
+                    table: Rc::clone(&entry.payload.table),
+                    placement: entry.payload.placement.clone(),
+                    frame,
+                    clip: clipped,
+                });
+            }
+
+            // Back targets carry no geometry — order is their only
+            // resolved datum, so they stage into the rank sort like
+            // everything else. No gate applies: dev registered them under
+            // neither its truncation nor its hit opacity.
+            for entry in &regs.back_targets {
+                orders.push(entry.order.clone());
+                staged_back.push(Staged {
+                    entry_order: entry.order.clone(),
+                    payload: entry.payload.clone(),
+                    window: entry.region.local,
+                });
+            }
+
+            // Modal scope: the frontmost entry, ungated as on dev.
+            for entry in &regs.modal_scope {
+                if modal.as_ref().is_none_or(|(order, _)| entry.order > *order) {
+                    modal = Some((entry.order.clone(), entry.payload.clone()));
+                }
+            }
+        }
+
+        // A hover a removal gate cleared repaints its owner, the same mark
+        // `HoverSync` raises for a hover change.
+        for owner in cleared_hover {
+            Self::mark_owner(&owner, Dirty::LAYOUT);
+        }
+
+        // The merged paint sort gives every materialized `order` — the same
+        // globally comparable sequence the per-frame counter minted.
+        orders.sort();
+        orders.dedup();
+        let rank = |order: &mount::PaintOrder| -> usize {
+            orders
+                .binary_search(order)
+                .expect("hydrolysis retained order missing from merged sort")
+        };
+
+        let pointer_targets = &mut self.hit_test.pointer_targets;
+        pointer_targets.clear();
+        for staged in staged_pointer {
+            let mut target = staged.payload;
+            target.order = rank(&staged.entry_order);
+            pointer_targets.push(target);
+        }
+
+        // Rebuild the gesture engine's target list in the same rank: the
+        // registered recognizers persist in the retained payloads, so an
+        // in-flight gesture survives both re-records and reparents.
+        let gesture_regions = &mut self.hit_test.gesture_regions;
+        gesture_regions.clear();
+        let mut targets = Vec::new();
+        self.gesture_engine.swap_targets(&mut targets);
+        targets.clear();
+        for staged in staged_gestures {
+            let order = rank(&staged.entry_order);
+            let mut target = staged.payload.target;
+            target.order = order;
+            self.gesture_engine.register_existing_target(target);
+            gesture_regions.push(crate::renderer::GestureRegion {
+                bounds: staged.window,
+                order,
+                owners: staged.payload.owners.clone(),
+            });
+        }
+
+        let gesture_occluders = &mut self.hit_test.gesture_occluders;
+        gesture_occluders.clear();
+        for (order, rect) in staged_occluders {
+            gesture_occluders.push((rect, rank(&order)));
+        }
+
+        let cursor_targets = &mut self.hit_test.cursor_targets;
+        cursor_targets.clear();
+        cursor_targets.extend(staged_cursor.into_iter().map(|staged| staged.payload));
+
+        let hover_targets = &mut self.hit_test.hover_targets;
+        hover_targets.clear();
+        hover_targets.extend(staged_hover.into_iter().map(|staged| staged.payload));
+
+        let drop_targets = &mut self.hit_test.drop_targets;
+        drop_targets.clear();
+        for staged in staged_drop {
+            let mut target = staged.payload;
+            target.key.order = rank(&staged.entry_order);
+            drop_targets.push(target);
+        }
+
+        let context_menu_targets = &mut self.hit_test.context_menu_targets;
+        context_menu_targets.clear();
+        for staged in staged_menus {
+            let mut target = staged.payload;
+            target.order = rank(&staged.entry_order);
+            context_menu_targets.push(target);
+        }
+
+        let scroll_targets = &mut self.hit_test.scroll_targets;
+        scroll_targets.clear();
+        for staged in staged_scroll {
+            let mut target = staged.payload;
+            target.order = rank(&staged.entry_order);
+            scroll_targets.push(target);
+        }
+
+        let text_input_targets = &mut self.text_editing.text_input_targets;
+        text_input_targets.clear();
+        for staged in staged_text {
+            let mut target = staged.payload;
+            target.order = rank(&staged.entry_order);
+            text_input_targets.push(target);
+        }
+
+        let embedded_input_targets = &mut self.hit_test.embedded_input_targets;
+        embedded_input_targets.clear();
+        for staged in staged_embedded {
+            let mut target = staged.payload;
+            target.order = rank(&staged.entry_order);
+            embedded_input_targets.push(target);
+        }
+
+        let native_view_occlusions = &mut self.hit_test.native_view_occlusions;
+        native_view_occlusions.clear();
+        for staged in staged_occlusions {
+            let mut occlusion = staged.payload;
+            occlusion.order = rank(&staged.entry_order);
+            native_view_occlusions.push(occlusion);
+        }
+
+        // Platform-view sink records in paint order — staged, then written
+        // once per frame by `record_platform_views` at frame end.
+        staged_platform.sort_by(|a, b| a.order.cmp(&b.order));
+        self.materialized_platform_views.clear();
+        self.materialized_platform_views
+            .extend(staged_platform.into_iter().map(|staged| {
+                let clipped = staged.clip;
+                let mut placement = staged.placement;
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    reason = "window coordinates fit f32 — same cast dev's placement math used"
+                )]
+                {
+                    placement.x = staged.frame.x0 as f32;
+                    placement.y = staged.frame.y0 as f32;
+                    placement.width = staged.frame.width() as f32;
+                    placement.height = staged.frame.height() as f32;
+                    placement.clip = (clipped != staged.frame).then(|| {
+                        [
+                            clipped.x0 as f32,
+                            clipped.y0 as f32,
+                            clipped.width() as f32,
+                            clipped.height() as f32,
+                        ]
+                    });
+                    placement.order = rank(&staged.order) as u32;
+                }
+                placement.visible = !clipped.is_zero_area();
+                crate::renderer::MaterializedPlatformView {
+                    table: staged.table,
+                    placement,
+                }
+            }));
+
+        self.hit_test.back_targets = staged_back
+            .into_iter()
+            .map(|staged| staged.payload)
+            .collect();
+
+        self.hit_test.modal_interaction = modal.map(|(_, payload)| payload);
+
+        let mut chain_seen = false;
+        let mut chain: Option<Rc<KeyHandlerNode>> = None;
+        let mut fold = |key_handlers: &Option<Rc<KeyHandlerNode>>| {
+            if chain_seen {
+                chain = common_key_handler_scope(chain.take(), key_handlers.clone());
+            } else {
+                chain_seen = true;
+                chain.clone_from(key_handlers);
+            }
+        };
+        for target in &self.hit_test.pointer_targets {
+            fold(&target.key_handlers);
+        }
+        for target in &self.hit_test.embedded_input_targets {
+            fold(&target.key_handlers);
+        }
+        for target in &self.text_editing.text_input_targets {
+            fold(&target.key_handlers);
+        }
+        // The semantic walk emits no pointer/text targets — its key scopes
+        // live on the focus links instead, so they fold in too. Same
+        // common-ancestor fold as dev's per-registration one.
+        #[cfg(feature = "accessibility")]
+        for chain_snapshot in self.accessibility.focus_key_handlers.values() {
+            fold(chain_snapshot);
+        }
+        self.hit_test.root_key_chain_seen = chain_seen;
+        self.hit_test.root_key_handlers = chain;
+
+        // The pointer-drag liveness check runs here, once per
+        // materialization: a target whose owner retired or gated out has
+        // left the flat list, so the stale drag is dropped then.
+        self.ensure_active_pointer_drag_target_is_live();
+        self.end_orphaned_touch_input();
     }
 
-    pub(crate) fn pop_hit_clip(&mut self) {
-        self.hit_clip_stack
-            .pop()
-            .expect("hydrolysis renderer: hit clip stack underflow");
+    /// Ends the touch input that outlives its target: a scroll motion whose
+    /// scroll view no registered `ScrollTarget` holds any more, and a
+    /// delayed press whose key no live node binds. Both end with their
+    /// owner, so the next motion tick or release never resolves a retired
+    /// owner; the press drops the tap it armed with it, as a touch move
+    /// cancels one.
+    fn end_orphaned_touch_input(&mut self) {
+        let mut motions = core::mem::take(&mut self.hit_test.scroll_motions);
+        motions.retain(|motion| {
+            self.try_scroll_target_owner(motion.handle().cache_key())
+                .is_some()
+        });
+        self.hit_test.scroll_motions = motions;
+        if self
+            .hit_test
+            .pending_pointer_press
+            .as_ref()
+            .is_some_and(|pending| {
+                !self.hit_test.interaction.key_active(&pending.slot.key)
+                    || self.try_key_owner(&pending.slot.key).is_none()
+            })
+        {
+            self.hit_test.pending_pointer_press = None;
+            self.hit_test.active_pointer_target = None;
+            self.hit_test.active_press_bounds = None;
+            self.hit_test.active_press_origin = None;
+        }
     }
 }
 
 impl HitTestState {
-    pub(crate) fn reset_scene(&mut self) {
-        self.embedded_input_targets.clear();
-        self.native_view_occlusions.clear();
-        self.pointer_targets.clear();
-        self.gesture_regions.clear();
-        self.gesture_occluders.clear();
-        self.cursor_targets.clear();
-        self.hover_targets.clear();
-        self.drop_targets.clear();
-        self.context_menu_targets.clear();
-        self.scroll_targets.clear();
-        self.modal_interaction = None;
-        self.hit_clip_stack.clear();
-        // `bubbled_key_sinks` survives: a press bubbled this frame may only
-        // get its release several frames later.
-        self.root_key_handlers = None;
-        self.root_key_chain_seen = false;
-    }
-
+    /// The flat lists are materialized views of the retained registries —
+    /// `reset_scene` no longer clears them; the interaction engine's own
+    /// per-frame begin stays, since its handles live outside the registries.
     pub(crate) fn begin_rebuild_frame(&mut self) {
-        self.hit_test_opacity = 1.0;
-        self.hit_test_order = 0;
-        self.hit_clip_stack.clear();
         self.focus_dropped_this_frame = false;
         self.interaction.begin_rebuild_frame();
     }
@@ -521,7 +1144,18 @@ impl HitTestState {
 
     /// Publishes, for each registered native subview, the rects where
     /// `WaterUI`-drawn interactive content sits above it.
+    #[cfg_attr(
+        not(hydrolysis_hosted),
+        expect(
+            clippy::unused_self,
+            clippy::missing_const_for_fn,
+            reason = "no hosted content exists on targets without system-compositor planes"
+        )
+    )]
     fn publish_native_view_occlusion(&self, text_inputs: &[TextInputTarget]) {
+        #[cfg(not(hydrolysis_hosted))]
+        let _ = text_inputs;
+        #[cfg(hydrolysis_hosted)]
         for occlusion in &self.native_view_occlusions {
             let above = |order: usize, bounds: kurbo::Rect| {
                 (order > occlusion.order)
@@ -547,17 +1181,8 @@ impl HitTestState {
                     )
                 }))
                 .collect();
-            occlusion.sink.replace(rects);
+            occlusion.sink.publish(rects);
         }
-    }
-
-    pub(crate) const fn next_hit_test_order(&mut self) -> usize {
-        let order = self.hit_test_order;
-        self.hit_test_order = self
-            .hit_test_order
-            .checked_add(1)
-            .expect("hydrolysis hit-test order overflow");
-        order
     }
 
     pub(crate) fn cursor_style_at(&self, point: kurbo::Point) -> CursorStyle {
@@ -577,35 +1202,53 @@ impl HitTestState {
     ) -> HoverSync {
         let mut sync = HoverSync::default();
         for target in &mut self.hover_targets {
+            // The slot's bind can lapse after the target staged (a frame-end
+            // prune that ran between materialization and this dispatch):
+            // an unbound slot reads as not hovered.
+            if !self.interaction.key_active(&target.slot.key) {
+                continue;
+            }
             let contains = target.bounds.contains(point);
             let slot_hovering = self.interaction.hovering(&target.slot);
             if contains != slot_hovering {
                 self.interaction.set_hovering(&target.slot, contains);
+                let mut chrome = false;
+                let mut repaint = true;
                 if let Some(handles) = &target.handles {
                     // Replayable state layer: the hover alpha animates through
                     // its retained draw, no structural rebuild needed unless
                     // the widget's chrome samples interaction state directly.
+                    // Engine-realized chrome took the change as live operands:
+                    // nothing in the tree changed, and the engine surface wakes
+                    // the host for the frame that animates them.
                     handles.set_hovering(contains, now);
-                    if handles.chrome_state_dependent() {
-                        sync.handler_changed = true;
-                    } else {
-                        sync.visual_changed = true;
+                    match handles.repaint() {
+                        Some(bits) if bits == Dirty::LAYOUT => chrome = true,
+                        Some(_) => sync.visual_changed = true,
+                        None => repaint = false,
                     }
                 }
                 if contains {
                     if let Some(on_enter) = target.on_enter.as_mut() {
-                        sync.handler_changed |= (on_enter.borrow_mut())(env);
+                        chrome |= (on_enter.borrow_mut())(env);
                     }
                 } else if let Some(on_exit) = target.on_exit.as_mut() {
-                    sync.handler_changed |= (on_exit.borrow_mut())(env);
+                    chrome |= (on_exit.borrow_mut())(env);
+                }
+                if chrome {
+                    sync.chrome_keys.push(target.slot.key.clone());
+                } else if repaint {
+                    sync.paint_keys.push(target.slot.key.clone());
                 }
             }
             if contains
                 && dispatch_move
                 && let Some(on_move) = target.on_move.as_mut()
+                && (on_move.borrow_mut())(target.to_local * point, env)
             {
-                sync.handler_changed |= (on_move.borrow_mut())(point, env);
+                sync.chrome_keys.push(target.slot.key.clone());
             }
+            sync.handler_changed = !sync.chrome_keys.is_empty();
         }
         sync
     }
@@ -675,6 +1318,7 @@ impl SemanticCore {
         let exit_changed = if let Some(target) = previous_target {
             let action_env = Self::drop_target_env(&target, env);
             target.destination.borrow_mut().exit(&action_env);
+            Self::mark_owner(&target.owner, Dirty::LAYOUT);
             true
         } else {
             previous_key.is_some() || current_key.is_some()
@@ -682,6 +1326,7 @@ impl SemanticCore {
         if let Some(target) = current_target {
             let action_env = Self::drop_target_env(&target, env);
             target.destination.borrow_mut().enter(&action_env);
+            Self::mark_owner(&target.owner, Dirty::LAYOUT);
             true
         } else {
             exit_changed
@@ -723,6 +1368,7 @@ impl SemanticCore {
                 .destination
                 .borrow_mut()
                 .deliver(active_drag.payload, &action_env);
+            Self::mark_owner(&target.owner, Dirty::LAYOUT);
             true
         } else {
             false
@@ -730,6 +1376,7 @@ impl SemanticCore {
         if let Some(target) = exit_target {
             let action_env = Self::drop_target_env(&target, env);
             target.destination.borrow_mut().exit(&action_env);
+            Self::mark_owner(&target.owner, Dirty::LAYOUT);
             true
         } else {
             delivered
@@ -747,6 +1394,7 @@ impl SemanticCore {
         if let Some(target) = exit_target {
             let action_env = Self::drop_target_env(&target, env);
             target.destination.borrow_mut().exit(&action_env);
+            Self::mark_owner(&target.owner, Dirty::LAYOUT);
             return true;
         }
         false
@@ -799,6 +1447,7 @@ impl SemanticCore {
     /// runner refreshes from the host's live answer before dispatching the
     /// event — see [`Self::note_pointer_position`].
     pub fn handle_file_hovered(&mut self, path: PathBuf, env: &Environment) -> bool {
+        self.registries();
         let payload = {
             let state = self.collect_os_file_drag_path(path);
             Self::os_file_payload(&state.paths)
@@ -818,6 +1467,7 @@ impl SemanticCore {
     /// drop itself is delivered once by [`Self::finish_os_file_drop`], at the
     /// end of the first drain that adds no more files.
     pub fn handle_file_dropped(&mut self, path: PathBuf) {
+        self.registries();
         let state = self.collect_os_file_drag_path(path);
         state.phase = OsFileDragPhase::Dropping {
             collected_this_drain: true,
@@ -911,6 +1561,7 @@ impl SemanticCore {
     /// An OS file drag left the window or ended without a drop (winit
     /// `HoveredFileCancelled`).
     pub fn handle_file_hover_cancelled(&mut self, env: &Environment) -> bool {
+        self.registries();
         self.hit_test.os_file_drag = None;
         self.cancel_active_drag(env)
     }
@@ -936,11 +1587,13 @@ impl SemanticCore {
             })
         {
             self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
+            self.hit_test.active_pointer_drag_owner = target.owner.clone();
             return;
         }
         let Some(point) = pointer else {
             self.hit_test.active_pointer_drag_target = None;
             self.hit_test.active_pointer_drag_signature = None;
+            self.hit_test.active_pointer_drag_owner = Weak::new();
             self.clear_scrollbar_drag();
             return;
         };
@@ -963,9 +1616,11 @@ impl SemanticCore {
             let target = &self.hit_test.pointer_targets[index];
             self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
             self.hit_test.active_pointer_drag_signature = Some((target.depth, target.order));
+            self.hit_test.active_pointer_drag_owner = target.owner.clone();
         } else {
             self.hit_test.active_pointer_drag_target = None;
             self.hit_test.active_pointer_drag_signature = None;
+            self.hit_test.active_pointer_drag_owner = Weak::new();
             self.clear_scrollbar_drag();
         }
     }
@@ -998,6 +1653,7 @@ impl HydrolysisRenderer {
         button: PointerButton,
         env: &Environment,
     ) -> bool {
+        self.registries();
         self.handle_pointer_down_with_source(0, PointerKind::Mouse, x, y, button, env)
     }
 
@@ -1019,6 +1675,7 @@ impl HydrolysisRenderer {
         button: PointerButton,
         env: &Environment,
     ) -> bool {
+        self.registries();
         if self
             .hit_test
             .active_pointer
@@ -1032,9 +1689,13 @@ impl HydrolysisRenderer {
         self.hit_test.pointer_position = Some(point);
         self.hit_test.pointer_press_origin = Some(point);
         let at = self.frame_instant();
+        if pointer_kind == PointerKind::Touch {
+            self.arm_touch_scroll(point, button, at);
+        }
         let mut refresh_requested = false;
         let mut visual_changed = false;
         self.hit_test.active_pointer_drag_target = None;
+        self.hit_test.active_pointer_drag_owner = Weak::new();
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
@@ -1047,11 +1708,7 @@ impl HydrolysisRenderer {
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
         visual_changed |= press_clear.visual_changed;
         refresh_requested |= press_clear.chrome_changed;
-        if refresh_requested {
-            self.request_refresh();
-        } else if visual_changed {
-            self.request_redraw();
-        }
+        self.hit_test.interaction.mark_press_clear(&press_clear);
         self.text_editing.active_text_selection_drag = None;
         let overlay_hit = matches!(
             self.text_editing.active_text_context_menu,
@@ -1133,13 +1790,25 @@ impl HydrolysisRenderer {
                     surface.local_bounds.size(),
                 ));
                 self.topmost_context_menu_target_enclosing(point, surface_bounds)
-                    .is_some_and(|target| !popup_menu_nodes(&target.items.snapshot()).is_empty())
+                    .is_some_and(|target| {
+                        !popup_menu_nodes(
+                            &target.items.snapshot(),
+                            &target.env,
+                            self.window_closable,
+                        )
+                        .is_empty()
+                    })
             } else {
                 (focus_wins && focused.is_some())
                     || self
                         .topmost_context_menu_target_at_point(point)
                         .is_some_and(|target| {
-                            !popup_menu_nodes(&target.items.snapshot()).is_empty()
+                            !popup_menu_nodes(
+                                &target.items.snapshot(),
+                                &target.env,
+                                self.window_closable,
+                            )
+                            .is_empty()
                         })
             };
         let gesture_changed = gesture_button(button).is_some_and(|mapped| {
@@ -1206,7 +1875,11 @@ impl HydrolysisRenderer {
                 if let Some(menu_target) =
                     self.topmost_context_menu_target_enclosing(point, surface_bounds)
                 {
-                    let mut items = popup_menu_nodes(&menu_target.items.snapshot());
+                    let mut items = popup_menu_nodes(
+                        &menu_target.items.snapshot(),
+                        &menu_target.env,
+                        self.window_closable,
+                    );
                     if !items.is_empty() {
                         // The debug inspect entry extends a menu, it does not
                         // create one — an empty `.context_menu` must behave
@@ -1308,7 +1981,13 @@ impl HydrolysisRenderer {
                 let menu_target = self.topmost_context_menu_target_at_point(point);
                 let mut items = menu_target
                     .as_ref()
-                    .map(|target| popup_menu_nodes(&target.items.snapshot()))
+                    .map(|target| {
+                        popup_menu_nodes(
+                            &target.items.snapshot(),
+                            &target.env,
+                            self.window_closable,
+                        )
+                    })
                     .unwrap_or_default();
                 if !items.is_empty() {
                     // The debug inspect entry extends a menu, it does not
@@ -1416,34 +2095,37 @@ impl HydrolysisRenderer {
             self.set_keyboard_focus_for_press(keyboard_key, point);
             refresh_requested |= self.set_focused_text_input(None);
             if let Some(slot) = target.press_slot.as_ref() {
-                let chrome_state_dependent = target
+                let repaint = target
                     .interaction
                     .as_ref()
-                    .is_some_and(|handles| handles.chrome_state_dependent());
+                    .map_or(Some(Dirty::PAINT), |handles| handles.repaint());
                 let touch_delay = target
                     .interaction
                     .as_ref()
                     .map_or(Duration::ZERO, |handles| handles.touch_delay());
+                let local_origin = target.to_local * point;
                 if pointer_kind == PointerKind::Mouse || touch_delay.is_zero() {
-                    self.hit_test.interaction.begin_press(slot, point, at);
-                    visual_changed = true;
+                    self.hit_test
+                        .interaction
+                        .begin_press(slot, point, Some(local_origin), at);
+                    // An engine-realized chrome's press is live operands only.
+                    visual_changed |= repaint.is_some();
                 } else {
                     self.hit_test.pending_pointer_press = Some(PendingPointerPress {
                         slot: slot.clone(),
                         origin: point,
+                        local_origin,
                         starts_at: at
                             .checked_add(touch_delay)
                             .expect("hydrolysis pointer press start time overflow"),
-                        chrome_state_dependent,
+                        repaint,
                     });
                 }
                 self.hit_test.active_press_bounds = Some(target.bounds);
                 self.hit_test.active_press_origin = Some(point);
-                if chrome_state_dependent && visual_changed {
-                    self.request_refresh();
-                    refresh_requested = true;
-                } else if visual_changed {
-                    self.request_redraw();
+                if let Some(bits) = repaint.filter(|_| visual_changed) {
+                    SemanticCore::mark_owner(&target.owner, bits);
+                    refresh_requested |= bits == Dirty::LAYOUT;
                 }
             }
             tracing::trace!(
@@ -1459,11 +2141,12 @@ impl HydrolysisRenderer {
             if target.captures_drag {
                 let changed = (target.action.borrow_mut())(self, point, env);
                 if changed {
-                    self.request_refresh();
+                    SemanticCore::mark_owner(&target.owner, Dirty::LAYOUT);
                     refresh_requested = true;
                 }
                 self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
                 self.hit_test.active_pointer_drag_signature = Some((target.depth, target.order));
+                self.hit_test.active_pointer_drag_owner = target.owner;
                 return refresh_requested || visual_changed || changed;
             }
             if target.press_slot.is_some() {
@@ -1475,7 +2158,7 @@ impl HydrolysisRenderer {
             }
             let changed = (target.action.borrow_mut())(self, point, env);
             if changed {
-                self.request_refresh();
+                SemanticCore::mark_owner(&target.owner, Dirty::LAYOUT);
                 refresh_requested = true;
             }
             // Slot-less utility targets stay transparent when unhandled,
@@ -1540,6 +2223,7 @@ impl HydrolysisRenderer {
         button: PointerButton,
         env: &Environment,
     ) -> bool {
+        self.registries();
         self.handle_pointer_up_with_source(0, PointerKind::Mouse, x, y, button, env)
     }
 
@@ -1553,6 +2237,7 @@ impl HydrolysisRenderer {
         button: PointerButton,
         env: &Environment,
     ) -> bool {
+        self.registries();
         if self.hit_test.active_pointer != Some((pointer_id, pointer_kind)) {
             return false;
         }
@@ -1563,6 +2248,8 @@ impl HydrolysisRenderer {
             target.sink.pointer_button(false, button, position);
             self.hit_test.active_pointer = None;
             self.hit_test.active_pointer_button = None;
+            let at = self.frame_instant();
+            self.abandon_touch_scroll(at);
             return true;
         }
         let at = self.frame_instant();
@@ -1570,34 +2257,38 @@ impl HydrolysisRenderer {
         // release, so it runs before the pending press is drained.
         #[allow(clippy::useless_let_if_seq)]
         let mut changed = self.handle_pointer_move_inner(x, y, env, pointer_kind);
+        if pointer_kind == PointerKind::Touch {
+            changed |= self.finish_touch_scroll(at);
+        }
         if let Some(pending) = self.hit_test.pending_pointer_press.take() {
-            self.hit_test
-                .interaction
-                .begin_press(&pending.slot, pending.origin, at);
-            if pending.chrome_state_dependent {
-                self.request_refresh();
-            } else {
-                self.request_redraw();
+            self.hit_test.interaction.begin_press(
+                &pending.slot,
+                pending.origin,
+                Some(pending.local_origin),
+                at,
+            );
+            if let Some(bits) = pending.repaint {
+                self.mark_key_owner(&pending.slot.key, bits);
+                changed = true;
             }
-            changed = true;
         }
         if let Some(target) = self.hit_test.active_pointer_target.take()
             && target.bounds.contains(point)
         {
-            let action_changed = (target.action.borrow_mut())(self, point, env);
-            if action_changed {
-                self.request_refresh();
-            }
-            changed |= action_changed;
+            // The action's verdict is "the tap landed", not a layout
+            // input: whatever it writes marks its own readers through the
+            // signal guards, so an ordinary activation marks nothing and
+            // counts nothing toward this release's `changed`
+            // (water-rs/waterui#2941).
+            let _ = (target.action.borrow_mut())(self, point, env);
         }
         let drop_changed = self.finish_active_drag(point, env);
-        if drop_changed {
-            self.request_refresh();
-        }
         changed |= drop_changed;
-        changed |= self.finish_interactive_navigation_pop(false);
+        changed |=
+            self.finish_interactive_navigation_pop(NavigationInteractivePopOutcome::ByProgress);
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
+        self.hit_test.active_pointer_drag_owner = Weak::new();
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
@@ -1608,11 +2299,7 @@ impl HydrolysisRenderer {
         self.hit_test.active_pointer = None;
         self.hit_test.active_pointer_button = None;
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
-        if press_clear.chrome_changed {
-            self.request_refresh();
-        } else if press_clear.visual_changed {
-            self.request_redraw();
-        }
+        self.hit_test.interaction.mark_press_clear(&press_clear);
         changed |= press_clear.visual_changed || press_clear.chrome_changed;
         let gesture_changed = gesture_button(button).is_some_and(|mapped| {
             self.gesture_engine
@@ -1632,6 +2319,7 @@ impl HydrolysisRenderer {
 
     /// Handles a pointer move to `(x, y)`; returns whether anything consumed it.
     pub fn handle_pointer_move(&mut self, x: f32, y: f32, env: &Environment) -> bool {
+        self.registries();
         self.handle_pointer_move_with_source(0, PointerKind::Mouse, x, y, env)
     }
 
@@ -1644,6 +2332,7 @@ impl HydrolysisRenderer {
         y: f32,
         env: &Environment,
     ) -> bool {
+        self.registries();
         if self
             .hit_test
             .active_pointer
@@ -1671,6 +2360,11 @@ impl HydrolysisRenderer {
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         self.hit_test.pointer_position = Some(point);
         let at = self.frame_instant();
+        // A claimed touch-drag scroll owns the sequence: the move drives
+        // its one-to-one tracking and nothing else sees it.
+        if pointer_kind == PointerKind::Touch && self.handle_touch_scroll_move(point, at, env) {
+            return true;
+        }
         // The hold dies when the press leaves the recognizer's slop — the
         // same move check `LongPressDetector` applies.
         if let Some(hold) = self.hit_test.pending_context_menu_hold
@@ -1702,7 +2396,8 @@ impl HydrolysisRenderer {
         if let Some(action) = self.hit_test.active_pointer_drag_target.clone() {
             let pointer_drag_changed = (action.borrow_mut())(self, point, env);
             if pointer_drag_changed {
-                self.request_refresh();
+                let owner = self.hit_test.active_pointer_drag_owner.clone();
+                SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
             }
             drag_changed |= pointer_drag_changed;
             refresh_requested |= pointer_drag_changed;
@@ -1711,9 +2406,6 @@ impl HydrolysisRenderer {
         // happens here. For an in-app drag this repeats the sync the
         // drag-target action just ran, a no-op while the target is unchanged.
         let drag_hover_changed = self.sync_active_drag_hover(point, env);
-        if drag_hover_changed {
-            self.request_refresh();
-        }
         drag_changed |= drag_hover_changed;
         refresh_requested |= drag_hover_changed;
         let hover = if pointer_kind == PointerKind::Mouse {
@@ -1721,13 +2413,8 @@ impl HydrolysisRenderer {
         } else {
             HoverSync::default()
         };
-        if hover.visual_changed {
-            self.request_redraw();
-        }
-        if hover.handler_changed {
-            self.request_refresh();
-        }
         refresh_requested |= hover.handler_changed;
+        self.hit_test.interaction.mark_hover_sync(&hover);
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -1748,13 +2435,8 @@ impl HydrolysisRenderer {
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let at = self.frame_instant();
         let hover = self.hit_test.sync_hover_targets(point, env, false, at);
-        if hover.visual_changed {
-            self.request_redraw();
-        }
         let changed = hover.handler_changed;
-        if changed {
-            self.request_refresh();
-        }
+        self.hit_test.interaction.mark_hover_sync(&hover);
         tracing::trace!(
             target: "waterui::hydrolysis::input",
             x,
@@ -2027,12 +2709,85 @@ impl SemanticCore {
         changed
     }
 
+    /// Marks both ends of a keyboard-focus move: the owner focus left drops
+    /// its focus visuals, the one it reached takes them. An owner whose
+    /// chrome is engine-realized takes the change as live operands instead
+    /// (water-rs/waterui#1433).
+    fn mark_focus_owners(
+        &mut self,
+        previous_focus: Option<InteractionKey>,
+        visible: bool,
+        #[cfg(feature = "accessibility")] node: Option<AccessibilityNodeId>,
+    ) {
+        // An owner whose chrome is engine-realized takes the change as live
+        // operands instead (water-rs/waterui#1433).
+        let left_owner = core::mem::take(&mut self.hit_test.keyboard_focus_owner);
+        let mut arrived_live = false;
+        if let Some(key) = self.hit_test.keyboard_focus.clone() {
+            // A semantic-only focusable (the semantic runtime registers no
+            // hit targets) is owned by the cell that emitted its node.
+            let owner = self.try_key_owner(&key);
+            #[cfg(feature = "accessibility")]
+            let owner = owner.or_else(|| node.and_then(|node| self.live_node_owner(node)));
+            let owner = owner
+                .unwrap_or_else(|| panic!("hydrolysis renderer: focused key {key:?} has no owner"));
+            let arrived_dirty = self.focus_dirty(&key, visible);
+            arrived_live = arrived_dirty.is_none();
+            if let Some(bits) = arrived_dirty {
+                Self::mark_owner(&owner, bits);
+            }
+            self.hit_test.keyboard_focus_owner = owner;
+        }
+        // Focus that stayed on its key changed only visibility: the arriving
+        // end above already handled the owner.
+        let left_dirty = previous_focus
+            .filter(|key| self.hit_test.keyboard_focus.as_ref() != Some(key))
+            .map(|key| self.focus_dirty(&key, false));
+        let left_live = left_dirty.as_ref().map_or(arrived_live, Option::is_none);
+        if let Some(Some(bits)) = left_dirty {
+            Self::mark_owner(&left_owner, bits);
+        } else if !left_live {
+            Self::mark_owner(&left_owner, Dirty::PAINT);
+        }
+    }
+
+    /// Shows or hides focus on `key`'s engine-realized chrome and answers
+    /// `None`; otherwise answers the mark the chrome's owner takes — the
+    /// widget's declared `repaint` kind, `PAINT` when it registers no
+    /// interaction handles: a recorded focus indicator repaints the owner's
+    /// content and never moves its geometry (water-rs/waterui#2940).
+    fn focus_dirty(&self, key: &InteractionKey, visible: bool) -> Option<Dirty> {
+        self.hit_test
+            .interaction
+            .handles_for_key(key)
+            .map_or(Some(Dirty::PAINT), |handles| {
+                let bits = handles.repaint();
+                if bits.is_none() {
+                    handles.set_focus_visible(visible);
+                }
+                bits
+            })
+    }
+
     pub(crate) fn set_keyboard_focus_impl(
         &mut self,
         focus: Option<InteractionKey>,
         #[cfg(feature = "accessibility")] node: Option<AccessibilityNodeId>,
         visible: bool,
     ) -> bool {
+        #[cfg(hydrolysis_hosted)]
+        if let Some(focus) = &focus {
+            for (key, runtime) in self
+                .hit_test
+                .native_view_occlusions
+                .iter()
+                .map(|target| &target.hosted)
+            {
+                if key == focus {
+                    runtime.content.request_focus();
+                }
+            }
+        }
         let visible = focus.is_some() && visible;
         #[cfg(feature = "accessibility")]
         let node_changed = self.accessibility.focus != node.unwrap_or(ACCESSIBILITY_ROOT_NODE_ID);
@@ -2045,6 +2800,7 @@ impl SemanticCore {
             return false;
         }
         let leaving = self.focused_candidate_order();
+        let previous_focus = self.hit_test.keyboard_focus.clone();
         if self.hit_test.keyboard_focus != focus || node_changed {
             // A `.focused` lens on the field still holding the caret is owned
             // by the text machinery: semantic focus moving to a non-text node
@@ -2112,7 +2868,33 @@ impl SemanticCore {
             .or(leaving)
             .or(self.hit_test.traversal_anchor);
         self.hit_test.keyboard_focus_visible = visible;
-        self.request_refresh();
+        // Both ends of the move repaint: the owner focus left drops its
+        // focus visuals, the one it reached takes them. The leaving owner
+        // was captured when focus arrived, so a target removed since still
+        // resolves (a dead owner has nothing left to wake).
+        #[cfg(feature = "accessibility")]
+        self.mark_focus_owners(previous_focus, visible, node);
+        #[cfg(not(feature = "accessibility"))]
+        self.mark_focus_owners(previous_focus, visible);
+        // The transition itself is bookkeeping, not geometry: the two
+        // owners carry the focus visuals (or their live chrome takes them
+        // as operands), the `.focused` bindings mark their own readers, and
+        // an accessibility focus move publishes as a focus-only tree update
+        // — none of it is a layout input, so nothing here may mark layout
+        // (water-rs/waterui#2940). When a quiet publish cannot describe the
+        // move (modal scope, un-emitted node) the root takes a paint mark —
+        // the a11y emit is window-level record state, still not geometry.
+        #[cfg(feature = "accessibility")]
+        if node_changed
+            && !self.publish_accessibility_focus(node.unwrap_or(ACCESSIBILITY_ROOT_NODE_ID))
+        {
+            self.context_mark_paint();
+        }
+        // The frame this transition needs is armed by the caller's
+        // `changed` result — input dispatch, the accessibility-action path
+        // and the emit pass's own flush all schedule one — so a move whose
+        // only visible change rides live chrome operands raises no mark
+        // and still reaches the next present.
         true
     }
 
@@ -2440,14 +3222,46 @@ impl SemanticCore {
     pub(crate) fn handle_keyboard_key_down(
         &mut self,
         key: &KeyCode,
+        logical_key: &keyboard_types::Key,
         modifiers: Modifiers,
         env: &Environment,
     ) -> bool {
+        self.registries();
+        // A declared menu chord claims its key before any built-in key
+        // handling — Escape, Tab traversal, arrow stepping, activation and
+        // focused text input — as AppKit offers key equivalents before
+        // `keyDown` (water-rs/hydrolysis#247). The runner seeds the registry
+        // into every window's environment — a missing one is a bug in the
+        // runner, not an absent table. Chords match the press's W3C
+        // `logical_key`. Without Control, Alt or Super a press is typing
+        // only while a text editor holds focus: J into a focused field
+        // types J, while J with nothing editable focused fires its chord —
+        // the space bar included — and a bare `Delete` chord does not
+        // steal the field's own delete either (water-rs/waterui#2118).
+        let registry = env
+            .get::<MenuShortcutRegistry>()
+            .expect(MISSING_MENU_SHORTCUT_REGISTRY);
+        let typing = !(modifiers.control || modifiers.alt || modifiers.super_key)
+            && self.text_editing.has_focus();
+        if !typing && registry.dispatch(self.window_id, logical_key, modifiers, env) {
+            return true;
+        }
         if matches!(key, KeyCode::Named(value) if value == "Escape")
             && let Some(modal) = self.hit_test.modal_interaction.clone()
             && modal.close_on_escape()
         {
             modal.handle_escape(env);
+            return true;
+        }
+        // Return answers the dialog on screen with its primary action
+        // whatever control holds focus — Space still activates the focused
+        // one — as an alert's default button does. A dialog without a
+        // primary action leaves Return to the focused control.
+        if matches!(key, KeyCode::Named(value) if value == "Enter")
+            && let Some(dialog) = self.popup_menu.dialog_stack.front().cloned()
+            && let Some(primary) = dialog.primary_action().cloned()
+        {
+            dialog.run_action(&primary, env);
             return true;
         }
         if matches!(key, KeyCode::Named(value) if value == "Escape") {
@@ -2570,7 +3384,7 @@ impl SemanticCore {
             };
             let changed = (action.borrow_mut())(step_forward);
             if changed {
-                self.request_refresh();
+                self.mark_key_owner(focused, Dirty::LAYOUT);
             }
             return true;
         }
@@ -2590,17 +3404,6 @@ impl SemanticCore {
             } {
                 return self.navigate_list_row(*dest, env, modifiers);
             }
-            return true;
-        }
-        // Menu chords are consulted before the modifier early return and
-        // before focused text input sees the key: a matching shortcut claims
-        // the event (water-rs/hydrolysis#247). The runner seeds the registry
-        // into every window's environment — a missing one is a bug in the
-        // runner, not an absent table.
-        let registry = env
-            .get::<MenuShortcutRegistry>()
-            .expect(MISSING_MENU_SHORTCUT_REGISTRY);
-        if registry.dispatch(self.window_id, key, modifiers, env) {
             return true;
         }
         if !activates || modifiers.control || modifiers.alt || modifiers.super_key {
@@ -2661,22 +3464,21 @@ impl SemanticCore {
         if let Some(slot) = target.press_slot.as_ref() {
             self.hit_test
                 .interaction
-                .begin_press(slot, origin, self.frame_instant());
+                .begin_press(slot, origin, None, self.frame_instant());
         }
-        if target
+        if let Some(bits) = target
             .interaction
             .as_ref()
-            .is_some_and(|handles| handles.chrome_state_dependent())
+            .map_or(Some(Dirty::PAINT), |handles| handles.repaint())
         {
-            self.request_refresh();
-        } else {
-            self.request_redraw();
+            Self::mark_owner(&target.owner, bits);
         }
         self.hit_test.active_keyboard_target = Some(target);
         true
     }
 
     pub(crate) fn handle_keyboard_key_up(&mut self, key: &KeyCode, env: &Environment) -> bool {
+        self.registries();
         let activates = matches!(key, KeyCode::Named(value) if value == "Enter" || value == "Space")
             || matches!(key, KeyCode::Character(value) if value == " ");
         if !activates {
@@ -2686,17 +3488,19 @@ impl SemanticCore {
             return false;
         };
         let point = target.bounds.center();
-        let action_changed = (target.action.borrow_mut())(self, point, env);
+        // The action's verdict is "the activation landed", not a layout
+        // input — the same verdict the pointer release path gives the
+        // tap's action: whatever it writes marks its own readers through
+        // the signal guards, so an ordinary activation changes nothing and
+        // counts nothing toward this release's `changed`
+        // (water-rs/waterui#2941).
+        let _ = (target.action.borrow_mut())(self, point, env);
         let clear = self
             .hit_test
             .interaction
             .clear_all_presses(self.frame_instant());
-        if action_changed || clear.chrome_changed {
-            self.request_refresh();
-        } else if clear.visual_changed {
-            self.request_redraw();
-        }
-        true
+        self.hit_test.interaction.mark_press_clear(&clear);
+        clear.visual_changed || clear.chrome_changed
     }
 
     /// A synthetic focus-out release — winit resends every held key as
@@ -2722,11 +3526,7 @@ impl SemanticCore {
             .hit_test
             .interaction
             .clear_all_presses(self.frame_instant());
-        if clear.chrome_changed {
-            self.request_refresh();
-        } else if clear.visual_changed {
-            self.request_redraw();
-        }
+        self.hit_test.interaction.mark_press_clear(&clear);
         true
     }
 }
@@ -2734,13 +3534,14 @@ impl SemanticCore {
 impl HydrolysisRenderer {
     /// The rendered-runtime gesture tick: advances the engine's recognizers,
     /// then fires an armed context-menu hold whose deadline elapsed. The
-    /// deadline rides [`SemanticCore::next_gesture_deadline`], so the runner
+    /// deadline rides `SemanticCore::next_gesture_deadline`, so the runner
     /// wakes for it — never a timer of its own. A hold that survives to the
     /// threshold opens the press point's menu through the same mount a
     /// secondary press takes, and consumes the press: pending recognizers
     /// fail as on a cancel, the captured pointer target drops, and a tap no
     /// longer fires on release.
     pub fn handle_gesture_tick(&mut self, at: Instant, env: &Environment) -> bool {
+        self.registries();
         let gesture_changed = self.core.handle_gesture_tick(at, env);
         let Some(hold) = self.hit_test.pending_context_menu_hold else {
             return gesture_changed;
@@ -2752,22 +3553,28 @@ impl HydrolysisRenderer {
         if !self.open_context_menu_at(hold.point, env) {
             return gesture_changed;
         }
+        self.consume_active_press(at, env);
+        true
+    }
+
+    /// Consumes the press the active pointer sequence carries: the
+    /// content's press is cancelled — never completed — pending recognizers
+    /// are failed, and the press's visual state releases. The shared
+    /// teardown a context-menu hold commits with and a touch-scroll claim
+    /// steals the sequence through.
+    fn consume_active_press(&mut self, at: Instant, env: &Environment) {
         self.hit_test.pending_pointer_press = None;
         self.hit_test.active_pointer_target = None;
         self.hit_test.active_pointer_drag_target = None;
+        self.hit_test.active_pointer_drag_owner = Weak::new();
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
-        if press_clear.chrome_changed {
-            self.request_refresh();
-        } else if press_clear.visual_changed {
-            self.request_redraw();
-        }
+        self.hit_test.interaction.mark_press_clear(&press_clear);
         let _ = self.gesture_engine.handle_pointer_cancel(at, env);
-        true
     }
 
     /// What a secondary press at `point` mounts: the menu of the
@@ -2806,7 +3613,9 @@ impl HydrolysisRenderer {
         };
         let mut items = menu_target
             .as_ref()
-            .map(|target| popup_menu_nodes(&target.items.snapshot()))
+            .map(|target| {
+                popup_menu_nodes(&target.items.snapshot(), &target.env, self.window_closable)
+            })
             .unwrap_or_default();
         self.append_inspect_element_item(&mut items, point);
         if items.is_empty() {
@@ -2833,6 +3642,7 @@ impl HydrolysisRenderer {
 
     /// Handles a cancelled pointer stream; returns whether anything consumed it.
     pub fn handle_pointer_cancel(&mut self, env: &Environment) -> bool {
+        self.registries();
         let Some((pointer_id, pointer_kind)) = self.hit_test.active_pointer else {
             return false;
         };
@@ -2846,13 +3656,16 @@ impl HydrolysisRenderer {
         pointer_kind: PointerKind,
         env: &Environment,
     ) -> bool {
+        self.registries();
         if self.hit_test.active_pointer != Some((pointer_id, pointer_kind)) {
             return false;
         }
         let at = self.frame_instant();
-        let mut refresh_requested = self.finish_interactive_navigation_pop(true);
+        let mut refresh_requested =
+            self.finish_interactive_navigation_pop(NavigationInteractivePopOutcome::Cancel);
         self.text_editing.active_text_selection_drag = None;
         self.hit_test.active_pointer_drag_target = None;
+        self.hit_test.active_pointer_drag_owner = Weak::new();
         self.hit_test.active_pointer_drag_signature = None;
         self.clear_scrollbar_drag();
         self.hit_test.active_pointer_target = None;
@@ -2864,13 +3677,10 @@ impl HydrolysisRenderer {
         self.hit_test.active_press_bounds = None;
         self.hit_test.active_press_origin = None;
         self.hit_test.pointer_press_origin = None;
+        refresh_requested |= self.abandon_touch_scroll(at);
         refresh_requested |= self.cancel_active_drag(env);
         let press_clear = self.hit_test.interaction.clear_all_presses(at);
-        if press_clear.chrome_changed {
-            self.request_refresh();
-        } else if press_clear.visual_changed {
-            self.request_redraw();
-        }
+        self.hit_test.interaction.mark_press_clear(&press_clear);
         refresh_requested |= press_clear.chrome_changed;
         let frame_instant = self.core.frame_instant;
         let gesture_changed = self
@@ -2879,29 +3689,47 @@ impl HydrolysisRenderer {
             .handle_pointer_cancel(frame_instant, env);
         refresh_requested |= gesture_changed;
         let mut hover_visual_changed = false;
+        let mut hover_chrome_keys = Vec::new();
+        let mut hover_paint_keys = Vec::new();
         let hit_test = &mut self.core.hit_test;
         for target in &mut hit_test.hover_targets {
+            if !hit_test.interaction.key_active(&target.slot.key) {
+                continue;
+            }
             let hovering = hit_test.interaction.hovering(&target.slot);
             if !hovering {
                 continue;
             }
             hit_test.interaction.set_hovering(&target.slot, false);
-            if let Some(handles) = &target.handles {
+            let paint = target.handles.as_ref().is_some_and(|handles| {
                 handles.set_hovering(false, at);
-                hover_visual_changed = true;
-            }
-            if let Some(on_exit) = target.on_exit.as_mut() {
-                refresh_requested |= (on_exit.borrow_mut())(env);
+                let repaint = handles.repaint().is_some();
+                hover_visual_changed |= repaint;
+                repaint
+            });
+            let chrome = target
+                .on_exit
+                .as_mut()
+                .is_some_and(|on_exit| (on_exit.borrow_mut())(env));
+            refresh_requested |= chrome;
+            if chrome {
+                hover_chrome_keys.push(target.slot.key.clone());
+            } else if paint {
+                hover_paint_keys.push(target.slot.key.clone());
             }
         }
-        if hover_visual_changed {
-            self.request_redraw();
-        }
+        self.hit_test
+            .interaction
+            .mark_owners(&hover_chrome_keys, Dirty::LAYOUT);
+        self.hit_test
+            .interaction
+            .mark_owners(&hover_paint_keys, Dirty::PAINT);
         refresh_requested || hover_visual_changed
     }
 
     /// Handles a scroll event at `(x, y)` with deltas `(dx, dy)`; `is_line_delta` selects line vs pixel units.
     pub fn handle_scroll(&mut self, x: f32, y: f32, dx: f32, dy: f32, is_line_delta: bool) -> bool {
+        self.registries();
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let unit = if is_line_delta {
             ScrollUnit::Line
@@ -2943,8 +3771,12 @@ impl HydrolysisRenderer {
             // A scroll offset is transform-level state outside the
             // reactive graph: the retained tree must re-encode at the
             // new offset (scene, hit-test geometry, accessibility),
-            // but its placements are unchanged — no layout.
-            self.request_refresh();
+            // but its placements are unchanged — no layout. The mark
+            // lands on the target's owner; a dead owner retired with
+            // its record, so there is nothing left to wake.
+            if let Some(cell) = target.owner.upgrade() {
+                cell.mark(Dirty::LAYOUT);
+            }
             self.dismiss_active_text_context_menu();
             // A scroll inside the context-menu presentation — its
             // drawn menu or its accessory — belongs to it and does
@@ -2968,6 +3800,19 @@ impl HydrolysisRenderer {
             .map(|target| target.handle.metrics())
     }
 
+    /// The stretch intensities of the scroll view under `(x, y)` — `None`
+    /// while no scroll target covers it.
+    #[cfg(test)]
+    pub(crate) fn scroll_stretch_at(&self, x: f32, y: f32) -> Option<kurbo::Vec2> {
+        let point = kurbo::Point::new(f64::from(x), f64::from(y));
+        self.hit_test
+            .scroll_targets
+            .iter()
+            .rev()
+            .find(|target| target.bounds.contains(point))
+            .map(|target| self.touch_stretch(target.handle.cache_key()))
+    }
+
     /// Handles a trackpad pan at `(x, y)` with deltas and a touch phase.
     pub fn handle_trackpad_pan(
         &mut self,
@@ -2977,6 +3822,7 @@ impl HydrolysisRenderer {
         dy: f32,
         phase: TouchPhase,
     ) -> bool {
+        self.registries();
         let point = kurbo::Point::new(f64::from(x), f64::from(y));
         let finished = matches!(phase, TouchPhase::Ended | TouchPhase::Cancelled);
         let contender_priority = self
@@ -2998,6 +3844,326 @@ impl HydrolysisRenderer {
             return true;
         }
         self.handle_scroll(x, y, dx, dy, false)
+    }
+
+    /// Arms the touch-scroll claim for a `PointerKind::Touch` sequence: the
+    /// motion of every scroll view under the touch stops where it is —
+    /// every other scroll view's keeps running — and the new press watches
+    /// for a slop crossing while its press still lands on the content
+    /// under it.
+    ///
+    /// # Panics
+    /// Panics when the platform window reported no `touch_scroll_config`:
+    /// delivering touch input without the gesture's parameters is a host
+    /// bug, not a scroll-disabled platform.
+    fn arm_touch_scroll(&mut self, point: kurbo::Point, button: PointerButton, at: Instant) {
+        assert!(
+            self.hit_test.touch_scroll_config.is_some(),
+            "{NO_TOUCH_SCROLL_CONFIG}"
+        );
+        // The touch stops the motions of the scroll views it lands in where
+        // they are — their stretches held too, as each `ScrollView` under
+        // an `ACTION_DOWN` aborts its scroller and holds its edges; the
+        // pending press holds them until the sequence shows whether a drag
+        // takes one over.
+        let (mut caught, running): (Vec<_>, Vec<_>) =
+            core::mem::take(&mut self.hit_test.scroll_motions)
+                .into_iter()
+                .partition(|motion| {
+                    let key = motion.handle().cache_key();
+                    self.hit_test.scroll_targets.iter().any(|target| {
+                        target.handle.cache_key() == key && target.bounds.contains(point)
+                    })
+                });
+        self.hit_test.scroll_motions = running;
+        for motion in &mut caught {
+            motion.catch();
+        }
+        if button == PointerButton::Primary {
+            self.hit_test.touch_scroll = TouchScrollGesture::Pending(TouchScrollPending {
+                origin: point,
+                tracker: VelocityTracker::new(at, point),
+                caught,
+            });
+        } else {
+            self.hit_test.touch_scroll = TouchScrollGesture::Idle;
+            self.let_go_caught_motions(caught, at);
+        }
+    }
+
+    /// Lets go of the motions a touch down caught, from rest: an offset one
+    /// held past an edge springs back and a held stretch relaxes;
+    /// otherwise its gesture ends where it stopped. Returns whether that
+    /// needs a frame.
+    fn let_go_caught_motions(&mut self, caught: Vec<ScrollMotion>, at: Instant) -> bool {
+        let config = self
+            .hit_test
+            .touch_scroll_config
+            .expect(NO_TOUCH_SCROLL_CONFIG);
+        caught.into_iter().fold(false, |needs_frame, motion| {
+            let key = motion.handle().cache_key();
+            let release = motion.let_go(&config, at);
+            self.apply_touch_release(key, release) || needs_frame
+        })
+    }
+
+    /// Installs what a released touch claim on the scroll view `key` names
+    /// turned into: its motion runs beside every other scroll view's; an
+    /// end that clamped the offset marks the view's owner. Returns whether
+    /// that needs a frame.
+    ///
+    /// # Panics
+    /// Panics when the scroll view already has a running motion: a release
+    /// comes only from a touch that caught or claimed the view, which took
+    /// its motion first.
+    fn apply_touch_release(&mut self, key: usize, release: TouchRelease) -> bool {
+        let TouchRelease { motion, clamped } = release;
+        if clamped && let Some(owner) = self.try_scroll_target_owner(key) {
+            SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
+        }
+        let Some(motion) = motion else {
+            return clamped;
+        };
+        assert!(
+            !self
+                .hit_test
+                .scroll_motions
+                .iter()
+                .any(|running| running.handle().cache_key() == key),
+            "a scroll view runs one motion at a time"
+        );
+        self.hit_test.scroll_motions.push(motion);
+        true
+    }
+
+    /// Ends the touch-scroll gesture without a fling — the sequence was
+    /// cancelled, or handed to a surface that owns its input: a claimed
+    /// drag is let go from rest, so an offset it pulled past an edge
+    /// springs back, and caught motions are let go the same way. Returns
+    /// whether that needs a frame.
+    fn abandon_touch_scroll(&mut self, at: Instant) -> bool {
+        let gesture = core::mem::replace(&mut self.hit_test.touch_scroll, TouchScrollGesture::Idle);
+        match gesture {
+            TouchScrollGesture::Dragging(drag) => {
+                self.release_touch_drag(&drag, kurbo::Vec2::ZERO, at)
+            }
+            TouchScrollGesture::Pending(pending) => self.let_go_caught_motions(pending.caught, at),
+            TouchScrollGesture::Idle => false,
+        }
+    }
+
+    /// Releases a claimed drag at `finger_velocity`: the fling it earns, or
+    /// the end of its gesture. Returns whether that needs a frame.
+    fn release_touch_drag(
+        &mut self,
+        drag: &TouchScrollDrag,
+        finger_velocity: kurbo::Vec2,
+        at: Instant,
+    ) -> bool {
+        let config = self
+            .hit_test
+            .touch_scroll_config
+            .expect(NO_TOUCH_SCROLL_CONFIG);
+        let key = drag.handle.cache_key();
+        let release = ScrollMotion::release(
+            &drag.handle,
+            &drag.claim,
+            finger_velocity,
+            &config,
+            drag.stretch.clone(),
+            at,
+        );
+        self.apply_touch_release(key, release)
+    }
+
+    /// Drives the touch-drag scroll gesture for a `PointerKind::Touch`
+    /// move and reports whether the sequence is the gesture's: while a
+    /// scroll view owns the drag every delta scrolls it one to one; while
+    /// the sequence is still pending, the first move past the touch slop
+    /// lets the innermost enclosing scroll view able to scroll along the
+    /// movement's dominant axis claim it — cancelling the content's press,
+    /// never completing it.
+    fn handle_touch_scroll_move(
+        &mut self,
+        point: kurbo::Point,
+        at: Instant,
+        env: &Environment,
+    ) -> bool {
+        let gesture = core::mem::replace(&mut self.hit_test.touch_scroll, TouchScrollGesture::Idle);
+        match gesture {
+            TouchScrollGesture::Dragging(mut drag) => {
+                drag.tracker.record(at, point);
+                // The offset moves opposite the finger: a drag up pushes it
+                // down into the content.
+                let changed = drag.scroll_by(drag.last.x - point.x, drag.last.y - point.y, at);
+                drag.last = point;
+                let owner = drag.owner.clone();
+                self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
+                if changed {
+                    SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
+                }
+                true
+            }
+            TouchScrollGesture::Pending(mut pending) => {
+                pending.tracker.record(at, point);
+                let displacement_x = point.x - pending.origin.x;
+                let displacement_y = point.y - pending.origin.y;
+                let (dominant, dominant_x) = if displacement_x.abs() > displacement_y.abs() {
+                    (displacement_x, true)
+                } else {
+                    (displacement_y, false)
+                };
+                // A `Pending` gesture exists only where the press armed it
+                // — with a config present — so a missing one here is the
+                // host retracting its parameters mid-sequence.
+                let config = self
+                    .hit_test
+                    .touch_scroll_config
+                    .expect(NO_TOUCH_SCROLL_CONFIG);
+                let slop = f64::from(config.touch_slop);
+                if dominant.abs() <= slop {
+                    self.hit_test.touch_scroll = TouchScrollGesture::Pending(pending);
+                    return false;
+                }
+                let claimant = if self.hit_test.active_embedded_target.is_some() {
+                    // The press landed on a surface that owns its input; a
+                    // scroll view never steals a sequence from it.
+                    None
+                } else {
+                    self.touch_scroll_claimant(
+                        pending.origin,
+                        displacement_x,
+                        displacement_y,
+                        config.physics.overscroll,
+                    )
+                };
+                // A caught motion is taken over only by a drag of its own
+                // scroll view — whose claim catches the offset where it
+                // stands, and which carries on the stretch it held; every
+                // other caught motion is let go again from rest.
+                let claimant_key = claimant.as_ref().map(|(handle, _)| handle.cache_key());
+                let (mut taken_over, caught): (Vec<_>, Vec<_>) =
+                    core::mem::take(&mut pending.caught)
+                        .into_iter()
+                        .partition(|motion| Some(motion.handle().cache_key()) == claimant_key);
+                let taken_over = taken_over.pop();
+                let released = self.let_go_caught_motions(caught, at);
+                let Some((handle, owner)) = claimant else {
+                    return released;
+                };
+                // The claim steals the sequence: the content's press is
+                // cancelled — never completed — through the same teardown a
+                // context-menu hold commits with.
+                self.hit_test.pending_context_menu_hold = None;
+                self.consume_active_press(at, env);
+                // The crossing move applies its excess over the slop at
+                // once — the content slides under the finger with no jump,
+                // anchored where the dominant axis left the slop.
+                let anchor = if dominant_x {
+                    kurbo::Point::new(pending.origin.x + slop.copysign(dominant), pending.origin.y)
+                } else {
+                    kurbo::Point::new(pending.origin.x, pending.origin.y + slop.copysign(dominant))
+                };
+                let claim = handle.begin_gesture();
+                let stretch = match config.physics.overscroll {
+                    Overscroll::Stretch(stretch) => Some(
+                        taken_over
+                            .and_then(ScrollMotion::into_stretch)
+                            .unwrap_or_else(|| ScrollStretch::new(stretch)),
+                    ),
+                    Overscroll::Clamped | Overscroll::RubberBand(_) => None,
+                };
+                let mut drag = Box::new(TouchScrollDrag {
+                    handle,
+                    claim,
+                    owner: owner.clone(),
+                    last: point,
+                    tracker: pending.tracker,
+                    overscroll: config.physics.overscroll,
+                    stretch,
+                });
+                let changed = drag.scroll_by(anchor.x - point.x, anchor.y - point.y, at);
+                self.hit_test.touch_scroll = TouchScrollGesture::Dragging(drag);
+                if changed {
+                    SemanticCore::mark_owner(&owner, Dirty::LAYOUT);
+                }
+                true
+            }
+            TouchScrollGesture::Idle => false,
+        }
+    }
+
+    /// The innermost scroll view under the touch-down point able to move
+    /// along the drag's dominant axis and direction — the claimant of a
+    /// past-slop touch drag. Newest-registered first, the same hit order
+    /// [`Self::handle_scroll`] walks. Under rubber-band and stretch edges
+    /// a view with any room along the axis claims the drag whatever its
+    /// offset — a drag at an edge toward it bands past it, as
+    /// `UIScrollView` with `bounces` does, or stretches it, as
+    /// `ScrollView` claims any drag past the slop; under clamped edges only
+    /// room left in the drag's direction claims it.
+    fn touch_scroll_claimant(
+        &self,
+        origin: kurbo::Point,
+        displacement_x: f64,
+        displacement_y: f64,
+        overscroll: Overscroll,
+    ) -> Option<(crate::scroll::ScrollHandle, Weak<crate::renderer::NodeCell>)> {
+        const EPSILON: f64 = 0.000_01;
+        let dominant_x = displacement_x.abs() > displacement_y.abs();
+        let bounces = !matches!(overscroll, Overscroll::Clamped);
+        // Whether an axis at `offset` within `0..=max` can move the way the
+        // finger's `displacement` pushes it. The finger's sign flips into
+        // the offset's: a drag up (negative displacement) pushes the offset
+        // toward its max.
+        let able = |displacement: f64, offset: f64, max: f64| {
+            if bounces {
+                max > EPSILON
+            } else if displacement > 0.0 {
+                offset > EPSILON
+            } else {
+                offset < max - EPSILON
+            }
+        };
+        self.hit_test
+            .scroll_targets
+            .iter()
+            .rev()
+            .find_map(|target| {
+                if !target.bounds.contains(origin) {
+                    return None;
+                }
+                let metrics = target.handle.metrics();
+                let claims = match (target.handle.axis(), dominant_x) {
+                    (ScrollAxis::Horizontal | ScrollAxis::All, true) => {
+                        able(displacement_x, metrics.offset_x, metrics.max_x)
+                    }
+                    (ScrollAxis::Vertical | ScrollAxis::All, false) => {
+                        able(displacement_y, metrics.offset_y, metrics.max_y)
+                    }
+                    (ScrollAxis::Horizontal, false) | (ScrollAxis::Vertical, true) => false,
+                    _ => panic!("scroll axis variant is not supported by hydrolysis"),
+                };
+                claims.then(|| (target.handle.clone(), target.owner.clone()))
+            })
+    }
+
+    /// Releases the touch-drag scroll gesture: a claimed drag whose
+    /// release velocity earns a fling starts it on the claimed handle;
+    /// anything else ends the gesture plainly. Returns whether the gesture
+    /// changed something the frame must show.
+    fn finish_touch_scroll(&mut self, at: Instant) -> bool {
+        let gesture = core::mem::replace(&mut self.hit_test.touch_scroll, TouchScrollGesture::Idle);
+        match gesture {
+            TouchScrollGesture::Dragging(drag) => {
+                let velocity = drag.tracker.velocity(at);
+                self.release_touch_drag(&drag, velocity, at)
+            }
+            // A tap on a moving scroll view stops it and lets it go: an
+            // offset caught past an edge springs back from rest.
+            TouchScrollGesture::Pending(pending) => self.let_go_caught_motions(pending.caught, at),
+            TouchScrollGesture::Idle => false,
+        }
     }
 }
 
@@ -3052,35 +4218,19 @@ impl SemanticCore {
     ///
     /// Returns `(clipped bounds, order)`; an empty clipped rect means the leaf
     /// is fully clipped away.
-    pub(crate) fn platform_view_placement(&mut self, bounds: kurbo::Rect) -> (kurbo::Rect, usize) {
-        let clipped = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
-        (clipped, order)
-    }
-
-    /// Records a native subview that the host platform hit-tests for itself, so
-    /// the content drawn above it can take its own clicks back.
-    ///
-    /// `bounds` is the subview's rect in window hit-test space; `sink` is the
-    /// channel the platform's view host reads the occluding rects from. See
-    /// [`NativeViewOcclusion`].
-    #[cfg(hydrolysis_macos_system_webview)]
-    pub(crate) fn register_native_view_occlusion(
+    /// Pushes the leaf's retained placement record; the resolved bounds and
+    /// paint rank are written into the sink table at materialization.
+    pub(crate) fn register_platform_view_placement(
         &mut self,
-        bounds: kurbo::Rect,
-        sink: Rc<RefCell<Vec<kurbo::Rect>>>,
+        local: kurbo::Rect,
+        table: Rc<RefCell<crate::platform_view::PlatformViewTable>>,
+        placement: crate::platform_view::PlatformViewPlacement,
     ) {
-        // The subview claims a slot in the same order every hit-test target
-        // uses, which is what makes "registered later" mean "painted above".
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
-        self.hit_test
-            .native_view_occlusions
-            .push(NativeViewOcclusion {
-                bounds,
-                order,
-                sink,
-            });
+        self.register_retained(
+            mount::PlatformViewRegistration { table, placement },
+            local,
+            |regs| &mut regs.platform_view_placements,
+        );
     }
 
     pub(crate) fn register_pointer_target_action(
@@ -3091,30 +4241,31 @@ impl SemanticCore {
         action: PointerAction,
         depth: usize,
     ) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
         let interaction = press_slot
             .as_ref()
             .and_then(|slot| self.hit_test.interaction.handles_for(slot));
         let modal = press_slot.as_ref().is_some_and(|slot| slot.modal);
         let key_handlers = self.snapshot_key_handlers();
-        self.hit_test.pointer_targets.push(PointerTarget {
+        self.register_retained(
+            PointerTarget {
+                to_local: kurbo::Affine::IDENTITY,
+                owner: Weak::new(),
+                bounds,
+                captures_drag,
+                depth,
+                order: 0,
+                press_slot,
+                owners: self.owner_stack.clone(),
+                interaction,
+                action,
+                keyboard_step: None,
+                keyboard_focusable: false,
+                modal,
+                key_handlers,
+            },
             bounds,
-            captures_drag,
-            depth,
-            order,
-            press_slot,
-            owners: self.owner_stack.clone(),
-            interaction,
-            action,
-            keyboard_step: None,
-            keyboard_focusable: false,
-            modal,
-            key_handlers,
-        });
+            |regs| &mut regs.pointer_targets,
+        );
     }
 
     /// Registers an opaque occlusion for `bounds`: an overlay's painted panel
@@ -3135,30 +4286,40 @@ impl SemanticCore {
     /// panel's painted rect in hit space; a press outside it is the
     /// dismiss-and-pass-through the overlay already implements, which this
     /// target must not shadow.
+    /// `bounds` is already in window space (overlay frames are resolved
+    /// before registration). The records still anchor at the recording
+    /// placement — the presentation host's own identity-chain slot — so
+    /// the occluder ranks under the host's paint order (a window-anchored
+    /// occluder would rank above the host's own content and swallow its
+    /// clicks), while the identity transform keeps the window-space rect
+    /// verbatim.
     pub(crate) fn register_hit_test_occluder(&mut self, bounds: kurbo::Rect) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
         let key_handlers = self.snapshot_key_handlers();
-        self.hit_test.pointer_targets.push(PointerTarget {
+        let anchor = self.current_placement();
+        self.register_retained_at(
+            PointerTarget {
+                to_local: kurbo::Affine::IDENTITY,
+                owner: Weak::new(),
+                bounds,
+                captures_drag: false,
+                depth: self.render_depth,
+                order: 0,
+                press_slot: None,
+                owners: self.owner_stack.clone(),
+                interaction: None,
+                action: Rc::new(RefCell::new(
+                    |_: &mut Self, _: kurbo::Point, _: &Environment| true,
+                )),
+                keyboard_step: None,
+                keyboard_focusable: false,
+                modal: false,
+                key_handlers,
+            },
             bounds,
-            captures_drag: false,
-            depth: self.render_depth,
-            order,
-            press_slot: None,
-            owners: self.owner_stack.clone(),
-            interaction: None,
-            action: Rc::new(RefCell::new(
-                |_: &mut Self, _: kurbo::Point, _: &Environment| true,
-            )),
-            keyboard_step: None,
-            keyboard_focusable: false,
-            modal: false,
-            key_handlers,
-        });
-        self.hit_test.gesture_occluders.push((bounds, order));
+            &anchor,
+            |regs| &mut regs.pointer_targets,
+        );
+        self.register_retained_at((), bounds, &anchor, |regs| &mut regs.gesture_occluders);
     }
 
     /// Runs `f` against the gesture engine with every target occluded at
@@ -3243,39 +4404,45 @@ impl SemanticCore {
     where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
         let key_handlers = self.snapshot_key_handlers();
-        self.hit_test.pointer_targets.push(PointerTarget {
+        self.register_retained(
+            PointerTarget {
+                to_local: kurbo::Affine::IDENTITY,
+                owner: Weak::new(),
+                bounds,
+                captures_drag: true,
+                depth: self.render_depth,
+                order: 0,
+                press_slot: None,
+                owners: self.owner_stack.clone(),
+                interaction: None,
+                action: Rc::new(RefCell::new(action)),
+                keyboard_step: None,
+                keyboard_focusable: false,
+                modal: false,
+                key_handlers,
+            },
             bounds,
-            captures_drag: true,
-            depth: self.render_depth,
-            order,
-            press_slot: None,
-            owners: self.owner_stack.clone(),
-            interaction: None,
-            action: Rc::new(RefCell::new(action)),
-            keyboard_step: None,
-            keyboard_focusable: false,
-            modal: false,
-            key_handlers,
-        });
+            |regs| &mut regs.pointer_targets,
+        );
     }
 
     /// The grab offset of the in-flight scrollbar drag owned by `key`, if any.
     pub(crate) fn scrollbar_drag_grab(&self, key: usize) -> Option<f64> {
         self.hit_test
             .active_scrollbar_drag
+            .as_ref()
             .filter(|drag| drag.key == key)
             .map(|drag| drag.grab)
     }
 
     /// Records the start of a scrollbar-thumb drag for the scroll slot `key`.
-    pub(crate) const fn begin_scrollbar_drag(&mut self, key: usize, grab: f64) {
-        self.hit_test.active_scrollbar_drag = Some(ScrollbarDrag { key, grab });
+    /// The drag's owner is the `ScrollTarget` holding that handle — the
+    /// dispatch runs outside any record, so it looks the owner up through
+    /// the registry rather than asking the reader.
+    pub(crate) fn begin_scrollbar_drag(&mut self, key: usize, grab: f64) {
+        let owner = self.scroll_target_owner(key);
+        self.hit_test.active_scrollbar_drag = Some(ScrollbarDrag { key, grab, owner });
     }
 
     /// Whether the scroll slot `key` currently owns a scrollbar-thumb drag
@@ -3283,6 +4450,7 @@ impl SemanticCore {
     pub(crate) fn scrollbar_drag_active(&self, key: usize) -> bool {
         self.hit_test
             .active_scrollbar_drag
+            .as_ref()
             .is_some_and(|drag| drag.key == key)
     }
 
@@ -3317,20 +4485,20 @@ impl SemanticCore {
         handles: &DropDestinationHandles,
         env: &Environment,
     ) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
-        self.hit_test.drop_targets.push(DropTarget {
-            bounds,
-            key: DropTargetKey {
-                depth: self.render_depth,
-                order,
+        self.register_retained(
+            DropTarget {
+                owner: Weak::new(),
+                bounds,
+                key: DropTargetKey {
+                    depth: self.render_depth,
+                    order: 0,
+                },
+                env: env.clone(),
+                destination: Rc::clone(&handles.destination),
             },
-            env: env.clone(),
-            destination: Rc::clone(&handles.destination),
-        });
+            bounds,
+            |regs| &mut regs.drop_targets,
+        );
     }
 }
 
@@ -3345,7 +4513,7 @@ impl HydrolysisRenderer {
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        self.bind_interaction_target_with_focus(key, bounds, env, None, false)
+        self.bind_interaction_target_with_focus(key, bounds, env, None, false, None)
     }
 
     /// Binds an interaction target for a control that supports the disabled
@@ -3363,7 +4531,30 @@ impl HydrolysisRenderer {
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
-        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled)
+        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, None)
+    }
+
+    /// Binds the interaction target of a control whose chrome is
+    /// engine-realized ([`LiveChrome`](crate::renderer::chrome::LiveChrome),
+    /// water-rs/waterui#1433), steered with `motion`. Hover, press and focus
+    /// changes move the chrome's live operands — the caller attaches it to
+    /// the returned handles — and mark nothing, so they neither re-render
+    /// nor repaint the control. A control under an `InteractionReport`
+    /// still re-renders on each change: the report's binding is written at
+    /// bind time.
+    pub(crate) fn bind_live_chrome_target(
+        &mut self,
+        key: InteractionKey,
+        bounds: kurbo::Rect,
+        env: &Environment,
+        disabled: bool,
+        motion: InteractionMotion,
+    ) -> (
+        WidgetInteractionState,
+        PressSlot,
+        Rc<InteractionLayerHandles>,
+    ) {
+        self.bind_interaction_target_with_focus(key, bounds, env, None, disabled, Some(motion))
     }
 
     pub(crate) fn bind_focused_control_interaction_target(
@@ -3384,6 +4575,7 @@ impl HydrolysisRenderer {
             env,
             Some(InteractionFocus::visible(focused)),
             disabled,
+            None,
         )
     }
 
@@ -3398,11 +4590,20 @@ impl HydrolysisRenderer {
         env: &Environment,
         focus: Option<InteractionFocus>,
         disabled: bool,
+        live_motion: Option<InteractionMotion>,
     ) -> (
         WidgetInteractionState,
         PressSlot,
         Rc<InteractionLayerHandles>,
     ) {
+        // `WidgetInteractionInput::bounds` filters inherited press waves by
+        // origin — origins are window-space points, so the check needs the
+        // resolved window rect, not the node-local `bounds` the register
+        // calls take.
+        let window_bounds = self
+            .current_placement()
+            .resolve_hit(bounds)
+            .map_or(kurbo::Rect::ZERO, |resolved| resolved.rect);
         let keyboard_focused = self.hit_test.keyboard_focus.as_ref() == Some(&key);
         let focus = if focus.is_some_and(|focus| focus.visible) {
             focus
@@ -3413,20 +4614,22 @@ impl HydrolysisRenderer {
         } else {
             focus
         };
-        let (hover_slot, hovered) = self.hit_test.interaction.bind_hover(&key);
+        let owner = self.registration_owner();
+        let (hover_slot, hovered) = self.hit_test.interaction.bind_hover(&key, &owner);
         if disabled {
             // No hover target is registered for a disabled control, so pointer
             // moves never sync its slot; reset it so a stale hover from before
             // the control was disabled does not resurface on re-enable.
             self.hit_test.interaction.set_hovering(&hover_slot, false);
         }
-        let motion = self.theme().interaction_motion();
+        let live = live_motion.is_some();
+        let motion = live_motion.unwrap_or_else(|| self.theme().interaction_motion());
         let now = self.frame_instant();
         let (mut state, mut press_slot, handles) =
             self.core.hit_test.interaction.bind_widget_state(
                 &key,
                 WidgetInteractionInput {
-                    bounds,
+                    bounds: window_bounds,
                     hovered,
                     focus,
                     disabled,
@@ -3434,10 +4637,11 @@ impl HydrolysisRenderer {
                 &motion,
                 &mut self.core.animation_controller,
                 now,
+                &owner,
             );
         if env
             .get::<ModalInteraction>()
-            .is_some_and(waterui_backend_core::widget::ModalInteraction::is_active)
+            .is_some_and(crate::theme::ModalInteraction::is_active)
         {
             press_slot.modal = true;
             self.register_modal_scope(env);
@@ -3454,21 +4658,29 @@ impl HydrolysisRenderer {
         state.state = flags;
         self.hit_test.interaction.set_reported_state(&key, flags);
         self.claim_interaction_reports(env, flags);
-        // Every widget that binds an interaction target draws its hover/focus/press
-        // state layers from the sampled state each flush, so its chrome is
-        // state-dependent by construction: a press or hover change must schedule a
-        // re-flush (not just a re-present of the stale scene).
-        handles.mark_chrome_state_dependent();
-        if !disabled && self.hit_test.hit_test_opacity > HIT_TEST_ALPHA_THRESHOLD {
-            let bounds = self.hit_test.clip_hit_bounds(bounds);
-            self.hit_test.hover_targets.push(HoverTarget {
+        // A widget that draws its hover/focus/press state layers from the
+        // sampled state each flush is state-dependent by construction: a press
+        // or hover change must schedule a re-flush (not just a re-present of
+        // the stale scene). Engine-realized chrome is not, unless a report
+        // binding needs the bind-time write.
+        if !live || env.get::<InteractionReport>().is_some() {
+            handles.mark_chrome_state_dependent();
+        }
+        if !disabled {
+            self.core.register_retained(
+                HoverTarget {
+                    owner: Weak::new(),
+                    bounds,
+                    to_local: kurbo::Affine::IDENTITY,
+                    slot: hover_slot,
+                    handles: Some(Rc::clone(&handles)),
+                    on_enter: None,
+                    on_move: None,
+                    on_exit: None,
+                },
                 bounds,
-                slot: hover_slot,
-                handles: Some(Rc::clone(&handles)),
-                on_enter: None,
-                on_move: None,
-                on_exit: None,
-            });
+                |regs| &mut regs.hover_targets,
+            );
         }
         (state, press_slot, handles)
     }
@@ -3556,12 +4768,17 @@ impl SemanticCore {
     /// it scopes. Called when the node carrying the metadata is emitted, on
     /// the rendered flush and the headless semantic walk alike, so the scope
     /// exists whether or not anything beneath it binds an interaction target.
+    /// The modal record carries no geometry: materialization keeps the
+    /// frontmost live entry on a paint-resolving chain — the same
+    /// "topmost wins" the per-frame overwrite gave.
     pub(crate) fn register_modal_scope(&mut self, env: &Environment) {
         if let Some(modal) = env
             .get::<ModalInteraction>()
             .filter(|modal| modal.is_active())
         {
-            self.hit_test.modal_interaction = Some(modal.clone());
+            self.register_retained(modal.clone(), kurbo::Rect::ZERO, |regs| {
+                &mut regs.modal_scope
+            });
         }
     }
 
@@ -3585,28 +4802,29 @@ impl SemanticCore {
     ) where
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
     {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
         let interaction = self.hit_test.interaction.handles_for(&press_slot);
         let modal = press_slot.modal;
         let key_handlers = self.snapshot_key_handlers();
-        self.hit_test.pointer_targets.push(PointerTarget {
+        self.register_retained(
+            PointerTarget {
+                to_local: kurbo::Affine::IDENTITY,
+                owner: Weak::new(),
+                bounds,
+                captures_drag: false,
+                depth: self.render_depth,
+                order: 0,
+                press_slot: Some(press_slot),
+                owners: self.owner_stack.clone(),
+                interaction,
+                action: Rc::new(RefCell::new(action)),
+                keyboard_step: None,
+                keyboard_focusable,
+                modal,
+                key_handlers,
+            },
             bounds,
-            captures_drag: false,
-            depth: self.render_depth,
-            order,
-            press_slot: Some(press_slot),
-            owners: self.owner_stack.clone(),
-            interaction,
-            action: Rc::new(RefCell::new(action)),
-            keyboard_step: None,
-            keyboard_focusable,
-            modal,
-            key_handlers,
-        });
+            |regs| &mut regs.pointer_targets,
+        );
     }
 
     pub(crate) fn register_interactive_pointer_drag_target<F, K>(
@@ -3619,28 +4837,29 @@ impl SemanticCore {
         F: 'static + FnMut(&mut Self, kurbo::Point, &Environment) -> bool,
         K: 'static + FnMut(bool) -> bool,
     {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
         let interaction = self.hit_test.interaction.handles_for(&press_slot);
         let modal = press_slot.modal;
         let key_handlers = self.snapshot_key_handlers();
-        self.hit_test.pointer_targets.push(PointerTarget {
+        self.register_retained(
+            PointerTarget {
+                to_local: kurbo::Affine::IDENTITY,
+                owner: Weak::new(),
+                bounds,
+                captures_drag: true,
+                depth: self.render_depth,
+                order: 0,
+                press_slot: Some(press_slot),
+                owners: self.owner_stack.clone(),
+                interaction,
+                action: Rc::new(RefCell::new(action)),
+                keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
+                keyboard_focusable: true,
+                modal,
+                key_handlers,
+            },
             bounds,
-            captures_drag: true,
-            depth: self.render_depth,
-            order,
-            press_slot: Some(press_slot),
-            owners: self.owner_stack.clone(),
-            interaction,
-            action: Rc::new(RefCell::new(action)),
-            keyboard_step: Some(Rc::new(RefCell::new(keyboard_step))),
-            keyboard_focusable: true,
-            modal,
-            key_handlers,
-        });
+            |regs| &mut regs.pointer_targets,
+        );
     }
 
     pub(crate) fn ensure_active_pointer_drag_target_is_live(&mut self) {
@@ -3652,18 +4871,34 @@ impl SemanticCore {
             .pointer_targets
             .iter()
             .any(|target| Rc::ptr_eq(&target.action, active));
-        if !alive {
-            self.hit_test.active_pointer_drag_target = None;
-            self.hit_test.active_pointer_drag_signature = None;
-            self.clear_scrollbar_drag();
+        if alive {
+            return;
         }
+        // A re-record mints a fresh action `Rc` for the same slot — the drag
+        // survives while a target still claims the captured signature, exactly
+        // the re-resolution `sync_active_pointer_drag_target_after_layout`
+        // applies after layout. Only a slot that left the list (a retired
+        // owner, a gate that took the target out) drops the drag here.
+        if let Some((depth, order)) = self.hit_test.active_pointer_drag_signature
+            && let Some(target) = self.hit_test.pointer_targets.iter().find(|target| {
+                target.captures_drag && target.depth == depth && target.order == order
+            })
+        {
+            self.hit_test.active_pointer_drag_target = Some(Rc::clone(&target.action));
+            self.hit_test.active_pointer_drag_owner = target.owner.clone();
+            return;
+        }
+        self.hit_test.active_pointer_drag_target = None;
+        self.hit_test.active_pointer_drag_signature = None;
+        self.hit_test.active_pointer_drag_owner = Weak::new();
+        self.clear_scrollbar_drag();
     }
 
     /// Ends any in-flight scrollbar-thumb drag; the thumb draws widened while
     /// dragged, so ending one schedules a re-encode to restore it.
     fn clear_scrollbar_drag(&mut self) {
-        if self.hit_test.active_scrollbar_drag.take().is_some() {
-            self.request_refresh();
+        if let Some(drag) = self.hit_test.active_scrollbar_drag.take() {
+            Self::mark_owner(&drag.owner, Dirty::LAYOUT);
         }
     }
 
@@ -3672,13 +4907,15 @@ impl SemanticCore {
     }
 
     pub(crate) fn register_cursor_target_style(&mut self, bounds: kurbo::Rect, style: CursorStyle) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        self.hit_test
-            .cursor_targets
-            .push(CursorTarget { bounds, style });
+        self.register_retained(
+            CursorTarget {
+                bounds,
+                style,
+                owner: Weak::new(),
+            },
+            bounds,
+            |regs| &mut regs.cursor_targets,
+        );
     }
 
     pub(crate) fn register_hover_target(
@@ -3705,19 +4942,22 @@ impl SemanticCore {
         on_move: Option<HoverMoveAction>,
         on_exit: Option<HoverAction>,
     ) {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let (slot, _hovering) = self.hit_test.interaction.bind_hover(&key);
-        self.hit_test.hover_targets.push(HoverTarget {
+        let owner = self.registration_owner();
+        let (slot, _hovering) = self.hit_test.interaction.bind_hover(&key, &owner);
+        self.register_retained(
+            HoverTarget {
+                owner: Weak::new(),
+                bounds,
+                to_local: kurbo::Affine::IDENTITY,
+                slot,
+                handles,
+                on_enter,
+                on_move,
+                on_exit,
+            },
             bounds,
-            slot,
-            handles,
-            on_enter,
-            on_move,
-            on_exit,
-        });
+            |regs| &mut regs.hover_targets,
+        );
     }
 
     pub(crate) fn register_hover_enter_target<F>(
@@ -3761,32 +5001,51 @@ impl SemanticCore {
     ) where
         F: 'static + FnMut(f32, f32, bool) -> bool,
     {
-        if self.hit_test.hit_test_opacity <= HIT_TEST_ALPHA_THRESHOLD {
-            return;
-        }
-        let bounds = self.hit_test.clip_hit_bounds(bounds);
-        let order = self.hit_test.next_hit_test_order();
-        self.hit_test.scroll_targets.push(ScrollTarget {
+        // The registering node's cell — this call runs inside the scroll
+        // node's record under its reader, so `reader_cell()` is the owner a
+        // smoothed scroll tick marks.
+        let scroll_owner = self.registration_owner();
+        self.retained
+            .bind_scroll_owner(handle.cache_key(), &scroll_owner);
+        self.register_retained(
+            ScrollTarget {
+                bounds,
+                action: Rc::new(RefCell::new(action)),
+                handle,
+                owner: Rc::downgrade(&scroll_owner),
+                depth: self.render_depth,
+                order: 0,
+            },
             bounds,
-            action: Rc::new(RefCell::new(action)),
-            handle,
-            depth: self.render_depth,
-            order,
-        });
+            |regs| &mut regs.scroll_targets,
+        );
     }
 
-    /// Advances every scroll view's smoothed wheel scroll and reports whether
-    /// more animation frames are needed.
+    /// Advances every scroll view's smoothed wheel scroll or programmatic
+    /// run and reports whether this frame needs to run: a tick moved an
+    /// offset, or a glide still has frames to go.
+    ///
+    /// The tick that lands a glide moves the offset onto its target and ends
+    /// the glide in one step, so "still gliding" alone would leave the landed
+    /// offset unrendered — the touch fling's tick reports the same pair.
     #[expect(
         clippy::needless_pass_by_ref_mut,
         reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
     )]
     pub(crate) fn tick_smooth_scrolls(&mut self, now: Instant) -> bool {
-        let mut active = false;
+        let mut ticked = false;
         for target in &self.hit_test.scroll_targets {
-            active |= target.handle.tick_smooth_scroll(now);
+            let before = target.handle.metrics();
+            let gliding = target.handle.tick_smooth_scroll(now);
+            let after = target.handle.metrics();
+            let moved = before.offset_x.to_bits() != after.offset_x.to_bits()
+                || before.offset_y.to_bits() != after.offset_y.to_bits();
+            if moved && let Some(cell) = target.owner.upgrade() {
+                cell.mark(crate::renderer::Dirty::PAINT);
+            }
+            ticked |= moved || gliding;
         }
-        active
+        ticked
     }
 
     /// Whether any scroll view's smoothed wheel scroll is still gliding,
@@ -3796,6 +5055,90 @@ impl SemanticCore {
             .scroll_targets
             .iter()
             .any(|target| target.handle.is_smooth_scrolling())
+    }
+
+    /// The host's touch-drag scroll parameters for this window, carried by
+    /// value from `PlatformWindow::touch_scroll_config` each input
+    /// dispatch — `None` where the platform supplies none.
+    pub(crate) const fn set_touch_scroll_config(
+        &mut self,
+        config: Option<crate::platform::TouchScrollConfig>,
+    ) {
+        self.hit_test.touch_scroll_config = config;
+    }
+
+    /// Whether a touch press is still waiting out its touch delay.
+    #[cfg(test)]
+    pub(crate) const fn has_pending_pointer_press(&self) -> bool {
+        self.hit_test.pending_pointer_press.is_some()
+    }
+
+    /// Whether any scroll view still moves after a touch let go of it — a
+    /// fling decelerating toward rest or a stretch relaxing.
+    pub(crate) const fn has_active_touch_fling(&self) -> bool {
+        !self.hit_test.scroll_motions.is_empty()
+    }
+
+    /// The stretch intensities the scroll view keyed `key` shows: those of
+    /// the touch drag holding it, or of its caught or running motion —
+    /// zero when none does.
+    pub(crate) fn touch_stretch(&self, key: usize) -> kurbo::Vec2 {
+        let owns = |motion: &&ScrollMotion| motion.handle().cache_key() == key;
+        let gesture = match &self.hit_test.touch_scroll {
+            TouchScrollGesture::Dragging(drag) if drag.handle.cache_key() == key => {
+                drag.stretch.as_ref()
+            }
+            TouchScrollGesture::Pending(pending) => pending
+                .caught
+                .iter()
+                .find(owns)
+                .and_then(ScrollMotion::stretch),
+            TouchScrollGesture::Dragging(_) | TouchScrollGesture::Idle => None,
+        };
+        gesture
+            .or_else(|| {
+                self.hit_test
+                    .scroll_motions
+                    .iter()
+                    .find(owns)
+                    .and_then(ScrollMotion::stretch)
+            })
+            .map_or(kurbo::Vec2::ZERO, ScrollStretch::vector)
+    }
+
+    /// The stretch direction the scroll view `handle` draws its content
+    /// with — HWUI's `mStretchDirection` — or `None` while nothing visibly
+    /// stretches it.
+    pub(crate) fn scroll_stretch(
+        &self,
+        handle: &crate::scroll::ScrollHandle,
+    ) -> Option<kurbo::Vec2> {
+        shown_stretch(self.touch_stretch(handle.cache_key()))
+    }
+
+    /// Advances every running scroll motion to `now`; returns whether a
+    /// write or a continuation needs another frame. Each write marks its
+    /// motion's `ScrollTarget` owner — looked up through the registry —
+    /// not the root.
+    pub(crate) fn tick_touch_scroll(&mut self, now: Instant) -> bool {
+        let motions = core::mem::take(&mut self.hit_test.scroll_motions);
+        let mut needs_frame = false;
+        for mut motion in motions {
+            // A motion whose scroll view no registered target holds any
+            // more ends with it.
+            let Some(owner) = self.try_scroll_target_owner(motion.handle().cache_key()) else {
+                continue;
+            };
+            let tick = motion.tick(now);
+            if tick.changed {
+                Self::mark_owner(&owner, Dirty::LAYOUT);
+            }
+            if tick.running {
+                self.hit_test.scroll_motions.push(motion);
+            }
+            needs_frame |= tick.changed || tick.running;
+        }
+        needs_frame
     }
 }
 
@@ -3822,10 +5165,12 @@ mod tests {
         state.cursor_targets.push(CursorTarget {
             bounds: rect(0.0, 0.0, 100.0, 100.0),
             style: CursorStyle::PointingHand,
+            owner: Weak::new(),
         });
         state.cursor_targets.push(CursorTarget {
             bounds: rect(25.0, 25.0, 75.0, 75.0),
             style: CursorStyle::IBeam,
+            owner: Weak::new(),
         });
 
         // Inside both: the later (topmost-drawn) target wins.
@@ -3838,18 +5183,5 @@ mod tests {
             state.cursor_style_at(kurbo::Point::new(10.0, 10.0)),
             CursorStyle::PointingHand
         );
-    }
-
-    #[test]
-    fn hit_test_order_is_monotonic_and_resets_per_rebuild() {
-        let mut state = HitTestState::default();
-        assert_eq!(state.next_hit_test_order(), 0);
-        assert_eq!(state.next_hit_test_order(), 1);
-        // A scene reset keeps registration order monotonic (parametric
-        // refreshes append targets); only a structural rebuild restarts it.
-        state.reset_scene();
-        assert_eq!(state.next_hit_test_order(), 2);
-        state.begin_rebuild_frame();
-        assert_eq!(state.next_hit_test_order(), 0);
     }
 }

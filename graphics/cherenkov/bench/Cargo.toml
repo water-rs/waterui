@@ -14,16 +14,20 @@ workspace = true
 default = []
 vello-classic = ["dep:vello", "dep:vello_common", "dep:wgpu29", "dep:pollster", "dep:ash"]
 vello-hybrid = ["dep:vello_hybrid", "dep:vello_common", "dep:wgpu29", "dep:pollster", "dep:glifo", "dep:ash"]
-vello-cpu = ["dep:vello_cpu", "dep:vello_common"]
-# `skia-safe` backend features stay in the feature lists, not on the
-# dependency: `skia-bindings` downloads a prebuilt Skia keyed on the whole
-# enabled set, and only the published combos (e.g. `metal,graphite`) have
-# binaries — an ad-hoc `vulkan,ganesh,metal,graphite` set falls back to a
-# full Skia source build. `skia-bindings/no-compile` turns that fallback
-# into a panic so every bench build linking Skia must use the prebuilt
-# binaries.
-skia = ["dep:skia-safe", "dep:ash", "dep:skia-bindings", "skia-safe/vulkan", "skia-safe/ganesh"]
-skia-metal = ["dep:skia-safe", "dep:objc2", "dep:objc2-metal", "dep:skia-bindings", "skia-safe/metal", "skia-safe/graphite"]
+vello-cpu = ["dep:vello_cpu", "dep:vello_common", "vello_cpu/multithreading"]
+# The `skia`/`skia-metal` features select the adapters; `skia-safe`'s GPU
+# backend features come from same-name declarations under the target tables
+# below, never from `skia-safe/*` entries here: `skia-bindings` downloads a
+# prebuilt Skia keyed on the whole enabled feature set and publishes
+# per-platform combos only — `ganesh,vulkan` for Linux/Android,
+# `graphite,metal` for Apple, and no union of the two anywhere. With the
+# backends target-gated the same way the adapters' code already is,
+# `--all-features` resolves to the published key on every platform instead
+# of asking for `ganesh-graphite-metal-vulkan`, which has no binary
+# (#2691). `skia-bindings/no-compile` turns the source-build fallback into
+# a panic so every bench build linking Skia must use the prebuilt binaries.
+skia = ["dep:skia-safe", "dep:ash", "dep:skia-bindings"]
+skia-metal = ["dep:skia-safe", "dep:objc2", "dep:objc2-metal", "dep:skia-bindings"]
 # The platform-buffer producers `external-cost` uses are target-gated
 # below; their `dep:` entries resolve only on the matching target.
 cherenkov = [
@@ -42,7 +46,7 @@ cherenkov-scene = { path = "../scene" }
 cherenkov-oracle = { path = "../oracle" }
 filtrate = { path = "../../filtrate", optional = true }
 kurbo = "0.13"
-nami = { version = "0.11.1", default-features = false, features = ["std", "kurbo"] }
+nami = { version = "0.13", default-features = false, features = ["std", "kurbo"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Decodes `powermetrics --format plist` output for `measure --energy`.
@@ -86,9 +90,19 @@ libc = "0.2"
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-sys = { version = "0.6", optional = true }
 
+# The Skia GPU backend set for this target, declared on a second `skia-safe`
+# entry under the platform table: Cargo merges same-name declarations, so
+# whichever adapter feature enabled `dep:skia-safe` gets the prebuilt combo
+# that exists here — Ganesh/Vulkan for `skia-vulkan`'s platforms and
+# Graphite/Metal where `skia-metal` compiles. The backends deliberately stay
+# off the feature lists above: the union is what `--all-features` asks for.
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
+skia-safe = { version = "0.153", optional = true, features = ["vulkan", "ganesh"] }
+
 # `external-cost`'s `CVPixelBuffer`/`IOSurface` producer (#168) and
 # skia-metal's Metal handle plumbing.
 [target.'cfg(target_vendor = "apple")'.dependencies]
+skia-safe = { version = "0.153", optional = true, features = ["metal", "graphite"] }
 objc2 = { version = "0.6.3", optional = true, default-features = false }
 objc2-metal = { version = "0.3.2", optional = true, default-features = false, features = [
     "MTLDevice", "MTLCommandQueue", "MTLCommandBuffer",

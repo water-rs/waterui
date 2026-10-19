@@ -187,6 +187,10 @@ impl<T: LocalizedDisplay> Display for LocalizedArgument<'_, T> {
 /// ```
 #[cfg(feature = "list")]
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_structs,
+    reason = "formatting newtype over the borrowed list"
+)]
 pub struct LocalizedList<'a>(pub &'a [&'a str]);
 
 #[cfg(feature = "list")]

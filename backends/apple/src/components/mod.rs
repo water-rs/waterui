@@ -25,12 +25,14 @@ pub mod color_picker;
 pub mod container;
 #[cfg(feature = "context_menu")]
 pub mod context_menu;
-#[cfg(any(test, feature = "button", feature = "slider"))]
+#[cfg(any(test, feature = "slider", all(target_os = "macos", feature = "button")))]
 pub mod control_size;
 #[cfg(feature = "cursor")]
 pub mod cursor;
 #[cfg(feature = "date_picker")]
 pub mod date_picker;
+#[cfg(feature = "dialog")]
+pub mod dialog;
 #[cfg(feature = "draggable")]
 pub mod draggable;
 #[cfg(feature = "drop_destination")]
@@ -58,7 +60,7 @@ pub mod hittable;
 pub mod ignore_safe_area;
 #[cfg(feature = "image")]
 pub mod image;
-#[cfg(feature = "layer_transform")]
+#[cfg(macos_layer_transform)]
 pub mod layer_transform;
 #[cfg(feature = "layout_priority")]
 pub mod layout_priority;
@@ -128,6 +130,9 @@ pub mod text;
 pub mod text_field;
 #[cfg(feature = "toggle")]
 pub mod toggle;
+// Unconditional — like `empty`: `Metadata<TransitionSpec>` can be produced by
+// any view tree (`.transition(...)` lives on `View`), so no feature gates it.
+pub mod transition;
 #[cfg(any(feature = "video", feature = "video_player"))]
 pub mod video;
 #[cfg(feature = "view_renderer")]

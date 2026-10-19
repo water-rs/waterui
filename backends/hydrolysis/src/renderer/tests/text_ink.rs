@@ -1,11 +1,12 @@
 //! Text measure-versus-paint fidelity on the real font stack.
 //!
-//! `HeadlessRuntime::new_for_tests` shapes text with the bundled deterministic
-//! fonts, which measure snugly; a divergence between the measured advance and
-//! the painted ink extent only shows on the fonts the windowed runners load
-//! (system collection + `resources/fonts`, including fallback). These tests
-//! run the winit runner's font path via
-//! [`HeadlessRuntime::new_for_tests_native_fonts`].
+//! A test runtime shapes through the same collection the windowed runners
+//! load — system font discovery plus the staged `resources/fonts` directory —
+//! so a divergence between the measured advance and the painted ink extent
+//! shows on the faces an application actually draws with. The faces these
+//! tests name (`Pacifico`) must be installed on the host: the runtime
+//! resolves families strictly, so a missing one fails naming it instead of
+//! silently substituting another face.
 
 use std::time::Instant;
 
@@ -167,7 +168,7 @@ fn painted_ink_stays_within_measured_frame_native_fonts() {
         AnyView::new(vstack((pill, twin)).background(Srgb::from_hex("#0000FF")))
     });
 
-    let mut runtime = HeadlessRuntime::new_for_tests_native_fonts(
+    let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
         W,
@@ -245,7 +246,7 @@ fn painted_ink_stays_within_measured_frame_single_text() {
         )
     });
 
-    let mut runtime = HeadlessRuntime::new_for_tests_native_fonts(
+    let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
         W,
@@ -268,7 +269,7 @@ fn painted_ink_stays_within_measured_frame_single_text() {
 }
 
 /// Same invariant on a face whose outlines genuinely overhang the pen
-/// advance — the bundled Pacifico subset ('p' starts 0.119em left of the
+/// advance — the installed Pacifico face ('p' starts 0.119em left of the
 /// pen origin, 'y'/'f' end ~0.10em right of the advance) — so the check
 /// exercises real overhang on every host, not only where the platform's
 /// default face happens to overhang.
@@ -292,7 +293,7 @@ fn painted_ink_stays_within_measured_frame_overhang_font() {
         )
     });
 
-    let mut runtime = HeadlessRuntime::new_for_tests_native_fonts(
+    let mut runtime = HeadlessRuntime::new_for_tests(
         test_environment(),
         builder,
         W,
@@ -312,54 +313,4 @@ fn painted_ink_stays_within_measured_frame_overhang_font() {
         ix0 >= cx0 && ix1 <= cx1,
         "twin ink x {ix0}..={ix1} escapes measured frame x {cx0}..={cx1}"
     );
-}
-
-/// `GlyphMetrics::bounds` must agree with drawing the outline through
-/// `ControlBoundsPen` — the ink-extent measure substitutes the former (the
-/// `glyf` header bounds) for the latter, so they must report the same extents
-/// on a TrueType face with real overhang.
-#[test]
-fn glyph_bounds_fast_path_agrees_with_drawn_outline() {
-    use skrifa::instance::{LocationRef, Size};
-    use skrifa::outline::{DrawSettings, pen::ControlBoundsPen};
-    use skrifa::{FontRef, GlyphId, MetadataProvider};
-
-    let font = FontRef::new(include_bytes!("../../../test-fonts/PacificoSubset.ttf"))
-        .expect("bundled Pacifico subset parses");
-    // Both paths read the same font-unit extents; at a scaled size the header
-    // path rounds through FreeType's 16.16 fixed-point scale while the pen
-    // scales in float, so allow one font unit of rounding in pixels.
-    let location = LocationRef::default();
-    for size in [Size::unscaled(), Size::new(16.0)] {
-        let slack = size.ppem().map_or(1e-3, |ppem| {
-            ppem / f32::from(font.metrics(size, location).units_per_em) + 1e-3
-        });
-        let metrics = font.glyph_metrics(size, location);
-        let outlines = font.outline_glyphs();
-        let glyph_count = font.metrics(size, location).glyph_count;
-        for glyph_id in 0..glyph_count {
-            let glyph = GlyphId::new(u32::from(glyph_id));
-            let header = metrics.bounds(glyph);
-            let drawn = outlines.get(glyph).and_then(|outline| {
-                let mut pen = ControlBoundsPen::new();
-                outline
-                    .draw(DrawSettings::unhinted(size, location), &mut pen)
-                    .ok()?;
-                pen.bounding_box()
-            });
-            let (Some(header), Some(drawn)) = (header, drawn) else {
-                // A glyph with no drawn outline reports no ink either way.
-                continue;
-            };
-            assert!(
-                (header.x_min - drawn.x_min).abs() <= slack
-                    && (header.x_max - drawn.x_max).abs() <= slack,
-                "glyph {glyph_id} @ {size:?}: header x {}..={} vs drawn {}..={}",
-                header.x_min,
-                header.x_max,
-                drawn.x_min,
-                drawn.x_max
-            );
-        }
-    }
 }

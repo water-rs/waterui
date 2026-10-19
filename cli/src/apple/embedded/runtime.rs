@@ -80,13 +80,13 @@ impl RuntimeClosure {
 
     pub(super) async fn compose(
         &self,
-        host: &Host,
         platform: TargetPlatform,
         project: &crate::project::Project,
         archive: &Path,
         output: &Path,
         notices: &Path,
     ) -> Result<PathBuf> {
+        let host = project.host();
         let triple = platform.triple().to_string();
         if self.archives.is_empty() {
             return Ok(archive.to_path_buf());

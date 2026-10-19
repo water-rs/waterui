@@ -1,8 +1,9 @@
-//! Visitors over a filter's reactive parameters, and the offsetting
+//! Visitors over a filter's reactive parameters and links, and the offsetting
 //! wrappers [`Chain`](crate::Chain) uses to place its second half.
 
 use crate::{
-    AuxImage, ColorStage, FilterParam, ImageVisitor, Placed, SpatialStage, StageCollector,
+    AuxImage, ColorStage, FilterLink, FilterParam, ImageVisitor, LinkVisitor, Placed, SpatialStage,
+    StageCollector,
 };
 
 /// Sink for [`Filter::visit_signals`](crate::Filter::visit_signals).
@@ -73,5 +74,28 @@ impl<C: StageCollector + ?Sized> StageCollector for OffsetCollector<'_, C> {
 
     fn spatial(&mut self, stage: Placed<SpatialStage>) {
         self.inner.spatial(stage.shifted(self.params, self.images));
+    }
+}
+
+/// Places every visited link after `params` parameters and `images` images.
+pub struct OffsetLinks<'a, V: LinkVisitor + ?Sized> {
+    inner: &'a mut V,
+    params: usize,
+    images: usize,
+}
+
+impl<'a, V: LinkVisitor + ?Sized> OffsetLinks<'a, V> {
+    pub(crate) const fn new(inner: &'a mut V, params: usize, images: usize) -> Self {
+        Self {
+            inner,
+            params,
+            images,
+        }
+    }
+}
+
+impl<V: LinkVisitor + ?Sized> LinkVisitor for OffsetLinks<'_, V> {
+    fn link(&mut self, link: FilterLink<'_>) {
+        self.inner.link(link.shifted(self.params, self.images));
     }
 }

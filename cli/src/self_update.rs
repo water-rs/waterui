@@ -12,7 +12,7 @@
 //! [`check`] act on the answer.
 //!
 //! The passive check is a separate surface: [`passive_update_notice`] runs at
-//! most once per [`PASSIVE_CHECK_INTERVAL`], records the attempt in the CLI's
+//! most once per `PASSIVE_CHECK_INTERVAL`, records the attempt in the CLI's
 //! own state directory (`~/.water/config.toml`), and is silent on failure.
 
 use std::{
@@ -39,6 +39,13 @@ const APP_NAME: &str = env!("CARGO_PKG_NAME");
 const RELEASE_OWNER: &str = "water-rs";
 const RELEASE_REPO: &str = "waterui";
 
+/// The repository name every receipt written before the CLI's releases
+/// moved here records instead. water-rs/cli is archived now, so an install
+/// still pointing at it is remapped to [`github_release_source`] each time
+/// its receipt is loaded — once, until the first update under the new
+/// source rewrites the receipt.
+const ARCHIVED_RELEASE_REPO: &str = "cli";
+
 /// The refusal `water update` gives for a layout no channel claims — an
 /// unrecognized layout is an error with a clear message, not a guess.
 const UNKNOWN_INSTALL_MESSAGE: &str = "cannot determine how this `water` \
@@ -52,6 +59,7 @@ const PASSIVE_CHECK_INTERVAL: Duration = Duration::from_hours(24);
 /// The install channel the running `water` binary came through — the four
 /// rows the update path distinguishes before touching anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum InstallSource {
     /// A cargo-dist install receipt covers this executable; the release's own
     /// installer may rewrite it in place (`water update`).
@@ -132,6 +140,10 @@ impl InstallSource {
 
 /// What a completed `water update` leaves behind.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each update outcome variant by variant"
+)]
 pub enum UpdateOutcome {
     /// The release installer moved the binary between versions.
     Updated {
@@ -155,6 +167,7 @@ pub enum UpdateOutcome {
 
 /// The result of a `water update` operation.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct UpdateReport {
     /// The channel that owns the running executable.
     pub source: InstallSource,
@@ -166,6 +179,10 @@ pub struct UpdateReport {
 
 /// What `water update --check` reports.
 #[derive(Debug)]
+#[expect(
+    clippy::exhaustive_enums,
+    reason = "the terminal reports each update check outcome variant by variant"
+)]
 pub enum CheckOutcome {
     /// The running version is the newest the release source lists.
     UpToDate {
@@ -248,8 +265,8 @@ pub async fn check(host: &Host) -> Result<CheckOutcome> {
 /// under the Homebrew prefix, and `fallback` — the channel-appropriate cargo
 /// invocation the caller already selected — everywhere else.
 #[must_use]
-pub fn cli_update_command(fallback: &str) -> String {
-    match InstallSource::detect(&Host::current()) {
+pub fn cli_update_command(host: &Host, fallback: &str) -> String {
+    match InstallSource::detect(host) {
         Ok(InstallSource::Dist) => "water update".to_owned(),
         Ok(InstallSource::Homebrew) => "brew upgrade water".to_owned(),
         Ok(InstallSource::Cargo | InstallSource::Unknown) | Err(_) => fallback.to_owned(),
@@ -258,18 +275,17 @@ pub fn cli_update_command(fallback: &str) -> String {
 
 /// The passive version check behind every non-hot-path command.
 ///
-/// At most one release query per [`PASSIVE_CHECK_INTERVAL`], recorded in the
+/// At most one release query per `PASSIVE_CHECK_INTERVAL`, recorded in the
 /// CLI's state directory, silent on any failure. Returns the notice to print
 /// when a newer release exists, `None` otherwise.
 #[must_use]
-pub async fn passive_update_notice() -> Option<String> {
-    let host = Host::current();
-    let water_home = water_dir::water_home_dir_in(&host).ok()?;
+pub async fn passive_update_notice(host: &Host) -> Option<String> {
+    let water_home = water_dir::water_home_dir(host).ok()?;
     let mut config = water_dir::ensure_global_config_in(&water_home).await.ok()?;
     if !passive_check_due(config.last_update_check_unix_seconds, unix_now()) {
         return None;
     }
-    let notice = passive_notice_inner(&host).await;
+    let notice = passive_notice_inner(host).await;
     config.last_update_check_unix_seconds = Some(unix_now());
     if let Err(error) = water_dir::write_global_config_in(&water_home, &config).await {
         tracing::debug!("update check: failed to record the check timestamp: {error}");
@@ -319,9 +335,13 @@ fn passive_check_due(last_unix_seconds: Option<u64>, now_unix_seconds: u64) -> b
 
 /// Re-run the newest release's installer over the receipt-installed binary.
 async fn run_dist_update(host: &Host) -> Result<UpdateOutcome> {
+    let archived = receipt_records_archived_source(host)?;
     let mut updater = configured_updater(host);
     let result = unblock_axoupdater(move || async move {
         updater.load_receipt()?;
+        if archived {
+            updater.set_release_source(github_release_source());
+        }
         updater.run().await
     })
     .await
@@ -339,11 +359,15 @@ async fn run_dist_update(host: &Host) -> Result<UpdateOutcome> {
 
 /// The newest version the release source for `source` lists.
 async fn query_latest(host: &Host, source: InstallSource) -> Result<Version> {
+    let archived = source == InstallSource::Dist && receipt_records_archived_source(host)?;
     let mut updater = configured_updater(host);
     let latest = unblock_axoupdater(move || async move {
         match source {
             InstallSource::Dist => {
                 updater.load_receipt()?;
+                if archived {
+                    updater.set_release_source(github_release_source());
+                }
             }
             _ => {
                 updater.set_release_source(github_release_source());
@@ -409,10 +433,31 @@ fn current_version() -> Version {
         .expect("package version is semver")
 }
 
+/// Whether the install receipt records releases from `water-rs/cli` — the
+/// archived repository the CLI released from before the move. Each update's
+/// installer rewrites the receipt with the source it came from, so the
+/// remap is needed only until the first update under the new source
+/// (#1659).
+fn receipt_records_archived_source(host: &Host) -> Result<bool> {
+    let Some(facts) = read_receipt(host)? else {
+        return Ok(false);
+    };
+    Ok(facts.source.is_some_and(|source| {
+        source.owner == RELEASE_OWNER && source.name == ARCHIVED_RELEASE_REPO
+    }))
+}
+
 /// The `install_prefix` the first found install receipt records, or `None`
-/// when no receipt exists. A receipt that exists but cannot be read is an
-/// error — a corrupt receipt is not evidence of a different channel.
+/// when no receipt exists.
 fn receipt_install_prefix(host: &Host) -> Result<Option<PathBuf>> {
+    Ok(read_receipt(host)?.map(|facts| PathBuf::from(facts.install_prefix)))
+}
+
+/// The first install receipt in axoupdater's search order, parsed down to
+/// the fields this module reads, or `None` when no receipt exists. A
+/// receipt that exists but cannot be read is an error — a corrupt receipt
+/// is not evidence of a different channel.
+fn read_receipt(host: &Host) -> Result<Option<ReceiptFacts>> {
     for dir in receipt_dirs(host) {
         let path = dir.join(format!("{APP_NAME}-receipt.json"));
         if !path.is_file() {
@@ -421,18 +466,28 @@ fn receipt_install_prefix(host: &Host) -> Result<Option<PathBuf>> {
         let contents = std::fs::read_to_string(&path).wrap_err_with(|| {
             format!("the install receipt at {} cannot be read", path.display())
         })?;
-        let receipt: ReceiptPrefix = serde_json::from_str(&contents)
-            .wrap_err_with(|| format!("the install receipt at {} is invalid", path.display()))?;
-        return Ok(Some(PathBuf::from(receipt.install_prefix)));
+        return serde_json::from_str(&contents)
+            .wrap_err_with(|| format!("the install receipt at {} is invalid", path.display()))
+            .map(Some);
     }
     Ok(None)
 }
 
-/// The `install_prefix` a dist receipt records — the only field detection
-/// needs; axoupdater re-parses the whole receipt when it runs the update.
+/// The fields this module reads out of a dist receipt — `install_prefix`
+/// for channel detection and `source` for the archived-repository remap;
+/// axoupdater re-parses the whole receipt when it runs the update.
 #[derive(Deserialize)]
-struct ReceiptPrefix {
+struct ReceiptFacts {
     install_prefix: String,
+    source: Option<ReceiptSource>,
+}
+
+/// The `source` object a cargo-dist receipt records — the repository the
+/// installing release served from.
+#[derive(Deserialize)]
+struct ReceiptSource {
+    owner: String,
+    name: String,
 }
 
 /// The directories that may hold `<app>-receipt.json`, in axoupdater's own
@@ -475,10 +530,7 @@ fn homebrew_prefixes(host: &Host) -> Vec<PathBuf> {
     if let Some(prefix) = host.env_string("HOMEBREW_PREFIX") {
         prefixes.push(PathBuf::from(prefix));
     }
-    let paths = host.path_entries();
-    if !paths.is_empty()
-        && let Ok(path) = std::env::join_paths(&paths)
-        && let Ok(brew) = which::which_in("brew", Some(path), host.cwd())
+    if let Ok(brew) = host.which_blocking("brew")
         && let Some(prefix) = canonicalize_or_self(&brew).parent().and_then(Path::parent)
     {
         prefixes.push(prefix.to_path_buf());
@@ -530,9 +582,10 @@ mod tests {
     use super::*;
     use crate::toolchain::testing::TestMachine;
 
-    /// A realistic cargo-dist receipt body; detection reads only
-    /// `install_prefix` out of it.
-    fn receipt_json(install_prefix: &Path) -> String {
+    /// A realistic cargo-dist receipt body whose `source` names `repo`
+    /// under the `water-rs` owner; detection reads `install_prefix` out of
+    /// it, the archived-source remap reads `source`.
+    fn receipt_json(install_prefix: &Path, repo: &str) -> String {
         serde_json::json!({
             "binaries": ["water"],
             "install_layout": "cargo-home",
@@ -541,7 +594,7 @@ mod tests {
             "provider": { "source": "cargo-dist", "version": "0.30.2" },
             "source": {
                 "app_name": "waterui-cli",
-                "name": "cli",
+                "name": repo,
                 "owner": "water-rs",
                 "release_type": "github",
             },
@@ -550,10 +603,15 @@ mod tests {
         .to_string()
     }
 
-    /// Write a receipt for `install_prefix` where the platform's receipt
-    /// search finds it, and return the host vars that make it visible.
-    fn stage_receipt(machine: &TestMachine, install_prefix: &Path) -> Vec<(String, String)> {
-        let contents = receipt_json(install_prefix);
+    /// Write a receipt recording `repo` as its release repository for
+    /// `install_prefix` where the platform's receipt search finds it, and
+    /// return the host vars that make it visible.
+    fn stage_receipt_source(
+        machine: &TestMachine,
+        install_prefix: &Path,
+        repo: &str,
+    ) -> Vec<(String, String)> {
+        let contents = receipt_json(install_prefix, repo);
         if cfg!(windows) {
             let local = machine.dir("localappdata");
             machine.file(
@@ -572,6 +630,12 @@ mod tests {
             );
             Vec::new()
         }
+    }
+
+    /// Write a receipt the way every pre-move install left it — recording
+    /// the archived `water-rs/cli` repository as its release source.
+    fn stage_receipt(machine: &TestMachine, install_prefix: &Path) -> Vec<(String, String)> {
+        stage_receipt_source(machine, install_prefix, ARCHIVED_RELEASE_REPO)
     }
 
     /// A dist install receipt covering the executable — the self-update row.
@@ -728,6 +792,37 @@ mod tests {
         assert_eq!(InstallSource::Homebrew.label(), "Homebrew");
         assert_eq!(InstallSource::Cargo.label(), "cargo");
         assert_eq!(InstallSource::Unknown.label(), "unknown");
+    }
+
+    /// A receipt still pointing at the archived `water-rs/cli` repository
+    /// is remapped — the pre-move install the one-time migration covers.
+    #[test]
+    fn a_receipt_recording_the_archived_repository_is_remapped() {
+        let machine = TestMachine::new();
+        let install = machine.dir("install");
+        let vars = stage_receipt(&machine, &install);
+        let host = machine.host(vars);
+        assert!(receipt_records_archived_source(&host).unwrap());
+    }
+
+    /// A receipt already recording this repository keeps its own source —
+    /// post-move installs and every update the migration already rewrote.
+    #[test]
+    fn a_receipt_recording_this_repository_is_left_alone() {
+        let machine = TestMachine::new();
+        let install = machine.dir("install");
+        let vars = stage_receipt_source(&machine, &install, RELEASE_REPO);
+        let host = machine.host(vars);
+        assert!(!receipt_records_archived_source(&host).unwrap());
+    }
+
+    /// No receipt means no source to remap — a non-dist install queries
+    /// this repository's releases directly.
+    #[test]
+    fn no_receipt_is_not_the_archived_source() {
+        let machine = TestMachine::new();
+        let host = machine.host(Vec::<(String, String)>::new());
+        assert!(!receipt_records_archived_source(&host).unwrap());
     }
 
     /// The 24-hour gate: first check always runs, then once per interval.
