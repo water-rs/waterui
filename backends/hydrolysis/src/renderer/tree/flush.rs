@@ -773,7 +773,7 @@ impl RenderNode {
                         );
                         let viewport = renderer.current_placement();
                         viewport.set_content_offset(-offset);
-                        let stretch = renderer.scroll_stretch(&handle, viewport_rect);
+                        let stretch = renderer.scroll_stretch(&handle);
                         renderer.program().begin_inner(
                             viewport_rect,
                             offset,

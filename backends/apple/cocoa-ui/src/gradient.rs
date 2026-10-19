@@ -11,7 +11,9 @@ use objc2_core_graphics::{
     kCGColorSpaceExtendedLinearDisplayP3, kCGColorSpaceExtendedSRGB,
 };
 use objc2_foundation::{NSNull, NSObjectProtocol, NSString};
-use objc2_quartz_core::{CAAction, CALayer, CALayerDelegate};
+use objc2_quartz_core::{
+    CAAction, CADynamicRangeHigh, CALayer, CALayerDelegate, kCAContentsFormatRGBA16Float,
+};
 
 use crate::callback::guarded;
 use crate::geometry::{Point, Rect};
@@ -132,6 +134,16 @@ fn validate_stops(stops: &[GradientStop]) -> (Vec<f64>, Vec<f64>) {
         previous_location = Some(stop.location);
     }
     (components, locations)
+}
+
+/// Whether any stop carries a colour outside SDR: an RGB component above
+/// `1.0` is an HDR highlight; below `0.0` is a wide-gamut value the extended
+/// spaces encode. An unorm `RGBA8Uint` backing clamps both at rasterization.
+fn needs_extended_range(stops: &[GradientStop]) -> bool {
+    stops
+        .iter()
+        .flat_map(|stop| &stop.components[..3])
+        .any(|component| !(0.0..=1.0).contains(component))
 }
 
 fn shape_in_points(shape: &GradientShape, bounds: Rect) -> ShapeInPoints {
@@ -308,6 +320,21 @@ impl GradientLayer {
         .expect("Core Graphics must create a gradient from validated stops");
         let painter = Painter::new(mtm, gradient, paint.shape);
         let layer = CALayer::new();
+        if needs_extended_range(&paint.stops) {
+            // A delegate-drawn layer rasters into its backing store, and the
+            // default `RGBA8Uint` format clamps every channel to [0, 1] —
+            // HDR stops flatten to SDR white before the compositor ever sees
+            // them. A half-float backing preserves the values, and the High
+            // preference asks the display for EDR headroom; on an SDR display
+            // both are inert. An explicit `Metadata<StandardDynamicRange>`
+            // ancestor still overrides the preference — this is the paint's
+            // own range, not a subtree pin.
+            // SAFETY: the extern statics are immutable framework constants.
+            unsafe {
+                layer.setContentsFormat(kCAContentsFormatRGBA16Float);
+                layer.setPreferredDynamicRange(CADynamicRangeHigh);
+            }
+        }
         layer.setDelegate(Some(ProtocolObject::from_ref(&*painter)));
         layer.setNeedsDisplayOnBoundsChange(true);
         layer.setNeedsDisplay();
@@ -452,6 +479,41 @@ mod tests {
                 components: [0.0; 4],
             },
         ]);
+    }
+
+    #[test]
+    fn gradient_range_check_flags_only_out_of_range_rgb() {
+        let sdr = [
+            GradientStop {
+                location: 0.0,
+                components: [0.0, 0.5, 1.0, 1.0],
+            },
+            GradientStop {
+                location: 1.0,
+                components: [1.0, 1.0, 1.0, 1.0],
+            },
+        ];
+        assert!(!needs_extended_range(&sdr));
+
+        let hdr = [GradientStop {
+            location: 0.5,
+            components: [4.0, 4.0, 4.0, 1.0],
+        }];
+        assert!(needs_extended_range(&hdr));
+
+        let wide_gamut = [GradientStop {
+            location: 0.5,
+            components: [-0.2, 0.5, 0.5, 1.0],
+        }];
+        assert!(needs_extended_range(&wide_gamut));
+
+        // Alpha is compositing weight, not luminance — an out-of-range
+        // alpha alone does not make the paint extended-range.
+        let odd_alpha = [GradientStop {
+            location: 0.5,
+            components: [0.5, 0.5, 0.5, 2.0],
+        }];
+        assert!(!needs_extended_range(&odd_alpha));
     }
 
     #[test]

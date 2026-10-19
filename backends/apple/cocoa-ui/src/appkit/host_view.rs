@@ -14,8 +14,8 @@ use std::rc::Rc;
 
 use objc2::AnyThread;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::runtime::{ProtocolObject, Sel};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSDragOperation, NSDraggingInfo, NSEvent, NSScreen, NSTrackingArea, NSTrackingAreaOptions,
     NSView,
@@ -55,6 +55,9 @@ type MouseHandler = Rc<dyn Fn(&HostView, &NSEvent)>;
 type PointerHandler = Rc<dyn Fn(&HostView, PointerEvent) -> bool>;
 type KeyHandler = Rc<dyn Fn(&HostView, &KeyEvent) -> bool>;
 type RightMouseHandler = Rc<dyn Fn(&HostView, &NSEvent)>;
+/// The handler `accessibilityPerformPress` calls; its answer is whether
+/// the press was handled.
+type AccessibilityPressHandler = Rc<dyn Fn(&HostView) -> bool>;
 
 /// The handlers a [`HostView`] calls.
 #[derive(Default)]
@@ -82,6 +85,9 @@ pub struct HostViewIvars {
     tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
     key: RefCell<Option<KeyHandler>>,
     right_mouse: RefCell<Option<RightMouseHandler>>,
+    /// `accessibilityPerformPress` — installed when the mounted content is
+    /// operable through an assistive client's press action.
+    accessibility_press: RefCell<Option<AccessibilityPressHandler>>,
     /// `viewDidChangeBackingProperties` subscribers — backing-scale changes.
     backing_changed: RefCell<Option<WindowHandler>>,
     /// Whether the view's own content is laid out against its bounds — the
@@ -134,6 +140,10 @@ impl fmt::Debug for HostViewIvars {
             .field("tracking_area", &self.tracking_area.borrow().is_some())
             .field("key", &self.key.borrow().is_some())
             .field("right_mouse", &self.right_mouse.borrow().is_some())
+            .field(
+                "accessibility_press",
+                &self.accessibility_press.borrow().is_some(),
+            )
             .field("capturable", &self.capturable.get().is_some())
             .finish()
     }
@@ -536,6 +546,36 @@ define_class!(
             });
         }
 
+        // SAFETY: see the module safety note. Overriding the method is what
+        // puts `AXPress` in the element's action list — `AppKit` detects the
+        // override when an assistive client asks for `AXActions`.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press_override(&self) -> bool {
+            guarded("HostView accessibilityPerformPress", || {
+                if let Some(handler) = self.ivars().accessibility_press.borrow().clone() {
+                    return handler(self);
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), accessibilityPerformPress] }
+            })
+        }
+
+        // SAFETY: see the module safety note. The override above puts
+        // `AXPress` on every host that is an accessibility element; the
+        // action is allowed only while a press handler is installed, so a
+        // host that is an element for another reason (a role set through
+        // accessibility metadata) advertises no press it cannot perform.
+        #[unsafe(method(isAccessibilitySelectorAllowed:))]
+        fn is_accessibility_selector_allowed_override(&self, selector: Sel) -> bool {
+            guarded("HostView isAccessibilitySelectorAllowed:", || {
+                if selector == sel!(accessibilityPerformPress) {
+                    return self.ivars().accessibility_press.borrow().is_some();
+                }
+                // SAFETY: see the module safety note.
+                unsafe { msg_send![super(self), isAccessibilitySelectorAllowed: selector] }
+            })
+        }
+
         // SAFETY: see the module safety note.
         #[unsafe(method(rightMouseDown:))]
         fn right_mouse_down_override(&self, event: &NSEvent) {
@@ -663,6 +703,20 @@ impl HostView {
         self.ivars().right_mouse.replace(Some(Rc::new(handler)));
     }
 
+    /// Calls `handler` on `accessibilityPerformPress` — an assistive
+    /// client's press on this element — and reports its answer as whether
+    /// the press was handled, replacing any handler set before.
+    ///
+    /// Installing one is what makes the view operable: `AppKit` lists
+    /// `AXPress` in the element's actions for a class that overrides
+    /// `accessibilityPerformPress`, so the override alone puts the action
+    /// on the element and this handler decides what it does.
+    pub fn set_accessibility_press_handler(&self, handler: impl Fn(&Self) -> bool + 'static) {
+        self.ivars()
+            .accessibility_press
+            .replace(Some(Rc::new(handler)));
+    }
+
     /// Lets `handler` answer the view's intrinsic measurements,
     /// `fittingSize` and `intrinsicContentSize`, for a layout container.
     pub fn set_measure_handler(&self, handler: impl Fn(&Self, MeasureProposal) -> Size + 'static) {
@@ -683,7 +737,8 @@ impl HostView {
     /// than reaching state the owner released, and the handlers no longer
     /// keep that state alive: layout, resize, hit-test, backing-changed,
     /// window, superview, measure, primary content, scroll surface,
-    /// hidden, mouse, drop, pointer, key and right-mouse. The pointer
+    /// hidden, mouse, drop, pointer, key, right-mouse and
+    /// accessibility-press. The pointer
     /// tracking area is removed as well, since it exists only to serve the
     /// pointer handler.
     pub fn clear_handlers(&self) {
@@ -706,6 +761,7 @@ impl HostView {
         self.updateTrackingAreas();
         ivars.key.replace(None);
         ivars.right_mouse.replace(None);
+        ivars.accessibility_press.replace(None);
         ivars.backing_changed.replace(None);
     }
 

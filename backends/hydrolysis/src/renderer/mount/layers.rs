@@ -26,11 +26,13 @@ use super::backdrop::{
 use super::cell::NodeCell;
 use super::placement::Placement;
 use super::program::{
-    ChromeMaterial, InnerProgram, Item, MaterialRequest, ProducerContent, Program, RunKey,
-    SceneContentSource, ScopeKey, ScopeProps,
+    ChromeMaterial, InnerProgram, Item, LiveItem, MaterialRequest, ProducerContent, Program,
+    RunKey, SceneContentSource, ScopeKey, ScopeProps,
 };
+use super::stretch::{ShownStretch, StretchFilter};
 use super::target::LayerTarget;
 use crate::renderer::ProducerWake;
+use crate::renderer::chrome::LiveSource;
 use crate::renderer::recording::{LoweredResources, SolidRect};
 
 /// The liveness token of one node's layers: parents list children by
@@ -120,6 +122,19 @@ fn write_props<T: LayerTarget>(
     *written = props;
 }
 
+/// What a test reads off a scroll node's inner layer
+/// ([`NodeLayers::inner_stretch`]).
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InnerStretchProbe {
+    /// The clip's bounds in the inner layer's space.
+    pub clip: Option<kurbo::Rect>,
+    /// The filter the inner layer carries.
+    pub filter: Option<FilterId>,
+    /// The registered stretch filter and its last written parameters.
+    pub stretch: Option<(FilterId, [f32; 10])>,
+}
+
 /// One run of recorded content. The run at the head of a layer's list
 /// with no leading child is that layer's own content (`layer: None`).
 pub struct RunLayer {
@@ -144,6 +159,8 @@ pub struct ScopeLayer {
     /// The `ChromeMaterial` member layers inside the scope, in program
     /// order.
     members: Vec<MemberLayer>,
+    /// The live layers inside the scope, in program order.
+    lives: Vec<LiveLayer>,
     /// The anchor layers the scope's items lower — the same retention
     /// and registration contract the node's own list has. The `Rc`
     /// pins the scope's cell, so its `BackdropScope::Scoped` address
@@ -176,6 +193,18 @@ pub struct MemberLayer {
     membership: Option<MaterialMembership>,
 }
 
+/// A live item's layer (water-rs/waterui#1433): the content its source
+/// recorded, kept by the item's ordinal. The source is recorded once; a
+/// commit that lists the same source again only re-places the layer.
+pub struct LiveLayer {
+    ordinal: u32,
+    layer: Layer,
+    /// The transform last written to the layer.
+    transform: kurbo::Affine,
+    /// The source the layer's content was recorded from.
+    source: Option<Rc<dyn LiveSource>>,
+}
+
 /// A node's retained layers.
 pub struct NodeLayers {
     token: Rc<LayerToken>,
@@ -185,6 +214,10 @@ pub struct NodeLayers {
     frame_props: LayerProps,
     /// The scroll node's clipped, scrolled content layer.
     inner: Option<(Layer, LayerProps)>,
+    /// The overscroll stretch filter the inner layer draws with while it
+    /// stretches — registered on its first stretch, kept while the inner
+    /// layer lives.
+    inner_stretch: Option<StretchFilter>,
     /// A producer node's install layer.
     install: Option<(Layer, LayerProps)>,
     /// Whether `install` holds a GPU producer (the census counts them).
@@ -195,6 +228,10 @@ pub struct NodeLayers {
     members: Vec<MemberLayer>,
     /// The member layers of the scroll node's inner list.
     inner_members: Vec<MemberLayer>,
+    /// The live layers of the node's own item list.
+    lives: Vec<LiveLayer>,
+    /// The live layers of the scroll node's inner list.
+    inner_lives: Vec<LiveLayer>,
     scopes: Vec<ScopeLayer>,
     committed: Committed,
     inner_committed: Committed,
@@ -289,6 +326,21 @@ impl NodeLayers {
         self.inner.as_ref().map(|(inner, _)| inner.id())
     }
 
+    /// The inner layer's committed clip bounds and filter, with the stretch
+    /// filter's last written parameters — `None` without an inner layer.
+    #[cfg(test)]
+    pub(crate) fn inner_stretch(&self) -> Option<InnerStretchProbe> {
+        let (_, props) = self.inner.as_ref()?;
+        Some(InnerStretchProbe {
+            clip: props.clip.as_ref().map(ShapeData::bounds),
+            filter: props.filter,
+            stretch: self
+                .inner_stretch
+                .as_ref()
+                .map(|stretch| (stretch.id(), stretch.written())),
+        })
+    }
+
     /// The member's frame layer id when the node holds a backdrop-group
     /// membership — a test-facing answer.
     #[cfg(test)]
@@ -339,6 +391,8 @@ pub struct MountStats {
     pub scene_segments: u32,
     /// Live GPU-content installs.
     pub gpu_content: u32,
+    /// Live items recorded: a source a commit listed for the first time.
+    pub live_records: u64,
     /// Live frames carrying a filter.
     pub filtered: u32,
     /// Live clipped layers.
@@ -429,7 +483,15 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
         for member in scope.members {
             self.retire_member(member);
         }
+        for live in scope.lives {
+            self.retire_live(live);
+        }
         self.retire_layer(scope.layer);
+    }
+
+    fn retire_live(&mut self, live: LiveLayer) {
+        self.retire_layer(live.layer);
+        self.graveyard.push(Box::new(live.source));
     }
 
     fn retire_member(&mut self, member: MemberLayer) {
@@ -443,11 +505,14 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
         let NodeLayers {
             frame,
             inner,
+            inner_stretch,
             install,
             runs,
             inner_runs,
             members,
             inner_members,
+            lives,
+            inner_lives,
             scopes,
             anchors,
             anchor_keys,
@@ -469,6 +534,9 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
         for member in members.into_iter().chain(inner_members) {
             self.retire_member(member);
         }
+        for live in lives.into_iter().chain(inner_lives) {
+            self.retire_live(live);
+        }
         for scope in scopes {
             self.retire_scope(scope);
         }
@@ -476,7 +544,8 @@ impl<T: LayerTarget> CommitCx<'_, '_, '_, T> {
             self.retire_layer(layer);
         }
         self.retire_layer(frame);
-        self.graveyard.push(Box::new((content_held, material)));
+        self.graveyard
+            .push(Box::new((content_held, material, inner_stretch)));
     }
 }
 
@@ -689,6 +758,10 @@ fn census_runs(runs: &[RunLayer], stats: &mut MountStats) {
     }
 }
 
+fn census_lives(lives: &[LiveLayer], stats: &mut MountStats) {
+    stats.scene_layers += u32::try_from(lives.len()).expect("live layer count fits u32");
+}
+
 fn census_children(
     committed: &Committed,
     own: &Rc<LayerToken>,
@@ -728,6 +801,8 @@ fn census_node(retained: &NodeRetained, depth: u32, stats: &mut MountStats) {
     }
     census_runs(&layers.runs, stats);
     census_runs(&layers.inner_runs, stats);
+    census_lives(&layers.lives, stats);
+    census_lives(&layers.inner_lives, stats);
     census_children(&layers.committed, &layers.token, depth, stats);
     if let Some((_, props)) = &layers.inner {
         let inner = census_clip(props.clip.is_some(), depth, stats);
@@ -736,6 +811,7 @@ fn census_node(retained: &NodeRetained, depth: u32, stats: &mut MountStats) {
     for scope in &layers.scopes {
         let inner = census_clip(scope.props.clip.is_some(), depth, stats);
         census_runs(&scope.runs, stats);
+        census_lives(&scope.lives, stats);
         census_children(&scope.committed, &layers.token, inner, stats);
     }
 }
@@ -752,14 +828,16 @@ fn node_want<'a>(guard: &'a std::cell::Ref<'_, Option<NodeLayers>>) -> Want<'a> 
     }
 }
 
-fn gpu_content_pixels(
-    transform: kurbo::Affine,
-    bounds: kurbo::Rect,
-    display_scale: f64,
-) -> (u32, u32) {
+/// The install's device-pixel size under `transform` — the node's
+/// window-space transform. The root transform already maps layout points
+/// onto the target's pixel grid (`set_window_viewport`'s
+/// `Affine::scale(scale_factor)`), so the display scale lives in
+/// `transform` and must not be multiplied in again
+/// (water-rs/waterui#2935).
+fn gpu_content_pixels(transform: kurbo::Affine, bounds: kurbo::Rect) -> (u32, u32) {
     let [a, b, c, d, _, _] = transform.as_coeffs();
-    let x_scale = a.hypot(b) * display_scale;
-    let y_scale = c.hypot(d) * display_scale;
+    let x_scale = a.hypot(b);
+    let y_scale = c.hypot(d);
     #[expect(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -826,11 +904,14 @@ pub fn commit_cell<T: LayerTarget>(
                 frame,
                 frame_props: LayerProps::DEFAULT,
                 inner: None,
+                inner_stretch: None,
                 install: None,
                 runs: Vec::new(),
                 inner_runs: Vec::new(),
                 members: Vec::new(),
                 inner_members: Vec::new(),
+                lives: Vec::new(),
+                inner_lives: Vec::new(),
                 scopes: Vec::new(),
                 committed: Vec::new(),
                 inner_committed: Vec::new(),
@@ -855,6 +936,18 @@ pub fn commit_cell<T: LayerTarget>(
             ..layers.frame_props.clone()
         };
         write_props(cx.tx, &layers.frame, &mut layers.frame_props, props);
+        // A stretch the inner layer shows follows the node's device
+        // transform, which can move without the node re-lowering.
+        if let (Some((inner, inner_props)), Some(stretch)) =
+            (layers.inner.as_mut(), layers.inner_stretch.as_mut())
+        {
+            let world = cx.window_transform * cell.placement().resolved_transform(false);
+            let props = LayerProps {
+                filter: stretch.follow(world),
+                ..inner_props.clone()
+            };
+            write_props(cx.tx, inner, inner_props, props);
+        }
         // No program staged: the last lowered request still governs the
         // frame's material membership — re-key it when the mount's terms
         // (display scale) changed without a re-flush.
@@ -948,6 +1041,7 @@ fn lower_program<T: LayerTarget>(
     let mut scopes_new = Vec::new();
     lower_inner(
         cx,
+        cell,
         layers,
         inner.as_ref(),
         &mut scopes_old,
@@ -979,6 +1073,7 @@ fn lower_program<T: LayerTarget>(
         &mut layers.anchor_keys,
         &mut layers.runs,
         &mut layers.members,
+        &mut layers.lives,
         &mut scopes_old,
         &mut scopes_new,
         &mut layers.committed,
@@ -1032,10 +1127,11 @@ fn commit_material<T: LayerTarget>(
 }
 
 /// Lowers a scroll node's inner layer — clipped to the viewport, offset by
-/// its `ScrollOffset` and stretched by its overscroll stretch — or retires
-/// it when the node has none.
+/// its `ScrollOffset` and, while it stretches, filtered by the overscroll
+/// stretch in the viewport's frame — or retires it when the node has none.
 fn lower_inner<T: LayerTarget>(
     cx: &mut CommitCx<'_, '_, '_, T>,
+    cell: &Rc<NodeCell>,
     layers: &mut NodeLayers,
     inner: Option<&InnerProgram>,
     scopes_old: &mut Vec<ScopeLayer>,
@@ -1046,6 +1142,25 @@ fn lower_inner<T: LayerTarget>(
         if layers.inner.is_none() {
             layers.inner = Some((cx.layer(), LayerProps::DEFAULT));
         }
+        let filter = if let Some(direction) = inner.stretch {
+            let shown = ShownStretch {
+                viewport: inner.viewport,
+                direction,
+            };
+            let world = cx.window_transform * cell.placement().resolved_transform(false);
+            match &mut layers.inner_stretch {
+                Some(stretch) => stretch.show(shown, world),
+                None => {
+                    layers.inner_stretch = Some(StretchFilter::new::<T>(cx.host, shown, world));
+                }
+            }
+            layers.inner_stretch.as_ref().map(StretchFilter::id)
+        } else {
+            if let Some(stretch) = &mut layers.inner_stretch {
+                stretch.rest();
+            }
+            None
+        };
         let (inner_layer, inner_props) = layers
             .inner
             .as_mut()
@@ -1055,15 +1170,10 @@ fn lower_inner<T: LayerTarget>(
             inner_layer,
             inner_props,
             LayerProps {
-                // The clip sits in the layer's own space, which the
-                // stretch maps into the parent's: the inverse stretch of
-                // the viewport lands exactly on the viewport, so only the
-                // content stretches. The stretch is an axis-aligned scale,
-                // whose image of a rectangle is a rectangle.
-                clip: Some(ShapeData::of(
-                    &inner.stretch.inverse().transform_rect_bbox(inner.viewport),
-                )),
-                transform: inner.stretch,
+                // The stretch filter warps the content inside the clip; the
+                // viewport itself never moves.
+                clip: Some(ShapeData::of(&inner.viewport)),
+                filter,
                 scroll: inner.offset,
                 ..LayerProps::DEFAULT
             },
@@ -1077,6 +1187,7 @@ fn lower_inner<T: LayerTarget>(
             &mut layers.inner_anchor_keys,
             &mut layers.inner_runs,
             &mut layers.inner_members,
+            &mut layers.inner_lives,
             scopes_old,
             scopes_new,
             &mut layers.inner_committed,
@@ -1086,6 +1197,9 @@ fn lower_inner<T: LayerTarget>(
     } else {
         if let Some((layer, _)) = layers.inner.take() {
             cx.retire_layer(layer);
+        }
+        if let Some(stretch) = layers.inner_stretch.take() {
+            cx.graveyard.push(Box::new(stretch));
         }
         for (scope, canvas, layer) in std::mem::take(&mut layers.inner_anchor_keys) {
             cx.scope_anchors.remove(scope, canvas, layer);
@@ -1098,6 +1212,9 @@ fn lower_inner<T: LayerTarget>(
         }
         for member in std::mem::take(&mut layers.inner_members) {
             cx.retire_member(member);
+        }
+        for live in std::mem::take(&mut layers.inner_lives) {
+            cx.retire_live(live);
         }
         layers.inner_committed.clear();
     }
@@ -1230,7 +1347,7 @@ fn mount_gpu<T: LayerTarget>(
 ) {
     let fresh = ensure_install(cx, layers, true);
     let world = cx.window_transform * cell.placement().resolved_transform(false);
-    let pixels = gpu_content_pixels(world, bounds, cx.display_scale);
+    let pixels = gpu_content_pixels(world, bounds);
     let (install, props) = layers.install.as_mut().expect("install ensured");
     let mut runtime = runtime.borrow_mut();
     if fresh {
@@ -1302,6 +1419,8 @@ enum Slot {
     Scope(usize),
     /// A `ChromeMaterial` member layer: the index into `members`.
     Member(usize),
+    /// A live item's layer: the index into `lives`.
+    Live(usize),
     Node(Rc<NodeCell>),
     /// A `.material_group()` anchor item's layer, indexing `anchors`.
     Anchor(usize),
@@ -1340,6 +1459,7 @@ fn lower_list<T: LayerTarget>(
     anchor_keys: &mut Vec<(NonZeroU64, Option<LayerId>, LayerId)>,
     runs: &mut Vec<RunLayer>,
     members: &mut Vec<MemberLayer>,
+    lives: &mut Vec<LiveLayer>,
     scopes_old: &mut Vec<ScopeLayer>,
     scopes_new: &mut Vec<ScopeLayer>,
     committed: &mut Committed,
@@ -1357,6 +1477,7 @@ fn lower_list<T: LayerTarget>(
     let mut old_anchors = std::mem::take(anchors);
     let mut old_runs = std::mem::take(runs);
     let mut members_old = std::mem::take(members);
+    let mut lives_old = std::mem::take(lives);
     let had_own = old_runs.iter().any(|run| run.layer.is_none());
     let mut own_used = false;
     let keys: Vec<_> = items.iter().map(Item::key).collect();
@@ -1384,6 +1505,10 @@ fn lower_list<T: LayerTarget>(
             Item::Chrome(chrome) => {
                 let at = lower_chrome(cx, chrome, &mut members_old, members, token, canvas);
                 slots.push(Slot::Member(at));
+            }
+            Item::Live(live) => {
+                let at = lower_live(cx, live, &mut lives_old, lives);
+                slots.push(Slot::Live(at));
             }
             Item::Anchor(cell) => {
                 // A plain, empty layer at the scope's paint position —
@@ -1423,6 +1548,9 @@ fn lower_list<T: LayerTarget>(
     for member in members_old {
         cx.retire_member(member);
     }
+    for live in lives_old {
+        cx.retire_live(live);
+    }
     // Anchor items the last lowering carried but this one does not:
     // their registrations released at the top, and their layers leave
     // `wants` — the reconcile detaches them from the parent's child
@@ -1432,7 +1560,7 @@ fn lower_list<T: LayerTarget>(
     }
 
     commit_list_slots(
-        cx, parent, leading, &slots, anchors, runs, members, scopes_new, committed, token,
+        cx, parent, leading, &slots, anchors, runs, members, lives, scopes_new, committed, token,
     );
 }
 
@@ -1452,6 +1580,7 @@ fn commit_list_slots<T: LayerTarget>(
     anchors: &[(Rc<NodeCell>, Layer)],
     runs: &[RunLayer],
     members: &[MemberLayer],
+    lives: &[LiveLayer],
     scopes_new: &[ScopeLayer],
     committed: &mut Committed,
     token: &Rc<LayerToken>,
@@ -1497,6 +1626,15 @@ fn commit_list_slots<T: LayerTarget>(
             }
             Slot::Member(at) => {
                 let layer = &members[*at].layer;
+                Want {
+                    id: layer.id(),
+                    token: own.clone(),
+                    layer,
+                    attached: None,
+                }
+            }
+            Slot::Live(at) => {
+                let layer = &lives[*at].layer;
                 Want {
                     id: layer.id(),
                     token: own.clone(),
@@ -1564,6 +1702,48 @@ fn lower_run<T: LayerTarget>(
     run
 }
 
+/// Lowers one live item, kept by its ordinal across commits; returns its
+/// index in `lives`. The layer records the item's source only when it is
+/// not the source the layer already holds — a node re-recording around an
+/// unchanged source leaves its content, and every live operand bound into
+/// it, untouched.
+fn lower_live<T: LayerTarget>(
+    cx: &mut CommitCx<'_, '_, '_, T>,
+    item: &LiveItem,
+    lives_old: &mut Vec<LiveLayer>,
+    lives: &mut Vec<LiveLayer>,
+) -> usize {
+    let mut live = lives_old
+        .iter()
+        .position(|live| live.ordinal == item.ordinal)
+        .map_or_else(
+            || LiveLayer {
+                ordinal: item.ordinal,
+                layer: cx.layer(),
+                transform: kurbo::Affine::IDENTITY,
+                source: None,
+            },
+            |at| lives_old.remove(at),
+        );
+    if live.transform != item.transform {
+        cx.tx[&live.layer].transform(item.transform);
+        live.transform = item.transform;
+    }
+    let recorded = live
+        .source
+        .as_ref()
+        .is_some_and(|source| Rc::ptr_eq(source, &item.source));
+    if !recorded {
+        cx.tx[&live.layer].record(|recorder| item.source.record(recorder));
+        cx.stats.live_records += 1;
+        if let Some(old) = live.source.replace(Rc::clone(&item.source)) {
+            cx.graveyard.push(Box::new(old));
+        }
+    }
+    lives.push(live);
+    lives.len() - 1
+}
+
 /// Lowers one scope, kept by its key across commits; returns its index in
 /// `scopes_new`.
 fn lower_scope<T: LayerTarget>(
@@ -1585,6 +1765,7 @@ fn lower_scope<T: LayerTarget>(
                 props: LayerProps::DEFAULT,
                 runs: Vec::new(),
                 members: Vec::new(),
+                lives: Vec::new(),
                 anchors: Vec::new(),
                 anchor_keys: Vec::new(),
                 committed: Vec::new(),
@@ -1607,6 +1788,7 @@ fn lower_scope<T: LayerTarget>(
         layer,
         runs,
         members,
+        lives,
         committed,
         anchors,
         anchor_keys,
@@ -1621,6 +1803,7 @@ fn lower_scope<T: LayerTarget>(
         anchor_keys,
         runs,
         members,
+        lives,
         scopes_old,
         scopes_new,
         committed,

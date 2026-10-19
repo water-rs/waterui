@@ -12,13 +12,16 @@ use accesskit::{Action, ActionRequest, Node, NodeId, Role, TreeId, TreeUpdate};
 use nami::Binding;
 use nami::Signal as _;
 use waterui::ViewExt as _;
+use waterui::prelude::text;
 use waterui_controls::button::button;
-use waterui_controls::menu::CommandExt as _;
+use waterui_controls::menu::{CommandExt as _, Menu};
 use waterui_core::AnyView;
 use waterui_core::handler::AnyViewBuilder;
 use waterui_form::picker::color::ColorPicker;
+use waterui_form::picker::{Picker, PickerStyle};
 use waterui_graphics::Color;
 use waterui_layout::frame::Frame;
+use waterui_layout::spacer::spacer;
 use waterui_layout::stack::vstack;
 
 use super::{MinimalTestTheme, test_environment};
@@ -393,10 +396,27 @@ fn a_popup_only_change_publishes_the_merged_tree() {
 }
 
 /// Pumps until the runtime settles and returns the merged tree as of that
-/// settle — `None` when no window has ever produced one.
-fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<TreeUpdate> {
-    for _ in 0..64 {
-        let _ = runtime.pump_at(false, Instant::now());
+/// settle — `None` when no window has ever produced one — plus the last
+/// frame instant pumped, so a caller that keeps pumping continues the same
+/// clock.
+///
+/// The clock is virtual, not wall: iteration `i` stamps its frame
+/// `i * 16ms` after `start`, so an interaction animation the preceding
+/// input armed crosses its horizon inside the loop instead of racing real
+/// time. Wall-clock stamps leave `is_settled` chasing the animation's real
+/// duration — the loop ends on its iteration cap while the fade is still
+/// in flight, and the next pump renders that frame and publishes a tree
+/// update a "clean" pump must not have (water-rs/waterui#1969 — the race
+/// #2499 fixed for `a_window_with_a_pending_frame_is_not_settled`, on the
+/// settle loop this test shares).
+fn pump_until_settled(
+    runtime: &mut HeadlessRuntime,
+    start: Instant,
+) -> (Option<TreeUpdate>, Instant) {
+    let mut at = start;
+    for i in 0..64u32 {
+        at = start + Duration::from_millis(16) * i;
+        let _ = runtime.pump_at(false, at);
         if runtime.is_settled() {
             break;
         }
@@ -405,7 +425,7 @@ fn pump_until_settled(runtime: &mut HeadlessRuntime) -> Option<TreeUpdate> {
         !runtime.has_pending_semantic_update(),
         "headless runtime never settled"
     );
-    runtime.accessibility_tree()
+    (runtime.accessibility_tree(), at)
 }
 
 /// `tree_update` is the "the tree changed" signal: a pump where no window —
@@ -432,10 +452,11 @@ fn a_clean_pump_publishes_no_tree_update() {
         MinimalTestTheme::default(),
     );
 
-    let update = pump_until_settled(&mut runtime)
-        .expect("the first frame must publish an accessibility tree");
+    let (update, mut now) = pump_until_settled(&mut runtime, Instant::now());
+    let update = update.expect("the first frame must publish an accessibility tree");
+    now += Duration::from_millis(16);
     assert!(
-        runtime.pump_at(false, Instant::now()).tree_update.is_none(),
+        runtime.pump_at(false, now).tree_update.is_none(),
         "a settled pump with no popup must publish nothing"
     );
 
@@ -455,14 +476,20 @@ fn a_clean_pump_publishes_no_tree_update() {
     ) {
         runtime.push_input_event(event);
     }
-    let update =
-        pump_until_settled(&mut runtime).expect("the click frame must publish the merged tree");
+    // The secondary click rests the pointer on the host button, arming its
+    // hover fade-in: the settle loop must run on the virtual clock or the
+    // fade is still in flight at the "clean pump" check (see the helper).
+    let (update, last) = pump_until_settled(&mut runtime, now);
+    let update = update.expect("the click frame must publish the merged tree");
     assert!(
         find_by_label(&update, Role::Button, "Copy").is_some(),
         "the menu's window must be merged before the clean-pump check"
     );
     assert!(
-        runtime.pump_at(false, Instant::now()).tree_update.is_none(),
+        runtime
+            .pump_at(false, last + Duration::from_millis(16))
+            .tree_update
+            .is_none(),
         "a settled pump with an open popup must publish nothing"
     );
 }
@@ -726,4 +753,154 @@ fn a_pen_hold_behaves_like_a_touch_hold() {
         0,
         "the press the menu claimed must not commit a tap on release"
     );
+}
+
+// ---------------------------------------------------------------------------
+// water-rs/waterui#2747: an accessibility-activated popup anchors at the
+// control's window-space bottom edge — the same anchor the pointer path
+// opens. Anchoring at the node's own local rect mounts the window at the
+// origin instead.
+// ---------------------------------------------------------------------------
+
+/// A menu trigger and a menu picker pushed to the window's bottom edge by a
+/// spacer: activating each through its `Click` action mounts the popup under
+/// the control, not under the origin.
+#[test]
+fn an_accessibility_activated_popup_anchors_under_the_control() {
+    let selection = Binding::i32(0);
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        let selection = selection.clone();
+        AnyView::new(vstack((
+            spacer(),
+            Menu::new("File", "Copy".action(|| {})),
+            Picker::new(
+                "Mode",
+                vec![text("One").tag(0), text("Two").tag(1)],
+                &selection,
+            )
+            .style(PickerStyle::Menu),
+        )))
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        480,
+        320,
+        MinimalTestTheme::default(),
+    );
+
+    let update = runtime
+        .pump_at(false, Instant::now())
+        .tree_update
+        .expect("the first frame must publish an accessibility tree");
+
+    // The menu trigger's popup window inflates by the panel margin on every
+    // side, so its frame origin sits one margin up-and-left of the anchor.
+    let (menu_id, menu_node) = find_by_label(&update, Role::Button, "File")
+        .expect("the menu trigger must emit a button node");
+    let trigger = menu_node.bounds().expect("the trigger carries bounds");
+    assert!(
+        trigger.y0 > 0.0,
+        "the trigger must sit away from the window origin for the anchor to differ"
+    );
+    assert!(
+        act(&mut runtime, Action::Click, menu_id),
+        "activating the menu trigger must be handled"
+    );
+    let _ = runtime.pump_at(false, Instant::now());
+    let frames = runtime.popup_frames();
+    let [frame] = frames.as_slice() else {
+        panic!("the menu activation must mount one popup window, got {frames:?}")
+    };
+    approx::assert_relative_eq!(f64::from(frame.x()), trigger.x0 - 14.0, epsilon = 0.5);
+    approx::assert_relative_eq!(f64::from(frame.y()), trigger.y1 - 14.0, epsilon = 0.5);
+
+    // The picker's popup frames exactly at the anchor: the field's
+    // bottom-left corner in window space.
+    let (picker_id, picker_node) = find_by_label(&update, Role::ComboBox, "Mode")
+        .expect("the menu picker must emit a combo box node");
+    let field = picker_node.bounds().expect("the picker carries bounds");
+    assert!(
+        field.y0 > 0.0,
+        "the field must sit away from the window origin for the anchor to differ"
+    );
+    assert!(
+        act(&mut runtime, Action::Click, picker_id),
+        "activating the picker must be handled"
+    );
+    let _ = runtime.pump_at(false, Instant::now());
+    let frames = runtime.popup_frames();
+    let [frame] = frames.as_slice() else {
+        panic!("the picker activation must mount one popup window, got {frames:?}")
+    };
+    approx::assert_relative_eq!(f64::from(frame.x()), field.x0, epsilon = 0.5);
+    approx::assert_relative_eq!(f64::from(frame.y()), field.y1, epsilon = 0.5);
+}
+
+/// The pointer activation of the same picker anchors identically: a click on
+/// the field mounts the popup under the field's window-space bottom edge.
+#[test]
+fn a_pointer_activated_picker_menu_anchors_under_the_field() {
+    let selection = Binding::i32(0);
+    let builder = AnyViewBuilder::<AnyView>::new(move || {
+        let selection = selection.clone();
+        AnyView::new(vstack((
+            spacer(),
+            Picker::new(
+                "Mode",
+                vec![text("One").tag(0), text("Two").tag(1)],
+                &selection,
+            )
+            .style(PickerStyle::Menu),
+        )))
+    });
+    let mut runtime = HeadlessRuntime::new_for_tests(
+        test_environment(),
+        builder,
+        480,
+        320,
+        MinimalTestTheme::default(),
+    );
+
+    let update = runtime
+        .pump_at(false, Instant::now())
+        .tree_update
+        .expect("the first frame must publish an accessibility tree");
+    let (_, picker_node) = find_by_label(&update, Role::ComboBox, "Mode")
+        .expect("the menu picker must emit a combo box node");
+    let field = picker_node.bounds().expect("the picker carries bounds");
+    assert!(
+        field.y0 > 0.0,
+        "the field must sit away from the window origin for the anchor to differ"
+    );
+
+    let (x, y) = (
+        crate::num_cast::f64_as_f32(f64::midpoint(field.x0, field.x1)),
+        crate::num_cast::f64_as_f32(f64::midpoint(field.y0, field.y1)),
+    );
+    for event in [
+        InputEvent::PointerDown {
+            id: 1,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+            button: PointerButton::Primary,
+        },
+        InputEvent::PointerUp {
+            id: 1,
+            kind: PointerKind::Mouse,
+            x,
+            y,
+            button: PointerButton::Primary,
+        },
+    ] {
+        runtime.push_input_event(event);
+    }
+    let _ = runtime.pump_at(false, Instant::now());
+    let frames = runtime.popup_frames();
+    let [frame] = frames.as_slice() else {
+        panic!("the field click must mount one popup window, got {frames:?}")
+    };
+    approx::assert_relative_eq!(f64::from(frame.x()), field.x0, epsilon = 0.5);
+    approx::assert_relative_eq!(f64::from(frame.y()), field.y1, epsilon = 0.5);
 }

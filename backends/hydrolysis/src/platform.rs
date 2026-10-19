@@ -1956,6 +1956,13 @@ fn hydrolysis_backend_tiers() -> Vec<wgpu::Backends> {
 fn hydrolysis_instance_descriptor(backends: wgpu::Backends) -> wgpu::InstanceDescriptor {
     let mut descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
     descriptor.backends = backends;
+    // Cherenkov's shaders need DXC; wgpu's default `Auto` silently falls
+    // back to FXC when `dxcompiler.dll` does not load, and FXC cannot
+    // compile them (#1713). Requiring DXC makes wgpu drop the DirectX 12
+    // backend instead, so another backend's adapter is selected, or the
+    // no-adapter failure names the missing runtime.
+    descriptor.backend_options.dx12.shader_compiler =
+        wgpu::Dx12Compiler::default_dynamic_dxc().with_env();
     descriptor
 }
 
@@ -2041,7 +2048,13 @@ fn fail_no_adapter(context: &str, inspected_adapters: Vec<String>, tiers: &[wgpu
     assert!(
         !inspected_adapters.is_empty(),
         "{context}: failed to find a surface-compatible wgpu adapter across the probed backends {tiers:?}. \
-    Set WGPU_BACKEND to an available backend or install/update the platform GPU driver."
+    Set WGPU_BACKEND to an available backend or install/update the platform GPU driver.{}",
+        if cfg!(windows) {
+            " DirectX 12 is only offered when the DXC runtime (dxcompiler.dll) loads: \
+`water run` stages it beside the binary and `water doctor` installs it."
+        } else {
+            ""
+        }
     );
 
     panic!(

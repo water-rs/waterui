@@ -40,14 +40,12 @@ use std::rc::Rc;
 
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, Bool, ProtocolObject};
-use objc2::{
-    DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
-};
+use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send};
 use objc2_app_kit::{
     NSAccessibilityIndexAttribute, NSAccessibilityRoleAttribute, NSAccessibilityRowRole,
-    NSBezelStyle, NSButton, NSColor, NSControlTextEditingDelegate,
-    NSDragOperation, NSDraggingInfo, NSFont, NSLayoutConstraint, NSPasteboardItem, NSPasteboardType,
-    NSPasteboardWriting, NSRectFill, NSScrollView, NSTableColumn, NSTableRowView, NSTableView,
+    NSBezelStyle, NSButton, NSColor, NSControlTextEditingDelegate, NSDragOperation, NSDraggingInfo,
+    NSFont, NSLayoutConstraint, NSPasteboardItem, NSPasteboardType, NSPasteboardWriting,
+    NSRectFill, NSScrollView, NSTableColumn, NSTableRowView, NSTableView,
     NSTableViewAnimationOptions, NSTableViewDataSource, NSTableViewDelegate,
     NSTableViewDropOperation, NSTableViewSelectionHighlightStyle, NSTableViewStyle, NSTextField,
     NSView,
@@ -267,8 +265,7 @@ impl InnerTable {
             .to_vec()
             .into_iter()
             .filter(|element| {
-                row_index(element)
-                    .is_none_or(|row| self.exposes_row(row, keep_selected))
+                row_index(element).is_none_or(|row| self.exposes_row(row, keep_selected))
             })
             .collect();
         NSArray::from_retained_slice(&exposed)
@@ -280,9 +277,7 @@ impl InnerTable {
     fn exposes_row(&self, row: NSInteger, keep_selected: bool) -> bool {
         row >= 0
             && row < self.numberOfRows()
-            && (self
-                .rowViewAtRow_makeIfNecessary(row, false)
-                .is_some()
+            && (self.rowViewAtRow_makeIfNecessary(row, false).is_some()
                 || (keep_selected && self.isRowSelected(row)))
     }
 }
@@ -296,9 +291,8 @@ fn row_index(element: &AnyObject) -> Option<NSInteger> {
     // attribute getters, not the modern `accessibilityRole` /
     // `accessibilityIndex` selectors, so the attributes are queried
     // directly.
-    let role: Option<Retained<AnyObject>> = unsafe {
-        msg_send![element, accessibilityAttributeValue: NSAccessibilityRoleAttribute]
-    };
+    let role: Option<Retained<AnyObject>> =
+        unsafe { msg_send![element, accessibilityAttributeValue: NSAccessibilityRoleAttribute] };
     let is_row = role
         .and_then(|role| role.downcast::<NSString>().ok())
         // SAFETY: the role attribute constant is a plain `NSString` static.
@@ -307,9 +301,8 @@ fn row_index(element: &AnyObject) -> Option<NSInteger> {
         return None;
     }
     // SAFETY: the same generic getter, for the row's index attribute.
-    let index: Option<Retained<AnyObject>> = unsafe {
-        msg_send![element, accessibilityAttributeValue: NSAccessibilityIndexAttribute]
-    };
+    let index: Option<Retained<AnyObject>> =
+        unsafe { msg_send![element, accessibilityAttributeValue: NSAccessibilityIndexAttribute] };
     index.and_then(|index| {
         // SAFETY: the index attribute is vended as an `NSNumber`.
         let index: NSInteger = unsafe { msg_send![&*index, integerValue] };

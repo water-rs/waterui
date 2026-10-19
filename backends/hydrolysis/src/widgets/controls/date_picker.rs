@@ -104,11 +104,7 @@ pub fn date_picker_accessibility(
             node.add_action(AccessibilityAction::SetValue);
         }
         let origin = ctx.map(|ctx| {
-            let bounds = ctx.bounds;
-            waterui_core::layout::Point::new(
-                crate::num_cast::f64_as_f32(bounds.x0),
-                crate::num_cast::f64_as_f32(bounds.y1),
-            )
+            crate::widgets::util::popup_anchor(renderer.resolve_window_rect(ctx.bounds))
         });
         if let Some(node_id) = renderer.register_accessibility_leaf(
             ctx,
@@ -310,10 +306,9 @@ pub fn render_date_picker_parts(
         text_bounds,
     );
 
-    let origin = waterui_core::layout::Point::new(
-        crate::num_cast::f64_as_f32(hit_bounds.x0),
-        crate::num_cast::f64_as_f32(hit_bounds.y1),
-    );
+    // The popup anchors in window space at the field's bottom edge.
+    let origin =
+        crate::widgets::util::popup_anchor(ctx.renderer_mut().resolve_window_rect(hit_bounds));
     // The popup opens in the picker's environment layered over the
     // dispatch's (water-rs/hydrolysis#140).
     let picker_env = env.clone();

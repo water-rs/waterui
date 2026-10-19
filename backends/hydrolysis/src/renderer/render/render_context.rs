@@ -195,6 +195,16 @@ impl<'a> WidgetRenderContext<'a> {
         self.renderer.draw_context(ctx, body);
     }
 
+    /// Lists `source` as a live item at this point of the widget's record
+    /// ([`HydrolysisRenderer::push_live`]).
+    pub(crate) fn push_live(
+        &mut self,
+        source: &std::rc::Rc<dyn crate::renderer::chrome::LiveSource>,
+    ) {
+        let ctx = self.render_context();
+        self.renderer.push_live(ctx, source);
+    }
+
     pub(crate) fn state_mut(&mut self) -> &mut HydroState {
         &mut self.renderer.state
     }

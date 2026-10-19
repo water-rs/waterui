@@ -267,14 +267,25 @@ fn expand(parsed: &Tsx, caller: Option<&Path>) -> syn::Result<TokenStream2> {
     let hash = quote!(<#props_type as #schema::TsProps>::CONTRACT_HASH);
     let meta_doc = format!("The mount of `{module}`, read back by the `water` CLI.");
 
+    let meta_name = meta.to_string();
+
     Ok(quote! {
         {
+            const ENCODED: [u8; #schema::mount_encoded_len(#module, #name, #hash) + 1] =
+                #schema::encode_mount(#module, #name, #hash);
+            const RECORD_LEN: usize = #meta_name.len() + ENCODED.len() + 2;
+
+            // The record lives in the metadata directory section and names
+            // itself (`name`, NUL, `payload`, NUL), which needs no symbol
+            // table: a linked MSVC image carries none.
             #[doc = #meta_doc]
             #[cfg(debug_assertions)]
             #[used]
             #[allow(non_upper_case_globals)]
-            static #meta: [u8; #schema::mount_encoded_len(#module, #name, #hash) + 1] =
-                #schema::encode_mount(#module, #name, #hash);
+            #[cfg_attr(not(target_vendor = "apple"), unsafe(link_section = ".wmeta"))]
+            #[cfg_attr(target_vendor = "apple", unsafe(link_section = "__DATA,__wmeta"))]
+            static #meta: [u8; RECORD_LEN] =
+                #schema::dir_entry::<RECORD_LEN>(#meta_name.as_bytes(), &ENCODED);
 
             #ts::Mount::new::<#props_type>(#module, #props_value)
         }
@@ -330,13 +341,22 @@ mod tests {
             .expect_err("the fixture does not exist");
         let message = error.to_string();
         assert!(message.contains("./promo.tsx"), "{message}");
-        assert!(message.contains("src/promo.tsx"), "{message}");
+        // The resolved path is rendered with the host's separators, so the
+        // expected suffix is joined the same way rather than spelled with `/`.
+        let resolved = Path::new("src").join("promo.tsx");
+        assert!(
+            message.contains(&resolved.display().to_string()),
+            "{message}"
+        );
     }
 
     #[test]
     fn an_absolute_path_is_refused() {
         let caller = manifest().join("src/tsx.rs");
-        let error = module_id(&literal("/etc/hosts"), &caller, manifest())
+        // The manifest path is absolute on every host; `/etc/hosts` is not —
+        // Windows reads it as drive-relative.
+        let absolute = manifest().join("src/lib.rs");
+        let error = module_id(&literal(&absolute.to_string_lossy()), &caller, manifest())
             .expect_err("a module is named relative to its mount site");
         assert!(error.to_string().contains("absolute"), "{error}");
     }

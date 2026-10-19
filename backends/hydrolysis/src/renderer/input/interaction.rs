@@ -237,13 +237,19 @@ impl InteractionEngine {
         clippy::needless_pass_by_ref_mut,
         reason = "the mutable borrow is required by the shared signature even though this implementation does not mutate it"
     )]
-    pub(crate) fn begin_press(&mut self, slot: &PressSlot, origin: kurbo::Point, now: Instant) {
+    pub(crate) fn begin_press(
+        &mut self,
+        slot: &PressSlot,
+        origin: kurbo::Point,
+        local_origin: Option<kurbo::Point>,
+        now: Instant,
+    ) {
         if let Some(handles) = self
             .states
             .get(&slot.key)
             .and_then(|state| state.handles.as_ref())
         {
-            handles.begin_press(origin, now);
+            handles.begin_press(origin, local_origin, now);
         }
     }
 
@@ -257,12 +263,18 @@ impl InteractionEngine {
             if let Some(handles) = &state.handles
                 && handles.release(now)
             {
-                clear.visual_changed = true;
-                if handles.chrome_state_dependent() {
-                    clear.chrome_changed = true;
-                    clear.chrome_keys.push(key.clone());
-                } else {
-                    clear.paint_keys.push(key.clone());
+                match handles.repaint() {
+                    Some(bits) if bits == crate::renderer::mount::Dirty::LAYOUT => {
+                        clear.visual_changed = true;
+                        clear.chrome_changed = true;
+                        clear.chrome_keys.push(key.clone());
+                    }
+                    Some(_) => {
+                        clear.visual_changed = true;
+                        clear.paint_keys.push(key.clone());
+                    }
+                    // Engine-realized chrome: live operands only.
+                    None => {}
                 }
             }
         }
@@ -270,9 +282,23 @@ impl InteractionEngine {
     }
 
     pub(crate) fn handles_for(&self, slot: &PressSlot) -> Option<Rc<InteractionLayerHandles>> {
+        self.handles_for_key(&slot.key)
+    }
+
+    /// Every bound control's live chrome.
+    #[cfg(test)]
+    pub(crate) fn live_chromes(&self) -> Vec<Rc<crate::renderer::chrome::LiveChrome>> {
         self.states
-            .get(&slot.key)
-            .and_then(|state| state.handles.clone())
+            .values()
+            .filter_map(|state| state.handles.as_ref()?.live_chrome())
+            .collect()
+    }
+
+    pub(crate) fn handles_for_key(
+        &self,
+        key: &InteractionKey,
+    ) -> Option<Rc<InteractionLayerHandles>> {
+        self.states.get(key).and_then(|state| state.handles.clone())
     }
 
     #[expect(
@@ -590,7 +616,7 @@ mod tests {
             };
 
         let (_, slot, _) = bind(&mut engine, &mut controller, started);
-        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), started);
+        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), None, started);
 
         // Release after the grow completed (test grow: 225ms linear); the
         // minimum press duration (75ms) has elapsed, so the release applies
@@ -656,7 +682,7 @@ mod tests {
             };
 
         let (_, slot, _) = bind(&mut engine, &mut controller, started);
-        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), started);
+        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), None, started);
 
         // Quick tap: released long before the grow (225ms) finishes.
         engine.clear_all_presses(started + Duration::from_millis(40));
@@ -664,7 +690,7 @@ mod tests {
         // Re-press at a different point while the first wave is mid-flight.
         let repressed = started + Duration::from_millis(100);
         let (_, slot, _) = bind(&mut engine, &mut controller, repressed);
-        engine.begin_press(&slot, kurbo::Point::new(80.0, 30.0), repressed);
+        engine.begin_press(&slot, kurbo::Point::new(80.0, 30.0), None, repressed);
 
         // Both waves are visible: the released first wave keeps its own grow
         // progress and origin while the fresh wave starts over from zero.
@@ -744,7 +770,7 @@ mod tests {
         // Hovered and mid-press, then the widget becomes disabled: the
         // sampled state comes to rest immediately and carries the flag.
         let (_, slot, _) = bind(&mut engine, &mut controller, started, true, false);
-        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), started);
+        engine.begin_press(&slot, kurbo::Point::new(10.0, 10.0), None, started);
 
         let disabled_at = started + Duration::from_millis(50);
         let (state, _, _) = bind(&mut engine, &mut controller, disabled_at, true, true);
@@ -779,7 +805,7 @@ mod tests {
     fn released_press_stays_visually_pressed_until_minimum_duration() {
         let started = Instant::now();
         let handles = handles(started);
-        handles.begin_press(kurbo::Point::new(4.0, 5.0), started);
+        handles.begin_press(kurbo::Point::new(4.0, 5.0), None, started);
         assert!(handles.release(started + Duration::from_millis(10)));
 
         assert!(handles.visually_pressed(started + Duration::from_millis(20)));
