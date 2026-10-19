@@ -22,12 +22,12 @@ is never what a user of the framework wants.
 
 ```bash
 # macOS and Linux
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/water-rs/waterui/releases/download/cli-latest/waterui-cli-installer.sh | sh
 ```
 
 ```powershell
 # Windows
-powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/cli/releases/latest/download/waterui-cli-installer.ps1 | iex"
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/water-rs/waterui/releases/download/cli-latest/waterui-cli-installer.ps1 | iex"
 ```
 
 `water update` replaces the binary with the newest release; `water update --check`

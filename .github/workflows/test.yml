@@ -304,7 +304,8 @@ jobs:
       # The feature combination Hydrolysis's own CI swept (#1428): the
       # all-features pass above covers the superset, but a feature interaction
       # that only this set compiles — webview-system stays off because its
-      # WKWebView bridge exists on macOS alone — would regress invisibly
+      # WKWebView bridge exists on macOS alone, where the `macos-lint`
+      # composite's host leg carries it — would regress invisibly
       # otherwise. The bare check is the other half of that contract: call
       # sites a feature gates out rot under every enabled leg.
       #
@@ -458,15 +459,16 @@ jobs:
       # lints; only the workspace crate is named here. Hydrolysis's `web`
       # feature is its browser runner — it used to be linted for wasm32 in the
       # hydrolysis repository's own CI and moved in with the tree (#1428).
-      # Its web video bridge needs `video` as well, so the pass enables both
-      # (#2799).
+      # Its web video bridge needs `video` as well (#2799), and
+      # `webview-system` is the `<iframe>` bridge — the only leg that can
+      # lint it (water-rs/waterui#1795).
       - name: Lint the wasm32-only paths
         run: |
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
             -p waterui-media \
             -- -D warnings
           cargo clippy --locked --profile ci-check --target wasm32-unknown-unknown \
-            -p hydrolysis --features web,video \
+            -p hydrolysis --features web,video,webview-system \
             -- -D warnings
           # The bare build is a separate gate: every feature off selects a
           # third of the backend's `cfg(feature)` surface that `web` never
