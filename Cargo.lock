@@ -1732,6 +1732,7 @@ dependencies = [
  "gungraun",
  "half",
  "kurbo 0.13.1",
+ "libc",
  "nami",
  "png",
  "rayon",
@@ -11557,8 +11558,7 @@ checksum = "ca0d1bf6fdd806e43ae5198f82f527056d359def39e54e67a0f478ac09dac081"
 [[package]]
 name = "tree-sitter-md"
 version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2efd398be546456c814598ee56c0f51769a77241511b4a58077815d120afa882"
+source = "git+https://github.com/lexoliu/tree-sitter-markdown?branch=wasm-tree-sitter-0.27#e6a5e1ef87ab6b801272b4854d0cc2e73b79b1fa"
 dependencies = [
  "cc",
  "tree-sitter-language",
@@ -12984,6 +12984,7 @@ dependencies = [
  "waterui-assets-planner",
  "waterui-inspector-protocol",
  "waterui-mcp-protocol",
+ "waterui-meta",
  "waterui-preview-protocol",
  "which 8.0.6",
  "whoami",
@@ -13600,7 +13601,6 @@ dependencies = [
  "hydrolysis-m3",
  "nami",
  "object 0.37.3",
- "rustc-demangle",
  "serde",
  "serde_json",
  "sha2",

@@ -316,8 +316,8 @@ Hydrolysis (the self-drawn GPU renderer) is styled by construction: every entry 
 takes a `hydrolysis::Style` value, and `Material3` is the Material Design 3 one:
 
 ```rust
-hydrolysis::run(app(env), hydrolysis_m3::Material3::defaults());   // light+dark baseline
-hydrolysis::run(app(env), hydrolysis_m3::Material3::dark());
+hydrolysis::run(app, env, hydrolysis_m3::Material3::defaults());   // light+dark baseline
+hydrolysis::run(app, env, hydrolysis_m3::Material3::dark());
 ```
 
 Tests take the same style through `theme =` — see `references/testing.md`:

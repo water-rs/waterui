@@ -130,6 +130,9 @@ pub mod text;
 pub mod text_field;
 #[cfg(feature = "toggle")]
 pub mod toggle;
+// Unconditional — like `empty`: `Metadata<TransitionSpec>` can be produced by
+// any view tree (`.transition(...)` lives on `View`), so no feature gates it.
+pub mod transition;
 #[cfg(any(feature = "video", feature = "video_player"))]
 pub mod video;
 #[cfg(feature = "view_renderer")]
