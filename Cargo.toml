@@ -578,6 +578,7 @@ lto = "thin"
 # xcb 1.7.0 still builds with vulnerable quick-xml 0.30. Upstream has migrated
 # to quick-xml 0.41, but has not released that change yet.
 [patch.crates-io]
+shaderloom = { git = "https://github.com/water-rs/shaderloom", branch = "dev" }
 # Evaluate SIMD exponential constants at compile time until wide releases the fix.
 wide = { git = "https://github.com/lexoliu/wide", branch = "perf/f32x4-exp-const" }
 # Extracted crates on crates.io (waterui-canvas #185, waterui-chart #188, …) depend on the

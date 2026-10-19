@@ -481,15 +481,23 @@ impl GpuCoverage {
         let tile_total = u32::try_from(self.work.len()).expect("work count fits u32") - strip_total;
         let bin_base = 0;
         let fragment_base = bin_base + self.bin_total * 3;
-        let sort_a = fragment_base + self.fragment_total * 8;
-        let groups = sort_a + self.fragment_total * 2;
-        let sort_b = groups + group_words(self.fragment_total, self.cov_total);
-        let histogram = sort_b + self.fragment_total * 2;
+        let sorted = fragment_base + self.fragment_total * 8;
+        let groups = sorted + self.fragment_total * 2;
+        let sort_scratch = groups + group_words(self.fragment_total, self.cov_total);
+        let radix_pass_count = radix_passes(self.cov_total);
+        // Start on the opposite side for odd pass counts so the result always
+        // precedes the group arena, leaving sort_scratch free for tokens.
+        let (sort_a, sort_b) = if radix_pass_count.is_multiple_of(2) {
+            (sorted, sort_scratch)
+        } else {
+            (sort_scratch, sorted)
+        };
+        let histogram = sort_scratch + self.fragment_total * 2;
         let histogram_end =
             histogram + self.fragment_total.div_ceil(WORKGROUP).div_ceil(256) * 256 * 16;
-        // Classification starts after radix sorting has released sort_b and
-        // its histogram. sort_a stays live through texel generation.
-        let tokens = sort_b;
+        // Classification starts after radix sorting has released sort_scratch and
+        // its histogram. The sorted keys stay live through texel generation.
+        let tokens = sort_scratch;
         let token_end = tokens + (self.fragment_total.min(self.cov_total) * 2 + strip_total) * 3;
         let params: [u32; PARAMS_WORDS] = [
             self.element_total,
@@ -501,7 +509,7 @@ impl GpuCoverage {
             CLASSIFY_WIDTH,
             self.cov_total,
             bin_base,
-            sort_b,
+            sort_scratch,
             fragment_base,
             self.fragment_total,
             sort_a,
@@ -509,11 +517,15 @@ impl GpuCoverage {
             histogram,
             groups,
             tokens,
-            0,
+            sorted,
             0,
             self.texel_words,
         ];
-        let cov_words = u64::from(token_end.max(histogram_end).max(sort_b + tile_total * 4));
+        let cov_words = u64::from(
+            token_end
+                .max(histogram_end)
+                .max(sort_scratch + tile_total * 4),
+        );
         let scratch_bytes = cov_words * 4;
         let limits = device.limits();
         let limit = limits
@@ -642,7 +654,6 @@ impl GpuCoverage {
         } else {
             None
         };
-        let radix_pass_count = radix_passes(self.cov_total);
         for radix_pass in 0..radix_pass_count {
             let mut block = params;
             block[18] = radix_pass;
@@ -926,11 +937,10 @@ const fn group_words(fragments: u32, columns: u32) -> u32 {
 /// Four-bit radix passes that order every key below `key_end` and keep the
 /// all-ones empty-slot sentinel after them: the sentinel's low `4 * passes`
 /// bits are all ones, which exceeds every key once `key_end <= 2^(4 * passes)`.
-/// Passes ping-pong between the sort buffers and the sorted keys must end
-/// in `sort_a`, so the count is even.
+/// The initial buffer depends on parity so the sorted keys finish in the
+/// fixed output arena without an extra pass.
 const fn radix_passes(key_end: u32) -> u32 {
-    let digits = key_end.bit_width().div_ceil(4);
-    digits.div_ceil(2) * 2
+    key_end.bit_width().div_ceil(4)
 }
 
 fn sized_buffer(
@@ -959,9 +969,9 @@ mod tests {
     #[test]
     fn radix_passes_order_keys_below_the_sentinel() {
         assert_eq!(radix_passes(255), 2);
-        assert_eq!(radix_passes(256), 4);
-        assert_eq!(radix_passes(1 << 16), 6);
-        assert_eq!(radix_passes(1 << 24), 8);
+        assert_eq!(radix_passes(256), 3);
+        assert_eq!(radix_passes(1 << 16), 5);
+        assert_eq!(radix_passes(1 << 24), 7);
         assert_eq!(radix_passes(u32::MAX), 8);
     }
 

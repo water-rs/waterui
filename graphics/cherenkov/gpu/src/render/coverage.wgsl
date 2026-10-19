@@ -85,7 +85,7 @@ struct Params {
     histogram: u32,
     groups: u32,
     tokens: u32,
-    reserved: u32,
+    sorted: u32,
     radix_pass: u32,
     texel_words: u32,
 }
@@ -428,8 +428,8 @@ fn edge_area(node: u32, head: u32, seed: i32, rule: u32) -> f32 {
     return area;
 }
 
-fn sort_key(index: u32) -> u32 { return coverage[params.sort_a + index * 2u]; }
-fn sort_node(index: u32) -> u32 { return coverage[params.sort_a + index * 2u + 1u]; }
+fn sort_key(index: u32) -> u32 { return coverage[params.sorted + index * 2u]; }
+fn sort_node(index: u32) -> u32 { return coverage[params.sorted + index * 2u + 1u]; }
 fn lower_bound(key: u32) -> u32 {
     var lo = 0u;
     var hi = fragment_count();
@@ -687,12 +687,12 @@ fn prefix(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 }
 
-fn tile_carry(pi: u32, key: u32, row: u32) -> u32 {
+fn tile_carry_base(pi: u32, key: u32) -> u32 {
     let local = key - paths[pi].grid_base;
     let tiles = (paths[pi].grid_w + params.classify_width - 1u) / params.classify_width;
     let tile = paths[pi].tile_base + (local / paths[pi].grid_w) * tiles
         + (local % paths[pi].grid_w) / params.classify_width;
-    return coverage[params.tile_prefix + tile * 4u + row];
+    return params.tile_prefix + tile * 4u;
 }
 
 fn path_for_key(key: u32) -> u32 {
@@ -715,12 +715,17 @@ fn integrate_edges(@builtin(global_invocation_id) gid: vec3<u32>) {
     if key == 0xffffffffu { return; }
     let node = sort_node(i);
     let base = params.fragment_base + (node - 1u) * 8u;
+    let edge = fragment(node);
+    if edge.y == edge.w {
+        coverage[base + 7u] = 0u;
+        return;
+    }
     let location = coverage[base + 6u];
     let row = location & 3u;
     let group = location >> 2u;
     let head = coverage[group + 4u + row];
     let pi = path_for_key(key);
-    let seed = bitcast<i32>(coverage[group + 8u + row] + tile_carry(pi, key, row));
+    let seed = bitcast<i32>(coverage[group + 8u + row] + coverage[tile_carry_base(pi, key) + row]);
     let value = edge_area(node, head, seed, paths[pi].rule);
     coverage[base + 7u] = bitcast<u32>(value);
 }
@@ -737,9 +742,10 @@ fn integrate(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pi = path_for_key(key);
     let group = group_address(i);
     let next = coverage[group];
+    let carry_base = tile_carry_base(pi, key);
     for (var row = 0u; row < 4u; row += 1u) {
         let head = coverage[group + 4u + row];
-        let carry = tile_carry(pi, key, row);
+        let carry = coverage[carry_base + row];
         let seed = bitcast<i32>(coverage[group + 8u + row] + carry);
         coverage[group + 12u + row] += carry;
         var value = inside(seed, paths[pi].rule);
