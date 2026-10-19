@@ -465,7 +465,7 @@ fn gpu_sparse_interiors_preserve_painter_order_across_frames() {
     })
     .expect("GPU coverage test adapter");
     let surface = engine
-        .surface(Offscreen::new((257, 9), OffscreenFormat::LinearF16), || {})
+        .surface(Offscreen::new((273, 9), OffscreenFormat::LinearF16), || {})
         .expect("coverage test surface");
     surface.clear_color(WorkingColor::new([0.0; 4]));
     let mut outer = BezPath::new();
@@ -480,11 +480,26 @@ fn gpu_sparse_interiors_preserve_painter_order_across_frames() {
     inner.line_to((250.5, 6.5));
     inner.line_to((4.5, 6.5));
     inner.close_path();
-    for reverse in [false, true] {
+    for (reverse, red, shift) in [
+        (false, true, 0u32),
+        (true, true, 0),
+        (false, false, 1),
+        (false, false, 20),
+        (false, true, 0),
+    ] {
         surface.update(|tx| {
+            tx[surface.root()]
+                .transform(cherenkov::kurbo::Affine::translate((f64::from(shift), 0.0)));
             tx[surface.root()].content(surface.record(|canvas| {
                 let mut layers = [
-                    (outer.clone(), WorkingColor::new([1.0, 0.0, 0.0, 1.0])),
+                    (
+                        outer.clone(),
+                        WorkingColor::new(if red {
+                            [1.0, 0.0, 0.0, 1.0]
+                        } else {
+                            [0.0, 1.0, 0.0, 1.0]
+                        }),
+                    ),
                     (inner.clone(), WorkingColor::new([0.0, 0.0, 1.0, 0.5])),
                 ];
                 if reverse {
@@ -506,11 +521,18 @@ fn gpu_sparse_interiors_preserve_painter_order_across_frames() {
             let image = surface.readback().expect("ordered coverage pixels");
             let expected = if reverse {
                 [1.0, 0.0, 0.0, 1.0]
-            } else {
+            } else if red {
                 [0.5, 0.0, 0.5, 1.0]
+            } else {
+                [0.0, 0.5, 0.5, 1.0]
             };
-            for x in [16usize, 128, 240] {
-                let actual = image.pixels[4 * 257 + x];
+            let edge = image.pixels[4 * 273 + 1 + usize::try_from(shift).unwrap()];
+            assert!(
+                (edge[3] - 0.75).abs() < 0.005,
+                "translated outer edge: {edge:?}"
+            );
+            for x in [32usize, 128, 240] {
+                let actual = image.pixels[4 * 273 + x];
                 for channel in 0..4 {
                     assert!(
                         (actual[channel] - expected[channel]).abs() < 0.001,

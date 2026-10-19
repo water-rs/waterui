@@ -441,14 +441,16 @@ pub struct GpuBound {
     pub grid_w: usize,
     /// Bound raster grid rows.
     pub grid_h: usize,
-    /// Maximum span instances the path can emit.
-    pub span_cap: usize,
+    /// Maximum combined span and cell instances the path can emit.
+    pub instance_cap: usize,
     /// Maximum cell instances the path can emit.
     pub cell_cap: usize,
     /// Stored R8 bytes, excluding implicit full interiors.
     pub texels: usize,
     /// The bound grid is empty: the path cannot emit anything.
     pub empty: bool,
+    /// The surface clips the conservative geometry hull.
+    pub clipped: bool,
     /// Conservative device bounds, used by pass planning before compute.
     pub rect: [f32; 4],
 }
@@ -632,9 +634,10 @@ pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> 
     bound.texels = if w <= 32 && h <= 32 {
         w * h
     } else {
-        bound.fragments * 64
+        (bound.fragments * 64).min(w * h)
     };
     bound.empty = w == 0 || h == 0;
+    bound.clipped = r != inflated;
     // Cells are column-disjoint inside their strip, so the strip count
     // times the grid width is the grid-side cap; spans obey the same
     // bound. The element bound may be tighter.
@@ -643,7 +646,8 @@ pub fn prepare_gpu(elements: &[PathEl], raster: Affine, surface: (f64, f64)) -> 
         .fragments
         .min(strip_cap)
         .max(usize::from(w <= 32 && h <= 32));
-    bound.span_cap = bound.cell_cap + h.div_ceil(STRIP_H);
+    // Spans and cells share the same output range and never overlap.
+    bound.instance_cap = (bound.cell_cap * 2 + h.div_ceil(STRIP_H)).min(strip_cap);
     GpuPath {
         elements: out,
         bound,

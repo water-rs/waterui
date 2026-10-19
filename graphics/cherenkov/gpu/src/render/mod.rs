@@ -3968,6 +3968,7 @@ impl Renderer for GpuRenderer {
     fn trim(&mut self, pressure: Pressure) {
         let _diag_guard = diag::Guard::scope(self.diag.as_ref());
         diag::set_phase("trim");
+        self.gpu_cov.trim_cache();
         if let Some(blur) = &mut self.shadow_blur {
             blur.trim();
         }
@@ -7537,16 +7538,16 @@ impl GpuRenderer {
                 Ok(PendingOrigin::None)
             }
             PendingRaster::GpuPath {
+                content,
                 rule,
                 raster,
                 surface,
                 template,
-                elements,
-                bound,
+                path,
             } => {
                 let index = self
                     .gpu_cov
-                    .push(rule, raster, surface, &template, &elements, bound)?;
+                    .push(content, rule, raster, surface, &template, &path)?;
                 Ok(PendingOrigin::Gpu(index))
             }
         }

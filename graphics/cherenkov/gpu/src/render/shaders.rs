@@ -479,7 +479,23 @@ const COVERAGE: Fixed = Fixed {
     metallib: COVERAGE_METALLIB,
     entries: &[
         wgpu::PassthroughShaderEntryPoint {
-            name: Cow::Borrowed("initialize"),
+            name: Cow::Borrowed("store_cache"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("replay_cache"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("replay_texels"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("prepare_cells"),
+            workgroup_size: (64, 1, 1),
+        },
+        wgpu::PassthroughShaderEntryPoint {
+            name: Cow::Borrowed("prepare_dispatch"),
             workgroup_size: (64, 1, 1),
         },
         wgpu::PassthroughShaderEntryPoint {

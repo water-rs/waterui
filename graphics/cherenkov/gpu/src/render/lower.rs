@@ -4105,6 +4105,7 @@ impl<'a> Lowering<'a> {
         let transform = self.transform;
         self.transform = raster;
         self.emit_gpu_path(
+            outline.content(tolerance),
             *rule,
             prepared,
             paint,
@@ -4824,9 +4825,9 @@ impl<'a> Lowering<'a> {
         // from the CPU atlas, so it decides before the hit checks.
         if self.has_compute && self.coverage_route == path::CoverageRoute::Gpu {
             self.path_gpu(
+                content,
                 rule,
-                shader_path,
-                make.take(),
+                &shader_path.unwrap_or_else(|| make.take().expect("path factory")()),
                 paint,
                 shader_data.as_ref(),
                 surface,
@@ -4951,32 +4952,32 @@ impl<'a> Lowering<'a> {
     /// into the instance buffer's tail behind indirect arguments.
     fn path_gpu(
         &mut self,
+        content: u64,
         rule: FillRule,
-        shader_path: Option<BezPath>,
-        make: Option<impl FnOnce() -> BezPath>,
+        local: &BezPath,
         paint: &ResolvedPaint,
         shader_data: Option<&PaintData>,
         surface: (u32, u32),
     ) {
-        let local = shader_path.unwrap_or_else(|| make.expect("path factory")());
         let prepared = path::prepare_gpu(
             local.elements(),
             self.transform,
             (f64::from(surface.0), f64::from(surface.1)),
         );
-        self.emit_gpu_path(rule, prepared, paint, shader_data, surface);
+        self.emit_gpu_path(content, rule, prepared, paint, shader_data, surface);
     }
 
     /// Consume the same encoded path whose bounds the route selector inspected.
     fn emit_gpu_path(
         &mut self,
+        content: u64,
         rule: FillRule,
         prepared: path::GpuPath,
         paint: &ResolvedPaint,
         shader_data: Option<&PaintData>,
         surface: (u32, u32),
     ) {
-        let path::GpuPath { elements, bound } = prepared;
+        let bound = prepared.bound;
         if bound.empty {
             return;
         }
@@ -4998,12 +4999,12 @@ impl<'a> Lowering<'a> {
         let template = Box::new(template);
         let pending = u32::try_from(self.pending.len()).expect("pending count fits u32");
         self.pending.push(PendingRaster::GpuPath {
+            content,
             rule: rule as u32,
             raster: self.transform,
             surface,
             template,
-            elements,
-            bound,
+            path: prepared,
         });
         self.push_gpu_range(pending);
     }
