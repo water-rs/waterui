@@ -25,8 +25,9 @@ inputs:
   limit-bytes:
     description: >-
       The repository's cache storage limit in bytes
-      (vars.ACTIONS_CACHE_LIMIT_BYTES); a save first proves the archive
-      fits under it next to every live entry.
+      (vars.ACTIONS_CACHE_LIMIT_BYTES), the fallback when the configured
+      limit cannot be read; a save first makes room and proves the archive
+      fits next to every live entry, and is skipped when it does not.
     required: false
     default: ""
   github-token:
@@ -41,6 +42,12 @@ outputs:
   cache-primary-key:
     description: The primary key a writer would save under.
     value: ${{ steps.restore.outputs.cache-primary-key }}
+  saved:
+    description: >-
+      With operation "save": "true" when the archive was saved, "false" when
+      the headroom check skipped it. Callers skip retiring the superseded
+      generation when it is "false".
+    value: ${{ steps.headroom.outputs.fits }}
 
 runs:
   using: composite
@@ -57,6 +64,7 @@ runs:
         restore-keys: |
           cargo-sources-${{ runner.os }}-
     - name: Cargo sources headroom
+      id: headroom
       if: inputs.operation == 'save'
       uses: ./.github/actions/cache-headroom
       with:
@@ -68,7 +76,7 @@ runs:
         github-token: ${{ inputs.github-token }}
     - name: Save Cargo sources
       id: save
-      if: inputs.operation == 'save'
+      if: inputs.operation == 'save' && steps.headroom.outputs.fits == 'true'
       uses: actions/cache/save@v4
       with:
         path: |

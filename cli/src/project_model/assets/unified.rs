@@ -19,7 +19,6 @@ use waterui_assets_planner::{
 use super::icon::encode_macos_icns;
 use super::icon::{
     IconSource, LINUX_HICOLOR_SIZES, WINDOW_ICON_SIZE, encode_png, render_android_foreground,
-    render_apple_icon,
 };
 use crate::artifact_symbols::ArtifactSymbols;
 use crate::project::Project;
@@ -1057,6 +1056,12 @@ async fn write_apple_root_contents(xcassets_dest: &Path) -> eyre::Result<()> {
     Ok(())
 }
 
+/// Writes every `AppIcon.appiconset` slot full-bleed — the `mac` idiom
+/// included. The asset catalog renders `mac` slots through the system icon
+/// plate, which applies its own mask and inset, so baking the icon-grid
+/// inset into the PNG would shrink the artwork twice (#1656). The loose
+/// `.icns` a hand-assembled bundle serves keeps the inset shape instead —
+/// `render_macos_icon` in `icon.rs`.
 async fn write_apple_app_icon(source: &IconSource, xcassets_dest: &Path) -> eyre::Result<()> {
     #[derive(Serialize)]
     struct ImageItem<'a> {
@@ -1084,11 +1089,7 @@ async fn write_apple_app_icon(source: &IconSource, xcassets_dest: &Path) -> eyre
     let mut images = Vec::new();
     for &(idiom, size, scale, pixels) in APPLE_APP_ICON_SPECS {
         let file_name = apple_app_icon_file(idiom, size, scale);
-        write_png(
-            &render_apple_icon(source, idiom, pixels)?,
-            &appicon_dir.join(&file_name),
-        )
-        .await?;
+        write_png(&source.render(pixels)?, &appicon_dir.join(&file_name)).await?;
         images.push(ImageItem {
             idiom,
             size,
@@ -1610,6 +1611,35 @@ mod tests {
             )
             .expect("valid json");
             assert_eq!(json["colors"].as_array().expect("colors").len(), 1);
+        });
+    }
+
+    /// The asset catalog's `mac` slots render through the system icon
+    /// plate, which owns the mask and inset — the PNGs must be full-bleed
+    /// or the artwork is shrunk twice (#1656). The loose-`.icns` path keeps
+    /// the baked inset — `macos_icns_icon_is_inset_and_rounded` in
+    /// `icon.rs`.
+    #[test]
+    fn apple_app_icon_mac_slots_render_full_bleed() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        smol::block_on(async {
+            write_apple_app_icon(&IconSource::default_logo(), temp.path())
+                .await
+                .expect("app icon set");
+            let decoded = image::open(
+                temp.path()
+                    .join(APPLE_APP_ICON_SET)
+                    .join("AppIcon-mac-512x512@2x.png"),
+            )
+            .expect("mac slot must be a decodable png")
+            .to_rgba8();
+            assert_eq!(decoded.dimensions(), (1024, 1024));
+            assert_eq!(
+                decoded.get_pixel(0, 0).0[3],
+                u8::MAX,
+                "the plate owns the macOS mask: the catalog slot keeps the \
+                 artwork's corner"
+            );
         });
     }
 

@@ -1071,7 +1071,7 @@ fn row_button(
     palette: &PanelPalette,
 ) -> BuiltRow {
     let row = HostView::new(mtm, crate::geometry::Rect::ZERO);
-    let button = UIButton::new(mtm);
+    let button = crate::uikit::button::CocoaUiButton::new(mtm).into_super();
     // The disclosure glyph is measured before the button is configured so
     // the content insets can reserve its real extent — title text then
     // never runs under the chevron, however long it is.
