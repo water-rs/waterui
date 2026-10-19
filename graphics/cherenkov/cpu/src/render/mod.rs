@@ -145,7 +145,10 @@ pub struct RasterRenderer {
     /// Counts rendered frames; the projective cache's recency clock.
     frame_count: u64,
     /// Rebuilt for each raster call; capacity is shared across surfaces.
-    band_index: bins::FrameIndex,
+    /// Boxed so lending it to a surface render moves a pointer, not the
+    /// index itself — a by-value move of the struct is a `memcpy` call
+    /// every frame. `None` only while a surface render holds it.
+    band_index: Option<Box<bins::FrameIndex>>,
 }
 
 impl std::fmt::Debug for RasterRenderer {
@@ -192,7 +195,7 @@ pub fn init(config: &RasterConfig) -> Result<(RasterRenderer, RasterInfo), Engin
                     geometry: geometry::GeometryCache::default(),
                     image_replacements: 0,
                     frame_count: 0,
-                    band_index: bins::FrameIndex::default(),
+                    band_index: Some(Box::default()),
                 },
                 info,
             )
@@ -651,7 +654,9 @@ impl Renderer for RasterRenderer {
             .values()
             .map(SurfaceState::band_bytes)
             .sum::<u64>()
-            + self.band_index.heap_bytes();
+            + self.band_index.as_ref().map_or(0, |index| {
+                size_of::<bins::FrameIndex>() as u64 + index.heap_bytes()
+            });
         categories.glyphs = self.glyph_cache.bytes();
         categories.images = self.images.values().map(|image| image.bytes()).sum();
         categories.colr = self.fonts.values().map(font::Font::colr_bytes).sum();
@@ -705,7 +710,7 @@ impl Renderer for RasterRenderer {
             self.glyph_cache.clear();
             self.bitmap_cache.clear();
             self.geometry.clear();
-            self.band_index = bins::FrameIndex::default();
+            self.band_index = Some(Box::default());
             for surface in self.surfaces.values_mut() {
                 for content in surface.layers.values_mut() {
                     content.trim();
@@ -741,9 +746,12 @@ impl RasterRenderer {
             });
             if sf.changed || filter_changed {
                 stats.frame = Some(frame.id);
-                let mut index = std::mem::take(&mut self.band_index);
+                let mut index = self
+                    .band_index
+                    .take()
+                    .expect("the band index is lent only for one surface render");
                 let result = self.render_surface(sf, frame.id, stats, &mut index);
-                self.band_index = index;
+                self.band_index = Some(index);
                 result?;
             }
         }
