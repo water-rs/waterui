@@ -5,8 +5,10 @@
 # verify a settled screenshot — a capture must carry real content (not a
 # uniform fill), and when a recorded baseline exists under backends/apple/Tests/E2EBaselines
 # it must match within the compare budget. A `.skip` marker next to a baseline
-# opts an example out of pixel comparison only; launch and content are still
-# verified. With RECORD=1, captures are written to ${RECORD_DIR} for the
+# declares a first screen that cannot be made deterministic — it opts the
+# example out of pixel comparison and out of the settle window itself: one
+# supervised capture after the first-paint marker, with launch and content
+# still verified. With RECORD=1, captures are written to ${RECORD_DIR} for the
 # baseline-publish job instead of being compared. Failures are collected so one
 # broken example does not hide the state of the rest; the script exits nonzero
 # if any example failed.
@@ -223,7 +225,12 @@ fi
 # shared deadline ($2): a hung simctl/screenshot/screencapture used to block
 # the settle loop unbounded between deadline checks — measured at 451 s for a
 # single screenshot in the Actions run behind #1539 — and a failed command
-# used to be silently retried or replaced by an earlier frame.
+# used to be silently retried or replaced by an earlier frame. Each command
+# also carries COMMAND_BOUND_S of its own: a healthy capture answers in
+# seconds, so a command still running at the bound is hung — killed there,
+# while shared budget remains, which is what separates a hung command from
+# ordinary settle-budget exhaustion in capture_settled below.
+COMMAND_BOUND_S=30
 capture_frame() {
   local target="$1"
   local deadline_at="$2"
@@ -234,15 +241,18 @@ capture_frame() {
     rm -f "${target}"
     "${command_deadline}" run --label "capture:simctl-io-screenshot" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+      --max-seconds "${COMMAND_BOUND_S}" \
       -- xcrun simctl io "${SIMULATOR_UDID}" screenshot "${target}" >/dev/null || return
   else
     local window_id
     window_id="$("${command_deadline}" run --label "capture:window-id" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+      --max-seconds "${COMMAND_BOUND_S}" \
       -- "${swift_tools_dir}/window-id" "${pid}")" || return
     rm -f "${target}"
     "${command_deadline}" run --label "capture:screencapture" \
       --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+      --max-seconds "${COMMAND_BOUND_S}" \
       -- screencapture -x -o "-l${window_id}" "${target}" || return
   fi
   if [[ ! -f "${target}" ]]; then
@@ -301,6 +311,16 @@ capture_settled() {
   local window_start=0
   local deadline_at frame_rc compare_rc remaining_s
   deadline_at="$("${command_deadline}" deadline --seconds "${CAPTURE_DEADLINE_S}")"
+  if [[ -f "${baselines_dir}/${platform}/${example}.skip" ]]; then
+    # A `.skip` first screen cannot be made deterministic by construction —
+    # continuous animation, live media — so the gate asks for exactly one
+    # supervised capture after the first-paint marker rather than stability
+    # the example declares it cannot produce. Launch and the non-blank
+    # check downstream still gate; a wedged command still fails on its own
+    # bound. The marker applies to the reference twin's capture here too.
+    capture_frame "${target}" "${deadline_at}" ${pid:+"${pid}"}
+    return
+  fi
   rm -f "${anchor}"
   # The sole loop bound is the shared CLOCK_MONOTONIC budget, which the
   # supervised commands themselves draw down; SECONDS is used only for the
@@ -318,6 +338,7 @@ capture_settled() {
         # diagnostics, which is what attributes a hang if the run dies mid-way.
         DIFF_BUDGET=0.01 "${command_deadline}" run --label "capture:compare-screenshots" \
           --deadline-at "${deadline_at}" --receipt "${receipts_file}" \
+          --max-seconds "${COMMAND_BOUND_S}" \
           -- "${swift_tools_dir}/compare-screenshots" \
              compare "${anchor}" "${target}" "${shots_dir}/.settle-diff.png" \
              >/dev/null || compare_rc=$?
@@ -326,8 +347,12 @@ capture_settled() {
         # diff restarts the window; exit 3 = the chrome band flipped
         # materialisation state between frames, which is still a screen
         # change, so the window restarts the same way. Exit 2 (decode/write
-        # error), 124 (deadline kill), or any other status is a command
-        # failure — no anchor update, no earlier-frame substitution.
+        # error) or any other status is a command failure — no anchor
+        # update, no earlier-frame substitution. A 124 carries two cases:
+        # killed at the scoped bound while shared budget remains is a hung
+        # compare — the failure itself; killed at the shared deadline is
+        # ordinary budget exhaustion mid-command, which lands on the same
+        # never-settled outcome as expiring between polls.
         if (( compare_rc == 0 )); then
           if (( SECONDS - window_start >= SETTLE_WINDOW_S )); then
             rm -f "${anchor}"
@@ -337,10 +362,15 @@ capture_settled() {
           # The screen changed: the window restarts here.
           cp "${target}" "${anchor}"
           window_start=${SECONDS}
+        elif (( compare_rc == 124 )) && \
+             ! "${command_deadline}" remaining --deadline-at "${deadline_at}" >/dev/null; then
+          # The shared deadline spent itself inside the compare — the
+          # loop's ordinary exhausted-budget outcome, not a command fault.
+          break
         else
           rm -f "${anchor}"
           if (( compare_rc == 124 )); then
-            echo "::error::${example}: the settle compare was killed at the shared ${CAPTURE_DEADLINE_S}s capture deadline; last receipt in ${receipts_file}."
+            echo "::error::${example}: the settle compare exceeded its ${COMMAND_BOUND_S}s command bound with shared budget remaining — a hung command, not settle progress; last receipt in ${receipts_file}."
           else
             echo "::error::${example}: the settle compare command failed (exit ${compare_rc}); last receipt in ${receipts_file}."
           fi
@@ -352,15 +382,20 @@ capture_settled() {
         window_start=${SECONDS}
       fi
     else
-      # A native capture command that fails or is killed at the deadline is
-      # the failure itself: retrying it or falling back to an earlier frame
-      # would substitute a state the harness never verified (#1539). Only a
-      # loop that ran out of budget with every command still succeeding may
-      # keep the last frame below.
+      # A native capture command that fails is the failure itself:
+      # retrying it or falling back to an earlier frame would substitute a
+      # state the harness never verified (#1539). The same two 124 cases
+      # as the compare apply — a kill at the scoped bound while budget
+      # remains is a hung command; a kill at the shared deadline is the
+      # loop's ordinary exhaustion, settled below.
       frame_rc=$?
+      if (( frame_rc == 124 )) && \
+         ! "${command_deadline}" remaining --deadline-at "${deadline_at}" >/dev/null; then
+        break
+      fi
       rm -f "${anchor}"
       if (( frame_rc == 124 )); then
-        echo "::error::${example}: a capture command was killed at the shared ${CAPTURE_DEADLINE_S}s capture deadline; last receipt in ${receipts_file}."
+        echo "::error::${example}: a capture command exceeded its ${COMMAND_BOUND_S}s command bound with shared budget remaining — a hung command, not settle progress; last receipt in ${receipts_file}."
       else
         echo "::error::${example}: a capture command failed (exit ${frame_rc}); last receipt in ${receipts_file}."
       fi
@@ -379,7 +414,7 @@ capture_settled() {
   if [[ ! -f "${target}" ]]; then
     return 1
   fi
-  echo "::warning::${example} never settled to a stable frame; using the last capture."
+  echo "::warning::${example} never settled to a stable frame; using the last capture. A first screen that cannot be made deterministic declares a .skip marker."
 }
 
 # One supervised `simctl terminate|uninstall <udid> <bundle>` of a shard-owned

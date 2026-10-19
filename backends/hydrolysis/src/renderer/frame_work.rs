@@ -76,6 +76,24 @@ impl FrameWorkCounters {
         *self = Self::default();
     }
 
+    /// Adds another span's counts into this one — for a frame whose work is
+    /// snapshotted in pieces (the render pump's own snapshot plus a capture
+    /// readback drained after it).
+    pub const fn accumulate(&mut self, other: Self) {
+        self.semantic_builds += other.semantic_builds;
+        self.structural_patches += other.structural_patches;
+        self.measure_calls += other.measure_calls;
+        self.layout_calls += other.layout_calls;
+        self.recorded_view_contents += other.recorded_view_contents;
+        self.live_recordings += other.live_recordings;
+        self.layer_creations += other.layer_creations;
+        self.layer_removals += other.layer_removals;
+        self.font_registrations += other.font_registrations;
+        self.image_registrations += other.image_registrations;
+        self.gpu_submissions += other.gpu_submissions;
+        self.host_wakeups += other.host_wakeups;
+    }
+
     /// Serializes the counters into a metrics map for frame-profile output.
     pub fn record_into(&self, metrics: &mut std::collections::BTreeMap<&'static str, u64>) {
         metrics.extend([

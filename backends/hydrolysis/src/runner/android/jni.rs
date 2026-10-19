@@ -55,8 +55,11 @@ use super::host::{AndroidSession, MetricsSnapshot, UiThreadServices};
 /// `nativePlatformViewFocus` reported whether a mounted platform-view child
 /// held UI focus; 15 = the report reads through the frame instead —
 /// `onNativePlatformViewFocus` / `platform_view_focus_inside` replaces the
-/// pushed native, which left with it.
-pub const JNI_SCHEMA: jint = 15;
+/// pushed native, which left with it; 16 = `onNativeFatalError` leaves the
+/// table — a lost GPU device is recreated instead of ending the session
+/// (water-rs/waterui#2742), and a recreation that exhausts its loss budget
+/// already reaches Kotlin as the frame call's `IllegalStateException`.
+pub const JNI_SCHEMA: jint = 16;
 
 /// A failure crossing the JNI boundary as an exception.
 #[derive(Debug)]

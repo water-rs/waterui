@@ -16,6 +16,7 @@ use waterui_core::view_renderer::{
 use waterui_core::{AnyView, ContentLedger, Environment, View, layout::Size};
 
 use super::executor::HeadlessMainThreadExecutor;
+use crate::renderer::FontFamilyResolution;
 use crate::renderer::tests::MinimalTestTheme;
 use crate::view_renderer::HydrolysisViewRenderer;
 
@@ -92,15 +93,28 @@ struct Capture {
     result: Rc<RefCell<Option<Result<RenderResult, RenderError>>>>,
 }
 
+/// The environment a capture mounts under: the assembled runner environment
+/// a [`HydrolysisViewRenderer`] is installed with — theme tokens, so `text`
+/// resolves its `Body` slot, and the shared font collection its text engine
+/// shapes from.
+fn capture_environment() -> Environment {
+    let mut env = crate::renderer::tests::pumped_test_environment();
+    waterui_text::FontCollection::new(parley::FontContext::new()).install(&mut env);
+    env
+}
+
 impl Capture {
-    fn start(gate: &Gate, content_deadline: Duration) -> Self {
+    fn start(view: AnyView, content_deadline: Duration) -> Self {
         let executor = HeadlessMainThreadExecutor::thread_shared();
         let _ = executor_core::try_init_local_executor(executor.clone());
-        let renderer = HydrolysisViewRenderer::new(Rc::new(MinimalTestTheme::default()));
+        let renderer = HydrolysisViewRenderer::new(
+            Rc::new(MinimalTestTheme::default()),
+            capture_environment(),
+            FontFamilyResolution::Lenient,
+        );
         let result: Rc<RefCell<Option<Result<RenderResult, RenderError>>>> = Rc::default();
         executor_core::spawn_local({
             let result = Rc::clone(&result);
-            let view = AnyView::new(FakeLoader(gate.clone()));
             async move {
                 let capture = renderer
                     .render_to_rgba(
@@ -113,6 +127,15 @@ impl Capture {
         })
         .detach();
         Self { executor, result }
+    }
+
+    fn start_loader(gate: &Gate, content_deadline: Duration) -> Self {
+        Self::start(AnyView::new(FakeLoader(gate.clone())), content_deadline)
+    }
+
+    /// Renders `view` to completion, driving the executor on its wake edges.
+    fn render(view: AnyView) -> Result<RenderResult, RenderError> {
+        Self::start(view, Duration::from_secs(30)).finish()
     }
 
     /// Runs what is queued; the capture's state after the drain.
@@ -138,10 +161,22 @@ impl Capture {
     }
 }
 
+/// A `text` leaf resolves its `Body` font token out of the environment, so
+/// a capture mounted under the assembled runner environment renders it
+/// instead of panicking on the missing token (water-rs/waterui#2703).
+#[test]
+fn a_capture_renders_text_under_the_installed_environment() {
+    use waterui::prelude::text;
+
+    let rendered = Capture::render(AnyView::new(text("capture me")))
+        .expect("a text leaf captures under the installed environment");
+    assert_eq!((rendered.width, rendered.height), (64, 32));
+}
+
 #[test]
 fn a_capture_awaits_content_a_view_owes() {
     let gate = Gate::default();
-    let capture = Capture::start(&gate, Duration::from_secs(30));
+    let capture = Capture::start_loader(&gate, Duration::from_secs(30));
     assert!(
         !capture.drain(),
         "the capture must not rasterize while the loader still owes content"
@@ -155,7 +190,7 @@ fn a_capture_awaits_content_a_view_owes() {
 
 #[test]
 fn a_capture_names_the_view_still_owing_at_the_deadline() {
-    let capture = Capture::start(&Gate::default(), Duration::from_millis(50));
+    let capture = Capture::start_loader(&Gate::default(), Duration::from_millis(50));
     let Err(error) = capture.finish() else {
         panic!("a load that never lands fails the capture");
     };
@@ -172,7 +207,7 @@ fn a_capture_names_the_view_still_owing_at_the_deadline() {
 #[test]
 fn a_capture_reports_a_failed_load() {
     let gate = Gate::default();
-    let capture = Capture::start(&gate, Duration::from_secs(30));
+    let capture = Capture::start_loader(&gate, Duration::from_secs(30));
     let _ = capture.drain();
     gate.open(Err("decode failed".into()));
     let Err(error) = capture.finish() else {

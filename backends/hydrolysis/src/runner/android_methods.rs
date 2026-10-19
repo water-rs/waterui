@@ -16,7 +16,6 @@ pub enum HostMethodId {
     SoftInput,
     AccessibilityTreeChanged,
     PlatformViewsChanged,
-    FatalError,
     CloseRequested,
     EditingState,
     CursorAnchorInfo,
@@ -27,12 +26,11 @@ pub enum HostMethodId {
 impl HostMethodId {
     /// Every id, in table order — the per-variant `dead_code` exemption for
     /// non-Android test builds and the test's order check both read it.
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 9] = [
         Self::RequestRedraw,
         Self::SoftInput,
         Self::AccessibilityTreeChanged,
         Self::PlatformViewsChanged,
-        Self::FatalError,
         Self::CloseRequested,
         Self::EditingState,
         Self::CursorAnchorInfo,
@@ -66,10 +64,6 @@ pub const HOST_METHODS: &[HostMethod] = &[
     HostMethod {
         name: "onNativePlatformViewsChanged",
         signature: "()V",
-    },
-    HostMethod {
-        name: "onNativeFatalError",
-        signature: "(Ljava/lang/String;)V",
     },
     HostMethod {
         name: "onNativeCloseRequested",

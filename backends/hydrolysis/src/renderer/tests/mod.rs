@@ -61,6 +61,7 @@ mod mid_flush_subview;
 pub mod mirror;
 mod navigation_back;
 mod navigation_layers;
+mod navigation_text_input;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
 mod opacity_binding;
