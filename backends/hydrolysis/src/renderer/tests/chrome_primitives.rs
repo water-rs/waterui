@@ -318,7 +318,10 @@ fn tap_release_needs_no_tree_pass() {
         [0, 0, 0],
         "an ordinary tap records nothing and lays nothing out"
     );
-    assert_eq!(released.semantic_builds, 0, "an ordinary tap builds nothing");
+    assert_eq!(
+        released.semantic_builds, 0,
+        "an ordinary tap builds nothing"
+    );
 }
 
 /// Pushes an Enter key event — the event lands on the next pumped frame,

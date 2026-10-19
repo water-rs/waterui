@@ -3488,16 +3488,19 @@ impl SemanticCore {
             return false;
         };
         let point = target.bounds.center();
-        let action_changed = (target.action.borrow_mut())(self, point, env);
+        // The action's verdict is "the activation landed", not a layout
+        // input — the same verdict the pointer release path gives the
+        // tap's action: whatever it writes marks its own readers through
+        // the signal guards, so an ordinary activation changes nothing and
+        // counts nothing toward this release's `changed`
+        // (water-rs/waterui#2941).
+        let _ = (target.action.borrow_mut())(self, point, env);
         let clear = self
             .hit_test
             .interaction
             .clear_all_presses(self.frame_instant());
-        if action_changed {
-            Self::mark_owner(&target.owner, Dirty::LAYOUT);
-        }
         self.hit_test.interaction.mark_press_clear(&clear);
-        true
+        clear.visual_changed || clear.chrome_changed
     }
 
     /// A synthetic focus-out release — winit resends every held key as
