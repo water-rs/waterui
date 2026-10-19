@@ -35,6 +35,11 @@
 //! Edges are finite by the lowering invariant (`flatten_edges` output is
 //! validated finite), so no non-finite case exists to handle.
 //!
+//! Origins share bins within one band-height translation interval. Edge
+//! bounds cover both ends of that interval; the raster predicate still
+//! rejects candidates outside the actual placed band. The error bound uses
+//! the larger absolute interval endpoint.
+//!
 //! # Expanded windows
 //!
 //! A filter scope's apron window or the capture run window spans
@@ -45,6 +50,7 @@
 
 use rayon::prelude::*;
 use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
 use crate::render::lower::Item;
@@ -125,6 +131,14 @@ fn rows_bands((y0, y1): (usize, usize), bands: usize) -> Range<usize> {
     (y0 / BAND_H).min(bands)..y1.div_ceil(BAND_H).min(bands)
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "the fixed raster band height is exactly representable"
+)]
+fn origin_band(oy: f32) -> f64 {
+    (f64::from(oy) / BAND_H as f64).floor() * BAND_H as f64
+}
+
 /// The first and past-last band edge `e` — placed at origin `oy` — can
 /// belong to, under the widened interval described in the module docs.
 ///
@@ -145,12 +159,14 @@ fn edge_bands(e: &Edge, oy: f32, h: usize, bands: usize) -> (usize, usize) {
     let (emin, emax) = (y0.min(y1), y0.max(y1));
     // γ₂·(|e.y|max + |oy| + h) + subnormal allowance; `bound` below is an
     // upper bound of `|oy − y0|` over every band and window origin.
-    let bound = f64::from(oy).abs() + h as f64;
+    let origin_lo = origin_band(oy);
+    let origin_hi = (origin_lo + BAND_H as f64).next_up();
+    let bound = origin_lo.abs().max(origin_hi.abs()) + h as f64;
     let err = GAMMA2.mul_add(y0.abs().max(y1.abs()) + bound, SUBNORMAL);
     // Outward rounding: one f64 ulp at each end covers the f64
     // arithmetic's own rounding of `emin/emax + oy` and the widened ends.
-    let lo = (emin + f64::from(oy) - err).next_down();
-    let hi = (emax + f64::from(oy) + err).next_up();
+    let lo = (emin + origin_lo - err).next_down();
+    let hi = (emax + origin_hi + err).next_up();
     // Clamp to the surface in f64 before converting: on an unclamped
     // huge `hi` the `as usize` cast saturates and the offset addition
     // could wrap. `hi.ceil()` lands the integer band boundary *after*
@@ -169,6 +185,8 @@ fn edge_bands(e: &Edge, oy: f32, h: usize, bands: usize) -> (usize, usize) {
 pub struct EdgeGroup<'a> {
     /// The draw's own edges, in original order.
     pub edges: &'a [Edge],
+    /// The caller retained the same immutable geometry at this group index.
+    pub geometry_unchanged: bool,
     /// The draw's device-space y origin.
     pub oy: f32,
     /// First band the owning item reaches.
@@ -207,12 +225,12 @@ pub struct EdgeBins {
     edge_spans: Vec<(usize, usize)>,
     /// Exact inputs that determine edge membership, independent of paint and x.
     grid: Option<(usize, usize)>,
-    origins: Vec<u32>,
+    origins: Vec<u64>,
     edge_rows: Vec<[u32; 2]>,
 }
 
 impl EdgeBins {
-    fn matches<'a, I>(&self, groups: I, bands: usize, h: usize) -> bool
+    fn matches_placement<'a, I>(&self, groups: I, bands: usize, h: usize) -> bool
     where
         I: Iterator<Item = EdgeGroup<'a>>,
     {
@@ -224,9 +242,25 @@ impl EdgeBins {
             if g >= self.span.len()
                 || self.band0[g] != group.band0
                 || self.span[g] != group.band1.saturating_sub(group.band0)
-                || self.origins[g] != group.oy.to_bits()
+                || self.origins[g] != origin_band(group.oy).to_bits()
             {
                 return false;
+            }
+            group_count += 1;
+        }
+        group_count == self.span.len()
+    }
+
+    fn matches<'a, I>(&self, groups: I, bands: usize, h: usize) -> bool
+    where
+        I: Iterator<Item = EdgeGroup<'a>> + Clone,
+    {
+        if !self.matches_placement(groups.clone(), bands, h) {
+            return false;
+        }
+        groups.enumerate().all(|(g, group)| {
+            if group.geometry_unchanged {
+                return true;
             }
             let start = self.span_off[g];
             let end = self
@@ -234,17 +268,12 @@ impl EdgeBins {
                 .get(g + 1)
                 .copied()
                 .unwrap_or(self.edge_rows.len());
-            if end - start != group.edges.len()
-                || !self.edge_rows[start..end]
+            end - start == group.edges.len()
+                && self.edge_rows[start..end]
                     .iter()
                     .zip(group.edges)
                     .all(|(rows, edge)| *rows == [edge.y0.to_bits(), edge.y1.to_bits()])
-            {
-                return false;
-            }
-            group_count += 1;
-        }
-        group_count == self.span.len()
+        })
     }
 
     /// Refreshes bins for `groups` over the `bands`-band, `h`-row grid.
@@ -255,7 +284,7 @@ impl EdgeBins {
     /// and decrements, so every counted reference lands exactly once.
     pub fn rebuild<'a, I>(&mut self, groups: I, counts: &mut Vec<usize>, bands: usize, h: usize)
     where
-        I: Iterator<Item = EdgeGroup<'a>> + Clone,
+        I: Iterator<Item = EdgeGroup<'a>> + Clone + Send + Sync,
     {
         if self.matches(groups.clone(), bands, h) {
             return;
@@ -269,7 +298,7 @@ impl EdgeBins {
         self.span_off.clear();
         let (mut pairs, mut edges_total) = (0usize, 0usize);
         for g in groups.clone() {
-            self.origins.push(g.oy.to_bits());
+            self.origins.push(origin_band(g.oy).to_bits());
             self.pair_base.push(pairs);
             self.band0.push(g.band0);
             self.span.push(g.band1.saturating_sub(g.band0));
@@ -282,28 +311,41 @@ impl EdgeBins {
         self.edge_rows.resize(edges_total, [0; 2]);
         let workers = rayon::current_thread_index().map_or(1, |_| rayon::current_num_threads());
         let chunk_len = edges_total.div_ceil(workers).max(1);
-        for (g, group) in groups.clone().enumerate() {
-            let start = self.span_off[g];
-            let end = start + group.edges.len();
-            let fill = |spans: &mut [(usize, usize)], rows: &mut [[u32; 2]], edges: &[Edge]| {
-                for ((span, row), edge) in spans.iter_mut().zip(rows).zip(edges) {
+        let span_off = &self.span_off;
+        let fill_chunk = |chunk: usize, spans: &mut [(usize, usize)], rows: &mut [[u32; 2]]| {
+            let start = chunk * chunk_len;
+            let first = span_off.partition_point(|&offset| offset <= start) - 1;
+            let mut skip = start - span_off[first];
+            let mut written = 0;
+            for group in groups.clone().skip(first) {
+                let count = (group.edges.len() - skip).min(spans.len() - written);
+                for ((span, row), edge) in spans[written..written + count]
+                    .iter_mut()
+                    .zip(&mut rows[written..written + count])
+                    .zip(&group.edges[skip..skip + count])
+                {
                     *row = [edge.y0.to_bits(), edge.y1.to_bits()];
                     *span = edge_bands(edge, group.oy, h, bands);
                 }
-            };
-            if workers == 1 || group.edges.len() <= chunk_len {
-                fill(
-                    &mut self.edge_spans[start..end],
-                    &mut self.edge_rows[start..end],
-                    group.edges,
-                );
-            } else {
-                self.edge_spans[start..end]
-                    .par_chunks_mut(chunk_len)
-                    .zip(self.edge_rows[start..end].par_chunks_mut(chunk_len))
-                    .zip(group.edges.par_chunks(chunk_len))
-                    .for_each(|((spans, rows), edges)| fill(spans, rows, edges));
+                written += count;
+                if written == spans.len() {
+                    break;
+                }
+                skip = 0;
             }
+        };
+        if workers == 1 {
+            self.edge_spans
+                .chunks_mut(chunk_len)
+                .zip(self.edge_rows.chunks_mut(chunk_len))
+                .enumerate()
+                .for_each(|(chunk, (spans, rows))| fill_chunk(chunk, spans, rows));
+        } else {
+            self.edge_spans
+                .par_chunks_mut(chunk_len)
+                .zip(self.edge_rows.par_chunks_mut(chunk_len))
+                .enumerate()
+                .for_each(|(chunk, (spans, rows))| fill_chunk(chunk, spans, rows));
         }
         // Count in pair space. `counts` keeps its high-water length —
         // the `counts[..pairs]` prefix is active and all-zero on entry
@@ -392,7 +434,16 @@ impl EdgeBins {
             * size_of::<usize>()
             + self.edge_spans.capacity() * size_of::<(usize, usize)>()
             + self.edge_rows.capacity() * size_of::<[u32; 2]>()
-            + self.origins.capacity() * size_of::<u32>()) as u64
+            + self.origins.capacity() * size_of::<u64>()) as u64
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct GeometryIdentity(usize);
+
+impl GeometryIdentity {
+    fn of(edges: &Arc<[Edge]>) -> Self {
+        Self(Arc::as_ptr(edges).cast::<Edge>() as usize)
     }
 }
 
@@ -416,6 +467,10 @@ pub struct FrameIndex {
     counts: Vec<usize>,
     /// The draws' edge bins, draw rank as group.
     edges: EdgeBins,
+    /// Immutable geometry retained to establish identity across raster calls.
+    sources: Vec<Arc<[Edge]>>,
+    /// Draw-order identities; `sources` keeps each backing allocation alive.
+    source_ids: Vec<GeometryIdentity>,
 }
 
 impl FrameIndex {
@@ -466,29 +521,46 @@ impl FrameIndex {
         }
         // A cloneable view of the draws' placements — nothing borrowed
         // is retained, no `Vec<EdgeGroup>` exists per rebuild.
-        self.edges.rebuild(
-            self.draws.iter().map(|&i| {
-                let Item::Draw {
-                    edges,
-                    offset,
-                    bbox,
-                    ..
-                } = &items[i]
-                else {
-                    unreachable!("draws only names Item::Draw")
-                };
-                let reach = rows_bands((bbox.y0 as usize, (bbox.y1 as usize).min(h)), bands);
-                EdgeGroup {
-                    edges,
-                    oy: offset[1],
-                    band0: reach.start,
-                    band1: reach.end,
-                }
-            }),
-            &mut self.counts,
-            bands,
-            h,
-        );
+        let sources = self.draws.iter().map(|&i| match &items[i] {
+            Item::Draw { edges, .. } => edges,
+            _ => unreachable!("draws only names Item::Draw"),
+        });
+        let same_geometry = self.source_ids.len() == self.draws.len()
+            && sources
+                .clone()
+                .zip(&self.source_ids)
+                .all(|(new, old)| GeometryIdentity::of(new) == *old);
+        let groups = self.draws.iter().enumerate().map(|(g, &i)| {
+            let Item::Draw {
+                edges,
+                offset,
+                bbox,
+                ..
+            } = &items[i]
+            else {
+                unreachable!("draws only names Item::Draw")
+            };
+            let reach = rows_bands((bbox.y0 as usize, (bbox.y1 as usize).min(h)), bands);
+            EdgeGroup {
+                edges,
+                geometry_unchanged: self.source_ids.get(g) == Some(&GeometryIdentity::of(edges)),
+                oy: offset[1],
+                band0: reach.start,
+                band1: reach.end,
+            }
+        });
+        if !same_geometry || !self.edges.matches_placement(groups.clone(), bands, h) {
+            self.edges.rebuild(groups, &mut self.counts, bands, h);
+        }
+        if !same_geometry {
+            self.source_ids.clear();
+            self.source_ids
+                .extend(sources.clone().map(GeometryIdentity::of));
+            self.sources.clear();
+            self.sources.extend(sources.cloned());
+            self.sources.sort_unstable_by_key(GeometryIdentity::of);
+            self.sources.dedup_by(|a, b| Arc::ptr_eq(a, b));
+        }
     }
 
     /// The original item indices to run for band `b`: every structural
@@ -548,7 +620,7 @@ impl FrameIndex {
 
     /// The retained heap capacity of every table and scratch Vec —
     /// reported under `Engine::memory()`'s band-buffers category.
-    pub const fn heap_bytes(&self) -> u64 {
+    pub fn heap_bytes(&self) -> u64 {
         ((self.item_off.capacity()
             + self.item_pool.capacity()
             + self.draws.capacity()
@@ -556,6 +628,14 @@ impl FrameIndex {
             + self.counts.capacity())
             * size_of::<usize>()) as u64
             + self.edges.heap_bytes()
+            + (self.sources.capacity() * size_of::<Arc<[Edge]>>()
+                + self.source_ids.capacity() * size_of::<GeometryIdentity>()) as u64
+            + self
+                .sources
+                .iter()
+                .filter(|source| Arc::strong_count(source) == 1)
+                .map(|source| (source.len() * size_of::<Edge>()) as u64)
+                .sum::<u64>()
     }
 }
 
@@ -599,6 +679,7 @@ mod tests {
         index.rebuild(
             std::iter::once(EdgeGroup {
                 edges,
+                geometry_unchanged: false,
                 oy,
                 band0: 0,
                 band1: bands,
@@ -676,6 +757,7 @@ mod tests {
         fn group(edges: &[Edge]) -> EdgeGroup<'_> {
             EdgeGroup {
                 edges,
+                geometry_unchanged: false,
                 oy: 0.0,
                 band0: 0,
                 band1: 4,
@@ -693,6 +775,19 @@ mod tests {
         assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
         index.rebuild(std::iter::once(group(&edges)), &mut counts, 4, 64);
         assert_eq!(index.at(0, 0), &[0]);
+        for oy in [0.0, 0.125, 7.5, 15.999_999] {
+            assert!(index.matches(
+                std::iter::once(EdgeGroup {
+                    oy,
+                    ..group(&edges)
+                }),
+                4,
+                64
+            ));
+            for band in kept_bands(&edges[0], oy, 64, 4) {
+                assert!(index.at(0, band).contains(&0));
+            }
+        }
         assert!(counts.iter().all(|&count| count == 0));
         edges[0].x0 = 9.0;
         assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
@@ -723,6 +818,91 @@ mod tests {
         assert!(index.matches(std::iter::once(group(&edges)), 4, 64));
     }
 
+    #[test]
+    fn parallel_chunks_cross_group_boundaries() {
+        let edges: Vec<Edge> = (0_u16..17)
+            .map(|i| Edge {
+                x0: 0.0,
+                x1: 1.0,
+                y0: f32::from(i) * 5.0,
+                y1: f32::from(i).mul_add(5.0, 19.0),
+            })
+            .collect();
+        let boundaries = [0, 0, 3, 4, 9, 9, 16, 17, 17];
+        let groups: Vec<_> = boundaries
+            .windows(2)
+            .map(|pair| EdgeGroup {
+                edges: &edges[pair[0]..pair[1]],
+                geometry_unchanged: false,
+                oy: -2.0,
+                band0: 0,
+                band1: 8,
+            })
+            .collect();
+        let mut serial = EdgeBins::default();
+        serial.rebuild(groups.iter().copied(), &mut Vec::new(), 8, 128);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .unwrap();
+        let mut parallel = EdgeBins::default();
+        let mut counts = Vec::new();
+        pool.install(|| parallel.rebuild(groups.iter().copied(), &mut counts, 8, 128));
+        for group in 0..groups.len() {
+            for band in 0..8 {
+                assert_eq!(parallel.at(group, band), serial.at(group, band));
+            }
+        }
+        assert!(counts.iter().all(|&count| count == 0));
+    }
+
+    #[test]
+    fn retained_geometry_checks_placement_and_replacement() {
+        let draw = |edges: Arc<[Edge]>| Item::Draw {
+            edges,
+            offset: [0.0; 2],
+            bbox: crate::render::lower::DrawBox {
+                x0: 0,
+                y0: 0,
+                x1: 10,
+                y1: 64,
+            },
+            rule: cherenkov::FillRule::NonZero,
+            paint: crate::render::paint::PaintData::Solid([0.0; 4]),
+            clip: None,
+            swept: false,
+        };
+        let geometry: Arc<[Edge]> = Arc::from([Edge {
+            x0: 0.0,
+            y0: 2.0,
+            x1: 1.0,
+            y1: 6.0,
+        }]);
+        let mut items = vec![draw(geometry.clone()), draw(geometry)];
+        let mut index = FrameIndex::default();
+        index.rebuild(&items, 64);
+        index.rebuild(&items, 64);
+        assert_eq!(index.sources.len(), 1);
+        assert_eq!(index.edges(0, 0), &[0]);
+        if let Item::Draw { offset, .. } = &mut items[0] {
+            offset[1] = 32.0;
+        }
+        index.rebuild(&items, 64);
+        assert_eq!(index.edges(0, 0), &[0usize; 0]);
+        assert_eq!(index.edges(2, 0), &[0]);
+        assert_eq!(index.edges(0, 1), &[0]);
+        items[0] = draw(Arc::from([Edge {
+            x0: 0.0,
+            y0: 50.0,
+            x1: 1.0,
+            y1: 54.0,
+        }]));
+        index.rebuild(&items, 64);
+        assert_eq!(index.sources.len(), 2);
+        assert_eq!(index.edges(2, 0), &[0usize; 0]);
+        assert_eq!(index.edges(3, 0), &[0]);
+    }
+
     /// Expanded windows: the merged query is a superset of what the
     /// predicate keeps over the window rows, sorted and unique, for a
     /// nonaligned window and a window clipped to the surface edge.
@@ -746,6 +926,7 @@ mod tests {
         index.rebuild(
             std::iter::once(EdgeGroup {
                 edges: &edges,
+                geometry_unchanged: false,
                 oy: 7.5,
                 band0: 0,
                 band1: bands,

@@ -2029,6 +2029,30 @@ pub(crate) fn report_monitor_error(sender: &Sender<DeviceEvent>, message: String
     let _ = sender.try_send(DeviceEvent::MonitorError { message });
 }
 
+/// Send a signal to the launch process this monitor owns — `devicectl` or
+/// `simctl`, which passes it through to the application it launched.
+#[cfg(unix)]
+pub(crate) fn signal_child(
+    child: &smol::process::Child,
+    signal: nix::sys::signal::Signal,
+    sender: &Sender<DeviceEvent>,
+    launcher: &str,
+) {
+    let Ok(raw_pid) = i32::try_from(child.id()) else {
+        report_monitor_error(
+            sender,
+            format!("{launcher} PID does not fit in nix::unistd::Pid"),
+        );
+        return;
+    };
+    if let Err(error) = nix::sys::signal::kill(nix::unistd::Pid::from_raw(raw_pid), signal) {
+        report_monitor_error(
+            sender,
+            format!("Could not signal {launcher} process: {error}"),
+        );
+    }
+}
+
 struct ChildMonitor {
     child: smol::process::Child,
     sender: Sender<DeviceEvent>,

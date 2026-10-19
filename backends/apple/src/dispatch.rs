@@ -85,39 +85,9 @@ impl Dispatcher {
     /// A `register_view` handler typically owns no platform view of its own:
     /// it applies `T`'s effect (an environment overlay, an attribute on the
     /// child's platform view) and returns the leaf its child rendered.
-    #[cfg(any(
-        feature = "accessibility_identifier",
-        feature = "accessibility_metadata",
-        feature = "anchored_overlay",
-        feature = "border",
-        feature = "clip_shape",
-        feature = "context_menu",
-        feature = "cursor",
-        feature = "draggable",
-        feature = "drop_destination",
-        feature = "dynamic_range",
-        feature = "focused",
-        feature = "gesture",
-        feature = "glass_background",
-        feature = "hittable",
-        feature = "ignore_safe_area",
-        feature = "layout_priority",
-        feature = "lifecycle_hook",
-        feature = "material_background",
-        feature = "multi_date_picker",
-        feature = "navigation",
-        feature = "offset",
-        feature = "on_event",
-        feature = "on_key_press",
-        feature = "opacity",
-        feature = "retain",
-        feature = "rotation",
-        feature = "scale",
-        feature = "secure",
-        feature = "shadow",
-        feature = "env",
-        feature = "fixed_container"
-    ))]
+    ///
+    /// Always compiled: the unconditional `Metadata<TransitionSpec>` claim
+    /// uses it, so it is not feature-gated like `install` call sites.
     pub(crate) fn register_view<T: 'static>(
         &mut self,
         handler: impl Fn(T, &RenderContext<'_>) -> NativeLeaf + 'static,

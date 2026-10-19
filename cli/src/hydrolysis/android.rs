@@ -296,20 +296,22 @@ async fn require_host_module(
     reason: &str,
 ) -> eyre::Result<()> {
     let module_dir = host_project_dir.join(module);
+    // The module path renders with forward separators regardless of host —
+    // the same normalization `template_entry` applies to paths it writes
+    // into Gradle scripts, so the message names one spelling everywhere.
+    let module_dir_display = module_dir.to_string_lossy().replace('\\', "/");
     let metadata = fs::metadata(&module_dir).await.wrap_err_with(|| {
         format!(
-            "the hydrolysis android host at {} ships no `{module}` module: {} does not exist; \
+            "the hydrolysis android host at {} ships no `{module}` module: {module_dir_display} does not exist; \
              {reason}",
             host_project_dir.display(),
-            module_dir.display()
         )
     })?;
     if !metadata.is_dir() {
         bail!(
-            "the hydrolysis android host at {} ships no `{module}` module: {} is not a \
+            "the hydrolysis android host at {} ships no `{module}` module: {module_dir_display} is not a \
              directory; {reason}",
             host_project_dir.display(),
-            module_dir.display()
         );
     }
     Ok(())
@@ -483,7 +485,7 @@ pub(crate) async fn resolve_declared_fonts(
 /// The artifacts and toolchain context produced by an Android launcher build.
 ///
 /// Includes the cargo result and the resolved NDK/SDK context for steps like
-/// `llvm-strip` and [`stage_runtime_libraries`]. Nothing is staged yet.
+/// `llvm-strip` and `stage_runtime_libraries`. Nothing is staged yet.
 #[derive(Debug)]
 pub struct HydrolysisAndroidBuild {
     /// The cargo build result — the cdylib artifact and its app symbols.
@@ -543,7 +545,7 @@ pub(crate) async fn build_prepared_into_jni_libs(
 ///
 /// The preview entry compiles with `waterui-preview-mode`, places the
 /// artifact itself and completes the directory with
-/// [`stage_runtime_libraries`]; [`build`] is this plus the Gradle
+/// `stage_runtime_libraries`; [`build`] is this plus the Gradle
 /// `jniLibs` staging.
 ///
 /// # Errors

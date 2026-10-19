@@ -17,6 +17,10 @@ pub fn install(dispatcher: &mut Dispatcher) {
     // Core — the unit view, always claimed: an unclaimed `Native<()>` falls
     // through the walk into a `body()` panic, which `panic = "abort"` makes fatal.
     crate::components::empty::install(dispatcher);
+    // `Metadata<TransitionSpec>` — claimed unconditionally like `Native<()>`:
+    // `.transition(...)` lives on `View` itself, so any view tree can produce
+    // the wrapper (the structural contract it declares is #1472).
+    crate::components::transition::install(dispatcher);
 
     // Wave A — trivial leaves.
     #[cfg(feature = "image")]

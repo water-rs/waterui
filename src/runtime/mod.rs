@@ -19,5 +19,6 @@ pub mod task;
 mod termination;
 pub mod window;
 mod window_close;
+mod window_focus;
 
 pub use entry::entry;
