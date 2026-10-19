@@ -229,14 +229,6 @@ impl HydrolysisRenderer {
         (&mut self.core.state, run)
     }
 
-    /// The per-frame work counters of the last rendered pump.
-    /// `HydroState::counters` is private to `crate::renderer`, so callers
-    /// outside the renderer reach it through here.
-    #[must_use]
-    pub const fn frame_work_counters(&self) -> FrameWorkCounters {
-        self.core.state.counters
-    }
-
     /// Mutable access for the runner's host-side wakeup and submission
     /// sites (the ones that happen outside a renderer method).
     pub const fn frame_work_counters_mut(&mut self) -> &mut FrameWorkCounters {
