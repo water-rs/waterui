@@ -2493,7 +2493,7 @@ impl OffscreenSurface {
     ///
     /// # Panics
     /// Panics when the surface's device is lost and the recreation
-    /// [`PresentationSurface::ensure_live`] runs could not restore it —
+    /// `PresentationSurface::ensure_live` runs could not restore it —
     /// a caller reaching this inherent `acquire` has no `SurfaceError`
     /// channel to report the loss through (water-rs/waterui#2742).
     pub fn acquire(&mut self) -> SurfaceFrame {
