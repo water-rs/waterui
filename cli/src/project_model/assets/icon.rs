@@ -550,6 +550,7 @@ fn content_bbox(image: &image::RgbaImage, background: [u8; 3]) -> Option<Content
 
 /// Multiplies the image's alpha by an antialiased rounded-rectangle mask
 /// covering the whole image.
+#[cfg(any(target_os = "macos", test))]
 fn apply_rounded_rect_mask(image: &mut image::RgbaImage, radius: f64) {
     let (width, height) = image.dimensions();
     let half_width = f64::from(width) / 2.0;
@@ -568,6 +569,7 @@ fn apply_rounded_rect_mask(image: &mut image::RgbaImage, radius: f64) {
     }
 }
 
+#[cfg(any(target_os = "macos", test, not(feature = "svg-icons")))]
 fn scale_alpha(alpha: u8, coverage: f64) -> u8 {
     let scaled = (f64::from(alpha) * coverage).round().clamp(0.0, 255.0);
     #[expect(
