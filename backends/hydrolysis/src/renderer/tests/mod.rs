@@ -63,6 +63,7 @@ mod navigation_back;
 mod navigation_layers;
 #[cfg(all(feature = "accessibility", not(target_arch = "wasm32")))]
 mod nested_menu_dispatch;
+mod opacity_binding;
 mod perf_full_rebuild;
 mod perf_scroll;
 #[cfg(not(target_arch = "wasm32"))]
