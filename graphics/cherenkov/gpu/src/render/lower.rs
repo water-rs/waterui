@@ -5701,9 +5701,16 @@ fn bboxes_disjoint(instances: &[Instance]) -> bool {
 /// by one pixel and integer-rounded, as `(x, y, w, h)`; `[0, 0, 0, 0]`
 /// when empty.
 fn tight_region(instances: &[Instance], width: u32, height: u32) -> [u32; 4] {
+    union_region(instances.iter().map(device_bbox), width, height)
+}
+
+/// The union device bbox of `bboxes` (non-finite boxes skipped), inflated
+/// by one pixel, integer-rounded and clipped to `width`×`height`, as
+/// `(x, y, w, h)`; `[0, 0, 0, 0]` when empty.
+fn union_region(bboxes: impl IntoIterator<Item = [f32; 4]>, width: u32, height: u32) -> [u32; 4] {
     let mut min = [f32::INFINITY; 2];
     let mut max = [f32::NEG_INFINITY; 2];
-    for b in instances.iter().map(device_bbox) {
+    for b in bboxes {
         if b.iter().any(|v| !v.is_finite()) {
             continue;
         }
@@ -5713,6 +5720,63 @@ fn tight_region(instances: &[Instance], width: u32, height: u32) -> [u32; 4] {
         max[1] = max[1].max(b[3]);
     }
     padded_region(min, max, width, height)
+}
+
+/// The texel region of a shadow capture that can hold nonzero input to
+/// its convolution: the union of everything drawn into its scratch depth
+/// since the depth's last clear — the silhouette scope opens it with a
+/// transparent one — padded and clipped to the padded capture extents of
+/// the pass at `last`. Draws into nested scratch depths are not members
+/// of the union; their composites into this depth are, since every pixel
+/// a pass writes comes through a drawn instance. A GPU-routed path's
+/// range contributes its anchor instance's conservative bound, and a
+/// coverage-tier polygon is bounded by the source instance it copies.
+/// A filtered pass can grow content past its draws' bounds, so its
+/// explicit region joins the union; `capture` and `backdrop_copy` never
+/// write the depth (the former is backdrop-only, the latter reads it).
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "pass region coordinates are small positive integers"
+)]
+pub fn shadow_support(frame: &Frame, last: usize) -> [u32; 4] {
+    let target = frame.passes[last].target;
+    let width = frame.passes[last].region[2];
+    let height = frame.passes[last].region[3];
+    let first = frame.passes[..=last]
+        .iter()
+        .rposition(|pass| pass.target == target && pass.clear.is_some())
+        .expect("a shadow capture opens its depth with a clear");
+    union_region(
+        frame.passes[first..=last]
+            .iter()
+            .enumerate()
+            .filter(|(_, pass)| pass.target == target)
+            .flat_map(|(index, pass)| {
+                let filtered = frame
+                    .filters
+                    .iter()
+                    .any(|&(pass_index, _)| pass_index == first + index)
+                    .then_some(pass.region);
+                pass.ranges
+                    .iter()
+                    .flat_map(|range| {
+                        frame.instances
+                            [range.instances.start as usize..range.instances.end as usize]
+                            .iter()
+                    })
+                    .map(device_bbox)
+                    .chain(filtered.map(|[x, y, w, h]| {
+                        [
+                            x as f32,
+                            y as f32,
+                            x.saturating_add(w) as f32,
+                            y.saturating_add(h) as f32,
+                        ]
+                    }))
+            }),
+        width,
+        height,
+    )
 }
 
 /// The `[x, y, w, h]` texel region covering the device rect `bounds`
@@ -7128,5 +7192,67 @@ mod tests {
             .plan_anchors(&tree)
             .expect("a plan after an error has no stale links");
         assert_eq!(lowering.anchor_scratch.links, [(anchor_a, 10)]);
+    }
+
+    #[test]
+    fn shadow_support_unions_draws_since_the_depths_last_clear() {
+        let span = |x0: f32, y0: f32, x1: f32, y1: f32| {
+            let mut inst = Instance::new(KIND_SPAN);
+            inst.bounds = [x0, y0, x1, y1];
+            inst
+        };
+        let range = |instances: Range<u32>| DrawRange {
+            source: None,
+            image: None,
+            mask: None,
+            pipeline: PipelineKind::SrcOver,
+            variant: ShaderVariant::Simple,
+            instances,
+            gpu: None,
+        };
+        let pass = |target: Target, clear: Option<[f32; 4]>, ranges: Vec<DrawRange>| Pass {
+            target,
+            clear,
+            ranges,
+            space: cherenkov::BlendSpace::Linear,
+            region: [0, 0, 64, 64],
+            backdrop_copy: None,
+            capture: None,
+            tier_ranges: [Range::default(), Range::default()],
+        };
+        let mut frame = Frame {
+            instances: vec![
+                span(0.0, 0.0, 60.0, 60.0),
+                span(20.0, 10.0, 24.0, 18.0),
+                span(2.0, 30.0, 6.0, 34.0),
+                span(50.0, 50.0, 54.0, 54.0),
+            ],
+            passes: vec![
+                // A sibling scope's stale capture at the same depth; the
+                // shadow's own open clears it away below.
+                pass(Target::Scratch(0), Some([0.0; 4]), vec![range(0..1)]),
+                // The shadow capture's transparent open and first draws.
+                pass(Target::Scratch(0), Some([0.0; 4]), vec![range(1..2)]),
+                // A nested scratch's draws are not members of this depth.
+                pass(Target::Scratch(1), Some([0.0; 4]), vec![range(3..4)]),
+                // A continued pass on the capture's depth adds more.
+                pass(Target::Scratch(0), None, vec![range(2..3)]),
+                // A depth whose clear admits no draws has no support.
+                pass(Target::Scratch(2), Some([0.0; 4]), vec![]),
+            ],
+            ..Frame::default()
+        };
+        // Union of (20,10)-(24,18) and (2,30)-(6,34), padded by one.
+        assert_eq!(shadow_support(&frame, 3), [1, 9, 24, 26]);
+        // At pass 1 only (20,10)-(24,18) has drawn since the clear.
+        assert_eq!(shadow_support(&frame, 1), [19, 9, 6, 10]);
+        // The nested depth's own support sees only its own draw.
+        assert_eq!(shadow_support(&frame, 2), [49, 49, 6, 6]);
+        // Nothing drawn since the clear: the support is empty.
+        assert_eq!(shadow_support(&frame, 4), [0, 0, 0, 0]);
+        // A filter on a pass can grow its content past the draws'
+        // bounds; its explicit region joins the union.
+        frame.filters.push((3, FilterKey::Layer(7)));
+        assert_eq!(shadow_support(&frame, 3), [0, 0, 64, 64]);
     }
 }

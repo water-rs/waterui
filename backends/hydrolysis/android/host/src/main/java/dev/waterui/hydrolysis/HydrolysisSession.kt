@@ -311,17 +311,6 @@ class HydrolysisSession internal constructor(
         hostView?.platformViewRegistry?.focusInside() == true
 
     /**
-     * A fatal, unrecoverable failure on the native side (GPU device loss, an
-     * explicit GPU error). The host raises it as an exception on the UI
-     * thread — a crash with a named cause is the honest surface for a session
-     * that can no longer present.
-     */
-    @CalledFromNative
-    fun onNativeFatalError(message: String) {
-        throw IllegalStateException(message)
-    }
-
-    /**
      * The native side requests a close from inside its frame and keeps
      * using the session after the request, so the close is posted: a
      * handler that destroys the session and detaches the view must run

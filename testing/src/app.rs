@@ -61,7 +61,7 @@ pub fn ui() -> UiBuilder {
 }
 
 /// Mounts a whole [`App`] on the rendered runtime and returns the offscreen
-/// session, taking `style` the way `hydrolysis::run(app, style)` does.
+/// session, taking `style` the way `hydrolysis::run(app, env, style)` does.
 ///
 /// The session mounts at the window's declared frame on the default builder
 /// configuration — [`RuntimeFlavor::Test`] and scale factor 1. When the

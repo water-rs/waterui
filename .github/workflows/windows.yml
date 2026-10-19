@@ -111,8 +111,9 @@ jobs:
       #
       # Of the six, `chromium-example` cannot link here (one level below its
       # backend's missing `cef_sandbox`), so it stays out. `stress-example`
-      # runs red here until the Cherenkov pin picks up the upload-staging
-      # timeout fix — that is the honest state of the leg.
+      # exercises the steady-redraw stress bench on this runner's adapter:
+      # the upload-staging timeout it used to hit is fixed in-tree in
+      # `graphics/cherenkov`, so the leg is expected to run green.
       #
       # One full-workspace pass under default features.
       - run: cargo nextest run --locked --workspace --exclude waterui-apple --exclude cocoa-ui --exclude waterui-dylib --exclude waterui-browser-cef --exclude '*-example' --profile ci

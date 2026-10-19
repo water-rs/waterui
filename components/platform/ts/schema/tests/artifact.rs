@@ -8,7 +8,7 @@
 //! channel is what every format shares: a linked image need not keep a
 //! symbol table at all — a linked PE carries none — so the record names
 //! itself instead of relying on one. The recovery below mirrors
-//! `ArtifactSymbols::static_bytes` in the `water` CLI so a divergence
+//! `ArtifactSymbols::meta_record` in the `water` CLI so a divergence
 //! between the two shows up here rather than in a project build.
 
 #![cfg(feature = "waterui")]

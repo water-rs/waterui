@@ -236,6 +236,8 @@ impl fmt::Display for Case {
 /// `eval_span`'s inputs: the paint and the run's output buffer.
 #[derive(Debug)]
 pub struct Eval {
+    /// The level the kernel call dispatches under.
+    pub level: cherenkov_cpu::Level,
     /// The paint.
     pub paint: PaintData,
     /// The run's first device column.
@@ -260,6 +262,8 @@ pub struct Composite {
     pub clip: ClipRun<'static>,
     /// The destination's storage space.
     pub space: cherenkov::BlendSpace,
+    /// The level the kernel calls dispatch under.
+    pub level: cherenkov_cpu::Level,
 }
 
 impl Case {
@@ -270,6 +274,7 @@ impl Case {
             .expect("the case table's paints lower");
         self.kind.assert_variant(&paint);
         Eval {
+            level: cherenkov_cpu::Level::new(),
             paint,
             x0: self.offset,
             py: PY,
@@ -286,13 +291,15 @@ impl Case {
     )]
     pub fn composite(self) -> Composite {
         let Eval {
+            level,
             paint,
             x0,
             py,
             mut out,
         } = self.eval();
-        let src = paint.eval_span(x0, py, &mut out).to_vec();
+        let src = kernels::eval_span(level, &paint, x0, py, &mut out).to_vec();
         Composite {
+            level,
             dst: (0..self.len)
                 .map(|i| {
                     [
@@ -328,4 +335,32 @@ pub fn cases() -> impl Iterator<Item = Case> {
 /// filtered to `kind`.
 pub fn of(kind: Kind) -> impl Iterator<Item = Case> {
     cases().filter(move |case| case.kind.name() == kind.name())
+}
+
+/// Opaque solid coverage: the entire run takes the destination-free store path.
+pub fn opaque_store(len: usize) -> Composite {
+    let mut input = Case {
+        kind: Kind::SolidOpaque,
+        len,
+        offset: 0,
+    }
+    .composite();
+    input.cov.fill(1.0);
+    input
+}
+
+/// Fixed premultiplied linear inputs spanning zero alpha, SDR and HDR.
+/// The encoded input is prepared outside the measured conversion.
+pub fn conversion_pixels(len: usize, encoded: bool) -> Vec<[f32; 4]> {
+    let palette = [
+        [0.0; 4],
+        [0.2, 0.1, 0.3, 0.5],
+        [-0.1, 1.5, 0.4, 1.0],
+        [0.7, 0.3, 0.2, 1.0],
+    ];
+    let mut pixels: Vec<_> = (0..len).map(|i| palette[i % palette.len()]).collect();
+    if encoded {
+        filtrate_core::space::to_srgb(&mut pixels);
+    }
+    pixels
 }
